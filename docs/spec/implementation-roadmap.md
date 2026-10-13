@@ -1329,8 +1329,16 @@ bounded deterministic M3U8 rendering and parsing for both media playlists
 (`HlsPlaylistMetadata::render_m3u8` / `parse_m3u8`) and master playlists
 (`HlsAbrCoordinator::render_master_m3u8` / `parse_master_m3u8`), validating
 FFmpeg-formatted master and variant playlists through `HlsAbrCoordinator`'s
-sequence and independent-segment alignment rules, though the native daemon does
-not yet consume those parsers at runtime. An optional token-guarded HTTP
+sequence and independent-segment alignment rules, and the native daemon now
+consumes those parsers for local output health: every five seconds it reads
+each HLS destination's `index.m3u8` (following a master's first in-directory
+variant under the same route allowlist the HTTP listener uses), parses the
+media playlist, and publishes the segment count, target duration, and the
+directory's free bytes through the lossy `stream_status` record as protocol
+2.19's optional local fields; unreadable, malformed, or escaping playlists
+publish no local health and never latch. Studio appends
+`local=<segments>seg/<ms>ms/<free>B` to a row that carries it. An optional
+token-guarded HTTP
 listener (`--hls-listen` plus `FREEMIXD_HLS_TOKEN`, loopback-only, no TLS)
 serves those outputs at `/v1/hls/<target-id>/<relative>` with a fixed route
 allowlist — `index.m3u8`, `segment-NNNNN.ts`, and their `0..=7` ladder-rung
