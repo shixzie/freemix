@@ -1380,6 +1380,22 @@ exists. `OR-001`'s space status is now observable on the recording path, but
 the row still awaits its other acceptance items, and item 9 remains
 incomplete.
 
+Current implementation boundary for item 11: `docs/spec/capability-matrix.md`
+is the first published capability matrix. It is generated deterministically
+from `parity.toml` by `cargo run -p xtask -- matrix write` and verified by
+`cargo run -p xtask -- matrix check`, which fails when the committed file is
+stale. The matrix renders one section per capability profile in registry order,
+with derived status and priority counts, and one row per feature carrying its
+identifier, priority, phase, ledger status, owner, and every acceptance-test
+identifier annotated with that test's ledger state. It uses only recorded
+ledger data and states explicitly that no capability profile is certified and
+that it reports ledger status plus local acceptance-test evidence only. It is
+not a hardware compatibility, driver, or vendor certification list: because
+ledger feature statuses are release states, most rows read planned or blocked
+even where development slices exist, and the acceptance column is where local
+evidence appears. Publishing measured capability support for certified devices
+therefore remains future work, and item 11 remains incomplete.
+
 Exit: a remote-controlled headless production can stream and record
 independently with tested recovery.
 
