@@ -1375,10 +1375,16 @@ child mux a linear-PCM `pcm_s16le` WAV output for the same captured audio at
 the project's sample rate and channel layout, from mono through 5.1, into an
 exclusive file that shares the segment's stem, so `program-002.mp4` is
 accompanied by `program-002.wav`. The final recorder report carries
-`wav_bytes`, `duration_ms` (the exact completed-pair span at the project frame
-rate), and `free_bytes` (the segment parent sampled when the report is frozen,
-zero when unreadable); a killed child may leave a truncated sidecar, and only
-a clean stop finalizes it.
+`wav_bytes`, `video_bitrate_kbps` and `audio_bitrate_kbps` (each `unset` when
+the slot keeps encoder defaults), `duration_ms` (the exact completed-pair span
+at the project frame rate), and `free_bytes` (the segment parent sampled when
+the report is frozen, zero when unreadable); a killed child may leave a
+truncated sidecar, and only a clean stop finalizes it. Each slot also carries
+optional video and audio encoder bitrates (`--record-bitrate-kbps[-2]` bounded
+1,000 through 100,000 kbps and `--record-audio-bitrate-kbps[-2]` bounded 8
+through 1,024 kbps, each requiring its slot's recorder); a configured bitrate
+becomes the child's `-b:v`/`-maxrate`/`-bufsize` or `-b:a`, while an unset
+value keeps the encoder defaults and the previous byte-identical argv.
 
 Program segments also rotate automatically at exact frame boundaries.
 `--record-segment-seconds <1..=86400>` makes every configured slot close its
@@ -1396,14 +1402,15 @@ the show and the other slot continue.
 
 The two slots are not independently controllable and still share the project
 encoding format and Master audio: both follow the one engine desired flag, and
-there is no per-recorder codec, resolution, audio-map, or bus/channel
-selection, no per-recorder segment policy (the daemon exposes only the shared
-duration rule, while frames/bytes/duration policies live in the unwired
-`fm-record` spool), no multiple-track or metadata handling, and no protocol or
-client representation of a recorder roster. That independent control, the
-differing codec/resolution/audio configuration, and `AU-010` bus selection
-remain planned; `AU-010` still depends on the planned `AU-002`/`AU-003`, so
-`OR-001`, `OR-002`, and `AU-010` are unchanged and item 4 remains incomplete.
+there is no per-recorder codec choice, resolution scaling, audio-map, or
+bus/channel selection, no per-recorder segment policy (the daemon exposes only
+the shared duration rule, while frames/bytes/duration policies live in the
+unwired `fm-record` spool), no multiple-track or metadata handling, and no
+protocol or client representation of a recorder roster. That independent
+control, the codec/resolution/audio-map configuration, and `AU-010` bus
+selection remain planned; `AU-010` still depends on the planned
+`AU-002`/`AU-003`, so `OR-001`, `OR-002`, and `AU-010` are unchanged and item 4
+remains incomplete.
 
 Current implementation boundary for item 5: `fm-record`'s crash-safe packet
 spool now carries ISO/MultiCorder tap and timecode manifest metadata plus
