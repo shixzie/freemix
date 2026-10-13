@@ -1209,14 +1209,17 @@ fn apply_recording_mutation(
         command,
     } = mutation;
     let active = matches!(command, EngineCommand::RecordStart);
-    let previous = state.desired_switcher().recording_desired();
     state
         .desired_switcher_mut()
         .set_recording_desired(active)
         .map_err(switcher_rejection)?;
-    if previous != active {
-        events.push(EngineEvent::RecordingChanged { active });
-    }
+    // Every acceptance carries one durable event, exactly like the stream
+    // roster events: the snapshot's revision, event sequence, and runtime
+    // generation advance together per accepted command, so a command that
+    // leaves the flag unchanged (an operator stopping a stopped recorder)
+    // must still emit it or the persisted counters diverge and the project
+    // refuses to restore.
+    events.push(EngineEvent::RecordingChanged { active });
     Ok(EngineAcceptance { target_frame })
 }
 

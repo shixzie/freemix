@@ -2486,7 +2486,7 @@ fn snapshot_and_restore_preserve_desired_stream_running_state_exactly() {
 }
 
 #[test]
-fn record_start_and_stop_emit_changed_events_only_on_transitions() {
+fn record_commands_emit_changed_events_per_acceptance() {
     let mut engine = streamed_engine();
     let started = engine
         .execute(envelope("rec-on", EngineCommand::RecordStart), 0)
@@ -2500,12 +2500,18 @@ fn record_start_and_stop_emit_changed_events_only_on_transitions() {
     engine.tick().unwrap();
     assert!(engine.realized_switcher().recording_desired());
 
+    // A command that leaves the flag unchanged is still an acceptance, and
+    // its event keeps the revision, event sequence, and runtime generation
+    // advancing together so the project stays restorable.
     let repeated = engine
         .execute(envelope("rec-on-again", EngineCommand::RecordStart), 0)
         .unwrap();
     assert!(repeated.receipt.accepted().is_some());
-    assert!(repeated.events.is_empty());
-    assert_eq!(engine.event_sequence(), EventSequence::new(1));
+    assert_eq!(
+        repeated.events[0].payload,
+        EngineEvent::RecordingChanged { active: true }
+    );
+    assert_eq!(engine.event_sequence(), EventSequence::new(2));
 
     let stopped = engine
         .execute(envelope("rec-off", EngineCommand::RecordStop), 0)
@@ -2515,6 +2521,32 @@ fn record_start_and_stop_emit_changed_events_only_on_transitions() {
         EngineEvent::RecordingChanged { active: false }
     );
     assert!(!engine.show().desired_switcher().recording_desired());
+}
+
+#[test]
+fn repeated_record_commands_keep_snapshot_restore_exact() {
+    let mut engine = streamed_engine();
+    for key in ["rec-on", "rec-on-again"] {
+        engine
+            .execute(envelope(key, EngineCommand::RecordStart), 0)
+            .unwrap();
+    }
+    for key in ["rec-off", "rec-off-again"] {
+        engine
+            .execute(envelope(key, EngineCommand::RecordStop), 0)
+            .unwrap();
+    }
+    while engine.snapshot().is_err() {
+        engine.tick().unwrap();
+    }
+    let snapshot = engine.snapshot().unwrap();
+    assert!(!snapshot.show().desired_switcher().recording_desired());
+    let restored = Engine::restore(snapshot).unwrap();
+    assert!(!restored.show().desired_switcher().recording_desired());
+    assert_eq!(
+        restored.realized_switcher().recording_desired(),
+        restored.show().desired_switcher().recording_desired()
+    );
 }
 
 #[test]

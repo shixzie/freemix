@@ -160,9 +160,12 @@ violations. The record never advances or carries a durable revision, and native
 
 Protocol 2.18 adds field-free `record_start` and `record_stop` commands
 authorized as transition operations. The engine owns the desired recording
-flag, snapshots project `record_desired_active`, and each acceptance that
-changes the flag emits one durable `recording_changed` event; idempotent
-replays return the original receipt without a new event. Realization is
+flag, snapshots project `record_desired_active`, and every acceptance emits one
+durable `recording_changed` event carrying the resulting flag — including a
+command that leaves the flag unchanged, so the revision, event sequence, and
+runtime generation keep advancing together exactly like the stream roster
+events; idempotent replays return the original receipt without a new event.
+Realization is
 daemon-side: a configured recorder reconciles at readiness against the
 persisted intent, live stops drain the current segment before its final
 report, and live starts open deterministically derived segment files.

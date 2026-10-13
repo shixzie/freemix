@@ -3270,6 +3270,24 @@ fn local_record_start_stop_round_trip_persists_recording_desired_active() {
 }
 
 #[test]
+fn repeated_record_commands_keep_the_checkpoint_restartable() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+
+    // A command that leaves the flag unchanged is still an acceptance. Its
+    // durable event keeps revision, event sequence, and runtime generation
+    // advancing together, so the next restore must still accept the project.
+    for command in ["record-start", "record-start", "record-stop", "record-stop"] {
+        assert_success(&invoke_bounded(&[command, context.project_path()]));
+    }
+    let status_output = status(&context.project);
+    assert!(status_output.contains("recording_desired=false"));
+    assert!(manifest(&context.project).contains("\"recording_desired_active\": false"));
+
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+#[test]
 fn remote_record_start_is_accepted_and_replicates_the_recording_flag() {
     let server = FakeRemoteServer::start_record_start();
     let address = server.address();
