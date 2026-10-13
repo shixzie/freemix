@@ -871,10 +871,33 @@ pub struct AudioMetersMessage {
     pub inputs: Vec<InputAudioMeters>,
 }
 
+/// Latest health of one local HLS output: playlist depth and free space.
+///
+/// This is lossy, latest-wins runtime telemetry like the rest of
+/// [`StreamStatusSample`]: it is never durable, never resumable, and never
+/// projected into snapshots or durable events. `segments` is the number of
+/// media segments currently published in the output's playlist, and
+/// `target_duration_ms` is that playlist's target duration in whole
+/// milliseconds. Both are bounded on the wire; `free_bytes` is the free space
+/// on the output directory's filesystem and may be any `u64` (`0` when the
+/// query was unavailable).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamLocalStatus {
+    pub segments: u32,
+    pub target_duration_ms: u32,
+    pub free_bytes: u64,
+}
+
 /// One lossy realized stream status sample for one configured target.
 ///
 /// Counters are cumulative since the target's last start. `failure` carries a
 /// sanitized short code and never URL text or key material.
+///
+/// `local` carries the latest health of this target's local HLS output when it
+/// has one. Wire encoding: a sample without local health ends at the `failure`
+/// field exactly as protocol 2.18 did; a sample with it appends one trailing
+/// `local=<segments>:<target_duration_ms>:<free_bytes>` field. `None` is the
+/// only shape for network targets, and `local=none` is never encoded.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamStatusSample {
     pub target: WireStreamTargetId,
@@ -884,6 +907,7 @@ pub struct StreamStatusSample {
     pub enqueued_pairs: u64,
     pub dropped_pairs: u64,
     pub failure: Option<String>,
+    pub local: Option<StreamLocalStatus>,
 }
 
 /// Lossy, non-resumable realized streaming status for every active target.

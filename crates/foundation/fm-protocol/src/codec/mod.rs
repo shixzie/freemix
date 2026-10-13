@@ -22,6 +22,12 @@ pub const MAX_STREAM_DETAIL_BYTES: usize = 64;
 /// Largest `StreamStatusMessage` sample count; matches the engine's
 /// bounded stream inventory.
 pub const MAX_STREAM_SAMPLES: usize = 5;
+/// Largest accepted [`crate::StreamLocalStatus::segments`] count: one
+/// playlist may publish at most this many media segments.
+pub const MAX_STREAM_LOCAL_SEGMENTS: u32 = 4_096;
+/// Largest accepted [`crate::StreamLocalStatus::target_duration_ms`]: one
+/// hour in whole milliseconds.
+pub const MAX_STREAM_LOCAL_TARGET_DURATION_MS: u32 = 3_600_000;
 
 fn validate_request_id(value: &str) -> Result<(), CodecError> {
     if value.is_empty()

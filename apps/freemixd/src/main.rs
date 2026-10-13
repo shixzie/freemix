@@ -61,7 +61,8 @@ use fm_persistence::{
 };
 #[cfg(feature = "native-media")]
 use fm_protocol::{
-    AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, InputAudioMeters, MAX_STREAM_SAMPLES,
+    AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, InputAudioMeters, MAX_STREAM_LOCAL_SEGMENTS,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, StreamLocalStatus,
     StreamRealizedState, StreamStatusSample, WireInputId, WireStreamTargetId,
 };
 use fm_protocol::{
@@ -141,9 +142,9 @@ use fm_io_macos::{CameraTelemetry, CameraVideoSource, MacosCameraAdapter};
 use fm_io_network::{
     AbrLadder, AbrVariant, AudioRendition, ColorDescription, DestinationConfig, DestinationEnqueue,
     DestinationId, DestinationRenditions, DestinationState, Endpoint, EnqueueStatus, FrameRate,
-    HlsLadder, HlsLadderRung, NetworkTelemetry, OutputPacket, OutputProtocol, OutputSet, PollEvent,
-    QueueCapacity, ReconnectPolicy, RenditionId, RenditionPlan, RenditionPlanner, RenditionProfile,
-    TimingProfile, VideoRendition,
+    HlsLadder, HlsLadderRung, HlsPlaylistMetadata, NetworkTelemetry, OutputPacket, OutputProtocol,
+    OutputSet, PollEvent, QueueCapacity, ReconnectPolicy, RenditionId, RenditionPlan,
+    RenditionPlanner, RenditionProfile, TimingProfile, VideoRendition, parse_master_m3u8,
     rtmp::{FfmpegRtmpSink, RtmpSinkConfig, StreamKey, raw_pair_packet},
 };
 #[cfg(feature = "native-media")]
@@ -408,6 +409,14 @@ struct NativeDaemon {
     /// creates each leaf directory later, so preflight and sampling resolve the
     /// nearest existing ancestor. Bounded by the engine's five-target cap.
     local_output_dirs: Vec<PathBuf>,
+    /// Latest sampled local HLS output health per destination slot, indexed by
+    /// the slot's one-based [`DestinationId`] minus one. Network targets and
+    /// local outputs whose playlist cannot currently be read stay `None`, and
+    /// their next wire sample carries no local field.
+    local_output_status: [Option<StreamLocalStatus>; fm_switcher::MAX_STREAM_COUNT],
+    /// When the last local HLS output sample was attempted; `None` makes the
+    /// first sample evaluate immediately instead of after one full interval.
+    local_output_sampled_at: Option<Instant>,
     /// Segments stopped off the render path, awaiting bounded finalization.
     recording_finalizers: Vec<ProgramRecordingFinalizer>,
     streams: Vec<NativeProgramStream>,
@@ -3230,6 +3239,88 @@ struct StreamRuntimeSnapshot<'a> {
     /// The shared output set's view of this target.
     state: Option<DestinationState>,
     network: Option<NetworkTelemetry>,
+    /// Latest cached local HLS output health for this target's slot; always
+    /// `None` for a network target.
+    local: Option<StreamLocalStatus>,
+}
+
+/// One local HLS output's latest bounded health, or `None` when its published
+/// playlist cannot be read or parsed.
+///
+/// A single-rendition sink publishes `<directory>/index.m3u8`. A ladder sink
+/// publishes a master playlist at that path whose first variant is a
+/// `<rung>/index.m3u8` inside the same directory, so a master is followed to
+/// its first variant before parsing. The variant path is validated against the
+/// same plain shapes the HLS listener serves — `index.m3u8` or one rung digit
+/// `0..=7` plus `index.m3u8` — so `..`, absolute paths, and backslashes are
+/// refused before any read.
+///
+/// `segments` and `target_duration_ms` come from the bounded M3U8 parser and
+/// saturate to the wire bounds; `free_bytes` measures the directory's nearest
+/// existing ancestor and is zero when the query is unavailable. Every read,
+/// parse, or shape failure returns `None` without latching: a missing or
+/// malformed playlist is a lossy sample gap, never a target failure.
+#[cfg(feature = "native-media")]
+fn local_hls_status(directory: &Path) -> Option<StreamLocalStatus> {
+    let text = std::fs::read_to_string(directory.join("index.m3u8")).ok()?;
+    let text = match parse_master_m3u8(&text) {
+        Ok(variants) => {
+            let variant = variants.first()?;
+            if !valid_local_hls_variant_path(variant.playlist_uri()) {
+                return None;
+            }
+            std::fs::read_to_string(directory.join(variant.playlist_uri())).ok()?
+        }
+        Err(_) => text,
+    };
+    let rendition = RenditionId::new(NonZeroU32::new(1).expect("the probe rendition is nonzero"));
+    let metadata = HlsPlaylistMetadata::parse_m3u8(&text, rendition, 1).ok()?;
+    let segments = u32::try_from(metadata.segments().len()).unwrap_or(u32::MAX);
+    let target_duration_ms =
+        u32::try_from(metadata.target_duration().as_nanos() / 1_000_000).unwrap_or(u32::MAX);
+    Some(StreamLocalStatus {
+        segments: segments.min(MAX_STREAM_LOCAL_SEGMENTS),
+        target_duration_ms: target_duration_ms.min(MAX_STREAM_LOCAL_TARGET_DURATION_MS),
+        free_bytes: disk::existing_ancestor(directory)
+            .and_then(|ancestor| disk::available_bytes(ancestor).ok())
+            .unwrap_or(0),
+    })
+}
+
+/// Whether one master-playlist variant path names a playlist inside the output
+/// directory: `index.m3u8` or `<rung>/index.m3u8` with one rung digit `0..=7`,
+/// exactly the shapes the HLS listener serves. Empty names, `..`, absolute
+/// paths, and backslashes are refused.
+#[cfg(feature = "native-media")]
+fn valid_local_hls_variant_path(relative: &str) -> bool {
+    match relative.split_once('/') {
+        None => relative == "index.m3u8",
+        Some((rung, leaf)) => {
+            let mut bytes = rung.bytes();
+            matches!(
+                (bytes.next(), bytes.next()),
+                (Some(byte), None) if byte.is_ascii_digit() && byte <= b'7'
+            ) && leaf == "index.m3u8"
+        }
+    }
+}
+
+/// The cached local HLS health for one destination slot, or `None` for a
+/// network target or a slot that has no sampled health yet.
+#[cfg(feature = "native-media")]
+fn cached_local_hls_status(
+    output_set: &OutputSet,
+    local_output_status: &[Option<StreamLocalStatus>; fm_switcher::MAX_STREAM_COUNT],
+    destination: DestinationId,
+) -> Option<StreamLocalStatus> {
+    let config = output_set.config(destination)?;
+    if config.protocol() != OutputProtocol::Hls {
+        return None;
+    }
+    local_output_status
+        .get(usize::from(destination.get()) - 1)
+        .copied()
+        .flatten()
 }
 
 /// Assembles the per-pass status record: `None` when no target is active or
@@ -3258,6 +3349,7 @@ fn stream_status_message(
 fn native_stream_snapshots<'a>(
     output_set: &'a OutputSet,
     streams: &'a mut [NativeProgramStream],
+    local_output_status: &[Option<StreamLocalStatus>; fm_switcher::MAX_STREAM_COUNT],
 ) -> Vec<StreamRuntimeSnapshot<'a>> {
     streams
         .iter_mut()
@@ -3269,6 +3361,7 @@ fn native_stream_snapshots<'a>(
             started: stream.started,
             state: output_set.state(stream.destination_id),
             network: output_set.telemetry(stream.destination_id).cloned(),
+            local: cached_local_hls_status(output_set, local_output_status, stream.destination_id),
         })
         .collect()
 }
@@ -3297,7 +3390,8 @@ fn stream_status_samples<'a>(
 /// Counters come from the per-target feed ledger; `connected` and muxed bytes
 /// come from the shared output set's telemetry. The first latched failure is
 /// sticky and always wins over whatever the transport last reported, mirroring
-/// `emit_final_record`.
+/// `emit_final_record`. `local` is the cached local HLS output health the
+/// snapshot already filtered to HLS targets.
 #[cfg(feature = "native-media")]
 fn stream_status_sample(runtime: StreamRuntimeSnapshot<'_>) -> Option<StreamStatusSample> {
     let StreamRuntimeSnapshot {
@@ -3308,6 +3402,7 @@ fn stream_status_sample(runtime: StreamRuntimeSnapshot<'_>) -> Option<StreamStat
         started,
         state,
         network,
+        local,
     } = runtime;
     if !started && first_failure.is_none() {
         // Configured but never started: an inactive target stays off the wire.
@@ -3334,6 +3429,7 @@ fn stream_status_sample(runtime: StreamRuntimeSnapshot<'_>) -> Option<StreamStat
         enqueued_pairs: ledger.enqueued_pairs,
         dropped_pairs: ledger.dropped_pairs,
         failure,
+        local,
     })
 }
 
@@ -3515,6 +3611,8 @@ impl NativeDaemon {
             disk_free_bytes: None,
             disk_sampled_at: None,
             local_output_dirs,
+            local_output_status: [None; fm_switcher::MAX_STREAM_COUNT],
+            local_output_sampled_at: None,
             recording_finalizers: Vec::new(),
             streams,
             stream_groups,
@@ -3769,6 +3867,41 @@ impl NativeDaemon {
                 eprintln!("FREEMIXD_DISK\tv=1\tstate=normal\tfree_bytes={available}");
             }
             fm_observability::AlertTransition::None => {}
+        }
+    }
+
+    /// Samples every local HLS target's published playlist health at the same
+    /// bounded cadence as [`Self::sample_disk_space`].
+    ///
+    /// The render loop calls this every frame; the gate is one empty check plus
+    /// one `Instant` comparison, and a playlist reaches the filesystem at most
+    /// once per [`DISK_SAMPLE_INTERVAL`]. Each local `hls://` destination is
+    /// read through [`local_hls_status`] into its destination slot; a target
+    /// whose playlist cannot be read now stores `None`, so its next wire sample
+    /// simply carries no local field. Network targets are skipped and keep
+    /// `None` entries.
+    fn sample_local_output_status(&mut self, now: Instant) {
+        if self.local_output_dirs.is_empty() {
+            return;
+        }
+        if self
+            .local_output_sampled_at
+            .is_some_and(|last| now.saturating_duration_since(last) < DISK_SAMPLE_INTERVAL)
+        {
+            return;
+        }
+        self.local_output_sampled_at = Some(now);
+        for stream in &self.streams {
+            let Some(config) = self.output_set.config(stream.destination_id) else {
+                continue;
+            };
+            if config.protocol() != OutputProtocol::Hls {
+                continue;
+            }
+            let slot = usize::from(stream.destination_id.get()) - 1;
+            if let Some(entry) = self.local_output_status.get_mut(slot) {
+                *entry = local_hls_status(Path::new(config.endpoint().path()));
+            }
         }
     }
 
@@ -4130,8 +4263,11 @@ impl NativeDaemon {
         for stream in &mut self.streams {
             stream.poll(&mut self.output_set, now_ms);
         }
-        let status_samples =
-            stream_status_samples(native_stream_snapshots(&self.output_set, &mut self.streams));
+        let status_samples = stream_status_samples(native_stream_snapshots(
+            &self.output_set,
+            &mut self.streams,
+            &self.local_output_status,
+        ));
         if let Some(status) =
             stream_status_message(server, self.stream_status_sequence, status_samples)?
         {
@@ -4556,8 +4692,10 @@ impl NativeDaemon {
                 &audio,
             );
         }
+        let now = Instant::now();
+        self.sample_local_output_status(now);
         self.advance_stream_routes(server)?;
-        self.sample_disk_space(Instant::now());
+        self.sample_disk_space(now);
         self.observe_native_telemetry();
         Ok(outcome.runtime_events)
     }
@@ -14836,6 +14974,26 @@ mod tests {
             started,
             state,
             network,
+            local: None,
+        }
+    }
+
+    #[cfg(feature = "native-media")]
+    fn local_stream_runtime(
+        target: u128,
+        local: StreamLocalStatus,
+    ) -> StreamRuntimeSnapshot<'static> {
+        StreamRuntimeSnapshot {
+            target: SwitcherStreamTargetId::from_non_zero(
+                NonZeroU128::new(target).expect("test target is nonzero"),
+            ),
+            ledger: StreamPairLedger::default(),
+            congested: false,
+            first_failure: None,
+            started: true,
+            state: Some(DestinationState::Live),
+            network: None,
+            local: Some(local),
         }
     }
 
@@ -15050,6 +15208,224 @@ mod tests {
             .collect();
         assert_eq!(flooded.len(), MAX_STREAM_SAMPLES + 1);
         assert_eq!(stream_status_samples(flooded).len(), MAX_STREAM_SAMPLES);
+    }
+
+    /// One hand-written single-rendition media playlist with `segments` whole
+    /// two-second segments.
+    #[cfg(feature = "native-media")]
+    fn media_playlist(segments: u32) -> String {
+        use core::fmt::Write as _;
+        let mut playlist = String::from(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n",
+        );
+        for index in 0..segments {
+            let _ = write!(playlist, "#EXTINF:2.000000,\nsegment-{index:05}.ts\n");
+        }
+        playlist
+    }
+
+    /// One local HLS destination config over an absolute probe directory.
+    #[cfg(feature = "native-media")]
+    fn hls_destination(id: u8, directory: &str) -> DestinationConfig {
+        DestinationConfig::new(
+            DestinationId::new(id).unwrap(),
+            OutputProtocol::Hls,
+            Endpoint::local_directory(directory).unwrap(),
+            None,
+            None,
+            None,
+            QueueCapacity::new(1).unwrap(),
+            ReconnectPolicy::new(
+                PROGRAM_STREAM_RECONNECT_INITIAL_DELAY_MS,
+                PROGRAM_STREAM_RECONNECT_MAX_DELAY_MS,
+                PROGRAM_STREAM_RECONNECT_MULTIPLIER,
+                Some(PROGRAM_STREAM_RECONNECT_ATTEMPTS),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn local_hls_status_reads_a_single_rendition_playlist() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("index.m3u8"), media_playlist(3)).unwrap();
+        let status = local_hls_status(directory.path()).expect("a valid playlist samples");
+        assert_eq!(status.segments, 3);
+        assert_eq!(status.target_duration_ms, 2_000);
+        assert_eq!(
+            status.free_bytes,
+            disk::available_bytes(directory.path()).unwrap_or(0)
+        );
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn local_hls_status_follows_the_first_master_variant() {
+        use fm_frame::VideoDimensions;
+        use fm_io_network::{HlsAbrCoordinator, HlsPlaylistType, HlsVariantMetadata};
+
+        let directory = tempfile::tempdir().unwrap();
+        let low = test_rendition(1);
+        let high = test_rendition(2);
+        let coordinator = HlsAbrCoordinator::new(
+            vec![
+                HlsVariantMetadata::new(
+                    low,
+                    "low",
+                    1_000_000,
+                    VideoDimensions::new(640, 360).unwrap(),
+                    "avc1.64001e,mp4a.40.2",
+                    "0/index.m3u8",
+                )
+                .unwrap(),
+                HlsVariantMetadata::new(
+                    high,
+                    "high",
+                    2_000_000,
+                    VideoDimensions::new(1_280, 720).unwrap(),
+                    "avc1.64002a,mp4a.40.2",
+                    "1/index.m3u8",
+                )
+                .unwrap(),
+            ],
+            6,
+            NormalizedDuration::from_nanos(2_000_000_000).unwrap(),
+            0,
+            6,
+            HlsPlaylistType::Live,
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("index.m3u8"),
+            coordinator.render_master_m3u8(),
+        )
+        .unwrap();
+
+        // The first variant renders through the real playlist renderer; the
+        // second carries different values to prove only the first is followed.
+        let first = HlsPlaylistMetadata::parse_m3u8(&media_playlist(2), low, 1).unwrap();
+        fs::create_dir(directory.path().join("0")).unwrap();
+        fs::write(directory.path().join("0/index.m3u8"), first.render_m3u8()).unwrap();
+        let second = HlsPlaylistMetadata::parse_m3u8(&media_playlist(5), high, 1).unwrap();
+        fs::create_dir(directory.path().join("1")).unwrap();
+        fs::write(directory.path().join("1/index.m3u8"), second.render_m3u8()).unwrap();
+
+        let status =
+            local_hls_status(directory.path()).expect("the master's first variant samples");
+        assert_eq!(status.segments, 2);
+        assert_eq!(status.target_duration_ms, 2_000);
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn local_hls_status_is_none_for_missing_or_invalid_playlists() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(
+            local_hls_status(directory.path()),
+            None,
+            "a missing index.m3u8 is a sample gap"
+        );
+
+        fs::write(directory.path().join("index.m3u8"), "not a playlist\n").unwrap();
+        assert_eq!(
+            local_hls_status(directory.path()),
+            None,
+            "unparseable text is a sample gap"
+        );
+
+        // A segment longer than the target duration fails the bounded parser.
+        fs::write(
+            directory.path().join("index.m3u8"),
+            "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:2.000000,\nsegment-00000.ts\n",
+        )
+        .unwrap();
+        assert_eq!(
+            local_hls_status(directory.path()),
+            None,
+            "an invalid playlist is a sample gap"
+        );
+
+        // A master whose first variant playlist is missing is also a gap.
+        fs::write(
+            directory.path().join("index.m3u8"),
+            concat!(
+                "#EXTM3U\n#EXT-X-VERSION:6\n",
+                "#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=640x360\n",
+                "0/index.m3u8\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            local_hls_status(directory.path()),
+            None,
+            "a missing variant is a sample gap"
+        );
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn local_hls_status_rejects_escaping_master_variants() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("hls");
+        fs::create_dir(&directory).unwrap();
+        // A valid playlist outside the output directory proves the escaping
+        // path is refused before any read, not merely because it is missing.
+        fs::write(root.path().join("escape"), media_playlist(4)).unwrap();
+        for variant in ["../escape", "/absolute/index.m3u8", "0\\index.m3u8"] {
+            fs::write(
+                directory.join("index.m3u8"),
+                format!(
+                    "#EXTM3U\n#EXT-X-VERSION:6\n\
+                     #EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=640x360\n{variant}\n"
+                ),
+            )
+            .unwrap();
+            assert_eq!(local_hls_status(&directory), None, "{variant}");
+        }
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn cached_local_health_is_projected_only_for_hls_targets() {
+        let mut set = OutputSet::new();
+        set.add_destination(mock_destination(1)).unwrap();
+        set.add_destination(hls_destination(2, "/srv/hls-probe"))
+            .unwrap();
+        let local = StreamLocalStatus {
+            segments: 6,
+            target_duration_ms: 6_000,
+            free_bytes: 1_024,
+        };
+        let mut cache = [None; fm_switcher::MAX_STREAM_COUNT];
+        cache[0] = Some(local);
+        cache[1] = Some(local);
+        assert_eq!(
+            cached_local_hls_status(&set, &cache, DestinationId::new(1).unwrap()),
+            None,
+            "a network target never projects local health"
+        );
+        assert_eq!(
+            cached_local_hls_status(&set, &cache, DestinationId::new(2).unwrap()),
+            Some(local)
+        );
+
+        // The mapping carries the filtered cache entry onto the wire sample.
+        let samples = stream_status_samples([
+            stream_runtime(
+                3,
+                StreamPairLedger::default(),
+                false,
+                None,
+                true,
+                Some(DestinationState::Live),
+                None,
+            ),
+            local_stream_runtime(4, local),
+        ]);
+        assert_eq!(samples[0].local, None);
+        assert_eq!(samples[1].local, Some(local));
     }
 
     /// One scripted [`fm_io_network::TransportSink`] against the same public
@@ -16247,6 +16623,7 @@ mod tests {
             enqueued_pairs: 0,
             dropped_pairs: 0,
             failure: None,
+            local: None,
         }
     }
 

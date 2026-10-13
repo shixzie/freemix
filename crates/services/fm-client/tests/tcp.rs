@@ -211,6 +211,7 @@ fn stream_status(sequence: u64) -> StreamStatusMessage {
             enqueued_pairs: sequence * 30,
             dropped_pairs: 0,
             failure: None,
+            local: None,
         }],
     }
 }

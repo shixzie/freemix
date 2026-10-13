@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.18 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.19 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -166,6 +166,18 @@ replays return the original receipt without a new event. Realization is
 daemon-side: a configured recorder reconciles at readiness against the
 persisted intent, live stops drain the current segment before its final
 report, and live starts open deterministically derived segment files.
+
+Protocol 2.19 extends each `stream_status` sample with local HLS output health.
+A sample for a local `hls://` destination may carry one trailing
+`local=<segments>:<target_duration_ms>:<free_bytes>` field holding the
+published playlist's segment count, its target duration in whole milliseconds,
+and the free bytes on the output filesystem; `segments` is bounded at 4096 and
+`target_duration_ms` at 3,600,000. A sample without local health — every
+network target, and a local output whose playlist is currently unreadable —
+ends at the `failure` field exactly as protocol 2.18 did, so `local=none` is
+never encoded. The local fields are lossy and latest-wins like the rest of the
+record: never durable, never resumable, and never projected into snapshots or
+durable events.
 
 Each telemetry class has requested cadence, aggregation, and maximum bandwidth.
 Slow clients receive coalesced latest data, never unbounded queues.

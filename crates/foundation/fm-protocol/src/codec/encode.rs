@@ -18,8 +18,8 @@ use super::value::{
     output_statuses, role, runtime_domains, stream_realized_state, stream_statuses, string_list,
 };
 use super::{
-    CodecError, MAX_FIELD_VALUE_BYTES, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_STREAM_SAMPLES,
-    validate_request_id,
+    CodecError, MAX_FIELD_VALUE_BYTES, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_STREAM_LOCAL_SEGMENTS,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_request_id,
 };
 
 /// Encodes one message as a single newline-terminated record.
@@ -1021,8 +1021,28 @@ fn encode_stream_status(
                 });
             }
             previous = Some(sample.target.get());
+            let local = match sample.local {
+                Some(local) => {
+                    if local.segments > MAX_STREAM_LOCAL_SEGMENTS
+                        || local.target_duration_ms > MAX_STREAM_LOCAL_TARGET_DURATION_MS
+                    {
+                        return Err(CodecError::InvalidField {
+                            field: "samples",
+                            value: format!(
+                                "local={}:{}:{}",
+                                local.segments, local.target_duration_ms, local.free_bytes
+                            ),
+                        });
+                    }
+                    format!(
+                        ":local={}:{}:{}",
+                        local.segments, local.target_duration_ms, local.free_bytes
+                    )
+                }
+                None => String::new(),
+            };
             Ok(format!(
-                "{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}{}",
                 sample.target,
                 stream_realized_state(sample.realized),
                 u8::from(sample.connected),
@@ -1033,6 +1053,7 @@ fn encode_stream_status(
                     Some(failure) => escape_stream_failure(failure)?,
                     None => String::new(),
                 },
+                local,
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;

@@ -11,9 +11,9 @@ use crate::{
     ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, OverlayStatus,
     ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent,
     ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
-    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
-    StreamStatusSample, StructuredError, WireInputId, WireMessage, WireOutputId,
-    WireOverlayChannelId, WireStingerSlotId, WireStreamTargetId,
+    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
+    StreamStatusMessage, StreamStatusSample, StructuredError, WireInputId, WireMessage,
+    WireOutputId, WireOverlayChannelId, WireStingerSlotId, WireStreamTargetId,
 };
 
 use super::value::{
@@ -23,7 +23,8 @@ use super::value::{
 };
 use super::{
     MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES, MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES,
-    MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH, MAX_STREAM_SAMPLES, validate_request_id,
+    MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH, MAX_STREAM_LOCAL_SEGMENTS,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_request_id,
 };
 
 /// Decodes exactly one newline-terminated wire record.
@@ -1311,64 +1312,164 @@ fn decode_stream_status(fields: &mut Fields) -> Result<StreamStatusMessage, Code
     let mut previous = None;
     let samples = entries
         .into_iter()
-        .map(|entry| {
-            let invalid = || CodecError::InvalidField {
-                field: "samples",
-                value: entry.to_owned(),
-            };
-            let parts = entry.split(':').collect::<Vec<_>>();
-            let [
-                target,
-                realized,
-                connected,
-                muxed_bytes,
-                enqueued_pairs,
-                dropped_pairs,
-                failure,
-            ] = parts.as_slice()
-            else {
-                return Err(invalid());
-            };
-            let target = target
-                .parse::<u128>()
-                .ok()
-                .and_then(NonZeroU128::new)
-                .map(WireStreamTargetId::new)
-                .ok_or_else(invalid)?;
-            if previous.is_some_and(|id| target.get() <= id) {
-                return Err(invalid());
-            }
-            previous = Some(target.get());
-            let realized = parse_stream_realized_state(realized).ok_or_else(invalid)?;
-            let connected = match *connected {
-                "0" => false,
-                "1" => true,
-                _ => return Err(invalid()),
-            };
-            let failure = if failure.is_empty() {
-                None
-            } else {
-                let failure = unescape(failure)?;
-                if failure.len() > super::MAX_STREAM_DETAIL_BYTES {
-                    return Err(invalid());
-                }
-                Some(failure)
-            };
-            Ok(StreamStatusSample {
-                target,
-                realized,
-                connected,
-                muxed_bytes: muxed_bytes.parse().map_err(|_| invalid())?,
-                enqueued_pairs: enqueued_pairs.parse().map_err(|_| invalid())?,
-                dropped_pairs: dropped_pairs.parse().map_err(|_| invalid())?,
-                failure,
-            })
-        })
+        .map(|entry| decode_stream_status_sample(entry, &mut previous))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(StreamStatusMessage {
         server,
         sequence,
         samples,
+    })
+}
+
+/// The seven required colon-separated `stream_status` sample fields plus the
+/// optional trailing `local=<segments>:<target_duration_ms>:<free_bytes>`
+/// triple, split from one sample entry.
+struct StreamSampleFields<'a> {
+    target: &'a str,
+    realized: &'a str,
+    connected: &'a str,
+    muxed_bytes: &'a str,
+    enqueued_pairs: &'a str,
+    dropped_pairs: &'a str,
+    failure: &'a str,
+    local: Option<(&'a str, &'a str, &'a str)>,
+}
+
+/// Splits one sample entry into its fields, refusing any shape other than the
+/// exact 2.18 seven-field form or that form plus the local triple.
+fn split_stream_status_sample(entry: &str) -> Option<StreamSampleFields<'_>> {
+    let parts = entry.split(':').collect::<Vec<_>>();
+    match parts.as_slice() {
+        [
+            target,
+            realized,
+            connected,
+            muxed_bytes,
+            enqueued_pairs,
+            dropped_pairs,
+            failure,
+        ] => Some(StreamSampleFields {
+            target,
+            realized,
+            connected,
+            muxed_bytes,
+            enqueued_pairs,
+            dropped_pairs,
+            failure,
+            local: None,
+        }),
+        [
+            target,
+            realized,
+            connected,
+            muxed_bytes,
+            enqueued_pairs,
+            dropped_pairs,
+            failure,
+            local_segments,
+            local_target_duration_ms,
+            local_free_bytes,
+        ] => Some(StreamSampleFields {
+            target,
+            realized,
+            connected,
+            muxed_bytes,
+            enqueued_pairs,
+            dropped_pairs,
+            failure,
+            local: Some((
+                local_segments.strip_prefix("local=")?,
+                local_target_duration_ms,
+                local_free_bytes,
+            )),
+        }),
+        _ => None,
+    }
+}
+
+/// Parses one sample's trailing local triple and enforces the wire bounds.
+fn parse_stream_local_status(
+    entry: &str,
+    segments: &str,
+    target_duration_ms: &str,
+    free_bytes: &str,
+) -> Result<StreamLocalStatus, CodecError> {
+    let invalid = || CodecError::InvalidField {
+        field: "samples",
+        value: entry.to_owned(),
+    };
+    let segments: u32 = segments.parse().map_err(|_| invalid())?;
+    let target_duration_ms: u32 = target_duration_ms.parse().map_err(|_| invalid())?;
+    let free_bytes: u64 = free_bytes.parse().map_err(|_| invalid())?;
+    if segments > MAX_STREAM_LOCAL_SEGMENTS
+        || target_duration_ms > MAX_STREAM_LOCAL_TARGET_DURATION_MS
+    {
+        return Err(invalid());
+    }
+    Ok(StreamLocalStatus {
+        segments,
+        target_duration_ms,
+        free_bytes,
+    })
+}
+
+/// Decodes one `;`-separated `stream_status` sample, enforcing the strictly
+/// ascending target order through `previous`.
+fn decode_stream_status_sample(
+    entry: &str,
+    previous: &mut Option<NonZeroU128>,
+) -> Result<StreamStatusSample, CodecError> {
+    let invalid = || CodecError::InvalidField {
+        field: "samples",
+        value: entry.to_owned(),
+    };
+    let Some(fields) = split_stream_status_sample(entry) else {
+        return Err(invalid());
+    };
+    let target = fields
+        .target
+        .parse::<u128>()
+        .ok()
+        .and_then(NonZeroU128::new)
+        .map(WireStreamTargetId::new)
+        .ok_or_else(invalid)?;
+    if previous.is_some_and(|id| target.get() <= id) {
+        return Err(invalid());
+    }
+    *previous = Some(target.get());
+    let realized = parse_stream_realized_state(fields.realized).ok_or_else(invalid)?;
+    let connected = match fields.connected {
+        "0" => false,
+        "1" => true,
+        _ => return Err(invalid()),
+    };
+    let failure = if fields.failure.is_empty() {
+        None
+    } else {
+        let failure = unescape(fields.failure)?;
+        if failure.len() > super::MAX_STREAM_DETAIL_BYTES {
+            return Err(invalid());
+        }
+        Some(failure)
+    };
+    let local = match fields.local {
+        Some((segments, target_duration_ms, free_bytes)) => Some(parse_stream_local_status(
+            entry,
+            segments,
+            target_duration_ms,
+            free_bytes,
+        )?),
+        None => None,
+    };
+    Ok(StreamStatusSample {
+        target,
+        realized,
+        connected,
+        muxed_bytes: fields.muxed_bytes.parse().map_err(|_| invalid())?,
+        enqueued_pairs: fields.enqueued_pairs.parse().map_err(|_| invalid())?,
+        dropped_pairs: fields.dropped_pairs.parse().map_err(|_| invalid())?,
+        failure,
+        local,
     })
 }
 

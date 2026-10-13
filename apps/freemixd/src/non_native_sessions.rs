@@ -1066,6 +1066,7 @@ mod tests {
                 enqueued_pairs: 12,
                 dropped_pairs: 1,
                 failure: None,
+                local: None,
             }],
         }
     }

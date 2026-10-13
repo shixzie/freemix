@@ -2135,6 +2135,7 @@ mod tests {
                 enqueued_pairs: 12,
                 dropped_pairs: 3,
                 failure: None,
+                local: None,
             }],
         }
     }

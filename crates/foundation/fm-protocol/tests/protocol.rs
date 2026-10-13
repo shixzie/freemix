@@ -160,8 +160,8 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
 }
 
 #[test]
-fn protocol_2_18_heartbeat_acknowledgement_codec_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 18));
+fn protocol_2_19_heartbeat_acknowledgement_codec_is_exact() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 19));
     let acknowledgement = WireMessage::HeartbeatAcknowledgement(HeartbeatAcknowledgementMessage {
         server: server_identity(),
         heartbeat_sequence: 88,
@@ -1501,6 +1501,7 @@ fn phase_one_records_reject_malformed_and_unknown_required_fields() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn stream_status_codec_is_lossy_bounded_and_exact() {
     use fm_protocol::{MAX_STREAM_SAMPLES, StreamStatusMessage, StreamStatusSample};
 
@@ -1516,6 +1517,7 @@ fn stream_status_codec_is_lossy_bounded_and_exact() {
                 enqueued_pairs: 900,
                 dropped_pairs: 3,
                 failure: None,
+                local: None,
             },
             StreamStatusSample {
                 target: WireStreamTargetId::new(NonZeroU128::new(11).unwrap()),
@@ -1525,6 +1527,7 @@ fn stream_status_codec_is_lossy_bounded_and_exact() {
                 enqueued_pairs: 0,
                 dropped_pairs: 0,
                 failure: Some("connect:refused".to_owned()),
+                local: None,
             },
         ],
     });
@@ -1564,6 +1567,7 @@ fn stream_status_codec_is_lossy_bounded_and_exact() {
             enqueued_pairs: 0,
             dropped_pairs: 0,
             failure: None,
+            local: None,
         });
     }
     assert!(matches!(
@@ -1583,6 +1587,7 @@ fn stream_status_codec_is_lossy_bounded_and_exact() {
                 enqueued_pairs: 1,
                 dropped_pairs: 0,
                 failure: None,
+                local: None,
             },
             StreamStatusSample {
                 target: WireStreamTargetId::new(NonZeroU128::new(9).unwrap()),
@@ -1592,6 +1597,7 @@ fn stream_status_codec_is_lossy_bounded_and_exact() {
                 enqueued_pairs: 0,
                 dropped_pairs: 0,
                 failure: None,
+                local: None,
             },
         ],
     };
@@ -1602,4 +1608,179 @@ fn stream_status_codec_is_lossy_bounded_and_exact() {
             ..
         })
     ));
+}
+
+#[test]
+fn stream_local_status_codec_round_trips_with_and_without_local() {
+    use fm_protocol::{StreamLocalStatus, StreamStatusMessage, StreamStatusSample};
+
+    let network = StreamStatusSample {
+        target: WireStreamTargetId::new(NonZeroU128::new(7).unwrap()),
+        realized: StreamRealizedState::Live,
+        connected: true,
+        muxed_bytes: 1_048_576,
+        enqueued_pairs: 900,
+        dropped_pairs: 3,
+        failure: None,
+        local: None,
+    };
+    let local = StreamStatusSample {
+        target: WireStreamTargetId::new(NonZeroU128::new(11).unwrap()),
+        realized: StreamRealizedState::Live,
+        connected: false,
+        muxed_bytes: 0,
+        enqueued_pairs: 0,
+        dropped_pairs: 0,
+        failure: None,
+        local: Some(StreamLocalStatus {
+            segments: 6,
+            target_duration_ms: 6_000,
+            free_bytes: 1_073_741_824,
+        }),
+    };
+    // A sample list mixing a network target (no local field) and a local HLS
+    // target keeps the exact 2.18 shape for the network sample and appends
+    // only the local sample's trailing field.
+    let message = WireMessage::StreamStatus(StreamStatusMessage {
+        server: server_identity(),
+        sequence: 16,
+        samples: vec![network.clone(), local.clone()],
+    });
+    let encoded = encode_line(&message).unwrap();
+    assert_eq!(
+        encoded,
+        "stream_status\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=16\tsamples=7%3Alive%3A1%3A1048576%3A900%3A3%3A%3B11%3Alive%3A0%3A0%3A0%3A0%3A%3Alocal%3D6%3A6000%3A1073741824\n"
+    );
+    assert_eq!(decode_line(&encoded).unwrap(), message);
+
+    // A local sample with a sanitized failure keeps the failure field between
+    // the counters and the local field.
+    let with_failure = StreamStatusSample {
+        failure: Some("connect:refused".to_owned()),
+        local: Some(StreamLocalStatus {
+            segments: 0,
+            target_duration_ms: 0,
+            free_bytes: 0,
+        }),
+        ..network
+    };
+    let message = WireMessage::StreamStatus(StreamStatusMessage {
+        server: server_identity(),
+        sequence: 17,
+        samples: vec![with_failure],
+    });
+    let encoded = encode_line(&message).unwrap();
+    assert_eq!(
+        encoded,
+        "stream_status\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=17\tsamples=7%3Alive%3A1%3A1048576%3A900%3A3%3Aconnect%253Arefused%3Alocal%3D0%3A0%3A0\n"
+    );
+    assert_eq!(decode_line(&encoded).unwrap(), message);
+}
+
+#[test]
+fn stream_local_status_codec_enforces_bounds_and_shapes() {
+    use fm_protocol::{
+        MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS, StreamLocalStatus,
+        StreamStatusMessage, StreamStatusSample,
+    };
+
+    let encode_local = |segments: u32, target_duration_ms: u32, free_bytes: u64| {
+        encode_line(&WireMessage::StreamStatus(StreamStatusMessage {
+            server: server_identity(),
+            sequence: 18,
+            samples: vec![StreamStatusSample {
+                target: WireStreamTargetId::new(NonZeroU128::new(9).unwrap()),
+                realized: StreamRealizedState::Live,
+                connected: true,
+                muxed_bytes: 1,
+                enqueued_pairs: 2,
+                dropped_pairs: 0,
+                failure: None,
+                local: Some(StreamLocalStatus {
+                    segments,
+                    target_duration_ms,
+                    free_bytes,
+                }),
+            }],
+        }))
+    };
+
+    // Every bound: zero and each maximum round-trip; the extremes of `u64`
+    // free bytes are both accepted.
+    for (segments, target_duration_ms, free_bytes) in [
+        (0, 0, 0),
+        (
+            MAX_STREAM_LOCAL_SEGMENTS,
+            MAX_STREAM_LOCAL_TARGET_DURATION_MS,
+            u64::MAX,
+        ),
+    ] {
+        let encoded = encode_local(segments, target_duration_ms, free_bytes).unwrap();
+        let WireMessage::StreamStatus(decoded) = decode_line(&encoded).unwrap() else {
+            panic!("expected a stream_status record");
+        };
+        assert_eq!(
+            decoded.samples[0].local,
+            Some(StreamLocalStatus {
+                segments,
+                target_duration_ms,
+                free_bytes,
+            })
+        );
+    }
+
+    // One past each bound is refused by the encoder and by the decoder.
+    for (segments, target_duration_ms) in [
+        (MAX_STREAM_LOCAL_SEGMENTS + 1, 0),
+        (0, MAX_STREAM_LOCAL_TARGET_DURATION_MS + 1),
+    ] {
+        assert!(matches!(
+            encode_local(segments, target_duration_ms, 0),
+            Err(CodecError::InvalidField {
+                field: "samples",
+                ..
+            })
+        ));
+    }
+    let maximum = encode_local(
+        MAX_STREAM_LOCAL_SEGMENTS,
+        MAX_STREAM_LOCAL_TARGET_DURATION_MS,
+        u64::MAX,
+    )
+    .unwrap();
+    for (needle, replacement) in [
+        ("local%3D4096%3A3600000", "local%3D4097%3A3600000"),
+        ("local%3D4096%3A3600000", "local%3D4096%3A3600001"),
+    ] {
+        let malformed = maximum.replace(needle, replacement);
+        assert!(matches!(
+            decode_line(&malformed),
+            Err(CodecError::InvalidField {
+                field: "samples",
+                ..
+            })
+        ));
+    }
+
+    // A local field that is not the exact trailing triple is refused: a
+    // truncated pair, an unknown key, and an extra field all fail closed.
+    for malformed in [
+        maximum.replace(
+            "%3Alocal%3D4096%3A3600000%3A18446744073709551615",
+            "%3Alocal%3D4096%3A3600000",
+        ),
+        maximum.replace("%3Alocal%3D", "%3Aother%3D"),
+        maximum.replace(
+            "%3Alocal%3D4096%3A3600000%3A18446744073709551615",
+            "%3Alocal%3D4096%3A3600000%3A18446744073709551615%3A1",
+        ),
+    ] {
+        assert!(matches!(
+            decode_line(&malformed),
+            Err(CodecError::InvalidField {
+                field: "samples",
+                ..
+            })
+        ));
+    }
 }

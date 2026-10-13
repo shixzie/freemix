@@ -967,9 +967,9 @@ const fn stream_realized_name(state: StreamRealizedState) -> &'static str {
 }
 
 /// One compact roster row: canonical name plus desired flag and, when a latest
-/// sample exists for that target, the retained realized transport counters.
-/// Roster entries without samples show the desired flag only; samples without
-/// roster entries are ignored by the caller.
+/// sample exists for that target, the retained realized transport counters and
+/// any local HLS output health. Roster entries without samples show the desired
+/// flag only; samples without roster entries are ignored by the caller.
 fn stream_row_text(stream: &StreamStatus, sample: Option<&StreamStatusSample>) -> String {
     use core::fmt::Write as _;
     let mut row = format!("{} desired={}", stream.name, stream.desired_running);
@@ -986,6 +986,13 @@ fn stream_row_text(stream: &StreamStatus, sample: Option<&StreamStatusSample>) -
         sample.dropped_pairs,
         sample.failure.as_deref().unwrap_or("none"),
     );
+    if let Some(local) = sample.local {
+        let _ = write!(
+            row,
+            " local={}seg/{}ms/{}B",
+            local.segments, local.target_duration_ms, local.free_bytes
+        );
+    }
     row
 }
 
@@ -2540,6 +2547,7 @@ mod tests {
             enqueued_pairs: 12,
             dropped_pairs: 3,
             failure: failure.map(str::to_owned),
+            local: None,
         }
     }
 
@@ -2611,6 +2619,22 @@ mod tests {
             ..sample
         };
         assert!(stream_row_text(&idle, Some(&clean)).ends_with("failure=none"));
+
+        // Local HLS output health appends one field after the counters; a
+        // sample without it keeps the row text above unchanged.
+        let local = StreamStatusSample {
+            local: Some(fm_protocol::StreamLocalStatus {
+                segments: 6,
+                target_duration_ms: 6_000,
+                free_bytes: 1_073_741_824,
+            }),
+            ..clean
+        };
+        assert_eq!(
+            stream_row_text(&idle, Some(&local)),
+            "RTMP Primary desired=true realized=live connected=true muxed_bytes=2048 \
+             enqueued_pairs=12 dropped_pairs=3 failure=none local=6seg/6000ms/1073741824B"
+        );
 
         let stopped = stream_roster_entry(41, "Backup", false);
         assert_eq!(stream_row_text(&stopped, None), "Backup desired=false");
