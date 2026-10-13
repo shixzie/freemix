@@ -7243,9 +7243,10 @@ struct DurableExecution {
 
 /// Refuses a command that could not be made durable, and says so.
 ///
-/// Every command path answers a durability failure the same way, because it is
-/// the same failure: a full disk during a show must cost one refused command
-/// the operator can retry, never the daemon.
+/// Every native command path answers a durability failure the same way,
+/// because it is the same failure: a full disk during a show must cost one
+/// refused command the operator can retry, never the daemon.
+#[cfg(feature = "native-media")]
 fn refuse_undurable(
     command: &CommandMessage,
     current_revision: u64,
