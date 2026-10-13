@@ -1396,7 +1396,12 @@ value keeps the encoder defaults and the previous byte-identical argv. Every
 segment also embeds a non-drop-frame start timecode derived from its absolute
 first frame index and the project's nominal frame rate (`-timecode`), so each
 segment, including every automatically rotated one, carries its own timeline
-position.
+position. Studio exposes a compact permission-gated `RECORDING` panel: it
+shows the replicated desired flag, offers exactly one Start or Stop action
+behind the Ready, view, and transition-permission gates, disables it while an
+earlier record intent is unresolved, and dispatches the field-free protocol
+record commands through the existing worker FIFO. That panel follows the one
+shared desired flag, so it is not per-slot control.
 
 Program segments also rotate automatically at exact frame boundaries.
 `--record-segment-seconds <1..=86400>` makes every configured slot close its
