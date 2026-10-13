@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use fm_codec_ffmpeg::record::{
     CleanupStatus, EnqueueRejection, OutputFinalization, PairedFrame, RecordConfig, RecordFormat,
-    Recorder, StopOutcome,
+    Recorder, StartErrorKind, StopOutcome,
 };
 use fm_frame::{
     AudioBlock, ChannelLayout, ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration,
@@ -202,6 +202,42 @@ fn assert_probe_and_decode(path: &std::path::Path, minimum_video_frames: u64) {
     );
 }
 
+fn assert_wav_sidecar(path: &std::path::Path, expected_seconds: f64) {
+    let probe = probe(path);
+    let streams = probe["streams"].as_array().unwrap();
+    let audio = streams
+        .iter()
+        .find(|stream| stream["codec_type"] == "audio")
+        .expect("WAV sidecar has no audio stream");
+    assert_eq!(audio["codec_name"], "pcm_s16le");
+    assert_eq!(audio["sample_rate"], "48000");
+    assert_eq!(audio["channels"], 2);
+    let duration = numeric_string(audio, "duration");
+    assert!(
+        (duration - expected_seconds).abs() <= 0.05,
+        "WAV stream duration {duration} does not match {expected_seconds}"
+    );
+    let container_duration = numeric_string(&probe["format"], "duration");
+    assert!(
+        (container_duration - expected_seconds).abs() <= 0.05,
+        "WAV container duration {container_duration} does not match {expected_seconds}"
+    );
+
+    let decode = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-f", "null", "-"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        decode.status.success(),
+        "WAV decode failed: {}",
+        String::from_utf8_lossy(&decode.stderr)
+    );
+}
+
 #[test]
 fn safe_stop_produces_playable_fragmented_h264_aac_mp4() {
     if !tools_available() {
@@ -230,6 +266,82 @@ fn safe_stop_produces_playable_fragmented_h264_aac_mp4() {
     assert_eq!(count(video, "nb_read_frames"), FRAME_COUNT);
     assert_eq!(count(video, "nb_read_packets"), FRAME_COUNT);
     assert_probe_and_decode(&path, FRAME_COUNT);
+}
+
+#[test]
+fn safe_stop_writes_a_matching_wav_sidecar_alongside_the_mp4() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("recording.mp4");
+    let wav_path = directory.path().join("recording.wav");
+    let output = std::fs::File::create(&path).unwrap();
+    let format = format();
+    let mut config = RecordConfig::new(format.clone());
+    config.wav = Some(wav_path.clone());
+    let mut recorder = Recorder::start(output, config).unwrap();
+    enqueue_all(&mut recorder, &format);
+    let report = recorder.stop();
+    assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+    assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");
+    assert_eq!(report.cleanup, CleanupStatus::Complete, "{report:?}");
+    assert_eq!(report.telemetry.completed_pairs, FRAME_COUNT);
+    assert_eq!(recorder.stop(), report);
+    assert_eq!(recorder.telemetry(), report.telemetry);
+
+    let wav_length = std::fs::metadata(&wav_path).unwrap().len();
+    assert_eq!(report.wav_bytes, wav_length, "{report:?}");
+    assert_eq!(report.telemetry.wav_bytes, wav_length);
+    assert!(
+        report.wav_bytes > 44,
+        "WAV sidecar has no payload: {report:?}"
+    );
+
+    assert_probe_and_decode(&path, FRAME_COUNT);
+    let probe = probe(&path);
+    let video = probe["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|stream| stream["codec_type"] == "video")
+        .unwrap();
+    assert_eq!(count(video, "nb_read_frames"), FRAME_COUNT);
+    assert_eq!(count(video, "nb_read_packets"), FRAME_COUNT);
+    let span_seconds = f64::from(u32::try_from(FRAME_COUNT).unwrap()) / 30.0;
+    assert_wav_sidecar(&wav_path, span_seconds);
+}
+
+#[test]
+fn second_start_refuses_an_existing_wav_sidecar_path() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempdir().unwrap();
+    let format = format();
+    let wav_path = directory.path().join("existing.wav");
+    let first_output = std::fs::File::create(directory.path().join("first.mp4")).unwrap();
+    let mut first_config = RecordConfig::new(format.clone());
+    first_config.wav = Some(wav_path.clone());
+    let mut recorder = Recorder::start(first_output, first_config).unwrap();
+
+    let mut second_config = RecordConfig::new(format);
+    second_config.wav = Some(wav_path.clone());
+    let second_output = std::fs::File::create(directory.path().join("second.mp4")).unwrap();
+    let Err(error) = Recorder::start(second_output, second_config) else {
+        panic!("start accepted the existing WAV sidecar");
+    };
+    assert_eq!(
+        error.kind,
+        StartErrorKind::WavOutput(std::io::ErrorKind::AlreadyExists)
+    );
+    assert_eq!(error.cleanup, CleanupStatus::Complete);
+
+    let report = recorder.stop();
+    assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+    assert_eq!(report.cleanup, CleanupStatus::Complete, "{report:?}");
+    let wav_length = std::fs::metadata(&wav_path).unwrap().len();
+    assert_eq!(report.wav_bytes, wav_length, "{report:?}");
 }
 
 #[test]

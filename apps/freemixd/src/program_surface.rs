@@ -666,6 +666,7 @@ struct ProgramApp {
     once: bool,
     display_index: usize,
     record_program: Option<PathBuf>,
+    record_wav: bool,
     camera_helper: Option<PathBuf>,
     window: Option<Arc<winit::window::Window>>,
     factory: Option<NativeSurfaceFactory>,
@@ -695,6 +696,7 @@ impl ProgramApp {
         once: bool,
         display_index: usize,
         record_program: Option<PathBuf>,
+        record_wav: bool,
         camera_helper: Option<PathBuf>,
         proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     ) -> Self {
@@ -709,6 +711,7 @@ impl ProgramApp {
             once,
             display_index,
             record_program,
+            record_wav,
             camera_helper,
             window: None,
             factory: None,
@@ -918,6 +921,7 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
         let listen = self.listen;
         let once = self.once;
         let record_program = self.record_program.clone();
+        let record_wav = self.record_wav;
         let camera_helper = self.camera_helper.clone();
         let proxy = self.proxy.clone();
         self.worker = Some(
@@ -933,6 +937,7 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
                         channels,
                         camera_helper,
                         record_program,
+                        record_wav,
                     )
                     .map_err(|error| error.to_string());
                     let _ = proxy.send_event(UserEvent::Finished(result));
@@ -1062,6 +1067,7 @@ pub(super) fn run(
     display_index: usize,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
+    record_wav: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
@@ -1071,6 +1077,7 @@ pub(super) fn run(
         once,
         display_index,
         record_program,
+        record_wav,
         camera_helper,
         proxy,
     );

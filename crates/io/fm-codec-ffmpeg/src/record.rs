@@ -11,14 +11,17 @@
 //! Normal stop and cleanup paths are deadline-bounded. If the operating system
 //! cannot create the final fallback cleanup thread, ownership is retained and
 //! joined synchronously; only that thread-exhaustion fallback may exceed the
-//! configured deadline.
+//! configured deadline. An optional linear-PCM WAV sidecar is written by the
+//! same child; its path is created exclusively before any child starts and the
+//! child reopens it directly.
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, mpsc};
@@ -265,6 +268,14 @@ pub struct RecordConfig {
     pub ffmpeg: Executable,
     pub format: RecordFormat,
     pub limits: RecordLimits,
+    /// Names the exclusive linear-PCM WAV sidecar the child writes directly.
+    ///
+    /// The path must not already exist: [`Recorder::start`] creates it with a
+    /// create-new open before any child starts and `FFmpeg` reopens the same
+    /// path itself, so nothing there is ever overwritten. Parent directories
+    /// are never created. The sidecar is only guaranteed finalized after a
+    /// clean stop; a killed child may leave it empty or truncated.
+    pub wav: Option<PathBuf>,
 }
 
 impl RecordConfig {
@@ -274,6 +285,7 @@ impl RecordConfig {
             ffmpeg: Executable::SearchPath,
             format,
             limits: RecordLimits::default(),
+            wav: None,
         }
     }
 }
@@ -604,6 +616,7 @@ pub enum StartErrorKind {
         bytes: u64,
     },
     OutputPosition(io::ErrorKind),
+    WavOutput(io::ErrorKind),
     Bind {
         input: MediaInput,
         kind: io::ErrorKind,
@@ -698,6 +711,14 @@ pub struct RecordTelemetry {
     pub outstanding_pairs: usize,
     pub retained_bytes: usize,
     pub output_bytes: u64,
+    /// Bytes written to the WAV sidecar, measured once from the sidecar's
+    /// metadata when [`Recorder::stop`] freezes the report. Zero while a
+    /// recorder is running, when no sidecar is configured, or when the
+    /// metadata cannot be read.
+    ///
+    /// The sidecar is only guaranteed finalized after a clean stop; a killed
+    /// child may leave it empty or truncated.
+    pub wav_bytes: u64,
     pub stderr_tail: String,
     pub stderr_truncated: bool,
 }
@@ -766,6 +787,9 @@ pub struct StopReport {
     pub exit_status: Option<i32>,
     pub output: OutputFinalization,
     pub cleanup: CleanupStatus,
+    /// Bytes in the WAV sidecar at stop; the same value as
+    /// [`RecordTelemetry::wav_bytes`].
+    pub wav_bytes: u64,
     pub telemetry: RecordTelemetry,
 }
 
@@ -805,6 +829,7 @@ struct SharedData {
     outstanding: usize,
     retained_bytes: usize,
     output_bytes: u64,
+    wav_bytes: u64,
     stderr: VecDeque<u8>,
     stderr_truncated: bool,
     child: Option<ChildResult>,
@@ -825,6 +850,7 @@ impl Shared {
                 outstanding: 0,
                 retained_bytes: 0,
                 output_bytes: 0,
+                wav_bytes: 0,
                 stderr: VecDeque::with_capacity(max_stderr.min(8 * 1024)),
                 stderr_truncated: false,
                 child: None,
@@ -922,6 +948,7 @@ fn telemetry_locked(data: &SharedData, redactions: &[String; 2]) -> RecordTeleme
         outstanding_pairs: data.outstanding,
         retained_bytes: data.retained_bytes,
         output_bytes: data.output_bytes,
+        wav_bytes: data.wav_bytes,
         stderr_tail,
         stderr_truncated: data.stderr_truncated,
     }
@@ -1018,6 +1045,7 @@ enum CleanupWorker {
 pub struct Recorder {
     format: RecordFormat,
     limits: RecordLimits,
+    wav: Option<PathBuf>,
     sender: Option<mpsc::SyncSender<PairJob>>,
     shared: Arc<Shared>,
     child: Arc<Mutex<Child>>,
@@ -1034,6 +1062,10 @@ impl Recorder {
     /// The file must be empty. Its position is normalized to zero before any
     /// process starts, and no other public handle is retained by this API.
     ///
+    /// When [`RecordConfig::wav`] names a path, that path must not exist: it is
+    /// created exclusively before any child starts and the same child reopens
+    /// it to write linear PCM directly.
+    ///
     /// # Errors
     ///
     /// Returns a typed path-free error. [`StartError::cleanup`] explicitly says
@@ -1044,6 +1076,7 @@ impl Recorder {
             .map_err(|error| StartError::complete(StartErrorKind::InvalidLimits(error)))?;
         let executable = recorder_executable(config.ffmpeg)?;
         let output = prepare_output(output)?;
+        prepare_wav(config.wav.as_deref())?;
         let video_token = random_token()?;
         let audio_token = random_token()?;
         let video_listener = bind_listener(MediaInput::Video)?;
@@ -1056,6 +1089,7 @@ impl Recorder {
             audio_address,
             &video_token,
             &audio_token,
+            config.wav.as_deref(),
         );
         let shared = Arc::new(Shared::new(
             &config.format,
@@ -1289,6 +1323,7 @@ impl Recorder {
         Ok(Self {
             format: config.format,
             limits: config.limits,
+            wav: config.wav,
             sender: Some(pair_sender),
             shared,
             child,
@@ -1563,8 +1598,10 @@ impl Recorder {
         if output == OutputFinalization::Unconfirmed || !unfinished.is_empty() {
             self.shared.fail(RecordFailure::CleanupUnconfirmed);
         }
+        let wav_bytes = wav_sidecar_bytes(self.wav.as_deref());
         let (telemetry, final_child) = {
             let mut data = self.shared.lock();
+            data.wav_bytes = wav_bytes;
             let cleanup_complete = unfinished.is_empty() && data.child.is_some();
             if data.failure.is_none()
                 && data.child.is_some_and(|child| child.success)
@@ -1598,6 +1635,7 @@ impl Recorder {
             exit_status: final_child.and_then(|child| child.code),
             output,
             cleanup,
+            wav_bytes: telemetry.wav_bytes,
             telemetry,
         };
         self.report = Some(report.clone());
@@ -1634,6 +1672,30 @@ fn prepare_output(mut output: File) -> Result<File, StartError> {
         .seek(SeekFrom::Start(0))
         .map_err(|error| StartError::complete(StartErrorKind::OutputPosition(error.kind())))?;
     Ok(output)
+}
+
+/// Proves exclusive ownership of the optional WAV sidecar before any child
+/// starts. `FFmpeg` reopens the path itself, so the create-new handle is closed
+/// immediately. Missing parent directories are never created.
+fn prepare_wav(path: Option<&Path>) -> Result<(), StartError> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    let probe = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| StartError::complete(StartErrorKind::WavOutput(error.kind())))?;
+    drop(probe);
+    Ok(())
+}
+
+/// Reads the sidecar length once the child has stopped writing. A killed child
+/// may leave the sidecar empty or truncated; it is only guaranteed finalized
+/// after a clean stop.
+fn wav_sidecar_bytes(path: Option<&Path>) -> u64 {
+    path.and_then(|path| fs::metadata(path).ok())
+        .map_or(0, |metadata| metadata.len())
 }
 
 fn random_token() -> Result<String, StartError> {
@@ -2376,6 +2438,7 @@ fn command_args(
     audio_address: SocketAddr,
     video_token: &str,
     audio_token: &str,
+    wav: Option<&Path>,
 ) -> Vec<OsString> {
     let dimensions = format.dimensions;
     let rate = format.frame_rate;
@@ -2447,7 +2510,19 @@ fn command_args(
         "mp4".to_owned(),
         "pipe:1".to_owned(),
     ];
-    values.into_iter().map(OsString::from).collect()
+    let mut args = values.into_iter().map(OsString::from).collect::<Vec<_>>();
+    if let Some(path) = wav {
+        // A second output for the same child: linear PCM written directly to
+        // the sidecar path. The MP4 output above stays first on `pipe:1`, and
+        // every video option stays attached to it.
+        args.extend(
+            ["-map", "1:a:0", "-c:a", "pcm_s16le", "-f", "wav", "-y"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        args.push(path.as_os_str().to_owned());
+    }
+    args
 }
 
 #[cfg(test)]
@@ -2550,6 +2625,7 @@ mod tests {
         Recorder {
             format: format.clone(),
             limits,
+            wav: None,
             sender: Some(sender),
             shared,
             child: Arc::new(Mutex::new(helper_child("sleep"))),
@@ -2566,6 +2642,7 @@ mod tests {
             exit_status: None,
             output: OutputFinalization::Unconfirmed,
             cleanup: CleanupStatus::Unconfirmed,
+            wav_bytes: 0,
             telemetry: recorder.telemetry(),
         });
         request_kill(&recorder.child);
@@ -2755,6 +2832,7 @@ mod tests {
             "127.0.0.1:1001".parse().unwrap(),
             "video-secret",
             "audio-secret",
+            None,
         );
         let args = args
             .iter()
@@ -2768,6 +2846,96 @@ mod tests {
                 .any(|pair| pair == ["-movflags", "+empty_moov+default_base_moof+frag_keyframe"])
         );
         assert_eq!(args.last().map(AsRef::as_ref), Some("pipe:1"));
+    }
+
+    #[test]
+    fn command_is_byte_identical_without_a_wav_sidecar_and_exact_with_one() {
+        let args = |wav: Option<&Path>| {
+            command_args(
+                &format(),
+                "127.0.0.1:1000".parse().unwrap(),
+                "127.0.0.1:1001".parse().unwrap(),
+                "video-secret",
+                "audio-secret",
+                wav,
+            )
+        };
+        let strings = |args: &[OsString]| {
+            args.iter()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let expected_base = [
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "warning",
+            "-f",
+            "rawvideo",
+            "-pixel_format",
+            "rgba",
+            "-video_size",
+            "2x2",
+            "-framerate",
+            "60000/1001",
+            "-probesize",
+            PROBE_SIZE,
+            "-analyzeduration",
+            "0",
+            "-protocol_whitelist",
+            "http,tcp",
+            "-i",
+            "http://127.0.0.1:1000/video-secret",
+            "-f",
+            "f32le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-channel_layout",
+            "stereo",
+            "-probesize",
+            PROBE_SIZE,
+            "-analyzeduration",
+            "0",
+            "-protocol_whitelist",
+            "http,tcp",
+            "-i",
+            "http://127.0.0.1:1001/audio-secret",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "60",
+            "-keyint_min",
+            "60",
+            "-sc_threshold",
+            "0",
+            "-force_key_frames",
+            "expr:gte(t,n_forced*1)",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+empty_moov+default_base_moof+frag_keyframe",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ];
+        assert_eq!(strings(&args(None)), expected_base);
+
+        let wav = Path::new("/tmp/freemix-sidecar.wav");
+        let mut expected_wav = strings(&args(None));
+        expected_wav
+            .extend(["-map", "1:a:0", "-c:a", "pcm_s16le", "-f", "wav", "-y"].map(str::to_owned));
+        expected_wav.push(wav.to_str().unwrap().to_owned());
+        assert_eq!(strings(&args(Some(wav))), expected_wav);
     }
 
     #[test]
@@ -2862,6 +3030,70 @@ mod tests {
         assert_eq!(error.kind, StartErrorKind::OutputNotEmpty { bytes: 9 });
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn start_refuses_an_existing_wav_sidecar_without_spawning_a_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let marker = directory.path().join("child-ran");
+        let stub = directory.path().join("ffmpeg-stub");
+        fs::write(&stub, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        let mut permissions = fs::metadata(&stub).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&stub, permissions).unwrap();
+
+        let wav = directory.path().join("sidecar.wav");
+        fs::write(&wav, b"already here").unwrap();
+        let mut config = RecordConfig::new(format());
+        config.ffmpeg = Executable::Explicit(stub);
+        config.wav = Some(wav.clone());
+        let output = File::create(directory.path().join("output.mp4")).unwrap();
+        let Err(error) = Recorder::start(output, config) else {
+            panic!("start accepted an existing WAV sidecar");
+        };
+        assert_eq!(
+            error.kind,
+            StartErrorKind::WavOutput(io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(error.cleanup, CleanupStatus::Complete);
+        assert_eq!(fs::read(&wav).unwrap(), b"already here");
+        assert!(
+            !marker.exists(),
+            "start spawned the child before refusing the existing sidecar"
+        );
+    }
+
+    #[test]
+    fn wav_bytes_default_to_zero_and_measure_a_configured_sidecar() {
+        let format = format();
+        let directory = tempdir().unwrap();
+
+        let shared = Arc::new(Shared::new(&format, 64, [String::new(), String::new()]));
+        shared.lock().state = RecorderState::Recording;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut recorder = fake_recorder(&format, RecordLimits::default(), shared, sender);
+        let report = recorder.cancel();
+        assert_eq!(report.wav_bytes, 0);
+        assert_eq!(report.telemetry.wav_bytes, 0);
+        drop(recorder);
+        drop(receiver);
+
+        let wav = directory.path().join("sidecar.wav");
+        fs::write(&wav, vec![7_u8; 100]).unwrap();
+        let shared = Arc::new(Shared::new(&format, 64, [String::new(), String::new()]));
+        shared.lock().state = RecorderState::Recording;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut recorder = fake_recorder(&format, RecordLimits::default(), shared, sender);
+        recorder.wav = Some(wav);
+        let report = recorder.cancel();
+        assert_eq!(report.wav_bytes, 100);
+        assert_eq!(report.telemetry.wav_bytes, 100);
+        assert_eq!(recorder.telemetry(), report.telemetry);
+        drop(recorder);
+        drop(receiver);
+    }
+
     #[test]
     fn paired_frame_rejects_length_sequence_and_sample_span() {
         let format = format();
@@ -2942,6 +3174,7 @@ mod tests {
         let mut recorder = Recorder {
             format: format.clone(),
             limits,
+            wav: None,
             sender: Some(sender),
             shared: Arc::clone(&shared),
             child: Arc::new(Mutex::new(child)),
@@ -2968,6 +3201,7 @@ mod tests {
             exit_status: None,
             output: OutputFinalization::Unconfirmed,
             cleanup: CleanupStatus::Unconfirmed,
+            wav_bytes: 0,
             telemetry,
         });
         drop(recorder);
@@ -3177,6 +3411,7 @@ mod tests {
                 kill_timeout: Duration::from_millis(40),
                 ..RecordLimits::default()
             },
+            wav: None,
             sender: Some(sender),
             shared,
             child,
@@ -3226,6 +3461,7 @@ mod tests {
                 kill_timeout: Duration::from_secs(1),
                 ..RecordLimits::default()
             },
+            wav: None,
             sender: Some(sender),
             shared,
             child,

@@ -352,6 +352,9 @@ struct NativeDaemon {
     /// Configured `--record-program` output path; recording configuration is
     /// independent of whether a segment is currently open.
     record_program: Option<PathBuf>,
+    /// Whether each segment also writes a `--record-wav` linear-PCM sidecar
+    /// next to the MP4. Configured support only, like [`Self::record_program`].
+    record_wav: bool,
     /// Segments stopped off the render path, awaiting bounded finalization.
     recording_finalizers: Vec<ProgramRecordingFinalizer>,
     streams: Vec<NativeProgramStream>,
@@ -1542,8 +1545,24 @@ impl RecorderCapturePolicy {
 }
 
 #[cfg(feature = "native-media")]
+/// The linear-PCM sidecar that accompanies one program MP4 segment when
+/// `--record-wav` is configured.
+///
+/// The sidecar shares the segment's stem, so `program-002.mp4` is accompanied
+/// by `program-002.wav` and live-start derivation stays in lockstep.
+#[cfg(feature = "native-media")]
+fn record_wav_path(segment: &Path) -> PathBuf {
+    segment.with_extension("wav")
+}
+
+#[cfg(feature = "native-media")]
 impl NativeProgramRecorder {
-    fn start(runtime: &NativeMediaRuntime, stored: &StoredProject, path: &Path) -> AppResult<Self> {
+    fn start(
+        runtime: &NativeMediaRuntime,
+        stored: &StoredProject,
+        path: &Path,
+        wav: bool,
+    ) -> AppResult<Self> {
         let settings = stored.project().settings();
         let dimensions = settings.video.dimensions;
         let format = RecordFormat::new(
@@ -1562,6 +1581,7 @@ impl NativeProgramRecorder {
         let mut config = RecordConfig::new(format.clone());
         config.limits.stop_timeout = PROGRAM_RECORDER_STOP_TIMEOUT;
         config.limits.kill_timeout = PROGRAM_RECORDER_KILL_TIMEOUT;
+        config.wav = wav.then(|| record_wav_path(path));
         let startup_pair_timeout = config
             .limits
             .connect_timeout
@@ -1696,12 +1716,13 @@ impl NativeProgramRecorder {
             })
             .unwrap_or_else(|| "none".to_owned());
         eprintln!(
-            "FREEMIXD_RECORDER\tv=1\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\toutput_finalization={:?}\tcleanup={:?}\tapp_capture_failure={}\tfailure={}",
+            "FREEMIXD_RECORDER\tv=1\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\twav_bytes={}\toutput_finalization={:?}\tcleanup={:?}\tapp_capture_failure={}\tfailure={}",
             report.telemetry.state,
             report.outcome,
             report.telemetry.accepted_pairs,
             report.telemetry.completed_pairs,
             report.telemetry.output_bytes,
+            report.telemetry.wav_bytes,
             report.output,
             report.cleanup,
             app_capture_failure,
@@ -3078,6 +3099,7 @@ impl NativeDaemon {
             stinger_retirements: NativeStingerRetirements::start()?,
             recorder: ProgramRecording::Off,
             record_program: None,
+            record_wav: false,
             recording_finalizers: Vec::new(),
             streams,
             stream_groups,
@@ -3120,6 +3142,7 @@ impl NativeDaemon {
             &self.runtime,
             stored,
             &segment,
+            self.record_wav,
         )?));
         Ok(())
     }
@@ -3127,8 +3150,9 @@ impl NativeDaemon {
     /// Records the configured output path so runtime `RecordStart` commands
     /// can derive later segment names from it even when startup itself does
     /// not open a segment.
-    fn configure_recording(&mut self, path: PathBuf) {
+    fn configure_recording(&mut self, path: PathBuf, wav: bool) {
         self.record_program = Some(path);
+        self.record_wav = wav;
     }
 
     /// Whether program recording support is CONFIGURED.
@@ -4213,7 +4237,7 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::unused_self)]
-    fn configure_recording(&mut self, _path: PathBuf) {}
+    fn configure_recording(&mut self, _path: PathBuf, _wav: bool) {}
 
     #[allow(clippy::unused_self)]
     fn recording_configured(&self) -> bool {
@@ -4825,6 +4849,7 @@ enum Command {
         fullscreen_display: usize,
         camera_helper: Option<PathBuf>,
         record_program: Option<PathBuf>,
+        record_wav: bool,
         diagnostic_stop_after: Option<Duration>,
         recover_to_checkpoint: bool,
     },
@@ -4869,6 +4894,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut fullscreen_display = None;
             let mut camera_helper = None;
             let mut record_program = None;
+            let mut record_wav = false;
             let mut diagnostic_stop_after = None;
             let mut recover_to_checkpoint = false;
             while let Some(option) = arguments.next() {
@@ -5011,6 +5037,10 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                             })?;
                         record_program = Some(PathBuf::from(value));
                     }
+                    "--record-wav" if record_wav => {
+                        return Err(AppFailure("duplicate option `--record-wav`".into()).into());
+                    }
+                    "--record-wav" => record_wav = true,
                     "--diagnostic-stop-after" if diagnostic_stop_after.is_some() => {
                         return Err(AppFailure(
                             "duplicate option `--diagnostic-stop-after`".into(),
@@ -5039,6 +5069,9 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             }
             if record_program.is_some() && !native_media {
                 return Err(AppFailure("--record-program requires --native-media".into()).into());
+            }
+            if record_wav && record_program.is_none() {
+                return Err(AppFailure("--record-wav requires --record-program".into()).into());
             }
             if camera_helper.is_some() && !native_media {
                 return Err(AppFailure("--camera-helper requires --native-media".into()).into());
@@ -5105,6 +5138,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 fullscreen_display: fullscreen_display.unwrap_or(0),
                 camera_helper,
                 record_program,
+                record_wav,
                 diagnostic_stop_after,
                 recover_to_checkpoint,
             })
@@ -5186,6 +5220,7 @@ fn run(command: Command) -> AppResult<()> {
             fullscreen_display,
             camera_helper,
             record_program,
+            record_wav,
             diagnostic_stop_after,
             recover_to_checkpoint,
         } => {
@@ -5197,6 +5232,7 @@ fn run(command: Command) -> AppResult<()> {
                     fullscreen_display,
                     camera_helper,
                     record_program,
+                    record_wav,
                 )
             } else {
                 serve_inner(
@@ -5213,6 +5249,7 @@ fn run(command: Command) -> AppResult<()> {
                         NativeServeMode::Disabled
                     },
                     record_program,
+                    record_wav,
                     diagnostic_stop_after,
                     recover_to_checkpoint,
                 )
@@ -5237,6 +5274,7 @@ fn run_fullscreen_program(
     fullscreen_display: usize,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
+    record_wav: bool,
 ) -> AppResult<()> {
     program_surface::run(
         project,
@@ -5245,6 +5283,7 @@ fn run_fullscreen_program(
         fullscreen_display,
         camera_helper,
         record_program,
+        record_wav,
     )
 }
 
@@ -5256,6 +5295,7 @@ fn run_fullscreen_program(
     _fullscreen_display: usize,
     _camera_helper: Option<PathBuf>,
     _record_program: Option<PathBuf>,
+    _record_wav: bool,
 ) -> AppResult<()> {
     Err(AppFailure(
         "--fullscreen-program requires a macOS build with feature `macos-program-surface`".into(),
@@ -5299,6 +5339,7 @@ fn serve_program_worker(
     channels: program_surface::ProgramWorkerChannels,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
+    record_wav: bool,
 ) -> AppResult<()> {
     serve_inner(
         path,
@@ -5315,6 +5356,7 @@ fn serve_program_worker(
             camera_helper,
         })),
         record_program,
+        record_wav,
         None,
         // `--recover-to-checkpoint` is refused with `--fullscreen-program`.
         false,
@@ -5328,6 +5370,7 @@ fn serve_inner(
     once: bool,
     mode: NativeServeMode,
     record_program: Option<PathBuf>,
+    record_wav: bool,
     diagnostic_stop_after: Option<Duration>,
     recover_to_checkpoint: bool,
 ) -> AppResult<()> {
@@ -5410,7 +5453,7 @@ fn serve_inner(
         native
             .as_mut()
             .ok_or_else(|| AppFailure("--record-program requires --native-media".into()))?
-            .configure_recording(path.clone());
+            .configure_recording(path.clone(), record_wav);
         // Startup reconciliation is deliberate: a configured recorder only
         // auto-starts when the restored project's desired flag says so. The
         // capability digest below keeps advertising configured support either
@@ -7651,10 +7694,11 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-wav]] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999.\n\
+--record-wav additionally writes a linear-PCM WAV sidecar for each segment, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
 Use --record-program=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 macOS fullscreen display selection is a zero-based index ordered by physical position, then stable descriptive fields.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
@@ -8265,6 +8309,7 @@ mod tests {
                 fullscreen_display: 0,
                 camera_helper: None,
                 record_program: None,
+                record_wav: false,
                 diagnostic_stop_after: None,
                 recover_to_checkpoint: false,
             }
@@ -8595,9 +8640,59 @@ mod tests {
                 ]),
                 "duplicate option `--record-program`",
             ),
+            (
+                strings(&["serve", "show.freemix", "--native-media", "--record-wav"]),
+                "--record-wav requires --record-program",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-wav",
+                    "--record-wav",
+                ]),
+                "duplicate option `--record-wav`",
+            ),
         ] {
             assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
         }
+    }
+
+    #[test]
+    fn parses_program_wav_sidecar_recording() {
+        assert!(matches!(
+            parse_args(strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program",
+                "capture.mp4",
+                "--record-wav",
+            ]))
+            .unwrap(),
+            Command::Serve {
+                record_program: Some(path),
+                record_wav: true,
+                ..
+            } if path == Path::new("capture.mp4")
+        ));
+        assert!(matches!(
+            parse_args(strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program",
+                "capture.mp4",
+            ]))
+            .unwrap(),
+            Command::Serve {
+                record_wav: false,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -8985,6 +9080,25 @@ mod tests {
         }
         let error = next_record_segment_path(&base, Path::exists).unwrap_err();
         assert!(error.to_string().contains("exhausted"));
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn record_wav_sidecar_shares_each_segment_stem() {
+        assert_eq!(
+            record_wav_path(Path::new("/srv/shows/program.mp4")),
+            Path::new("/srv/shows/program.wav")
+        );
+        assert_eq!(
+            record_wav_path(Path::new("/srv/shows/program-002.mp4")),
+            Path::new("/srv/shows/program-002.wav")
+        );
+        // A configured name without the MP4 extension still gets a WAV
+        // sidecar rather than overwriting the segment itself.
+        assert_eq!(
+            record_wav_path(Path::new("/srv/shows/program")),
+            Path::new("/srv/shows/program.wav")
+        );
     }
 
     #[cfg(feature = "native-media")]
