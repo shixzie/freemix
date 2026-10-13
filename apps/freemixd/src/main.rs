@@ -91,6 +91,7 @@ use freemixd::{ReadinessRecord, StatusReadinessRecord};
 // preflight and its constants are used in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod disk;
+mod hls_server;
 mod journal;
 mod latest_record;
 mod non_native_sessions;
@@ -105,6 +106,7 @@ mod status_listener;
 mod stinger_mutation;
 mod web;
 
+use hls_server::{HlsRoots, HlsServer};
 use journal::{DurableJournal, DurableStore, ReplayedMutations};
 use status_listener::{DaemonStatus, StatusListener};
 
@@ -2519,6 +2521,55 @@ fn local_output_directories(splits: &[SplitStreamTarget<'_>]) -> Vec<PathBuf> {
         .filter(|split| split.protocol == OutputProtocol::Hls)
         .map(|split| PathBuf::from(split.endpoint.path()))
         .collect()
+}
+
+/// Filters a compiled destination listing down to the local `hls://` roots,
+/// keyed by the engine stream target id.
+///
+/// Only local HLS destinations contribute a root; every network destination is
+/// skipped. Duplicate target ids are refused rather than letting the last one
+/// win, because two roots under one id would serve the wrong ladder.
+///
+/// # Errors
+///
+/// Returns [`hls_server::HlsRouteError::DuplicateTarget`] when two HLS
+/// destinations name the same target id.
+#[cfg(feature = "native-media")]
+fn hls_roots_from_destinations(
+    destinations: impl IntoIterator<Item = (OutputProtocol, u128, PathBuf)>,
+) -> Result<HlsRoots, hls_server::HlsRouteError> {
+    HlsRoots::try_from_targets(
+        destinations
+            .into_iter()
+            .filter_map(|(protocol, target, root)| {
+                (protocol == OutputProtocol::Hls).then_some((target, root))
+            }),
+    )
+}
+
+/// Builds the HLS route table from the daemon's compiled stream destinations.
+///
+/// Each local `hls://` destination is keyed by the same engine stream target id
+/// that `FREEMIXD_PREFLIGHT` and `FREEMIXD_STREAM` records carry.
+///
+/// # Errors
+///
+/// Returns [`hls_server::HlsRouteError::DuplicateTarget`] if two compiled
+/// destinations name the same target id, which the engine's target inventory
+/// should already prevent.
+#[cfg(feature = "native-media")]
+fn hls_roots(native: Option<&NativeDaemon>) -> Result<HlsRoots, hls_server::HlsRouteError> {
+    let destinations = native.into_iter().flat_map(|native| {
+        native.streams.iter().filter_map(|stream| {
+            let config = native.output_set.config(stream.destination_id)?;
+            Some((
+                config.protocol(),
+                stream.target.get().get(),
+                PathBuf::from(config.endpoint().path()),
+            ))
+        })
+    });
+    hls_roots_from_destinations(destinations)
 }
 
 /// Builds the pending network probe for one compiled destination's endpoint,
@@ -5538,6 +5589,7 @@ enum Command {
         listen: SocketAddr,
         web_listen: Option<SocketAddr>,
         status_listen: Option<SocketAddr>,
+        hls_listen: Option<SocketAddr>,
         once: bool,
         native_media: bool,
         fullscreen_program: bool,
@@ -5587,6 +5639,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut listen = DEFAULT_LISTEN.parse()?;
             let mut web_listen: Option<SocketAddr> = None;
             let mut status_listen: Option<SocketAddr> = None;
+            let mut hls_listen: Option<SocketAddr> = None;
             let mut once = false;
             let mut native_media = false;
             let mut fullscreen_program = false;
@@ -5701,6 +5754,15 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                     })?);
                     continue;
                 }
+                if let Some(value) = option.strip_prefix("--hls-listen=") {
+                    if hls_listen.is_some() {
+                        return Err(AppFailure("duplicate option `--hls-listen`".into()).into());
+                    }
+                    hls_listen = Some(value.parse().map_err(|error| {
+                        AppFailure(format!("invalid hls listen address: {error}"))
+                    })?);
+                    continue;
+                }
                 match option.as_str() {
                     "--listen" => {
                         listen = arguments
@@ -5733,6 +5795,17 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         })?;
                         status_listen = Some(value.parse().map_err(|error| {
                             AppFailure(format!("invalid status listen address: {error}"))
+                        })?);
+                    }
+                    "--hls-listen" => {
+                        if hls_listen.is_some() {
+                            return Err(AppFailure("duplicate option `--hls-listen`".into()).into());
+                        }
+                        let value = arguments
+                            .next()
+                            .ok_or_else(|| AppFailure("missing value for --hls-listen".into()))?;
+                        hls_listen = Some(value.parse().map_err(|error| {
+                            AppFailure(format!("invalid hls listen address: {error}"))
                         })?);
                     }
                     "--once" => once = true,
@@ -5962,11 +6035,28 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                     .into());
                 }
             }
+            if let Some(address) = hls_listen {
+                if !address.ip().is_loopback() {
+                    return Err(
+                        AppFailure("--hls-listen must use a loopback address".into()).into(),
+                    );
+                }
+                if !native_media {
+                    return Err(AppFailure("--hls-listen requires --native-media".into()).into());
+                }
+                if fullscreen_program {
+                    return Err(AppFailure(
+                        "--hls-listen cannot be combined with --fullscreen-program".into(),
+                    )
+                    .into());
+                }
+            }
             Ok(Command::Serve {
                 project,
                 listen,
                 web_listen,
                 status_listen,
+                hls_listen,
                 once,
                 native_media,
                 fullscreen_program,
@@ -6092,6 +6182,7 @@ fn run(command: Command) -> AppResult<()> {
             listen,
             web_listen,
             status_listen,
+            hls_listen,
             once,
             native_media,
             fullscreen_program,
@@ -6127,6 +6218,7 @@ fn run(command: Command) -> AppResult<()> {
                         listen,
                         web_listen,
                         status_listen,
+                        hls_listen,
                     },
                     once,
                     if native_media {
@@ -6224,12 +6316,14 @@ struct ProgramServeSetup {
     camera_helper: Option<PathBuf>,
 }
 
-/// The daemon's bound sockets: control, optional web gateway, optional status.
+/// The daemon's bound sockets: control, optional web gateway, optional status,
+/// and optional HLS.
 #[derive(Clone, Copy)]
 struct ServeListeners {
     listen: SocketAddr,
     web_listen: Option<SocketAddr>,
     status_listen: Option<SocketAddr>,
+    hls_listen: Option<SocketAddr>,
 }
 
 #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
@@ -6255,6 +6349,7 @@ fn serve_program_worker(
             listen,
             web_listen: None,
             status_listen: None,
+            hls_listen: None,
         },
         once,
         NativeServeMode::Program(Box::new(ProgramServeSetup {
@@ -6376,6 +6471,7 @@ fn serve_inner(
         listen,
         web_listen,
         status_listen,
+        hls_listen,
     } = listeners;
     if !listen.ip().is_loopback() {
         return Err(AppFailure(format!(
@@ -6399,6 +6495,9 @@ fn serve_inner(
     }
     if status_listen.is_some_and(|address| !address.ip().is_loopback()) {
         return Err(AppFailure("--status-listen must use a loopback address".into()).into());
+    }
+    if hls_listen.is_some_and(|address| !address.ip().is_loopback()) {
+        return Err(AppFailure("--hls-listen must use a loopback address".into()).into());
     }
 
     let store = ProjectStore::new(path)?;
@@ -6559,6 +6658,45 @@ fn serve_inner(
     let operator_status = status_listen
         .map(|address| StatusListener::bind(address, &process_shutdown.status))
         .transpose()?;
+    // The HLS listener is a read-only view of the compiled `hls://` destination
+    // directories. It is refused when no such destination is configured, and
+    // its token is required before readiness is advertised, exactly like the
+    // status listener's.
+    let hls_listener = match hls_listen {
+        Some(address) => {
+            if native.is_none() {
+                return Err(AppFailure("--hls-listen requires --native-media".into()).into());
+            }
+            #[cfg(feature = "native-media")]
+            let roots = hls_roots(native.as_ref()).map_err(|error| {
+                AppFailure(format!(
+                    "--hls-listen could not map hls:// stream destinations: {error}"
+                ))
+            })?;
+            #[cfg(not(feature = "native-media"))]
+            let roots = HlsRoots::try_from_targets(std::iter::empty::<(u128, PathBuf)>()).map_err(
+                |error| {
+                    AppFailure(format!(
+                        "--hls-listen could not map hls:// stream destinations: {error}"
+                    ))
+                },
+            )?;
+            if roots.is_empty() {
+                return Err(AppFailure(
+                    "--hls-listen requires at least one hls:// stream destination".into(),
+                )
+                .into());
+            }
+            let token = hls_server::token_from_environment()?;
+            Some(HlsServer::start(
+                address,
+                token,
+                roots,
+                Arc::new(AtomicBool::new(false)),
+            )?)
+        }
+        None => None,
+    };
     server.mark_ready()?;
     process_shutdown.observe_service(server.status());
     let readiness = ReadinessRecord {
@@ -6581,6 +6719,10 @@ fn serve_inner(
         );
         std::io::stdout().flush()?;
     }
+    if let Some(listener) = hls_listener.as_ref() {
+        println!("FREEMIXD_HLS_READY\tv=1\taddress={}", listener.address());
+        std::io::stdout().flush()?;
+    }
     if let Some(duration) = diagnostic_stop_after {
         process_shutdown.set_diagnostic_deadline(duration)?;
     }
@@ -6601,11 +6743,15 @@ fn serve_inner(
     process_shutdown.status.begin_draining();
     let gateway_result = web_gateway.map(web::WebGateway::shutdown);
     let status_result = operator_status.map(StatusListener::shutdown);
+    let hls_result = hls_listener.map(HlsServer::shutdown);
     let _shutdown_reason = session_result?;
     if let Some(result) = gateway_result {
         result?;
     }
     if let Some(result) = status_result {
+        result?;
+    }
+    if let Some(result) = hls_result {
         result?;
     }
     if native.is_some() {
@@ -8726,7 +8872,7 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
@@ -8739,6 +8885,7 @@ macOS fullscreen display selection is a zero-based index ordered by physical pos
 --recover-to-checkpoint opens the project at its last checkpoint and permanently discards every acknowledged command the journal recorded after it, printing each abandoned sequence, revision and command id first. It loses work; use it only when a replay is refused and the show must go on. It is unavailable with --fullscreen-program.\n\
 --web-listen enables the loopback-only `/v1/control` WebSocket listener and requires FREEMIXD_WEB_TOKEN.\n\
 --status-listen enables the loopback-only operator status listener serving /healthz, /readyz, and the token-guarded /v1/support-bundle; it requires FREEMIXD_STATUS_TOKEN and is unavailable with --fullscreen-program.\n\
+--hls-listen enables the loopback-only HLS listener for local hls:// stream destinations. It serves GET /v1/hls/<target>/index.m3u8 and GET /v1/hls/<target>/segment-NNNNN.ts, plus the same shapes under rung directories 0..=7 for a multi-bitrate ladder, and requires both --native-media and FREEMIXD_HLS_TOKEN; TLS, LAN binding, Web Controller roles, and per-viewer capacity remain future work.\n\
 Native mode continues across client disconnects; close the Program window or press Escape for bounded shutdown."
     );
 }
@@ -9337,6 +9484,7 @@ mod tests {
                 listen: "127.0.0.1:9123".parse().unwrap(),
                 web_listen: None,
                 status_listen: None,
+                hls_listen: None,
                 once: true,
                 native_media: false,
                 fullscreen_program: false,
@@ -9397,6 +9545,154 @@ mod tests {
             command,
             Command::Serve { listen, once: false, native_media: false, .. }
                 if listen == DEFAULT_LISTEN.parse::<SocketAddr>().unwrap()
+        ));
+    }
+
+    #[test]
+    fn parses_hls_listen_only_as_a_loopback_native_option() {
+        for arguments in [
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--hls-listen",
+                "127.0.0.1:0",
+            ]),
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--hls-listen=127.0.0.1:9432",
+            ]),
+        ] {
+            assert!(matches!(
+                parse_args(arguments).unwrap(),
+                Command::Serve {
+                    hls_listen: Some(address),
+                    native_media: true,
+                    ..
+                } if address.ip().is_loopback()
+            ));
+        }
+        for (arguments, expected) in [
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--hls-listen",
+                    "0.0.0.0:9000",
+                ]),
+                "--hls-listen must use a loopback address",
+            ),
+            (
+                strings(&["serve", "show.freemix", "--hls-listen", "127.0.0.1:9000"]),
+                "--hls-listen requires --native-media",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--fullscreen-program",
+                    "--hls-listen",
+                    "127.0.0.1:9000",
+                ]),
+                "--hls-listen cannot be combined with --fullscreen-program",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--hls-listen",
+                    "127.0.0.1:9001",
+                    "--hls-listen",
+                    "127.0.0.1:9002",
+                ]),
+                "duplicate option `--hls-listen`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--hls-listen=127.0.0.1:9001",
+                    "--hls-listen=127.0.0.1:9002",
+                ]),
+                "duplicate option `--hls-listen`",
+            ),
+            (
+                strings(&["serve", "show.freemix", "--native-media", "--hls-listen"]),
+                "missing value for --hls-listen",
+            ),
+        ] {
+            assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+        }
+        // Like `--status-listen`, the `=` form parses its value directly, so an
+        // empty value is an invalid address rather than a missing argument.
+        assert!(
+            parse_args(strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--hls-listen=",
+            ]))
+            .unwrap_err()
+            .to_string()
+            .contains("invalid hls listen address")
+        );
+    }
+
+    #[test]
+    fn hls_token_bounds_helper_requires_bounded_ascii_graphic_bytes() {
+        let short = [b'a'; hls_server::HLS_TOKEN_MIN_BYTES - 1];
+        assert!(!hls_server::valid_token(&short));
+        let minimum = [b'a'; hls_server::HLS_TOKEN_MIN_BYTES];
+        assert!(hls_server::valid_token(&minimum));
+        let maximum = [b'a'; hls_server::HLS_TOKEN_MAX_BYTES];
+        assert!(hls_server::valid_token(&maximum));
+        let long = [b'a'; hls_server::HLS_TOKEN_MAX_BYTES + 1];
+        assert!(!hls_server::valid_token(&long));
+        for byte in [b' ', b'\n', b'\r', 0x7f] {
+            let mut non_graphic = minimum;
+            non_graphic[0] = byte;
+            assert!(!hls_server::valid_token(&non_graphic), "{byte:#04x}");
+        }
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn hls_roots_helper_skips_non_hls_destinations_and_keys_hls_targets() {
+        let roots = hls_roots_from_destinations([
+            (OutputProtocol::Rtmp, 1, PathBuf::from("/srv/rtmp")),
+            (OutputProtocol::Hls, 3, PathBuf::from("/srv/hls-a")),
+            (OutputProtocol::Srt, 2, PathBuf::from("/srv/srt")),
+            (OutputProtocol::Hls, 4, PathBuf::from("/srv/hls-b")),
+        ])
+        .unwrap();
+        assert_eq!(
+            roots.resolve(3, "index.m3u8"),
+            Ok(PathBuf::from("/srv/hls-a/index.m3u8"))
+        );
+        assert_eq!(
+            roots.resolve(4, "7/segment-00042.ts"),
+            Ok(PathBuf::from("/srv/hls-b/7/segment-00042.ts"))
+        );
+        assert_eq!(
+            roots.resolve(1, "index.m3u8"),
+            Err(hls_server::HlsRouteError::NotFound)
+        );
+        assert_eq!(
+            roots.resolve(2, "index.m3u8"),
+            Err(hls_server::HlsRouteError::NotFound)
+        );
+        assert!(matches!(
+            hls_roots_from_destinations([
+                (OutputProtocol::Hls, 5, PathBuf::from("/srv/one")),
+                (OutputProtocol::Hls, 5, PathBuf::from("/srv/two")),
+            ]),
+            Err(hls_server::HlsRouteError::DuplicateTarget)
         ));
     }
 
