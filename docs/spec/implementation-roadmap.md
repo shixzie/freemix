@@ -1254,7 +1254,13 @@ primary to the backup endpoint under a bounded reconnect budget (250 ms
 doubling to 2 s across at most 40 attempts), refused frames are dropped rather
 than retried, `WaitingToReconnect` and `Congested` are reachable wire states,
 and final `FREEMIXD_STREAM` records derive from state-machine telemetry plus
-the per-target ledger. The stream inventory is bounded at five everywhere —
+the per-target ledger. Connection accounting is delivery-proven: an attempt
+clears the retry budget, and a scheduled reconnect counts as a recovery, only
+once its session has actually handed media to the transport's muxer, so a
+spawned-but-refused attempt (for example an FFmpeg child that exits because the
+ingest rejected its connection) keeps consuming the budget and an unreachable
+destination latches failed after its bounded attempts instead of reconnecting
+forever. The stream inventory is bounded at five everywhere —
 authoring, engine, wire, and transport agree — matching the five-simultaneous
 destinations product contract. There is no output-health UI beyond Studio's
 compact panel, no live decoder acceptance of a streamed broadcast against a
