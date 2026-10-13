@@ -1327,39 +1327,51 @@ authored target once and a remote single-key or multi-key RTMP ladder is not
 implemented. Studio and Web show the existing roster only. `OR-007` and
 `OR-017` therefore remain planned, and item 3 remains incomplete.
 
-Current implementation boundary for item 4: the native program recorder can
-write a split WAV sidecar alongside each MP4 segment. `--record-wav` (which
-requires `--record-program` and native media) makes the same bounded FFmpeg
-child mux a linear-PCM `pcm_s16le` WAV output for the same captured audio at
-the project's sample rate and channel layout, from mono through 5.1, into an
-exclusive file that shares the segment's stem: `program.mp4` is accompanied by
-`program.wav`, and every later derived segment such as `program-002.mp4` by
-`program-002.wav`. Startup creates the sidecar exclusively before spawning any
-child, so an existing sidecar refuses that segment instead of overwriting it,
-and with `--record-wav` absent every argument, file, and report stays
-byte-identical to the previous slice. Bounded pair admission, sticky failure,
-the paced startup barrier, bounded stop/kill/finalization, live start and
-stop, and restart reconciliation are unchanged. The final `FREEMIXD_RECORDER`
-record carries `wav_bytes`, `duration_ms` (the exact completed-pair span at the
-project frame rate), and `free_bytes` (the segment parent sampled when the
-report is frozen, zero when unreadable); a killed child may leave a truncated
-sidecar, and only a clean stop finalizes it. This is one program-audio file per segment, not an independent second
-program recorder, automatic segment-rule rotation, per-recorder bus or channel
-selection, multiple tracks or metadata, or duration/space status. The second
-recorder's independent source, codec, resolution, and audio map, the item's
-segment rules, and `AU-010` bus selection remain planned; `AU-010` still
-depends on the planned `AU-002`/`AU-003`, so `OR-001`, `OR-002`, and `AU-010`
-are unchanged and item 4 remains incomplete.
+Current implementation boundary for item 4: native `freemixd` runs two
+independently configured program recorder destinations. Slot one is
+`--record-program` and slot two is `--record-program-2`; both require native
+media, need not be configured together, and each keeps its own output path,
+segment derivation, exclusive files, finalizer worker, capture-failure latch,
+and sanitized `FREEMIXD_RECORDER` report, now prefixed `slot=1|2`. The two
+slots share the engine's existing desired recording flag, so an accepted
+`RecordStart`/`RecordStop` opens or drains both; one slot's start, prime, or
+finalization failure latches and reports only that slot and never aborts the
+show or the other slot. Each slot taps the same first Program output texture
+and Master audio block, cloning the audio only when both slots are running,
+and each owns its own readback. Startup remains fail-closed for any configured
+recorder, `FREEMIXD_TELEMETRY` aggregates both slots' outstanding and retained
+values, and disk preflight and free-space sampling cover both parents. Each
+slot can also write a split WAV sidecar: `--record-wav` now requires at least
+one recorder and applies to every configured slot, making the same bounded
+FFmpeg child mux a linear-PCM `pcm_s16le` WAV output for the same captured
+audio at the project's sample rate and channel layout, from mono through 5.1,
+into an exclusive file that shares the segment's stem, so `program-002.mp4` is
+accompanied by `program-002.wav`. The final recorder report carries
+`wav_bytes`, `duration_ms` (the exact completed-pair span at the project frame
+rate), and `free_bytes` (the segment parent sampled when the report is frozen,
+zero when unreadable); a killed child may leave a truncated sidecar, and only
+a clean stop finalizes it.
+
+The two slots are not independently controllable and do not yet differ in
+media: both follow the one engine desired flag, both record the first Program
+output at the project format and Master audio map, and there is no
+per-recorder source, overlay, codec, resolution, audio-map, or bus/channel
+selection, no automatic segment-rule rotation, no multiple-track or metadata
+handling, and no protocol or client representation of a recorder roster. That
+independent control, the differing media configuration, the item's segment
+rules, and `AU-010` bus selection remain planned; `AU-010` still depends on
+the planned `AU-002`/`AU-003`, so `OR-001`, `OR-002`, and `AU-010` are
+unchanged and item 4 remains incomplete.
 
 Current implementation boundary for item 9: native `freemixd` performs a
 fail-closed disk preflight for configured program recording and reports
-free-space alert edges while recording. A configured `--record-program` output
-whose parent filesystem cannot be queried or has fewer than 512 MiB available
-refuses daemon startup with a sanitized error that carries the byte count and
-I/O kind but never the path. While recording is configured, the render loop
-samples the output parent's free space at most once every five seconds, with
-the first sample evaluating immediately so a low value present at startup fires
-at the first frame. The samples drive one hysteretic `fm-observability` alert
+free-space alert edges while recording. Any configured recorder output
+(`--record-program` or `--record-program-2`) whose parent filesystem cannot be
+queried or has fewer than 512 MiB available refuses daemon startup with a
+sanitized error that carries the byte count and I/O kind but never the path.
+While recording is configured, the render loop samples each output parent's
+free space at most once every five seconds, with the first sample evaluating
+immediately so a low value present at startup fires at the first frame. The samples drive one hysteretic `fm-observability` alert
 that fires at or below 1 GiB and clears at 2 GiB, printing exactly one
 `FREEMIXD_DISK` record per edge with its state and free bytes. The final
 `FREEMIXD_TELEMETRY` v4 record gains `disk_alert=unknown|normal|low` and
@@ -1369,9 +1381,9 @@ same preflight and alerting now cover every authored local HLS output: startup
 fails closed when an HLS directory's nearest existing ancestor cannot be
 queried or falls below the same floor, naming the stream target id and byte
 count but never the path, and the five-second sampler takes the minimum free
-space across the recording parent and every local output directory, so one
-`FREEMIXD_DISK` edge covers whichever configured local output crosses the
-threshold. No path is created by the preflight; the HLS sink still creates its
+space across every configured recording parent and every local output
+directory, so one `FREEMIXD_DISK` edge covers whichever configured local
+output crosses the threshold. No path is created by the preflight; the HLS sink still creates its
 own leaf later. This covers program recording and local HLS outputs only:
 network preflight remains endpoint validation rather than a bandwidth probe,
 there is no new GPU capability preflight, low space never stops or fails a
