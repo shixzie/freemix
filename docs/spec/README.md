@@ -114,6 +114,8 @@ server. Crashing or restarting the UI must not stop an on-air production.
     phase exit criteria, dependencies, and team guidance.
 13. [Sources and constraints](sources.md) — feature baseline and relevant
     technical references.
+14. [Capability matrix](capability-matrix.md) — generated per-profile ledger
+    status and acceptance-test evidence.
 
 ## 6. Definition of done
 

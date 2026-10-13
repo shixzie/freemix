@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -18,6 +19,17 @@ const GENERIC_EQUIVALENT: &str = "equivalent-behavior-allowed";
 const TEST_PLANNED: &str = "planned";
 const TEST_PRESENT: &str = "present";
 const TEST_VERIFIED: &str = "verified";
+const CAPABILITY_MATRIX_PATH: &str = "docs/spec/capability-matrix.md";
+const STATUS_ORDER: [&str; 7] = [
+    "planned",
+    "present",
+    "implemented",
+    "verified",
+    "blocked",
+    "partial",
+    "removed",
+];
+const PRIORITY_ORDER: [&str; 4] = ["P0", "P1", "P2", "P3"];
 
 #[derive(Clone, Debug)]
 struct Registry {
@@ -121,7 +133,12 @@ fn run(args: &[String]) -> Result<String, String> {
                 "deps check passed: {dependency_count} local path dependencies"
             ))
         }
-        _ => Err("usage: cargo run -p xtask -- <parity check [--phase N]|deps check>".to_owned()),
+        [group, command] if group == "matrix" && command == "write" => write_capability_matrix(&root),
+        [group, command] if group == "matrix" && command == "check" => check_capability_matrix(&root),
+        _ => Err(
+            "usage: cargo run -p xtask -- <parity check [--phase N]|deps check|matrix write|matrix check>"
+                .to_owned(),
+        ),
     }
 }
 
@@ -135,6 +152,149 @@ fn check_parity(root: &Path, phase: Option<u8>) -> Result<String, String> {
         "parity check passed: {} features (P0=24, P1=70, P2=9){phase_claim}",
         ledger.features.len()
     ))
+}
+
+fn write_capability_matrix(root: &Path) -> Result<String, String> {
+    let ledger = parse_ledger(&read(&root.join("parity.toml"))?)?;
+    let rendered = render_capability_matrix(&ledger);
+    let path = root.join(CAPABILITY_MATRIX_PATH);
+    fs::write(&path, &rendered)
+        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    Ok(format!(
+        "matrix write: wrote {CAPABILITY_MATRIX_PATH} ({} bytes, {} profiles, {} features)",
+        rendered.len(),
+        ledger.registry.profiles.len(),
+        ledger.features.len()
+    ))
+}
+
+fn check_capability_matrix(root: &Path) -> Result<String, String> {
+    let ledger = parse_ledger(&read(&root.join("parity.toml"))?)?;
+    let rendered = render_capability_matrix(&ledger);
+    let committed = fs::read_to_string(root.join(CAPABILITY_MATRIX_PATH)).map_err(|error| {
+        format!(
+            "{CAPABILITY_MATRIX_PATH} cannot be read ({error}); run `cargo run -p xtask -- matrix write`"
+        )
+    })?;
+    if committed != rendered {
+        return Err(format!(
+            "{CAPABILITY_MATRIX_PATH} is stale; run `cargo run -p xtask -- matrix write` and commit the result"
+        ));
+    }
+    Ok(format!(
+        "matrix check passed: {CAPABILITY_MATRIX_PATH} matches {} profiles and {} features",
+        ledger.registry.profiles.len(),
+        ledger.features.len()
+    ))
+}
+
+fn render_capability_matrix(ledger: &Ledger) -> String {
+    let test_states: BTreeMap<&str, &str> = ledger
+        .tests
+        .iter()
+        .map(|test| (test.id.as_str(), test.state.as_str()))
+        .collect();
+    let mut output = String::new();
+    output.push_str("# Development capability matrix\n\n");
+    output.push_str(
+        "Generated from `parity.toml`; run `cargo run -p xtask -- matrix write` to regenerate.\n",
+    );
+    output.push_str("No capability profile is certified. This matrix reports ledger status and\n");
+    output.push_str("local acceptance-test evidence only.\n");
+    for profile in &ledger.registry.profiles {
+        let features: Vec<_> = ledger
+            .features
+            .iter()
+            .filter(|feature| {
+                feature
+                    .capability_profiles
+                    .iter()
+                    .any(|candidate| candidate == profile)
+            })
+            .collect();
+        let _ = write!(output, "\n## {profile}\n\n");
+        output.push_str(&summary_line(&features));
+        output.push_str("\n\n| ID | Pri | Phase | Status | Owner | Acceptance |\n");
+        output.push_str("|---|---|---|---|---|---|\n");
+        for feature in &features {
+            let _ = writeln!(
+                output,
+                "| {} | {} | {} | {} | {} | {} |",
+                feature.id,
+                feature.priority,
+                feature.phase,
+                feature.status,
+                feature.owner,
+                acceptance_summary(feature, &test_states)
+            );
+        }
+    }
+    output
+}
+
+fn summary_line(features: &[&Feature]) -> String {
+    let status_counts = counted_values(
+        features.iter().map(|feature| feature.status.as_str()),
+        &STATUS_ORDER,
+    );
+    let priority_counts = counted_values(
+        features.iter().map(|feature| feature.priority.as_str()),
+        &PRIORITY_ORDER,
+    );
+    let plural = if features.len() == 1 { "" } else { "s" };
+    format!(
+        "Total: {} feature{plural}. Status: {}. Priority: {}.",
+        features.len(),
+        counted_list(&status_counts),
+        counted_list(&priority_counts)
+    )
+}
+
+fn counted_values<'a>(
+    values: impl Iterator<Item = &'a str>,
+    order: &[&str],
+) -> Vec<(&'a str, usize)> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for value in values {
+        *counts.entry(value).or_default() += 1;
+    }
+    let mut counted: Vec<_> = counts.into_iter().collect();
+    counted.sort_by_key(|(value, _)| {
+        (
+            order
+                .iter()
+                .position(|candidate| candidate == value)
+                .unwrap_or(order.len()),
+            *value,
+        )
+    });
+    counted
+}
+
+fn counted_list(counts: &[(&str, usize)]) -> String {
+    if counts.is_empty() {
+        return "none".to_owned();
+    }
+    counts
+        .iter()
+        .map(|(value, count)| format!("{value}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn acceptance_summary(feature: &Feature, test_states: &BTreeMap<&str, &str>) -> String {
+    if feature.tests.is_empty() {
+        return "none".to_owned();
+    }
+    feature
+        .tests
+        .iter()
+        .map(|test| {
+            let state = test_states.get(test.as_str()).copied().unwrap_or("unknown");
+            format!("{test} ({state})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn workspace_root() -> PathBuf {
@@ -1361,6 +1521,72 @@ mod tests {
         );
     }
 
+    fn sample_feature(
+        id: &str,
+        priority: &str,
+        phase: u8,
+        profiles: &[&str],
+        tests: &[&str],
+        status: &str,
+    ) -> Feature {
+        Feature {
+            id: id.to_owned(),
+            priority: priority.to_owned(),
+            phase,
+            owner: "team".to_owned(),
+            dependencies: Vec::new(),
+            capability_profiles: profiles
+                .iter()
+                .map(|profile| (*profile).to_owned())
+                .collect(),
+            tests: tests.iter().map(|test| (*test).to_owned()).collect(),
+            status: status.to_owned(),
+            substitution_policy: GENERIC_EQUIVALENT.to_owned(),
+        }
+    }
+
+    fn sample_ledger() -> Ledger {
+        Ledger {
+            registry: Registry {
+                profiles: vec!["alpha".to_owned(), "beta".to_owned(), "empty".to_owned()],
+                workstreams: vec!["team".to_owned()],
+            },
+            tests: vec![
+                TestRecord {
+                    id: "accept-in-001".to_owned(),
+                    state: TEST_PRESENT.to_owned(),
+                    paths: Vec::new(),
+                    commands: Vec::new(),
+                },
+                TestRecord {
+                    id: "accept-in-002".to_owned(),
+                    state: TEST_PLANNED.to_owned(),
+                    paths: Vec::new(),
+                    commands: Vec::new(),
+                },
+            ],
+            waivers: Vec::new(),
+            features: vec![
+                sample_feature(
+                    "IN-001",
+                    "P0",
+                    1,
+                    &["alpha"],
+                    &["accept-in-001", "accept-in-002"],
+                    "planned",
+                ),
+                sample_feature("IN-002", "P1", 2, &["beta"], &[], "blocked"),
+                sample_feature("IN-003", "P2", 3, &["alpha"], &[], "implemented"),
+            ],
+        }
+    }
+
+    fn section<'a>(rendered: &'a str, profile: &str) -> &'a str {
+        let heading = format!("## {profile}\n");
+        let start = rendered.find(&heading).unwrap() + heading.len();
+        rendered[start..].split("\n## ").next().unwrap()
+    }
+
     #[test]
     fn checked_in_ledger_is_valid() {
         let (ledger, markdown) = loaded();
@@ -1650,5 +1876,74 @@ mod tests {
         assert!(!dependency_allowed(Layer::Media, Layer::Service));
         assert!(!dependency_allowed(Layer::Ui, Layer::Service));
         assert!(dependency_allowed(Layer::Feature, Layer::Media));
+    }
+
+    #[test]
+    fn matrix_renders_profiles_in_registry_order() {
+        let rendered = render_capability_matrix(&sample_ledger());
+        assert!(rendered.starts_with("# Development capability matrix\n"));
+        assert!(rendered.contains("No capability profile is certified."));
+        assert!(rendered.ends_with('\n'));
+        assert!(rendered.find("## alpha").unwrap() < rendered.find("## beta").unwrap());
+        assert!(rendered.find("## beta").unwrap() < rendered.find("## empty").unwrap());
+    }
+
+    #[test]
+    fn matrix_filters_features_by_profile() {
+        let rendered = render_capability_matrix(&sample_ledger());
+        let alpha = section(&rendered, "alpha");
+        assert!(alpha.contains("| IN-001 |"));
+        assert!(alpha.contains("| IN-003 |"));
+        assert!(!alpha.contains("IN-002"));
+        let beta = section(&rendered, "beta");
+        assert!(beta.contains("| IN-002 |"));
+        assert!(!beta.contains("IN-001"));
+        assert!(!beta.contains("IN-003"));
+    }
+
+    #[test]
+    fn matrix_annotates_acceptance_tests_with_registry_state() {
+        let rendered = render_capability_matrix(&sample_ledger());
+        let alpha = section(&rendered, "alpha");
+        assert!(alpha.contains("accept-in-001 (present), accept-in-002 (planned)"));
+        let beta = section(&rendered, "beta");
+        assert!(beta.contains("| none |"));
+    }
+
+    #[test]
+    fn matrix_renders_features_in_ledger_order_deterministically() {
+        let ledger = sample_ledger();
+        let rendered = render_capability_matrix(&ledger);
+        assert_eq!(rendered, render_capability_matrix(&ledger));
+        let alpha = section(&rendered, "alpha");
+        assert!(alpha.find("IN-001").unwrap() < alpha.find("IN-003").unwrap());
+        for line in rendered.lines() {
+            assert_eq!(line.trim_end(), line);
+        }
+    }
+
+    #[test]
+    fn matrix_handles_profile_with_no_features() {
+        let rendered = render_capability_matrix(&sample_ledger());
+        let empty = section(&rendered, "empty");
+        assert!(empty.contains("Total: 0 features. Status: none. Priority: none."));
+        assert!(empty.contains("| ID | Pri | Phase | Status | Owner | Acceptance |"));
+        assert!(empty.contains("|---|---|---|---|---|---|"));
+        let rows: Vec<_> = empty
+            .lines()
+            .filter(|line| line.starts_with("| ") && !line.starts_with("| ID |"))
+            .collect();
+        assert!(rows.is_empty(), "unexpected rows: {rows:?}");
+    }
+
+    #[test]
+    fn matrix_summarizes_status_and_priority_counts_derived_from_features() {
+        let rendered = render_capability_matrix(&sample_ledger());
+        let alpha = section(&rendered, "alpha");
+        assert!(alpha.contains(
+            "Total: 2 features. Status: planned=1, implemented=1. Priority: P0=1, P2=1."
+        ));
+        let beta = section(&rendered, "beta");
+        assert!(beta.contains("Total: 1 feature. Status: blocked=1. Priority: P1=1."));
     }
 }
