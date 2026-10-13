@@ -15,12 +15,16 @@ use fm_frame::{
     MediaFlags, MediaTiming, NormalizedDuration, NormalizedTimestamp, OriginalTimestamp,
     PacketFlags, SequenceNumber, StreamId,
 };
-use fm_types::{ChannelLayout, MediaTimestamp, PixelFormat, SampleRate, TimeBase, VideoDimensions};
+use fm_types::{
+    ChannelLayout, InputId, MediaTimestamp, PixelFormat, SampleRate, TimeBase, Timecode,
+    VideoDimensions,
+};
 
 use crate::{
     ActionOutcome, ActionReceiptId, AppendError, Discontinuity, DurableWriter, EnqueueError,
-    QueueLimits, RecordEvent, RecorderConfig, RecorderCoordinator, RecorderError, RecorderId,
-    RecorderState, SegmentPolicy, WriterFactory, format, repair_recording,
+    IsoTapMetadata, QueueLimits, RecordEvent, RecorderConfig, RecorderCoordinator, RecorderError,
+    RecorderId, RecorderState, SegmentPolicy, TimecodeSource, WriterFactory, format,
+    repair_recording,
 };
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1121,4 +1125,139 @@ fn stop_and_action_receipts_are_idempotent_across_restart() {
         restarted.snapshot(recorder).expect("snapshot").state,
         RecorderState::Stopped
     );
+}
+
+#[test]
+fn segments_rotate_by_duration_and_track_segment_duration() {
+    let temp = TempDirectory::new("duration-segmentation");
+    let recorder = id(70);
+    let frame_duration = 33_333_333u64;
+    let max_duration =
+        NormalizedDuration::from_nanos(frame_duration * 2).expect("nonzero max duration");
+    {
+        let (mut coordinator, _) =
+            RecorderCoordinator::open(temp.path()).expect("open coordinator");
+        coordinator
+            .start(
+                recorder,
+                receipt(70),
+                config(SegmentPolicy::by_duration(max_duration)),
+            )
+            .expect("start duration recorder");
+        for sequence in 0..5 {
+            coordinator
+                .append(recorder, video(sequence, 16))
+                .expect("append frame");
+        }
+        let snapshot = coordinator.snapshot(recorder).expect("snapshot");
+        assert_eq!(snapshot.segment_index, Some(2));
+        assert_eq!(snapshot.written_frames, 1);
+        assert_eq!(snapshot.written_duration_nanos, frame_duration);
+        // Drop without stopping to also verify crash recovery of active segment duration.
+    }
+
+    let (mut reopened, report) =
+        RecorderCoordinator::open(temp.path()).expect("reopen duration recorder");
+    assert!(report.failures.is_empty());
+    let (_, recovery) = &report.recovered[0];
+    assert_eq!(
+        recovery
+            .segments
+            .iter()
+            .map(|segment| (segment.records, segment.duration_nanos))
+            .collect::<Vec<_>>(),
+        vec![
+            (2, frame_duration * 2),
+            (2, frame_duration * 2),
+            (1, frame_duration),
+        ]
+    );
+    let snapshot = reopened.snapshot(recorder).expect("reopened snapshot");
+    assert_eq!(snapshot.segment_index, Some(2));
+    assert_eq!(snapshot.written_frames, 1);
+    assert_eq!(snapshot.written_duration_nanos, frame_duration);
+
+    // Appending one more frame fits in segment 2 (2 * frame_duration <= max_duration);
+    // appending a third frame in segment 2 rotates to segment 3.
+    reopened
+        .append(recorder, video(5, 16))
+        .expect("append second frame in recovered segment");
+    assert_eq!(
+        reopened.snapshot(recorder).expect("snapshot").segment_index,
+        Some(2)
+    );
+    reopened
+        .append(recorder, video(6, 16))
+        .expect("append frame triggering rotation after recovery");
+    let snapshot = reopened.snapshot(recorder).expect("snapshot after rotate");
+    assert_eq!(snapshot.segment_index, Some(3));
+    assert_eq!(snapshot.written_duration_nanos, frame_duration);
+    reopened
+        .stop(recorder, receipt(71))
+        .expect("stop duration recorder");
+}
+
+#[test]
+fn iso_tap_and_timecode_manifest_persist_and_recover_across_restart() {
+    let temp = TempDirectory::new("iso-tap-manifest");
+    let recorder = id(80);
+    let tap = IsoTapMetadata {
+        video_input: Some(InputId::new(NonZeroU128::new(101).expect("nonzero input"))),
+        audio_input: Some(InputId::new(NonZeroU128::new(202).expect("nonzero input"))),
+        timecode_source: TimecodeSource::SourceOriginal,
+        start_timecode: Some(Timecode::new(1, 2, 3, 4, 30).expect("valid timecode")),
+    };
+    {
+        let (mut coordinator, _) =
+            RecorderCoordinator::open(temp.path()).expect("open coordinator");
+        coordinator
+            .start(
+                recorder,
+                receipt(80),
+                config(SegmentPolicy::default()).with_tap(tap),
+            )
+            .expect("start iso tap recorder");
+        assert_eq!(
+            coordinator.snapshot(recorder).expect("snapshot").tap,
+            Some(tap)
+        );
+        coordinator
+            .append(recorder, video(0, 16))
+            .expect("append frame");
+    }
+
+    let (mut reopened, report) =
+        RecorderCoordinator::open(temp.path()).expect("recover iso tap recorder");
+    assert!(report.failures.is_empty());
+    assert_eq!(
+        reopened.snapshot(recorder).expect("recovered snapshot").tap,
+        Some(tap)
+    );
+    reopened
+        .stop(recorder, receipt(81))
+        .expect("stop recovered recorder");
+    assert_eq!(
+        reopened.snapshot(recorder).expect("stopped snapshot").tap,
+        Some(tap)
+    );
+    drop(reopened);
+
+    // Corrupt the persisted start timecode hours byte (>= 24) inside a valid-CRC frame
+    // and verify decode_manifest / repair_recording rejects it.
+    let directory = recording_directory(temp.path(), recorder);
+    let manifest_path = directory.join(format::MANIFEST_NAME);
+    let scanned = format::scan_manifest(&manifest_path).expect("scan manifest");
+    let mut corrupt_start_payload = scanned.frames[0].payload.clone();
+    // Layout of START payload:
+    // receipt(16) + max_events(8) + max_bytes(8) + max_frames(1) + max_bytes(1) + max_duration(1)
+    // + video_input(1+16) + audio_input(1+16) + timecode_source(1) + start_timecode_tag(1) + hours(1)
+    let hours_offset = 16 + 8 + 8 + 1 + 1 + 1 + 17 + 17 + 1 + 1;
+    corrupt_start_payload[hours_offset] = 99;
+    let corrupt_frame = format::ScannedFrame {
+        kind: scanned.frames[0].kind,
+        payload: corrupt_start_payload,
+    };
+    let error = format::decode_manifest(&corrupt_frame, &manifest_path)
+        .expect_err("corrupt timecode hours must fail manifest decode");
+    assert!(error.to_string().contains("invalid start timecode"));
 }

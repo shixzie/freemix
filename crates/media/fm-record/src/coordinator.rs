@@ -7,6 +7,8 @@ use std::{
     sync::Arc,
 };
 
+use fm_frame::NormalizedDuration;
+
 use crate::{
     ActionOutcome, ActionReceiptId, AppendError, EnqueueError, RecordEvent, RecorderConfig,
     RecorderError, RecorderId, RecorderSnapshot, RecorderState, RecoveredSegment, RecoveryReport,
@@ -78,6 +80,7 @@ struct Recorder {
     segment_index: Option<u64>,
     segment_frames: u64,
     segment_bytes: u64,
+    segment_duration_nanos: u64,
     failure: Option<String>,
 }
 
@@ -95,6 +98,7 @@ impl Recorder {
             segment_index: None,
             segment_frames: 0,
             segment_bytes: 0,
+            segment_duration_nanos: 0,
             failure: Some(failure),
         }
     }
@@ -108,6 +112,8 @@ impl Recorder {
             queued_bytes: self.queue_bytes,
             written_frames: self.segment_frames,
             written_bytes: self.segment_bytes,
+            written_duration_nanos: self.segment_duration_nanos,
+            tap: self.config.map(|config| config.tap),
             failure: self.failure.clone(),
         }
     }
@@ -308,6 +314,7 @@ impl RecorderCoordinator {
                 segment_index: Some(index),
                 segment_frames: 0,
                 segment_bytes: 0,
+                segment_duration_nanos: 0,
                 failure: None,
             },
         );
@@ -386,7 +393,7 @@ impl RecorderCoordinator {
         }
         let mut written = 0;
         loop {
-            let (batch, batch_frames, batch_bytes, queue_bytes, path) = {
+            let (batch, batch_frames, batch_bytes, batch_duration_nanos, queue_bytes, path) = {
                 let recorder = self
                     .recorders
                     .get(&id)
@@ -402,26 +409,35 @@ impl RecorderCoordinator {
                 let mut batch = Vec::new();
                 let mut frames = recorder.segment_frames;
                 let mut bytes = recorder.segment_bytes;
+                let mut duration_nanos = recorder.segment_duration_nanos;
                 let mut batch_frames = 0;
                 let mut batch_bytes = 0;
+                let mut batch_duration_nanos = 0u64;
                 let mut queue_bytes = 0;
                 for event in &recorder.queue {
                     let (kind, payload) = encoded_event(event)?;
                     let record_bytes = framed_len(payload.len())?;
                     let counts_as_frame = event.counts_as_frame();
+                    let event_duration_nanos =
+                        event.duration().map_or(0, NormalizedDuration::as_nanos);
                     if should_rotate(
                         config.segments,
                         frames,
                         bytes,
+                        duration_nanos,
                         record_bytes,
+                        event_duration_nanos,
                         counts_as_frame,
                     ) {
                         break;
                     }
                     frames = frames.saturating_add(u64::from(counts_as_frame));
                     bytes = bytes.saturating_add(record_bytes);
+                    duration_nanos = duration_nanos.saturating_add(event_duration_nanos);
                     batch_frames += u64::from(counts_as_frame);
                     batch_bytes += record_bytes;
+                    batch_duration_nanos =
+                        batch_duration_nanos.saturating_add(event_duration_nanos);
                     queue_bytes += event.queue_bytes();
                     batch.push((kind, payload));
                 }
@@ -434,6 +450,7 @@ impl RecorderCoordinator {
                     batch,
                     batch_frames,
                     batch_bytes,
+                    batch_duration_nanos,
                     queue_bytes,
                     segment_path(&recorder.directory, index),
                 )
@@ -486,6 +503,9 @@ impl RecorderCoordinator {
             recorder.queue_bytes = recorder.queue_bytes.saturating_sub(queue_bytes);
             recorder.segment_bytes = recorder.segment_bytes.saturating_add(batch_bytes);
             recorder.segment_frames = recorder.segment_frames.saturating_add(batch_frames);
+            recorder.segment_duration_nanos = recorder
+                .segment_duration_nanos
+                .saturating_add(batch_duration_nanos);
             written += batch.len();
         }
         Ok(written)
@@ -611,8 +631,9 @@ impl RecorderCoordinator {
                     index,
                     frames,
                     bytes,
+                    duration_nanos,
                 } => {
-                    closed.insert(index, (frames, bytes));
+                    closed.insert(index, (frames, bytes, duration_nanos));
                 }
             }
         }
@@ -620,6 +641,7 @@ impl RecorderCoordinator {
         let mut segment_index = report.segments.iter().map(|segment| segment.index).max();
         let mut segment_frames = 0;
         let mut segment_bytes = 0;
+        let mut segment_duration_nanos = 0;
         let mut manifest = None;
         let mut segment = None;
         if state == RecorderState::Recording {
@@ -643,6 +665,7 @@ impl RecorderCoordinator {
             let active_scan = scan_segment(&active_path)?;
             segment_frames = active_scan.media_frames;
             segment_bytes = active_scan.valid_bytes;
+            segment_duration_nanos = active_scan.duration_nanos;
             let mut manifest_writer = self
                 .factory
                 .open_append(&manifest_path)
@@ -674,6 +697,7 @@ impl RecorderCoordinator {
             segment_index,
             segment_frames,
             segment_bytes,
+            segment_duration_nanos,
             failure: None,
         };
         self.receipts.extend(staged_receipts);
@@ -769,6 +793,7 @@ impl RecorderCoordinator {
         recorder.segment_index = Some(next_index);
         recorder.segment_frames = 0;
         recorder.segment_bytes = 0;
+        recorder.segment_duration_nanos = 0;
         Ok(())
     }
 
@@ -803,6 +828,7 @@ impl RecorderCoordinator {
                 index,
                 frames: recorder.segment_frames,
                 bytes: recorder.segment_bytes,
+                duration_nanos: recorder.segment_duration_nanos,
             },
         )?;
         recorder.segment = None;
@@ -835,7 +861,9 @@ fn should_rotate(
     policy: crate::SegmentPolicy,
     frames: u64,
     bytes: u64,
+    duration_nanos: u64,
     next_bytes: u64,
+    next_duration_nanos: u64,
     counts_as_frame: bool,
 ) -> bool {
     let frame_limit = counts_as_frame && policy.max_frames.is_some_and(|limit| frames >= limit);
@@ -843,7 +871,11 @@ fn should_rotate(
         && policy
             .max_bytes
             .is_some_and(|limit| bytes.saturating_add(next_bytes) > limit);
-    frame_limit || byte_limit
+    let duration_limit = frames > 0
+        && policy.max_duration.is_some_and(|limit| {
+            duration_nanos.saturating_add(next_duration_nanos) > limit.as_nanos()
+        });
+    frame_limit || byte_limit || duration_limit
 }
 
 fn write_manifest_frame(
@@ -921,6 +953,7 @@ pub fn repair_recording(directory: impl AsRef<Path>) -> Result<RecoveryReport, R
             index,
             records: scan.records,
             bytes: scan.valid_bytes,
+            duration_nanos: scan.duration_nanos,
             truncated_bytes: scan.truncated_bytes,
         });
     }

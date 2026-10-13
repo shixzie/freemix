@@ -372,6 +372,7 @@ fn capacity_low_space_and_recovery_reports_are_conservative() {
             records: 4,
             bytes: 100,
             truncated_bytes: 5,
+            duration_nanos: 0,
         }],
     };
     let report = inspect_recovery(

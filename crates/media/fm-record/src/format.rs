@@ -4,12 +4,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fm_frame::{EncodedPacket, MediaTiming, OriginalTimestamp};
-use fm_types::{Channel, PixelFormat};
+use fm_frame::{CodecId, EncodedPacket, MediaTiming, NormalizedDuration, OriginalTimestamp};
+use fm_types::{Channel, InputId, PixelFormat, Timecode};
 
 use crate::{
-    ActionReceiptId, RecordEvent, RecorderConfig, RecorderError, SegmentPolicy,
-    coordinator::DurableWriter,
+    ActionReceiptId, IsoTapMetadata, RecordEvent, RecorderConfig, RecorderError, SegmentPolicy,
+    TimecodeSource, coordinator::DurableWriter,
 };
 
 pub(crate) const MANIFEST_NAME: &str = "manifest.fmr";
@@ -52,6 +52,7 @@ pub(crate) enum ManifestEntry {
         index: u64,
         frames: u64,
         bytes: u64,
+        duration_nanos: u64,
     },
 }
 
@@ -73,6 +74,7 @@ pub(crate) struct SegmentScan {
     pub records: u64,
     pub media_frames: u64,
     pub valid_bytes: u64,
+    pub duration_nanos: u64,
     pub truncated_bytes: u64,
 }
 
@@ -218,7 +220,7 @@ pub(crate) fn write_frame(
 }
 
 pub(crate) fn encode_manifest(entry: ManifestEntry) -> (u8, Vec<u8>) {
-    let mut output = Vec::with_capacity(64);
+    let mut output = Vec::with_capacity(112);
     let kind = match entry {
         ManifestEntry::Start {
             receipt,
@@ -236,6 +238,17 @@ pub(crate) fn encode_manifest(entry: ManifestEntry) -> (u8, Vec<u8>) {
             );
             put_option_u64(&mut output, config.segments.max_frames);
             put_option_u64(&mut output, config.segments.max_bytes);
+            put_option_u64(
+                &mut output,
+                config
+                    .segments
+                    .max_duration
+                    .map(NormalizedDuration::as_nanos),
+            );
+            put_option_u128(&mut output, config.tap.video_input.map(InputId::get));
+            put_option_u128(&mut output, config.tap.audio_input.map(InputId::get));
+            output.push(timecode_source_code(config.tap.timecode_source));
+            encode_option_timecode(&mut output, config.tap.start_timecode);
             put_u64(&mut output, index);
             START
         }
@@ -251,10 +264,12 @@ pub(crate) fn encode_manifest(entry: ManifestEntry) -> (u8, Vec<u8>) {
             index,
             frames,
             bytes,
+            duration_nanos,
         } => {
             put_u64(&mut output, index);
             put_u64(&mut output, frames);
             put_u64(&mut output, bytes);
+            put_u64(&mut output, duration_nanos);
             SEGMENT_CLOSE
         }
     };
@@ -273,15 +288,30 @@ pub(crate) fn decode_manifest(
                 .map_err(|_| corrupt(path, "queue event limit does not fit this platform"))?;
             let max_bytes = usize::try_from(cursor.u64()?)
                 .map_err(|_| corrupt(path, "queue byte limit does not fit this platform"))?;
+            let max_frames = cursor.option_u64()?;
+            let max_segment_bytes = cursor.option_u64()?;
+            let max_duration = cursor
+                .option_u64()?
+                .map(NormalizedDuration::from_nanos)
+                .transpose()
+                .map_err(|_| corrupt(path, "invalid segment duration limit"))?;
+            let tap = IsoTapMetadata {
+                video_input: cursor.option_input_id(path)?,
+                audio_input: cursor.option_input_id(path)?,
+                timecode_source: cursor.timecode_source(path)?,
+                start_timecode: cursor.option_timecode(path)?,
+            };
             let config = RecorderConfig {
                 queue: crate::QueueLimits {
                     max_events,
                     max_bytes,
                 },
                 segments: SegmentPolicy {
-                    max_frames: cursor.option_u64()?,
-                    max_bytes: cursor.option_u64()?,
+                    max_frames,
+                    max_bytes: max_segment_bytes,
+                    max_duration,
                 },
+                tap,
             };
             config
                 .validate()
@@ -302,6 +332,7 @@ pub(crate) fn decode_manifest(
             index: cursor.u64()?,
             frames: cursor.u64()?,
             bytes: cursor.u64()?,
+            duration_nanos: cursor.u64()?,
         },
         _ => return Err(corrupt(path, "unknown manifest record kind")),
     };
@@ -311,8 +342,10 @@ pub(crate) fn decode_manifest(
     Ok(entry)
 }
 
+const SEGMENT_METADATA_PREFIX_BYTES: usize = 256;
+
 pub(crate) fn scan_manifest(path: &Path) -> Result<ScanResult, RecorderError> {
-    let scan = scan_file(path, MAX_MANIFEST_PAYLOAD, true, false)?;
+    let scan = scan_file(path, MAX_MANIFEST_PAYLOAD, MAX_MANIFEST_PAYLOAD, false)?;
     Ok(ScanResult {
         frames: scan.frames,
         valid_bytes: scan.valid_bytes,
@@ -321,11 +354,17 @@ pub(crate) fn scan_manifest(path: &Path) -> Result<ScanResult, RecorderError> {
 }
 
 pub(crate) fn scan_segment(path: &Path) -> Result<SegmentScan, RecorderError> {
-    let scan = scan_file(path, MAX_ENCODED_FRAME_PAYLOAD, false, true)?;
+    let scan = scan_file(
+        path,
+        MAX_ENCODED_FRAME_PAYLOAD,
+        SEGMENT_METADATA_PREFIX_BYTES,
+        true,
+    )?;
     Ok(SegmentScan {
         records: scan.records,
         media_frames: scan.media_frames,
         valid_bytes: scan.valid_bytes,
+        duration_nanos: scan.duration_nanos,
         truncated_bytes: scan.truncated_bytes,
     })
 }
@@ -335,13 +374,14 @@ struct RawScan {
     records: u64,
     media_frames: u64,
     valid_bytes: u64,
+    duration_nanos: u64,
     truncated_bytes: u64,
 }
 
 fn scan_file(
     path: &Path,
     maximum_payload: usize,
-    collect_payloads: bool,
+    collect_limit: usize,
     segment: bool,
 ) -> Result<RawScan, RecorderError> {
     let mut file = File::open(path).map_err(|error| RecorderError::io(path, error))?;
@@ -352,6 +392,7 @@ fn scan_file(
     let mut frames = Vec::new();
     let mut records = 0u64;
     let mut media_frames = 0u64;
+    let mut duration_nanos = 0u64;
     let mut offset = 0u64;
 
     loop {
@@ -401,7 +442,7 @@ fn scan_file(
             });
         }
         let Some((payload, actual_payload_crc)) =
-            read_payload(&mut file, payload_len_usize, collect_payloads)
+            read_payload(&mut file, payload_len_usize, collect_limit)
                 .map_err(|error| RecorderError::io(path, error))?
         else {
             break;
@@ -414,16 +455,19 @@ fn scan_file(
                 reason: "payload checksum mismatch",
             });
         }
-        if collect_payloads {
+        if segment {
+            if header[5] != DISCONTINUITY {
+                let frame_duration = decode_segment_media_duration(&payload, path, offset)?;
+                duration_nanos = duration_nanos.saturating_add(frame_duration);
+                media_frames = media_frames.saturating_add(1);
+            }
+        } else {
             frames.push(ScannedFrame {
                 kind: header[5],
                 payload,
             });
         }
         records = records.saturating_add(1);
-        if segment && header[5] != DISCONTINUITY {
-            media_frames = media_frames.saturating_add(1);
-        }
         offset = offset
             .checked_add(u64::try_from(HEADER_LEN).unwrap_or(24))
             .and_then(|value| value.checked_add(payload_len))
@@ -435,8 +479,46 @@ fn scan_file(
         records,
         media_frames,
         valid_bytes: offset,
+        duration_nanos,
         truncated_bytes: original_len.saturating_sub(offset),
     })
+}
+
+fn decode_segment_media_duration(
+    payload: &[u8],
+    path: &Path,
+    offset: u64,
+) -> Result<u64, RecorderError> {
+    let invalid = || RecorderError::Corrupt {
+        path: path.to_path_buf(),
+        offset,
+        reason: "invalid segment media timing",
+    };
+    let codec_len = usize::from(u16::from_le_bytes(
+        payload
+            .get(..2)
+            .ok_or_else(invalid)?
+            .try_into()
+            .map_err(|_| invalid())?,
+    ));
+    if codec_len == 0 || codec_len > CodecId::MAX_LENGTH {
+        return Err(invalid());
+    }
+    let channel_tag_offset = 2 + codec_len + 8 + 4;
+    let channel_extra = match *payload.get(channel_tag_offset).ok_or_else(invalid)? {
+        0 => 0,
+        1 => 2,
+        _ => return Err(invalid()),
+    };
+    let duration_offset = channel_tag_offset + 1 + channel_extra + 16 + 8;
+    let duration_bytes: [u8; 8] = payload
+        .get(duration_offset..duration_offset + 8)
+        .ok_or_else(invalid)?
+        .try_into()
+        .map_err(|_| invalid())?;
+    let duration_nanos = u64::from_le_bytes(duration_bytes);
+    NormalizedDuration::from_nanos(duration_nanos).map_err(|_| invalid())?;
+    Ok(duration_nanos)
 }
 
 pub(crate) fn truncate_file(path: &Path, length: u64) -> Result<(), RecorderError> {
@@ -450,13 +532,10 @@ pub(crate) fn truncate_file(path: &Path, length: u64) -> Result<(), RecorderErro
 fn read_payload(
     file: &mut File,
     payload_len: usize,
-    collect: bool,
+    collect_limit: usize,
 ) -> io::Result<Option<(Vec<u8>, u32)>> {
-    let mut payload = if collect {
-        Vec::with_capacity(payload_len)
-    } else {
-        Vec::new()
-    };
+    let target_collect = payload_len.min(collect_limit);
+    let mut payload = Vec::with_capacity(target_collect);
     let mut remaining = payload_len;
     let mut crc = u32::MAX;
     let mut buffer = [0u8; 8 * 1024];
@@ -467,8 +546,9 @@ fn read_payload(
             return Ok(None);
         }
         crc = crc32_update(crc, &buffer[..read]);
-        if collect {
-            payload.extend_from_slice(&buffer[..read]);
+        if payload.len() < target_collect {
+            let keep = (target_collect - payload.len()).min(read);
+            payload.extend_from_slice(&buffer[..keep]);
         }
         remaining -= read;
     }
@@ -637,6 +717,34 @@ fn put_option_u64(output: &mut Vec<u8>, value: Option<u64>) {
     }
 }
 
+fn put_option_u128(output: &mut Vec<u8>, value: Option<NonZeroU128>) {
+    match value {
+        Some(value) => {
+            output.push(1);
+            put_u128(output, value.get());
+        }
+        None => output.push(0),
+    }
+}
+
+fn timecode_source_code(source: TimecodeSource) -> u8 {
+    match source {
+        TimecodeSource::SharedMaster => 0,
+        TimecodeSource::SourceOriginal => 1,
+    }
+}
+
+fn encode_option_timecode(output: &mut Vec<u8>, value: Option<Timecode>) {
+    match value {
+        Some(timecode) => {
+            output.push(1);
+            let (hours, minutes, seconds, frames) = timecode.components();
+            output.extend_from_slice(&[hours, minutes, seconds, frames]);
+        }
+        None => output.push(0),
+    }
+}
+
 fn put_u16(output: &mut Vec<u8>, value: u16) {
     output.extend_from_slice(&value.to_le_bytes());
 }
@@ -710,6 +818,41 @@ impl<'a> Cursor<'a> {
             _ => Err(RecorderError::FormatLimit(
                 "invalid optional manifest field",
             )),
+        }
+    }
+
+    fn option_input_id(&mut self, path: &Path) -> Result<Option<InputId>, RecorderError> {
+        match self.take::<1>()?[0] {
+            0 => Ok(None),
+            1 => NonZeroU128::new(self.u128()?)
+                .map(InputId::new)
+                .map(Some)
+                .ok_or_else(|| corrupt(path, "zero input id")),
+            _ => Err(corrupt(path, "invalid optional manifest field")),
+        }
+    }
+
+    fn timecode_source(&mut self, path: &Path) -> Result<TimecodeSource, RecorderError> {
+        match self.take::<1>()?[0] {
+            0 => Ok(TimecodeSource::SharedMaster),
+            1 => Ok(TimecodeSource::SourceOriginal),
+            _ => Err(corrupt(path, "unknown timecode source")),
+        }
+    }
+
+    fn option_timecode(&mut self, path: &Path) -> Result<Option<Timecode>, RecorderError> {
+        match self.take::<1>()?[0] {
+            0 => Ok(None),
+            1 => {
+                let [hours, minutes, seconds, frames] = self.take::<4>()?;
+                // A timecode carries no frame-rate domain, so the nominal
+                // rate only bounds the frame component; the manifest stores
+                // exactly the authored components.
+                Timecode::new(hours, minutes, seconds, frames, u8::MAX)
+                    .map(Some)
+                    .map_err(|_| corrupt(path, "invalid start timecode"))
+            }
+            _ => Err(corrupt(path, "invalid start timecode")),
         }
     }
 }

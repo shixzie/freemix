@@ -2,10 +2,10 @@ use core::{fmt, num::NonZeroU128};
 use std::{io, path::PathBuf};
 
 use fm_frame::{
-    CodecConfigGeneration, CodecId, EncodedPacket, EncodedPayload, MediaTiming, OriginalTimestamp,
-    PacketFlags, StreamId,
+    CodecConfigGeneration, CodecId, EncodedPacket, EncodedPayload, MediaTiming, NormalizedDuration,
+    OriginalTimestamp, PacketFlags, StreamId,
 };
-use fm_types::{ChannelLayout, PixelFormat, SampleRate, VideoDimensions};
+use fm_types::{ChannelLayout, InputId, PixelFormat, SampleRate, Timecode, VideoDimensions};
 
 macro_rules! stable_id {
     ($name:ident) => {
@@ -80,9 +80,25 @@ impl Default for QueueLimits {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TimecodeSource {
+    #[default]
+    SharedMaster,
+    SourceOriginal,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IsoTapMetadata {
+    pub video_input: Option<InputId>,
+    pub audio_input: Option<InputId>,
+    pub timecode_source: TimecodeSource,
+    pub start_timecode: Option<Timecode>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SegmentPolicy {
     pub max_frames: Option<u64>,
     pub max_bytes: Option<u64>,
+    pub max_duration: Option<NormalizedDuration>,
 }
 
 impl SegmentPolicy {
@@ -91,6 +107,7 @@ impl SegmentPolicy {
         Self {
             max_frames: Some(max_frames),
             max_bytes: None,
+            max_duration: None,
         }
     }
 
@@ -99,6 +116,16 @@ impl SegmentPolicy {
         Self {
             max_frames: None,
             max_bytes: Some(max_bytes),
+            max_duration: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn by_duration(max_duration: NormalizedDuration) -> Self {
+        Self {
+            max_frames: None,
+            max_bytes: None,
+            max_duration: Some(max_duration),
         }
     }
 }
@@ -107,12 +134,28 @@ impl SegmentPolicy {
 pub struct RecorderConfig {
     pub queue: QueueLimits,
     pub segments: SegmentPolicy,
+    pub tap: IsoTapMetadata,
 }
 
 impl RecorderConfig {
     #[must_use]
     pub const fn new(queue: QueueLimits, segments: SegmentPolicy) -> Self {
-        Self { queue, segments }
+        Self {
+            queue,
+            segments,
+            tap: IsoTapMetadata {
+                video_input: None,
+                audio_input: None,
+                timecode_source: TimecodeSource::SharedMaster,
+                start_timecode: None,
+            },
+        }
+    }
+
+    #[must_use]
+    pub const fn with_tap(mut self, tap: IsoTapMetadata) -> Self {
+        self.tap = tap;
+        self
     }
 
     pub(crate) fn validate(self) -> Result<(), RecorderError> {
@@ -121,9 +164,15 @@ impl RecorderConfig {
                 "queue event and byte limits must be nonzero",
             ));
         }
-        if self.segments.max_frames == Some(0) || self.segments.max_bytes == Some(0) {
+        if self.segments.max_frames == Some(0)
+            || self.segments.max_bytes == Some(0)
+            || self
+                .segments
+                .max_duration
+                .is_some_and(|duration| duration.as_nanos() == 0)
+        {
             return Err(RecorderError::InvalidConfig(
-                "segment frame and byte limits must be nonzero",
+                "segment frame, byte, and duration limits must be nonzero",
             ));
         }
         Ok(())
@@ -330,6 +379,16 @@ impl RecordEvent {
         !matches!(self, Self::Discontinuity(_))
     }
 
+    #[must_use]
+    pub const fn duration(&self) -> Option<NormalizedDuration> {
+        match self {
+            Self::Audio { metadata, .. } => Some(metadata.common.timing().duration()),
+            Self::Video { metadata, .. } => Some(metadata.common.timing().duration()),
+            Self::Timed { metadata, .. } => Some(metadata.common.timing().duration()),
+            Self::Discontinuity(_) => None,
+        }
+    }
+
     pub(crate) fn queue_bytes(&self) -> usize {
         self.payload_len().saturating_add(256)
     }
@@ -359,6 +418,8 @@ pub struct RecorderSnapshot {
     pub queued_bytes: usize,
     pub written_frames: u64,
     pub written_bytes: u64,
+    pub written_duration_nanos: u64,
+    pub tap: Option<IsoTapMetadata>,
     pub failure: Option<String>,
 }
 
@@ -367,6 +428,7 @@ pub struct RecoveredSegment {
     pub index: u64,
     pub records: u64,
     pub bytes: u64,
+    pub duration_nanos: u64,
     pub truncated_bytes: u64,
 }
 

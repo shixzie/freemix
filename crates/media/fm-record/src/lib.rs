@@ -14,9 +14,9 @@ pub use coordinator::{
 };
 pub use types::{
     ActionOutcome, ActionReceiptId, AppendError, AudioPacketMetadata, Discontinuity, EnqueueError,
-    PacketCommon, QueueLimits, RecordEvent, RecorderConfig, RecorderError, RecorderId,
-    RecorderSnapshot, RecorderState, RecoveredSegment, RecoveryReport, SegmentPolicy,
-    TimedPacketMetadata, VideoPacketMetadata,
+    IsoTapMetadata, PacketCommon, QueueLimits, RecordEvent, RecorderConfig, RecorderError,
+    RecorderId, RecorderSnapshot, RecorderState, RecoveredSegment, RecoveryReport, SegmentPolicy,
+    TimecodeSource, TimedPacketMetadata, VideoPacketMetadata,
 };
 
 #[cfg(test)]
