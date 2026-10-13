@@ -1350,6 +1350,28 @@ segment rules, and `AU-010` bus selection remain planned; `AU-010` still
 depends on the planned `AU-002`/`AU-003`, so `OR-001`, `OR-002`, and `AU-010`
 are unchanged and item 4 remains incomplete.
 
+Current implementation boundary for item 9: native `freemixd` performs a
+fail-closed disk preflight for configured program recording and reports
+free-space alert edges while recording. A configured `--record-program` output
+whose parent filesystem cannot be queried or has fewer than 512 MiB available
+refuses daemon startup with a sanitized error that carries the byte count and
+I/O kind but never the path. While recording is configured, the render loop
+samples the output parent's free space at most once every five seconds, with
+the first sample evaluating immediately so a low value present at startup fires
+at the first frame. The samples drive one hysteretic `fm-observability` alert
+that fires at or below 1 GiB and clears at 2 GiB, printing exactly one
+`FREEMIXD_DISK` record per edge with its state and free bytes. The final
+`FREEMIXD_TELEMETRY` v4 record gains `disk_alert=unknown|normal|low` and
+`disk_free_bytes`. A failed sample stays silent and leaves the last value and
+state; a daemon that has never sampled reports `unknown` with zero bytes. This
+covers program recording only: HLS and other local outputs have no preflight or
+space alert, network preflight remains endpoint validation rather than a
+bandwidth probe, there is no new GPU capability preflight, low space never
+stops or fails a running recording on its own, and no per-destination disk
+telemetry exists. `OR-001`'s space status is now observable on the recording
+path, but the row still awaits its other acceptance items, and item 9 remains
+incomplete.
+
 Exit: a remote-controlled headless production can stream and record
 independently with tested recovery.
 
