@@ -89,6 +89,10 @@ use fm_switcher::{
 use fm_types::{InputId, ProjectId};
 use freemixd::{ReadinessRecord, StatusReadinessRecord};
 
+// The free-space alert is constructed only by the native render loop; the
+// preflight and its constants are used in every build.
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+mod disk;
 mod journal;
 mod latest_record;
 mod non_native_sessions;
@@ -141,7 +145,7 @@ use fm_io_network::{
 #[cfg(feature = "native-media")]
 use fm_model::{InputKind, SimulatedAudio, SimulatedVideo, StartupPolicy};
 #[cfg(feature = "native-media")]
-use fm_observability::{Metric, MetricStore};
+use fm_observability::{AlertState, Metric, MetricStore};
 #[cfg(feature = "native-media")]
 use fm_scheduler::{FrameNumber, FramePacer};
 #[cfg(feature = "native-media")]
@@ -208,6 +212,12 @@ const PROGRAM_STREAM_RECONNECT_ATTEMPTS: u32 = 40;
 /// short reconnect without unbounding the render loop's enqueue cost.
 #[cfg(feature = "native-media")]
 const PROGRAM_STREAM_QUEUE_CAPACITY: usize = 4;
+/// Free-space sampling cadence for a configured program recording. The render
+/// loop calls the sampler every frame, so the gate compares one `Instant` and
+/// samples at most this often; five seconds bounds how long a filesystem
+/// crossing the low watermark can go unreported without adding per-frame I/O.
+#[cfg(feature = "native-media")]
+const DISK_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 #[cfg(all(feature = "native-media", feature = "macos-program-surface"))]
 // Referenced by macos-program-surface code paths that are themselves inert off macOS.
 #[allow(dead_code)]
@@ -355,6 +365,14 @@ struct NativeDaemon {
     /// Whether each segment also writes a `--record-wav` linear-PCM sidecar
     /// next to the MP4. Configured support only, like [`Self::record_program`].
     record_wav: bool,
+    /// Hysteretic free-space alert for the configured recording output.
+    disk_alert: disk::DiskSpaceAlert,
+    /// Latest successfully sampled free bytes for the recording output's
+    /// parent; `None` until the first sample succeeds.
+    disk_free_bytes: Option<u64>,
+    /// When the last disk sample was attempted; `None` makes the first sample
+    /// evaluate immediately instead of after one full interval.
+    disk_sampled_at: Option<Instant>,
     /// Segments stopped off the render path, awaiting bounded finalization.
     recording_finalizers: Vec<ProgramRecordingFinalizer>,
     streams: Vec<NativeProgramStream>,
@@ -1257,6 +1275,12 @@ struct NativeRuntimeTelemetry {
     recorder_peak_retained_bytes: u64,
     stream_enqueued_pairs_total: u64,
     stream_dropped_pairs_total: u64,
+    /// Latest successfully sampled free bytes for the configured recording
+    /// output's parent; `None` until the first sample.
+    disk_free_bytes: Option<u64>,
+    /// Recording free-space alert state at the latest sample; `None` until
+    /// the first sample evaluated.
+    disk_alert: Option<AlertState>,
 }
 
 #[cfg(feature = "native-media")]
@@ -1304,6 +1328,8 @@ impl NativeRuntimeTelemetry {
             recorder_peak_retained_bytes: 0,
             stream_enqueued_pairs_total: 0,
             stream_dropped_pairs_total: 0,
+            disk_free_bytes: None,
+            disk_alert: None,
         }
     }
 
@@ -1407,7 +1433,7 @@ impl NativeRuntimeTelemetry {
         let presentation_active = presentation.is_some();
         let presentation = presentation.unwrap_or_default();
         format!(
-            "FREEMIXD_TELEMETRY\tv=4\thost_lateness_samples_total={}\thost_lateness_samples_retained={}\thost_lateness_metric_samples_dropped={}\thost_lateness_p50_ms={}\thost_lateness_p95_ms={}\thost_lateness_p99_ms={}\taudio_retained_blocks={}\taudio_observed_peak_retained_blocks={}\taudio_retained_samples={}\taudio_observed_peak_retained_samples={}\taudio_retained_bytes={}\taudio_observed_peak_retained_bytes={}\taudio_reservation_requests={}\taudio_reserved_blocks={}\taudio_observed_peak_reserved_blocks={}\taudio_reserved_samples={}\taudio_observed_peak_reserved_samples={}\taudio_reserved_bytes={}\taudio_observed_peak_reserved_bytes={}\taudio_source_stalls={}\taudio_positioned_blocks={}\taudio_positioned_samples={}\taudio_leading_silence_samples={}\taudio_eos_padding_blocks={}\taudio_eos_padding_samples={}\taudio_sink_depth={}\taudio_sink_peak_depth={}\taudio_sink_dropped={}\tcamera_configured_sources={}\tcamera_frames_received={}\tcamera_frames_ingested={}\tcamera_native_dropped={}\tcamera_queue_depth={}\tcamera_queue_peak_depth={}\tcamera_queue_dropped={}\tcamera_continuity_rejected={}\tcamera_recovery_timeout_discarded={}\tcamera_terminal_error_discarded={}\tcamera_terminal_trigger_discarded={}\tcamera_ready_delivery_depth={}\tcamera_ready_delivery_discarded={}\tcamera_cancellation_discarded={}\tcamera_supervisor_slot_replaced={}\tcamera_supervisor_slot_depth={}\tcamera_ingest_failed={}\tcamera_preflight_depth={}\tcamera_preflight_discarded={}\tcamera_recovery_attempts={}\tcamera_recovery_successes={}\tcamera_recovery_exhausted={}\tcamera_recovery_worker_failures={}\tpresentation_active={}\tpresentation_pending_depth={}\tpresentation_peak_pending_depth={}\tpresentation_dropped={}\trecorder_configured={}\trecorder_outstanding_pairs={}\trecorder_observed_peak_outstanding_pairs={}\trecorder_retained_bytes={}\trecorder_observed_peak_retained_bytes={}\tstream_pairs_enqueued_total={}\tstream_pairs_dropped_total={}\tgpu_backend={:?}\tgpu_adapter={}\tgpu_timing={:?}\tgpu_pass_samples_total={}\tgpu_pass_samples_retained={}\tgpu_pass_metric_samples_dropped={}\tgpu_pass_p50_ms={}\tgpu_pass_p95_ms={}\tgpu_pass_p99_ms={}\tgpu_samples_pending={}\tgpu_samples_dropped={}\tgpu_samples_unavailable={}\tmetric_errors={}\tmetric_samples_dropped={}",
+            "FREEMIXD_TELEMETRY\tv=4\thost_lateness_samples_total={}\thost_lateness_samples_retained={}\thost_lateness_metric_samples_dropped={}\thost_lateness_p50_ms={}\thost_lateness_p95_ms={}\thost_lateness_p99_ms={}\taudio_retained_blocks={}\taudio_observed_peak_retained_blocks={}\taudio_retained_samples={}\taudio_observed_peak_retained_samples={}\taudio_retained_bytes={}\taudio_observed_peak_retained_bytes={}\taudio_reservation_requests={}\taudio_reserved_blocks={}\taudio_observed_peak_reserved_blocks={}\taudio_reserved_samples={}\taudio_observed_peak_reserved_samples={}\taudio_reserved_bytes={}\taudio_observed_peak_reserved_bytes={}\taudio_source_stalls={}\taudio_positioned_blocks={}\taudio_positioned_samples={}\taudio_leading_silence_samples={}\taudio_eos_padding_blocks={}\taudio_eos_padding_samples={}\taudio_sink_depth={}\taudio_sink_peak_depth={}\taudio_sink_dropped={}\tcamera_configured_sources={}\tcamera_frames_received={}\tcamera_frames_ingested={}\tcamera_native_dropped={}\tcamera_queue_depth={}\tcamera_queue_peak_depth={}\tcamera_queue_dropped={}\tcamera_continuity_rejected={}\tcamera_recovery_timeout_discarded={}\tcamera_terminal_error_discarded={}\tcamera_terminal_trigger_discarded={}\tcamera_ready_delivery_depth={}\tcamera_ready_delivery_discarded={}\tcamera_cancellation_discarded={}\tcamera_supervisor_slot_replaced={}\tcamera_supervisor_slot_depth={}\tcamera_ingest_failed={}\tcamera_preflight_depth={}\tcamera_preflight_discarded={}\tcamera_recovery_attempts={}\tcamera_recovery_successes={}\tcamera_recovery_exhausted={}\tcamera_recovery_worker_failures={}\tpresentation_active={}\tpresentation_pending_depth={}\tpresentation_peak_pending_depth={}\tpresentation_dropped={}\trecorder_configured={}\trecorder_outstanding_pairs={}\trecorder_observed_peak_outstanding_pairs={}\trecorder_retained_bytes={}\trecorder_observed_peak_retained_bytes={}\tstream_pairs_enqueued_total={}\tstream_pairs_dropped_total={}\tgpu_backend={:?}\tgpu_adapter={}\tgpu_timing={:?}\tgpu_pass_samples_total={}\tgpu_pass_samples_retained={}\tgpu_pass_metric_samples_dropped={}\tgpu_pass_p50_ms={}\tgpu_pass_p95_ms={}\tgpu_pass_p99_ms={}\tgpu_samples_pending={}\tgpu_samples_dropped={}\tgpu_samples_unavailable={}\tmetric_errors={}\tmetric_samples_dropped={}\tdisk_alert={}\tdisk_free_bytes={}",
             host.count,
             host.retained_samples,
             host.dropped_samples,
@@ -1484,6 +1510,8 @@ impl NativeRuntimeTelemetry {
             self.gpu_unavailable_samples,
             self.metric_errors,
             self.metrics.dropped_samples(),
+            disk_alert_label(self.disk_alert),
+            self.disk_free_bytes.unwrap_or(0),
         )
     }
 
@@ -1506,6 +1534,17 @@ fn saturating_u64(value: usize) -> u64 {
 #[cfg(feature = "native-media")]
 fn metric_value(value: Option<f64>) -> String {
     value.map_or_else(|| "none".to_owned(), |value| format!("{value:.3}"))
+}
+
+/// Renders the telemetry label for the recording free-space alert; `None`
+/// means no sample has ever succeeded.
+#[cfg(feature = "native-media")]
+const fn disk_alert_label(state: Option<AlertState>) -> &'static str {
+    match state {
+        Some(AlertState::Firing) => "low",
+        Some(AlertState::Inactive) => "normal",
+        None => "unknown",
+    }
 }
 
 #[cfg(feature = "native-media")]
@@ -3100,6 +3139,9 @@ impl NativeDaemon {
             recorder: ProgramRecording::Off,
             record_program: None,
             record_wav: false,
+            disk_alert: disk::DiskSpaceAlert::new(),
+            disk_free_bytes: None,
+            disk_sampled_at: None,
             recording_finalizers: Vec::new(),
             streams,
             stream_groups,
@@ -3162,6 +3204,41 @@ impl NativeDaemon {
     /// reports per-segment runtime health.
     fn recording_configured(&self) -> bool {
         self.record_program.is_some()
+    }
+
+    /// Samples the configured recording output's free space at a bounded
+    /// cadence and reports alert edges.
+    ///
+    /// The render loop calls this every frame; the gate is one optional field
+    /// check plus one `Instant` comparison, and a sample reaches the
+    /// filesystem at most once per [`DISK_SAMPLE_INTERVAL`]. Query failures
+    /// stay silent and leave the last sampled value and alert state in place.
+    /// The first call while recording is configured evaluates immediately, so
+    /// a low value present at startup fires at the first frame boundary.
+    fn sample_disk_space(&mut self, now: Instant) {
+        let Some(parent) = self.record_program.as_deref().map(recording_parent) else {
+            return;
+        };
+        if self
+            .disk_sampled_at
+            .is_some_and(|last| now.saturating_duration_since(last) < DISK_SAMPLE_INTERVAL)
+        {
+            return;
+        }
+        self.disk_sampled_at = Some(now);
+        let Ok(available) = disk::available_bytes(parent) else {
+            return;
+        };
+        self.disk_free_bytes = Some(available);
+        match self.disk_alert.observe(available) {
+            fm_observability::AlertTransition::Fired => {
+                eprintln!("FREEMIXD_DISK\tv=1\tstate=low\tfree_bytes={available}");
+            }
+            fm_observability::AlertTransition::Cleared => {
+                eprintln!("FREEMIXD_DISK\tv=1\tstate=normal\tfree_bytes={available}");
+            }
+            fm_observability::AlertTransition::None => {}
+        }
     }
 
     fn prime_recorder(
@@ -3786,6 +3863,7 @@ impl NativeDaemon {
             );
         }
         self.advance_stream_routes(server)?;
+        self.sample_disk_space(Instant::now());
         self.observe_native_telemetry();
         Ok(outcome.runtime_events)
     }
@@ -3882,6 +3960,10 @@ impl NativeDaemon {
             .fold(0_u64, u64::saturating_add);
         self.telemetry
             .observe_streams(streams_enqueued, streams_dropped);
+        // The disk sample lags telemetry by at most one frame; `None` until
+        // the first sample keeps the record honest about "never sampled".
+        self.telemetry.disk_free_bytes = self.disk_free_bytes;
+        self.telemetry.disk_alert = self.disk_free_bytes.map(|_| self.disk_alert.state());
         self.telemetry.observe_gpu(self.runtime.context());
     }
 
@@ -5363,6 +5445,17 @@ fn serve_program_worker(
     )
 }
 
+/// Parent directory of a configured recording output.
+///
+/// A bare file name resolves to the working directory the recorder writes to,
+/// mirroring how [`next_record_segment_path`] keeps derived segment paths
+/// relative.
+fn recording_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 #[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn serve_inner(
     path: &Path,
@@ -5450,9 +5543,26 @@ fn serve_inner(
     let authority = control_server_identity(&control.borrow(), project_id);
     let mut durable = project;
     if let Some(path) = record_program {
+        if native.is_none() {
+            return Err(AppFailure("--record-program requires --native-media".into()).into());
+        }
+        // Configured recording fails closed before any recorder exists. The
+        // preflight error carries free-space counts and I/O kinds only, never
+        // the operator's path.
+        disk::preflight_recording_parent(recording_parent(&path)).map_err(|error| {
+            AppFailure(match error {
+                disk::DiskPreflightError::BelowMinimum { available } => format!(
+                    "--record-program requires at least {} free bytes, found {available}",
+                    disk::RECORDING_MINIMUM_FREE_BYTES
+                ),
+                disk::DiskPreflightError::Unavailable(kind) => {
+                    format!("--record-program free space is unavailable: {kind}")
+                }
+            })
+        })?;
         native
             .as_mut()
-            .ok_or_else(|| AppFailure("--record-program requires --native-media".into()))?
+            .expect("recording requires native state")
             .configure_recording(path.clone(), record_wav);
         // Startup reconciliation is deliberate: a configured recorder only
         // auto-starts when the restored project's desired flag says so. The
@@ -8787,6 +8897,16 @@ mod tests {
         assert!(diagnostic.contains("\tgpu_pass_samples_retained=0\t"));
         assert!(diagnostic.contains("\tgpu_pass_p50_ms=none\t"));
         assert!(diagnostic.contains("\tmetric_errors=0\t"));
+        assert!(diagnostic.contains("\tdisk_alert=unknown\t"));
+        assert!(diagnostic.ends_with("\tdisk_free_bytes=0"));
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn disk_alert_label_maps_alert_states() {
+        assert_eq!(disk_alert_label(None), "unknown");
+        assert_eq!(disk_alert_label(Some(AlertState::Inactive)), "normal");
+        assert_eq!(disk_alert_label(Some(AlertState::Firing)), "low");
     }
 
     #[cfg(all(feature = "native-media", target_os = "macos"))]
@@ -9080,6 +9200,15 @@ mod tests {
         }
         let error = next_record_segment_path(&base, Path::exists).unwrap_err();
         assert!(error.to_string().contains("exhausted"));
+    }
+
+    #[test]
+    fn recording_parent_falls_back_to_the_working_directory() {
+        assert_eq!(recording_parent(Path::new("capture.mp4")), Path::new("."));
+        assert_eq!(
+            recording_parent(Path::new("out/capture.mp4")),
+            Path::new("out")
+        );
     }
 
     #[cfg(feature = "native-media")]
