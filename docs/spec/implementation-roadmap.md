@@ -1330,8 +1330,16 @@ bounded deterministic M3U8 rendering and parsing for both media playlists
 (`HlsAbrCoordinator::render_master_m3u8` / `parse_master_m3u8`), validating
 FFmpeg-formatted master and variant playlists through `HlsAbrCoordinator`'s
 sequence and independent-segment alignment rules, though the native daemon does
-not yet consume those parsers at runtime. There is no HTTP server or
-access-controlled LAN page, no renderer-visible viewer or capacity report, and
+not yet consume those parsers at runtime. An optional token-guarded HTTP
+listener (`--hls-listen` plus `FREEMIXD_HLS_TOKEN`, loopback-only, no TLS)
+serves those outputs at `/v1/hls/<target-id>/<relative>` with a fixed route
+allowlist — `index.m3u8`, `segment-NNNNN.ts`, and their `0..=7` ladder-rung
+variants — exact content types and lengths, `HEAD` support, 401/404/405/431
+handling, bounded request heads, bounded concurrent connections, and
+per-phase deadlines, so a player can pull the live playlists and segments
+without a directory listing or path traversal. That listener is serving
+groundwork only: there is no LAN binding or TLS, no Web Controller page or
+renderer-visible viewer, no per-viewer or capacity bandwidth reporting, and
 no per-rung persisted audio setting or codec choice. The ladder is
 one destination's ABR encoder into one directory rather than independently
 controlled destinations, so the five-destination bound still counts each
