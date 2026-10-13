@@ -11,7 +11,11 @@
 //! HLS destination is local: it has no peer and no stream key semantics, so a
 //! backup endpoint and a credential are refused for it at configuration time,
 //! and its endpoint's placeholder host and port are never rendered in the
-//! destination URL.
+//! destination URL. It may also carry a multi-bitrate ladder
+//! ([`RtmpSinkConfig::ladder`]): the one child encodes every rung of the same
+//! frame, and the segmenter publishes one master playlist plus one variant
+//! playlist per rung. A ladder is HLS-only — every network destination carries
+//! exactly one rendition, and [`Streamer::start`] refuses one for it.
 //!
 //! # The mapping, including where it is imperfect
 //!
@@ -115,7 +119,10 @@
 //! child's default trust configuration); SRT encryption and passphrase policy
 //! (`srt://` likewise uses the child's default configuration and carries the
 //! caller's stream id verbatim); credential resolution (this sink is handed an
-//! already-resolved stream key); adaptive bitrate; hardware encoders; and any
+//! already-resolved stream key); adaptive bitrate for network destinations
+//! (only a local HLS destination carries the authored ladder, and even there
+//! this transport never selects a rendition — the child's segmenter publishes
+//! every one of them); hardware encoders; and any
 //! wiring into the daemon or a per-output audio bus.
 
 use core::fmt;
@@ -128,6 +135,7 @@ use fm_codec_ffmpeg::stream::{
     StartError, StartErrorKind, StopReport, StreamConfig, StreamDestination, StreamFailure,
     StreamLimits, StreamTelemetry, Streamer,
 };
+pub use fm_codec_ffmpeg::stream::{HlsLadder, HlsLadderError, HlsLadderRung};
 use fm_frame::{
     AudioBlock, ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration,
     NormalizedTimestamp, OriginalTimestamp, SequenceNumber, TimeBase,
@@ -241,6 +249,13 @@ pub struct RtmpSinkConfig {
     /// Appended as the final path segment of the destination URL. `None` means
     /// the endpoint path already carries the key.
     pub stream_key: Option<StreamKey>,
+    /// An authored multi-bitrate ladder. Only a local HLS destination
+    /// (`OutputProtocol::Hls`) encodes one: the one child scales every rung and
+    /// the segmenter publishes a master playlist plus one variant playlist per
+    /// rung. Every network destination carries exactly one rendition and
+    /// [`Streamer::start`] refuses a ladder for it, so this stays `None` unless
+    /// the selected endpoint is HLS.
+    pub ladder: Option<HlsLadder>,
 }
 
 impl RtmpSinkConfig {
@@ -263,6 +278,7 @@ impl RtmpSinkConfig {
             },
             encoder: EncoderSettings::default(),
             stream_key: None,
+            ladder: None,
         }
     }
 }
@@ -409,7 +425,9 @@ pub fn raw_pair_packet(
 ///
 /// A local HLS destination has no stream key and no failover: its directory
 /// comes from [`Endpoint::path`] and the placeholder host and port are never
-/// rendered.
+/// rendered. A ladder in [`RtmpSinkConfig`] is honoured only for that local
+/// HLS endpoint; every network endpoint keeps publishing exactly one
+/// rendition, because [`Streamer::start`] refuses a ladder for it.
 ///
 /// Give one sink to one [`OutputSet`] destination. Sharing a sink between
 /// destinations would let one destination's failure stop another's child.
@@ -629,6 +647,7 @@ impl TransportSink for FfmpegRtmpSink {
         stream_config.limits = self.config.limits;
         stream_config.encoder = self.config.encoder;
         stream_config.overflow = OverflowPolicy::Reject;
+        stream_config.ladder.clone_from(&self.config.ladder);
         match Streamer::start(stream_config) {
             Ok(streamer) => {
                 self.connections_started = self.connections_started.saturating_add(1);
@@ -752,6 +771,11 @@ fn classify_start(error: &StartError) -> SinkError {
             FailureStage::Protocol,
             false,
             "HLS output directory is unusable".to_owned(),
+        ),
+        StartErrorKind::LadderNotSupported => (
+            FailureStage::Protocol,
+            false,
+            "a bitrate ladder is carried by a local HLS destination only".to_owned(),
         ),
         StartErrorKind::InvalidExecutable => (
             FailureStage::Protocol,

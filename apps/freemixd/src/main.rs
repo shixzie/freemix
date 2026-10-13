@@ -133,9 +133,9 @@ use fm_io_macos::{CameraTelemetry, CameraVideoSource, MacosCameraAdapter};
 use fm_io_network::{
     AbrLadder, AbrVariant, AudioRendition, ColorDescription, DestinationConfig, DestinationEnqueue,
     DestinationId, DestinationRenditions, DestinationState, Endpoint, EnqueueStatus, FrameRate,
-    NetworkTelemetry, OutputPacket, OutputProtocol, OutputSet, PollEvent, QueueCapacity,
-    ReconnectPolicy, RenditionId, RenditionPlan, RenditionPlanner, RenditionProfile, TimingProfile,
-    VideoRendition,
+    HlsLadder, HlsLadderRung, NetworkTelemetry, OutputPacket, OutputProtocol, OutputSet, PollEvent,
+    QueueCapacity, ReconnectPolicy, RenditionId, RenditionPlan, RenditionPlanner, RenditionProfile,
+    TimingProfile, VideoRendition,
     rtmp::{FfmpegRtmpSink, RtmpSinkConfig, StreamKey, raw_pair_packet},
 };
 #[cfg(feature = "native-media")]
@@ -2030,6 +2030,30 @@ fn stream_encoder_settings(video_bitrate_kbps: u32) -> EncoderSettings {
     }
 }
 
+/// Compiles one target's authored HLS ladder into the sink's own rung type.
+///
+/// `fm-model` and the sink validate the identical rule set, and the authored
+/// value cannot change between them, so a rejected conversion is unreachable;
+/// dropping the ladder instead would silently publish one rendition of a
+/// multi-bitrate destination.
+#[cfg(feature = "native-media")]
+fn stream_ladder(target: &fm_model::StreamTarget) -> Option<HlsLadder> {
+    target.ladder().map(|ladder| {
+        HlsLadder::new(
+            ladder
+                .rungs()
+                .iter()
+                .map(|rung| HlsLadderRung {
+                    video_bitrate_kbps: rung.video_bitrate_kbps(),
+                    width: rung.width(),
+                    height: rung.height(),
+                })
+                .collect(),
+        )
+        .expect("the authored ladder already satisfies the sink's rules")
+    })
+}
+
 /// Validates one authored target's primary and backup URLs with the codec
 /// parser — validity stays where it has always been — and splits them into
 /// the endpoint pieces a [`DestinationConfig`] carries.
@@ -2399,6 +2423,7 @@ impl NativeProgramStream {
             sink_config.limits.kill_timeout = PROGRAM_STREAM_KILL_TIMEOUT;
             sink_config.encoder = stream_encoder_settings(split.target.video_bitrate_kbps());
             sink_config.stream_key = split.stream_key;
+            sink_config.ladder = stream_ladder(&split.target);
             output_set
                 .add_destination(
                     DestinationConfig::new(
@@ -8992,6 +9017,56 @@ mod tests {
             settings.audio_bitrate_kbps,
             EncoderSettings::default().audio_bitrate_kbps
         );
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn stream_ladder_maps_authored_rungs_and_ignores_keyed_destinations() {
+        use fm_model::{
+            StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol,
+            StreamTarget, StreamTargetId,
+        };
+
+        let output = fm_types::OutputId::new(NonZeroU128::new(7_111).unwrap());
+        let (protocol, endpoint) = StreamEndpoint::parse_url("hls:///srv/freemix/live").unwrap();
+        let ladder = StreamLadder::new(vec![
+            StreamLadderRung::new(1_000, 640, 360).unwrap(),
+            StreamLadderRung::new(2_500, 1_280, 720).unwrap(),
+        ])
+        .unwrap();
+        let laddered = StreamTarget::new(
+            StreamTargetId::new(NonZeroU128::new(7_110).unwrap()),
+            "Ladder".to_owned(),
+            protocol,
+            endpoint,
+            None,
+            output,
+        )
+        .unwrap()
+        .with_ladder(Some(ladder))
+        .unwrap();
+        let mapped = stream_ladder(&laddered).unwrap();
+        assert_eq!(mapped.rungs().len(), 2);
+        assert_eq!(mapped.top_bitrate_kbps(), 2_500);
+        assert_eq!(mapped.rungs()[0].video_bitrate_kbps, 1_000);
+        assert_eq!(mapped.rungs()[0].width, 640);
+        assert_eq!(mapped.rungs()[0].height, 360);
+        assert_eq!(mapped.rungs()[1].video_bitrate_kbps, 2_500);
+        assert_eq!(mapped.rungs()[1].width, 1_280);
+        assert_eq!(mapped.rungs()[1].height, 720);
+        // The base bitrate a laddered target advertises is its top rung.
+        assert_eq!(laddered.video_bitrate_kbps(), 2_500);
+
+        let keyed = StreamTarget::new(
+            StreamTargetId::new(NonZeroU128::new(7_112).unwrap()),
+            "Plain".to_owned(),
+            StreamProtocol::Rtmp,
+            StreamEndpoint::parse("ingest.example.com/live").unwrap(),
+            Some(StreamKey::parse("unit-secret-key").unwrap()),
+            output,
+        )
+        .unwrap();
+        assert!(stream_ladder(&keyed).is_none());
     }
 
     /// Work that is not durable is never acknowledged.

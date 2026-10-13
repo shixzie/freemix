@@ -6,8 +6,12 @@
 //! inputs, and muxes `-f flv` to one `rtmp://` or `rtmps://` destination,
 //! `-f mpegts` to one `srt://host[:port]?streamid=KEY` destination, or
 //! `-f hls` into the absolute local directory named by an
-//! `hls:///absolute/path` destination — the LAN-equivalent local HLS output. It
-//! reuses [`RecordFormat`] and [`PairedFrame`] from [`crate::record`], which
+//! `hls:///absolute/path` destination — the LAN-equivalent local HLS output. An
+//! HLS destination may additionally carry a multi-bitrate [`HlsLadder`]: the
+//! one child then scales and encodes 2..=8 renditions of the same decoded
+//! frame, and the segmenter publishes one master playlist plus one variant
+//! playlist per rung. It reuses [`RecordFormat`] and [`PairedFrame`] from
+//! [`crate::record`], which
 //! own cadence, layout, and per-pair timing validation. The recorder's private
 //! process plumbing (loopback HTTP handshake, child reaping, fallback cleanup)
 //! is not reachable across module boundaries, so the equivalent bounded
@@ -92,6 +96,19 @@ const MIN_STREAM_KEY_BYTES: usize = 4;
 const STREAM_ID_PARAM: &str = "streamid";
 /// The only scheme that names a local directory instead of a network peer.
 const HLS_SCHEME: &str = "hls://";
+/// How many renditions one HLS ladder may carry: a ladder is a choice, and
+/// every rung is another video encoder and audio stream inside the one child.
+const MIN_LADDER_RUNGS: usize = 2;
+const MAX_LADDER_RUNGS: usize = 8;
+/// Bitrate envelope of one ladder rung, in kbps, matching the single-rendition
+/// encoder's own bound.
+const MIN_LADDER_BITRATE_KBPS: u32 = 1_000;
+const MAX_LADDER_BITRATE_KBPS: u32 = 100_000;
+/// Dimension envelope of one ladder rung. The lower bound is the smallest
+/// macroblock-bearing frame; the upper bound is 8K UHD.
+const MIN_LADDER_DIMENSION: u32 = 16;
+const MAX_LADDER_WIDTH: u32 = 7_680;
+const MAX_LADDER_HEIGHT: u32 = 4_320;
 const REDACTED_KEY: &str = "****";
 const REDACTED_TOKEN: &[u8] = b"<input-token>";
 const STATS_PERIOD: &str = "0.25";
@@ -466,6 +483,161 @@ impl Default for EncoderSettings {
     }
 }
 
+/// One rung of a multi-bitrate HLS ladder: the frame size one rendition is
+/// scaled to and the video bitrate it is encoded at.
+///
+/// Every rung of a ladder is encoded from the same decoded frame by the same
+/// `FFmpeg` child, so a rung is a scale target plus a bitrate cap, not a
+/// separate session. Its `Display` is the `{width}x{height}@{kbps}` form the
+/// master playlist's resolutions read as.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HlsLadderRung {
+    pub video_bitrate_kbps: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl fmt::Display for HlsLadderRung {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}x{}@{}",
+            self.width, self.height, self.video_bitrate_kbps
+        )
+    }
+}
+
+/// A validated multi-bitrate HLS ladder: 2..=8 renditions of one program,
+/// encoded together by one `FFmpeg` child and published as one master playlist
+/// plus one variant playlist and segment set per rung.
+///
+/// The rungs read from the thinnest rendition to the richest: bitrates strictly
+/// increase, and neither width nor height ever decreases across the list, so
+/// the last rung is [`HlsLadder::top_bitrate_kbps`].
+///
+/// Only a local HLS destination carries a ladder. Every network transport in
+/// this crate publishes exactly one rendition, and [`Streamer::start`] refuses
+/// a ladder configured for anything else.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HlsLadder {
+    rungs: Vec<HlsLadderRung>,
+}
+
+impl HlsLadder {
+    /// Validates the rung count, each rung's own bitrate and dimensions, and
+    /// the ordering across rungs, in that order.
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed [`HlsLadderError`] of the first rule the list breaks.
+    pub fn new(rungs: Vec<HlsLadderRung>) -> Result<Self, HlsLadderError> {
+        if rungs.len() < MIN_LADDER_RUNGS {
+            return Err(HlsLadderError::TooFewRungs);
+        }
+        if rungs.len() > MAX_LADDER_RUNGS {
+            return Err(HlsLadderError::TooManyRungs);
+        }
+        let mut previous: Option<HlsLadderRung> = None;
+        for rung in &rungs {
+            if rung.video_bitrate_kbps < MIN_LADDER_BITRATE_KBPS {
+                return Err(HlsLadderError::BitrateTooLow);
+            }
+            if rung.video_bitrate_kbps > MAX_LADDER_BITRATE_KBPS {
+                return Err(HlsLadderError::BitrateTooHigh);
+            }
+            if rung.width < MIN_LADDER_DIMENSION || rung.height < MIN_LADDER_DIMENSION {
+                return Err(HlsLadderError::DimensionTooSmall);
+            }
+            if rung.width > MAX_LADDER_WIDTH || rung.height > MAX_LADDER_HEIGHT {
+                return Err(HlsLadderError::DimensionTooLarge);
+            }
+            if rung.width % 2 != 0 || rung.height % 2 != 0 {
+                return Err(HlsLadderError::OddDimension);
+            }
+            if let Some(previous) = previous {
+                if rung.video_bitrate_kbps <= previous.video_bitrate_kbps {
+                    return Err(HlsLadderError::BitratesNotIncreasing);
+                }
+                if rung.width < previous.width || rung.height < previous.height {
+                    return Err(HlsLadderError::DimensionsDecrease);
+                }
+            }
+            previous = Some(*rung);
+        }
+        Ok(Self { rungs })
+    }
+
+    /// The rungs in ascending bitrate order, exactly as validated.
+    #[must_use]
+    pub fn rungs(&self) -> &[HlsLadderRung] {
+        &self.rungs
+    }
+
+    /// The highest rung's video bitrate in kbps: the top of the ladder.
+    #[must_use]
+    pub fn top_bitrate_kbps(&self) -> u32 {
+        self.rungs.last().map_or(0, |rung| rung.video_bitrate_kbps)
+    }
+}
+
+impl fmt::Display for HlsLadder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, rung) in self.rungs.iter().enumerate() {
+            if index > 0 {
+                formatter.write_str(",")?;
+            }
+            write!(formatter, "{rung}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Why a rung list is not a usable HLS ladder. Every variant carries static
+/// text and no values.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HlsLadderError {
+    /// Fewer than two rungs: a ladder with one rendition is not a choice.
+    TooFewRungs,
+    /// More than eight rungs: every rung is another encoder for the one child.
+    TooManyRungs,
+    /// A rung bitrate below `1_000` kbps.
+    BitrateTooLow,
+    /// A rung bitrate above `100_000` kbps.
+    BitrateTooHigh,
+    /// A rung narrower or shorter than 16 pixels.
+    DimensionTooSmall,
+    /// A rung wider than `7_680` or taller than `4_320` pixels.
+    DimensionTooLarge,
+    /// A rung whose width or height is not even; 4:2:0 needs even dimensions.
+    OddDimension,
+    /// Bitrates must strictly increase from the first rung to the last.
+    BitratesNotIncreasing,
+    /// Neither width nor height may decrease from the first rung to the last.
+    DimensionsDecrease,
+}
+
+impl fmt::Display for HlsLadderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::TooFewRungs => "an HLS ladder needs at least two rungs",
+            Self::TooManyRungs => "an HLS ladder carries at most eight rungs",
+            Self::BitrateTooLow => "a ladder rung bitrate is below 1000 kbps",
+            Self::BitrateTooHigh => "a ladder rung bitrate is above 100000 kbps",
+            Self::DimensionTooSmall => "a ladder rung is smaller than 16x16",
+            Self::DimensionTooLarge => "a ladder rung is larger than 7680x4320",
+            Self::OddDimension => "a ladder rung has an odd dimension",
+            Self::BitratesNotIncreasing => {
+                "ladder bitrates must strictly increase from the first rung to the last"
+            }
+            Self::DimensionsDecrease => {
+                "ladder dimensions must not decrease from the first rung to the last"
+            }
+        })
+    }
+}
+
+impl std::error::Error for HlsLadderError {}
+
 /// Streaming startup configuration.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamConfig {
@@ -475,6 +647,10 @@ pub struct StreamConfig {
     pub limits: StreamLimits,
     pub overflow: OverflowPolicy,
     pub encoder: EncoderSettings,
+    /// A multi-bitrate ladder, `Some` only for an HLS destination: the child
+    /// encodes every rung of the one program and publishes a master playlist
+    /// plus one variant playlist per rung.
+    pub ladder: Option<HlsLadder>,
 }
 
 impl StreamConfig {
@@ -487,6 +663,7 @@ impl StreamConfig {
             limits: StreamLimits::default(),
             overflow: OverflowPolicy::DropOldest,
             encoder: EncoderSettings::default(),
+            ladder: None,
         }
     }
 }
@@ -538,8 +715,13 @@ pub enum StartErrorKind {
     UnsupportedChannelLayout,
     /// The absolute directory an HLS destination publishes into is unusable:
     /// it exists as something other than a directory, or it is missing and
-    /// could not be created as a single leaf. The variant carries no path text.
+    /// could not be created as a single leaf. A ladder's variant directories
+    /// beneath it are held to the same rule. The variant carries no path text.
     HlsDirectoryUnusable,
+    /// A multi-bitrate ladder was configured for a destination that cannot
+    /// carry one: only a local HLS destination encodes more than one
+    /// rendition. The variant carries no path or URL text.
+    LadderNotSupported,
     Randomness,
     ThreadSpawn(io::ErrorKind),
     Bind {
@@ -1353,12 +1535,26 @@ impl Streamer {
             config.encoder,
         )
         .map_err(|error| StartError::complete(StartErrorKind::InvalidLimits(error)))?;
+        // Only a local HLS destination can publish more than one rendition:
+        // every network transport muxes exactly one stream into one output.
+        // Refusing here keeps a ladder out of every non-HLS argument tail
+        // before anything is bound or spawned.
+        if config.ladder.is_some() && config.destination.kind() != DestinationKind::Hls {
+            return Err(StartError::complete(StartErrorKind::LadderNotSupported));
+        }
         // A local HLS destination publishes into a directory the operator
         // chose. Create its leaf before the child is spawned, so an unusable
         // path is a startup error rather than a child that dies on its first
-        // mux.
+        // mux. A ladder's variant directories are created with it: the child
+        // writes `<dir>/%v/...` but never creates the variant directories.
         if let Some(directory) = config.destination.local_directory() {
             ensure_hls_directory(directory).map_err(StartError::complete)?;
+            if let Some(ladder) = &config.ladder {
+                for index in 0..ladder.rungs().len() {
+                    ensure_hls_directory(&format!("{directory}/{index}"))
+                        .map_err(StartError::complete)?;
+                }
+            }
         }
         let layout =
             output_channel_layout(config.destination.kind(), config.format.channel_layout())
@@ -2806,9 +3002,11 @@ fn join_cleanup_workers(workers: Vec<CleanupWorker>) {
 ///
 /// Only the leaf may be missing: an HLS destination is an operator-chosen
 /// absolute path, and silently creating missing parents would materialize a
-/// typo. `FFmpeg` still decides whether the directory is writable; this check
-/// exists so an unusable destination is a path-free startup error rather than
-/// a child that dies during its first mux.
+/// typo. A ladder calls this once for the destination itself and once for each
+/// variant directory beneath it; the destination is created first, so every
+/// variant directory is still exactly one leaf. `FFmpeg` still decides whether
+/// the directory is writable; this check exists so an unusable destination is a
+/// path-free startup error rather than a child that dies during its first mux.
 fn ensure_hls_directory(path: &str) -> Result<(), StartErrorKind> {
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
@@ -2895,7 +3093,6 @@ fn command_args(config: &StreamConfig, layout: &str, inputs: &Inputs<'_>) -> Vec
     let rate = format.frame_rate();
     let fps = u64::from(rate.numerator()).div_ceil(u64::from(rate.denominator()));
     let gop = fps.saturating_mul(u64::from(config.encoder.keyframe_interval_seconds));
-    let video_bitrate = format!("{}k", config.encoder.video_bitrate_kbps);
     let mut values = vec![
         "-nostdin".to_owned(),
         "-hide_banner".to_owned(),
@@ -2944,6 +3141,37 @@ fn command_args(config: &StreamConfig, layout: &str, inputs: &Inputs<'_>) -> Vec
         "http,tcp".to_owned(),
         "-i".to_owned(),
         format!("http://{}/{}", inputs.audio_address, inputs.audio_token),
+    ];
+    // `Streamer::start` refuses a ladder for every non-HLS destination before
+    // any argument is built, so a ladder reaching here is always the local HLS
+    // segmenter's multi-rendition shape.
+    if let Some(ladder) = config
+        .ladder
+        .as_ref()
+        .filter(|_| config.destination.kind() == DestinationKind::Hls)
+    {
+        values.extend(ladder_encoder_args(ladder, config.encoder, gop));
+        values.extend(ladder_output_args(
+            &config.destination.url,
+            config.encoder.keyframe_interval_seconds,
+            ladder.rungs().len(),
+        ));
+    } else {
+        values.extend(single_rendition_encoder_args(config.encoder, gop));
+        values.extend(output_args(
+            config.destination.kind(),
+            &config.destination.url,
+            config.encoder.keyframe_interval_seconds,
+        ));
+    }
+    values.into_iter().map(OsString::from).collect()
+}
+
+/// The single-rendition encoder block: one video stream and one audio stream,
+/// both mapped from the pair inputs.
+fn single_rendition_encoder_args(encoder: EncoderSettings, gop: u64) -> Vec<String> {
+    let video_bitrate = format!("{}k", encoder.video_bitrate_kbps);
+    vec![
         "-map".to_owned(),
         "0:v:0".to_owned(),
         "-map".to_owned(),
@@ -2961,7 +3189,7 @@ fn command_args(config: &StreamConfig, layout: &str, inputs: &Inputs<'_>) -> Vec
         "-maxrate".to_owned(),
         video_bitrate,
         "-bufsize".to_owned(),
-        format!("{}k", config.encoder.video_bitrate_kbps.saturating_mul(2)),
+        format!("{}k", encoder.video_bitrate_kbps.saturating_mul(2)),
         "-g".to_owned(),
         gop.to_string(),
         "-keyint_min".to_owned(),
@@ -2969,23 +3197,85 @@ fn command_args(config: &StreamConfig, layout: &str, inputs: &Inputs<'_>) -> Vec
         "-sc_threshold".to_owned(),
         "0".to_owned(),
         "-force_key_frames".to_owned(),
-        format!(
-            "expr:gte(t,n_forced*{})",
-            config.encoder.keyframe_interval_seconds
-        ),
+        format!("expr:gte(t,n_forced*{})", encoder.keyframe_interval_seconds),
         "-c:a".to_owned(),
         "aac".to_owned(),
         "-b:a".to_owned(),
-        format!("{}k", config.encoder.audio_bitrate_kbps),
+        format!("{}k", encoder.audio_bitrate_kbps),
         "-flush_packets".to_owned(),
         "1".to_owned(),
+    ]
+}
+
+/// The ladder encoder block: the filter graph that splits the one decoded
+/// video input into one scaled stream per rung, then per rung the mapped video
+/// stream with its own bitrate cap and one mapped AAC stream, and finally the
+/// shared encoder flags. The child does the scaling itself, from the one
+/// decoded frame it already holds; nothing is decoded twice.
+fn ladder_encoder_args(ladder: &HlsLadder, encoder: EncoderSettings, gop: u64) -> Vec<String> {
+    let mut values = vec![
+        "-filter_complex".to_owned(),
+        ladder_filter_complex(ladder.rungs()),
     ];
-    values.extend(output_args(
-        config.destination.kind(),
-        &config.destination.url,
-        config.encoder.keyframe_interval_seconds,
-    ));
-    values.into_iter().map(OsString::from).collect()
+    for (index, rung) in ladder.rungs().iter().enumerate() {
+        let bitrate = rung.video_bitrate_kbps;
+        values.extend([
+            "-map".to_owned(),
+            format!("[s{index}]"),
+            format!("-c:v:{index}"),
+            "libx264".to_owned(),
+            format!("-b:v:{index}"),
+            format!("{bitrate}k"),
+            format!("-maxrate:v:{index}"),
+            format!("{bitrate}k"),
+            format!("-bufsize:v:{index}"),
+            format!("{}k", bitrate.saturating_mul(2)),
+            "-map".to_owned(),
+            "1:a:0".to_owned(),
+            format!("-c:a:{index}"),
+            "aac".to_owned(),
+            format!("-b:a:{index}"),
+            format!("{}k", encoder.audio_bitrate_kbps),
+        ]);
+    }
+    values.extend([
+        "-preset".to_owned(),
+        "veryfast".to_owned(),
+        "-tune".to_owned(),
+        "zerolatency".to_owned(),
+        "-pix_fmt".to_owned(),
+        "yuv420p".to_owned(),
+        "-g".to_owned(),
+        gop.to_string(),
+        "-keyint_min".to_owned(),
+        gop.to_string(),
+        "-sc_threshold".to_owned(),
+        "0".to_owned(),
+        "-force_key_frames".to_owned(),
+        format!("expr:gte(t,n_forced*{})", encoder.keyframe_interval_seconds),
+        "-flush_packets".to_owned(),
+        "1".to_owned(),
+    ]);
+    values
+}
+
+/// The filter graph that splits the one decoded video input into one scaled
+/// stream per rung:
+/// `[0:v]split=N[v0]...[vN-1];[v0]scale=W0:H0[s0];...`.
+fn ladder_filter_complex(rungs: &[HlsLadderRung]) -> String {
+    use fmt::Write as _;
+    let mut graph = format!("[0:v]split={}", rungs.len());
+    let mut scales = String::new();
+    for (index, rung) in rungs.iter().enumerate() {
+        let _ = write!(graph, "[v{index}]");
+        let _ = write!(
+            scales,
+            ";[v{index}]scale={}:{}[s{index}]",
+            rung.width, rung.height
+        );
+    }
+    graph.push_str(&scales);
+    graph
 }
 
 /// The container each transport is muxed into: FLV for RTMP(S), MPEG-TS for
@@ -2999,9 +3289,27 @@ const fn muxer_format(kind: DestinationKind) -> &'static str {
     }
 }
 
-/// The output-side argument tail, from the first muxer-owned flag to the
-/// destination URL. Kept pure so tests can assert exactly what the child is
-/// told to mux.
+/// The segmenter settings every HLS output shares: the muxer, the segment
+/// duration, the bounded playlist window, and the segment flags. Only the
+/// segment filename and the playlists differ between one rendition and a
+/// ladder.
+fn hls_segmenter_args(keyframe_interval_seconds: u32) -> Vec<String> {
+    vec![
+        "-y".to_owned(),
+        "-f".to_owned(),
+        muxer_format(DestinationKind::Hls).to_owned(),
+        "-hls_time".to_owned(),
+        keyframe_interval_seconds.to_string(),
+        "-hls_list_size".to_owned(),
+        "6".to_owned(),
+        "-hls_flags".to_owned(),
+        "delete_segments+independent_segments+temp_file".to_owned(),
+    ]
+}
+
+/// The single-rendition output-side argument tail, from the first
+/// muxer-owned flag to the destination URL. Kept pure so tests can assert
+/// exactly what the child is told to mux.
 ///
 /// `keyframe_interval_seconds` is the encoder's keyframe interval, which an
 /// HLS destination uses as its segment duration so every segment starts on a
@@ -3013,16 +3321,8 @@ fn output_args(kind: DestinationKind, url: &str, keyframe_interval_seconds: u32)
         // the playlist both live inside it, and the playlist is the output
         // file the child writes.
         let directory = url.strip_prefix(HLS_SCHEME).unwrap_or(url);
+        values.extend(hls_segmenter_args(keyframe_interval_seconds));
         values.extend([
-            "-y".to_owned(),
-            "-f".to_owned(),
-            muxer_format(kind).to_owned(),
-            "-hls_time".to_owned(),
-            keyframe_interval_seconds.to_string(),
-            "-hls_list_size".to_owned(),
-            "6".to_owned(),
-            "-hls_flags".to_owned(),
-            "delete_segments+independent_segments+temp_file".to_owned(),
             "-hls_segment_filename".to_owned(),
             format!("{directory}/segment-%05d.ts"),
             format!("{directory}/index.m3u8"),
@@ -3039,6 +3339,28 @@ fn output_args(kind: DestinationKind, url: &str, keyframe_interval_seconds: u32)
         "-f".to_owned(),
         muxer_format(kind).to_owned(),
         url.to_owned(),
+    ]);
+    values
+}
+
+/// The HLS ladder output tail: the shared segmenter settings, the per-variant
+/// `%v` segment template, the master playlist name, the explicit
+/// stream-to-variant map, and the per-variant output URL.
+fn ladder_output_args(url: &str, keyframe_interval_seconds: u32, rung_count: usize) -> Vec<String> {
+    let directory = url.strip_prefix(HLS_SCHEME).unwrap_or(url);
+    let var_stream_map = (0..rung_count)
+        .map(|index| format!("v:{index},a:{index}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut values = hls_segmenter_args(keyframe_interval_seconds);
+    values.extend([
+        "-hls_segment_filename".to_owned(),
+        format!("{directory}/%v/segment-%05d.ts"),
+        "-master_pl_name".to_owned(),
+        "index.m3u8".to_owned(),
+        "-var_stream_map".to_owned(),
+        var_stream_map,
+        format!("{directory}/%v/index.m3u8"),
     ]);
     values
 }
@@ -3603,6 +3925,284 @@ mod tests {
         let expected_text = expected.iter().map(String::as_str).collect::<Vec<_>>();
         assert_eq!(&text[text.len() - expected_text.len()..], expected_text);
         assert!(!text.contains(&"-flvflags"), "{text:?}");
+    }
+
+    fn ladder_rung(video_bitrate_kbps: u32, width: u32, height: u32) -> HlsLadderRung {
+        HlsLadderRung {
+            video_bitrate_kbps,
+            width,
+            height,
+        }
+    }
+
+    /// The two-rung ladder the argv and start tests share: thinnest first, as
+    /// [`HlsLadder`] validates.
+    fn ladder() -> HlsLadder {
+        HlsLadder::new(vec![
+            ladder_rung(1_000, 320, 180),
+            ladder_rung(1_500, 640, 360),
+        ])
+        .unwrap()
+    }
+
+    fn inputs() -> Inputs<'static> {
+        Inputs {
+            video_address: "127.0.0.1:20001".parse().unwrap(),
+            audio_address: "127.0.0.1:20002".parse().unwrap(),
+            video_token: "video-token",
+            audio_token: "audio-token",
+        }
+    }
+
+    #[test]
+    fn hls_ladders_validate_rung_count_bitrates_dimensions_and_order() {
+        // The smallest and largest accepted values, and the Display forms.
+        let bounds = HlsLadder::new(vec![
+            ladder_rung(1_000, 16, 16),
+            ladder_rung(100_000, 7_680, 4_320),
+        ])
+        .unwrap();
+        assert_eq!(bounds.rungs().len(), 2);
+        assert_eq!(bounds.top_bitrate_kbps(), 100_000);
+        assert_eq!(format!("{}", bounds.rungs()[0]), "16x16@1000");
+        assert_eq!(format!("{bounds}"), "16x16@1000,7680x4320@100000");
+        assert_eq!(
+            format!("{}", HlsLadderError::BitratesNotIncreasing),
+            "ladder bitrates must strictly increase from the first rung to the last"
+        );
+
+        // Eight rungs are still one child; nine are not.
+        let eight = (0..8_u32)
+            .map(|index| ladder_rung(1_000 + index * 500, 320, 180))
+            .collect::<Vec<_>>();
+        assert!(HlsLadder::new(eight).is_ok());
+        let nine = (0..9_u32)
+            .map(|index| ladder_rung(1_000 + index * 500, 320, 180))
+            .collect::<Vec<_>>();
+        assert_eq!(HlsLadder::new(nine), Err(HlsLadderError::TooManyRungs));
+        // A ladder is a choice, so one rung is not a ladder at all.
+        assert_eq!(HlsLadder::new(Vec::new()), Err(HlsLadderError::TooFewRungs));
+        assert_eq!(
+            HlsLadder::new(vec![ladder_rung(1_500, 640, 360)]),
+            Err(HlsLadderError::TooFewRungs)
+        );
+
+        // Each remaining rule, one case at a time.
+        for (rungs, expected) in [
+            (
+                vec![ladder_rung(999, 320, 180), ladder_rung(1_500, 640, 360)],
+                HlsLadderError::BitrateTooLow,
+            ),
+            (
+                vec![ladder_rung(1_000, 320, 180), ladder_rung(100_001, 640, 360)],
+                HlsLadderError::BitrateTooHigh,
+            ),
+            (
+                vec![ladder_rung(1_000, 320, 180), ladder_rung(1_500, 8, 8)],
+                HlsLadderError::DimensionTooSmall,
+            ),
+            (
+                vec![ladder_rung(1_000, 320, 180), ladder_rung(1_500, 7_682, 360)],
+                HlsLadderError::DimensionTooLarge,
+            ),
+            (
+                vec![ladder_rung(1_000, 320, 180), ladder_rung(1_500, 640, 4_322)],
+                HlsLadderError::DimensionTooLarge,
+            ),
+            (
+                vec![ladder_rung(1_000, 320, 180), ladder_rung(1_500, 641, 360)],
+                HlsLadderError::OddDimension,
+            ),
+            (
+                vec![ladder_rung(1_000, 320, 180), ladder_rung(1_500, 320, 181)],
+                HlsLadderError::OddDimension,
+            ),
+            (
+                vec![ladder_rung(1_000, 320, 180), ladder_rung(1_000, 640, 360)],
+                HlsLadderError::BitratesNotIncreasing,
+            ),
+            (
+                vec![ladder_rung(1_500, 640, 360), ladder_rung(1_000, 320, 180)],
+                HlsLadderError::BitratesNotIncreasing,
+            ),
+            (
+                vec![ladder_rung(1_000, 640, 360), ladder_rung(1_500, 320, 360)],
+                HlsLadderError::DimensionsDecrease,
+            ),
+            (
+                vec![ladder_rung(1_000, 640, 360), ladder_rung(1_500, 640, 180)],
+                HlsLadderError::DimensionsDecrease,
+            ),
+        ] {
+            assert_eq!(HlsLadder::new(rungs), Err(expected), "{expected:?}");
+        }
+
+        // Equal frame sizes are allowed while the bitrates still climb.
+        let equal = HlsLadder::new(vec![
+            ladder_rung(1_500, 640, 360),
+            ladder_rung(3_000, 640, 360),
+        ])
+        .unwrap();
+        assert_eq!(equal.top_bitrate_kbps(), 3_000);
+    }
+
+    #[test]
+    fn hls_ladder_argv_is_exact() {
+        let mut config = StreamConfig::new(format(), StreamDestination::parse(HLS_URL).unwrap());
+        config.ladder = Some(ladder());
+        let args = command_args(&config, "stereo", &inputs());
+        let text = args
+            .iter()
+            .map(|argument| argument.to_str().unwrap())
+            .collect::<Vec<_>>();
+        let start = text
+            .iter()
+            .position(|argument| *argument == "-filter_complex")
+            .expect("a ladder argv carries its filter graph");
+        let expected = [
+            "-filter_complex",
+            "[0:v]split=2[v0][v1];[v0]scale=320:180[s0];[v1]scale=640:360[s1]",
+            "-map",
+            "[s0]",
+            "-c:v:0",
+            "libx264",
+            "-b:v:0",
+            "1000k",
+            "-maxrate:v:0",
+            "1000k",
+            "-bufsize:v:0",
+            "2000k",
+            "-map",
+            "1:a:0",
+            "-c:a:0",
+            "aac",
+            "-b:a:0",
+            "128k",
+            "-map",
+            "[s1]",
+            "-c:v:1",
+            "libx264",
+            "-b:v:1",
+            "1500k",
+            "-maxrate:v:1",
+            "1500k",
+            "-bufsize:v:1",
+            "3000k",
+            "-map",
+            "1:a:0",
+            "-c:a:1",
+            "aac",
+            "-b:a:1",
+            "128k",
+            "-preset",
+            "veryfast",
+            "-tune",
+            "zerolatency",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "60",
+            "-keyint_min",
+            "60",
+            "-sc_threshold",
+            "0",
+            "-force_key_frames",
+            "expr:gte(t,n_forced*2)",
+            "-flush_packets",
+            "1",
+            "-y",
+            "-f",
+            "hls",
+            "-hls_time",
+            "2",
+            "-hls_list_size",
+            "6",
+            "-hls_flags",
+            "delete_segments+independent_segments+temp_file",
+            "-hls_segment_filename",
+            "/srv/freemix/output/hls/%v/segment-%05d.ts",
+            "-master_pl_name",
+            "index.m3u8",
+            "-var_stream_map",
+            "v:0,a:0 v:1,a:1",
+            "/srv/freemix/output/hls/%v/index.m3u8",
+        ];
+        // The whole tail, exactly: no single-rendition map, no unsuffixed
+        // codec flags, and no FLV-only flag may survive into a ladder.
+        assert_eq!(&text[start..], expected.as_slice(), "{text:?}");
+        assert!(!text.contains(&"0:v:0"), "{text:?}");
+        assert!(!text.contains(&"-c:v"), "{text:?}");
+        assert!(!text.contains(&"-b:v"), "{text:?}");
+        assert!(!text.contains(&"-b:a"), "{text:?}");
+        assert!(!text.contains(&"-flvflags"), "{text:?}");
+    }
+
+    #[test]
+    fn hls_ladder_filter_graph_and_variant_map_scale_every_rung() {
+        // Three rungs: one scale per rung, one variant pair per rung.
+        let three = HlsLadder::new(vec![
+            ladder_rung(1_000, 320, 180),
+            ladder_rung(1_500, 640, 360),
+            ladder_rung(3_000, 1_280, 720),
+        ])
+        .unwrap();
+        assert_eq!(
+            ladder_filter_complex(three.rungs()),
+            "[0:v]split=3[v0][v1][v2];[v0]scale=320:180[s0];\
+             [v1]scale=640:360[s1];[v2]scale=1280:720[s2]"
+        );
+        let tail = ladder_output_args(HLS_URL, 2, three.rungs().len());
+        let var_stream_map = tail
+            .windows(2)
+            .find(|window| window[0] == "-var_stream_map")
+            .expect("a ladder tail carries -var_stream_map");
+        assert_eq!(var_stream_map[1], "v:0,a:0 v:1,a:1 v:2,a:2");
+    }
+
+    #[test]
+    fn start_refuses_a_ladder_for_every_network_destination() {
+        for url in [
+            "rtmp://127.0.0.1:1/app/key12345",
+            "rtmps://127.0.0.1:1/app/key12345",
+            "srt://127.0.0.1:1?streamid=abcd1234",
+        ] {
+            let mut config = StreamConfig::new(format(), StreamDestination::parse(url).unwrap());
+            config.ladder = Some(ladder());
+            let Err(error) = Streamer::start(config) else {
+                panic!("a ladder must be refused for {url}");
+            };
+            assert_eq!(error.kind, StartErrorKind::LadderNotSupported, "{error:?}");
+            assert_eq!(error.cleanup, CleanupStatus::Complete, "{error:?}");
+            // The refusal happens before any executable is resolved or any
+            // socket is bound, so no child can exist, and its kind carries no
+            // path or URL text.
+            assert!(!format!("{error:?}").contains("127.0.0.1"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn start_refuses_a_ladder_variant_directory_occupied_by_a_file() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("hls");
+        fs::create_dir(&directory).unwrap();
+        // The destination itself is a directory, but the first variant
+        // directory beneath it is not.
+        fs::write(directory.join("0"), b"occupied").unwrap();
+        let destination =
+            StreamDestination::parse(&format!("hls://{}", directory.to_str().unwrap())).unwrap();
+        let mut config = StreamConfig::new(format(), destination);
+        config.ladder = Some(ladder());
+        let Err(error) = Streamer::start(config) else {
+            panic!("a file where a variant directory belongs must be refused");
+        };
+        assert_eq!(
+            error.kind,
+            StartErrorKind::HlsDirectoryUnusable,
+            "{error:?}"
+        );
+        assert_eq!(error.cleanup, CleanupStatus::Complete, "{error:?}");
+        // The check runs before any child exists and nothing was replaced.
+        assert_eq!(fs::read(directory.join("0")).unwrap(), b"occupied");
     }
 
     #[test]

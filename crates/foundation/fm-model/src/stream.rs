@@ -6,6 +6,14 @@
 //! [`Output`](crate::Output) supplies its video and audio. It is not a running
 //! stream. Nothing here starts, stops, reconnects, or observes a sink.
 //!
+//! An HLS destination may also carry an authored multi-bitrate
+//! [`StreamLadder`]: [`MIN_STREAM_LADDER_RUNGS`] through
+//! [`MAX_STREAM_LADDER_RUNGS`] rungs, each an even width and height with a
+//! video bitrate that strictly increases up the list while the dimensions
+//! never shrink. The ladder is authored intent like the rest of a destination;
+//! nothing here muxes or serves a rendition. RTMP/RTMPS/SRT publish one
+//! rendition and refuse a ladder.
+//!
 //! # The stream key is a secret
 //!
 //! [`StreamKey`] never renders its value. `Debug` shows `StreamKey(****)`, it
@@ -34,7 +42,11 @@
 //! userinfo, a stream key of at least [`MIN_STREAM_KEY_BYTES`] for the
 //! protocols that carry one, an absolute local directory for `hls`, and a
 //! total URL that stays inside the sink's bound. The composed URL is
-//! [`StreamTarget::expose_url`].
+//! [`StreamTarget::expose_url`]. An HLS ladder is held to the same standard as
+//! the destination that carries it: rung count, rung bitrates, even
+//! dimensions inside [`MIN_STREAM_LADDER_DIMENSION`] through
+//! [`MAX_STREAM_LADDER_WIDTH`] and [`MAX_STREAM_LADDER_HEIGHT`], strictly
+//! increasing bitrates, and nondecreasing dimensions.
 
 use core::{fmt, num::NonZeroU128};
 
@@ -69,6 +81,22 @@ pub const MAX_VIDEO_BITRATE_KBPS: u32 = 100_000;
 
 /// Video bitrate assumed when a destination is authored without naming one.
 pub const DEFAULT_VIDEO_BITRATE_KBPS: u32 = 4_500;
+
+/// Fewest rungs an authored HLS ladder may carry. One rendition is not a
+/// ladder, and the group needs a lower rung to fall back from.
+pub const MIN_STREAM_LADDER_RUNGS: usize = 2;
+
+/// Most rungs an authored HLS ladder may carry.
+pub const MAX_STREAM_LADDER_RUNGS: usize = 8;
+
+/// Smallest authored ladder width or height, in pixels.
+pub const MIN_STREAM_LADDER_DIMENSION: u32 = 16;
+
+/// Widest authored ladder rendition: 8K UHD width, in pixels.
+pub const MAX_STREAM_LADDER_WIDTH: u32 = 7_680;
+
+/// Tallest authored ladder rendition: 8K UHD height, in pixels.
+pub const MAX_STREAM_LADDER_HEIGHT: u32 = 4_320;
 
 /// Stable identity of one configured streaming destination.
 ///
@@ -386,6 +414,242 @@ impl fmt::Display for StreamVideoBitrateError {
 
 impl std::error::Error for StreamVideoBitrateError {}
 
+/// Why an authored HLS ladder was refused.
+///
+/// No variant carries a rejected value, so an error may be logged or surfaced
+/// to an operator without repeating what was rejected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamLadderError {
+    /// Fewer than [`MIN_STREAM_LADDER_RUNGS`] rungs.
+    TooFewRungs,
+    /// More than [`MAX_STREAM_LADDER_RUNGS`] rungs.
+    TooManyRungs,
+    /// A rung's video bitrate is below [`MIN_VIDEO_BITRATE_KBPS`].
+    BitrateTooLow,
+    /// A rung's video bitrate is above [`MAX_VIDEO_BITRATE_KBPS`].
+    BitrateTooHigh,
+    /// A rung's width or height is below [`MIN_STREAM_LADDER_DIMENSION`].
+    DimensionTooSmall,
+    /// A rung's width is above [`MAX_STREAM_LADDER_WIDTH`] or its height is
+    /// above [`MAX_STREAM_LADDER_HEIGHT`].
+    DimensionTooLarge,
+    /// A rung's width or height is not even, so no chroma layout divides it.
+    OddDimension,
+    /// A rung's video bitrate does not exceed the previous rung's.
+    BitratesNotIncreasing,
+    /// A rung's width or height is smaller than the previous rung's.
+    DimensionsDecrease,
+}
+
+impl fmt::Display for StreamLadderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooFewRungs => write!(
+                formatter,
+                "stream ladder must have at least {MIN_STREAM_LADDER_RUNGS} rungs"
+            ),
+            Self::TooManyRungs => write!(
+                formatter,
+                "stream ladder must not have more than {MAX_STREAM_LADDER_RUNGS} rungs"
+            ),
+            Self::BitrateTooLow => write!(
+                formatter,
+                "stream ladder rung video bitrate must be at least {MIN_VIDEO_BITRATE_KBPS} kbps"
+            ),
+            Self::BitrateTooHigh => write!(
+                formatter,
+                "stream ladder rung video bitrate must not exceed {MAX_VIDEO_BITRATE_KBPS} kbps"
+            ),
+            Self::DimensionTooSmall => write!(
+                formatter,
+                "stream ladder rung width and height must be at least {MIN_STREAM_LADDER_DIMENSION}"
+            ),
+            Self::DimensionTooLarge => write!(
+                formatter,
+                "stream ladder rung must not exceed {MAX_STREAM_LADDER_WIDTH} by \
+                 {MAX_STREAM_LADDER_HEIGHT}"
+            ),
+            Self::OddDimension => {
+                formatter.write_str("stream ladder rung width and height must be even")
+            }
+            Self::BitratesNotIncreasing => {
+                formatter.write_str("stream ladder rung video bitrates must strictly increase")
+            }
+            Self::DimensionsDecrease => {
+                formatter.write_str("stream ladder rung width and height must not decrease")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StreamLadderError {}
+
+/// One authored ABR rendition inside a [`StreamLadder`].
+///
+/// The dimensions are the rendition's own encoded size, not the program's, and
+/// the bitrate is that rendition's video bitrate in kilobits per second.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamLadderRung {
+    video_bitrate_kbps: u32,
+    width: u32,
+    height: u32,
+}
+
+impl StreamLadderRung {
+    /// Validates one rung's video bitrate and dimensions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamLadderError::BitrateTooLow`] or
+    /// [`StreamLadderError::BitrateTooHigh`] when the bitrate falls outside
+    /// [`MIN_VIDEO_BITRATE_KBPS`]..=[`MAX_VIDEO_BITRATE_KBPS`],
+    /// [`StreamLadderError::DimensionTooSmall`] when width or height is below
+    /// [`MIN_STREAM_LADDER_DIMENSION`],
+    /// [`StreamLadderError::DimensionTooLarge`] when width exceeds
+    /// [`MAX_STREAM_LADDER_WIDTH`] or height exceeds
+    /// [`MAX_STREAM_LADDER_HEIGHT`], and [`StreamLadderError::OddDimension`]
+    /// when either dimension is not even.
+    pub fn new(
+        video_bitrate_kbps: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, StreamLadderError> {
+        validate_video_bitrate(video_bitrate_kbps).map_err(|error| match error {
+            StreamVideoBitrateError::TooLow => StreamLadderError::BitrateTooLow,
+            StreamVideoBitrateError::TooHigh => StreamLadderError::BitrateTooHigh,
+        })?;
+        if width < MIN_STREAM_LADDER_DIMENSION || height < MIN_STREAM_LADDER_DIMENSION {
+            return Err(StreamLadderError::DimensionTooSmall);
+        }
+        if width > MAX_STREAM_LADDER_WIDTH || height > MAX_STREAM_LADDER_HEIGHT {
+            return Err(StreamLadderError::DimensionTooLarge);
+        }
+        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
+            return Err(StreamLadderError::OddDimension);
+        }
+        Ok(Self {
+            video_bitrate_kbps,
+            width,
+            height,
+        })
+    }
+
+    /// The rendition's video bitrate, in kilobits per second.
+    #[must_use]
+    pub const fn video_bitrate_kbps(&self) -> u32 {
+        self.video_bitrate_kbps
+    }
+
+    /// The rendition's width, in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// The rendition's height, in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+}
+
+/// Renders dimensions and bitrate as `{width}x{height}@{video_bitrate_kbps}`,
+/// for example `640x360@800`.
+impl fmt::Display for StreamLadderRung {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}x{}@{}",
+            self.width, self.height, self.video_bitrate_kbps
+        )
+    }
+}
+
+/// One authored multi-bitrate HLS ladder, ordered lowest rendition first.
+///
+/// The list order is the contract: video bitrates strictly increase from the
+/// first rung to the last and dimensions never shrink, so a sink can walk the
+/// rungs from the lowest fallback to the top rendition. A ladder is authored
+/// intent and only HLS carries one; see [`StreamTarget::with_ladder`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamLadder {
+    rungs: Vec<StreamLadderRung>,
+}
+
+impl StreamLadder {
+    /// Validates rung count and list order.
+    ///
+    /// Each rung is already validated by [`StreamLadderRung::new`]; this checks
+    /// what only the list can: a count between [`MIN_STREAM_LADDER_RUNGS`] and
+    /// [`MAX_STREAM_LADDER_RUNGS`], strictly increasing video bitrates, and
+    /// nondecreasing width and height.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamLadderError::TooFewRungs`] or
+    /// [`StreamLadderError::TooManyRungs`] for a count outside the bound,
+    /// [`StreamLadderError::BitratesNotIncreasing`] when a rung's video
+    /// bitrate does not exceed the previous rung's, and
+    /// [`StreamLadderError::DimensionsDecrease`] when either dimension shrinks
+    /// from one rung to the next.
+    pub fn new(rungs: Vec<StreamLadderRung>) -> Result<Self, StreamLadderError> {
+        if rungs.len() < MIN_STREAM_LADDER_RUNGS {
+            return Err(StreamLadderError::TooFewRungs);
+        }
+        if rungs.len() > MAX_STREAM_LADDER_RUNGS {
+            return Err(StreamLadderError::TooManyRungs);
+        }
+        for (lower, higher) in rungs.iter().zip(rungs.iter().skip(1)) {
+            if higher.video_bitrate_kbps <= lower.video_bitrate_kbps {
+                return Err(StreamLadderError::BitratesNotIncreasing);
+            }
+            if higher.width < lower.width || higher.height < lower.height {
+                return Err(StreamLadderError::DimensionsDecrease);
+            }
+        }
+        Ok(Self { rungs })
+    }
+
+    /// The rungs, from the lowest rendition to the top one.
+    #[must_use]
+    pub fn rungs(&self) -> &[StreamLadderRung] {
+        &self.rungs
+    }
+
+    /// The top rung's video bitrate, in kilobits per second.
+    ///
+    /// This is the destination's primary/grouping bitrate: the value a sink
+    /// advertises and groups the ladder's renditions under.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the ladder has no rungs; unreachable because
+    /// [`StreamLadder::new`] refuses fewer than [`MIN_STREAM_LADDER_RUNGS`]
+    /// rungs and the rungs cannot be mutated afterwards.
+    #[must_use]
+    pub fn top_bitrate_kbps(&self) -> u32 {
+        self.rungs
+            .last()
+            .expect("a validated ladder always has at least one rung")
+            .video_bitrate_kbps
+    }
+}
+
+/// Renders the rungs comma-joined from lowest to highest, for example
+/// `640x360@800,1280x720@1500`.
+impl fmt::Display for StreamLadder {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut rungs = self.rungs.iter();
+        if let Some(rung) = rungs.next() {
+            write!(formatter, "{rung}")?;
+        }
+        for rung in rungs {
+            write!(formatter, ",{rung}")?;
+        }
+        Ok(())
+    }
+}
+
 /// One validated stream key.
 ///
 /// The value is never rendered. There is no `Display`, `Debug` prints
@@ -453,6 +717,9 @@ pub enum StreamTargetError {
     UnexpectedStreamKey,
     /// HLS has no failover endpoint; local segmenting cannot use one.
     BackupNotAllowed,
+    /// RTMP/RTMPS/SRT publish one rendition, so a multi-bitrate ladder has no
+    /// meaning there.
+    LadderNotAllowed,
     /// Scheme, endpoint, key and separators together exceed what the sink
     /// accepts as one URL.
     UrlTooLong,
@@ -474,6 +741,8 @@ impl fmt::Display for StreamTargetError {
             }
             Self::BackupNotAllowed => formatter
                 .write_str("stream destination protocol does not support a backup endpoint"),
+            Self::LadderNotAllowed => formatter
+                .write_str("stream destination protocol does not support a multi-bitrate ladder"),
             Self::UrlTooLong => write!(
                 formatter,
                 "stream destination URL must not exceed {} bytes",
@@ -502,6 +771,7 @@ pub struct StreamTarget {
     startup: StartupPolicy,
     running: bool,
     video_bitrate_kbps: u32,
+    ladder: Option<StreamLadder>,
     output: OutputId,
 }
 
@@ -553,6 +823,7 @@ impl StreamTarget {
             startup: StartupPolicy::Stopped,
             running: false,
             video_bitrate_kbps: DEFAULT_VIDEO_BITRATE_KBPS,
+            ladder: None,
             output,
         })
     }
@@ -578,6 +849,32 @@ impl StreamTarget {
             }
         }
         self.backup_endpoint = backup_endpoint;
+        Ok(self)
+    }
+
+    /// Attaches or clears the authored multi-bitrate ladder.
+    ///
+    /// Only HLS publishes more than one rendition, so `Some` on any other
+    /// protocol is refused. Setting a ladder also sets
+    /// [`StreamTarget::video_bitrate_kbps`] to [`StreamLadder::top_bitrate_kbps`],
+    /// the top rung's bitrate: that is the destination's primary/grouping
+    /// bitrate, the value a sink advertises and groups the renditions under.
+    /// Passing `None` clears the ladder and leaves the base bitrate untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamTargetError::LadderNotAllowed`] when a ladder is set on
+    /// a protocol other than `hls`.
+    pub fn with_ladder(mut self, ladder: Option<StreamLadder>) -> Result<Self, StreamTargetError> {
+        if let Some(ladder) = ladder {
+            if self.protocol != StreamProtocol::Hls {
+                return Err(StreamTargetError::LadderNotAllowed);
+            }
+            self.video_bitrate_kbps = ladder.top_bitrate_kbps();
+            self.ladder = Some(ladder);
+        } else {
+            self.ladder = None;
+        }
         Ok(self)
     }
 
@@ -655,9 +952,18 @@ impl StreamTarget {
     }
 
     /// The authored video bitrate, in kilobits per second.
+    ///
+    /// When the destination carries a ladder this is the top rung's bitrate,
+    /// the primary/grouping value the sink advertises.
     #[must_use]
     pub const fn video_bitrate_kbps(&self) -> u32 {
         self.video_bitrate_kbps
+    }
+
+    /// The authored multi-bitrate ladder, when this HLS destination has one.
+    #[must_use]
+    pub const fn ladder(&self) -> Option<&StreamLadder> {
+        self.ladder.as_ref()
     }
 
     /// The output this destination takes video and audio from.
@@ -738,7 +1044,7 @@ impl StreamTarget {
 ///
 /// The omitted fields are exactly the ones the redacted URLs already
 /// summarise, and one of them is the secret, so this impl is deliberately not
-/// exhaustive.
+/// exhaustive. The authored ladder is rendered verbatim: it holds no secret.
 impl fmt::Debug for StreamTarget {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -747,6 +1053,7 @@ impl fmt::Debug for StreamTarget {
             .field("name", &self.name)
             .field("url", &self.redacted_url())
             .field("backup_url", &self.redacted_backup_url())
+            .field("ladder", &self.ladder)
             .field("startup", &self.startup)
             .field("output", &self.output)
             .finish_non_exhaustive()

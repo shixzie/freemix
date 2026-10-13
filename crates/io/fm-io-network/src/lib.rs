@@ -33,6 +33,7 @@ pub use rendition::{
     PlannedRendition, RenditionError, RenditionId, RenditionPlan, RenditionPlanner,
     RenditionProfile, TimingProfile, VideoRendition,
 };
+pub use rtmp::{HlsLadder, HlsLadderError, HlsLadderRung};
 
 pub use fm_codec_api::QueueCapacity;
 

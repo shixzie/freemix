@@ -6,7 +6,8 @@ use fm_model::{
     MainMix, Output, Project, ProjectSettings, RectMask, RestartPolicy, Rgba8, Rotation, Scene,
     SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
     StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
-    StreamEndpoint, StreamKey, StreamProtocol, StreamTarget, StreamTargetId,
+    StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol, StreamTarget,
+    StreamTargetId,
 };
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, ChromaLocation, ColorMetadata, ColorPrimaries,
@@ -578,7 +579,9 @@ fn parse_output(value: Value) -> Result<Output, DecodeError> {
 /// carries no endpoint or key text, so a manifest with a bad stream key is
 /// refused without the key appearing in the failure. `key` is a string for
 /// RTMP/RTMPS/SRT and `null` for HLS; [constructor](StreamTarget::new) refuses
-/// either pairing reversed.
+/// either pairing reversed. `ladder` is `null` for a single-rendition
+/// destination and an array of rungs for an HLS ladder; the
+/// [builder](StreamTarget::with_ladder) refuses one on any other protocol.
 fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
     let mut object = Object::new(value, "stream target")?;
     let id = StreamTargetId::new(object.nonzero_u128("id")?);
@@ -614,6 +617,7 @@ fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
     let output = OutputId::new(object.nonzero_u128("output")?);
     let running = object.boolean("running")?;
     let video_bitrate_kbps = object.u32("video_bitrate_kbps")?;
+    let ladder = parse_optional(object.take("ladder")?, parse_stream_ladder)?;
     object.finish()?;
     let target = StreamTarget::new(id, name, protocol, endpoint, key, output)
         .and_then(|target| target.with_backup_endpoint(backup_endpoint))
@@ -621,7 +625,29 @@ fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
     let target = target
         .with_video_bitrate(video_bitrate_kbps)
         .map_err(|error| syntax(format!("stream target video bitrate is invalid: {error}")))?;
+    let target = target
+        .with_ladder(ladder)
+        .map_err(|error| syntax(format!("stream target is invalid: {error}")))?;
     Ok(target.with_startup(startup).set_running(running))
+}
+
+/// Parses one authored ladder: an array of rung objects from lowest to
+/// highest.
+fn parse_stream_ladder(value: Value) -> Result<StreamLadder, DecodeError> {
+    let rungs = parse_array(value, "stream ladder", parse_stream_ladder_rung)?;
+    StreamLadder::new(rungs).map_err(|error| syntax(format!("field `ladder` is invalid: {error}")))
+}
+
+fn parse_stream_ladder_rung(value: Value) -> Result<StreamLadderRung, DecodeError> {
+    let mut object = Object::new(value, "stream ladder rung")?;
+    let rung = StreamLadderRung::new(
+        object.u32("video_bitrate_kbps")?,
+        object.u32("width")?,
+        object.u32("height")?,
+    )
+    .map_err(|error| syntax(format!("field `ladder` is invalid: {error}")))?;
+    object.finish()?;
+    Ok(rung)
 }
 
 fn parse_main_mix(value: Value) -> Result<MainMix, DecodeError> {

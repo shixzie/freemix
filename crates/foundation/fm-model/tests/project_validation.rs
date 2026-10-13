@@ -5,14 +5,17 @@ use fm_model::{
     CURRENT_SCHEMA_VERSION, CropRect, DEFAULT_VIDEO_BITRATE_KBPS, DuplicateSceneInputError,
     EntityRef, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
     InputGainMilliDb, InputKind, Layer, LayerGeometry, MAX_STREAM_ENDPOINT_BYTES,
-    MAX_VIDEO_BITRATE_KBPS, MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project,
-    ProjectSettings, REDACTED_STREAM_KEY, RectMask, RemoveAudioBusError, RemoveInputError,
-    RemoveOutputError, RemoveSceneError, RenameSceneError, RestartPolicy, Rgba8, Rotation, Scene,
-    SceneLayerError, SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
-    SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
+    MAX_STREAM_LADDER_HEIGHT, MAX_STREAM_LADDER_RUNGS, MAX_STREAM_LADDER_WIDTH,
+    MAX_VIDEO_BITRATE_KBPS, MIN_STREAM_LADDER_DIMENSION, MIN_STREAM_LADDER_RUNGS,
+    MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project, ProjectSettings,
+    REDACTED_STREAM_KEY, RectMask, RemoveAudioBusError, RemoveInputError, RemoveOutputError,
+    RemoveSceneError, RenameSceneError, RestartPolicy, Rgba8, Rotation, Scene, SceneLayerError,
+    SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
     StingerSlotNumber, StreamEndpoint, StreamEndpointError, StreamKey, StreamKeyError,
-    StreamProtocol, StreamTarget, StreamTargetError, StreamTargetId, StreamVideoBitrateError,
-    ValidationError, ValidationErrorKind,
+    StreamLadder, StreamLadderError, StreamLadderRung, StreamProtocol, StreamTarget,
+    StreamTargetError, StreamTargetId, StreamVideoBitrateError, ValidationError,
+    ValidationErrorKind,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, MAX_INPUT_NAME_BYTES,
@@ -904,6 +907,10 @@ fn stream_target(id: u128, name: &str, output: OutputId) -> StreamTarget {
     .unwrap()
 }
 
+fn ladder_rung(video_bitrate_kbps: u32, width: u32, height: u32) -> StreamLadderRung {
+    StreamLadderRung::new(video_bitrate_kbps, width, height).unwrap()
+}
+
 #[test]
 fn stream_destinations_refuse_bad_urls_credentials_duplicate_ids_and_dangling_outputs() {
     for (url, expected) in [
@@ -1376,6 +1383,198 @@ fn stream_destinations_author_a_bounded_video_bitrate_with_a_default() {
     );
     // The builder setter leaves the original untouched when it refuses.
     assert_eq!(target.video_bitrate_kbps(), DEFAULT_VIDEO_BITRATE_KBPS);
+}
+
+#[test]
+fn stream_ladder_rungs_validate_bitrates_and_even_bounded_dimensions() {
+    // A rung renders dimensions and bitrate, for example `640x360@1000`.
+    let rung = ladder_rung(1_000, 640, 360);
+    assert_eq!(rung.video_bitrate_kbps(), 1_000);
+    assert_eq!(rung.width(), 640);
+    assert_eq!(rung.height(), 360);
+    assert_eq!(rung.to_string(), "640x360@1000");
+
+    // The bounds are inclusive on both ends.
+    for (bitrate, width, height) in [
+        (
+            MIN_VIDEO_BITRATE_KBPS,
+            MIN_STREAM_LADDER_DIMENSION,
+            MIN_STREAM_LADDER_DIMENSION,
+        ),
+        (
+            MAX_VIDEO_BITRATE_KBPS,
+            MAX_STREAM_LADDER_WIDTH,
+            MAX_STREAM_LADDER_HEIGHT,
+        ),
+    ] {
+        assert!(
+            StreamLadderRung::new(bitrate, width, height).is_ok(),
+            "{width}x{height}@{bitrate} must be accepted"
+        );
+    }
+
+    for (bitrate, width, height, expected) in [
+        (
+            MIN_VIDEO_BITRATE_KBPS - 1,
+            640,
+            360,
+            StreamLadderError::BitrateTooLow,
+        ),
+        (0, 640, 360, StreamLadderError::BitrateTooLow),
+        (
+            MAX_VIDEO_BITRATE_KBPS + 1,
+            640,
+            360,
+            StreamLadderError::BitrateTooHigh,
+        ),
+        (
+            MIN_VIDEO_BITRATE_KBPS,
+            MIN_STREAM_LADDER_DIMENSION - 1,
+            360,
+            StreamLadderError::DimensionTooSmall,
+        ),
+        (
+            MIN_VIDEO_BITRATE_KBPS,
+            640,
+            MIN_STREAM_LADDER_DIMENSION - 1,
+            StreamLadderError::DimensionTooSmall,
+        ),
+        (
+            MIN_VIDEO_BITRATE_KBPS,
+            MAX_STREAM_LADDER_WIDTH + 1,
+            360,
+            StreamLadderError::DimensionTooLarge,
+        ),
+        (
+            MIN_VIDEO_BITRATE_KBPS,
+            640,
+            MAX_STREAM_LADDER_HEIGHT + 1,
+            StreamLadderError::DimensionTooLarge,
+        ),
+        (1_000, 641, 360, StreamLadderError::OddDimension),
+        (1_000, 640, 361, StreamLadderError::OddDimension),
+    ] {
+        assert_eq!(
+            StreamLadderRung::new(bitrate, width, height),
+            Err(expected),
+            "{width}x{height}@{bitrate} must be refused"
+        );
+    }
+}
+
+#[test]
+fn stream_ladders_require_two_to_eight_increasing_rungs() {
+    let low = ladder_rung(1_000, 640, 360);
+    let high = ladder_rung(1_500, 1_280, 720);
+    let ladder = StreamLadder::new(vec![low, high]).unwrap();
+    assert_eq!(ladder.rungs(), &[low, high]);
+    assert_eq!(ladder.top_bitrate_kbps(), 1_500);
+    assert_eq!(ladder.to_string(), "640x360@1000,1280x720@1500");
+    assert_eq!(MIN_STREAM_LADDER_RUNGS, 2);
+    assert_eq!(MAX_STREAM_LADDER_RUNGS, 8);
+
+    // One rung is not a ladder, and neither is an empty list.
+    assert_eq!(
+        StreamLadder::new(Vec::new()),
+        Err(StreamLadderError::TooFewRungs)
+    );
+    assert_eq!(
+        StreamLadder::new(vec![low]),
+        Err(StreamLadderError::TooFewRungs)
+    );
+
+    // The count bound is inclusive: eight increasing rungs are accepted and a
+    // ninth is refused before any ordering rule is considered.
+    let rungs = |count: u32| {
+        (0..count)
+            .map(|index| ladder_rung(1_000 + index * 1_000, 640 + index * 16, 360 + index * 16))
+            .collect::<Vec<_>>()
+    };
+    assert!(StreamLadder::new(rungs(8)).is_ok());
+    assert_eq!(
+        StreamLadder::new(rungs(9)),
+        Err(StreamLadderError::TooManyRungs)
+    );
+
+    // Bitrates must strictly increase: equal or descending is refused.
+    assert_eq!(
+        StreamLadder::new(vec![
+            ladder_rung(1_000, 640, 360),
+            ladder_rung(1_000, 1_280, 720),
+        ]),
+        Err(StreamLadderError::BitratesNotIncreasing)
+    );
+    assert_eq!(
+        StreamLadder::new(vec![
+            ladder_rung(1_500, 1_280, 720),
+            ladder_rung(1_000, 640, 360),
+        ]),
+        Err(StreamLadderError::BitratesNotIncreasing)
+    );
+
+    // Dimensions may stay equal but must not shrink at any rung.
+    assert!(StreamLadder::new(vec![low, ladder_rung(1_500, 640, 360)]).is_ok());
+    assert_eq!(
+        StreamLadder::new(vec![
+            ladder_rung(1_000, 1_280, 720),
+            ladder_rung(1_500, 640, 1_080),
+        ]),
+        Err(StreamLadderError::DimensionsDecrease)
+    );
+    assert_eq!(
+        StreamLadder::new(vec![
+            ladder_rung(1_000, 640, 720),
+            ladder_rung(1_500, 640, 360),
+        ]),
+        Err(StreamLadderError::DimensionsDecrease)
+    );
+}
+
+#[test]
+fn stream_ladders_are_hls_only_and_group_under_the_top_rung() {
+    let ladder = StreamLadder::new(vec![
+        ladder_rung(1_000, 640, 360),
+        ladder_rung(1_500, 1_280, 720),
+    ])
+    .unwrap();
+
+    let hls = StreamTarget::new(
+        stream_target_id(4),
+        "Local HLS".to_owned(),
+        StreamProtocol::Hls,
+        StreamEndpoint::parse_for(StreamProtocol::Hls, "/var/lib/freemix/live").unwrap(),
+        None,
+        output_id(1),
+    )
+    .unwrap();
+    assert_eq!(hls.ladder(), None);
+    assert_eq!(hls.video_bitrate_kbps(), DEFAULT_VIDEO_BITRATE_KBPS);
+
+    // A ladder moves the base bitrate to the top rung, the primary/grouping
+    // bitrate a sink advertises, even over one authored earlier.
+    let laddered = hls
+        .clone()
+        .with_video_bitrate(9_000)
+        .unwrap()
+        .with_ladder(Some(ladder.clone()))
+        .unwrap();
+    assert_eq!(laddered.ladder(), Some(&ladder));
+    assert_eq!(laddered.video_bitrate_kbps(), 1_500);
+
+    // Clearing removes the ladder and leaves the base bitrate where it was.
+    let cleared = laddered.clone().with_ladder(None).unwrap();
+    assert_eq!(cleared.ladder(), None);
+    assert_eq!(cleared.video_bitrate_kbps(), 1_500);
+
+    // RTMP/RTMPS/SRT publish one rendition, so a ladder is refused there.
+    let remote = stream_target(1, "Primary", output_id(1));
+    assert_eq!(
+        remote.clone().with_ladder(Some(ladder)),
+        Err(StreamTargetError::LadderNotAllowed)
+    );
+    // Clearing is a no-op where no ladder was allowed in the first place.
+    assert_eq!(remote.clone().with_ladder(None).unwrap(), remote);
+    assert_eq!(remote.video_bitrate_kbps(), DEFAULT_VIDEO_BITRATE_KBPS);
 }
 
 #[test]

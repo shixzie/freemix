@@ -1932,6 +1932,9 @@ fn stream_target(spec: &StreamSpec) -> AppResult<StreamTarget> {
     let target = target
         .with_video_bitrate(spec.video_bitrate_kbps)
         .map_err(|error| AppFailure(error.to_string()))?;
+    let target = target
+        .with_ladder(spec.ladder.clone())
+        .map_err(|error| AppFailure(error.to_string()))?;
     Ok(target.with_startup(spec.startup))
 }
 
@@ -3287,7 +3290,9 @@ fn print_outputs(project: &Project) {
 /// The URLs printed here come from [`StreamTarget::redacted_url`], which
 /// renders the key as `****`. An HLS destination has no key: its local
 /// `hls:///absolute/dir` output path is operator-chosen storage rather than a
-/// secret and is printed verbatim. No line in this program prints the key.
+/// secret and is printed verbatim. Its authored ladder renders as
+/// `ladder=640x360@800,1280x720@1500`, and a destination without one renders
+/// `ladder=none`. No line in this program prints the key.
 fn print_stream_targets(project: &Project) {
     for target in project.stream_targets() {
         let output = project
@@ -3300,7 +3305,7 @@ fn print_stream_targets(project: &Project) {
             StartupPolicy::ReconcileDesiredState => "reconcile-desired-state",
         };
         println!(
-            "stream id={} name={:?} protocol={} url={:?} backup_url={:?} output={} output_name={:?} startup={startup} video_bitrate_kbps={} running={}",
+            "stream id={} name={:?} protocol={} url={:?} backup_url={:?} output={} output_name={:?} startup={startup} video_bitrate_kbps={} ladder={} running={}",
             target.id(),
             target.name(),
             target.protocol(),
@@ -3311,6 +3316,9 @@ fn print_stream_targets(project: &Project) {
             target.output(),
             output.name,
             target.video_bitrate_kbps(),
+            target
+                .ladder()
+                .map_or_else(|| "none".to_owned(), ToString::to_string),
             target.running(),
         );
     }
@@ -3513,8 +3521,8 @@ Usage:
   freemix-cli output-rename <show.freemix> <existing-output-id> <name>
   freemix-cli output-startup <show.freemix> <existing-output-id> <stopped|reconcile-desired-state>
   freemix-cli output-remove <show.freemix> <existing-output-id>
-  freemix-cli stream-add <show.freemix> <nonzero-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>]
-  freemix-cli stream-update <show.freemix> <existing-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>]
+  freemix-cli stream-add <show.freemix> <nonzero-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)]
+  freemix-cli stream-update <show.freemix> <existing-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>] [--rung <video_bitrate_kbps>:<width>x<height> (hls:// only, repeat 2..=8)]
   freemix-cli stream-remove <show.freemix> <existing-stream-id>
   freemix-cli stream-start <show.freemix> <existing-stream-id>
   freemix-cli stream-stop <show.freemix> <existing-stream-id>
@@ -3526,7 +3534,13 @@ Usage:
       never printed: `streams` and every error render it as ****. An
       hls:///abs/dir destination writes local segments and carries no key: it
       omits the <stream-key> positional and refuses --backup; its local output
-      path is not a secret and is printed verbatim.
+      path is not a secret and is printed verbatim. The repeated
+      --rung <video_bitrate_kbps>:<width>x<height> option authors that
+      destination's multi-bitrate ladder: 2 to 8 rungs with strictly
+      increasing bitrates and nondecreasing even dimensions, printed as
+      `ladder=640x360@1000,1280x720@2500`; the top rung becomes the
+      destination's video_bitrate_kbps. Every other destination refuses
+      --rung.
   freemix-cli scene-input-add <show.freemix> <nonzero-input-id> <nonzero-scene-id> <name>
   freemix-cli scene-input-duplicate <show.freemix> <source-scene-id> <new-scene-id> <new-input-id> <scene-name> <input-name>
   freemix-cli scene-input-audio-source <show.freemix> <scene-input-id> <source-input-id>

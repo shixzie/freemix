@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, path::PathBuf};
 
-use fm_model::{DEFAULT_VIDEO_BITRATE_KBPS, StartupPolicy};
+use fm_model::{DEFAULT_VIDEO_BITRATE_KBPS, StartupPolicy, StreamLadder, StreamLadderRung};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManualTransitionKind {
@@ -74,8 +74,10 @@ impl FadeToBlackTarget {
 /// That matches the bundle's trust model, which stores the key in plaintext in
 /// `project.json`; it is still worth knowing before pasting a production key
 /// on a shared host. An `hls:///absolute/dir` destination writes local
-/// segments, carries no key at all, and therefore omits the key positional.
-/// Once parsed the key stops being printable: `Debug` here redacts it, and the
+/// segments, carries no key at all, and therefore omits the key positional;
+/// the repeated `--rung <video_bitrate_kbps>:<width>x<height>` option authors
+/// that destination's multi-bitrate ladder, validated here as a whole. Once
+/// parsed the key stops being printable: `Debug` here redacts it, and the
 /// model type it becomes never renders it at all.
 #[derive(Clone, Eq, PartialEq)]
 pub struct StreamSpec {
@@ -87,6 +89,7 @@ pub struct StreamSpec {
     pub backup_url: Option<String>,
     pub startup: StartupPolicy,
     pub video_bitrate_kbps: u32,
+    pub ladder: Option<fm_model::StreamLadder>,
 }
 
 impl std::fmt::Debug for StreamSpec {
@@ -101,6 +104,7 @@ impl std::fmt::Debug for StreamSpec {
             .field("backup_url", &self.backup_url)
             .field("startup", &self.startup)
             .field("video_bitrate_kbps", &self.video_bitrate_kbps)
+            .field("ladder", &self.ladder)
             .finish()
     }
 }
@@ -783,6 +787,11 @@ pub enum ArgsError {
     BlankValue(&'static str),
     /// HLS writes into one local directory and has no failover endpoint.
     BackupNotAllowed,
+    /// RTMP/RTMPS/SRT publish one rendition, so a multi-bitrate ladder has no
+    /// meaning there.
+    LadderNotAllowed,
+    /// The authored rungs are individually shaped but invalid as a ladder.
+    InvalidLadder(fm_model::StreamLadderError),
     InvalidNumber {
         field: &'static str,
         value: String,
@@ -811,6 +820,10 @@ impl core::fmt::Display for ArgsError {
             Self::BackupNotAllowed => {
                 formatter.write_str("hls:// stream destinations do not support --backup")
             }
+            Self::LadderNotAllowed => {
+                formatter.write_str("only hls:// stream destinations support --rung")
+            }
+            Self::InvalidLadder(error) => write!(formatter, "{error}"),
             Self::InvalidNumber { field, value } | Self::InvalidChoice { field, value } => {
                 write!(formatter, "invalid {field} value `{value}`")
             }
@@ -1084,6 +1097,7 @@ fn parse_stream(
     let mut backup_url = None;
     let mut startup = StartupPolicy::Stopped;
     let mut video_bitrate_kbps = DEFAULT_VIDEO_BITRATE_KBPS;
+    let mut rungs = Vec::new();
     while let Some(option) = arguments.next() {
         match option.as_str() {
             "--backup" => {
@@ -1101,6 +1115,16 @@ fn parse_stream(
                     "video bitrate",
                 )?;
             }
+            // Each `--rung` is one authored rendition. Only HLS publishes more
+            // than one, so a ladder on any other protocol is refused before
+            // the value is even read.
+            "--rung" => {
+                if !hls {
+                    return Err(ArgsError::LadderNotAllowed);
+                }
+                let value = required(&mut arguments, "stream ladder rung")?;
+                rungs.push(ladder_rung(&value)?);
+            }
             // An HLS destination has no key positional: a leftover positional
             // is most likely one typed from the network shape, so refuse it
             // instead of silently folding it into the name.
@@ -1110,6 +1134,11 @@ fn parse_stream(
             _ => return Err(ArgsError::UnknownOption(option)),
         }
     }
+    let ladder = if rungs.is_empty() {
+        None
+    } else {
+        Some(StreamLadder::new(rungs).map_err(ArgsError::InvalidLadder)?)
+    };
     Ok(build(
         path,
         StreamSpec {
@@ -1121,8 +1150,41 @@ fn parse_stream(
             backup_url,
             startup,
             video_bitrate_kbps,
+            ladder,
         },
     ))
+}
+
+/// Parses one repeated `--rung` value:
+/// `<video_bitrate_kbps>:<width>x<height>`, for example `1000:640x360`.
+///
+/// A value of any other shape is an [`ArgsError::InvalidNumber`]. A well-shaped
+/// rung is validated by [`StreamLadderRung::new`], whose refusal carries the
+/// model's own message.
+fn ladder_rung(value: &str) -> Result<StreamLadderRung, ArgsError> {
+    let (video_bitrate_kbps, dimensions) = value
+        .split_once(':')
+        .ok_or_else(|| invalid_ladder_rung(value))?;
+    let (width, height) = dimensions
+        .split_once('x')
+        .ok_or_else(|| invalid_ladder_rung(value))?;
+    let video_bitrate_kbps = video_bitrate_kbps
+        .parse::<u32>()
+        .map_err(|_| invalid_ladder_rung(value))?;
+    let width = width
+        .parse::<u32>()
+        .map_err(|_| invalid_ladder_rung(value))?;
+    let height = height
+        .parse::<u32>()
+        .map_err(|_| invalid_ladder_rung(value))?;
+    StreamLadderRung::new(video_bitrate_kbps, width, height).map_err(ArgsError::InvalidLadder)
+}
+
+fn invalid_ladder_rung(value: &str) -> ArgsError {
+    ArgsError::InvalidNumber {
+        field: "stream ladder rung",
+        value: value.to_owned(),
+    }
 }
 
 fn parse_stream_remove(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {

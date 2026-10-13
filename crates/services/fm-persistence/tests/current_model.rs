@@ -11,7 +11,8 @@ use fm_model::{
     MainMix, Output, Project, ProjectSettings, RectMask, RestartPolicy, Rgba8, Rotation, Scene,
     SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
     StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
-    StreamEndpoint, StreamKey, StreamProtocol, StreamTarget, StreamTargetId,
+    StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol, StreamTarget,
+    StreamTargetId,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
@@ -70,6 +71,10 @@ fn stream_target_id(value: u128) -> StreamTargetId {
 
 /// The rich fixture's stream key. Nothing but `project.json` may contain it.
 const RICH_STREAM_KEY: &str = "live-2f8c41d9-secret";
+
+/// The authored ladder the HLS ladder tests write and rewrite. The array is
+/// exactly what the encoder must produce, field order included.
+const HLS_LADDER_JSON: &str = "[{\"video_bitrate_kbps\": 1000, \"width\": 640, \"height\": 360}, {\"video_bitrate_kbps\": 1500, \"width\": 1280, \"height\": 720}]";
 
 fn rich_settings() -> ProjectSettings {
     let frame_rate = FrameRate::new(24_000, 1_001).unwrap();
@@ -185,6 +190,36 @@ fn rich_stream_target(high: u128) -> StreamTarget {
     .unwrap()
     .with_startup(StartupPolicy::ReconcileDesiredState)
     .set_running(true)
+}
+
+/// Adds the authored HLS ladder destination to the rich fixture.
+///
+/// The target is the second stream destination, so callers index it as
+/// `stream_targets()[1]`. Setting the ladder moves its base bitrate to the top
+/// rung, so the authored `video_bitrate_kbps` is `1500`.
+fn laddered_hls_project(high: u128) -> Project {
+    let mut project = rich_project();
+    let target = StreamTarget::new(
+        stream_target_id(high + 42),
+        "Local HLS ladder".into(),
+        StreamProtocol::Hls,
+        StreamEndpoint::parse_for(StreamProtocol::Hls, "/var/lib/freemix/live").unwrap(),
+        None,
+        output_id(high + 30),
+    )
+    .unwrap()
+    .with_ladder(Some(hls_ladder()))
+    .unwrap();
+    project.add_stream_target_checked(target).unwrap();
+    project
+}
+
+fn hls_ladder() -> StreamLadder {
+    StreamLadder::new(vec![
+        StreamLadderRung::new(1_000, 640, 360).unwrap(),
+        StreamLadderRung::new(1_500, 1_280, 720).unwrap(),
+    ])
+    .unwrap()
 }
 
 fn rich_project() -> Project {
@@ -555,7 +590,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 21"));
+    assert!(encoded.contains("\"schema_version\": 22"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -611,6 +646,157 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 }
 
 #[test]
+fn hls_stream_ladder_round_trips_at_the_current_schema() {
+    let high = u128::from(u64::MAX) + 101;
+    let temp = TestDirectory::new("stream-target-ladder");
+    let store = temp.store("show");
+    let expected = StoredProject::from_project(
+        laddered_hls_project(high),
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(encoded.contains("\"schema_version\": 22"));
+    // The ladder is written as an inline array of rung objects, in list order
+    // and with exactly the authored fields.
+    assert!(
+        encoded.contains(&format!(
+            "\"video_bitrate_kbps\": 1500,\n        \"ladder\": {HLS_LADDER_JSON}"
+        )),
+        "encoded ladder must be exactly the authored rungs"
+    );
+    // A destination without a ladder writes an explicit `null`.
+    assert!(encoded.contains("\"video_bitrate_kbps\": 9000,\n        \"ladder\": null"));
+
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded, expected);
+    assert_eq!(loaded.project().schema_version(), CURRENT_SCHEMA_VERSION);
+    let loaded_target = &loaded.project().stream_targets()[1];
+    assert_eq!(loaded_target.ladder(), Some(&hls_ladder()));
+    assert_eq!(loaded_target.video_bitrate_kbps(), 1_500);
+    assert_eq!(
+        loaded_target.ladder().unwrap().to_string(),
+        "640x360@1000,1280x720@1500"
+    );
+}
+
+#[test]
+fn strict_stream_ladder_parser_rejects_missing_wrong_typed_and_out_of_contract_fields() {
+    let high = u128::from(u64::MAX) + 101;
+    let temp = TestDirectory::new("strict-stream-ladder");
+    let store = temp.store("show");
+    let expected = StoredProject::from_project(
+        laddered_hls_project(high),
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+
+    let first_rung = "{\"video_bitrate_kbps\": 1000, \"width\": 640, \"height\": 360}";
+    let nine_rungs = (0..9)
+        .map(|index| {
+            format!(
+                "{{\"video_bitrate_kbps\": {}, \"width\": {}, \"height\": {}}}",
+                1_000 + index * 1_000,
+                640 + index * 16,
+                360 + index * 16,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    for malformed in [
+        // Missing and wrong-typed fields: a current manifest carries `ladder`
+        // explicitly, as `null` or as an array of rung objects.
+        encoded.replacen(",\n        \"ladder\": null", "", 1),
+        encoded.replacen(&format!(",\n        \"ladder\": {HLS_LADDER_JSON}"), "", 1),
+        encoded.replacen(
+            &format!("\"ladder\": {HLS_LADDER_JSON}"),
+            "\"ladder\": 7",
+            1,
+        ),
+        encoded.replacen(
+            &format!("\"ladder\": {HLS_LADDER_JSON}"),
+            "\"ladder\": {\"rungs\": []}",
+            1,
+        ),
+        encoded.replacen(
+            first_rung,
+            "{\"video_bitrate_kbps\": \"1000\", \"width\": 640, \"height\": 360}",
+            1,
+        ),
+        encoded.replacen(
+            first_rung,
+            "{\"video_bitrate_kbps\": 1000, \"height\": 360}",
+            1,
+        ),
+        encoded.replacen(
+            first_rung,
+            "{\"video_bitrate_kbps\": 1000, \"width\": 640, \"height\": 360, \"future\": 1}",
+            1,
+        ),
+        encoded.replacen(
+            first_rung,
+            "{\"video_bitrate_kbps\": 1000, \"width\": -640, \"height\": 360}",
+            1,
+        ),
+        // Out-of-contract lists and rungs the model constructors enforce.
+        encoded.replacen(HLS_LADDER_JSON, &format!("[{first_rung}]"), 1),
+        encoded.replacen(HLS_LADDER_JSON, &format!("[{nine_rungs}]"), 1),
+        encoded.replacen(
+            HLS_LADDER_JSON,
+            "[{\"video_bitrate_kbps\": 1500, \"width\": 1280, \"height\": 720}, {\"video_bitrate_kbps\": 1000, \"width\": 640, \"height\": 360}]",
+            1,
+        ),
+        encoded.replacen(
+            HLS_LADDER_JSON,
+            "[{\"video_bitrate_kbps\": 1000, \"width\": 1280, \"height\": 720}, {\"video_bitrate_kbps\": 1500, \"width\": 640, \"height\": 360}]",
+            1,
+        ),
+        encoded.replacen(
+            first_rung,
+            "{\"video_bitrate_kbps\": 999, \"width\": 640, \"height\": 360}",
+            1,
+        ),
+        encoded.replacen(
+            first_rung,
+            "{\"video_bitrate_kbps\": 1000, \"width\": 641, \"height\": 360}",
+            1,
+        ),
+        encoded.replacen(
+            first_rung,
+            "{\"video_bitrate_kbps\": 1000, \"width\": 640, \"height\": 15}",
+            1,
+        ),
+        // A ladder is an HLS-only shape: the RTMP target refuses it through
+        // the model's own builder.
+        encoded.replacen(
+            "\"ladder\": null",
+            &format!("\"ladder\": {HLS_LADDER_JSON}"),
+            1,
+        ),
+    ] {
+        fs::write(store.manifest_path(), malformed).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(
+            matches!(error, StoreError::MalformedManifest { .. }),
+            "expected a malformed manifest, got {error:?}"
+        );
+    }
+
+    // The untouched manifest still loads after every rejected rewrite.
+    fs::write(store.manifest_path(), encoded).unwrap();
+    assert_eq!(store.load().unwrap(), expected);
+}
+
+#[test]
 fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema() {
     let temp = TestDirectory::new("stream-target-running");
     let store = temp.store("show");
@@ -630,7 +816,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 21"));
+    assert!(valid.contains("\"schema_version\": 22"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -646,7 +832,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 21", "\"schema_version\": 20", 1),
+        valid.replacen("\"schema_version\": 22", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();

@@ -332,7 +332,8 @@ fn write_project_collections(output: &mut String, project: &fm_model::Project) {
 /// existing trust model: `project.json` is plaintext and the bundle must be
 /// protected like the credential it now contains. This is the one place the
 /// secret is allowed to leave [`fm_model::StreamKey`]. An HLS destination has
-/// no key; its field is written as `null`.
+/// no key; its field is written as `null`. An authored ladder is written
+/// inline as an array of rungs; a destination without one writes `null`.
 fn write_stream_targets(output: &mut String, project: &fm_model::Project) {
     output.push_str(",\n    \"stream_targets\": [");
     for (index, target) in project.stream_targets().iter().enumerate() {
@@ -369,15 +370,41 @@ fn write_stream_targets(output: &mut String, project: &fm_model::Project) {
         }
         write!(
             output,
-            ",\n        \"startup\": \"{}\",\n        \"output\": {},\n        \"running\": {},\n        \"video_bitrate_kbps\": {}\n      }}",
+            ",\n        \"startup\": \"{}\",\n        \"output\": {},\n        \"running\": {},\n        \"video_bitrate_kbps\": {},\n        \"ladder\": ",
             startup_policy(target.startup()),
             target.output(),
             target.running(),
             target.video_bitrate_kbps(),
         )
         .expect("writing to a string cannot fail");
+        write_stream_ladder(output, target.ladder());
+        output.push_str("\n      }");
     }
     array_end(output, project.stream_targets().is_empty(), 4);
+}
+
+/// Writes one destination's authored ladder as an inline array of rung
+/// objects, or `null` when it has none.
+fn write_stream_ladder(output: &mut String, ladder: Option<&fm_model::StreamLadder>) {
+    let Some(ladder) = ladder else {
+        output.push_str("null");
+        return;
+    };
+    output.push('[');
+    for (index, rung) in ladder.rungs().iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(
+            output,
+            "{{\"video_bitrate_kbps\": {}, \"width\": {}, \"height\": {}}}",
+            rung.video_bitrate_kbps(),
+            rung.width(),
+            rung.height(),
+        )
+        .expect("writing to a string cannot fail");
+    }
+    output.push(']');
 }
 
 fn write_input_audio_strips(output: &mut String, project: &fm_model::Project) {
