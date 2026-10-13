@@ -1555,6 +1555,9 @@ struct NativeProgramRecorder {
     capture: RecorderCapturePolicy,
     finalization_clean: Option<bool>,
     startup_pair_timeout: Duration,
+    /// Parent directory of the open segment, sampled for free space when the
+    /// final report is frozen.
+    parent: PathBuf,
 }
 
 #[cfg(feature = "native-media")]
@@ -1617,6 +1620,7 @@ impl NativeProgramRecorder {
             NonZeroU32::new(dimensions.height()).expect("project height is nonzero"),
         )?;
         let output = create_record_output(path)?;
+        let parent = recording_parent(path).to_path_buf();
         let mut config = RecordConfig::new(format.clone());
         config.limits.stop_timeout = PROGRAM_RECORDER_STOP_TIMEOUT;
         config.limits.kill_timeout = PROGRAM_RECORDER_KILL_TIMEOUT;
@@ -1634,6 +1638,7 @@ impl NativeProgramRecorder {
             capture: RecorderCapturePolicy::default(),
             finalization_clean: None,
             startup_pair_timeout,
+            parent,
         })
     }
 
@@ -1741,6 +1746,9 @@ impl NativeProgramRecorder {
             };
         }
         let report = self.recorder.stop();
+        let duration_ms =
+            recorded_duration_ms(report.telemetry.completed_pairs, self.format.frame_rate());
+        let free_bytes = disk::available_bytes(&self.parent).unwrap_or(0);
         let app_capture_failure = self.capture.app_capture_failure;
         let failure = self
             .capture
@@ -1755,13 +1763,15 @@ impl NativeProgramRecorder {
             })
             .unwrap_or_else(|| "none".to_owned());
         eprintln!(
-            "FREEMIXD_RECORDER\tv=1\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\twav_bytes={}\toutput_finalization={:?}\tcleanup={:?}\tapp_capture_failure={}\tfailure={}",
+            "FREEMIXD_RECORDER\tv=1\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\twav_bytes={}\tduration_ms={}\tfree_bytes={}\toutput_finalization={:?}\tcleanup={:?}\tapp_capture_failure={}\tfailure={}",
             report.telemetry.state,
             report.outcome,
             report.telemetry.accepted_pairs,
             report.telemetry.completed_pairs,
             report.telemetry.output_bytes,
             report.telemetry.wav_bytes,
+            duration_ms,
+            free_bytes,
             report.output,
             report.cleanup,
             app_capture_failure,
@@ -1812,6 +1822,22 @@ fn startup_pair_decision(
     } else {
         StartupPairDecision::Pending
     }
+}
+
+/// Wall duration of `pairs` completed frames at `rate`, in whole milliseconds.
+///
+/// The recorder knows only admitted and completed pair counts; the captured
+/// cadence turns those into the media span the segment actually covers. The
+/// arithmetic is exact integer math, saturating rather than wrapping.
+#[cfg(feature = "native-media")]
+fn recorded_duration_ms(pairs: u64, rate: fm_types::FrameRate) -> u64 {
+    let numerator = u128::from(rate.numerator());
+    let denominator = u128::from(rate.denominator());
+    let millis = u128::from(pairs)
+        .saturating_mul(1_000)
+        .saturating_mul(denominator)
+        / numerator;
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 /// Realization state of the configured program recording.
@@ -9228,6 +9254,20 @@ mod tests {
             record_wav_path(Path::new("/srv/shows/program")),
             Path::new("/srv/shows/program.wav")
         );
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn recorded_duration_is_exact_for_integer_and_fractional_rates() {
+        let thirty = fm_types::FrameRate::new(30, 1).unwrap();
+        assert_eq!(recorded_duration_ms(0, thirty), 0);
+        assert_eq!(recorded_duration_ms(90, thirty), 3_000);
+        let drop_frame = fm_types::FrameRate::new(30_000, 1_001).unwrap();
+        assert_eq!(recorded_duration_ms(30, drop_frame), 1_001);
+        assert_eq!(recorded_duration_ms(60, drop_frame), 2_002);
+        let sixty = fm_types::FrameRate::new(60, 1).unwrap();
+        assert_eq!(recorded_duration_ms(1, sixty), 16);
+        assert_eq!(recorded_duration_ms(u64::MAX, thirty), u64::MAX);
     }
 
     #[cfg(feature = "native-media")]
