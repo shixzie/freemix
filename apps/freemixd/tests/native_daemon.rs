@@ -1075,7 +1075,7 @@ fn native_generator_program_recording_is_playable_and_checkpointed() {
     let (capabilities_digest, initial) = client.handshake_with_digest();
     assert_eq!(
         capabilities_digest,
-        "native-media-bounded-video-audio-master-camera-record-program-telemetry-v3"
+        "native-media-bounded-video-audio-master-meters-camera-record-program-telemetry-v4"
     );
     assert_snapshot_routing(&initial, 0, input(1), input(2));
     thread::sleep(Duration::from_millis(1_500));
@@ -1214,7 +1214,7 @@ fn recording_desired_false_configures_support_without_recorder_activity() {
     // The digest reflects CONFIGURED support, not recording activity.
     assert_eq!(
         capabilities_digest,
-        "native-media-bounded-video-audio-master-camera-record-program-telemetry-v3"
+        "native-media-bounded-video-audio-master-meters-camera-record-program-telemetry-v4"
     );
     assert!(!initial.record_desired_active);
     thread::sleep(Duration::from_millis(1_000));
@@ -1264,7 +1264,7 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
     let (capabilities_digest, initial) = client.handshake_with_digest();
     assert_eq!(
         capabilities_digest,
-        "native-media-bounded-video-audio-master-camera-record-program-telemetry-v3"
+        "native-media-bounded-video-audio-master-meters-camera-record-program-telemetry-v4"
     );
     assert!(initial.record_desired_active);
     thread::sleep(Duration::from_millis(1_500));
@@ -1347,7 +1347,7 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
     let (digest, snapshot) = client.handshake_with_digest();
     assert_eq!(
         digest,
-        "native-media-bounded-video-audio-master-camera-record-program-telemetry-v3"
+        "native-media-bounded-video-audio-master-meters-camera-record-program-telemetry-v4"
     );
     assert_eq!(snapshot.revision, 3);
     assert!(!snapshot.record_desired_active);
@@ -2061,7 +2061,7 @@ fn fullscreen_program_generated_bars_presents_and_exits_once() {
     let (capabilities_digest, initial) = client.handshake_with_digest();
     assert_eq!(
         capabilities_digest,
-        "native-media-bounded-video-audio-master-camera-fullscreen-sdr-telemetry-v3"
+        "native-media-bounded-video-audio-master-meters-camera-fullscreen-sdr-telemetry-v4"
     );
     assert_snapshot_routing(&initial, 0, input(1), input(2));
     thread::sleep(Duration::from_millis(200));
