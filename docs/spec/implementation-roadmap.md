@@ -1372,15 +1372,50 @@ rate), and `free_bytes` (the segment parent sampled when the report is frozen,
 zero when unreadable); a killed child may leave a truncated sidecar, and only
 a clean stop finalizes it.
 
+Program segments also rotate automatically at exact frame boundaries.
+`--record-segment-seconds <1..=86400>` makes every configured slot close its
+current segment once its accepted-pair count reaches
+`ceil(seconds * rate.numerator / rate.denominator)` for the project frame rate.
+The completed segment is handed to a background finalizer, the next
+deterministic `<stem>-NNN.mp4` (with its `<stem>-NNN.wav` sidecar when
+`--record-wav` is set) opens at the boundary frame with the same dimensions,
+frame rate, sample rate, and channel layout and `first_sequence` equal to that
+frame, and the boundary frame is then captured into the new segment, so no
+frame is dropped or duplicated across the seam and finished segments drain and
+report off the render path. A rotation that cannot derive or open its next
+segment latches only that slot and reports a sanitized `rotate:` notice while
+the show and the other slot continue.
+
 The two slots are not independently controllable and still share the project
 encoding format and Master audio: both follow the one engine desired flag, and
 there is no per-recorder codec, resolution, audio-map, or bus/channel
-selection, no automatic segment-rule rotation, no multiple-track or metadata
-handling, and no protocol or client representation of a recorder roster. That
-independent control, the differing codec/resolution/audio configuration, the
-item's segment rules, and `AU-010` bus selection remain planned; `AU-010` still
-depends on the planned `AU-002`/`AU-003`, so `OR-001`, `OR-002`, and `AU-010`
-are unchanged and item 4 remains incomplete.
+selection, no per-recorder segment policy (the daemon exposes only the shared
+duration rule, while frames/bytes/duration policies live in the unwired
+`fm-record` spool), no multiple-track or metadata handling, and no protocol or
+client representation of a recorder roster. That independent control, the
+differing codec/resolution/audio configuration, and `AU-010` bus selection
+remain planned; `AU-010` still depends on the planned `AU-002`/`AU-003`, so
+`OR-001`, `OR-002`, and `AU-010` are unchanged and item 4 remains incomplete.
+
+Current implementation boundary for item 5: `fm-record`'s crash-safe packet
+spool now carries ISO/MultiCorder tap and timecode manifest metadata plus
+duration-based segmentation. `SegmentPolicy` gains `max_duration` through
+`SegmentPolicy::by_duration`; the spool rotates when the next media event would
+push the segment past the limit and at least one media frame is already in it,
+`RecorderSnapshot.written_duration_nanos` and `RecoveredSegment.duration_nanos`
+report exact recorded spans, and crash reconciliation restores the active
+segment's duration by scanning media timing from a bounded prefix of each
+record before validating and repairing torn tails. `RecorderConfig.tap`
+(`IsoTapMetadata`) records optional video and audio source `InputId`s, a
+`TimecodeSource` of `SharedMaster` or `SourceOriginal`, and an optional
+`Timecode`, all stored in the CRC-protected `manifest.fmr` start record and
+restored across restart; unknown timecode sources, invalid timecodes, zero
+input ids, and truncated or checksum-corrupt records are refused
+transactionally. This is spool metadata only: no daemon path selects per-input
+taps, writes an editing-format timecode manifest, records several inputs
+simultaneously, or exposes tap or timecode state on the wire, and per-camera
+storage roots, ISO/MultiCorder graph taps, and `OR-004` acceptance remain
+planned, so item 5 remains incomplete.
 
 Current implementation boundary for item 9: native `freemixd` performs a
 fail-closed disk preflight for configured program recording and reports
