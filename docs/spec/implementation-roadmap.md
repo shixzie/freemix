@@ -1364,13 +1364,20 @@ that fires at or below 1 GiB and clears at 2 GiB, printing exactly one
 `FREEMIXD_DISK` record per edge with its state and free bytes. The final
 `FREEMIXD_TELEMETRY` v4 record gains `disk_alert=unknown|normal|low` and
 `disk_free_bytes`. A failed sample stays silent and leaves the last value and
-state; a daemon that has never sampled reports `unknown` with zero bytes. This
-covers program recording only: HLS and other local outputs have no preflight or
-space alert, network preflight remains endpoint validation rather than a
-bandwidth probe, there is no new GPU capability preflight, low space never
-stops or fails a running recording on its own, and no per-destination disk
-telemetry exists. `OR-001`'s space status is now observable on the recording
-path, but the row still awaits its other acceptance items, and item 9 remains
+state; a daemon that has never sampled reports `unknown` with zero bytes. The
+same preflight and alerting now cover every authored local HLS output: startup
+fails closed when an HLS directory's nearest existing ancestor cannot be
+queried or falls below the same floor, naming the stream target id and byte
+count but never the path, and the five-second sampler takes the minimum free
+space across the recording parent and every local output directory, so one
+`FREEMIXD_DISK` edge covers whichever configured local output crosses the
+threshold. No path is created by the preflight; the HLS sink still creates its
+own leaf later. This covers program recording and local HLS outputs only:
+network preflight remains endpoint validation rather than a bandwidth probe,
+there is no new GPU capability preflight, low space never stops or fails a
+running recording or output on its own, and no per-destination disk telemetry
+exists. `OR-001`'s space status is now observable on the recording path, but
+the row still awaits its other acceptance items, and item 9 remains
 incomplete.
 
 Exit: a remote-controlled headless production can stream and record
