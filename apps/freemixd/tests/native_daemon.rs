@@ -1094,7 +1094,7 @@ fn native_generator_program_recording_is_playable_and_checkpointed() {
         .lines()
         .find(|line| line.starts_with("FREEMIXD_RECORDER\t"))
         .unwrap_or_else(|| panic!("missing recorder diagnostic: {stderr}"));
-    assert!(diagnostic.contains("\tv=1\tstate=Stopped\toutcome=Clean\t"));
+    assert!(diagnostic.contains("\tv=1\tslot=1\tstate=Stopped\toutcome=Clean\t"));
     assert!(diagnostic.contains("\toutput_finalization=Synced\tcleanup=Complete\t"));
     assert!(diagnostic.contains("\tapp_capture_failure=false\tfailure=none"));
     let accepted = diagnostic_value(diagnostic, "accepted_pairs")
@@ -1333,7 +1333,7 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
         .lines()
         .filter(|line| line.starts_with("FREEMIXD_RECORDER\t"))
     {
-        assert!(diagnostic.contains("\tv=1\tstate=Stopped\toutcome=Clean\t"));
+        assert!(diagnostic.contains("\tv=1\tslot=1\tstate=Stopped\toutcome=Clean\t"));
         assert!(diagnostic.contains("\toutput_finalization=Synced\tcleanup=Complete\t"));
     }
 

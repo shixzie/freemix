@@ -666,6 +666,7 @@ struct ProgramApp {
     once: bool,
     display_index: usize,
     record_program: Option<PathBuf>,
+    record_program_2: Option<PathBuf>,
     record_wav: bool,
     camera_helper: Option<PathBuf>,
     window: Option<Arc<winit::window::Window>>,
@@ -696,6 +697,7 @@ impl ProgramApp {
         once: bool,
         display_index: usize,
         record_program: Option<PathBuf>,
+        record_program_2: Option<PathBuf>,
         record_wav: bool,
         camera_helper: Option<PathBuf>,
         proxy: winit::event_loop::EventLoopProxy<UserEvent>,
@@ -703,7 +705,7 @@ impl ProgramApp {
         let (size_sender, size_receiver) = coalescing_channel();
         let (replacement_sender, replacement_receiver) = mpsc::sync_channel(1);
         let (recreate_sender, recreate_receiver) = coalescing_channel();
-        let recorder_requested = record_program.is_some();
+        let recorder_requested = record_program.is_some() || record_program_2.is_some();
         let shutdown_timeout = program_shutdown_timeout(recorder_requested);
         Self {
             project,
@@ -711,6 +713,7 @@ impl ProgramApp {
             once,
             display_index,
             record_program,
+            record_program_2,
             record_wav,
             camera_helper,
             window: None,
@@ -921,6 +924,7 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
         let listen = self.listen;
         let once = self.once;
         let record_program = self.record_program.clone();
+        let record_program_2 = self.record_program_2.clone();
         let record_wav = self.record_wav;
         let camera_helper = self.camera_helper.clone();
         let proxy = self.proxy.clone();
@@ -937,6 +941,7 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
                         channels,
                         camera_helper,
                         record_program,
+                        record_program_2,
                         record_wav,
                     )
                     .map_err(|error| error.to_string());
@@ -1067,6 +1072,7 @@ pub(super) fn run(
     display_index: usize,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
+    record_program_2: Option<PathBuf>,
     record_wav: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build()?;
@@ -1077,6 +1083,7 @@ pub(super) fn run(
         once,
         display_index,
         record_program,
+        record_program_2,
         record_wav,
         camera_helper,
         proxy,

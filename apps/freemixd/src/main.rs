@@ -111,7 +111,7 @@ use fm_codec_ffmpeg::{
     Adapter, Config as FfmpegConfig, StreamSelector, ToolAvailability,
     record::{
         CleanupStatus, EnqueueRejection, OutputFinalization, PairedFrame, RecordConfig,
-        RecordFormat, Recorder, RecorderState, StopOutcome,
+        RecordFormat, Recorder, RecorderState, StopOutcome, StopReport,
     },
     stream::{EncoderSettings, StreamDestination},
 };
@@ -359,18 +359,25 @@ struct NativeDaemon {
     assets_root: PathBuf,
     pending_stinger_mutation: Option<NativeStingerMutation>,
     stinger_retirements: NativeStingerRetirements,
-    recorder: ProgramRecording,
+    /// Realization state of every configured recorder slot: slot 0 is
+    /// `--record-program` and slot 1 is `--record-program-2`. Each slot owns
+    /// its own segment, sidecar, failure latch, and report.
+    recorders: [ProgramRecording; RECORDER_SLOTS],
     /// Configured `--record-program` output path; recording configuration is
     /// independent of whether a segment is currently open.
     record_program: Option<PathBuf>,
+    /// Configured `--record-program-2` output path: the second recorder slot,
+    /// configured exactly like [`Self::record_program`] and deriving its own
+    /// segment names.
+    record_program_2: Option<PathBuf>,
     /// Whether each segment also writes a `--record-wav` linear-PCM sidecar
-    /// next to the MP4. Configured support only, like [`Self::record_program`].
+    /// next to the MP4. Applies to every configured recorder slot.
     record_wav: bool,
     /// Hysteretic free-space alert for the configured program outputs.
     disk_alert: disk::DiskSpaceAlert,
     /// Latest successfully sampled free bytes across the configured outputs:
-    /// the recording output's parent and every local HLS output directory;
-    /// `None` until the first sample succeeds.
+    /// every configured recording output's parent and every local HLS output
+    /// directory; `None` until the first sample succeeds.
     disk_free_bytes: Option<u64>,
     /// When the last disk sample was attempted; `None` makes the first sample
     /// evaluate immediately instead of after one full interval.
@@ -1402,17 +1409,36 @@ impl NativeRuntimeTelemetry {
         self.audio_sink_dropped = sink.dropped();
     }
 
-    fn observe_recorder(&mut self, recorder: &NativeProgramRecorder) {
+    /// Aggregates the running recorder slots into the whole-run sample.
+    ///
+    /// Outstanding pairs and retained bytes sum across every running slot and
+    /// both peaks track the aggregate. Called only while at least one slot
+    /// runs, so an idle daemon keeps its last observation instead of
+    /// fabricating a zero sample from no recorders.
+    fn observe_recorders<'a>(
+        &mut self,
+        recorders: impl IntoIterator<Item = &'a NativeProgramRecorder>,
+    ) {
+        let mut outstanding_pairs = 0_u64;
+        let mut retained_bytes = 0_u64;
+        let mut observed = false;
+        for recorder in recorders {
+            let telemetry = recorder.recorder.telemetry();
+            outstanding_pairs =
+                outstanding_pairs.saturating_add(saturating_u64(telemetry.outstanding_pairs));
+            retained_bytes =
+                retained_bytes.saturating_add(saturating_u64(telemetry.retained_bytes));
+            observed = true;
+        }
+        if !observed {
+            return;
+        }
         self.recorder_configured = true;
-        let telemetry = recorder.recorder.telemetry();
-        self.recorder_outstanding_pairs = saturating_u64(telemetry.outstanding_pairs);
-        self.recorder_peak_outstanding_pairs = self
-            .recorder_peak_outstanding_pairs
-            .max(self.recorder_outstanding_pairs);
-        self.recorder_retained_bytes = saturating_u64(telemetry.retained_bytes);
-        self.recorder_peak_retained_bytes = self
-            .recorder_peak_retained_bytes
-            .max(self.recorder_retained_bytes);
+        self.recorder_outstanding_pairs = outstanding_pairs;
+        self.recorder_peak_outstanding_pairs =
+            self.recorder_peak_outstanding_pairs.max(outstanding_pairs);
+        self.recorder_retained_bytes = retained_bytes;
+        self.recorder_peak_retained_bytes = self.recorder_peak_retained_bytes.max(retained_bytes);
     }
 
     /// Additive v4 aggregation: whole-run stream pair admission counters. The
@@ -1566,6 +1592,9 @@ struct NativeProgramRecorder {
     /// Parent directory of the open segment, sampled for free space when the
     /// final report is frozen.
     parent: PathBuf,
+    /// 1-based recorder slot number this segment belongs to; every report and
+    /// failure notice this recorder emits is annotated with it.
+    slot: usize,
 }
 
 #[cfg(feature = "native-media")]
@@ -1612,6 +1641,7 @@ impl NativeProgramRecorder {
         stored: &StoredProject,
         path: &Path,
         wav: bool,
+        slot: usize,
     ) -> AppResult<Self> {
         let settings = stored.project().settings();
         let dimensions = settings.video.dimensions;
@@ -1647,6 +1677,7 @@ impl NativeProgramRecorder {
             finalization_clean: None,
             startup_pair_timeout,
             parent,
+            slot,
         })
     }
 
@@ -1702,7 +1733,7 @@ impl NativeProgramRecorder {
         if let Some((failure, app_capture_failure)) =
             self.capture.fail(failure, app_capture_failure)
         {
-            let notice = recorder_failure_notice(failure, app_capture_failure);
+            let notice = recorder_failure_notice(self.slot, failure, app_capture_failure);
             eprintln!("{notice}");
             self.recorder.request_cancel();
         }
@@ -1771,19 +1802,15 @@ impl NativeProgramRecorder {
             })
             .unwrap_or_else(|| "none".to_owned());
         eprintln!(
-            "FREEMIXD_RECORDER\tv=1\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\twav_bytes={}\tduration_ms={}\tfree_bytes={}\toutput_finalization={:?}\tcleanup={:?}\tapp_capture_failure={}\tfailure={}",
-            report.telemetry.state,
-            report.outcome,
-            report.telemetry.accepted_pairs,
-            report.telemetry.completed_pairs,
-            report.telemetry.output_bytes,
-            report.telemetry.wav_bytes,
-            duration_ms,
-            free_bytes,
-            report.output,
-            report.cleanup,
-            app_capture_failure,
-            diagnostic_field(&failure),
+            "{}",
+            recorder_report(
+                self.slot,
+                &report,
+                duration_ms,
+                free_bytes,
+                app_capture_failure,
+                &failure,
+            )
         );
         let complete = report.telemetry.state == RecorderState::Stopped
             && report.outcome == StopOutcome::Clean
@@ -1848,12 +1875,13 @@ fn recorded_duration_ms(pairs: u64, rate: fm_types::FrameRate) -> u64 {
     u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
-/// Realization state of the configured program recording.
+/// Realization state of one configured recorder slot.
 ///
-/// Recording is configured by `--record-program` but only OPENED while the
-/// engine's desired flag is set, mirroring how stream sinks realize desired
-/// running flags. The open segment is boxed to keep this enum small; it is
-/// moved as a unit at every state change.
+/// Recording is configured by `--record-program` (slot 0) or
+/// `--record-program-2` (slot 1) but only OPENED while the engine's desired
+/// flag is set, mirroring how stream sinks realize desired running flags. Each
+/// slot is independent: one open segment per configured output, boxed to keep
+/// this enum small and moved as a unit at every state change.
 #[cfg(feature = "native-media")]
 enum ProgramRecording {
     /// Recording is configured, but no segment is open.
@@ -1861,6 +1889,20 @@ enum ProgramRecording {
     /// One open segment capturing the program feed.
     Running(Box<NativeProgramRecorder>),
 }
+
+#[cfg(feature = "native-media")]
+impl ProgramRecording {
+    /// Whether this slot currently owns an open segment.
+    fn is_running(&self) -> bool {
+        matches!(self, Self::Running(_))
+    }
+}
+
+/// The daemon's fixed number of recorder slots: slot 0 is `--record-program`
+/// and slot 1 is `--record-program-2`. A second slot doubles the independent
+/// destinations without changing the engine's single desired recording flag.
+#[cfg(feature = "native-media")]
+const RECORDER_SLOTS: usize = 2;
 
 /// One segment handed off the render path for bounded finalization.
 ///
@@ -1923,6 +1965,34 @@ fn next_record_segment_path(
         diagnostic_field(&file_name.to_string_lossy())
     ))
     .into())
+}
+
+/// Resolves the next segment path for one recorder slot.
+///
+/// Slot 0 derives from `--record-program` and slot 1 from
+/// `--record-program-2`; an unconfigured slot derives nothing. Derivation
+/// stays independent per slot, so two recorders writing into the same
+/// directory fill their own `<stem>-NNN.mp4` gaps.
+///
+/// # Errors
+///
+/// Returns the same refusal [`next_record_segment_path`] produces for a
+/// configured path that cannot be segmented.
+#[cfg(feature = "native-media")]
+fn next_slot_segment_path(
+    slot: usize,
+    primary: Option<&Path>,
+    secondary: Option<&Path>,
+    exists: impl FnMut(&Path) -> bool,
+) -> AppResult<Option<PathBuf>> {
+    let configured = match slot {
+        0 => primary,
+        1 => secondary,
+        _ => None,
+    };
+    configured
+        .map(|base| next_record_segment_path(base, exists))
+        .transpose()
 }
 
 /// Per-target bookkeeping for the native streaming feed path.
@@ -3191,8 +3261,9 @@ impl NativeDaemon {
             assets_root: store.assets_root().clone(),
             pending_stinger_mutation: None,
             stinger_retirements: NativeStingerRetirements::start()?,
-            recorder: ProgramRecording::Off,
+            recorders: [ProgramRecording::Off, ProgramRecording::Off],
             record_program: None,
+            record_program_2: None,
             record_wav: false,
             disk_alert: disk::DiskSpaceAlert::new(),
             disk_free_bytes: None,
@@ -3234,32 +3305,86 @@ impl NativeDaemon {
         Ok(native)
     }
 
-    fn start_recorder(&mut self, stored: &StoredProject, path: &Path) -> AppResult<()> {
+    /// Opens one slot's next segment for a configured output.
+    ///
+    /// The slot index is zero-based (`--record-program` is 0 and
+    /// `--record-program-2` is 1); the recorder itself reports the matching
+    /// 1-based slot number.
+    fn start_recorder(
+        &mut self,
+        slot: usize,
+        stored: &StoredProject,
+        path: &Path,
+    ) -> AppResult<()> {
         let segment = next_record_segment_path(path, Path::exists)?;
-        self.recorder = ProgramRecording::Running(Box::new(NativeProgramRecorder::start(
+        self.recorders[slot] = ProgramRecording::Running(Box::new(NativeProgramRecorder::start(
             &self.runtime,
             stored,
             &segment,
             self.record_wav,
+            slot + 1,
         )?));
         Ok(())
     }
 
-    /// Records the configured output path so runtime `RecordStart` commands
-    /// can derive later segment names from it even when startup itself does
+    /// Records the configured output paths so runtime `RecordStart` commands
+    /// can derive later segment names from them even when startup itself does
     /// not open a segment.
-    fn configure_recording(&mut self, path: PathBuf, wav: bool) {
-        self.record_program = Some(path);
+    ///
+    /// Slot 0 is `--record-program` and slot 1 is `--record-program-2`; the
+    /// shared `record_wav` flag applies to every configured slot. The
+    /// whole-run telemetry reports recording as configured whenever at least
+    /// one slot has a destination.
+    fn configure_recordings(
+        &mut self,
+        primary: Option<PathBuf>,
+        secondary: Option<PathBuf>,
+        wav: bool,
+    ) {
+        self.record_program = primary;
+        self.record_program_2 = secondary;
         self.record_wav = wav;
+        self.telemetry.recorder_configured = self.recording_configured();
     }
 
-    /// Whether program recording support is CONFIGURED.
+    /// Whether program recording support is CONFIGURED for any slot.
     ///
     /// Deliberately independent of segment activity: the immutable handshake
     /// digest advertises configured startup support, while `FREEMIXD_RECORDER`
     /// reports per-segment runtime health.
     fn recording_configured(&self) -> bool {
-        self.record_program.is_some()
+        self.record_program.is_some() || self.record_program_2.is_some()
+    }
+
+    /// Starts and primes every configured recorder slot for daemon startup.
+    ///
+    /// Startup recording is fail-closed exactly like the single-slot daemon:
+    /// the first slot that cannot start or reach mux readiness fails startup,
+    /// and the caller finalizes whatever already started through the regular
+    /// shutdown path. `Ok(false)` means a requested shutdown interrupted a
+    /// barrier.
+    fn start_and_prime_configured_recorders(
+        &mut self,
+        stored: &StoredProject,
+        control: &mut ControlService<Policy>,
+        server: &ServerIdentity,
+        shutdown: Option<&ProcessShutdown>,
+    ) -> AppResult<bool> {
+        let configured = [self.record_program.clone(), self.record_program_2.clone()];
+        for (slot, path) in configured.into_iter().enumerate() {
+            let Some(path) = path else {
+                continue;
+            };
+            self.start_recorder(slot, stored, &path)?;
+        }
+        for slot in 0..RECORDER_SLOTS {
+            if self.recorders[slot].is_running()
+                && !self.prime_recorder(slot, control, server, shutdown)?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Preflights every authored local HLS output directory, refusing startup
@@ -3303,7 +3428,7 @@ impl NativeDaemon {
     ///
     /// The render loop calls this every frame; the gate is two optional field
     /// checks plus one `Instant` comparison, and a sample reaches the
-    /// filesystem at most once per [`DISK_SAMPLE_INTERVAL`]. A configured
+    /// filesystem at most once per [`DISK_SAMPLE_INTERVAL`]. Every configured
     /// recording output contributes its parent directory, and every authored
     /// local HLS output contributes the nearest existing ancestor of its
     /// directory — the sink creates the leaf later — with the minimum across
@@ -3313,7 +3438,11 @@ impl NativeDaemon {
     /// or a local output is configured evaluates immediately, so a low value
     /// present at startup fires at the first frame boundary.
     fn sample_disk_space(&mut self, now: Instant) {
-        if self.record_program.is_none() && self.local_output_dirs.is_empty() {
+        let recording_parents = [
+            self.record_program.as_deref(),
+            self.record_program_2.as_deref(),
+        ];
+        if recording_parents.iter().all(Option::is_none) && self.local_output_dirs.is_empty() {
             return;
         }
         if self
@@ -3323,13 +3452,16 @@ impl NativeDaemon {
             return;
         }
         self.disk_sampled_at = Some(now);
-        let recording_parent = self.record_program.as_deref().map(recording_parent);
+        let recording_parents = recording_parents
+            .into_iter()
+            .flatten()
+            .map(recording_parent);
         let local_ancestors = self
             .local_output_dirs
             .iter()
             .filter_map(|directory| disk::existing_ancestor(directory));
         let mut minimum: Option<u64> = None;
-        for path in recording_parent.into_iter().chain(local_ancestors) {
+        for path in recording_parents.chain(local_ancestors) {
             if let Ok(available) = disk::available_bytes(path) {
                 minimum = Some(minimum.map_or(available, |current| current.min(available)));
             }
@@ -3349,19 +3481,26 @@ impl NativeDaemon {
         }
     }
 
+    /// Waits for one recorder slot's first muxed pair within that slot's own
+    /// startup timeout.
+    ///
+    /// Returns `Ok(true)` when the slot is ready or was never started,
+    /// `Ok(false)` when a requested shutdown interrupted the barrier, and an
+    /// error when the slot failed or exhausted its deadline. Every failure
+    /// latches only the addressed slot; the caller decides whether that fails
+    /// startup (configured startup, fail-closed) or only the slot (runtime
+    /// `RecordStart`).
     fn prime_recorder(
         &mut self,
+        slot: usize,
         control: &mut ControlService<Policy>,
         server: &ServerIdentity,
         shutdown: Option<&ProcessShutdown>,
     ) -> AppResult<bool> {
-        let ProgramRecording::Running(_) = self.recorder else {
+        let ProgramRecording::Running(recorder) = &self.recorders[slot] else {
             return Ok(true);
         };
-        let startup_timeout = match &self.recorder {
-            ProgramRecording::Running(recorder) => recorder.startup_pair_timeout,
-            ProgramRecording::Off => unreachable!("recorder presence was checked"),
-        };
+        let startup_timeout = recorder.startup_pair_timeout;
         let deadline = Instant::now()
             .checked_add(startup_timeout)
             .ok_or_else(|| AppFailure("Program recorder startup deadline overflow".into()))?;
@@ -3369,7 +3508,7 @@ impl NativeDaemon {
             if requested_daemon_shutdown(Some(&*self), shutdown).is_some() {
                 return Ok(false);
             }
-            let decision = match &self.recorder {
+            let decision = match &self.recorders[slot] {
                 ProgramRecording::Running(recorder) => recorder.startup_decision(),
                 ProgramRecording::Off => unreachable!("recorder presence was checked"),
             }?;
@@ -3379,7 +3518,7 @@ impl NativeDaemon {
                 StartupPairDecision::Pending => {}
             }
             if Instant::now() >= deadline {
-                return Err(match &mut self.recorder {
+                return Err(match &mut self.recorders[slot] {
                     ProgramRecording::Running(recorder) => recorder.fail_startup_timeout(),
                     ProgramRecording::Off => unreachable!("recorder presence was checked"),
                 });
@@ -3499,6 +3638,41 @@ impl NativeDaemon {
     /// the shared output set schedules reconnects and backoff on.
     fn stream_clock_ms(&self) -> u64 {
         u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Feeds one produced program texture and audio block to every running
+    /// recorder slot.
+    ///
+    /// The first running slot consumes the produced block; when both slots run
+    /// the second receives a clone, mirroring how the stream fan-out clones one
+    /// block per target. An idle slot clones nothing, and each slot keeps its
+    /// own readback owner. Takes the recorder pieces separately so the caller
+    /// can hold immutable borrows of other daemon fields.
+    fn capture_recorders(
+        recorders: &mut [ProgramRecording; RECORDER_SLOTS],
+        runtime: &NativeMediaRuntime,
+        program: &NativeTexture,
+        audio: AudioBlock,
+    ) {
+        // A clone is made only when a second slot actually runs; the first
+        // running slot consumes the produced block.
+        let two_running = recorders[0].is_running() && recorders[1].is_running();
+        let second = two_running.then(|| audio.clone());
+        let mut pending = [Some(audio), second];
+        let mut feed = 0;
+        for slot in recorders.iter_mut() {
+            let ProgramRecording::Running(recorder) = slot else {
+                continue;
+            };
+            let Some(entry) = pending.get_mut(feed) else {
+                continue;
+            };
+            let Some(block) = entry.take() else {
+                continue;
+            };
+            feed += 1;
+            recorder.capture(runtime, program, block);
+        }
     }
 
     /// Packs one pair per rendition group per frame and fans it out through
@@ -3637,14 +3811,15 @@ impl NativeDaemon {
 
     /// Schedules recording realization for an accepted RecordStart/RecordStop.
     ///
-    /// A start opens the next segment immediately and holds the session until
-    /// the same bounded prime barrier used at startup confirms mux readiness;
-    /// durability and the engine commit have already settled, so a client is
-    /// merely delayed, never acknowledged for unrealized state. Failures latch
-    /// the attempt unavailable and are reported as a sanitized notice without
-    /// aborting the show.
+    /// A start opens the next segment of every configured slot immediately and
+    /// holds the session until the same bounded prime barrier used at startup
+    /// confirms mux readiness; durability and the engine commit have already
+    /// settled, so a client is merely delayed, never acknowledged for
+    /// unrealized state. Each slot is realized independently: a failure latches
+    /// only that slot's attempt unavailable and reports its own sanitized
+    /// notice without aborting the show or the other slot.
     ///
-    /// A stop retires the open segment off the hot path: the slot drops to
+    /// A stop retires every open segment off the hot path: each slot drops to
     /// [`ProgramRecording::Off`] at once and finalization runs on a dedicated
     /// worker, exactly like stinger retirement, with shutdown joining within
     /// the recorder's own stop budget.
@@ -3667,60 +3842,66 @@ impl NativeDaemon {
             return;
         }
         self.reap_finished_recording_finalizers();
-        if active {
-            self.open_pending_recording(stored, control, server, process_shutdown);
-        } else {
-            self.retire_running_recording();
+        for slot in 0..RECORDER_SLOTS {
+            if active {
+                self.open_pending_recording(slot, stored, control, server, process_shutdown);
+            } else {
+                self.retire_running_recording(slot);
+            }
         }
     }
 
-    /// Opens the next segment after an accepted `RecordStart`.
+    /// Opens one slot's next segment after an accepted `RecordStart`.
     ///
-    /// Every failure here latches only THIS attempt unavailable and reports a
-    /// sanitized notice; the show keeps running, exactly like stream sink
-    /// failures. Engine errors surfaced by the prime barrier are treated the
-    /// same way: if the engine is genuinely broken, the next frame
-    /// realization fails loudly on its own.
+    /// An unconfigured slot derives nothing and stays untouched. Every failure
+    /// here latches only THIS slot's attempt unavailable and reports a
+    /// sanitized notice naming the slot; the show and the other slot keep
+    /// running, exactly like stream sink failures. Engine errors surfaced by
+    /// the prime barrier are treated the same way: if the engine is genuinely
+    /// broken, the next frame realization fails loudly on its own.
     fn open_pending_recording(
         &mut self,
+        slot: usize,
         stored: &StoredProject,
         control: &mut ControlService<Policy>,
         server: &ServerIdentity,
         process_shutdown: Option<&ProcessShutdown>,
     ) {
-        if !self.recording_configured() || matches!(self.recorder, ProgramRecording::Running(_)) {
+        if self.recorders[slot].is_running() {
             return;
         }
-        let configured = self
-            .record_program
-            .as_ref()
-            .expect("recording was checked as configured");
-        let segment = match next_record_segment_path(configured, Path::exists) {
-            Ok(segment) => segment,
+        let segment = match next_slot_segment_path(
+            slot,
+            self.record_program.as_deref(),
+            self.record_program_2.as_deref(),
+            Path::exists,
+        ) {
+            Ok(Some(segment)) => segment,
+            Ok(None) => return,
             Err(error) => {
                 eprintln!(
                     "{}",
-                    recorder_failure_notice(&format!("start:{error}"), false)
+                    recorder_failure_notice(slot + 1, &format!("start:{error}"), false)
                 );
                 return;
             }
         };
-        if let Err(error) = self.start_recorder(stored, &segment) {
-            self.recorder = ProgramRecording::Off;
+        if let Err(error) = self.start_recorder(slot, stored, &segment) {
+            self.recorders[slot] = ProgramRecording::Off;
             eprintln!(
                 "{}",
-                recorder_failure_notice(&format!("start:{error}"), false)
+                recorder_failure_notice(slot + 1, &format!("start:{error}"), false)
             );
             return;
         }
-        match self.prime_recorder(control, server, process_shutdown) {
+        match self.prime_recorder(slot, control, server, process_shutdown) {
             Ok(true | false) => {}
             Err(error) => {
-                // The barrier failed; latch this attempt unavailable. The
-                // failure notice was already emitted by the capture policy or
-                // the timeout helper; cancel and report the partial segment.
+                // The barrier failed; latch this slot's attempt unavailable.
+                // The failure notice was already emitted by the capture policy
+                // or the timeout helper; cancel and report the partial segment.
                 let ProgramRecording::Running(mut recorder) =
-                    std::mem::replace(&mut self.recorder, ProgramRecording::Off)
+                    std::mem::replace(&mut self.recorders[slot], ProgramRecording::Off)
                 else {
                     return;
                 };
@@ -3728,18 +3909,18 @@ impl NativeDaemon {
                 let _ = recorder.stop_and_report();
                 eprintln!(
                     "{}",
-                    recorder_failure_notice(&format!("startup:{error}"), false)
+                    recorder_failure_notice(slot + 1, &format!("startup:{error}"), false)
                 );
             }
         }
     }
 
-    /// Retires an open segment off the render path after an accepted
+    /// Retires one slot's open segment off the render path after an accepted
     /// `RecordStop`. The worker drains the sink cleanly (no cancellation), so
     /// the finalized file keeps its full `FREEMIXD_RECORDER` report.
-    fn retire_running_recording(&mut self) {
+    fn retire_running_recording(&mut self, slot: usize) {
         let ProgramRecording::Running(recorder) =
-            std::mem::replace(&mut self.recorder, ProgramRecording::Off)
+            std::mem::replace(&mut self.recorders[slot], ProgramRecording::Off)
         else {
             return;
         };
@@ -3750,7 +3931,7 @@ impl NativeDaemon {
             mpsc::sync_channel::<Box<NativeProgramRecorder>>(1);
         let (done_sender, done) = mpsc::sync_channel(1);
         let spawned = thread::Builder::new()
-            .name("freemix-native-recording-finalizer".to_owned())
+            .name(format!("freemix-native-recording-finalizer-{}", slot + 1))
             .spawn(move || {
                 let Ok(mut recorder) = handoff_receiver.recv() else {
                     return;
@@ -3770,7 +3951,7 @@ impl NativeDaemon {
                 // shutdown path uses.
                 eprintln!(
                     "{}",
-                    recorder_failure_notice(&format!("finalize:{error}"), false)
+                    recorder_failure_notice(slot + 1, &format!("finalize:{error}"), false)
                 );
                 let _ = recorder.stop_and_report();
             }
@@ -3952,13 +4133,8 @@ impl NativeDaemon {
         } else {
             audio.clone()
         };
-        match &mut self.recorder {
-            ProgramRecording::Running(recorder) => {
-                if let (Some(output), Some(audio)) = (latest_program, audio) {
-                    recorder.capture(&self.runtime, output, audio);
-                }
-            }
-            ProgramRecording::Off => {}
+        if let (Some(output), Some(audio)) = (latest_program, audio) {
+            Self::capture_recorders(&mut self.recorders, &self.runtime, output, audio);
         }
         if let (Some(output), Some(audio)) = (latest_program, stream_audio) {
             Self::capture_streams(
@@ -3985,9 +4161,13 @@ impl NativeDaemon {
         false
     }
 
-    /// Finalizes the open segment, if any, then joins every detached
-    /// finalizer within the recorder's own stop budget so each runtime-stopped
-    /// segment has emitted its `FREEMIXD_RECORDER` report before exit.
+    /// Finalizes every open segment, then joins every detached finalizer
+    /// within the recorder's own stop budget so each runtime-stopped segment
+    /// has emitted its `FREEMIXD_RECORDER` report before exit.
+    ///
+    /// Slots finalize independently: one slot's failure is collected and
+    /// returned after every other slot has had its bounded stop, never
+    /// aborting the remaining teardown.
     fn finalize_recorder(&mut self) -> AppResult<()> {
         let mut first_error = None;
         for recorder in std::mem::take(&mut self.recording_finalizers) {
@@ -4014,13 +4194,20 @@ impl NativeDaemon {
                 first_error.get_or_insert(result);
             }
         }
-        if let ProgramRecording::Running(mut recorder) =
-            std::mem::replace(&mut self.recorder, ProgramRecording::Off)
-        {
-            if let Err(error) = recorder.stop_and_report() {
-                first_error.get_or_insert(Err(error));
+        let mut stopped = Vec::new();
+        for slot in &mut self.recorders {
+            if let ProgramRecording::Running(mut recorder) =
+                std::mem::replace(slot, ProgramRecording::Off)
+            {
+                if let Err(error) = recorder.stop_and_report() {
+                    first_error.get_or_insert(Err(error));
+                }
+                stopped.push(recorder);
             }
-            self.telemetry.observe_recorder(&recorder);
+        }
+        if !stopped.is_empty() {
+            self.telemetry
+                .observe_recorders(stopped.iter().map(|recorder| &**recorder));
         }
         match first_error {
             Some(result) => result,
@@ -4053,9 +4240,11 @@ impl NativeDaemon {
         if !self.camera_telemetry_frozen {
             self.telemetry.camera = aggregate_camera_telemetry(&self.cameras.source_telemetry());
         }
-        if let ProgramRecording::Running(recorder) = &self.recorder {
-            self.telemetry.observe_recorder(recorder);
-        }
+        let running_recorders = self.recorders.iter().filter_map(|slot| match slot {
+            ProgramRecording::Running(recorder) => Some(&**recorder),
+            ProgramRecording::Off => None,
+        });
+        self.telemetry.observe_recorders(running_recorders);
         let streams_enqueued = self
             .streams
             .iter()
@@ -4411,14 +4600,10 @@ impl NativeDaemon {
         false
     }
 
-    #[allow(clippy::unused_self)]
-    fn start_recorder(&mut self, _stored: &StoredProject, _path: &Path) -> AppResult<()> {
-        Err(AppFailure("native-media support was not compiled in".into()).into())
-    }
-
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
-    fn prime_recorder(
+    fn start_and_prime_configured_recorders(
         &mut self,
+        _stored: &StoredProject,
         _control: &mut ControlService<Policy>,
         _server: &ServerIdentity,
         _shutdown: Option<&ProcessShutdown>,
@@ -4427,7 +4612,13 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::unused_self)]
-    fn configure_recording(&mut self, _path: PathBuf, _wav: bool) {}
+    fn configure_recordings(
+        &mut self,
+        _primary: Option<PathBuf>,
+        _secondary: Option<PathBuf>,
+        _wav: bool,
+    ) {
+    }
 
     #[allow(clippy::unused_self)]
     fn recording_configured(&self) -> bool {
@@ -4982,10 +5173,40 @@ fn diagnostic_field(value: &str) -> String {
         .collect()
 }
 
+/// One sanitized `FREEMIXD_RECORDER` record for a finished segment.
+///
+/// Every existing field keeps its name and order; the 1-based `slot` names
+/// which configured recorder wrote the segment and follows `v=1`
+/// immediately.
 #[cfg(feature = "native-media")]
-fn recorder_failure_notice(failure: &str, app_capture_failure: bool) -> String {
+fn recorder_report(
+    slot: usize,
+    report: &StopReport,
+    duration_ms: u64,
+    free_bytes: u64,
+    app_capture_failure: bool,
+    failure: &str,
+) -> String {
     format!(
-        "FREEMIXD_RECORDER_FAILURE\tv=1\tapp_capture_failure={app_capture_failure}\tfailure={}",
+        "FREEMIXD_RECORDER\tv=1\tslot={slot}\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\twav_bytes={}\tduration_ms={duration_ms}\tfree_bytes={free_bytes}\toutput_finalization={:?}\tcleanup={:?}\tapp_capture_failure={app_capture_failure}\tfailure={}",
+        report.telemetry.state,
+        report.outcome,
+        report.telemetry.accepted_pairs,
+        report.telemetry.completed_pairs,
+        report.telemetry.output_bytes,
+        report.telemetry.wav_bytes,
+        report.output,
+        report.cleanup,
+        diagnostic_field(failure),
+    )
+}
+
+/// One sanitized, slot-annotated immediate failure notice for a latch that
+/// just took the addressed recorder slot out of the capture path.
+#[cfg(feature = "native-media")]
+fn recorder_failure_notice(slot: usize, failure: &str, app_capture_failure: bool) -> String {
+    format!(
+        "FREEMIXD_RECORDER_FAILURE\tv=1\tslot={slot}\tapp_capture_failure={app_capture_failure}\tfailure={}",
         diagnostic_field(failure),
     )
 }
@@ -5026,6 +5247,9 @@ impl ControlPlane for ControlHandle {
     }
 }
 
+// The parse result is built once and matched once; keeping the Serve fields
+// inline beats indirection for a value that never lives in a collection.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Command {
     Serve {
@@ -5039,6 +5263,7 @@ enum Command {
         fullscreen_display: usize,
         camera_helper: Option<PathBuf>,
         record_program: Option<PathBuf>,
+        record_program_2: Option<PathBuf>,
         record_wav: bool,
         diagnostic_stop_after: Option<Duration>,
         recover_to_checkpoint: bool,
@@ -5084,6 +5309,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut fullscreen_display = None;
             let mut camera_helper = None;
             let mut record_program = None;
+            let mut record_program_2 = None;
             let mut record_wav = false;
             let mut diagnostic_stop_after = None;
             let mut recover_to_checkpoint = false;
@@ -5096,6 +5322,20 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         return Err(AppFailure("missing value for --record-program".into()).into());
                     }
                     record_program = Some(PathBuf::from(value));
+                    continue;
+                }
+                if let Some(value) = option.strip_prefix("--record-program-2=") {
+                    if record_program_2.is_some() {
+                        return Err(
+                            AppFailure("duplicate option `--record-program-2`".into()).into()
+                        );
+                    }
+                    if value.is_empty() {
+                        return Err(
+                            AppFailure("missing value for --record-program-2".into()).into()
+                        );
+                    }
+                    record_program_2 = Some(PathBuf::from(value));
                     continue;
                 }
                 if let Some(value) = option.strip_prefix("--camera-helper=") {
@@ -5227,6 +5467,20 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                             })?;
                         record_program = Some(PathBuf::from(value));
                     }
+                    "--record-program-2" if record_program_2.is_some() => {
+                        return Err(
+                            AppFailure("duplicate option `--record-program-2`".into()).into()
+                        );
+                    }
+                    "--record-program-2" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-program-2".into())
+                            })?;
+                        record_program_2 = Some(PathBuf::from(value));
+                    }
                     "--record-wav" if record_wav => {
                         return Err(AppFailure("duplicate option `--record-wav`".into()).into());
                     }
@@ -5260,8 +5514,14 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             if record_program.is_some() && !native_media {
                 return Err(AppFailure("--record-program requires --native-media".into()).into());
             }
-            if record_wav && record_program.is_none() {
-                return Err(AppFailure("--record-wav requires --record-program".into()).into());
+            if record_program_2.is_some() && !native_media {
+                return Err(AppFailure("--record-program-2 requires --native-media".into()).into());
+            }
+            if record_wav && record_program.is_none() && record_program_2.is_none() {
+                return Err(AppFailure(
+                    "--record-wav requires --record-program or --record-program-2".into(),
+                )
+                .into());
             }
             if camera_helper.is_some() && !native_media {
                 return Err(AppFailure("--camera-helper requires --native-media".into()).into());
@@ -5328,6 +5588,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 fullscreen_display: fullscreen_display.unwrap_or(0),
                 camera_helper,
                 record_program,
+                record_program_2,
                 record_wav,
                 diagnostic_stop_after,
                 recover_to_checkpoint,
@@ -5410,6 +5671,7 @@ fn run(command: Command) -> AppResult<()> {
             fullscreen_display,
             camera_helper,
             record_program,
+            record_program_2,
             record_wav,
             diagnostic_stop_after,
             recover_to_checkpoint,
@@ -5422,6 +5684,7 @@ fn run(command: Command) -> AppResult<()> {
                     fullscreen_display,
                     camera_helper,
                     record_program,
+                    record_program_2,
                     record_wav,
                 )
             } else {
@@ -5439,6 +5702,7 @@ fn run(command: Command) -> AppResult<()> {
                         NativeServeMode::Disabled
                     },
                     record_program,
+                    record_program_2,
                     record_wav,
                     diagnostic_stop_after,
                     recover_to_checkpoint,
@@ -5457,6 +5721,7 @@ fn run(command: Command) -> AppResult<()> {
 }
 
 #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
 fn run_fullscreen_program(
     project: PathBuf,
     listen: SocketAddr,
@@ -5464,6 +5729,7 @@ fn run_fullscreen_program(
     fullscreen_display: usize,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
+    record_program_2: Option<PathBuf>,
     record_wav: bool,
 ) -> AppResult<()> {
     program_surface::run(
@@ -5473,11 +5739,13 @@ fn run_fullscreen_program(
         fullscreen_display,
         camera_helper,
         record_program,
+        record_program_2,
         record_wav,
     )
 }
 
 #[cfg(not(all(feature = "macos-program-surface", target_os = "macos")))]
+#[allow(clippy::too_many_arguments)]
 fn run_fullscreen_program(
     _project: PathBuf,
     _listen: SocketAddr,
@@ -5485,6 +5753,7 @@ fn run_fullscreen_program(
     _fullscreen_display: usize,
     _camera_helper: Option<PathBuf>,
     _record_program: Option<PathBuf>,
+    _record_program_2: Option<PathBuf>,
     _record_wav: bool,
 ) -> AppResult<()> {
     Err(AppFailure(
@@ -5529,6 +5798,7 @@ fn serve_program_worker(
     channels: program_surface::ProgramWorkerChannels,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
+    record_program_2: Option<PathBuf>,
     record_wav: bool,
 ) -> AppResult<()> {
     serve_inner(
@@ -5546,6 +5816,7 @@ fn serve_program_worker(
             camera_helper,
         })),
         record_program,
+        record_program_2,
         record_wav,
         None,
         // `--recover-to-checkpoint` is refused with `--fullscreen-program`.
@@ -5564,13 +5835,53 @@ fn recording_parent(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-#[allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+/// Preflights every configured recording output's parent directory, refusing
+/// startup when one has too little free space.
+///
+/// Every configured recorder slot is a configured show destination, so each
+/// parent is held to the same floor; the whole-run sampler later takes the
+/// minimum across these parents and every local HLS output.
+///
+/// # Errors
+///
+/// Returns a sanitized [`AppFailure`] naming the flag when any configured
+/// parent cannot be queried or falls below
+/// [`disk::RECORDING_MINIMUM_FREE_BYTES`]. The message carries free-space
+/// counts or an I/O kind only; it never renders the operator's path.
+fn preflight_recording_outputs<'a>(
+    outputs: impl IntoIterator<Item = (&'static str, Option<&'a Path>)>,
+) -> AppResult<()> {
+    for (flag, path) in outputs {
+        let Some(path) = path else {
+            continue;
+        };
+        disk::preflight_recording_parent(recording_parent(path)).map_err(|error| {
+            AppFailure(match error {
+                disk::DiskPreflightError::BelowMinimum { available } => format!(
+                    "{flag} requires at least {} free bytes, found {available}",
+                    disk::RECORDING_MINIMUM_FREE_BYTES
+                ),
+                disk::DiskPreflightError::Unavailable(kind) => {
+                    format!("{flag} free space is unavailable: {kind}")
+                }
+            })
+        })?;
+    }
+    Ok(())
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines,
+    clippy::too_many_arguments
+)]
 fn serve_inner(
     path: &Path,
     listeners: ServeListeners,
     once: bool,
     mode: NativeServeMode,
     record_program: Option<PathBuf>,
+    record_program_2: Option<PathBuf>,
     record_wav: bool,
     diagnostic_stop_after: Option<Duration>,
     recover_to_checkpoint: bool,
@@ -5659,60 +5970,47 @@ fn serve_inner(
     let mut process_shutdown = register_process_shutdown()?;
     let authority = control_server_identity(&control.borrow(), project_id);
     let mut durable = project;
-    if let Some(path) = record_program {
+    if record_program.is_some() || record_program_2.is_some() {
         if native.is_none() {
-            return Err(AppFailure("--record-program requires --native-media".into()).into());
+            let flag = if record_program.is_some() {
+                "--record-program"
+            } else {
+                "--record-program-2"
+            };
+            return Err(AppFailure(format!("{flag} requires --native-media")).into());
         }
-        // Configured recording fails closed before any recorder exists. The
+        // Configured recording fails closed before any recorder exists. Each
         // preflight error carries free-space counts and I/O kinds only, never
-        // the operator's path.
-        disk::preflight_recording_parent(recording_parent(&path)).map_err(|error| {
-            AppFailure(match error {
-                disk::DiskPreflightError::BelowMinimum { available } => format!(
-                    "--record-program requires at least {} free bytes, found {available}",
-                    disk::RECORDING_MINIMUM_FREE_BYTES
-                ),
-                disk::DiskPreflightError::Unavailable(kind) => {
-                    format!("--record-program free space is unavailable: {kind}")
-                }
-            })
-        })?;
-        native
-            .as_mut()
-            .expect("recording requires native state")
-            .configure_recording(path.clone(), record_wav);
+        // the operator's paths.
+        preflight_recording_outputs([
+            ("--record-program", record_program.as_deref()),
+            ("--record-program-2", record_program_2.as_deref()),
+        ])?;
+        let native = native.as_mut().expect("recording requires native state");
+        native.configure_recordings(record_program.clone(), record_program_2.clone(), record_wav);
         // Startup reconciliation is deliberate: a configured recorder only
         // auto-starts when the restored project's desired flag says so. The
         // capability digest below keeps advertising configured support either
         // way; runtime RecordStart commands open segments later on demand.
         if durable.project().recording_desired_active() {
-            native
-                .as_mut()
-                .expect("recording requires native state")
-                .start_recorder(&durable, &path)?;
-            let primed = native
-                .as_mut()
-                .expect("recording requires native state")
-                .prime_recorder(
-                    &mut control.borrow_mut(),
-                    &authority,
-                    Some(&process_shutdown),
-                );
+            let primed = native.start_and_prime_configured_recorders(
+                &durable,
+                &mut control.borrow_mut(),
+                &authority,
+                Some(&process_shutdown),
+            );
             match primed {
                 Ok(true) => {}
                 Ok(false) => {
                     checkpoint_native(&control, &journal, &mut durable)?;
-                    native
-                        .as_mut()
-                        .expect("recording requires native state")
-                        .finalize_recorder()?;
+                    native.finalize_recorder()?;
                     return Ok(());
                 }
                 Err(error) => {
-                    let _ = native
-                        .as_mut()
-                        .expect("recording requires native state")
-                        .finalize_recorder();
+                    // Fail closed for configured recording; whatever already
+                    // started is finalized and checkpointed through the same
+                    // shutdown path this branch always used.
+                    let _ = native.finalize_recorder();
                     return Err(error);
                 }
             }
@@ -7921,12 +8219,12 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-wav]] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-program-2 output-2.mp4] [--record-wav]] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
-Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999.\n\
---record-wav additionally writes a linear-PCM WAV sidecar for each segment, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
-Use --record-program=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
+Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report.\n\
+--record-wav additionally writes a linear-PCM WAV sidecar for each segment of every configured recorder, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
+Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 macOS fullscreen display selection is a zero-based index ordered by physical position, then stable descriptive fields.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
 --recover-to-checkpoint opens the project at its last checkpoint and permanently discards every acknowledged command the journal recorded after it, printing each abandoned sequence, revision and command id first. It loses work; use it only when a replay is refused and the show must go on. It is unavailable with --fullscreen-program.\n\
@@ -8536,6 +8834,7 @@ mod tests {
                 fullscreen_display: 0,
                 camera_helper: None,
                 record_program: None,
+                record_program_2: None,
                 record_wav: false,
                 diagnostic_stop_after: None,
                 recover_to_checkpoint: false,
@@ -8869,7 +9168,7 @@ mod tests {
             ),
             (
                 strings(&["serve", "show.freemix", "--native-media", "--record-wav"]),
-                "--record-wav requires --record-program",
+                "--record-wav requires --record-program or --record-program-2",
             ),
             (
                 strings(&[
@@ -8886,6 +9185,149 @@ mod tests {
         ] {
             assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
         }
+    }
+
+    #[test]
+    fn rejects_invalid_second_program_recording_options() {
+        for (arguments, expected) in [
+            (
+                strings(&["serve", "show.freemix", "--record-program-2", "capture.mp4"]),
+                "--record-program-2 requires --native-media",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                ]),
+                "missing value for --record-program-2",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "--once",
+                ]),
+                "missing value for --record-program-2",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "one.mp4",
+                    "--record-program-2",
+                    "two.mp4",
+                ]),
+                "duplicate option `--record-program-2`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2=",
+                ]),
+                "missing value for --record-program-2",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2=one.mp4",
+                    "--record-program-2=two.mp4",
+                ]),
+                "duplicate option `--record-program-2`",
+            ),
+        ] {
+            assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn parses_second_program_recording_slot() {
+        for arguments in [
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program-2",
+                "backup.mp4",
+            ]),
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program-2=backup.mp4",
+            ]),
+        ] {
+            assert!(matches!(
+                parse_args(arguments).unwrap(),
+                Command::Serve {
+                    record_program: None,
+                    record_program_2: Some(path),
+                    ..
+                } if path == Path::new("backup.mp4")
+            ));
+        }
+        // An option-like file name stays reachable through the `=` form.
+        assert!(matches!(
+            parse_args(strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program-2=--backup.mp4",
+            ]))
+            .unwrap(),
+            Command::Serve {
+                record_program_2: Some(path),
+                ..
+            } if path == Path::new("--backup.mp4")
+        ));
+        // Both slots configure side by side from one desired flag.
+        assert!(matches!(
+            parse_args(strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program",
+                "capture.mp4",
+                "--record-program-2",
+                "backup.mp4",
+            ]))
+            .unwrap(),
+            Command::Serve {
+                record_program: Some(primary),
+                record_program_2: Some(secondary),
+                ..
+            } if primary == Path::new("capture.mp4") && secondary == Path::new("backup.mp4")
+        ));
+    }
+
+    #[test]
+    fn parses_wav_sidecar_for_the_second_recorder_slot() {
+        assert!(matches!(
+            parse_args(strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program-2",
+                "backup.mp4",
+                "--record-wav",
+            ]))
+            .unwrap(),
+            Command::Serve {
+                record_program: None,
+                record_program_2: Some(path),
+                record_wav: true,
+                ..
+            } if path == Path::new("backup.mp4")
+        ));
     }
 
     #[test]
@@ -9317,6 +9759,33 @@ mod tests {
         }
         let error = next_record_segment_path(&base, Path::exists).unwrap_err();
         assert!(error.to_string().contains("exhausted"));
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn second_recorder_slot_derives_segments_from_its_own_configured_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let primary = directory.path().join("program.mp4");
+        let secondary = directory.path().join("backup.mp4");
+        std::fs::write(&primary, b"").unwrap();
+        std::fs::write(&secondary, b"").unwrap();
+        let derive = |slot| {
+            next_slot_segment_path(slot, Some(&primary), Some(&secondary), Path::exists).unwrap()
+        };
+        assert_eq!(derive(0).unwrap(), directory.path().join("program-002.mp4"));
+        // Slot 1 derives from `--record-program-2` alone, so two recorders
+        // writing into one directory fill their own gaps.
+        assert_eq!(derive(1).unwrap(), directory.path().join("backup-002.mp4"));
+        // An unconfigured slot derives nothing instead of borrowing the
+        // other slot's base path.
+        assert_eq!(
+            next_slot_segment_path(1, Some(&primary), None, Path::exists).unwrap(),
+            None
+        );
+        assert_eq!(
+            next_slot_segment_path(0, None, Some(&secondary), Path::exists).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -9954,10 +10423,45 @@ mod tests {
             panic!("first failure must emit a notice");
         };
         assert_eq!(
-            recorder_failure_notice(failure, app_capture_failure),
-            "FREEMIXD_RECORDER_FAILURE\tv=1\tapp_capture_failure=true\tfailure=readback:first line end",
+            recorder_failure_notice(2, failure, app_capture_failure),
+            "FREEMIXD_RECORDER_FAILURE\tv=1\tslot=2\tapp_capture_failure=true\tfailure=readback:first line end",
         );
         assert!(policy.fail("enqueue:second".to_owned(), false).is_none());
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn recorder_report_annotates_the_slot_immediately_after_the_version() {
+        let report = StopReport {
+            outcome: StopOutcome::Clean,
+            exit_status: Some(0),
+            output: OutputFinalization::Synced,
+            cleanup: CleanupStatus::Complete,
+            wav_bytes: 0,
+            telemetry: fm_codec_ffmpeg::record::RecordTelemetry {
+                state: RecorderState::Stopped,
+                failure: None,
+                accepted_pairs: 30,
+                completed_pairs: 30,
+                failed_pairs: 0,
+                outstanding_pairs: 0,
+                retained_bytes: 0,
+                output_bytes: 1_024,
+                wav_bytes: 512,
+                stderr_tail: String::new(),
+                stderr_truncated: false,
+            },
+        };
+        assert_eq!(
+            recorder_report(1, &report, 1_000, 2_048, false, "none"),
+            "FREEMIXD_RECORDER\tv=1\tslot=1\tstate=Stopped\toutcome=Clean\taccepted_pairs=30\tcompleted_pairs=30\toutput_bytes=1024\twav_bytes=512\tduration_ms=1000\tfree_bytes=2048\toutput_finalization=Synced\tcleanup=Complete\tapp_capture_failure=false\tfailure=none",
+        );
+        // The second slot is annotated by number, never by position in a
+        // combined record, so a mixed run keeps the two segments separable.
+        assert!(
+            recorder_report(2, &report, 0, 0, false, "none")
+                .starts_with("FREEMIXD_RECORDER\tv=1\tslot=2\tstate=Stopped\t")
+        );
     }
 
     #[cfg(feature = "native-media")]
