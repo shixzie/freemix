@@ -29,7 +29,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use fm_frame::{AudioBlock, SequenceNumber};
-use fm_types::{Channel, ChannelLayout, FrameRate, SampleRate, VideoDimensions};
+use fm_types::{Channel, ChannelLayout, FrameRate, SampleRate, Timecode, VideoDimensions};
 
 use crate::{Executable, UnavailableReason};
 
@@ -298,6 +298,13 @@ pub struct RecordConfig {
     /// `Some` adds `-b:a {kbps}k` to the AAC encoder arguments. `None` keeps
     /// the encoder's own default bitrate and therefore today's output.
     pub audio_bitrate_kbps: Option<u32>,
+    /// Optional start timecode for the segment, in the project's nominal
+    /// frame-rate domain.
+    ///
+    /// `Some` adds `-timecode {hours:02}:{minutes:02}:{seconds:02}:{frames:02}`
+    /// to the MP4 output, immediately before `-f mp4 pipe:1`. `None` keeps the
+    /// output byte for byte as it was before timecodes existed.
+    pub timecode: Option<Timecode>,
 }
 
 impl RecordConfig {
@@ -310,6 +317,7 @@ impl RecordConfig {
             wav: None,
             video_bitrate_kbps: None,
             audio_bitrate_kbps: None,
+            timecode: None,
         }
     }
 }
@@ -1137,6 +1145,7 @@ impl Recorder {
             config.wav.as_deref(),
             config.video_bitrate_kbps,
             config.audio_bitrate_kbps,
+            config.timecode,
         );
         let shared = Arc::new(Shared::new(
             &config.format,
@@ -2489,6 +2498,7 @@ fn command_args(
     wav: Option<&Path>,
     video_bitrate_kbps: Option<u32>,
     audio_bitrate_kbps: Option<u32>,
+    timecode: Option<Timecode>,
 ) -> Vec<OsString> {
     let dimensions = format.dimensions;
     let rate = format.frame_rate;
@@ -2575,10 +2585,15 @@ fn command_args(
         "+empty_moov+default_base_moof+frag_keyframe".to_owned(),
         "-flush_packets".to_owned(),
         "1".to_owned(),
-        "-f".to_owned(),
-        "mp4".to_owned(),
-        "pipe:1".to_owned(),
     ]);
+    if let Some(timecode) = timecode {
+        let (hours, minutes, seconds, frames) = timecode.components();
+        values.extend([
+            "-timecode".to_owned(),
+            format!("{hours:02}:{minutes:02}:{seconds:02}:{frames:02}"),
+        ]);
+    }
+    values.extend(["-f".to_owned(), "mp4".to_owned(), "pipe:1".to_owned()]);
     let mut args = values.into_iter().map(OsString::from).collect::<Vec<_>>();
     if let Some(path) = wav {
         // A second output for the same child: linear PCM written directly to
@@ -2904,6 +2919,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let args = args
             .iter()
@@ -2929,6 +2945,7 @@ mod tests {
                 "video-secret",
                 "audio-secret",
                 wav,
+                None,
                 None,
                 None,
             )
@@ -3023,6 +3040,7 @@ mod tests {
                 None,
                 video,
                 audio,
+                None,
             )
             .iter()
             .map(|value| value.to_string_lossy().into_owned())
@@ -3081,6 +3099,66 @@ mod tests {
         assert!(high.windows(2).any(|pair| pair == ["-b:v", "100000k"]));
         assert!(high.windows(2).any(|pair| pair == ["-bufsize", "200000k"]));
         assert!(high.windows(2).any(|pair| pair == ["-b:a", "1024k"]));
+    }
+
+    #[test]
+    fn timecode_argument_is_exact_and_only_when_configured() {
+        let args = |timecode: Option<Timecode>| {
+            command_args(
+                &format(),
+                "127.0.0.1:1000".parse().unwrap(),
+                "127.0.0.1:1001".parse().unwrap(),
+                "video-secret",
+                "audio-secret",
+                None,
+                None,
+                None,
+                timecode,
+            )
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+        };
+
+        let unconfigured = args(None);
+        assert!(
+            !unconfigured.iter().any(|argument| argument == "-timecode"),
+            "{unconfigured:?}"
+        );
+
+        let zero = args(Some(Timecode::new(0, 0, 0, 0, 30).unwrap()));
+        assert_eq!(
+            zero[zero.len() - 5..]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["-timecode", "00:00:00:00", "-f", "mp4", "pipe:1"]
+        );
+
+        let configured = args(Some(Timecode::new(1, 2, 3, 4, 30).unwrap()));
+        assert_eq!(
+            configured[configured.len() - 7..]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "-flush_packets",
+                "1",
+                "-timecode",
+                "01:02:03:04",
+                "-f",
+                "mp4",
+                "pipe:1"
+            ]
+        );
+        assert_eq!(
+            configured
+                .iter()
+                .filter(|argument| *argument == "-timecode")
+                .count(),
+            1
+        );
+        assert!(RecordConfig::new(format()).timecode.is_none());
     }
 
     #[test]

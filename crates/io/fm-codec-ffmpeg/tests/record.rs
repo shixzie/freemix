@@ -11,7 +11,7 @@ use fm_frame::{
     AudioBlock, ChannelLayout, ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration,
     NormalizedTimestamp, OriginalTimestamp, SampleRate, SequenceNumber, TimeBase,
 };
-use fm_types::FrameRate;
+use fm_types::{FrameRate, Timecode};
 use tempfile::tempdir;
 
 const FRAME_COUNT: u64 = 90;
@@ -364,6 +364,60 @@ fn safe_stop_records_with_configured_video_and_audio_bitrates() {
     // Bitrate targeting is deliberately loose at this size, so only the
     // stream identity and decodability are asserted.
     assert_probe_and_decode(&path, FRAME_COUNT);
+}
+
+#[test]
+fn safe_stop_embeds_the_configured_start_timecode() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("timecode.mp4");
+    let output = std::fs::File::create(&path).unwrap();
+    let format = format();
+    let mut config = RecordConfig::new(format.clone());
+    config.timecode = Some(Timecode::new(1, 2, 3, 4, 30).unwrap());
+    let mut recorder = Recorder::start(output, config).unwrap();
+    enqueue_all(&mut recorder, &format);
+    let report = recorder.stop();
+    assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+    assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");
+    assert_eq!(report.cleanup, CleanupStatus::Complete, "{report:?}");
+    assert_eq!(report.telemetry.completed_pairs, FRAME_COUNT);
+    assert_eq!(recorder.stop(), report);
+    assert_eq!(recorder.telemetry(), report.telemetry);
+
+    // The timecode adds only an MP4 `tmcd` data stream; the H.264 and AAC
+    // streams still probe and decode as before.
+    assert_probe_and_decode(&path, FRAME_COUNT);
+    let probe = probe(&path);
+    let streams = probe["streams"].as_array().unwrap();
+    let video = streams
+        .iter()
+        .find(|stream| stream["codec_type"] == "video")
+        .unwrap();
+    assert_eq!(count(video, "nb_read_frames"), FRAME_COUNT);
+    assert_eq!(count(video, "nb_read_packets"), FRAME_COUNT);
+
+    // `FFmpeg` 6.1 writes the start timecode as an MP4 `tmcd` timecode track
+    // and mirrors it in the video stream's `tags.timecode`; either stable
+    // representation is accepted, but the rendered value must be exact.
+    let tmcd = streams
+        .iter()
+        .any(|stream| stream["codec_type"] == "data" && stream["codec_tag_string"] == "tmcd");
+    let timecodes = streams
+        .iter()
+        .filter_map(|stream| stream["tags"]["timecode"].as_str())
+        .chain(probe["format"]["tags"]["timecode"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        tmcd || !timecodes.is_empty(),
+        "ffprobe reports neither a tmcd data stream nor a timecode tag: {probe}"
+    );
+    assert!(
+        timecodes.contains(&"01:02:03:04"),
+        "ffprobe does not render the configured 01:02:03:04 timecode: {probe}"
+    );
 }
 
 #[test]

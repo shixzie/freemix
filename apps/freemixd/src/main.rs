@@ -1672,6 +1672,36 @@ fn segment_frame_limit(seconds: NonZeroU32, rate: fm_types::FrameRate) -> u64 {
     u64::try_from(frames).unwrap_or(u64::MAX)
 }
 
+/// Non-drop-frame start timecode for the absolute engine frame index
+/// `first_sequence` at `rate`, in the project's nominal frame-rate domain.
+///
+/// The nominal frames per second is the exact integer rounding of the
+/// rational rate, `(numerator + denominator / 2) / denominator`, clamped to
+/// the timecode's representable `1..=255`. Components wrap modulo their
+/// conventional bases (24 hours, 60 minutes, 60 seconds). `None` is returned
+/// only if [`fm_types::Timecode::new`] rejects a component, which the wrap and
+/// the nominal clamp make unreachable but which stays typed rather than
+/// panicking.
+#[cfg(feature = "native-media")]
+fn recording_start_timecode(
+    first_sequence: u64,
+    rate: fm_types::FrameRate,
+) -> Option<fm_types::Timecode> {
+    let numerator = u64::from(rate.numerator());
+    let denominator = u64::from(rate.denominator());
+    let nominal = u8::try_from(((numerator + denominator / 2) / denominator).clamp(1, 255)).ok()?;
+    let frames_per_second = u64::from(nominal);
+    let total_seconds = first_sequence / frames_per_second;
+    fm_types::Timecode::new(
+        u8::try_from((total_seconds / 3_600) % 24).ok()?,
+        u8::try_from((total_seconds / 60) % 60).ok()?,
+        u8::try_from(total_seconds % 60).ok()?,
+        u8::try_from(first_sequence % frames_per_second).ok()?,
+        nominal,
+    )
+    .ok()
+}
+
 #[cfg(feature = "native-media")]
 impl NativeProgramRecorder {
     fn start(
@@ -1693,9 +1723,11 @@ impl NativeProgramRecorder {
             settings.audio.channels.clone(),
             SequenceNumber::new(stored.position().frames_rendered),
         )?;
+        let timecode = recording_start_timecode(format.first_sequence().get(), format.frame_rate());
         Self::start_with_format(
             runtime,
             format,
+            timecode,
             path,
             wav,
             video_bitrate_kbps,
@@ -1707,6 +1739,7 @@ impl NativeProgramRecorder {
     fn start_with_format(
         runtime: &NativeMediaRuntime,
         format: RecordFormat,
+        timecode: Option<fm_types::Timecode>,
         path: &Path,
         wav: bool,
         video_bitrate_kbps: Option<u32>,
@@ -1726,6 +1759,7 @@ impl NativeProgramRecorder {
         config.wav = wav.then(|| record_wav_path(path));
         config.video_bitrate_kbps = video_bitrate_kbps;
         config.audio_bitrate_kbps = audio_bitrate_kbps;
+        config.timecode = timecode;
         let startup_pair_timeout = config
             .limits
             .connect_timeout
@@ -4301,6 +4335,7 @@ impl NativeDaemon {
         self.reap_finished_recording_finalizers();
         self.retire_running_recording(slot);
         let rotated = next_format.map_err(Into::into).and_then(|format| {
+            let timecode = recording_start_timecode(sequence.get(), format.frame_rate());
             let segment = next_slot_segment_path(
                 slot,
                 self.record_program.as_deref(),
@@ -4311,6 +4346,7 @@ impl NativeDaemon {
             NativeProgramRecorder::start_with_format(
                 &self.runtime,
                 format,
+                timecode,
                 &segment,
                 self.record_wav,
                 self.record_bitrates[slot],
@@ -11777,6 +11813,35 @@ mod tests {
         let sixty = fm_types::FrameRate::new(60, 1).unwrap();
         assert_eq!(recorded_duration_ms(1, sixty), 16);
         assert_eq!(recorded_duration_ms(u64::MAX, thirty), u64::MAX);
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn recording_start_timecode_derives_components_at_integer_and_fractional_rates() {
+        let components = |sequence: u64, rate: fm_types::FrameRate| {
+            recording_start_timecode(sequence, rate).map(fm_types::Timecode::components)
+        };
+        let thirty = fm_types::FrameRate::new(30, 1).unwrap();
+        assert_eq!(components(0, thirty), Some((0, 0, 0, 0)));
+        assert_eq!(components(29, thirty), Some((0, 0, 0, 29)));
+        assert_eq!(components(30, thirty), Some((0, 0, 1, 0)));
+        assert_eq!(components(30 * 3_600, thirty), Some((1, 0, 0, 0)));
+        // The hour component wraps modulo 24 at exactly 24 hours and at 25
+        // hours, whose minute, second, and frame components restart at zero.
+        assert_eq!(components(30 * 3_600 * 24, thirty), Some((0, 0, 0, 0)));
+        assert_eq!(components(30 * 3_600 * 25, thirty), Some((1, 0, 0, 0)));
+
+        // Fractional NTSC rates derive the rounded nominal integer cadence.
+        let rate_29_97 = fm_types::FrameRate::new(30_000, 1_001).unwrap();
+        let rate_23_976 = fm_types::FrameRate::new(24_000, 1_001).unwrap();
+        let rate_59_94 = fm_types::FrameRate::new(60_000, 1_001).unwrap();
+        assert_eq!(components(29, rate_29_97), Some((0, 0, 0, 29)));
+        assert_eq!(components(30, rate_29_97), Some((0, 0, 1, 0)));
+        assert_eq!(components(23, rate_23_976), Some((0, 0, 0, 23)));
+        assert_eq!(components(24, rate_23_976), Some((0, 0, 1, 0)));
+        assert_eq!(components(59, rate_59_94), Some((0, 0, 0, 59)));
+        assert_eq!(components(60, rate_59_94), Some((0, 0, 1, 0)));
+        assert_eq!(components(30 * 3_600, rate_29_97), Some((1, 0, 0, 0)));
     }
 
     #[cfg(feature = "native-media")]
