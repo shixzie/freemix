@@ -12,7 +12,7 @@ use std::{
 
 use eframe::egui;
 use fm_client::{
-    ClientError, CommandStatus, CommandUncertainty, SessionEvent, SyncMode, TcpSessionError,
+    Client, ClientError, CommandStatus, CommandUncertainty, SessionEvent, SyncMode, TcpSessionError,
 };
 use fm_protocol::{
     CommandPayload, CommandResult, DurableGap, OverlayBorderPreset, OverlayPositionPreset,
@@ -20,8 +20,9 @@ use fm_protocol::{
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
-    ExternalStudioAction, InputAudioStripUpdate, InputMoveDirection, StudioConnectionStatus,
-    StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice, external_intent,
+    ExternalStudioAction, InputAudioStripUpdate, InputMoveDirection, RecordingAction,
+    StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice,
+    external_intent,
 };
 use fm_ui_model::ClientView;
 
@@ -1784,6 +1785,10 @@ fn intent_payload(
                 duration_frames,
             }
         }
+        StudioIntent::Recording(action) => match action {
+            RecordingAction::Start => CommandPayload::RecordStart,
+            RecordingAction::Stop => CommandPayload::RecordStop,
+        },
         StudioIntent::StartManualTransition { kind } => {
             CommandPayload::StartManualTransition { kind }
         }
@@ -1838,15 +1843,32 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
         state.streams = view
             .as_ref()
             .map_or_else(Vec::new, |render| render.streams.clone());
-        if view.is_some() {
+        if let Some(view) = &view {
             state.audio_meters = runtime.session().latest_audio_meters().cloned();
             state.stream_status = runtime.session().latest_stream_status().cloned();
+            state.recording_desired = view.record_desired_active;
         }
         state.view = view;
     }
     state.pending_commands = client.model().pending_commands().len();
+    state.recording_pending = recording_command_pending(client);
     state.error = error.or(lifecycle_error);
     state
+}
+
+/// Whether an unresolved `record_start`/`record_stop` command still owns the
+/// recording panel. The replicated model keeps an accepted command pending
+/// until its durable revision is applied and removes a rejected one at its
+/// result, so this clears exactly when the command resolves.
+fn recording_command_pending(client: &Client) -> bool {
+    client.model().pending_commands().iter().any(|pending| {
+        client.command(pending.id.as_str()).is_some_and(|record| {
+            matches!(
+                record.command.payload,
+                CommandPayload::RecordStart | CommandPayload::RecordStop
+            )
+        })
+    })
 }
 
 fn switcher_permissions(permissions: Option<&[String]>) -> (bool, bool) {
@@ -2185,6 +2207,27 @@ mod tests {
                     position: FadeToBlackPosition::LIVE,
                 },
             },
+        }
+    }
+
+    fn recording_event(revision: u64, active: bool) -> EventMessage {
+        EventMessage {
+            cursor: EventCursor {
+                engine: EngineIdentity {
+                    engine_id: "e".into(),
+                    state_epoch: 1,
+                    log_id: "l".into(),
+                },
+                revision,
+            },
+            payload: EventPayload::RecordingChanged { active },
+        }
+    }
+
+    fn recording_runtime_event(revision: u64, sequence: u64) -> RuntimeEventMessage {
+        RuntimeEventMessage {
+            sequence,
+            ..command_runtime_event(revision)
         }
     }
 
@@ -2808,6 +2851,175 @@ mod tests {
         server.join().unwrap();
     }
 
+    /// Receives the next publication satisfying `predicate`, tolerating a
+    /// notification that was coalesced with a state the caller already took.
+    fn receive_state_where(
+        updates: &StateUpdates,
+        predicate: impl Fn(&StudioUiState) -> bool,
+    ) -> StudioUiState {
+        loop {
+            updates
+                .receiver
+                .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
+                .unwrap();
+            let state = updates
+                .latest
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(state) = state
+                && predicate(&state)
+            {
+                return state;
+            }
+        }
+    }
+
+    /// Answers one scripted `record_start` and one `record_stop` command in
+    /// order, holding each result open until the test confirmed that the
+    /// dispatched intent was observed pending.
+    fn serve_worker_recording(
+        listener: &TcpListener,
+        command_seen: &SyncSender<()>,
+        release: &Receiver<()>,
+    ) {
+        let mut peer = HeartbeatPeer::accept(listener);
+        peer.handshake_request();
+        peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+            HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            },
+        )));
+        peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+        let mut revision = heartbeat_snapshot().revision;
+        for (sequence, expected) in [
+            (1, CommandPayload::RecordStart),
+            (2, CommandPayload::RecordStop),
+        ] {
+            loop {
+                let mut line = String::new();
+                if peer.reader.read_line(&mut line).unwrap() == 0 {
+                    return;
+                }
+                match decode_line(&line).unwrap() {
+                    WireMessage::Heartbeat(heartbeat) => {
+                        peer.send(&WireMessage::HeartbeatAcknowledgement(
+                            HeartbeatAcknowledgementMessage {
+                                server: heartbeat.server,
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        ));
+                    }
+                    WireMessage::Command(command) => {
+                        assert_eq!(command.payload, expected);
+                        assert_eq!(command.expected_revision, Some(revision));
+                        command_seen.send(()).unwrap();
+                        release.recv_timeout(HEARTBEAT_TEST_TIMEOUT).unwrap();
+                        revision += 1;
+                        peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                            id: command.id,
+                            revision,
+                            scheduled_frame: None,
+                        }));
+                        peer.send(&WireMessage::Event(recording_event(
+                            revision,
+                            expected == CommandPayload::RecordStart,
+                        )));
+                        peer.send(&WireMessage::RuntimeEvent(recording_runtime_event(
+                            revision, sequence,
+                        )));
+                        break;
+                    }
+                    other => panic!("unexpected peer message: {other:?}"),
+                }
+            }
+        }
+        // The test shuts the worker down as soon as both commands resolved, so
+        // a closed pipe while answering the final heartbeats simply ends this
+        // scripted peer instead of failing the join.
+        loop {
+            let mut line = String::new();
+            if peer.reader.read_line(&mut line).unwrap() == 0 {
+                return;
+            }
+            let WireMessage::Heartbeat(heartbeat) = decode_line(&line).unwrap() else {
+                panic!("expected heartbeat");
+            };
+            if peer
+                .writer
+                .write_all(
+                    encode_line(&WireMessage::HeartbeatAcknowledgement(
+                        HeartbeatAcknowledgementMessage {
+                            server: heartbeat.server,
+                            heartbeat_sequence: heartbeat.sequence,
+                            received_at_ms: heartbeat.sent_at_ms,
+                        },
+                    ))
+                    .unwrap()
+                    .as_bytes(),
+                )
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn worker_recording_intents_send_payloads_and_clear_pending_at_the_durable_event() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (command_seen, command_seen_receiver) = sync_channel(2);
+        let (release, release_receiver) = sync_channel(2);
+        let server = thread::spawn(move || {
+            serve_worker_recording(&listener, &command_seen, &release_receiver);
+        });
+        let (request_sender, updates, worker) =
+            spawn_existing_worker(address, "recording-intent-test");
+
+        receive_connection_state(&updates, StudioConnectionStatus::Ready);
+        for (action, desired_after_resolution) in [
+            (RecordingAction::Start, true),
+            (RecordingAction::Stop, false),
+        ] {
+            request_sender
+                .send(WorkerRequest::Intent(StudioIntent::Recording(action)))
+                .unwrap();
+            command_seen_receiver
+                .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
+                .unwrap();
+            let dispatched = receive_state_where(&updates, |state| state.recording_pending);
+            assert_eq!(dispatched.connection_status, StudioConnectionStatus::Ready);
+            assert_eq!(dispatched.recording_desired, !desired_after_resolution);
+            assert_eq!(dispatched.pending_commands, 1);
+            assert!(
+                dispatched.error.is_none(),
+                "recording dispatch carried an error: {:?}",
+                dispatched.error
+            );
+            release.send(()).unwrap();
+            let resolved = receive_state_where(&updates, |state| {
+                !state.recording_pending
+                    && state.pending_commands == 0
+                    && state
+                        .view
+                        .as_ref()
+                        .is_some_and(|view| view.record_desired_active == desired_after_resolution)
+            });
+            assert_eq!(resolved.connection_status, StudioConnectionStatus::Ready);
+            assert!(
+                resolved.error.is_none(),
+                "recording resolution carried an error: {:?}",
+                resolved.error
+            );
+        }
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
     #[test]
     fn queued_audio_edits_merge_with_the_latest_confirmed_strip() {
         let project = ProjectId::new(NonZeroU128::new(7).unwrap());
@@ -2915,6 +3127,18 @@ mod tests {
             Ok(CommandPayload::ReorderInputs {
                 inputs: vec![ids[1], ids[2], ids[0]]
             })
+        );
+    }
+
+    #[test]
+    fn recording_intents_map_to_field_free_record_payloads() {
+        assert_eq!(
+            intent_payload(StudioIntent::Recording(RecordingAction::Start), None),
+            Ok(CommandPayload::RecordStart)
+        );
+        assert_eq!(
+            intent_payload(StudioIntent::Recording(RecordingAction::Stop), None),
+            Ok(CommandPayload::RecordStop)
         );
     }
 

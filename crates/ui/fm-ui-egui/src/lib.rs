@@ -125,6 +125,8 @@ pub enum StudioIntent {
     FadeToBlack { active: bool, duration_frames: u32 },
     /// Toggles Fade-to-Black from the latest confirmed desired target.
     ToggleFadeToBlack { duration_frames: u32 },
+    /// Starts or stops the configured program recorder.
+    Recording(RecordingAction),
     /// Starts a held manual Fade, Wipe, `AlphaFade`, or Slide transition.
     StartManualTransition { kind: ManualTransitionKind },
     /// Sets the exact manual-transition position in basis points.
@@ -220,6 +222,8 @@ pub struct StudioUiState {
     pub audio_meters: Option<AudioMetersMessage>,
     pub streams: Vec<StreamStatus>,
     pub stream_status: Option<StreamStatusMessage>,
+    pub recording_desired: bool,
+    pub recording_pending: bool,
 }
 
 impl StudioUiState {
@@ -241,6 +245,8 @@ impl StudioUiState {
             audio_meters: None,
             streams: Vec::new(),
             stream_status: None,
+            recording_desired: false,
+            recording_pending: false,
         }
     }
 
@@ -276,6 +282,41 @@ impl StudioUiState {
         self.can_edit_project = can_edit_project;
         self
     }
+}
+
+/// Recording operator actions emitted by the compact recording panel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordingAction {
+    /// Starts the configured program recorder.
+    Start,
+    /// Stops the configured program recorder.
+    Stop,
+}
+
+/// Validates one requested recording action against the session gates and the
+/// authoritative desired flag, returning it only when the current state permits
+/// exactly that action.
+#[must_use]
+pub const fn recording_action(
+    state: &StudioUiState,
+    requested: RecordingAction,
+) -> Option<RecordingAction> {
+    let enabled = state.connection_status.controls_enabled()
+        && state.view.is_some()
+        && state.can_transition
+        && !state.recording_pending;
+    match (enabled, state.recording_desired, requested) {
+        (true, false, RecordingAction::Start) | (true, true, RecordingAction::Stop) => {
+            Some(requested)
+        }
+        _ => None,
+    }
+}
+
+/// Operator-facing recording status derived only from the replicated desired
+/// flag; it is never an optimistic local guess.
+const fn recording_status_label(desired: bool) -> &'static str {
+    if desired { "RECORDING" } else { "STOPPED" }
 }
 
 /// Pure transition-control availability derived from one UI state.
@@ -829,32 +870,103 @@ impl StudioShell {
             .fill(GRAPHITE)
             .inner_margin(Margin::same(12))
             .show(ui, |ui| {
-                draw_header(ui, state);
-                draw_messages(ui, state);
-                ui.add_space(8.0);
-                draw_monitors(ui, state.view.as_ref());
-                ui.add_space(8.0);
-                draw_transition_row(ui, self, state, &mut intents);
-                ui.add_space(8.0);
-                draw_overlays(ui, state, self.transition_duration_frames, &mut intents);
-                ui.add_space(8.0);
-                fade_to_black::draw_fade_to_black(
-                    ui,
-                    &mut self.fade_to_black_duration_frames,
-                    state,
-                    &mut intents,
-                );
-                self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
-                ui.add_space(8.0);
-                draw_manual_transition(ui, state, manual_transition_controls, &mut intents);
-                ui.add_space(8.0);
-                draw_input_audio_strips(ui, state, &mut intents);
-                draw_audio_meters(ui, state);
-                draw_streams(ui, state);
-                ui.add_space(8.0);
-                self.draw_inputs(ui, state, &mut intents);
+                // The console is taller than a default window: without a
+                // scroll area every panel below the overlays (FTB, manual
+                // transition, audio, streams, recording, and the input tiles)
+                // is unreachable.
+                ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        draw_header(ui, state);
+                        draw_messages(ui, state);
+                        ui.add_space(8.0);
+                        draw_monitors(ui, state.view.as_ref());
+                        ui.add_space(8.0);
+                        draw_transition_row(ui, self, state, &mut intents);
+                        ui.add_space(8.0);
+                        draw_overlays(ui, state, self.transition_duration_frames, &mut intents);
+                        ui.add_space(8.0);
+                        fade_to_black::draw_fade_to_black(
+                            ui,
+                            &mut self.fade_to_black_duration_frames,
+                            state,
+                            &mut intents,
+                        );
+                        self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
+                        ui.add_space(8.0);
+                        draw_manual_transition(ui, state, manual_transition_controls, &mut intents);
+                        ui.add_space(8.0);
+                        draw_input_audio_strips(ui, state, &mut intents);
+                        draw_audio_meters(ui, state);
+                        draw_streams(ui, state);
+                        if let Some(action) = self.draw_recording(ui, state) {
+                            intents.push(StudioIntent::Recording(action));
+                        }
+                        ui.add_space(8.0);
+                        self.draw_inputs(ui, state, &mut intents);
+                    });
             });
         intents
+    }
+
+    /// Draws the compact recording panel and returns the selected action.
+    ///
+    /// The panel exposes exactly one action for the authoritative desired flag
+    /// and keeps it disabled while an earlier recording intent is unresolved.
+    #[allow(clippy::unused_self)] // the panel reads immutable state; the shell receiver matches `draw_inputs`
+    pub fn draw_recording(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+    ) -> Option<RecordingAction> {
+        let requested = if state.recording_desired {
+            RecordingAction::Stop
+        } else {
+            RecordingAction::Start
+        };
+        let mut selected = None;
+        Frame::new()
+            .fill(GRAPHITE_RAISED)
+            .stroke(Stroke::new(1.0, Color32::from_rgb(67, 61, 44)))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("RECORDING").small().strong().color(AMBER));
+                    ui.label(
+                        RichText::new(recording_status_label(state.recording_desired))
+                            .small()
+                            .strong()
+                            .color(if state.recording_desired {
+                                PROGRAM
+                            } else {
+                                MUTED
+                            }),
+                    );
+                    if state.recording_pending {
+                        ui.label(RichText::new("PENDING").small().color(AMBER));
+                    }
+                    let (label, fill) = match requested {
+                        RecordingAction::Start => ("START", Color32::from_rgb(92, 28, 32)),
+                        RecordingAction::Stop => ("STOP", Color32::from_rgb(98, 66, 17)),
+                    };
+                    if ui
+                        .add_enabled(
+                            recording_action(state, requested).is_some(),
+                            Button::new(RichText::new(label).strong())
+                                .fill(fill)
+                                .min_size(Vec2::new(92.0, 28.0)),
+                        )
+                        .on_hover_text(match requested {
+                            RecordingAction::Start => "Start the configured program recorder",
+                            RecordingAction::Stop => "Stop the configured program recorder",
+                        })
+                        .clicked()
+                    {
+                        selected = recording_action(state, requested);
+                    }
+                });
+            });
+        selected
     }
 }
 
@@ -1123,17 +1235,24 @@ fn draw_overlays(
                         .color(MUTED),
                 )
                 .on_hover_text("Confirmation is control state, not output-video proof.");
-                for channel_number in 1..=8 {
-                    draw_overlay_channel(
-                        ui,
-                        state,
-                        channel_number,
-                        duration_frames,
-                        enabled,
-                        intents,
-                    );
-                }
             });
+            // Rows of three: eight channel columns at their bounded width
+            // never fit beside a default-width window, and a wrapped row
+            // silently clipped the last channels instead of wrapping.
+            for row in [1_u8..=3, 4_u8..=6, 7_u8..=8] {
+                ui.horizontal(|ui| {
+                    for channel_number in row {
+                        draw_overlay_channel(
+                            ui,
+                            state,
+                            channel_number,
+                            duration_frames,
+                            enabled,
+                            intents,
+                        );
+                    }
+                });
+            }
         });
 }
 
@@ -1163,6 +1282,9 @@ fn draw_overlay_channel(
         .as_ref()
         .map(|view| view.switcher.desired.preview);
     ui.vertical(|ui| {
+        // Bound one channel column so its status text wraps instead of
+        // stretching the column past a third of a default-width window.
+        ui.set_max_width(390.0);
         ui.horizontal_wrapped(|ui| {
             let update = overlay_update_intent(enabled, channel, desired, source);
             if ui
@@ -2054,7 +2176,7 @@ const fn tally_fill(tally: TallyState) -> Color32 {
 mod tests {
     use core::num::NonZeroU128;
 
-    use fm_ui_model::{ActiveManualTransition, BusSelection};
+    use fm_ui_model::{ActiveManualTransition, BusSelection, ProjectCursor};
 
     use super::*;
 
@@ -2585,6 +2707,108 @@ mod tests {
             true,
             &roster
         ));
+    }
+
+    fn recording_view(record_desired_active: bool) -> ClientView {
+        ClientView {
+            cursor: ProjectCursor::from_resume_cursor(
+                fm_types::ProjectId::new(NonZeroU128::new(1).unwrap()),
+                fm_protocol::ResumeCursor {
+                    server: fm_protocol::ServerIdentity {
+                        engine_id: "e".to_owned(),
+                        project_id: "1".to_owned(),
+                        state_epoch: 1,
+                        log_id: "l".to_owned(),
+                    },
+                    revision: 1,
+                },
+            )
+            .unwrap(),
+            show_name: "show".to_owned(),
+            inputs: vec![input(1)],
+            input_names: vec!["Input 1".to_owned()],
+            outputs: Vec::new(),
+            input_audio_strips: Vec::new(),
+            stingers: Vec::new(),
+            streams: Vec::new(),
+            record_desired_active,
+            desired_overlays: Vec::new(),
+            realized_overlays: Vec::new(),
+            switcher: switcher((1, 1), (1, 1)),
+        }
+    }
+
+    fn recording_state(desired: bool, pending: bool) -> StudioUiState {
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(recording_view(desired))
+            .with_switcher_permissions(true, true);
+        state.recording_desired = desired;
+        state.recording_pending = pending;
+        state
+    }
+
+    #[test]
+    fn recording_controls_require_ready_view_and_transition_permission() {
+        let available = recording_state(false, false);
+        assert_eq!(
+            recording_action(&available, RecordingAction::Start),
+            Some(RecordingAction::Start)
+        );
+        let denied = [
+            // The transition permission is missing.
+            StudioUiState::new(StudioConnectionStatus::Ready)
+                .with_view(recording_view(false))
+                .with_switcher_permissions(true, false),
+            // No replicated view is present.
+            StudioUiState::new(StudioConnectionStatus::Ready).with_switcher_permissions(true, true),
+            // The lifecycle is not ready.
+            StudioUiState::new(StudioConnectionStatus::Connecting)
+                .with_view(recording_view(false))
+                .with_switcher_permissions(true, true),
+        ];
+        for state in denied {
+            assert_eq!(recording_action(&state, RecordingAction::Start), None);
+            assert_eq!(recording_action(&state, RecordingAction::Stop), None);
+        }
+    }
+
+    #[test]
+    fn recording_action_follows_the_authoritative_desired_flag() {
+        assert_eq!(
+            recording_action(&recording_state(false, false), RecordingAction::Start),
+            Some(RecordingAction::Start)
+        );
+        assert_eq!(
+            recording_action(&recording_state(true, false), RecordingAction::Stop),
+            Some(RecordingAction::Stop)
+        );
+        assert_eq!(recording_status_label(false), "STOPPED");
+        assert_eq!(recording_status_label(true), "RECORDING");
+    }
+
+    #[test]
+    fn recording_pending_blocks_a_second_intent() {
+        for (desired, action) in [
+            (false, RecordingAction::Start),
+            (true, RecordingAction::Stop),
+        ] {
+            assert_eq!(
+                recording_action(&recording_state(desired, true), action),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn recording_click_must_match_the_authoritative_desired_flag() {
+        assert_eq!(
+            recording_action(&recording_state(false, false), RecordingAction::Stop),
+            None
+        );
+        assert_eq!(
+            recording_action(&recording_state(true, false), RecordingAction::Start),
+            None
+        );
     }
 
     #[test]
