@@ -4,14 +4,15 @@ use fm_model::{
     AddInputError, AddSceneInputError, AddSceneLayerError, AddStreamTargetError, AudioBus, BusSend,
     CURRENT_SCHEMA_VERSION, CropRect, DEFAULT_VIDEO_BITRATE_KBPS, DuplicateSceneInputError,
     EntityRef, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
-    InputGainMilliDb, InputKind, Layer, LayerGeometry, MAX_VIDEO_BITRATE_KBPS,
-    MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project, ProjectSettings, RectMask,
-    RemoveAudioBusError, RemoveInputError, RemoveOutputError, RemoveSceneError, RenameSceneError,
-    RestartPolicy, Rgba8, Rotation, Scene, SceneLayerError, SetStingerError, SimulatedAudio,
-    SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy,
-    StingerConfig, StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint,
-    StreamEndpointError, StreamKey, StreamKeyError, StreamProtocol, StreamTarget, StreamTargetId,
-    StreamVideoBitrateError, ValidationError, ValidationErrorKind,
+    InputGainMilliDb, InputKind, Layer, LayerGeometry, MAX_STREAM_ENDPOINT_BYTES,
+    MAX_VIDEO_BITRATE_KBPS, MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project,
+    ProjectSettings, REDACTED_STREAM_KEY, RectMask, RemoveAudioBusError, RemoveInputError,
+    RemoveOutputError, RemoveSceneError, RenameSceneError, RestartPolicy, Rgba8, Rotation, Scene,
+    SceneLayerError, SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
+    SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
+    StingerSlotNumber, StreamEndpoint, StreamEndpointError, StreamKey, StreamKeyError,
+    StreamProtocol, StreamTarget, StreamTargetError, StreamTargetId, StreamVideoBitrateError,
+    ValidationError, ValidationErrorKind,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, MAX_INPUT_NAME_BYTES,
@@ -897,7 +898,7 @@ fn stream_target(id: u128, name: &str, output: OutputId) -> StreamTarget {
         name.to_owned(),
         StreamProtocol::Rtmps,
         StreamEndpoint::parse("ingest.example:443/live").unwrap(),
-        StreamKey::parse("sk-abcdef-012345").unwrap(),
+        Some(StreamKey::parse("sk-abcdef-012345").unwrap()),
         output,
     )
     .unwrap()
@@ -1068,7 +1069,7 @@ fn srt_endpoints_take_host_port_only_and_recompose_through_a_streamid_query() {
         StreamEndpoint::parse_url("srt://ingest.example.test:9710")
             .unwrap()
             .1,
-        StreamKey::parse(KEY).unwrap(),
+        Some(StreamKey::parse(KEY).unwrap()),
         output_id(1),
     )
     .unwrap()
@@ -1104,6 +1105,177 @@ fn srt_endpoints_take_host_port_only_and_recompose_through_a_streamid_query() {
 }
 
 #[test]
+fn hls_endpoints_take_absolute_directory_paths_and_reject_escaping_ones() {
+    // A full URL stores exactly what follows `hls://`, so the leading slash
+    // belongs to the path and recomposition restores the full URL.
+    assert_eq!(
+        StreamEndpoint::parse_url("hls:///var/lib/freemix/live").unwrap(),
+        (
+            StreamProtocol::Hls,
+            StreamEndpoint::parse_for(StreamProtocol::Hls, "/var/lib/freemix/live").unwrap()
+        )
+    );
+    assert_eq!(StreamProtocol::Hls.scheme(), "hls");
+    assert_eq!(
+        StreamEndpoint::parse_url("hls:///var/lib/freemix/live")
+            .unwrap()
+            .1
+            .as_str(),
+        "/var/lib/freemix/live"
+    );
+
+    for (endpoint, expected) in [
+        ("var/lib/freemix/live", StreamEndpointError::PathNotAbsolute),
+        ("./live", StreamEndpointError::PathNotAbsolute),
+        ("", StreamEndpointError::Empty),
+        ("/", StreamEndpointError::EmptyPathSegment),
+        (
+            "/var/lib/freemix/live/",
+            StreamEndpointError::EmptyPathSegment,
+        ),
+        ("/var//freemix/live", StreamEndpointError::EmptyPathSegment),
+        ("/var/lib/../live", StreamEndpointError::PathTraversal),
+        ("/var/lib/./live", StreamEndpointError::PathTraversal),
+        ("/var/lib/..", StreamEndpointError::PathTraversal),
+        (
+            "/var/lib/freemix/live?token=abcdef",
+            StreamEndpointError::QueryOrFragment,
+        ),
+        (
+            "/var/lib/freemix/live#segment",
+            StreamEndpointError::QueryOrFragment,
+        ),
+        (
+            "hls:///var/lib/freemix/live",
+            StreamEndpointError::EmbeddedScheme,
+        ),
+        ("/var/lib/free mix", StreamEndpointError::InvalidCharacter),
+    ] {
+        assert_eq!(
+            StreamEndpoint::parse_for(StreamProtocol::Hls, endpoint),
+            Err(expected),
+            "{endpoint} must be refused"
+        );
+    }
+
+    // The shared guards run before the path rules, so the bound still holds.
+    assert_eq!(
+        StreamEndpoint::parse_for(
+            StreamProtocol::Hls,
+            &format!("/{}", "a".repeat(MAX_STREAM_ENDPOINT_BYTES))
+        ),
+        Err(StreamEndpointError::TooLong)
+    );
+
+    // An absolute directory stays invalid for RTMP, whose authority would be
+    // empty, so the HLS shape does not leak into the other protocols.
+    assert_eq!(
+        StreamEndpoint::parse("/var/lib/freemix/live"),
+        Err(StreamEndpointError::MissingHost)
+    );
+}
+
+#[test]
+fn hls_destinations_author_a_local_directory_without_a_key_or_backup() {
+    let endpoint = StreamEndpoint::parse_url("hls:///var/lib/freemix/live")
+        .unwrap()
+        .1;
+    let target = StreamTarget::new(
+        stream_target_id(3),
+        "Local HLS".to_owned(),
+        StreamProtocol::Hls,
+        endpoint.clone(),
+        None,
+        output_id(1),
+    )
+    .unwrap();
+
+    assert_eq!(target.key(), None);
+    assert_eq!(target.endpoint(), &endpoint);
+    assert_eq!(target.expose_url(), "hls:///var/lib/freemix/live");
+    assert_eq!(target.redacted_url(), "hls:///var/lib/freemix/live");
+    assert_eq!(target.expose_backup_url(), None);
+    assert_eq!(target.redacted_backup_url(), None);
+
+    // An HLS destination has no key to redact, so no surface renders the
+    // placeholder or leaves the directory.
+    for rendered in [
+        format!("{target:?}"),
+        format!("{target}"),
+        target.redacted_url(),
+    ] {
+        assert!(rendered.contains("hls:///var/lib/freemix/live"));
+        assert!(
+            !rendered.contains(REDACTED_STREAM_KEY),
+            "unexpected redaction in `{rendered}`"
+        );
+    }
+
+    // HLS refuses a key...
+    assert_eq!(
+        StreamTarget::new(
+            stream_target_id(3),
+            "Keyed HLS".to_owned(),
+            StreamProtocol::Hls,
+            endpoint.clone(),
+            Some(StreamKey::parse("sk-abcdef-012345").unwrap()),
+            output_id(1),
+        ),
+        Err(StreamTargetError::UnexpectedStreamKey)
+    );
+
+    // ...and a failover endpoint, which has no local equivalent. Clearing
+    // one stays allowed and changes nothing.
+    assert_eq!(
+        target.clone().with_backup_endpoint(Some(endpoint)),
+        Err(StreamTargetError::BackupNotAllowed)
+    );
+    assert_eq!(target.clone().with_backup_endpoint(None).unwrap(), target);
+}
+
+#[test]
+fn remote_protocols_require_a_stream_key() {
+    for (protocol, endpoint) in [
+        (
+            StreamProtocol::Rtmp,
+            StreamEndpoint::parse("ingest.example/live").unwrap(),
+        ),
+        (
+            StreamProtocol::Rtmps,
+            StreamEndpoint::parse("ingest.example:443/live").unwrap(),
+        ),
+        (
+            StreamProtocol::Srt,
+            StreamEndpoint::parse_for(StreamProtocol::Srt, "ingest.example:9710").unwrap(),
+        ),
+    ] {
+        assert_eq!(
+            StreamTarget::new(
+                stream_target_id(5),
+                "No key".to_owned(),
+                protocol,
+                endpoint.clone(),
+                None,
+                output_id(1),
+            ),
+            Err(StreamTargetError::MissingStreamKey),
+            "{protocol} must require a stream key"
+        );
+
+        let target = StreamTarget::new(
+            stream_target_id(5),
+            "Keyed".to_owned(),
+            protocol,
+            endpoint,
+            Some(StreamKey::parse("sk-abcdef-012345").unwrap()),
+            output_id(1),
+        )
+        .unwrap();
+        assert!(target.key().is_some());
+    }
+}
+
+#[test]
 fn stream_key_never_appears_in_debug_display_or_errors() {
     const SECRET: &str = "live-9f3c-secret-key";
     let target = StreamTarget::new(
@@ -1111,7 +1283,7 @@ fn stream_key_never_appears_in_debug_display_or_errors() {
         "Primary".to_owned(),
         StreamProtocol::Rtmps,
         StreamEndpoint::parse("ingest.example:443/live").unwrap(),
-        StreamKey::parse(SECRET).unwrap(),
+        Some(StreamKey::parse(SECRET).unwrap()),
         output_id(1),
     )
     .unwrap()

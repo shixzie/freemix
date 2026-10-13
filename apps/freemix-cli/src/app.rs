@@ -22,8 +22,8 @@ use fm_model::{
     InputGainMilliDb, InputKind, Layer, LayerGeometry, MainMix, Project, ProjectSettings, RectMask,
     Rgba8 as ModelRgba8, Rotation, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
     SourceRef, StartupPolicy, StingerAudioPolicy as ModelStingerAudioPolicy, StingerConfig,
-    StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamTarget,
-    StreamTargetId,
+    StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamProtocol,
+    StreamTarget, StreamTargetId,
 };
 use fm_persistence::validate_asset_uri;
 use fm_persistence::{
@@ -1884,9 +1884,11 @@ fn rename_output(path: &Path, output: OutputId, name: String) -> AppResult<()> {
 
 /// Builds a validated destination from the authored arguments.
 ///
-/// Every rejection here comes from a typed model error that carries no URL or
-/// key text, so a mistyped key is refused without echoing it back to the
-/// terminal or into a shell history through an error message.
+/// The protocol pairs the destination with its key shape: HLS writes to a
+/// local directory and gets `None`, while RTMP/RTMPS/SRT require the authored
+/// key. Every rejection here carries no URL or key text, so a mistyped key is
+/// refused without echoing it back to the terminal or into a shell history
+/// through an error message.
 fn stream_target(spec: &StreamSpec) -> AppResult<StreamTarget> {
     let (protocol, endpoint) = StreamEndpoint::parse_url(&spec.url)
         .map_err(|error| AppFailure(format!("invalid stream url: {error}")))?;
@@ -1905,8 +1907,18 @@ fn stream_target(spec: &StreamSpec) -> AppResult<StreamTarget> {
             }
         })
         .transpose()?;
-    let key = StreamKey::parse(&spec.key)
-        .map_err(|error| AppFailure(format!("invalid stream key: {error}")))?;
+    let key = match protocol {
+        StreamProtocol::Hls => None,
+        StreamProtocol::Rtmp | StreamProtocol::Rtmps | StreamProtocol::Srt => {
+            let secret = spec.key.as_deref().ok_or_else(|| {
+                AppFailure("stream destination protocol requires a stream key".into())
+            })?;
+            Some(
+                StreamKey::parse(secret)
+                    .map_err(|error| AppFailure(format!("invalid stream key: {error}")))?,
+            )
+        }
+    };
     let target = StreamTarget::new(
         stream_target_id(spec.stream)?,
         spec.name.clone(),
@@ -3273,7 +3285,9 @@ fn print_outputs(project: &Project) {
 /// Lists configured streaming destinations with the stream key redacted.
 ///
 /// The URLs printed here come from [`StreamTarget::redacted_url`], which
-/// renders the key as `****`. No line in this program prints the key.
+/// renders the key as `****`. An HLS destination has no key: its local
+/// `hls:///absolute/dir` output path is operator-chosen storage rather than a
+/// secret and is printed verbatim. No line in this program prints the key.
 fn print_stream_targets(project: &Project) {
     for target in project.stream_targets() {
         let output = project
@@ -3286,7 +3300,7 @@ fn print_stream_targets(project: &Project) {
             StartupPolicy::ReconcileDesiredState => "reconcile-desired-state",
         };
         println!(
-            "stream id={} name={:?} protocol={} url={:?} backup_url={:?} output={} output_name={:?} startup={startup} running={}",
+            "stream id={} name={:?} protocol={} url={:?} backup_url={:?} output={} output_name={:?} startup={startup} video_bitrate_kbps={} running={}",
             target.id(),
             target.name(),
             target.protocol(),
@@ -3296,6 +3310,7 @@ fn print_stream_targets(project: &Project) {
                 .unwrap_or_else(|| "none".to_owned()),
             target.output(),
             output.name,
+            target.video_bitrate_kbps(),
             target.running(),
         );
     }
@@ -3498,8 +3513,8 @@ Usage:
   freemix-cli output-rename <show.freemix> <existing-output-id> <name>
   freemix-cli output-startup <show.freemix> <existing-output-id> <stopped|reconcile-desired-state>
   freemix-cli output-remove <show.freemix> <existing-output-id>
-  freemix-cli stream-add <show.freemix> <nonzero-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]> <stream-key> <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>]
-  freemix-cli stream-update <show.freemix> <existing-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]> <stream-key> <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>]
+  freemix-cli stream-add <show.freemix> <nonzero-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>]
+  freemix-cli stream-update <show.freemix> <existing-stream-id> <existing-output-id> <rtmp(s)://host/app|srt://host[:port]|hls:///abs/dir> [<stream-key>] <name> [--backup <url matching the primary scheme>] [--startup <stopped|reconcile-desired-state>] [--video-bitrate-kbps <1000..=100000>]
   freemix-cli stream-remove <show.freemix> <existing-stream-id>
   freemix-cli stream-start <show.freemix> <existing-stream-id>
   freemix-cli stream-stop <show.freemix> <existing-stream-id>
@@ -3508,7 +3523,10 @@ Usage:
       The stream key is a positional argument and is therefore visible in this
       machine's process list. It is stored in plaintext in project.json, like
       every other authored field, so protect the bundle accordingly. It is
-      never printed: `streams` and every error render it as ****.
+      never printed: `streams` and every error render it as ****. An
+      hls:///abs/dir destination writes local segments and carries no key: it
+      omits the <stream-key> positional and refuses --backup; its local output
+      path is not a secret and is printed verbatim.
   freemix-cli scene-input-add <show.freemix> <nonzero-input-id> <nonzero-scene-id> <name>
   freemix-cli scene-input-duplicate <show.freemix> <source-scene-id> <new-scene-id> <new-input-id> <scene-name> <input-name>
   freemix-cli scene-input-audio-source <show.freemix> <scene-input-id> <source-input-id>

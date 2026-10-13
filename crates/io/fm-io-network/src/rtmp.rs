@@ -1,12 +1,17 @@
-//! A real RTMP/RTMPS/SRT transport for [`OutputSet`](crate::OutputSet), one bounded
+//! A real RTMP/RTMPS/SRT/HLS transport for [`OutputSet`](crate::OutputSet), one bounded
 //! `FFmpeg` child per connection attempt.
 //!
 //! [`OutputSet`](crate::OutputSet) owns retry budgets, backoff, backup-endpoint rotation, the
 //! recovery queue, and failure isolation. [`Streamer`] owns one live output
 //! session: an `FFmpeg` child fed raw video and audio over authenticated
-//! loopback inputs, muxing `-f flv` to one `rtmp://` or `rtmps://` destination
-//! or `-f mpegts` to one `srt://` destination, with automatic reconnection
-//! explicitly left to its caller. This module is that caller.
+//! loopback inputs, muxing `-f flv` to one `rtmp://` or `rtmps://` destination,
+//! `-f mpegts` to one `srt://` destination, or `-f hls` into the absolute local
+//! directory an HLS endpoint names (`hls:///absolute/path`), with automatic
+//! reconnection explicitly left to its caller. This module is that caller. An
+//! HLS destination is local: it has no peer and no stream key semantics, so a
+//! backup endpoint and a credential are refused for it at configuration time,
+//! and its endpoint's placeholder host and port are never rendered in the
+//! destination URL.
 //!
 //! # The mapping, including where it is imperfect
 //!
@@ -106,7 +111,7 @@
 //!
 //! # Not covered
 //!
-//! HLS and LAN outputs; TLS certificate policy (`rtmps://` uses the
+//! TLS certificate policy (`rtmps://` uses the
 //! child's default trust configuration); SRT encryption and passphrase policy
 //! (`srt://` likewise uses the child's default configuration and carries the
 //! caller's stream id verbatim); credential resolution (this sink is handed an
@@ -398,9 +403,13 @@ pub fn raw_pair_packet(
     .map_err(RawPairError::Packet)
 }
 
-/// One destination's RTMP/RTMPS transport: at most one `FFmpeg` child, started
-/// by [`connect`](TransportSink::connect) and reaped by
+/// One destination's RTMP/RTMPS/SRT/HLS transport: at most one `FFmpeg` child,
+/// started by [`connect`](TransportSink::connect) and reaped by
 /// [`disconnect`](TransportSink::disconnect).
+///
+/// A local HLS destination has no stream key and no failover: its directory
+/// comes from [`Endpoint::path`] and the placeholder host and port are never
+/// rendered.
 ///
 /// Give one sink to one [`OutputSet`] destination. Sharing a sink between
 /// destinations would let one destination's failure stop another's child.
@@ -490,8 +499,9 @@ impl FfmpegRtmpSink {
     ) -> Result<StreamDestination, SinkError> {
         // One composition per protocol, then one `StreamDestination::parse`:
         // the codec parser stays the single validity source for every URL
-        // this transport opens. The endpoint's explicit port is always
-        // rendered because [`Endpoint`] cannot exist without one.
+        // this transport opens. Network endpoints render their explicit port
+        // because [`Endpoint`] cannot exist without one; a local HLS endpoint
+        // renders only its path.
         let url = match config.protocol() {
             OutputProtocol::Rtmp | OutputProtocol::Rtmps => {
                 let scheme = match config.protocol() {
@@ -523,7 +533,12 @@ impl FfmpegRtmpSink {
                 }
                 url
             }
-            other => {
+            // A local HLS destination is one absolute directory: the
+            // endpoint's placeholder host and port are never rendered, and
+            // there is no stream key to append because HLS has no failover
+            // key semantics.
+            OutputProtocol::Hls => format!("hls://{}", endpoint.path()),
+            other @ OutputProtocol::LiveLan => {
                 return Err(SinkError::new(
                     FailureStage::Protocol,
                     None,
@@ -732,6 +747,11 @@ fn classify_start(error: &StartError) -> SinkError {
             FailureStage::Protocol,
             false,
             "FLV carries mono or stereo audio only".to_owned(),
+        ),
+        StartErrorKind::HlsDirectoryUnusable => (
+            FailureStage::Protocol,
+            false,
+            "HLS output directory is unusable".to_owned(),
         ),
         StartErrorKind::InvalidExecutable => (
             FailureStage::Protocol,

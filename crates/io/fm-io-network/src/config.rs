@@ -43,6 +43,10 @@ pub enum OutputProtocol {
     /// [`Endpoint`] cannot be built without one, and credentials follow the
     /// same rules as RTMP: one resolved stream key, never embedded userinfo.
     Srt,
+    /// Local HLS: the child writes MPEG-TS segments and a playlist into one
+    /// absolute directory. There is no peer, so the endpoint's host and port
+    /// are placeholders that are never rendered, and TLS configuration, a
+    /// backup endpoint, and a credential are all refused rather than ignored.
     Hls,
     LiveLan,
 }
@@ -93,6 +97,13 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
+    /// The placeholder host a local-directory endpoint carries. A local
+    /// destination has no peer, so [`Endpoint::host`] is never rendered for it.
+    const LOCAL_HOST: &'static str = "localhost";
+    /// The placeholder port for a local-directory endpoint; a local
+    /// destination has no port, so [`Endpoint::port`] is never rendered for it.
+    const LOCAL_PORT: u16 = 1;
+
     /// Creates a structured endpoint without resolving it or opening a socket.
     ///
     /// # Errors
@@ -124,6 +135,26 @@ impl Endpoint {
         Ok(Self { host, port, path })
     }
 
+    /// Creates the local-directory endpoint carried by `OutputProtocol::Hls`.
+    ///
+    /// The path is one absolute directory and must satisfy the HLS path rules:
+    /// printable ASCII only, at least one segment, no empty or trailing
+    /// separator, and no `.` or `..` segment. The host and port are
+    /// placeholders that a local destination never renders, so callers must
+    /// treat this endpoint as a path and nothing else.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::InvalidPath`] unless `path` is a valid local
+    /// directory.
+    pub fn local_directory(path: impl Into<String>) -> Result<Self, ConfigError> {
+        let path = path.into();
+        if !valid_local_directory(&path) {
+            return Err(ConfigError::InvalidPath);
+        }
+        Self::new(Self::LOCAL_HOST, Self::LOCAL_PORT, path)
+    }
+
     #[must_use]
     pub fn host(&self) -> &str {
         &self.host
@@ -138,6 +169,28 @@ impl Endpoint {
     pub fn path(&self) -> &str {
         &self.path
     }
+}
+
+/// Whether `path` is an absolute local directory acceptable as an HLS output:
+/// printable ASCII, at least one segment, and only plain named segments — no
+/// empty segment (`//`), no trailing `/`, and no `.` or `..` segment.
+///
+/// This is the same rule set the codec applies to an `hls://` destination, so
+/// a directory the transport accepts can always be composed into a URL the
+/// codec accepts.
+fn valid_local_directory(path: &str) -> bool {
+    if !path.starts_with('/') || path.len() < 2 {
+        return false;
+    }
+    if !path.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+        || path.ends_with('/')
+        || path.contains("//")
+    {
+        return false;
+    }
+    !path[1..]
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -314,8 +367,10 @@ impl DestinationConfig {
     ///
     /// # Errors
     ///
-    /// RTMPS requires TLS; plain RTMP and SRT reject contradictory TLS
-    /// configuration.
+    /// RTMPS requires TLS; plain RTMP, SRT, and HLS reject contradictory TLS
+    /// configuration. HLS publishes into a local directory: it has no peer to
+    /// fail over to and no stream key, so a backup endpoint and a credential
+    /// are refused rather than stored and ignored.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: DestinationId,
@@ -330,8 +385,20 @@ impl DestinationConfig {
         if protocol.requires_tls() && tls.is_none() {
             return Err(ConfigError::TlsRequired);
         }
-        if matches!(protocol, OutputProtocol::Rtmp | OutputProtocol::Srt) && tls.is_some() {
+        if matches!(
+            protocol,
+            OutputProtocol::Rtmp | OutputProtocol::Srt | OutputProtocol::Hls
+        ) && tls.is_some()
+        {
             return Err(ConfigError::TlsNotSupported);
+        }
+        if protocol == OutputProtocol::Hls {
+            if backup_endpoint.is_some() {
+                return Err(ConfigError::BackupNotSupported);
+            }
+            if credential.is_some() {
+                return Err(ConfigError::CredentialNotSupported);
+            }
         }
         Ok(Self {
             id,
@@ -398,6 +465,10 @@ pub enum ConfigError {
     InvalidTlsServerName,
     TlsRequired,
     TlsNotSupported,
+    /// A local destination has no peer to fail over to.
+    BackupNotSupported,
+    /// A local destination has no stream key for a credential to resolve to.
+    CredentialNotSupported,
     InvalidReconnectDelay,
     InvalidReconnectMultiplier,
 }
@@ -421,6 +492,12 @@ impl fmt::Display for ConfigError {
             Self::InvalidTlsServerName => formatter.write_str("TLS server name is invalid"),
             Self::TlsRequired => formatter.write_str("this protocol requires TLS configuration"),
             Self::TlsNotSupported => formatter.write_str("plain RTMP cannot use TLS configuration"),
+            Self::BackupNotSupported => {
+                formatter.write_str("a local destination cannot use a backup endpoint")
+            }
+            Self::CredentialNotSupported => {
+                formatter.write_str("a local destination cannot use a credential")
+            }
             Self::InvalidReconnectDelay => formatter.write_str("reconnect delay is invalid"),
             Self::InvalidReconnectMultiplier => {
                 formatter.write_str("reconnect multiplier must be at least two")

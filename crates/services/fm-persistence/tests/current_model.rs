@@ -173,7 +173,7 @@ fn rich_stream_target(high: u128) -> StreamTarget {
         "Main ingest".into(),
         StreamProtocol::Rtmps,
         StreamEndpoint::parse("ingest.example.test:443/live").unwrap(),
-        StreamKey::parse(RICH_STREAM_KEY).unwrap(),
+        Some(StreamKey::parse(RICH_STREAM_KEY).unwrap()),
         output_id(high + 30),
     )
     .unwrap()
@@ -443,7 +443,7 @@ fn stream_destination_round_trips_at_the_current_schema_and_keeps_its_key_off_ev
         target.backup_endpoint().map(StreamEndpoint::as_str),
         Some("backup.example.test/live/eu")
     );
-    assert_eq!(target.key().expose_secret(), RICH_STREAM_KEY);
+    assert_eq!(target.key().unwrap().expose_secret(), RICH_STREAM_KEY);
     assert_eq!(target.startup(), StartupPolicy::ReconcileDesiredState);
     assert!(target.running());
     assert_eq!(
@@ -487,7 +487,7 @@ fn srt_stream_destination_round_trips_at_the_current_schema() {
         "SRT relay".into(),
         StreamProtocol::Srt,
         StreamEndpoint::parse_for(StreamProtocol::Srt, "relay.example.test:9710").unwrap(),
-        StreamKey::parse(KEY).unwrap(),
+        Some(StreamKey::parse(KEY).unwrap()),
         output_id(high + 30),
     )
     .unwrap()
@@ -529,6 +529,88 @@ fn srt_stream_destination_round_trips_at_the_current_schema() {
 }
 
 #[test]
+fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
+    let high = u128::from(u64::MAX) + 101;
+    let temp = TestDirectory::new("stream-target-hls");
+    let store = temp.store("show");
+
+    let mut project = rich_project();
+    let target = StreamTarget::new(
+        stream_target_id(high + 41),
+        "Local HLS".into(),
+        StreamProtocol::Hls,
+        StreamEndpoint::parse_for(StreamProtocol::Hls, "/var/lib/freemix/live").unwrap(),
+        None,
+        output_id(high + 30),
+    )
+    .unwrap();
+    project.add_stream_target_checked(target).unwrap();
+    let expected = StoredProject::from_project(
+        project,
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(encoded.contains("\"schema_version\": 21"));
+    assert!(encoded.contains("\"protocol\": \"hls\""));
+    assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
+    assert!(encoded.contains("\"backup_endpoint\": null"));
+    assert!(encoded.contains("\"key\": null"));
+
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded, expected);
+    let loaded_target = &loaded.project().stream_targets()[1];
+    assert_eq!(loaded_target.protocol(), StreamProtocol::Hls);
+    assert_eq!(loaded_target.key(), None);
+    assert_eq!(loaded_target.endpoint().as_str(), "/var/lib/freemix/live");
+    assert_eq!(loaded_target.expose_url(), "hls:///var/lib/freemix/live");
+    assert_eq!(loaded_target.redacted_url(), "hls:///var/lib/freemix/live");
+
+    // HLS belongs to the current contract: the key is exactly `null`, so a
+    // string, another type, or a missing field is malformed.
+    for malformed in [
+        encoded.replacen("\"key\": null", "\"key\": \"live-key-012345\"", 1),
+        encoded.replacen("\"key\": null", "\"key\": 12345", 1),
+        encoded.replacen(",\n        \"key\": null", "", 1),
+    ] {
+        fs::write(store.manifest_path(), malformed).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(
+            matches!(error, StoreError::MalformedManifest { .. }),
+            "expected a malformed manifest, got {error:?}"
+        );
+        assert!(!error.to_string().contains("live-key-012345"));
+    }
+
+    // RTMP/RTMPS/SRT still require the key string: `null` or a non-string
+    // there is malformed rather than a keyless remote destination.
+    store.save(&stored_rich_project()).unwrap();
+    let remote = fs::read_to_string(store.manifest_path()).unwrap();
+    for malformed in [
+        remote.replacen(
+            &format!("\"key\": \"{RICH_STREAM_KEY}\""),
+            "\"key\": null",
+            1,
+        ),
+        remote.replacen(
+            &format!("\"key\": \"{RICH_STREAM_KEY}\""),
+            "\"key\": 12345",
+            1,
+        ),
+    ] {
+        fs::write(store.manifest_path(), malformed).unwrap();
+        assert!(matches!(
+            store.load(),
+            Err(StoreError::MalformedManifest { .. })
+        ));
+    }
+}
+
+#[test]
 fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema() {
     let temp = TestDirectory::new("stream-target-running");
     let store = temp.store("show");
@@ -548,7 +630,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 20"));
+    assert!(valid.contains("\"schema_version\": 21"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -564,7 +646,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 20", "\"schema_version\": 19", 1),
+        valid.replacen("\"schema_version\": 21", "\"schema_version\": 20", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();

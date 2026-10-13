@@ -331,7 +331,8 @@ fn write_project_collections(output: &mut String, project: &fm_model::Project) {
 /// The stream key is written in the clear. That is the `.freemix` bundle's
 /// existing trust model: `project.json` is plaintext and the bundle must be
 /// protected like the credential it now contains. This is the one place the
-/// secret is allowed to leave [`fm_model::StreamKey`].
+/// secret is allowed to leave [`fm_model::StreamKey`]. An HLS destination has
+/// no key; its field is written as `null`.
 fn write_stream_targets(output: &mut String, project: &fm_model::Project) {
     output.push_str(",\n    \"stream_targets\": [");
     for (index, target) in project.stream_targets().iter().enumerate() {
@@ -358,11 +359,17 @@ fn write_stream_targets(output: &mut String, project: &fm_model::Project) {
         } else {
             output.push_str("null");
         }
-        output.push_str(",\n        \"key\": \"");
-        escape_string(output, target.key().expose_secret());
+        output.push_str(",\n        \"key\": ");
+        if let Some(key) = target.key() {
+            output.push('"');
+            escape_string(output, key.expose_secret());
+            output.push('"');
+        } else {
+            output.push_str("null");
+        }
         write!(
             output,
-            "\",\n        \"startup\": \"{}\",\n        \"output\": {},\n        \"running\": {},\n        \"video_bitrate_kbps\": {}\n      }}",
+            ",\n        \"startup\": \"{}\",\n        \"output\": {},\n        \"running\": {},\n        \"video_bitrate_kbps\": {}\n      }}",
             startup_policy(target.startup()),
             target.output(),
             target.running(),

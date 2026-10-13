@@ -13,7 +13,7 @@ use std::{
 use fm_model::{
     AudioBus, BusSend, Input, InputAudioStripState, InputKind, Layer, LayerGeometry, RectMask,
     Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
-    StartupPolicy,
+    StartupPolicy, StreamProtocol,
 };
 use fm_persistence::{MutationBatch, ProjectStore, StoredProject};
 use fm_protocol::{
@@ -2678,7 +2678,7 @@ fn local_stream_destinations_are_authored_offline_and_never_print_the_stream_key
     let stored = store.load().unwrap();
     let target = &stored.project().stream_targets()[0];
     assert_eq!(target.name(), "Main ingest");
-    assert_eq!(target.key().expose_secret(), KEY);
+    assert_eq!(target.key().unwrap().expose_secret(), KEY);
     assert_eq!(target.startup(), StartupPolicy::ReconcileDesiredState);
     // Destinations authored without naming a bitrate assume the default.
     assert_eq!(target.video_bitrate_kbps(), 4_500);
@@ -2698,7 +2698,8 @@ fn local_stream_destinations_are_authored_offline_and_never_print_the_stream_key
             "stream id=40 name=\"Main ingest\" protocol=rtmps ",
             "url=\"rtmps://ingest.example.test:443/live/****\" ",
             "backup_url=\"rtmps://backup.example.test/live/****\" ",
-            "output=30 output_name=\"Primary\" startup=reconcile-desired-state running=false"
+            "output=30 output_name=\"Primary\" startup=reconcile-desired-state ",
+            "video_bitrate_kbps=4500 running=false"
         )
     );
 
@@ -2755,7 +2756,7 @@ fn local_stream_destinations_are_authored_offline_and_never_print_the_stream_key
     ]));
     let updated = store.load().unwrap();
     let target = &updated.project().stream_targets()[0];
-    assert_eq!(target.key().expose_secret(), "rotated-key-0001");
+    assert_eq!(target.key().unwrap().expose_secret(), "rotated-key-0001");
     assert_eq!(target.redacted_url(), "rtmp://relay.example.test/live/****");
     assert_eq!(target.backup_endpoint(), None);
     assert_eq!(target.startup(), StartupPolicy::Stopped);
@@ -2804,7 +2805,8 @@ fn author_srt_stream_destination(context: &ContractContext) {
             "stream id=41 name=\"SRT relay\" protocol=srt ",
             "url=\"srt://relay.example.test:9710?streamid=****\" ",
             "backup_url=\"none\" ",
-            "output=30 output_name=\"Primary\" startup=stopped running=false"
+            "output=30 output_name=\"Primary\" startup=stopped ",
+            "video_bitrate_kbps=4500 running=false"
         )
     );
     assert_success(&invoke_bounded(&[
@@ -2814,6 +2816,138 @@ fn author_srt_stream_destination(context: &ContractContext) {
     ]));
 }
 
+/// Authors one `hls:///absolute/dir` destination on the existing output and
+/// checks the operator-facing inventory names its local path and authored
+/// bitrate without ever rendering a stream key: HLS has none.
+#[test]
+fn hls_stream_destination_is_authored_offline_and_prints_its_path_and_bitrate() {
+    const HLS_DIRECTORY: &str = "/var/lib/freemix/live/hls";
+    let context = ContractContext::new();
+    author_stream_destination(&context);
+    let store = ProjectStore::new(&context.project).unwrap();
+
+    assert_success(&invoke_bounded(&[
+        "stream-add",
+        context.project_path(),
+        "41",
+        "30",
+        &format!("hls://{HLS_DIRECTORY}"),
+        "Local HLS",
+        "--video-bitrate-kbps",
+        "6000",
+    ]));
+
+    let stored = store.load().unwrap();
+    let target = stored
+        .project()
+        .stream_targets()
+        .iter()
+        .find(|target| target.id().to_string() == "41")
+        .expect("the HLS destination was authored");
+    assert_eq!(target.protocol(), StreamProtocol::Hls);
+    assert_eq!(target.key(), None);
+    assert_eq!(target.endpoint().as_str(), HLS_DIRECTORY);
+    assert_eq!(target.backup_endpoint(), None);
+    assert_eq!(target.video_bitrate_kbps(), 6_000);
+    assert_eq!(target.redacted_url(), format!("hls://{HLS_DIRECTORY}"));
+    let authored_manifest = fs::read_to_string(context.project.join("project.json")).unwrap();
+    assert!(authored_manifest.contains("\"protocol\": \"hls\""));
+    assert!(authored_manifest.contains("\"key\": null"));
+
+    // The inventory line is the operator-facing surface: the local directory
+    // is storage rather than a secret and is printed verbatim, no `****`
+    // placeholder appears, and no key text can.
+    let streams = invoke_bounded(&["streams", context.project_path()]);
+    assert_success(&streams);
+    let rendered = stdout(&streams);
+    let hls_line = rendered
+        .lines()
+        .find(|line| line.contains("id=41"))
+        .expect("the HLS destination has an inventory line");
+    assert_eq!(
+        hls_line,
+        concat!(
+            "stream id=41 name=\"Local HLS\" protocol=hls ",
+            "url=\"hls:///var/lib/freemix/live/hls\" ",
+            "backup_url=\"none\" ",
+            "output=30 output_name=\"Primary\" startup=stopped ",
+            "video_bitrate_kbps=6000 running=false"
+        )
+    );
+    assert!(!hls_line.contains("****"));
+    assert!(!hls_line.contains(STREAM_KEY));
+
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// An HLS destination takes no stream key positional and no failover
+/// endpoint. Both mistakes are refused by the argument parser, before any
+/// project IO, so the bundle stays byte-identical.
+#[test]
+fn hls_stream_destination_refusals_are_atomic() {
+    let context = ContractContext::new();
+    author_stream_destination(&context);
+    let unchanged = fs::read(context.project.join("project.json")).unwrap();
+
+    for (arguments, expected) in [
+        (
+            vec![
+                "stream-add",
+                context.project_path(),
+                "41",
+                "30",
+                "hls:///var/lib/freemix/live/hls",
+                STREAM_KEY,
+                "Local HLS",
+            ],
+            "unexpected argument `Local HLS`",
+        ),
+        (
+            vec![
+                "stream-add",
+                context.project_path(),
+                "41",
+                "30",
+                "hls:///var/lib/freemix/live/hls",
+                "Local HLS",
+                "--backup",
+                "hls:///var/lib/freemix/live/hls-backup",
+            ],
+            "hls:// stream destinations do not support --backup",
+        ),
+        (
+            vec![
+                "stream-update",
+                context.project_path(),
+                "40",
+                "30",
+                "hls:///var/lib/freemix/live/hls",
+                STREAM_KEY,
+                "Main ingest",
+            ],
+            "unexpected argument `Main ingest`",
+        ),
+    ] {
+        let rejected = invoke_bounded(&arguments);
+        assert_failure_contains(&rejected, expected);
+        let rendered = format!(
+            "{}{}",
+            String::from_utf8_lossy(&rejected.stdout),
+            String::from_utf8_lossy(&rejected.stderr)
+        );
+        assert!(
+            !rendered.contains(STREAM_KEY),
+            "the refused HLS command leaked the stream key into `{rendered}`"
+        );
+        assert_eq!(
+            fs::read(context.project.join("project.json")).unwrap(),
+            unchanged
+        );
+    }
+
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 #[test]
 fn local_stream_start_stop_round_trip_persists_desired_running() {
     let context = ContractContext::new();
@@ -2821,13 +2955,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        20
+        21
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 20);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 21);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -2840,7 +2974,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 20);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 21);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -2916,14 +3050,14 @@ fn local_record_start_stop_round_trip_persists_recording_desired_active() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        20
+        21
     );
     assert!(manifest(&context.project).contains("\"recording_desired_active\": false"));
 
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 20);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 21);
     assert!(started_manifest.contains("\"recording_desired_active\": true"));
     assert!(!started_manifest.contains("\"recording_desired_active\": false"));
     assert!(stdout(&started).contains("recording_desired=true"));
@@ -2932,7 +3066,7 @@ fn local_record_start_stop_round_trip_persists_recording_desired_active() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 20);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 21);
     assert!(stopped_manifest.contains("\"recording_desired_active\": false"));
     assert!(!stopped_manifest.contains("\"recording_desired_active\": true"));
     assert!(stdout(&stopped).contains("recording_desired=false"));

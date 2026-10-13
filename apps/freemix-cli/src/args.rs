@@ -69,10 +69,12 @@ impl FadeToBlackTarget {
 
 /// Everything `stream-add` and `stream-update` author about one destination.
 ///
-/// The stream key arrives as a positional argument, so it is visible in this
-/// machine's process list while the command runs. That matches the bundle's
-/// trust model, which stores the key in plaintext in `project.json`; it is
-/// still worth knowing before pasting a production key on a shared host.
+/// The stream key arrives as a positional argument for the network protocols,
+/// so it is visible in this machine's process list while the command runs.
+/// That matches the bundle's trust model, which stores the key in plaintext in
+/// `project.json`; it is still worth knowing before pasting a production key
+/// on a shared host. An `hls:///absolute/dir` destination writes local
+/// segments, carries no key at all, and therefore omits the key positional.
 /// Once parsed the key stops being printable: `Debug` here redacts it, and the
 /// model type it becomes never renders it at all.
 #[derive(Clone, Eq, PartialEq)]
@@ -80,7 +82,7 @@ pub struct StreamSpec {
     pub stream: u128,
     pub output: u128,
     pub url: String,
-    pub key: String,
+    pub key: Option<String>,
     pub name: String,
     pub backup_url: Option<String>,
     pub startup: StartupPolicy,
@@ -94,7 +96,7 @@ impl std::fmt::Debug for StreamSpec {
             .field("stream", &self.stream)
             .field("output", &self.output)
             .field("url", &self.url)
-            .field("key", &"****")
+            .field("key", &self.key.as_ref().map(|_| "****"))
             .field("name", &self.name)
             .field("backup_url", &self.backup_url)
             .field("startup", &self.startup)
@@ -779,6 +781,8 @@ pub enum ArgsError {
     MissingCommand,
     MissingValue(&'static str),
     BlankValue(&'static str),
+    /// HLS writes into one local directory and has no failover endpoint.
+    BackupNotAllowed,
     InvalidNumber {
         field: &'static str,
         value: String,
@@ -804,6 +808,9 @@ impl core::fmt::Display for ArgsError {
             Self::MissingCommand => formatter.write_str("a command is required"),
             Self::MissingValue(field) => write!(formatter, "missing value for {field}"),
             Self::BlankValue(field) => write!(formatter, "{field} must not be blank"),
+            Self::BackupNotAllowed => {
+                formatter.write_str("hls:// stream destinations do not support --backup")
+            }
             Self::InvalidNumber { field, value } | Self::InvalidChoice { field, value } => {
                 write!(formatter, "invalid {field} value `{value}`")
             }
@@ -1064,7 +1071,15 @@ fn parse_stream(
     let stream = number(&required(&mut arguments, "stream")?, "stream")?;
     let output = number(&required(&mut arguments, "output")?, "output")?;
     let url = nonblank(&mut arguments, "stream url")?;
-    let key = nonblank(&mut arguments, "stream key")?;
+    // HLS writes to a local directory and carries no stream key, so its
+    // positional shape is `<url> <name>`; every network protocol keeps the
+    // existing `<url> <key> <name>`.
+    let hls = url.starts_with("hls://");
+    let key = if hls {
+        None
+    } else {
+        Some(nonblank(&mut arguments, "stream key")?)
+    };
     let name = nonblank(&mut arguments, "stream name")?;
     let mut backup_url = None;
     let mut startup = StartupPolicy::Stopped;
@@ -1072,6 +1087,9 @@ fn parse_stream(
     while let Some(option) = arguments.next() {
         match option.as_str() {
             "--backup" => {
+                if hls {
+                    return Err(ArgsError::BackupNotAllowed);
+                }
                 backup_url = Some(nonblank(&mut arguments, "backup stream url")?);
             }
             "--startup" => {
@@ -1082,6 +1100,12 @@ fn parse_stream(
                     &required(&mut arguments, "video bitrate kbps")?,
                     "video bitrate",
                 )?;
+            }
+            // An HLS destination has no key positional: a leftover positional
+            // is most likely one typed from the network shape, so refuse it
+            // instead of silently folding it into the name.
+            _ if hls && !option.starts_with("--") => {
+                return Err(ArgsError::UnexpectedArgument(option));
             }
             _ => return Err(ArgsError::UnknownOption(option)),
         }

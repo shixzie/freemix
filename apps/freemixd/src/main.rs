@@ -2074,16 +2074,18 @@ fn split_target_endpoints(
 
 /// Splits one full destination URL into the pieces a [`DestinationConfig`]
 /// carries, using the one convention that round-trips through
-/// `fm_codec_ffmpeg::StreamDestination::parse` for all three protocols:
+/// `fm_codec_ffmpeg::StreamDestination::parse` for every protocol:
 /// RTMP/RTMPS compose back as `{scheme}://{host}:{port}{path}/{key}` with the
 /// application path stored in `Endpoint::path` *without* its final key
-/// segment, while SRT composes back as `srt://{host}:{port}?streamid={key}`
-/// with no path at all, so its mandatory `Endpoint::path` field holds the
-/// inert placeholder `"/"`, which the SRT branch ignores. Both endpoints
-/// always name an explicit port because an `Endpoint` cannot be built without
-/// one; an authored URL that omits it fails compilation here instead of being
-/// guessed at air time. The stream key is revalidated as the redactable
-/// single path segment the transport expects.
+/// segment, SRT composes back as `srt://{host}:{port}?streamid={key}` with no
+/// path at all, so its mandatory `Endpoint::path` field holds the inert
+/// placeholder `"/"`, which the SRT branch ignores, and HLS composes back as
+/// `hls://{absolute/dir}` with the directory stored in `Endpoint::path`, no
+/// key at all, and the placeholder host and port a local destination never
+/// renders. Every network endpoint always names an explicit port because an
+/// `Endpoint` cannot be built without one; an authored URL that omits it fails
+/// compilation here instead of being guessed at air time. The stream key is
+/// revalidated as the redactable single path segment the transport expects.
 ///
 /// # Errors
 ///
@@ -2100,9 +2102,22 @@ fn split_destination_url(url: &str) -> AppResult<(OutputProtocol, Endpoint, Opti
         (OutputProtocol::Rtmps, rest)
     } else if let Some(rest) = url.strip_prefix("srt://") {
         (OutputProtocol::Srt, rest)
+    } else if let Some(rest) = url.strip_prefix("hls://") {
+        (OutputProtocol::Hls, rest)
     } else {
         return unsupported();
     };
+    // A local HLS destination is one absolute directory and carries no key:
+    // the endpoint stores the directory in `path`, and the placeholder host
+    // and port are never rendered by any transport.
+    if protocol == OutputProtocol::Hls {
+        let endpoint = Endpoint::local_directory(rest).map_err(|error| {
+            AppFailure(format!(
+                "stream destination endpoint was refused: {error:?}"
+            ))
+        })?;
+        return Ok((OutputProtocol::Hls, endpoint, None));
+    }
     let (authority, endpoint_path, key_text) = if protocol == OutputProtocol::Srt {
         match rest.split_once('?') {
             Some((authority, query)) => {
@@ -2157,7 +2172,9 @@ fn split_destination_url(url: &str) -> AppResult<(OutputProtocol, Endpoint, Opti
 }
 
 /// Renders the destination with its key masked, byte-for-byte like
-/// `StreamDestination::redacted` renders the same URL.
+/// `StreamDestination::redacted` renders the same URL. An HLS destination has
+/// no key: its absolute directory is operator-chosen local storage rather than
+/// a secret, so it is rendered verbatim as `hls:///absolute/path`.
 #[cfg(feature = "native-media")]
 fn redacted_destination_url(protocol: OutputProtocol, endpoint: &Endpoint, keyed: bool) -> String {
     match protocol {
@@ -2190,8 +2207,11 @@ fn redacted_destination_url(protocol: OutputProtocol, endpoint: &Endpoint, keyed
             }
             url
         }
-        // HLS and LAN outputs have no daemon streaming transport yet.
-        _ => String::new(),
+        // A local HLS destination is its absolute directory: there is no key
+        // to mask, and the placeholder host and port are never rendered.
+        OutputProtocol::Hls => format!("hls://{}", endpoint.path()),
+        // LAN outputs have no daemon streaming transport yet.
+        OutputProtocol::LiveLan => String::new(),
     }
 }
 
@@ -8952,7 +8972,7 @@ mod tests {
             "Bitrate".to_owned(),
             StreamProtocol::Rtmp,
             StreamEndpoint::parse("ingest.example.com/live").unwrap(),
-            StreamKey::parse("unit-secret-key").unwrap(),
+            Some(StreamKey::parse("unit-secret-key").unwrap()),
             fm_types::OutputId::new(NonZeroU128::new(7_101).unwrap()),
         )
         .unwrap();
@@ -11482,7 +11502,7 @@ mod tests {
                 ),
                 StreamProtocol::Rtmp,
                 StreamEndpoint::parse("ingest.example.com/live").unwrap(),
-                StreamKey::parse("unit-secret-key").unwrap(),
+                Some(StreamKey::parse("unit-secret-key").unwrap()),
                 output_id,
             )
             .unwrap()
@@ -12847,6 +12867,16 @@ mod tests {
                 "/",
                 None,
             ),
+            (
+                "hls:///var/lib/freemix/live",
+                OutputProtocol::Hls,
+                // A local destination has no peer: the placeholder host and
+                // port are never rendered, and the directory is the path.
+                "localhost",
+                1,
+                "/var/lib/freemix/live",
+                None,
+            ),
         ] {
             let (split_protocol, endpoint, split_key) = split_destination_url(url).expect(url);
             assert_eq!(split_protocol, protocol, "{url:?}");
@@ -12863,18 +12893,22 @@ mod tests {
             // under the transport's rules yields a URL the codec parser — the
             // single validity source — accepts again.
             let composed = match (protocol, key) {
-                (OutputProtocol::Srt, Some(key)) => format!("srt://{host}:{port}?streamid={key}"),
-                (OutputProtocol::Srt, None) => format!("srt://{host}:{port}"),
-                (_, None) => unreachable!("RTMP destinations always carry a key here"),
-                (OutputProtocol::Hls | OutputProtocol::LiveLan, _) => {
-                    unreachable!("no daemon streaming transport for HLS or LAN outputs")
-                }
                 (OutputProtocol::Rtmp, Some(key)) => {
                     format!("rtmp://{host}:{port}{path}/{key}")
                 }
                 (OutputProtocol::Rtmps, Some(key)) => {
                     format!("rtmps://{host}:{port}{path}/{key}")
                 }
+                (OutputProtocol::Srt, Some(key)) => format!("srt://{host}:{port}?streamid={key}"),
+                (OutputProtocol::Srt, None) => format!("srt://{host}:{port}"),
+                (OutputProtocol::Hls, None) => format!("hls://{path}"),
+                (OutputProtocol::Hls, Some(_)) => {
+                    unreachable!("HLS destinations carry no stream key")
+                }
+                (OutputProtocol::LiveLan, _) => {
+                    unreachable!("no daemon streaming transport for LAN outputs")
+                }
+                (_, None) => unreachable!("network destinations always carry a key here"),
             };
             fm_codec_ffmpeg::stream::StreamDestination::parse(&composed)
                 .unwrap_or_else(|error| panic!("{composed:?} does not re-parse: {error:?}"));
@@ -12888,12 +12922,119 @@ mod tests {
             "srt://host.example.test?param=key12345",
             "http://host.example.test:1935/app/key12345",
             "srt://host.example.test:70000?streamid=key12345",
+            "hls://relative/dir",
+            "hls:///srv/../etc",
+            "hls:///srv//live",
+            "hls:///srv/live/",
+            "hls://",
         ] {
             assert!(
                 split_destination_url(url).is_err(),
                 "{url:?} must be refused"
             );
         }
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn redacted_destination_url_masks_keys_and_renders_hls_paths_verbatim() {
+        let network = Endpoint::new("ingest.example.test", 1_935, "/live_app").unwrap();
+        assert_eq!(
+            redacted_destination_url(OutputProtocol::Rtmp, &network, true),
+            "rtmp://ingest.example.test:1935/live_app/****"
+        );
+        assert_eq!(
+            redacted_destination_url(OutputProtocol::Rtmp, &network, false),
+            "rtmp://ingest.example.test:1935/live_app"
+        );
+        assert_eq!(
+            redacted_destination_url(OutputProtocol::Rtmps, &network, true),
+            "rtmps://ingest.example.test:1935/live_app/****"
+        );
+        let srt = Endpoint::new("ingest.example.test", 9_710, "/").unwrap();
+        assert_eq!(
+            redacted_destination_url(OutputProtocol::Srt, &srt, true),
+            "srt://ingest.example.test:9710?streamid=****"
+        );
+        assert_eq!(
+            redacted_destination_url(OutputProtocol::Srt, &srt, false),
+            "srt://ingest.example.test:9710"
+        );
+        // A local HLS directory is operator-chosen storage, not a secret: it
+        // renders verbatim no matter what key presence the caller reports.
+        let hls = Endpoint::local_directory("/var/lib/freemix/live").unwrap();
+        assert_eq!(
+            redacted_destination_url(OutputProtocol::Hls, &hls, false),
+            "hls:///var/lib/freemix/live"
+        );
+        assert_eq!(
+            redacted_destination_url(OutputProtocol::Hls, &hls, true),
+            "hls:///var/lib/freemix/live"
+        );
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn split_and_group_targets_gives_hls_its_own_rendition_group() {
+        use fm_model::{
+            DEFAULT_VIDEO_BITRATE_KBPS, StreamEndpoint as ModelStreamEndpoint,
+            StreamKey as ModelStreamKey, StreamProtocol, StreamTarget, StreamTargetId,
+        };
+        use fm_types::OutputId as ModelOutputId;
+
+        let output = ModelOutputId::new(NonZeroU128::new(30).unwrap());
+        let target = |id: u128, protocol: StreamProtocol, endpoint: &str| {
+            let endpoint = ModelStreamEndpoint::parse_for(protocol, endpoint).unwrap();
+            let key = match protocol {
+                StreamProtocol::Hls => None,
+                StreamProtocol::Rtmp | StreamProtocol::Rtmps | StreamProtocol::Srt => {
+                    Some(ModelStreamKey::parse("live-key-0001").unwrap())
+                }
+            };
+            StreamTarget::new(
+                StreamTargetId::new(NonZeroU128::new(id).unwrap()),
+                format!("Destination {id}"),
+                protocol,
+                endpoint,
+                key,
+                output,
+            )
+            .unwrap()
+        };
+        let targets = [
+            target(1, StreamProtocol::Rtmp, "ingest.example.test:1935/live"),
+            target(2, StreamProtocol::Rtmp, "backup.example.test:1935/live"),
+            target(3, StreamProtocol::Hls, "/var/lib/freemix/live"),
+            target(4, StreamProtocol::Hls, "/var/lib/freemix/live-alt"),
+        ];
+        let grouped = split_and_group_targets(&targets).unwrap();
+        // One group per distinct protocol/bitrate identity in first-appearance
+        // order: both RTMP targets share the first, both HLS targets the
+        // second, and every HLS target splits with no stream key.
+        assert_eq!(
+            grouped.group_keys,
+            vec![
+                (OutputProtocol::Rtmp, DEFAULT_VIDEO_BITRATE_KBPS),
+                (OutputProtocol::Hls, DEFAULT_VIDEO_BITRATE_KBPS),
+            ]
+        );
+        assert_eq!(
+            grouped
+                .splits
+                .iter()
+                .map(|split| split.group_index)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 1, 1]
+        );
+        for split in &grouped.splits {
+            assert_eq!(
+                split.stream_key.is_some(),
+                split.protocol != OutputProtocol::Hls,
+                "HLS targets carry no stream key"
+            );
+            assert_eq!(split.backup_endpoint, None);
+        }
+        assert_eq!(grouped.splits[2].endpoint.path(), "/var/lib/freemix/live");
     }
 
     #[cfg(feature = "native-media")]

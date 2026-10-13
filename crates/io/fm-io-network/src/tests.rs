@@ -51,13 +51,16 @@ fn config(id: u8, capacity: usize, protocol: OutputProtocol) -> DestinationConfi
     let tls = protocol
         .requires_tls()
         .then(|| TlsConfig::system_roots(Some("stream.example.test".to_owned())).unwrap());
+    // HLS publishes into one local directory: a backup endpoint and a
+    // credential are refused for it, so this shared helper omits both.
+    let local = protocol == OutputProtocol::Hls;
     DestinationConfig::new(
         destination_id(id),
         protocol,
         Endpoint::new("stream.example.test", 1_935, "/live").unwrap(),
-        Some(Endpoint::new("backup.example.test", 1_935, "/live").unwrap()),
+        (!local).then(|| Endpoint::new("backup.example.test", 1_935, "/live").unwrap()),
         tls,
-        Some(CredentialReference::new(format!("secret://stream-key/{id}")).unwrap()),
+        (!local).then(|| CredentialReference::new(format!("secret://stream-key/{id}")).unwrap()),
         QueueCapacity::new(capacity).unwrap(),
         ReconnectPolicy::new(100, 800, 2, Some(4)).unwrap(),
     )
@@ -213,6 +216,93 @@ fn srt_config_rejects_tls_and_mirrors_the_rtmp_matrices() {
     assert!(
         protocol_config(1, OutputProtocol::Rtmps, tls, None).is_ok(),
         "RTMPS with TLS stays valid"
+    );
+}
+
+/// HLS is a local destination: TLS, a backup endpoint, and a credential each
+/// describe a peer or a stream key that a local directory does not have, and
+/// are refused rather than stored and ignored.
+#[test]
+fn hls_config_refuses_tls_backup_and_credential() {
+    fn hls_config(
+        backup: Option<Endpoint>,
+        tls: Option<TlsConfig>,
+        credential: Option<CredentialReference>,
+    ) -> Result<DestinationConfig, ConfigError> {
+        DestinationConfig::new(
+            destination_id(1),
+            OutputProtocol::Hls,
+            Endpoint::local_directory("/srv/freemix/hls").unwrap(),
+            backup,
+            tls,
+            credential,
+            QueueCapacity::new(4).unwrap(),
+            ReconnectPolicy::new(100, 800, 2, Some(4)).unwrap(),
+        )
+    }
+    assert!(
+        hls_config(None, None, None).is_ok(),
+        "a bare local HLS configuration is valid"
+    );
+    assert_eq!(
+        hls_config(
+            Some(Endpoint::local_directory("/srv/freemix/hls-backup").unwrap()),
+            None,
+            None
+        )
+        .err(),
+        Some(ConfigError::BackupNotSupported)
+    );
+    assert_eq!(
+        hls_config(
+            None,
+            None,
+            Some(CredentialReference::new("secret://stream-key").unwrap())
+        )
+        .err(),
+        Some(ConfigError::CredentialNotSupported)
+    );
+    assert_eq!(
+        hls_config(
+            None,
+            Some(TlsConfig::system_roots(Some("stream.example.test".to_owned())).unwrap()),
+            None
+        )
+        .err(),
+        Some(ConfigError::TlsNotSupported)
+    );
+}
+
+/// A local-directory endpoint carries the absolute directory in its path and
+/// placeholders the transport never renders, and it applies the same path rules
+/// the codec applies to an `hls://` destination.
+#[test]
+fn local_directory_endpoints_are_validated_and_carry_placeholders() {
+    let endpoint = Endpoint::local_directory("/srv/freemix/hls").unwrap();
+    assert_eq!(endpoint.path(), "/srv/freemix/hls");
+    assert_eq!(endpoint.host(), "localhost");
+    assert_eq!(endpoint.port().get(), 1);
+    for rejected in [
+        "",
+        "relative/path",
+        "/",
+        "/trailing/",
+        "/double//segment",
+        "/dot/./segment",
+        "/dotdot/../segment",
+        "/non ascii/é",
+    ] {
+        assert_eq!(
+            Endpoint::local_directory(rejected).err(),
+            Some(ConfigError::InvalidPath),
+            "{rejected}"
+        );
+    }
+    // A path the codec would accept but the endpoint's own length bound cannot
+    // carry is still refused, not truncated.
+    assert_eq!(
+        Endpoint::local_directory(format!("/{}", "a".repeat(2_048))).err(),
+        Some(ConfigError::InvalidPath)
     );
 }
 

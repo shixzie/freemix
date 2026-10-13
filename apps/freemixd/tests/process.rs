@@ -2986,7 +2986,7 @@ fn create_stream_project(path: &Path) {
             format!("Destination {}", index + 1),
             StreamProtocol::Rtmp,
             StreamEndpoint::parse("127.0.0.1/live").unwrap(),
-            StreamKey::parse("live-key-0001").unwrap(),
+            Some(StreamKey::parse("live-key-0001").unwrap()),
             output_id(1),
         )
         .unwrap()

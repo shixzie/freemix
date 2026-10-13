@@ -576,7 +576,9 @@ fn parse_output(value: Value) -> Result<Output, DecodeError> {
 ///
 /// Every rejection message below is built from a typed model error that
 /// carries no endpoint or key text, so a manifest with a bad stream key is
-/// refused without the key appearing in the failure.
+/// refused without the key appearing in the failure. `key` is a string for
+/// RTMP/RTMPS/SRT and `null` for HLS; [constructor](StreamTarget::new) refuses
+/// either pairing reversed.
 fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
     let mut object = Object::new(value, "stream target")?;
     let id = StreamTargetId::new(object.nonzero_u128("id")?);
@@ -585,6 +587,7 @@ fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
         "rtmp" => StreamProtocol::Rtmp,
         "rtmps" => StreamProtocol::Rtmps,
         "srt" => StreamProtocol::Srt,
+        "hls" => StreamProtocol::Hls,
         value => return Err(unknown_enum("stream target protocol", value)),
     };
     let endpoint = StreamEndpoint::parse_for(protocol, &object.string("endpoint")?)
@@ -596,8 +599,13 @@ fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
                 .map_err(|error| syntax(format!("field `backup_endpoint` is invalid: {error}")))
         })
         .transpose()?;
-    let key = StreamKey::parse(&object.string("key")?)
-        .map_err(|error| syntax(format!("field `key` is invalid: {error}")))?;
+    let key = object
+        .optional_string("key")?
+        .map(|secret| {
+            StreamKey::parse(&secret)
+                .map_err(|error| syntax(format!("field `key` is invalid: {error}")))
+        })
+        .transpose()?;
     let startup = match object.string("startup")?.as_str() {
         "stopped" => StartupPolicy::Stopped,
         "reconcile_desired_state" => StartupPolicy::ReconcileDesiredState,

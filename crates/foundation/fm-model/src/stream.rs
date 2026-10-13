@@ -1,7 +1,8 @@
-//! Configured RTMP/RTMPS/SRT streaming destinations.
+//! Configured RTMP/RTMPS/SRT/HLS streaming destinations.
 //!
 //! A [`StreamTarget`] is the authored, persisted half of going live: it names
-//! an ingest server, carries the service's stream key, and says which
+//! an ingest server or a local output directory, carries the service's stream
+//! key when the protocol has one, and says which
 //! [`Output`](crate::Output) supplies its video and audio. It is not a running
 //! stream. Nothing here starts, stops, reconnects, or observes a sink.
 //!
@@ -11,7 +12,8 @@
 //! has no `Display`, and no error type in this module carries key or endpoint
 //! text, so a rejected destination cannot leak one through a message. The only
 //! way to read the secret is [`StreamKey::expose_secret`], which is named to be
-//! obvious in review and in `grep`.
+//! obvious in review and in `grep`. An HLS destination writes to a local
+//! directory and has no key at all: [`StreamTarget::key`] returns `None`.
 //!
 //! The key *is* written to `project.json` in the clear. That is the existing
 //! trust model of a `.freemix` bundle: the manifest is plaintext JSON on disk
@@ -28,9 +30,10 @@
 //! the sink then refuses is a show that fails at air time instead of at
 //! authoring time. `fm-model` is a foundation crate and cannot depend on the
 //! `io` layer, so the rules are restated here against the same contract:
-//! `rtmp`/`rtmps`/`srt` only, printable ASCII, no `user:password@host`
-//! userinfo, a stream key of at least [`MIN_STREAM_KEY_BYTES`], and a total
-//! URL that stays inside the sink's bound. The composed URL is
+//! `rtmp`/`rtmps`/`srt`/`hls` only, printable ASCII, no `user:password@host`
+//! userinfo, a stream key of at least [`MIN_STREAM_KEY_BYTES`] for the
+//! protocols that carry one, an absolute local directory for `hls`, and a
+//! total URL that stays inside the sink's bound. The composed URL is
 //! [`StreamTarget::expose_url`].
 
 use core::{fmt, num::NonZeroU128};
@@ -43,7 +46,8 @@ use crate::StartupPolicy;
 pub const MAX_STREAM_TARGET_NAME_BYTES: usize = 128;
 
 /// Longest scheme-relative endpoint, as `host[:port]/application/path` for
-/// RTMP/RTMPS or bare `host[:port]` for SRT.
+/// RTMP/RTMPS, bare `host[:port]` for SRT, or an absolute local directory path
+/// for HLS.
 pub const MAX_STREAM_ENDPOINT_BYTES: usize = 1_024;
 
 /// Shortest stream key that can be substituted out of captured child output
@@ -98,11 +102,15 @@ impl fmt::Display for StreamTargetId {
 }
 
 /// The transport a destination is published over.
+///
+/// RTMP/RTMPS/SRT publish to a remote ingest and carry a stream key; HLS
+/// writes segments under a local directory and carries none.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamProtocol {
     Rtmp,
     Rtmps,
     Srt,
+    Hls,
 }
 
 impl StreamProtocol {
@@ -113,6 +121,7 @@ impl StreamProtocol {
             Self::Rtmp => "rtmp",
             Self::Rtmps => "rtmps",
             Self::Srt => "srt",
+            Self::Hls => "hls",
         }
     }
 }
@@ -133,7 +142,7 @@ pub enum StreamEndpointError {
     TooLong,
     /// The endpoint contains whitespace, control, or non-ASCII bytes.
     InvalidCharacter,
-    /// Only `rtmp://`, `rtmps://`, and `srt://` are accepted.
+    /// Only `rtmp://`, `rtmps://`, `srt://`, and `hls://` are accepted.
     UnsupportedScheme,
     /// A scheme appeared inside the scheme-relative endpoint text.
     EmbeddedScheme,
@@ -147,7 +156,13 @@ pub enum StreamEndpointError {
     /// An SRT endpoint carries an application path, but SRT names only a
     /// `host[:port]`; per-session identity belongs in the stream id.
     PathNotAllowed,
-    /// A `//` or a trailing `/` left a path segment empty.
+    /// An HLS endpoint names a directory and must start with `/`.
+    PathNotAbsolute,
+    /// An HLS path segment was `.` or `..`, which could escape the authored
+    /// directory.
+    PathTraversal,
+    /// A `//` or a trailing `/` left a path segment empty, or an HLS path was
+    /// only `/`.
     EmptyPathSegment,
     /// `?` and `#` belong to the stream key, which is where services put
     /// per-session tokens, not to the endpoint.
@@ -160,12 +175,18 @@ impl fmt::Display for StreamEndpointError {
             Self::Empty => "stream endpoint must not be empty",
             Self::TooLong => "stream endpoint is too long",
             Self::InvalidCharacter => "stream endpoint must be printable ASCII without whitespace",
-            Self::UnsupportedScheme => "stream endpoint must use rtmp://, rtmps:// or srt://",
+            Self::UnsupportedScheme => {
+                "stream endpoint must use rtmp://, rtmps://, srt:// or hls://"
+            }
             Self::EmbeddedScheme => "stream endpoint must not repeat the URL scheme",
             Self::MissingHost => "stream endpoint must name a host",
             Self::EmbeddedCredentials => "stream endpoint must not embed user:password credentials",
             Self::MissingApplicationPath => "stream endpoint must include an application path",
             Self::PathNotAllowed => "stream endpoint must be host[:port] only without a path",
+            Self::PathNotAbsolute => "stream endpoint path must be absolute",
+            Self::PathTraversal => {
+                "stream endpoint path must not contain `.` or `..` path segments"
+            }
             Self::EmptyPathSegment => "stream endpoint must not contain an empty path segment",
             Self::QueryOrFragment => {
                 "stream endpoint must not contain a query or fragment; put tokens in the key"
@@ -178,9 +199,10 @@ impl std::error::Error for StreamEndpointError {}
 
 /// One validated ingest location, stored without its scheme.
 ///
-/// The text is `host[:port]/application[/path]` for RTMP/RTMPS and bare
-/// `host[:port]` for SRT. The scheme lives on [`StreamTarget::protocol`] so
-/// that it is not stored twice and cannot disagree with itself.
+/// The text is `host[:port]/application[/path]` for RTMP/RTMPS, bare
+/// `host[:port]` for SRT, and an absolute directory path for HLS. The scheme
+/// lives on [`StreamTarget::protocol`] so that it is not stored twice and
+/// cannot disagree with itself.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamEndpoint {
     text: String,
@@ -201,7 +223,9 @@ impl StreamEndpoint {
     ///
     /// RTMP/RTMPS accept `host[:port]/application[/path]`. SRT accepts only
     /// `host[:port]`: it has no application path, and per-session identity is
-    /// carried by the stream id tail instead.
+    /// carried by the stream id tail instead. HLS accepts an absolute local
+    /// directory path that is exactly what follows `hls://` in a full URL: at
+    /// least one non-empty segment, with no `.` or `..` segment.
     ///
     /// # Errors
     ///
@@ -248,6 +272,20 @@ impl StreamEndpoint {
                     return Err(StreamEndpointError::EmbeddedCredentials);
                 }
             }
+            StreamProtocol::Hls => {
+                let Some(path) = text.strip_prefix('/') else {
+                    return Err(StreamEndpointError::PathNotAbsolute);
+                };
+                if path
+                    .split('/')
+                    .any(|segment| segment == "." || segment == "..")
+                {
+                    return Err(StreamEndpointError::PathTraversal);
+                }
+                if path.split('/').any(str::is_empty) {
+                    return Err(StreamEndpointError::EmptyPathSegment);
+                }
+            }
         }
         Ok(Self {
             text: text.to_owned(),
@@ -255,10 +293,12 @@ impl StreamEndpoint {
     }
 
     /// Splits and validates a full `rtmp://host/application`,
-    /// `rtmps://host/application`, or `srt://host[:port]` URL.
+    /// `rtmps://host/application`, `srt://host[:port]`, or
+    /// `hls:///local/directory` URL.
     ///
     /// The URL must not already carry a stream key or stream id: the tail is
     /// a separate authored field so that it can be redacted independently.
+    /// HLS has no tail, so what follows `hls://` is the path itself.
     ///
     /// # Errors
     ///
@@ -270,6 +310,8 @@ impl StreamEndpoint {
             (StreamProtocol::Rtmp, rest)
         } else if let Some(rest) = url.strip_prefix("srt://") {
             (StreamProtocol::Srt, rest)
+        } else if let Some(rest) = url.strip_prefix("hls://") {
+            (StreamProtocol::Hls, rest)
         } else if url.is_empty() {
             return Err(StreamEndpointError::Empty);
         } else {
@@ -279,7 +321,8 @@ impl StreamEndpoint {
     }
 
     /// The scheme-relative endpoint text: `host[:port]/application[/path]`
-    /// for RTMP/RTMPS, bare `host[:port]` for SRT.
+    /// for RTMP/RTMPS, bare `host[:port]` for SRT, and an absolute directory
+    /// path for HLS.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.text
@@ -404,6 +447,12 @@ impl fmt::Debug for StreamKey {
 pub enum StreamTargetError {
     EmptyName,
     NameTooLong,
+    /// RTMP/RTMPS/SRT carry per-session identity and require a stream key.
+    MissingStreamKey,
+    /// HLS writes to a local directory and must not carry a stream key.
+    UnexpectedStreamKey,
+    /// HLS has no failover endpoint; local segmenting cannot use one.
+    BackupNotAllowed,
     /// Scheme, endpoint, key and separators together exceed what the sink
     /// accepts as one URL.
     UrlTooLong,
@@ -417,6 +466,14 @@ impl fmt::Display for StreamTargetError {
                 formatter,
                 "stream destination name must not exceed {MAX_STREAM_TARGET_NAME_BYTES} bytes"
             ),
+            Self::MissingStreamKey => {
+                formatter.write_str("stream destination protocol requires a stream key")
+            }
+            Self::UnexpectedStreamKey => {
+                formatter.write_str("stream destination protocol does not accept a stream key")
+            }
+            Self::BackupNotAllowed => formatter
+                .write_str("stream destination protocol does not support a backup endpoint"),
             Self::UrlTooLong => write!(
                 formatter,
                 "stream destination URL must not exceed {} bytes",
@@ -441,7 +498,7 @@ pub struct StreamTarget {
     protocol: StreamProtocol,
     endpoint: StreamEndpoint,
     backup_endpoint: Option<StreamEndpoint>,
-    key: StreamKey,
+    key: Option<StreamKey>,
     startup: StartupPolicy,
     running: bool,
     video_bitrate_kbps: u32,
@@ -455,16 +512,20 @@ impl StreamTarget {
     /// Builds a destination that starts [`StartupPolicy::Stopped`] with no
     /// backup endpoint.
     ///
+    /// `key` is `Some` for RTMP/RTMPS/SRT, which carry per-session identity,
+    /// and `None` for HLS, which writes to a local directory with no secret.
+    ///
     /// # Errors
     ///
-    /// Returns [`StreamTargetError`] when the name is blank or oversized, or
-    /// when the composed URL would exceed what the sink accepts.
+    /// Returns [`StreamTargetError`] when the name is blank or oversized, the
+    /// protocol/key pairing is wrong, or the composed URL would exceed what
+    /// the sink accepts.
     pub fn new(
         id: StreamTargetId,
         name: String,
         protocol: StreamProtocol,
         endpoint: StreamEndpoint,
-        key: StreamKey,
+        key: Option<StreamKey>,
         output: OutputId,
     ) -> Result<Self, StreamTargetError> {
         if name.trim().is_empty() {
@@ -473,7 +534,13 @@ impl StreamTarget {
         if name.len() > MAX_STREAM_TARGET_NAME_BYTES {
             return Err(StreamTargetError::NameTooLong);
         }
-        if url_bytes(protocol, &endpoint, &key) > Self::MAX_URL_BYTES {
+        if protocol == StreamProtocol::Hls && key.is_some() {
+            return Err(StreamTargetError::UnexpectedStreamKey);
+        }
+        if protocol != StreamProtocol::Hls && key.is_none() {
+            return Err(StreamTargetError::MissingStreamKey);
+        }
+        if url_bytes(protocol, &endpoint, key.as_ref()) > Self::MAX_URL_BYTES {
             return Err(StreamTargetError::UrlTooLong);
         }
         Ok(Self {
@@ -495,16 +562,20 @@ impl StreamTarget {
     ///
     /// # Errors
     ///
-    /// Returns [`StreamTargetError::UrlTooLong`] when the composed backup URL
-    /// would exceed what the sink accepts.
+    /// Returns [`StreamTargetError::BackupNotAllowed`] for HLS, which has no
+    /// failover endpoint, and [`StreamTargetError::UrlTooLong`] when the
+    /// composed backup URL would exceed what the sink accepts.
     pub fn with_backup_endpoint(
         mut self,
         backup_endpoint: Option<StreamEndpoint>,
     ) -> Result<Self, StreamTargetError> {
-        if let Some(endpoint) = &backup_endpoint
-            && url_bytes(self.protocol, endpoint, &self.key) > Self::MAX_URL_BYTES
-        {
-            return Err(StreamTargetError::UrlTooLong);
+        if let Some(endpoint) = &backup_endpoint {
+            if self.protocol == StreamProtocol::Hls {
+                return Err(StreamTargetError::BackupNotAllowed);
+            }
+            if url_bytes(self.protocol, endpoint, self.key.as_ref()) > Self::MAX_URL_BYTES {
+                return Err(StreamTargetError::UrlTooLong);
+            }
         }
         self.backup_endpoint = backup_endpoint;
         Ok(self)
@@ -564,11 +635,11 @@ impl StreamTarget {
         self.backup_endpoint.as_ref()
     }
 
-    /// The stream key. Reading its value still requires
-    /// [`StreamKey::expose_secret`].
+    /// The stream key, when the protocol carries one. Reading its value still
+    /// requires [`StreamKey::expose_secret`].
     #[must_use]
-    pub const fn key(&self) -> &StreamKey {
-        &self.key
+    pub const fn key(&self) -> Option<&StreamKey> {
+        self.key.as_ref()
     }
 
     #[must_use]
@@ -615,38 +686,57 @@ impl StreamTarget {
     ///
     /// This is what a sink is handed. It must not reach a log or a status
     /// line; use [`StreamTarget::redacted_url`] for anything an operator or a
-    /// file might see.
+    /// file might see. HLS composes its local output directory and has no key
+    /// segment.
     #[must_use]
     pub fn expose_url(&self) -> String {
-        compose_url(self.protocol, &self.endpoint, self.key.expose_secret())
+        compose_url(
+            self.protocol,
+            &self.endpoint,
+            self.key.as_ref().map(StreamKey::expose_secret),
+        )
     }
 
     /// The full failover URL, stream key included, when one is configured.
     #[must_use]
     pub fn expose_backup_url(&self) -> Option<String> {
-        self.backup_endpoint
-            .as_ref()
-            .map(|endpoint| compose_url(self.protocol, endpoint, self.key.expose_secret()))
+        self.backup_endpoint.as_ref().map(|endpoint| {
+            compose_url(
+                self.protocol,
+                endpoint,
+                self.key.as_ref().map(StreamKey::expose_secret),
+            )
+        })
     }
 
     /// The destination URL with the stream key replaced by `****`.
+    ///
+    /// HLS has no key, so its URL is the same as [`StreamTarget::expose_url`].
     #[must_use]
     pub fn redacted_url(&self) -> String {
-        compose_url(self.protocol, &self.endpoint, REDACTED_STREAM_KEY)
+        compose_url(
+            self.protocol,
+            &self.endpoint,
+            self.key.as_ref().map(|_| REDACTED_STREAM_KEY),
+        )
     }
 
     /// The failover URL with the stream key replaced by `****`.
     #[must_use]
     pub fn redacted_backup_url(&self) -> Option<String> {
-        self.backup_endpoint
-            .as_ref()
-            .map(|endpoint| compose_url(self.protocol, endpoint, REDACTED_STREAM_KEY))
+        self.backup_endpoint.as_ref().map(|endpoint| {
+            compose_url(
+                self.protocol,
+                endpoint,
+                self.key.as_ref().map(|_| REDACTED_STREAM_KEY),
+            )
+        })
     }
 }
 
 /// Renders the redacted URLs instead of the raw protocol, endpoint and key.
 ///
-/// The omitted fields are exactly the three the redacted URLs already
+/// The omitted fields are exactly the ones the redacted URLs already
 /// summarise, and one of them is the secret, so this impl is deliberately not
 /// exhaustive.
 impl fmt::Debug for StreamTarget {
@@ -669,31 +759,44 @@ impl fmt::Display for StreamTarget {
     }
 }
 
-fn compose_url(protocol: StreamProtocol, endpoint: &StreamEndpoint, tail: &str) -> String {
-    match protocol {
-        StreamProtocol::Rtmp | StreamProtocol::Rtmps => {
+/// Renders one destination URL from its parts.
+///
+/// `tail` is the stream key or its redacted placeholder for RTMP/RTMPS/SRT,
+/// and `None` for HLS, whose local output path carries no secret. The
+/// constructor pairs each protocol with exactly one shape and no setter can
+/// change either half, so a mismatch is unreachable.
+fn compose_url(protocol: StreamProtocol, endpoint: &StreamEndpoint, tail: Option<&str>) -> String {
+    match (protocol, tail) {
+        (StreamProtocol::Rtmp | StreamProtocol::Rtmps, Some(tail)) => {
             format!("{}://{}/{tail}", protocol.scheme(), endpoint.as_str())
         }
-        StreamProtocol::Srt => {
+        (StreamProtocol::Srt, Some(tail)) => {
             format!(
                 "{}://{}?streamid={tail}",
                 protocol.scheme(),
                 endpoint.as_str()
             )
         }
+        (StreamProtocol::Hls, None) => format!("{}://{}", protocol.scheme(), endpoint.as_str()),
+        _ => unreachable!("stream protocol and stream key presence are paired at construction"),
     }
 }
 
-fn url_bytes(protocol: StreamProtocol, endpoint: &StreamEndpoint, key: &StreamKey) -> usize {
+fn url_bytes(
+    protocol: StreamProtocol,
+    endpoint: &StreamEndpoint,
+    key: Option<&StreamKey>,
+) -> usize {
     let separator = match protocol {
         StreamProtocol::Rtmp | StreamProtocol::Rtmps => 1,
         StreamProtocol::Srt => "?streamid=".len(),
+        StreamProtocol::Hls => 0,
     };
     protocol.scheme().len()
         + "://".len()
         + endpoint.as_str().len()
         + separator
-        + key.expose_secret().len()
+        + key.map_or(0, |key| key.expose_secret().len())
 }
 
 fn validate_video_bitrate(video_bitrate_kbps: u32) -> Result<(), StreamVideoBitrateError> {

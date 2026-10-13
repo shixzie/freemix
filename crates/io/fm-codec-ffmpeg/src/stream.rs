@@ -1,9 +1,12 @@
-//! Bounded RTMP/RTMPS/SRT live streaming through one direct `FFmpeg` child.
+//! Bounded RTMP/RTMPS/SRT live streaming and local HLS output through one
+//! direct `FFmpeg` child.
 //!
 //! The streamer feeds one `FFmpeg` child tightly packed RGBA8 video frames and
 //! sample-major interleaved `f32le` audio over two authenticated loopback HTTP
-//! inputs, and muxes `-f flv` to one `rtmp://` or `rtmps://` destination, or
-//! `-f mpegts` to one `srt://host[:port]?streamid=KEY` destination. It
+//! inputs, and muxes `-f flv` to one `rtmp://` or `rtmps://` destination,
+//! `-f mpegts` to one `srt://host[:port]?streamid=KEY` destination, or
+//! `-f hls` into the absolute local directory named by an
+//! `hls:///absolute/path` destination — the LAN-equivalent local HLS output. It
 //! reuses [`RecordFormat`] and [`PairedFrame`] from [`crate::record`], which
 //! own cadence, layout, and per-pair timing validation. The recorder's private
 //! process plumbing (loopback HTTP handshake, child reaping, fallback cleanup)
@@ -13,7 +16,9 @@
 //! # Secret handling
 //!
 //! The destination carries a stream key: an RTMP path tail or an SRT
-//! `streamid`. [`StreamDestination`] keeps the key
+//! `streamid`. An HLS destination carries no secret at all, so its redacted
+//! form is the URL itself and the key machinery must not mask any part of the
+//! directory path. [`StreamDestination`] keeps the key
 //! private: its `Debug` and `Display` render the redacted form only, every
 //! typed error is path- and key-free, and child stderr is redacted *before* it
 //! enters the bounded retention ring, so neither truncation nor a read split
@@ -48,10 +53,9 @@
 //! fatal cause is sticky, every later call reports it, and retry policy belongs
 //! to the caller, which owns backoff, destination rotation, and whether a new
 //! [`Streamer`] should be started at all. Also out of scope: per-output wiring
-//! into the engine, hardware encoders, adaptive bitrate, and TLS certificate
-//! policy (`rtmps://` uses the child's default trust configuration), and SRT
-//! encryption and passphrase policy (`srt://` likewise uses the child's
-//! defaults).
+//! into the engine, hardware encoders, and TLS certificate policy (`rtmps://`
+//! uses the child's default trust configuration), and SRT encryption and
+//! passphrase policy (`srt://` likewise uses the child's defaults).
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
@@ -86,6 +90,8 @@ const MAX_DESTINATION_BYTES: usize = 2 * 1024;
 const MIN_STREAM_KEY_BYTES: usize = 4;
 /// The only query parameter an SRT destination may carry.
 const STREAM_ID_PARAM: &str = "streamid";
+/// The only scheme that names a local directory instead of a network peer.
+const HLS_SCHEME: &str = "hls://";
 const REDACTED_KEY: &str = "****";
 const REDACTED_TOKEN: &[u8] = b"<input-token>";
 const STATS_PERIOD: &str = "0.25";
@@ -123,6 +129,12 @@ pub enum DestinationError {
     /// `?streamid=<key>` parameter: a path component, a second `?`, an unknown
     /// parameter name, or extra parameters are all refused.
     MalformedSrtUrl,
+    /// An `hls://` destination names a local directory, so the text after the
+    /// scheme must start with `/`.
+    PathNotAbsolute,
+    /// The `hls://` path is not a plain sequence of named segments: an empty
+    /// segment (`//`), a trailing `/`, or a `.` or `..` segment is refused.
+    MalformedHlsPath,
 }
 
 impl fmt::Display for DestinationError {
@@ -143,13 +155,18 @@ pub enum DestinationKind {
     Rtmps,
     /// `srt://`, muxed as MPEG-TS.
     Srt,
+    /// `hls:///absolute/path`, muxed as MPEG-TS segments plus a playlist in
+    /// that local directory. A local destination has no peer and no secret.
+    Hls,
 }
 
-/// One validated `rtmp://`, `rtmps://`, or `srt://` destination with a
-/// redacted view.
+/// One validated `rtmp://`, `rtmps://`, `srt://`, or local `hls://` live
+/// destination, with a redacted view.
 ///
 /// The secret tail is never rendered. `Debug` and `Display` both produce the
 /// redacted form, so embedding this value in a derived `Debug` type is safe.
+/// An HLS destination has no secret: its absolute directory is
+/// operator-chosen local storage and is rendered verbatim.
 #[derive(Clone, Eq, PartialEq)]
 pub struct StreamDestination {
     url: String,
@@ -164,7 +181,9 @@ impl StreamDestination {
     /// For RTMP the secret is everything after the final `/`, including any
     /// query string, which is where RTMP services carry stream keys and tokens.
     /// For SRT the secret is the value of the single optional `streamid`
-    /// parameter; no path component is allowed there at all.
+    /// parameter; no path component is allowed there at all. An HLS destination
+    /// carries no secret: the absolute directory after `hls://` is validated
+    /// and then rendered verbatim.
     ///
     /// # Errors
     ///
@@ -185,12 +204,18 @@ impl StreamDestination {
             (DestinationKind::Rtmps, rest)
         } else if let Some(rest) = url.strip_prefix("srt://") {
             (DestinationKind::Srt, rest)
+        } else if let Some(rest) = url.strip_prefix(HLS_SCHEME) {
+            (DestinationKind::Hls, rest)
         } else {
             return Err(DestinationError::UnsupportedScheme);
         };
         let key = match kind {
             DestinationKind::Rtmp | DestinationKind::Rtmps => Self::rtmp_key(rest)?,
             DestinationKind::Srt => Self::srt_stream_id(rest)?.unwrap_or_default(),
+            DestinationKind::Hls => {
+                Self::hls_directory(rest)?;
+                ""
+            }
         };
         let key_offset = url.len() - key.len();
         let redacted = if key.is_empty() {
@@ -271,10 +296,41 @@ impl StreamDestination {
         Ok(Some(value))
     }
 
+    /// The HLS destination directory: the secret-free absolute path after the
+    /// scheme.
+    ///
+    /// # Errors
+    ///
+    /// [`DestinationError::PathNotAbsolute`] when the path does not start with
+    /// `/`, and [`DestinationError::MalformedHlsPath`] when it is not a plain
+    /// sequence of named segments.
+    fn hls_directory(rest: &str) -> Result<&str, DestinationError> {
+        if !rest.starts_with('/') {
+            return Err(DestinationError::PathNotAbsolute);
+        }
+        if !valid_local_directory(rest) {
+            return Err(DestinationError::MalformedHlsPath);
+        }
+        Ok(rest)
+    }
+
     /// The validated transport this destination publishes over.
     #[must_use]
     pub const fn kind(&self) -> DestinationKind {
         self.kind
+    }
+
+    /// The absolute local directory this destination publishes into, or `None`
+    /// for every network destination.
+    ///
+    /// An HLS directory is operator-chosen local storage rather than a secret,
+    /// so both this and [`StreamDestination::redacted`] render it verbatim.
+    #[must_use]
+    pub fn local_directory(&self) -> Option<&str> {
+        match self.kind {
+            DestinationKind::Hls => Some(&self.url[HLS_SCHEME.len()..]),
+            _ => None,
+        }
     }
 
     /// The destination with its stream key replaced by `****`.
@@ -301,6 +357,27 @@ impl fmt::Display for StreamDestination {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.redacted)
     }
+}
+
+/// Whether `path` is an absolute local directory acceptable as an HLS output:
+/// printable ASCII, at least one segment, and only plain named segments — no
+/// empty segment (`//`), no trailing `/`, and no `.` or `..` segment.
+///
+/// This is the one rule set for HLS paths: a destination that parses here is
+/// exactly a directory [`Streamer::start`] is willing to publish into.
+fn valid_local_directory(path: &str) -> bool {
+    if !path.starts_with('/') || path.len() < 2 {
+        return false;
+    }
+    if !path.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+        || path.ends_with('/')
+        || path.contains("//")
+    {
+        return false;
+    }
+    !path[1..]
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
 }
 
 /// What the sink does when an accepted pair does not fit.
@@ -367,7 +444,11 @@ impl Default for StreamLimits {
     }
 }
 
-/// Encoder settings applied to the FLV output.
+/// Encoder settings applied to the encoded output.
+///
+/// `keyframe_interval_seconds` also becomes `-hls_time` for a local HLS
+/// destination, so playlist segments end on the keyframe boundaries this
+/// interval produces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EncoderSettings {
     pub video_bitrate_kbps: u32,
@@ -451,10 +532,14 @@ pub enum StartErrorKind {
     InvalidLimits(LimitsError),
     InvalidExecutable,
     ToolUnavailable(UnavailableReason),
-    /// FLV carries mono or stereo audio only; MPEG-TS additionally carries
-    /// multi-channel AAC. Wider layouts are refused rather than silently
-    /// downmixed.
+    /// FLV carries mono or stereo audio only; the MPEG-TS-based outputs
+    /// additionally carry multi-channel AAC. Wider layouts are refused rather
+    /// than silently downmixed.
     UnsupportedChannelLayout,
+    /// The absolute directory an HLS destination publishes into is unusable:
+    /// it exists as something other than a directory, or it is missing and
+    /// could not be created as a single leaf. The variant carries no path text.
+    HlsDirectoryUnusable,
     Randomness,
     ThreadSpawn(io::ErrorKind),
     Bind {
@@ -615,7 +700,8 @@ pub struct StreamTelemetry {
     pub peak_outstanding_pairs: usize,
     pub retained_bytes: usize,
     pub peak_retained_bytes: usize,
-    /// Bytes the child reports having handed to its FLV muxer (`total_size`).
+    /// Bytes the child reports having handed to its output muxer
+    /// (`total_size`).
     ///
     /// This is **not** a delivery receipt. The bytes counted here have been
     /// written into the child's output pipeline; how many of them have reached
@@ -1236,7 +1322,7 @@ enum CleanupWorker {
     Unit(JoinHandle<()>),
 }
 
-/// Long-lived bounded RTMP/RTMPS sink over one direct `FFmpeg` child.
+/// Long-lived bounded RTMP/RTMPS/SRT/HLS sink over one direct `FFmpeg` child.
 pub struct Streamer {
     format: RecordFormat,
     limits: StreamLimits,
@@ -1267,6 +1353,13 @@ impl Streamer {
             config.encoder,
         )
         .map_err(|error| StartError::complete(StartErrorKind::InvalidLimits(error)))?;
+        // A local HLS destination publishes into a directory the operator
+        // chose. Create its leaf before the child is spawned, so an unusable
+        // path is a startup error rather than a child that dies on its first
+        // mux.
+        if let Some(directory) = config.destination.local_directory() {
+            ensure_hls_directory(directory).map_err(StartError::complete)?;
+        }
         let layout =
             output_channel_layout(config.destination.kind(), config.format.channel_layout())
                 .ok_or_else(|| StartError::complete(StartErrorKind::UnsupportedChannelLayout))?;
@@ -1942,7 +2035,7 @@ fn mpegts_channel_layout(layout: &ChannelLayout) -> Option<&'static str> {
 fn output_channel_layout(kind: DestinationKind, layout: &ChannelLayout) -> Option<&'static str> {
     match kind {
         DestinationKind::Rtmp | DestinationKind::Rtmps => flv_channel_layout(layout),
-        DestinationKind::Srt => mpegts_channel_layout(layout),
+        DestinationKind::Srt | DestinationKind::Hls => mpegts_channel_layout(layout),
     }
 }
 
@@ -2709,6 +2802,23 @@ fn join_cleanup_workers(workers: Vec<CleanupWorker>) {
     }
 }
 
+/// Ensures the directory one local HLS destination publishes into.
+///
+/// Only the leaf may be missing: an HLS destination is an operator-chosen
+/// absolute path, and silently creating missing parents would materialize a
+/// typo. `FFmpeg` still decides whether the directory is writable; this check
+/// exists so an unusable destination is a path-free startup error rather than
+/// a child that dies during its first mux.
+fn ensure_hls_directory(path: &str) -> Result<(), StartErrorKind> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir(path).map_err(|_| StartErrorKind::HlsDirectoryUnusable)
+        }
+        Ok(_) | Err(_) => Err(StartErrorKind::HlsDirectoryUnusable),
+    }
+}
+
 fn streamer_executable(executable: Executable) -> Result<OsString, StartError> {
     match executable {
         Executable::SearchPath => Ok(OsString::from("ffmpeg")),
@@ -2873,25 +2983,52 @@ fn command_args(config: &StreamConfig, layout: &str, inputs: &Inputs<'_>) -> Vec
     values.extend(output_args(
         config.destination.kind(),
         &config.destination.url,
+        config.encoder.keyframe_interval_seconds,
     ));
     values.into_iter().map(OsString::from).collect()
 }
 
 /// The container each transport is muxed into: FLV for RTMP(S), MPEG-TS for
-/// SRT.
+/// SRT, and the HLS segmenter for a local directory.
 #[must_use]
 const fn muxer_format(kind: DestinationKind) -> &'static str {
     match kind {
         DestinationKind::Rtmp | DestinationKind::Rtmps => "flv",
         DestinationKind::Srt => "mpegts",
+        DestinationKind::Hls => "hls",
     }
 }
 
 /// The output-side argument tail, from the first muxer-owned flag to the
 /// destination URL. Kept pure so tests can assert exactly what the child is
 /// told to mux.
-fn output_args(kind: DestinationKind, url: &str) -> Vec<String> {
+///
+/// `keyframe_interval_seconds` is the encoder's keyframe interval, which an
+/// HLS destination uses as its segment duration so every segment starts on a
+/// keyframe; other transports ignore it.
+fn output_args(kind: DestinationKind, url: &str, keyframe_interval_seconds: u32) -> Vec<String> {
     let mut values = Vec::new();
+    if kind == DestinationKind::Hls {
+        // The destination URL names the directory; the segment template and
+        // the playlist both live inside it, and the playlist is the output
+        // file the child writes.
+        let directory = url.strip_prefix(HLS_SCHEME).unwrap_or(url);
+        values.extend([
+            "-y".to_owned(),
+            "-f".to_owned(),
+            muxer_format(kind).to_owned(),
+            "-hls_time".to_owned(),
+            keyframe_interval_seconds.to_string(),
+            "-hls_list_size".to_owned(),
+            "6".to_owned(),
+            "-hls_flags".to_owned(),
+            "delete_segments+independent_segments+temp_file".to_owned(),
+            "-hls_segment_filename".to_owned(),
+            format!("{directory}/segment-%05d.ts"),
+            format!("{directory}/index.m3u8"),
+        ]);
+        return values;
+    }
     if kind != DestinationKind::Srt {
         // FLV-only: suppress the duration/filesize warnings a live FLV muxer
         // would otherwise print, since a live stream has neither. MPEG-TS has
@@ -3154,6 +3291,11 @@ mod tests {
             output_channel_layout(DestinationKind::Srt, &surround),
             Some("5.1")
         );
+        // HLS is MPEG-TS underneath and follows the same layout rules.
+        assert_eq!(
+            output_channel_layout(DestinationKind::Hls, &surround),
+            Some("5.1")
+        );
         assert_eq!(
             output_channel_layout(DestinationKind::Rtmp, &surround),
             None
@@ -3354,6 +3496,167 @@ mod tests {
                 .unwrap()
             ),
             None
+        );
+    }
+
+    const HLS_URL: &str = "hls:///srv/freemix/output/hls";
+
+    #[test]
+    fn hls_destinations_are_absolute_segment_paths_and_render_verbatim() {
+        for (accepted, directory) in [
+            (HLS_URL, "/srv/freemix/output/hls"),
+            ("hls:///a", "/a"),
+            ("hls:///srv/out.v1", "/srv/out.v1"),
+            // A key-shaped segment is still just a path: HLS has no secret.
+            (
+                "hls:///srv/live_998877_SuperSecretStreamKey",
+                "/srv/live_998877_SuperSecretStreamKey",
+            ),
+        ] {
+            let destination = StreamDestination::parse(accepted).unwrap();
+            assert_eq!(destination.kind(), DestinationKind::Hls);
+            assert_eq!(destination.local_directory(), Some(directory));
+            assert_eq!(destination.redacted(), accepted);
+            assert_eq!(format!("{destination}"), accepted);
+            assert_eq!(
+                format!("{destination:?}"),
+                format!("StreamDestination({accepted:?})")
+            );
+            assert!(!destination.redacted().contains("****"), "{accepted}");
+        }
+        for (rejected, expected) in [
+            ("hls://", DestinationError::PathNotAbsolute),
+            ("hls://relative/path", DestinationError::PathNotAbsolute),
+            ("hls:///", DestinationError::MalformedHlsPath),
+            ("hls:///trailing/", DestinationError::MalformedHlsPath),
+            ("hls:///double//segment", DestinationError::MalformedHlsPath),
+            ("hls:///dot/./segment", DestinationError::MalformedHlsPath),
+            (
+                "hls:///dotdot/../segment",
+                DestinationError::MalformedHlsPath,
+            ),
+        ] {
+            assert_eq!(
+                StreamDestination::parse(rejected),
+                Err(expected),
+                "{rejected}"
+            );
+        }
+        // The URL-wide character rule runs before the path rules.
+        assert_eq!(
+            StreamDestination::parse("hls:///srv/out put"),
+            Err(DestinationError::InvalidCharacter)
+        );
+        // Network destinations still have no local directory.
+        assert_eq!(destination().local_directory(), None);
+        assert_eq!(
+            StreamDestination::parse("srt://ingest.example:9710")
+                .unwrap()
+                .local_directory(),
+            None
+        );
+    }
+
+    #[test]
+    fn hls_output_tail_is_exact_and_uses_the_keyframe_interval() {
+        assert_eq!(muxer_format(DestinationKind::Hls), "hls");
+        let expected = [
+            "-y",
+            "-f",
+            "hls",
+            "-hls_time",
+            "2",
+            "-hls_list_size",
+            "6",
+            "-hls_flags",
+            "delete_segments+independent_segments+temp_file",
+            "-hls_segment_filename",
+            "/srv/freemix/output/hls/segment-%05d.ts",
+            "/srv/freemix/output/hls/index.m3u8",
+        ]
+        .map(str::to_owned);
+        assert_eq!(output_args(DestinationKind::Hls, HLS_URL, 2), expected);
+        // The encoder's keyframe interval is passed through, not baked in.
+        let longer = output_args(DestinationKind::Hls, HLS_URL, 5);
+        let interval = longer
+            .windows(2)
+            .find(|window| window[0] == "-hls_time")
+            .expect("an HLS tail carries -hls_time");
+        assert_eq!(interval[1], "5");
+
+        // Through `command_args` the tail is byte-for-byte what the child is
+        // driven with, and no FLV-only flag leaks into it.
+        let video_address: SocketAddr = "127.0.0.1:20001".parse().unwrap();
+        let audio_address: SocketAddr = "127.0.0.1:20002".parse().unwrap();
+        let inputs = Inputs {
+            video_address,
+            audio_address,
+            video_token: "video-token",
+            audio_token: "audio-token",
+        };
+        let hls = StreamConfig::new(format(), StreamDestination::parse(HLS_URL).unwrap());
+        let args = command_args(&hls, "stereo", &inputs);
+        let text = args
+            .iter()
+            .map(|argument| argument.to_str().unwrap())
+            .collect::<Vec<_>>();
+        let expected_text = expected.iter().map(String::as_str).collect::<Vec<_>>();
+        assert_eq!(&text[text.len() - expected_text.len()..], expected_text);
+        assert!(!text.contains(&"-flvflags"), "{text:?}");
+    }
+
+    #[test]
+    fn non_hls_output_tails_stay_byte_identical() {
+        assert_eq!(
+            output_args(DestinationKind::Rtmp, "rtmp://host/app/key12345", 2),
+            [
+                "-flvflags",
+                "no_duration_filesize",
+                "-f",
+                "flv",
+                "rtmp://host/app/key12345",
+            ]
+            .map(str::to_owned)
+        );
+        assert_eq!(
+            output_args(DestinationKind::Rtmps, "rtmps://host/app/key12345", 2),
+            [
+                "-flvflags",
+                "no_duration_filesize",
+                "-f",
+                "flv",
+                "rtmps://host/app/key12345",
+            ]
+            .map(str::to_owned)
+        );
+        assert_eq!(
+            output_args(DestinationKind::Srt, "srt://host?streamid=abcd1234", 2),
+            ["-f", "mpegts", "srt://host?streamid=abcd1234"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn hls_directories_are_created_as_one_leaf_only() {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = root.path().join("live");
+        let leaf = leaf.to_str().unwrap();
+        assert_eq!(ensure_hls_directory(leaf), Ok(()));
+        assert!(std::path::Path::new(leaf).is_dir());
+        // An existing directory is accepted unchanged.
+        assert_eq!(ensure_hls_directory(leaf), Ok(()));
+        // A missing parent chain is refused rather than created.
+        let nested = format!("{leaf}/deeper/leaf");
+        assert_eq!(
+            ensure_hls_directory(&nested),
+            Err(StartErrorKind::HlsDirectoryUnusable)
+        );
+        assert!(!std::path::Path::new(&nested).exists());
+        // A regular file at the destination is refused.
+        let file = root.path().join("occupied");
+        fs::write(&file, b"occupied").unwrap();
+        assert_eq!(
+            ensure_hls_directory(file.to_str().unwrap()),
+            Err(StartErrorKind::HlsDirectoryUnusable)
         );
     }
 }
