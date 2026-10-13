@@ -231,16 +231,6 @@ impl WireStreamTargetId {
     pub const fn get(self) -> NonZeroU128 {
         self.0
     }
-
-    #[must_use]
-    pub const fn from_domain(value: OutputId) -> Self {
-        Self(value.get())
-    }
-
-    #[must_use]
-    pub const fn to_domain(self) -> OutputId {
-        OutputId::new(self.0)
-    }
 }
 
 impl fmt::Display for WireStreamTargetId {
