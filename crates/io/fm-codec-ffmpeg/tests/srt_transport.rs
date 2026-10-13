@@ -190,17 +190,13 @@ fn publisher_alive(key: &str) -> bool {
 }
 
 fn spawn_srt_receiver(port: u16, output: &Path) -> Child {
+    // `?mode=listener` binds the UDP port on every ffmpeg SRT build; the
+    // generic `-listen 1` input option does not on ffmpeg 6.1, where it
+    // blocks before the listener socket exists. A caller (`mode=caller`) is
+    // the default for our publisher and needs no query parameter.
     Command::new("ffmpeg")
-        .args([
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-listen",
-            "1",
-            "-i",
-        ])
-        .arg(format!("srt://127.0.0.1:{port}?mode=caller"))
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
+        .arg(format!("srt://127.0.0.1:{port}?mode=listener"))
         .args(["-c", "copy", "-y"])
         .arg(output)
         .stdin(Stdio::null())
