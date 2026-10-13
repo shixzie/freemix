@@ -382,10 +382,11 @@ struct NativeDaemon {
     /// Whether each segment also writes a `--record-wav` linear-PCM sidecar
     /// next to the MP4. Applies to every configured recorder slot.
     record_wav: bool,
-    /// Optional frame-boundary segment rotation target in seconds
-    /// (`--record-segment-seconds <1..=86400>`). Applies to every configured
-    /// recorder slot.
-    record_segment_seconds: Option<NonZeroU32>,
+    /// Optional per-slot frame-boundary segment rotation target in seconds
+    /// (`--record-segment-seconds` is slot 0 and `--record-segment-seconds-2`
+    /// is slot 1). A slot whose entry is `None` never rotates automatically,
+    /// even when the other slot is configured to.
+    record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
     /// Optional per-slot `libx264` video bitrate in kbps
     /// (`--record-bitrate-kbps` is slot 0 and `--record-bitrate-kbps-2` is
     /// slot 1). `None` keeps that slot's encoder default.
@@ -2019,7 +2020,8 @@ impl ProgramRecording {
 /// The daemon's fixed number of recorder slots: slot 0 is `--record-program`
 /// and slot 1 is `--record-program-2`. A second slot doubles the independent
 /// destinations without changing the engine's single desired recording flag.
-#[cfg(feature = "native-media")]
+/// The count also sizes the per-slot CLI configuration arrays, so it stays
+/// available in every build.
 const RECORDER_SLOTS: usize = 2;
 
 /// One segment handed off the render path for bounded finalization.
@@ -2111,6 +2113,19 @@ fn next_slot_segment_path(
     configured
         .map(|base| next_record_segment_path(base, exists))
         .transpose()
+}
+
+/// Selects the configured rotation duration addressed to one recorder slot.
+///
+/// Slot 0 follows `--record-segment-seconds` and slot 1 follows
+/// `--record-segment-seconds-2`; `None` means that slot never rotates
+/// automatically, even when the other slot is configured to rotate.
+#[cfg(feature = "native-media")]
+fn slot_segment_seconds(
+    segment_seconds: &[Option<NonZeroU32>; RECORDER_SLOTS],
+    slot: usize,
+) -> Option<NonZeroU32> {
+    segment_seconds[slot]
 }
 
 /// Per-target bookkeeping for the native streaming feed path.
@@ -3604,7 +3619,7 @@ impl NativeDaemon {
             record_program_2: None,
             record_outputs: [None, None],
             record_wav: false,
-            record_segment_seconds: None,
+            record_segment_seconds: [None; RECORDER_SLOTS],
             record_bitrates: [None, None],
             record_audio_bitrates: [None, None],
             disk_alert: disk::DiskSpaceAlert::new(),
@@ -3679,9 +3694,10 @@ impl NativeDaemon {
     ///
     /// Slot 0 is `--record-program` (`--record-output`) and slot 1 is
     /// `--record-program-2` (`--record-output-2`); the shared `record_wav`
-    /// flag applies to every configured slot, while each bitrate pair applies
-    /// only to its own slot. The whole-run telemetry reports recording as
-    /// configured whenever at least one slot has a destination.
+    /// flag applies to every configured slot, while each segment duration and
+    /// bitrate pair applies only to its own slot. The whole-run telemetry
+    /// reports recording as configured whenever at least one slot has a
+    /// destination.
     #[allow(clippy::too_many_arguments)]
     fn configure_recordings(
         &mut self,
@@ -3690,7 +3706,7 @@ impl NativeDaemon {
         secondary: Option<PathBuf>,
         secondary_output: Option<fm_types::OutputId>,
         wav: bool,
-        segment_seconds: Option<NonZeroU32>,
+        segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
         primary_bitrate: Option<u32>,
         primary_audio_bitrate: Option<u32>,
         secondary_bitrate: Option<u32>,
@@ -4437,8 +4453,8 @@ impl NativeDaemon {
         });
     }
 
-    /// Rotates every running recorder slot that has reached
-    /// [`Self::record_segment_seconds`] before capturing `sequence`.
+    /// Rotates every running recorder slot that has reached its own
+    /// [`Self::record_segment_seconds`] entry before capturing `sequence`.
     ///
     /// Completed segments are handed off the render path via
     /// [`Self::retire_running_recording`], finished finalizers are reaped to
@@ -4454,7 +4470,8 @@ impl NativeDaemon {
     fn rotate_running_recording(&mut self, slot: usize, sequence: SequenceNumber) {
         let next_format = match &self.recorders[slot] {
             ProgramRecording::Running(recorder)
-                if recorder.should_rotate(self.record_segment_seconds) =>
+                if recorder
+                    .should_rotate(slot_segment_seconds(&self.record_segment_seconds, slot)) =>
             {
                 let old = &recorder.format;
                 RecordFormat::new(
@@ -5167,7 +5184,7 @@ impl NativeDaemon {
         _secondary: Option<PathBuf>,
         _secondary_output: Option<fm_types::OutputId>,
         _wav: bool,
-        _segment_seconds: Option<NonZeroU32>,
+        _segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
         _primary_bitrate: Option<u32>,
         _primary_audio_bitrate: Option<u32>,
         _secondary_bitrate: Option<u32>,
@@ -5849,7 +5866,7 @@ enum Command {
         record_program_2: Option<PathBuf>,
         record_output_2: Option<fm_types::OutputId>,
         record_wav: bool,
-        record_segment_seconds: Option<NonZeroU32>,
+        record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
         record_bitrate_kbps: Option<u32>,
         record_bitrate_kbps_2: Option<u32>,
         record_audio_bitrate_kbps: Option<u32>,
@@ -5903,7 +5920,8 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut record_program_2 = None;
             let mut record_output_2 = None;
             let mut record_wav = false;
-            let mut record_segment_seconds = None;
+            let mut record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS] =
+                [None; RECORDER_SLOTS];
             let mut record_bitrate_kbps = None;
             let mut record_bitrate_kbps_2 = None;
             let mut record_audio_bitrate_kbps = None;
@@ -5958,7 +5976,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                     continue;
                 }
                 if let Some(value) = option.strip_prefix("--record-segment-seconds=") {
-                    if record_segment_seconds.is_some() {
+                    if record_segment_seconds[0].is_some() {
                         return Err(AppFailure(
                             "duplicate option `--record-segment-seconds`".into(),
                         )
@@ -5970,7 +5988,29 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         )
                         .into());
                     }
-                    record_segment_seconds = Some(parse_record_segment_seconds(value)?);
+                    record_segment_seconds[0] = Some(parse_record_segment_seconds(
+                        "--record-segment-seconds",
+                        value,
+                    )?);
+                    continue;
+                }
+                if let Some(value) = option.strip_prefix("--record-segment-seconds-2=") {
+                    if record_segment_seconds[1].is_some() {
+                        return Err(AppFailure(
+                            "duplicate option `--record-segment-seconds-2`".into(),
+                        )
+                        .into());
+                    }
+                    if value.is_empty() {
+                        return Err(AppFailure(
+                            "missing value for --record-segment-seconds-2".into(),
+                        )
+                        .into());
+                    }
+                    record_segment_seconds[1] = Some(parse_record_segment_seconds(
+                        "--record-segment-seconds-2",
+                        value,
+                    )?);
                     continue;
                 }
                 if let Some(value) = option.strip_prefix("--record-bitrate-kbps=") {
@@ -6248,7 +6288,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         return Err(AppFailure("duplicate option `--record-wav`".into()).into());
                     }
                     "--record-wav" => record_wav = true,
-                    "--record-segment-seconds" if record_segment_seconds.is_some() => {
+                    "--record-segment-seconds" if record_segment_seconds[0].is_some() => {
                         return Err(AppFailure(
                             "duplicate option `--record-segment-seconds`".into(),
                         )
@@ -6261,7 +6301,28 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                             .ok_or_else(|| {
                                 AppFailure("missing value for --record-segment-seconds".into())
                             })?;
-                        record_segment_seconds = Some(parse_record_segment_seconds(&value)?);
+                        record_segment_seconds[0] = Some(parse_record_segment_seconds(
+                            "--record-segment-seconds",
+                            &value,
+                        )?);
+                    }
+                    "--record-segment-seconds-2" if record_segment_seconds[1].is_some() => {
+                        return Err(AppFailure(
+                            "duplicate option `--record-segment-seconds-2`".into(),
+                        )
+                        .into());
+                    }
+                    "--record-segment-seconds-2" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-segment-seconds-2".into())
+                            })?;
+                        record_segment_seconds[1] = Some(parse_record_segment_seconds(
+                            "--record-segment-seconds-2",
+                            &value,
+                        )?);
                     }
                     "--record-bitrate-kbps" if record_bitrate_kbps.is_some() => {
                         return Err(
@@ -6411,13 +6472,15 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 )
                 .into());
             }
-            if record_segment_seconds.is_some()
-                && record_program.is_none()
-                && record_program_2.is_none()
-            {
+            if record_segment_seconds[0].is_some() && record_program.is_none() {
                 return Err(AppFailure(
-                    "--record-segment-seconds requires --record-program or --record-program-2"
-                        .into(),
+                    "--record-segment-seconds requires --record-program".into(),
+                )
+                .into());
+            }
+            if record_segment_seconds[1].is_some() && record_program_2.is_none() {
+                return Err(AppFailure(
+                    "--record-segment-seconds-2 requires --record-program-2".into(),
                 )
                 .into());
             }
@@ -6528,13 +6591,14 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
     }
 }
 
-/// Parses `--record-segment-seconds` as an integer in
+/// Parses one recorder segment-duration option as an integer in
 /// `1..=MAX_RECORD_SEGMENT_SECONDS`.
 ///
 /// # Errors
 ///
-/// Returns an [`AppFailure`] when `value` is not an integer in `1..=86400`.
-fn parse_record_segment_seconds(value: &str) -> AppResult<NonZeroU32> {
+/// Returns an [`AppFailure`] naming `option` when `value` is not an integer
+/// in `1..=86400`.
+fn parse_record_segment_seconds(option: &str, value: &str) -> AppResult<NonZeroU32> {
     value
         .parse::<u32>()
         .ok()
@@ -6542,7 +6606,7 @@ fn parse_record_segment_seconds(value: &str) -> AppResult<NonZeroU32> {
         .and_then(NonZeroU32::new)
         .ok_or_else(|| {
             AppFailure(format!(
-                "invalid value for --record-segment-seconds `{value}`; expected an integer in 1..=86400"
+                "invalid value for {option} `{value}`; expected an integer in 1..=86400"
             ))
             .into()
         })
@@ -6736,7 +6800,7 @@ fn run_fullscreen_program(
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
-    record_segment_seconds: Option<NonZeroU32>,
+    record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
     record_bitrate_kbps: Option<u32>,
     record_bitrate_kbps_2: Option<u32>,
     record_audio_bitrate_kbps: Option<u32>,
@@ -6774,7 +6838,7 @@ fn run_fullscreen_program(
     _record_program_2: Option<PathBuf>,
     _record_output_2: Option<fm_types::OutputId>,
     _record_wav: bool,
-    _record_segment_seconds: Option<NonZeroU32>,
+    _record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
     _record_bitrate_kbps: Option<u32>,
     _record_bitrate_kbps_2: Option<u32>,
     _record_audio_bitrate_kbps: Option<u32>,
@@ -6828,7 +6892,7 @@ fn serve_program_worker(
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
-    record_segment_seconds: Option<NonZeroU32>,
+    record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
     record_bitrate_kbps: Option<u32>,
     record_bitrate_kbps_2: Option<u32>,
     record_audio_bitrate_kbps: Option<u32>,
@@ -6958,7 +7022,7 @@ fn serve_inner(
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
-    record_segment_seconds: Option<NonZeroU32>,
+    record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
     record_bitrate_kbps: Option<u32>,
     record_bitrate_kbps_2: Option<u32>,
     record_audio_bitrate_kbps: Option<u32>,
@@ -9375,12 +9439,12 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
 --record-wav additionally writes a linear-PCM WAV sidecar for each segment of every configured recorder, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
---record-segment-seconds rotates each active recorder slot to its next <stem>-<NNN>.mp4 segment on a frame boundary after at least the configured number of seconds.\n\
+--record-segment-seconds and --record-segment-seconds-2 rotate the active --record-program and --record-program-2 slot respectively to its next <stem>-<NNN>.mp4 segment on a frame boundary after at least the configured number of seconds; each accepts <option> <value> or <option>=<value> and requires its own recorder, and a slot without its own duration never rotates automatically.\n\
 --record-bitrate-kbps and --record-bitrate-kbps-2 set each slot's libx264 video bitrate in kbps (1000..=100000), and --record-audio-bitrate-kbps and --record-audio-bitrate-kbps-2 set its AAC audio bitrate in kbps (8..=1024); each accepts <option> <value> or <option>=<value>, applies only to its own --record-program/--record-program-2 slot, and leaves that slot's encoder defaults untouched when unset.\n\
 Configured network stream endpoints are probed once at startup and reported as FREEMIXD_PREFLIGHT; the probe is bounded and never blocks or refuses startup, and it is a reachability check rather than a bandwidth or health guarantee.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
@@ -10006,7 +10070,7 @@ mod tests {
                 record_program_2: None,
                 record_output_2: None,
                 record_wav: false,
-                record_segment_seconds: None,
+                record_segment_seconds: [None; RECORDER_SLOTS],
                 record_bitrate_kbps: None,
                 record_bitrate_kbps_2: None,
                 record_audio_bitrate_kbps: None,
@@ -10940,50 +11004,60 @@ mod tests {
     }
 
     #[test]
-    fn parses_record_segment_seconds_with_either_recorder_slot() {
+    fn parses_record_segment_seconds_per_slot_with_either_form_and_inclusive_bounds() {
+        let seconds = |value| NonZeroU32::new(value).unwrap();
         for (arguments, expected) in [
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
                     "--record-program",
                     "capture.mp4",
                     "--record-segment-seconds",
                     "1",
                 ]),
-                NonZeroU32::new(1).unwrap(),
+                [Some(seconds(1)), None],
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
-                    "--record-program-2",
-                    "backup.mp4",
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
                     "--record-segment-seconds=86400",
                 ]),
-                NonZeroU32::new(86_400).unwrap(),
+                [Some(seconds(86_400)), None],
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2",
+                    "1",
+                ]),
+                [None, Some(seconds(1))],
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2=86400",
+                ]),
+                [None, Some(seconds(86_400))],
+            ),
+            (
+                record_args(&[
                     "--record-program=capture.mp4",
                     "--record-program-2=backup.mp4",
                     "--record-segment-seconds",
                     "300",
+                    "--record-segment-seconds-2=600",
                 ]),
-                NonZeroU32::new(300).unwrap(),
+                [Some(seconds(300)), Some(seconds(600))],
             ),
         ] {
             assert!(matches!(
                 parse_args(arguments).unwrap(),
                 Command::Serve {
-                    record_segment_seconds: Some(seconds),
+                    record_segment_seconds,
                     ..
-                } if seconds == expected
+                } if record_segment_seconds == expected
             ));
         }
     }
@@ -10992,20 +11066,33 @@ mod tests {
     fn rejects_invalid_record_segment_seconds_options_and_values() {
         for (arguments, expected) in [
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&["--record-segment-seconds", "60"]),
+                "--record-segment-seconds requires --record-program",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
                     "--record-segment-seconds",
                     "60",
                 ]),
-                "--record-segment-seconds requires --record-program or --record-program-2",
+                "--record-segment-seconds requires --record-program",
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&["--record-segment-seconds-2", "60"]),
+                "--record-segment-seconds-2 requires --record-program-2",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds-2",
+                    "60",
+                ]),
+                "--record-segment-seconds-2 requires --record-program-2",
+            ),
+            (
+                record_args(&[
                     "--record-program",
                     "capture.mp4",
                     "--record-segment-seconds",
@@ -11013,10 +11100,7 @@ mod tests {
                 "missing value for --record-segment-seconds",
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
                     "--record-program",
                     "capture.mp4",
                     "--record-segment-seconds",
@@ -11025,10 +11109,7 @@ mod tests {
                 "missing value for --record-segment-seconds",
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
                     "--record-program",
                     "capture.mp4",
                     "--record-segment-seconds=",
@@ -11036,10 +11117,32 @@ mod tests {
                 "missing value for --record-segment-seconds",
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2",
+                ]),
+                "missing value for --record-segment-seconds-2",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2",
+                    "--once",
+                ]),
+                "missing value for --record-segment-seconds-2",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2=",
+                ]),
+                "missing value for --record-segment-seconds-2",
+            ),
+            (
+                record_args(&[
                     "--record-program",
                     "capture.mp4",
                     "--record-segment-seconds",
@@ -11050,10 +11153,7 @@ mod tests {
                 "duplicate option `--record-segment-seconds`",
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
                     "--record-program",
                     "capture.mp4",
                     "--record-segment-seconds=10",
@@ -11062,10 +11162,27 @@ mod tests {
                 "duplicate option `--record-segment-seconds`",
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2",
+                    "10",
+                    "--record-segment-seconds-2",
+                    "20",
+                ]),
+                "duplicate option `--record-segment-seconds-2`",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2=10",
+                    "--record-segment-seconds-2=20",
+                ]),
+                "duplicate option `--record-segment-seconds-2`",
+            ),
+            (
+                record_args(&[
                     "--record-program",
                     "capture.mp4",
                     "--record-segment-seconds",
@@ -11074,10 +11191,7 @@ mod tests {
                 "invalid value for --record-segment-seconds `0`; expected an integer in 1..=86400",
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
                     "--record-program",
                     "capture.mp4",
                     "--record-segment-seconds=86401",
@@ -11085,10 +11199,7 @@ mod tests {
                 "invalid value for --record-segment-seconds `86401`; expected an integer in 1..=86400",
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
                     "--record-program",
                     "capture.mp4",
                     "--record-segment-seconds=abc",
@@ -11096,19 +11207,69 @@ mod tests {
                 "invalid value for --record-segment-seconds `abc`; expected an integer in 1..=86400",
             ),
             (
-                strings(&[
-                    "serve",
-                    "show.freemix",
-                    "--native-media",
+                record_args(&[
                     "--record-program-2",
                     "backup.mp4",
+                    "--record-segment-seconds-2",
+                    "0",
+                ]),
+                "invalid value for --record-segment-seconds-2 `0`; expected an integer in 1..=86400",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2=86401",
+                ]),
+                "invalid value for --record-segment-seconds-2 `86401`; expected an integer in 1..=86400",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2=abc",
+                ]),
+                "invalid value for --record-segment-seconds-2 `abc`; expected an integer in 1..=86400",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
                     "--record-segment-seconds=-5",
                 ]),
                 "invalid value for --record-segment-seconds `-5`; expected an integer in 1..=86400",
             ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds-2=-5",
+                ]),
+                "invalid value for --record-segment-seconds-2 `-5`; expected an integer in 1..=86400",
+            ),
         ] {
             assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
         }
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn slot_segment_seconds_selects_each_slots_own_rotation_duration() {
+        let first_only: [Option<NonZeroU32>; RECORDER_SLOTS] =
+            [Some(NonZeroU32::new(10).unwrap()), None];
+        assert_eq!(
+            slot_segment_seconds(&first_only, 0).map(NonZeroU32::get),
+            Some(10)
+        );
+        assert_eq!(slot_segment_seconds(&first_only, 1), None);
+
+        let second_only: [Option<NonZeroU32>; RECORDER_SLOTS] =
+            [None, Some(NonZeroU32::new(86_400).unwrap())];
+        assert_eq!(slot_segment_seconds(&second_only, 0), None);
+        assert_eq!(
+            slot_segment_seconds(&second_only, 1).map(NonZeroU32::get),
+            Some(86_400)
+        );
     }
 
     #[test]

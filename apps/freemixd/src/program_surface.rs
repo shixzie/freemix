@@ -24,6 +24,8 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
+use super::RECORDER_SLOTS;
+#[cfg(target_os = "macos")]
 use fm_color::NativeSdrOutputTransform;
 #[cfg(any(target_os = "macos", test))]
 use fm_gpu::{FrameDecision, FrameGeneration, PresentationFrame};
@@ -671,7 +673,7 @@ struct ProgramApp {
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
-    record_segment_seconds: Option<NonZeroU32>,
+    record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
     record_bitrate_kbps: Option<u32>,
     record_bitrate_kbps_2: Option<u32>,
     record_audio_bitrate_kbps: Option<u32>,
@@ -710,7 +712,7 @@ impl ProgramApp {
         record_program_2: Option<PathBuf>,
         record_output_2: Option<fm_types::OutputId>,
         record_wav: bool,
-        record_segment_seconds: Option<NonZeroU32>,
+        record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
         record_bitrate_kbps: Option<u32>,
         record_bitrate_kbps_2: Option<u32>,
         record_audio_bitrate_kbps: Option<u32>,
@@ -1114,7 +1116,7 @@ pub(super) fn run(
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
-    record_segment_seconds: Option<NonZeroU32>,
+    record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
     record_bitrate_kbps: Option<u32>,
     record_bitrate_kbps_2: Option<u32>,
     record_audio_bitrate_kbps: Option<u32>,

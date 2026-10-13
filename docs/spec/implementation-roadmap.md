@@ -1415,8 +1415,9 @@ the show and the other slot continue.
 The two slots are not independently controllable and still share the project
 encoding format and Master audio: both follow the one engine desired flag, and
 there is no per-recorder codec choice, resolution scaling, audio-map, or
-bus/channel selection, no per-recorder segment policy (the daemon exposes only
-the shared duration rule, while frames/bytes/duration policies live in the
+bus/channel selection, no frame- or byte-based segment policy in the daemon
+(each slot carries its own duration rule through `--record-segment-seconds`
+and `--record-segment-seconds-2`, while frames/bytes policies live in the
 unwired `fm-record` spool), no multiple-track or metadata handling, and no
 protocol or client representation of a recorder roster. That independent
 control, the codec/resolution/audio-map configuration, and `AU-010` bus
