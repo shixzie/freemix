@@ -1694,6 +1694,7 @@ fn switcher_rejection(error: SwitcherError) -> Rejection {
         SwitcherError::TransitionInProgress => RejectionCode::Conflict,
         SwitcherError::UnsupportedManualTransitionKind
         | SwitcherError::InvalidManualTransitionRoute
+        | SwitcherError::PreviewEqualsProgram(_)
         | SwitcherError::ZeroDuration
         | SwitcherError::InvalidOverlayTransitionDuration { .. }
         | SwitcherError::OverlayQueueFull { .. }

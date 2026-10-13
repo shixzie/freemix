@@ -269,6 +269,9 @@ impl SwitcherState {
             SwitcherCommand::SelectPreview(input) => {
                 self.require_idle()?;
                 self.require_input(input)?;
+                if input == self.program {
+                    return Err(SwitcherError::PreviewEqualsProgram(input));
+                }
                 self.preview = input;
                 Ok(vec![SwitcherEvent::PreviewSelected { input }])
             }

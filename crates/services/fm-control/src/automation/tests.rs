@@ -221,7 +221,7 @@ fn automation_commands_are_authorized_as_their_requesting_principal() {
             id: "take-three".to_owned(),
             scope: ShortcutScope::Global,
             chord: chord("T"),
-            intent: request(1),
+            intent: request(3),
         })
         .unwrap();
     let pressed = plane
@@ -238,7 +238,7 @@ fn automation_commands_are_authorized_as_their_requesting_principal() {
         pressed.submission.output.result,
         CommandResult::Accepted { .. }
     ));
-    assert_eq!(preview(&control), input(1));
+    assert_eq!(preview(&control), input(3));
 }
 
 /// An emitted idempotency key identifies the action, not the emission, so one
@@ -580,10 +580,10 @@ fn bindings_matching_one_input_emit_in_a_defined_order() {
     let operator = principal(Role::Operator);
 
     plane
-        .insert_trigger(&operator, beat_trigger("alpha", 3))
+        .insert_trigger(&operator, beat_trigger("alpha", 2))
         .unwrap();
     plane
-        .insert_trigger(&operator, beat_trigger("beta", 1))
+        .insert_trigger(&operator, beat_trigger("beta", 3))
         .unwrap();
     plane
         .schedule(&operator, "backdrop", 50, ScheduleKind::Once, request(2))
@@ -600,7 +600,7 @@ fn bindings_matching_one_input_emit_in_a_defined_order() {
     );
     assert_eq!(
         preview(&control),
-        input(1),
+        input(3),
         "the last binding in the defined order owns the resulting state"
     );
     assert!(tick.submitted.iter().all(|entry| matches!(

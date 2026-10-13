@@ -162,6 +162,10 @@ pub enum SwitcherEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SwitcherError {
     UnknownInput(InputId),
+    /// The requested Preview input is already the Program source. The project
+    /// model requires the two to differ, so accepting this would leave a
+    /// state no checkpoint could persist.
+    PreviewEqualsProgram(InputId),
     TransitionInProgress,
     UnsupportedManualTransitionKind,
     InvalidManualTransitionRoute,
@@ -194,6 +198,10 @@ impl core::fmt::Display for SwitcherError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::UnknownInput(id) => write!(formatter, "input {id} is not part of this mix"),
+            Self::PreviewEqualsProgram(id) => write!(
+                formatter,
+                "input {id} is already the Program source; Preview and Program must differ"
+            ),
             Self::TransitionInProgress => {
                 formatter.write_str("a transition is already in progress")
             }

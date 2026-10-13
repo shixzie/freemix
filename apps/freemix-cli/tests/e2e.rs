@@ -3270,15 +3270,83 @@ fn local_record_start_stop_round_trip_persists_recording_desired_active() {
 }
 
 #[test]
-fn repeated_record_commands_keep_the_checkpoint_restartable() {
+fn repeated_no_op_commands_keep_the_checkpoint_restartable() {
     let context = ContractContext::new();
     assert_success(&invoke_bounded(&["new", context.project_path()]));
+    for arguments in [
+        vec![
+            "scene-input-add",
+            context.project_path(),
+            "10",
+            "10",
+            "Program",
+        ],
+        vec!["audio-bus-add", context.project_path(), "20", "Master"],
+        vec![
+            "output-add",
+            context.project_path(),
+            "30",
+            "10",
+            "20",
+            "Primary",
+        ],
+        vec![
+            "stream-add",
+            context.project_path(),
+            "40",
+            "30",
+            "rtmps://ingest.example.test:443/live",
+            STREAM_KEY,
+            "Main ingest",
+        ],
+    ] {
+        assert_success(&invoke_bounded(&arguments));
+    }
 
-    // A command that leaves the flag unchanged is still an acceptance. Its
-    // durable event keeps revision, event sequence, and runtime generation
-    // advancing together, so the next restore must still accept the project.
-    for command in ["record-start", "record-start", "record-stop", "record-stop"] {
-        assert_success(&invoke_bounded(&[command, context.project_path()]));
+    // Commands that leave state unchanged are still acceptances. Their
+    // durable events must keep revision, event sequence, and runtime
+    // generation advancing together, so the next restore still accepts the
+    // project. This guards every command family that can be a no-op, not just
+    // the record commands that first exposed the counter divergence.
+    for arguments in [
+        vec!["record-start", context.project_path()],
+        vec!["record-start", context.project_path()],
+        vec!["record-stop", context.project_path()],
+        vec!["record-stop", context.project_path()],
+        vec!["preview", context.project_path(), "2"],
+        vec!["preview", context.project_path(), "2"],
+        vec!["cut", context.project_path()],
+        vec!["cut", context.project_path()],
+        vec!["ftb", context.project_path(), "live", "30"],
+        vec!["ftb", context.project_path(), "live", "30"],
+        vec![
+            "audio-strip",
+            context.project_path(),
+            "1",
+            "0",
+            "0",
+            "off",
+            "off",
+            "on",
+            "0",
+        ],
+        vec![
+            "audio-strip",
+            context.project_path(),
+            "1",
+            "0",
+            "0",
+            "off",
+            "off",
+            "on",
+            "0",
+        ],
+        vec!["input-reorder", context.project_path(), "1", "2", "10"],
+        vec!["input-reorder", context.project_path(), "1", "2", "10"],
+        vec!["stream-start", context.project_path(), "40"],
+        vec!["stream-start", context.project_path(), "40"],
+    ] {
+        assert_success(&invoke_bounded(&arguments));
     }
     let status_output = status(&context.project);
     assert!(status_output.contains("recording_desired=false"));
