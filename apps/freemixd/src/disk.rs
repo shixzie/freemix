@@ -1,11 +1,13 @@
 //! Bounded disk preflight and low-space alerting for configured program
-//! recording.
+//! outputs: the recording output and the local directories of HLS stream
+//! targets.
 //!
 //! The preflight is fail-closed: a configured `--record-program` output whose
 //! parent cannot be queried or has too little free space refuses daemon
-//! startup. Once running, the render loop feeds free-space samples into a
-//! hysteretic alert so a recording approaching the filesystem floor is
-//! reported exactly at the edges, never per frame.
+//! startup, and every authored local HLS output directory is held to the same
+//! floor through its nearest existing ancestor. Once running, the render loop
+//! feeds free-space samples into a hysteretic alert so an output approaching
+//! the filesystem floor is reported exactly at the edges, never per frame.
 
 use std::{error::Error, fmt, io, path::Path};
 
@@ -13,17 +15,23 @@ use fm_observability::{
     AlertPolicy, AlertState, AlertTransition, ThresholdAlert, ThresholdDirection,
 };
 
-/// Free bytes a configured recording output's parent must have available
-/// before daemon startup proceeds.
+/// Free bytes a configured local output must have available before daemon
+/// startup proceeds: the parent of a `--record-program` output, or the nearest
+/// existing ancestor of an authored local HLS output directory.
 pub const RECORDING_MINIMUM_FREE_BYTES: u64 = 512 * 1024 * 1024;
 
-/// Free bytes at or below which a running recording's alert fires.
+/// Free bytes at or below which the running output alert fires.
 pub const DISK_LOW_FREE_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// Free bytes at or above which a firing recording alert clears.
+/// Free bytes at or above which a firing output alert clears.
 pub const DISK_CLEAR_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Failure of the configured recording disk preflight.
+/// How many path components [`existing_ancestor`] inspects before giving up:
+/// far beyond any operator-authored output directory while still bounding an
+/// adversarial path that names a long chain of nonexistent parents.
+const EXISTING_ANCESTOR_DEPTH_LIMIT: usize = 64;
+
+/// Failure of a configured output's disk preflight.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiskPreflightError {
     /// The free-space query failed with this I/O kind.
@@ -38,11 +46,11 @@ impl fmt::Display for DiskPreflightError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unavailable(kind) => {
-                write!(formatter, "recording free space is unavailable: {kind}")
+                write!(formatter, "output free space is unavailable: {kind}")
             }
             Self::BelowMinimum { available } => write!(
                 formatter,
-                "recording requires at least {RECORDING_MINIMUM_FREE_BYTES} free bytes, \
+                "an output requires at least {RECORDING_MINIMUM_FREE_BYTES} free bytes, \
                  found {available}"
             ),
         }
@@ -62,8 +70,27 @@ pub fn available_bytes(path: &Path) -> io::Result<u64> {
     fs4::available_space(path)
 }
 
-/// Pure decision logic for the configured recording minimum, kept separate so
-/// it is testable without a real filesystem.
+/// The first existing ancestor of `path`, starting with `path` itself.
+///
+/// Walks up at most [`EXISTING_ANCESTOR_DEPTH_LIMIT`] path components and
+/// returns `None` when nothing along that walk exists. A local HLS sink
+/// creates its output directory later, so this is the most specific path
+/// whose filesystem the daemon can measure now.
+#[must_use]
+pub fn existing_ancestor(path: &Path) -> Option<&Path> {
+    let mut candidate = Some(path);
+    for _ in 0..EXISTING_ANCESTOR_DEPTH_LIMIT {
+        let current = candidate?;
+        if current.exists() {
+            return Some(current);
+        }
+        candidate = current.parent();
+    }
+    None
+}
+
+/// Pure decision logic for the configured output minimum, kept separate so it
+/// is testable without a real filesystem.
 ///
 /// # Errors
 ///
@@ -77,6 +104,19 @@ fn preflight_available(available: u64) -> Result<u64, DiskPreflightError> {
     }
 }
 
+/// Queries `path`'s free bytes and applies the configured output floor.
+///
+/// # Errors
+///
+/// Returns [`DiskPreflightError::Unavailable`] when the free-space query
+/// fails, or [`DiskPreflightError::BelowMinimum`] when it succeeds with too
+/// little space. Neither variant renders the path.
+fn preflight_existing_path(path: &Path) -> Result<u64, DiskPreflightError> {
+    let available =
+        available_bytes(path).map_err(|error| DiskPreflightError::Unavailable(error.kind()))?;
+    preflight_available(available)
+}
+
 /// Verifies that `path` — the caller-resolved parent directory of the
 /// configured recording output — has at least [`RECORDING_MINIMUM_FREE_BYTES`]
 /// free.
@@ -87,12 +127,28 @@ fn preflight_available(available: u64) -> Result<u64, DiskPreflightError> {
 /// fails, or [`DiskPreflightError::BelowMinimum`] when it succeeds with too
 /// little space. Neither variant renders the path.
 pub fn preflight_recording_parent(path: &Path) -> Result<u64, DiskPreflightError> {
-    let available =
-        available_bytes(path).map_err(|error| DiskPreflightError::Unavailable(error.kind()))?;
-    preflight_available(available)
+    preflight_existing_path(path)
 }
 
-/// Hysteretic free-space alert for a configured recording output.
+/// Verifies that `path` — the absolute directory of an authored local HLS
+/// stream target — has at least [`RECORDING_MINIMUM_FREE_BYTES`] free.
+///
+/// The local HLS sink creates the leaf directory later, so the leaf normally
+/// does not exist at preflight time: the nearest existing ancestor is what can
+/// be measured now, and it lies on the filesystem the sink will publish into.
+///
+/// # Errors
+///
+/// Returns [`DiskPreflightError::Unavailable`] when no ancestor exists or the
+/// free-space query fails, or [`DiskPreflightError::BelowMinimum`] when the
+/// query succeeds with too little space. Neither variant renders the path.
+pub fn preflight_local_output(path: &Path) -> Result<u64, DiskPreflightError> {
+    let existing =
+        existing_ancestor(path).ok_or(DiskPreflightError::Unavailable(io::ErrorKind::NotFound))?;
+    preflight_existing_path(existing)
+}
+
+/// Hysteretic free-space alert for the configured program outputs.
 ///
 /// Wraps [`ThresholdAlert`] with the daemon's fixed below policy: it fires at
 /// or below [`DISK_LOW_FREE_BYTES`] and clears at or above
@@ -107,7 +163,7 @@ pub struct DiskSpaceAlert {
 // 2 GiB clear watermark.
 #[allow(clippy::cast_precision_loss)]
 impl DiskSpaceAlert {
-    /// Creates an inactive alert with the daemon's recording policy.
+    /// Creates an inactive alert with the daemon's fixed policy.
     ///
     /// # Panics
     ///
@@ -122,7 +178,7 @@ impl DiskSpaceAlert {
                     DISK_LOW_FREE_BYTES as f64,
                     DISK_CLEAR_FREE_BYTES as f64,
                 )
-                .expect("the recording free-space constants form a hysteresis band"),
+                .expect("the free-space constants form a hysteresis band"),
             ),
         }
     }
@@ -161,6 +217,8 @@ impl Default for DiskSpaceAlert {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -231,5 +289,63 @@ mod tests {
             preflight_recording_parent(&missing),
             Err(DiskPreflightError::Unavailable(_))
         ));
+    }
+
+    #[test]
+    fn existing_ancestor_returns_an_existing_path_itself() {
+        let directory = tempfile::tempdir().unwrap();
+
+        assert_eq!(existing_ancestor(directory.path()), Some(directory.path()));
+    }
+
+    #[test]
+    fn existing_ancestor_walks_up_to_the_nearest_existing_parent() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("hls").join("live");
+
+        assert_eq!(existing_ancestor(&missing), Some(directory.path()));
+    }
+
+    #[test]
+    fn existing_ancestor_handles_relative_paths() {
+        assert_eq!(existing_ancestor(Path::new(".")), Some(Path::new(".")));
+        // The walk bottoms out at the empty relative parent: nothing along
+        // this path exists, so there is no filesystem to name.
+        assert_eq!(
+            existing_ancestor(Path::new("freemix-absent-ancestor-test-path/leaf")),
+            None
+        );
+    }
+
+    #[test]
+    fn existing_ancestor_stops_after_the_bounded_depth() {
+        // The root exists, but the bounded walk gives up before reaching it.
+        let mut deep = PathBuf::from("/freemix-absent-ancestor");
+        for ordinal in 0..EXISTING_ANCESTOR_DEPTH_LIMIT {
+            deep.push(format!("level-{ordinal}"));
+        }
+
+        assert_eq!(existing_ancestor(&deep), None);
+    }
+
+    #[test]
+    fn preflight_local_output_measures_a_missing_leafs_existing_ancestor() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("hls").join("live");
+
+        // The sink creates the leaf later, so the temp directory's filesystem
+        // is what the preflight measures; only an ancestor is reachable at
+        // startup.
+        let available = preflight_local_output(&missing)
+            .expect("the temp filesystem is expected to have enough free space");
+        assert!(available >= RECORDING_MINIMUM_FREE_BYTES);
+    }
+
+    #[test]
+    fn preflight_local_output_is_unavailable_without_an_existing_ancestor() {
+        assert_eq!(
+            preflight_local_output(Path::new("freemix-absent-ancestor-test-path/leaf")),
+            Err(DiskPreflightError::Unavailable(io::ErrorKind::NotFound))
+        );
     }
 }

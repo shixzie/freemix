@@ -212,7 +212,8 @@ const PROGRAM_STREAM_RECONNECT_ATTEMPTS: u32 = 40;
 /// short reconnect without unbounding the render loop's enqueue cost.
 #[cfg(feature = "native-media")]
 const PROGRAM_STREAM_QUEUE_CAPACITY: usize = 4;
-/// Free-space sampling cadence for a configured program recording. The render
+/// Free-space sampling cadence for the configured program outputs: the
+/// recording output's parent and every local HLS output directory. The render
 /// loop calls the sampler every frame, so the gate compares one `Instant` and
 /// samples at most this often; five seconds bounds how long a filesystem
 /// crossing the low watermark can go unreported without adding per-frame I/O.
@@ -365,14 +366,20 @@ struct NativeDaemon {
     /// Whether each segment also writes a `--record-wav` linear-PCM sidecar
     /// next to the MP4. Configured support only, like [`Self::record_program`].
     record_wav: bool,
-    /// Hysteretic free-space alert for the configured recording output.
+    /// Hysteretic free-space alert for the configured program outputs.
     disk_alert: disk::DiskSpaceAlert,
-    /// Latest successfully sampled free bytes for the recording output's
-    /// parent; `None` until the first sample succeeds.
+    /// Latest successfully sampled free bytes across the configured outputs:
+    /// the recording output's parent and every local HLS output directory;
+    /// `None` until the first sample succeeds.
     disk_free_bytes: Option<u64>,
     /// When the last disk sample was attempted; `None` makes the first sample
     /// evaluate immediately instead of after one full interval.
     disk_sampled_at: Option<Instant>,
+    /// Absolute output directory of every authored local HLS stream target, in
+    /// authored order; empty when the show has no local outputs. The HLS sink
+    /// creates each leaf directory later, so preflight and sampling resolve the
+    /// nearest existing ancestor. Bounded by the engine's five-target cap.
+    local_output_dirs: Vec<PathBuf>,
     /// Segments stopped off the render path, awaiting bounded finalization.
     recording_finalizers: Vec<ProgramRecordingFinalizer>,
     streams: Vec<NativeProgramStream>,
@@ -1275,11 +1282,12 @@ struct NativeRuntimeTelemetry {
     recorder_peak_retained_bytes: u64,
     stream_enqueued_pairs_total: u64,
     stream_dropped_pairs_total: u64,
-    /// Latest successfully sampled free bytes for the configured recording
-    /// output's parent; `None` until the first sample.
+    /// Latest successfully sampled free bytes across the configured outputs:
+    /// the recording output's parent and every local HLS output directory;
+    /// `None` until the first sample.
     disk_free_bytes: Option<u64>,
-    /// Recording free-space alert state at the latest sample; `None` until
-    /// the first sample evaluated.
+    /// Disk free-space alert state at the latest sample; `None` until the
+    /// first sample evaluated.
     disk_alert: Option<AlertState>,
 }
 
@@ -2381,6 +2389,22 @@ fn split_and_group_targets(targets: &[fm_model::StreamTarget]) -> AppResult<Spli
     Ok(SplitTargets { splits, group_keys })
 }
 
+/// The absolute directory of every authored local HLS target, in authored
+/// order.
+///
+/// An HLS target splits into one absolute directory instead of a network
+/// endpoint, and the sink creates that leaf directory later, so both the
+/// startup preflight and the runtime free-space sampler measure the nearest
+/// existing ancestor. Bounded by the engine's five-target cap.
+#[cfg(feature = "native-media")]
+fn local_output_directories(splits: &[SplitStreamTarget<'_>]) -> Vec<PathBuf> {
+    splits
+        .iter()
+        .filter(|split| split.protocol == OutputProtocol::Hls)
+        .map(|split| PathBuf::from(split.endpoint.path()))
+        .collect()
+}
+
 /// Builds one shared state bundle per rendition group: one readback owner for
 /// the whole group and the planner variants that pin the group's rendition id
 /// inside planner-produced plans. Group ids are their one-based positions.
@@ -2434,6 +2458,10 @@ impl NativeProgramStream {
     /// one shared-rendition group owning one readback and one packed pair
     /// per frame.
     ///
+    /// Also yields the absolute directory of every authored local HLS target,
+    /// in authored order, for the daemon's startup preflight and runtime
+    /// free-space sampler.
+    ///
     /// Startup fails closed on more targets than the engine inventories or the
     /// output set can carry, or a destination URL that would be refused at
     /// connect time; all three are authoring errors the model validation
@@ -2443,7 +2471,7 @@ impl NativeProgramStream {
         runtime: &NativeMediaRuntime,
         stored: &StoredProject,
         output_set: &mut OutputSet,
-    ) -> AppResult<(Vec<Self>, Vec<StreamRenditionGroup>)> {
+    ) -> AppResult<(Vec<Self>, Vec<StreamRenditionGroup>, Vec<PathBuf>)> {
         let targets = stored.project().stream_targets();
         if targets.len() > fm_switcher::MAX_STREAM_COUNT {
             return Err(AppFailure(format!(
@@ -2482,6 +2510,7 @@ impl NativeProgramStream {
             SequenceNumber::new(frames_rendered),
         )?;
         let split_targets = split_and_group_targets(targets)?;
+        let local_output_dirs = local_output_directories(&split_targets.splits);
         let mut groups = build_stream_groups(
             runtime,
             &format,
@@ -2547,7 +2576,7 @@ impl NativeProgramStream {
                 started: false,
             });
         }
-        Ok((streams, groups))
+        Ok((streams, groups, local_output_dirs))
     }
 
     /// Marks this target running in the shared output set. Connection trouble
@@ -3134,7 +3163,7 @@ impl NativeDaemon {
         // problem is reported against an otherwise healthy show. Starting one
         // is deferred to readiness; failures there latch per target.
         let mut output_set = OutputSet::new();
-        let (streams, stream_groups) =
+        let (streams, stream_groups, local_output_dirs) =
             NativeProgramStream::compile(&runtime, stored, &mut output_set)?;
         #[cfg(target_os = "macos")]
         resolution.cameras.mark_preflight_frames_ingested();
@@ -3168,6 +3197,7 @@ impl NativeDaemon {
             disk_alert: disk::DiskSpaceAlert::new(),
             disk_free_bytes: None,
             disk_sampled_at: None,
+            local_output_dirs,
             recording_finalizers: Vec::new(),
             streams,
             stream_groups,
@@ -3232,19 +3262,60 @@ impl NativeDaemon {
         self.record_program.is_some()
     }
 
-    /// Samples the configured recording output's free space at a bounded
+    /// Preflights every authored local HLS output directory, refusing startup
+    /// with a sanitized failure when one has too little free space.
+    ///
+    /// A local output is a configured show destination, so it is held to the
+    /// same floor as the configured recording output. The directory is
+    /// measured through its nearest existing ancestor because the HLS sink
+    /// creates the leaf later. The failure names the authored stream target id
+    /// and carries free-space counts or an I/O kind only; it never renders the
+    /// directory.
+    fn preflight_local_outputs(&self) -> AppResult<()> {
+        for stream in &self.streams {
+            let config = self
+                .output_set
+                .config(stream.destination_id)
+                .expect("every compiled stream owns one output-set slot");
+            if config.protocol() != OutputProtocol::Hls {
+                continue;
+            }
+            disk::preflight_local_output(Path::new(config.endpoint().path())).map_err(|error| {
+                match error {
+                    disk::DiskPreflightError::BelowMinimum { available } => AppFailure(format!(
+                        "stream target {} local output has insufficient free space: requires at \
+                         least {} free bytes, found {available}",
+                        stream.target,
+                        disk::RECORDING_MINIMUM_FREE_BYTES
+                    )),
+                    disk::DiskPreflightError::Unavailable(kind) => AppFailure(format!(
+                        "stream target {} local output free space is unavailable: {kind}",
+                        stream.target
+                    )),
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Samples the free space shared by the configured outputs at a bounded
     /// cadence and reports alert edges.
     ///
-    /// The render loop calls this every frame; the gate is one optional field
-    /// check plus one `Instant` comparison, and a sample reaches the
-    /// filesystem at most once per [`DISK_SAMPLE_INTERVAL`]. Query failures
-    /// stay silent and leave the last sampled value and alert state in place.
-    /// The first call while recording is configured evaluates immediately, so
-    /// a low value present at startup fires at the first frame boundary.
+    /// The render loop calls this every frame; the gate is two optional field
+    /// checks plus one `Instant` comparison, and a sample reaches the
+    /// filesystem at most once per [`DISK_SAMPLE_INTERVAL`]. A configured
+    /// recording output contributes its parent directory, and every authored
+    /// local HLS output contributes the nearest existing ancestor of its
+    /// directory — the sink creates the leaf later — with the minimum across
+    /// the queries that succeed driving the alert. Query failures stay silent:
+    /// a failed query is skipped, and when no query succeeds the last sampled
+    /// value and alert state stay in place. The first call while a recording
+    /// or a local output is configured evaluates immediately, so a low value
+    /// present at startup fires at the first frame boundary.
     fn sample_disk_space(&mut self, now: Instant) {
-        let Some(parent) = self.record_program.as_deref().map(recording_parent) else {
+        if self.record_program.is_none() && self.local_output_dirs.is_empty() {
             return;
-        };
+        }
         if self
             .disk_sampled_at
             .is_some_and(|last| now.saturating_duration_since(last) < DISK_SAMPLE_INTERVAL)
@@ -3252,7 +3323,18 @@ impl NativeDaemon {
             return;
         }
         self.disk_sampled_at = Some(now);
-        let Ok(available) = disk::available_bytes(parent) else {
+        let recording_parent = self.record_program.as_deref().map(recording_parent);
+        let local_ancestors = self
+            .local_output_dirs
+            .iter()
+            .filter_map(|directory| disk::existing_ancestor(directory));
+        let mut minimum: Option<u64> = None;
+        for path in recording_parent.into_iter().chain(local_ancestors) {
+            if let Ok(available) = disk::available_bytes(path) {
+                minimum = Some(minimum.map_or(available, |current| current.min(available)));
+            }
+        }
+        let Some(available) = minimum else {
             return;
         };
         self.disk_free_bytes = Some(available);
@@ -5565,6 +5647,15 @@ fn serve_inner(
             )?)
         }
     };
+    // Every authored local HLS output is a configured show destination, so it
+    // fails closed before serving exactly like the configured recording
+    // output below: too little free space in any local output directory
+    // refuses startup. The failure names the authored stream target and
+    // carries free-space counts and I/O kinds only, never the directory.
+    #[cfg(feature = "native-media")]
+    if let Some(native) = native.as_ref() {
+        native.preflight_local_outputs()?;
+    }
     let mut process_shutdown = register_process_shutdown()?;
     let authority = control_server_identity(&control.borrow(), project_id);
     let mut durable = project;
@@ -13393,6 +13484,54 @@ mod tests {
             assert_eq!(split.backup_endpoint, None);
         }
         assert_eq!(grouped.splits[2].endpoint.path(), "/var/lib/freemix/live");
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn local_output_directories_extracts_the_hls_directory_of_each_authored_target() {
+        use fm_model::{
+            StreamEndpoint as ModelStreamEndpoint, StreamKey as ModelStreamKey, StreamProtocol,
+            StreamTarget, StreamTargetId,
+        };
+        use fm_types::OutputId as ModelOutputId;
+
+        let output = ModelOutputId::new(NonZeroU128::new(31).unwrap());
+        let target = |id: u128, protocol: StreamProtocol, endpoint: &str| {
+            let endpoint = ModelStreamEndpoint::parse_for(protocol, endpoint).unwrap();
+            let key = match protocol {
+                StreamProtocol::Hls => None,
+                StreamProtocol::Rtmp | StreamProtocol::Rtmps | StreamProtocol::Srt => {
+                    Some(ModelStreamKey::parse("live-key-0001").unwrap())
+                }
+            };
+            StreamTarget::new(
+                StreamTargetId::new(NonZeroU128::new(id).unwrap()),
+                format!("Destination {id}"),
+                protocol,
+                endpoint,
+                key,
+                output,
+            )
+            .unwrap()
+        };
+        let targets = [
+            target(1, StreamProtocol::Rtmp, "ingest.example.test:1935/live"),
+            target(2, StreamProtocol::Hls, "/var/lib/freemix/live"),
+            target(3, StreamProtocol::Rtmp, "backup.example.test:1935/live"),
+            target(4, StreamProtocol::Hls, "/var/lib/freemix/live-alt"),
+        ];
+        let grouped = split_and_group_targets(&targets).unwrap();
+
+        // Only local HLS targets contribute a directory, in authored order,
+        // and the compiled endpoint already carries it as one absolute path
+        // that the sink creates later.
+        assert_eq!(
+            local_output_directories(&grouped.splits),
+            vec![
+                PathBuf::from("/var/lib/freemix/live"),
+                PathBuf::from("/var/lib/freemix/live-alt"),
+            ]
+        );
     }
 
     #[cfg(feature = "native-media")]
