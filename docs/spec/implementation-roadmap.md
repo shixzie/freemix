@@ -1438,13 +1438,21 @@ count but never the path, and the five-second sampler takes the minimum free
 space across every configured recording parent and every local output
 directory, so one `FREEMIXD_DISK` edge covers whichever configured local
 output crosses the threshold. No path is created by the preflight; the HLS sink still creates its
-own leaf later. This covers program recording and local HLS outputs only:
-network preflight remains endpoint validation rather than a bandwidth probe,
-there is no new GPU capability preflight, low space never stops or fails a
-running recording or output on its own, and no per-destination disk telemetry
-exists. `OR-001`'s space status is now observable on the recording path, but
-the row still awaits its other acceptance items, and item 9 remains
-incomplete.
+own leaf later. Configured network stream endpoints are additionally probed
+once at native startup: each primary and configured backup endpoint gets one
+bounded TCP reachability attempt (two seconds total across all probes, one
+worker each, unanswered probes reported as unresolved rather than blocking),
+and every probed endpoint prints exactly one sanitized `FREEMIXD_PREFLIGHT`
+record carrying the target id, the primary/backup label, and
+`reachable|refused|timed-out|unresolved`. That preflight never refuses startup
+and never changes destination state or reconnection, because an ingest may
+legitimately come up later. This covers program recording, local HLS outputs,
+and one-shot network reachability only: there is no continuous network
+monitoring or bandwidth probe, no GPU capability preflight beyond adapter
+creation, low space never stops or fails a running recording or output on its
+own, and no per-destination disk telemetry exists. `OR-001`'s space status is
+now observable on the recording path, but the row still awaits its other
+acceptance items, and item 9 remains incomplete.
 
 Current implementation boundary for item 11: `docs/spec/capability-matrix.md`
 is the first published capability matrix. It is generated deterministically
