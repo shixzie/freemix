@@ -1271,13 +1271,14 @@ planned. The model and sink accept SRT alongside RTMP/RTMPS:
 redaction, the FFmpeg sink muxes MPEG-TS with its own channel-layout rules,
 and a real-ffmpeg integration receives an SRT broadcast and probes H.264/AAC.
 Schema 20 persists each target's authored video bitrate and native sessions
-thread it into the encoder. Destinations whose scheme and authored bitrate
-match share one GPU readback, one packed raw pair per frame, and one group
-sequence cursor, fanned out through the rendition planner over exactly the
-group's active members with per-route results mapping back to per-target
-ledger drops and congestion flags; distinct bitrates stay independent groups,
-a stopped member leaves its plan, and a restart resumes the same group past
-the gap. Protocol 2.17 adds the
+thread it into the encoder. Destinations whose authored project `OutputId`,
+scheme, and authored bitrate match share one GPU readback of that project
+output's rendered texture (preserving its per-output overlay inclusion), one
+packed raw pair per frame, and one group sequence cursor, fanned out through
+the rendition planner over exactly the group's active members with per-route
+results mapping back to per-target ledger drops and congestion flags; distinct
+project outputs or bitrates stay independent groups, a stopped member leaves
+its plan, and a restart resumes the same group past the gap. Protocol 2.17 adds the
 lossy latest-wins `stream_status` peer record beside audio meters: native
 `freemixd` publishes per-target realized state, counters, and sanitized
 failures each frame interval; sessions validate identity and monotonic
@@ -1323,10 +1324,15 @@ rules, and prints the path, authored bitrate, and ladder. No protocol change
 was needed: protocol 2.18 snapshots already carry target identity, name, and
 desired state, and the lossy `stream_status` record carries the realized state.
 
-This remains one local HLS output per destination. There is no HTTP server or
-access-controlled LAN page, no renderer-visible viewer or capacity report, no
-per-rung persisted audio setting or codec choice, and the `fm-io-network` HLS
-playlist/ABR metadata types are still unconsumed by the runtime. The ladder is
+This remains one local HLS output per destination. `fm-io-network` now provides
+bounded deterministic M3U8 rendering and parsing for both media playlists
+(`HlsPlaylistMetadata::render_m3u8` / `parse_m3u8`) and master playlists
+(`HlsAbrCoordinator::render_master_m3u8` / `parse_master_m3u8`), validating
+FFmpeg-formatted master and variant playlists through `HlsAbrCoordinator`'s
+sequence and independent-segment alignment rules, though the native daemon does
+not yet consume those parsers at runtime. There is no HTTP server or
+access-controlled LAN page, no renderer-visible viewer or capacity report, and
+no per-rung persisted audio setting or codec choice. The ladder is
 one destination's ABR encoder into one directory rather than independently
 controlled destinations, so the five-destination bound still counts each
 authored target once and a remote single-key or multi-key RTMP ladder is not
@@ -1334,40 +1340,47 @@ implemented. Studio and Web show the existing roster only. `OR-007` and
 `OR-017` therefore remain planned, and item 3 remains incomplete.
 
 Current implementation boundary for item 4: native `freemixd` runs two
-independently configured program recorder destinations. Slot one is
-`--record-program` and slot two is `--record-program-2`; both require native
-media, need not be configured together, and each keeps its own output path,
-segment derivation, exclusive files, finalizer worker, capture-failure latch,
-and sanitized `FREEMIXD_RECORDER` report, now prefixed `slot=1|2`. The two
+independently configured program recorder destinations with per-slot project
+output selection. Slot one is `--record-program` (with optional
+`--record-output <output-id>`) and slot two is `--record-program-2` (with
+optional `--record-output-2 <output-id>`); both require native media, need not
+be configured together, and each keeps its own output path, selected project
+`OutputId`, segment derivation, exclusive files, finalizer worker,
+capture-failure latch, and sanitized `FREEMIXD_RECORDER` report, now prefixed
+`slot=1|2`. Startup validates any selected `OutputId` fail-closed against the
+project's configured outputs before opening a recorder. When a slot names an
+`OutputId`, it captures that output's independently realized GPU texture (so
+slot one and slot two can record different overlay inclusions, such as Program
+with overlays and a clean feed, concurrently); when omitted, the slot defaults
+to the first configured project output or the unbound Program texture. The two
 slots share the engine's existing desired recording flag, so an accepted
 `RecordStart`/`RecordStop` opens or drains both; one slot's start, prime, or
 finalization failure latches and reports only that slot and never aborts the
-show or the other slot. Each slot taps the same first Program output texture
-and Master audio block, cloning the audio only when both slots are running,
-and each owns its own readback. Startup remains fail-closed for any configured
-recorder, `FREEMIXD_TELEMETRY` aggregates both slots' outstanding and retained
-values, and disk preflight and free-space sampling cover both parents. Each
-slot can also write a split WAV sidecar: `--record-wav` now requires at least
-one recorder and applies to every configured slot, making the same bounded
-FFmpeg child mux a linear-PCM `pcm_s16le` WAV output for the same captured
-audio at the project's sample rate and channel layout, from mono through 5.1,
-into an exclusive file that shares the segment's stem, so `program-002.mp4` is
+show or the other slot. Each slot taps the Master audio block, cloning the
+audio only when both slots run and resolve an output texture, and each owns its
+own readback. Startup remains fail-closed for any configured recorder,
+`FREEMIXD_TELEMETRY` aggregates both slots' outstanding and retained values,
+and disk preflight and free-space sampling cover both parents. Each slot can
+also write a split WAV sidecar: `--record-wav` now requires at least one
+recorder and applies to every configured slot, making the same bounded FFmpeg
+child mux a linear-PCM `pcm_s16le` WAV output for the same captured audio at
+the project's sample rate and channel layout, from mono through 5.1, into an
+exclusive file that shares the segment's stem, so `program-002.mp4` is
 accompanied by `program-002.wav`. The final recorder report carries
 `wav_bytes`, `duration_ms` (the exact completed-pair span at the project frame
 rate), and `free_bytes` (the segment parent sampled when the report is frozen,
 zero when unreadable); a killed child may leave a truncated sidecar, and only
 a clean stop finalizes it.
 
-The two slots are not independently controllable and do not yet differ in
-media: both follow the one engine desired flag, both record the first Program
-output at the project format and Master audio map, and there is no
-per-recorder source, overlay, codec, resolution, audio-map, or bus/channel
+The two slots are not independently controllable and still share the project
+encoding format and Master audio: both follow the one engine desired flag, and
+there is no per-recorder codec, resolution, audio-map, or bus/channel
 selection, no automatic segment-rule rotation, no multiple-track or metadata
 handling, and no protocol or client representation of a recorder roster. That
-independent control, the differing media configuration, the item's segment
-rules, and `AU-010` bus selection remain planned; `AU-010` still depends on
-the planned `AU-002`/`AU-003`, so `OR-001`, `OR-002`, and `AU-010` are
-unchanged and item 4 remains incomplete.
+independent control, the differing codec/resolution/audio configuration, the
+item's segment rules, and `AU-010` bus selection remain planned; `AU-010` still
+depends on the planned `AU-002`/`AU-003`, so `OR-001`, `OR-002`, and `AU-010`
+are unchanged and item 4 remains incomplete.
 
 Current implementation boundary for item 9: native `freemixd` performs a
 fail-closed disk preflight for configured program recording and reports
