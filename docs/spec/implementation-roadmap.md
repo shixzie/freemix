@@ -1327,6 +1327,29 @@ authored target once and a remote single-key or multi-key RTMP ladder is not
 implemented. Studio and Web show the existing roster only. `OR-007` and
 `OR-017` therefore remain planned, and item 3 remains incomplete.
 
+Current implementation boundary for item 4: the native program recorder can
+write a split WAV sidecar alongside each MP4 segment. `--record-wav` (which
+requires `--record-program` and native media) makes the same bounded FFmpeg
+child mux a linear-PCM `pcm_s16le` WAV output for the same captured audio at
+the project's sample rate and channel layout, from mono through 5.1, into an
+exclusive file that shares the segment's stem: `program.mp4` is accompanied by
+`program.wav`, and every later derived segment such as `program-002.mp4` by
+`program-002.wav`. Startup creates the sidecar exclusively before spawning any
+child, so an existing sidecar refuses that segment instead of overwriting it,
+and with `--record-wav` absent every argument, file, and report stays
+byte-identical to the previous slice. Bounded pair admission, sticky failure,
+the paced startup barrier, bounded stop/kill/finalization, live start and
+stop, and restart reconciliation are unchanged. The final `FREEMIXD_RECORDER`
+record gains `wav_bytes`, measured from the sidecar when the report is frozen;
+a killed child may leave a truncated sidecar, and only a clean stop finalizes
+it. This is one program-audio file per segment, not an independent second
+program recorder, automatic segment-rule rotation, per-recorder bus or channel
+selection, multiple tracks or metadata, or duration/space status. The second
+recorder's independent source, codec, resolution, and audio map, the item's
+segment rules, and `AU-010` bus selection remain planned; `AU-010` still
+depends on the planned `AU-002`/`AU-003`, so `OR-001`, `OR-002`, and `AU-010`
+are unchanged and item 4 remains incomplete.
+
 Exit: a remote-controlled headless production can stream and record
 independently with tested recovery.
 
