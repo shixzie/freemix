@@ -11,12 +11,16 @@ use fm_codec_ffmpeg::{
 use fm_frame::{AudioBlock, Channel, ClockDomainId, CpuVideoFrame};
 use tempfile::tempdir;
 
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
+/// Generous by design: these acceptance tests run on loaded CI hosts and
+/// against real FFmpeg processes, and a starved tool is not a product failure.
+/// The production deadlines stay covered by the process-shim unit tests.
+const PROCESS_TIMEOUT: Duration = Duration::from_mins(1);
 static FFMPEG_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_limits() -> fm_codec_ffmpeg::Limits {
     fm_codec_ffmpeg::Limits {
-        discovery_timeout: Duration::from_secs(10),
+        discovery_timeout: Duration::from_secs(30),
+        probe_timeout: Duration::from_secs(30),
         frame_metadata_timeout: Duration::from_mins(1),
         ..fm_codec_ffmpeg::Limits::default()
     }

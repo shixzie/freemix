@@ -360,7 +360,22 @@ fn forced_child_kill_leaves_a_playable_fragmented_prefix() {
         thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(recorder.telemetry().completed_pairs, FRAME_COUNT);
-    thread::sleep(Duration::from_millis(100));
+    // Let the child mux what it has already read. A fixed sleep is too tight
+    // on a loaded host and can kill the child before it has written a full
+    // frame; wait for the output to stop growing, bounded.
+    let settle_deadline = Instant::now() + Duration::from_secs(5);
+    let mut last_bytes = recorder.telemetry().output_bytes;
+    let mut stable_polls = 0;
+    while Instant::now() < settle_deadline && stable_polls < 4 {
+        thread::sleep(Duration::from_millis(25));
+        let bytes = recorder.telemetry().output_bytes;
+        if bytes == last_bytes {
+            stable_polls += 1;
+        } else {
+            stable_polls = 0;
+            last_bytes = bytes;
+        }
+    }
     let report = recorder.cancel();
     assert_eq!(report.outcome, StopOutcome::Killed, "{report:?}");
     assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");

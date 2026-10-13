@@ -2547,6 +2547,7 @@ mod tests {
             limits: crate::Limits {
                 max_audio_samples: 100_000,
                 max_total_decoded_bytes: 800_000,
+                // This bound is the caller deadline under test.
                 decode_timeout: Duration::from_millis(300),
                 ..crate::Limits::default()
             },
@@ -2615,7 +2616,10 @@ mod tests {
             limits: crate::Limits {
                 max_audio_samples: 100_000,
                 max_total_decoded_bytes: 800_000,
-                decode_timeout: Duration::from_millis(300),
+                // Generous: the shim runner is this test binary re-executed,
+                // which is timing-flaky on loaded hosts. These tests exercise
+                // attempt ordering, not deadline behavior.
+                decode_timeout: Duration::from_secs(10),
                 ..crate::Limits::default()
             },
         })
