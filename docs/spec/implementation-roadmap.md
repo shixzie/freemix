@@ -1280,6 +1280,37 @@ status; Studio swallows the records beside meters and renders the roster with
 live samples. Snapshots still project only desired state; the lossy record is
 transport state and never durable.
 
+Current implementation boundary for item 3: the authored model now carries a
+local HLS destination. `StreamProtocol::Hls` is a keyless protocol whose
+endpoint is one absolute local directory; the model refuses a stream key or
+backup endpoint for it, and schema 21 persists `"key": null` for an HLS target
+while network protocols keep requiring a key. `fm-codec-ffmpeg` muxes the same
+bounded raw-pair loopback inputs and per-target admission, padding, progress,
+stderr, and stop/kill contract through the FFmpeg `hls` muxer into
+`<directory>/index.m3u8` plus `segment-%05d.ts`. Segment duration follows the
+encoder's keyframe interval, the playlist keeps a bounded six-segment window
+with `delete_segments+independent_segments+temp_file`, HLS follows the
+MPEG-TS channel-layout rules, and startup creates the missing leaf directory
+before any child spawns while refusing a path that is not a directory. The
+transport adds `Endpoint::local_directory` for `OutputProtocol::Hls` and the
+sink composes `hls://<absolute/dir>`, so an HLS target obtains the same
+`OutputSet` queue, congestion, retry, and stop semantics as every network
+destination even though it has no peer to fail over to. Native `freemixd`
+accepts the authored URL in its destination splitter, compiles each HLS target
+into its own `(protocol, bitrate)` rendition group with one GPU readback and
+one FFmpeg child, and renders the path verbatim in operator text because a
+local directory is not a secret. The CLI authors `hls:///absolute/dir <name>`
+without a key positional, refuses `--backup` for it, and prints the path and
+authored bitrate. No protocol change was needed: protocol 2.18 snapshots
+already carry target identity, name, and desired state, and the lossy
+`stream_status` record carries the realized state. This remains one
+single-rendition local output: there is no HTTP server or access-controlled
+LAN page, no master playlist or per-destination multi-bitrate ladder, no
+renderer-visible viewer or capacity report, and the `fm-io-network` HLS
+playlist/ABR metadata types are still unconsumed by the runtime. Studio and
+Web show the existing roster only. `OR-007` and `OR-017` therefore remain
+planned, and item 3 remains incomplete.
+
 Exit: a remote-controlled headless production can stream and record
 independently with tested recovery.
 
