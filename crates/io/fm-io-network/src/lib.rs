@@ -19,8 +19,9 @@ pub use config::{
     OutputProtocol, ReconnectPolicy, TlsConfig, TlsMinimumVersion, TlsVerification,
 };
 pub use hls::{
-    HlsAbrCoordinator, HlsError, HlsPlaylist, HlsPlaylistMetadata, HlsPlaylistType,
-    HlsSegmentMetadata, HlsVariantMetadata,
+    HlsAbrCoordinator, HlsError, HlsMasterVariant, HlsPlaylist, HlsPlaylistMetadata,
+    HlsPlaylistType, HlsSegmentMetadata, HlsVariantMetadata, MAX_M3U8_BYTES, MAX_M3U8_SEGMENTS,
+    parse_master_m3u8, parse_media_m3u8,
 };
 pub use impairment::{ImpairmentDecision, ImpairmentError, ImpairmentModel, ImpairmentTelemetry};
 pub use output::{

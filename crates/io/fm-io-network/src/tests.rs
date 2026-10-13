@@ -1049,3 +1049,190 @@ fn a_proven_session_clears_the_reconnect_budget_and_counts_the_recovery() {
         "a proven session never exhausts the budget"
     );
 }
+
+#[test]
+fn hls_media_playlist_renders_and_round_trips_through_bounded_parser() {
+    let id = rendition_id(1);
+    let mut playlist = HlsPlaylist::new(7, id, duration(2), 10, 4, HlsPlaylistType::Event).unwrap();
+    for (sequence, disc, start_nanos, dur_nanos, uri) in [
+        (10, 1, 0, 2_000_000_000, "seg-00010.ts"),
+        (11, 1, 2_000_000_000, 1_500_000_000, "seg-00011.ts"),
+        (12, 2, 3_500_000_000, 2_000_000_000, "seg-00012.ts"),
+    ] {
+        playlist
+            .append(
+                HlsSegmentMetadata::new(
+                    id,
+                    sequence,
+                    disc,
+                    NormalizedTimestamp::from_nanos(start_nanos),
+                    NormalizedDuration::from_nanos(dur_nanos).unwrap(),
+                    4_096,
+                    true,
+                    uri,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+    playlist.finish();
+
+    let metadata = playlist.metadata();
+    let rendered = metadata.render_m3u8();
+    assert_eq!(
+        rendered,
+        concat!(
+            "#EXTM3U\n",
+            "#EXT-X-VERSION:7\n",
+            "#EXT-X-TARGETDURATION:2\n",
+            "#EXT-X-MEDIA-SEQUENCE:10\n",
+            "#EXT-X-DISCONTINUITY-SEQUENCE:1\n",
+            "#EXT-X-PLAYLIST-TYPE:EVENT\n",
+            "#EXT-X-INDEPENDENT-SEGMENTS\n",
+            "#EXTINF:2.000000,\n",
+            "seg-00010.ts\n",
+            "#EXTINF:1.500000,\n",
+            "seg-00011.ts\n",
+            "#EXT-X-DISCONTINUITY\n",
+            "#EXTINF:2.000000,\n",
+            "seg-00012.ts\n",
+            "#EXT-X-ENDLIST\n",
+        )
+    );
+
+    let parsed = HlsPlaylistMetadata::parse_m3u8(&rendered, id, 4_096).unwrap();
+    assert_eq!(parsed, metadata);
+    assert_eq!(parse_media_m3u8(&rendered, id, 4_096).unwrap(), metadata);
+    assert_eq!(parsed.render_m3u8(), rendered);
+}
+
+#[test]
+fn hls_media_playlist_parser_rejects_oversized_and_malformed_inputs() {
+    let id = rendition_id(1);
+    let oversized = format!("#EXTM3U\n{}", "a".repeat(MAX_M3U8_BYTES));
+    assert!(matches!(
+        HlsPlaylistMetadata::parse_m3u8(&oversized, id, 1_024),
+        Err(HlsError::MalformedPlaylist(_))
+    ));
+    assert_eq!(
+        HlsPlaylistMetadata::parse_m3u8("#EXTM3U\n#EXT-X-TARGETDURATION:2\n", id, 0),
+        Err(HlsError::EmptySegment)
+    );
+    for malformed in [
+        "",
+        "not an m3u8",
+        "#EXTM3U\n#EXT-X-VERSION:3\nsegment.ts\n",
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.000000\nsegment.ts\n",
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.000000,\n",
+        "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.000000,\nseg.ts\n#EXT-X-ENDLIST\n#EXTINF:2.000000,\nseg2.ts\n",
+    ] {
+        assert!(
+            matches!(
+                HlsPlaylistMetadata::parse_m3u8(malformed, id, 1_024),
+                Err(HlsError::MalformedPlaylist(_))
+            ),
+            "expected MalformedPlaylist for: {malformed:?}"
+        );
+    }
+    assert_eq!(
+        HlsPlaylistMetadata::parse_m3u8(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:3.000000,\nseg-0.ts\n",
+            id,
+            1_024,
+        ),
+        Err(HlsError::DurationExceedsTarget)
+    );
+}
+
+#[test]
+fn hls_master_playlist_round_trips_and_ffmpeg_variants_align_in_abr_coordinator() {
+    use core::fmt::Write as _;
+
+    let low_id = rendition_id(1);
+    let high_id = rendition_id(2);
+    let variants = vec![
+        HlsVariantMetadata::new(
+            low_id,
+            "360p",
+            1_240_800,
+            VideoDimensions::new(640, 360).unwrap(),
+            "avc1.64001e,mp4a.40.2",
+            "0/index.m3u8",
+        )
+        .unwrap(),
+        HlsVariantMetadata::new(
+            high_id,
+            "720p",
+            3_128_000,
+            VideoDimensions::new(1_280, 720).unwrap(),
+            "avc1.64002a,mp4a.40.2",
+            "1/index.m3u8",
+        )
+        .unwrap(),
+    ];
+    let mut coordinator = HlsAbrCoordinator::new(
+        variants.clone(),
+        6,
+        duration(2),
+        0,
+        6,
+        HlsPlaylistType::Live,
+    )
+    .unwrap();
+
+    let rendered_master = coordinator.render_master_m3u8();
+    let parsed_master = parse_master_m3u8(&rendered_master).unwrap();
+    assert_eq!(parsed_master.len(), 2);
+    for (parsed, expected) in parsed_master.iter().zip(&variants) {
+        assert_eq!(parsed.bandwidth_bps(), expected.bandwidth_bps());
+        assert_eq!(parsed.resolution(), expected.dimensions());
+        assert_eq!(parsed.codecs(), Some(expected.codecs()));
+        assert_eq!(parsed.playlist_uri(), expected.playlist_uri());
+    }
+
+    let ffmpeg_master = concat!(
+        "#EXTM3U\n",
+        "#EXT-X-VERSION:3\n",
+        "#EXT-X-INDEPENDENT-SEGMENTS\n",
+        "#EXT-X-STREAM-INF:BANDWIDTH=1240800,RESOLUTION=640x360,CODECS=\"avc1.64001e,mp4a.40.2\"\n",
+        "0/index.m3u8\n\n",
+        "#EXT-X-STREAM-INF:BANDWIDTH=3128000,RESOLUTION=1280x720,CODECS=\"avc1.64002a,mp4a.40.2\"\n",
+        "1/index.m3u8\n",
+    );
+    assert_eq!(parse_master_m3u8(ffmpeg_master).unwrap(), parsed_master);
+    assert_eq!(
+        parse_master_m3u8("#EXTM3U\n#EXT-X-VERSION:6\n"),
+        Err(HlsError::InvalidVariantCount)
+    );
+    let mut nine_variants = String::from("#EXTM3U\n#EXT-X-VERSION:6\n");
+    for index in 0..9 {
+        let _ = write!(
+            nine_variants,
+            "#EXT-X-STREAM-INF:BANDWIDTH={},RESOLUTION=640x360\n{index}/index.m3u8\n",
+            1_000_000 + index * 100_000
+        );
+    }
+    assert_eq!(
+        parse_master_m3u8(&nine_variants),
+        Err(HlsError::InvalidVariantCount)
+    );
+
+    let variant_0_m3u8 = concat!(
+        "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n",
+        "#EXT-X-INDEPENDENT-SEGMENTS\n#EXTINF:2.000000,\n0/segment-00000.ts\n",
+        "#EXTINF:2.000000,\n0/segment-00001.ts\n",
+    );
+    let variant_1_m3u8 = concat!(
+        "#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n",
+        "#EXT-X-INDEPENDENT-SEGMENTS\n#EXTINF:2.000000,\n1/segment-00000.ts\n",
+        "#EXTINF:2.000000,\n1/segment-00001.ts\n",
+    );
+    let parsed_0 = HlsPlaylistMetadata::parse_m3u8(variant_0_m3u8, low_id, 8_192).unwrap();
+    let parsed_1 = HlsPlaylistMetadata::parse_m3u8(variant_1_m3u8, high_id, 16_384).unwrap();
+    for (seg_0, seg_1) in parsed_0.segments().iter().zip(parsed_1.segments()) {
+        coordinator.append(seg_0.clone()).unwrap();
+        coordinator.append(seg_1.clone()).unwrap();
+    }
+    assert_eq!(coordinator.playlist(low_id).unwrap(), parsed_0);
+    assert_eq!(coordinator.playlist(high_id).unwrap(), parsed_1);
+}
