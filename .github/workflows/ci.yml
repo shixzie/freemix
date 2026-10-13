@@ -39,3 +39,4 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.0
       - run: cargo run -p xtask -- parity check
       - run: cargo run -p xtask -- deps check
+      - run: cargo run -p xtask -- matrix check
