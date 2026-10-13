@@ -1193,7 +1193,12 @@ companion acceptance records a protocol-driven manual Fade at 75% forward,
 25% reversed, cancelled, then fully progressed and committed; decoded video
 must contain the corresponding ordered Program/Preview blend sequence, and the
 checkpoint must be inactive with committed routing. Together these exercise
-both halves of `SW-004` on one macOS recording output. Fullscreen presentation,
+both halves of `SW-004` on one macOS recording output. Selecting the input
+that is already the desired Program source as Preview is refused with
+`invalid_command` before any state changes, so the persisted main-mix
+projection can never carry equal Program and Preview; automation bindings and
+shortcuts that target the Program input are refused the same way instead of
+leaving a state no checkpoint could persist. Fullscreen presentation,
 Windows/Linux adapters, and complete profile acceptance remain absent, so Phase
 3 item 5 and `SW-002`/`SW-004` remain planned.
 
