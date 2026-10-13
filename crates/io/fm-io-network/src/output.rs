@@ -214,6 +214,18 @@ pub trait TransportSink: Send {
     /// represented by [`SinkWrite::Congested`], not an error.
     fn write(&mut self, packet: &OutputPacket) -> Result<SinkWrite, SinkError>;
 
+    /// Whether the current session has proven the destination by actually
+    /// delivering media to it.
+    ///
+    /// A transport that queues packets asynchronously can accept a write
+    /// before the peer has accepted the stream. The state machine only clears
+    /// a reconnect budget and counts a recovery once this reports `true` for
+    /// the open session. The default is for transports whose connect or write
+    /// already proves delivery.
+    fn session_proven(&self) -> bool {
+        true
+    }
+
     fn disconnect(&mut self);
 }
 
@@ -267,6 +279,9 @@ impl NetworkTelemetry {
         self.connect_attempts
     }
 
+    /// Connections that followed a scheduled reconnect and then proved the
+    /// destination by delivering a packet. A spawned but unproven connection
+    /// never counts.
     #[must_use]
     pub const fn reconnects(&self) -> u64 {
         self.reconnects
@@ -417,7 +432,14 @@ struct DestinationOutput {
     queue: VecDeque<OutputPacket>,
     queued_bytes: usize,
     reconnect_attempt: u32,
-    has_connected: bool,
+    /// A connect that has not yet carried a packet. A transport that spawns a
+    /// child before the peer accepts the stream can only report a successful
+    /// connect early; the state machine treats that as pending until a packet
+    /// is actually delivered.
+    pending_connect: bool,
+    /// Whether the pending connect followed a scheduled reconnect. A recovery
+    /// is only counted once its connection delivers a packet.
+    pending_reconnect: bool,
     recover_queue_on_connect: bool,
     telemetry: NetworkTelemetry,
 }
@@ -431,7 +453,8 @@ impl DestinationOutput {
             state: DestinationState::Stopped,
             queued_bytes: 0,
             reconnect_attempt: 0,
-            has_connected: false,
+            pending_connect: false,
+            pending_reconnect: false,
             recover_queue_on_connect: false,
             telemetry: NetworkTelemetry::default(),
         }
@@ -467,8 +490,23 @@ impl DestinationOutput {
         EnqueueStatus::Accepted
     }
 
+    /// Records that the open session has proven the destination by delivering
+    /// media: the retry budget clears and a connection that followed a
+    /// scheduled reconnect counts as a recovery.
+    fn prove_connection(&mut self) {
+        if self.pending_reconnect {
+            self.telemetry.reconnects = self.telemetry.reconnects.saturating_add(1);
+        }
+        self.pending_connect = false;
+        self.pending_reconnect = false;
+        self.reconnect_attempt = 0;
+    }
+
     fn schedule_failure(&mut self, now_ms: u64, error: SinkError) -> PollEvent {
         let retryable = error.retryable;
+        // The failed session proved nothing and will not deliver anything.
+        self.pending_connect = false;
+        self.pending_reconnect = false;
         self.telemetry.record_failure(FailureRecord {
             at_ms: now_ms,
             stage: error.stage,
@@ -514,11 +552,13 @@ impl DestinationOutput {
         match sink.connect(&self.config, endpoint) {
             Ok(observation) => {
                 let recover_queue = self.recover_queue_on_connect;
-                if self.has_connected {
-                    self.telemetry.reconnects = self.telemetry.reconnects.saturating_add(1);
-                }
-                self.has_connected = true;
-                self.reconnect_attempt = 0;
+                // Connecting is not delivery. A transport may accept the
+                // attempt before the peer does, so the attempt stays pending:
+                // the retry budget is only cleared, and a recovery only
+                // counted, once a write proves the destination is carrying
+                // packets.
+                self.pending_connect = true;
+                self.pending_reconnect = self.reconnect_attempt > 0;
                 self.recover_queue_on_connect = false;
                 self.telemetry.round_trip_time_ms = observation.round_trip_time_ms;
                 if recover_queue {
@@ -585,6 +625,10 @@ impl DestinationOutput {
                 }
             }
             DestinationState::Live | DestinationState::Congested => {}
+        }
+
+        if self.pending_connect && sink.session_proven() {
+            self.prove_connection();
         }
 
         let Some(packet) = self.queue.front() else {

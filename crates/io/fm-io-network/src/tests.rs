@@ -101,6 +101,9 @@ struct FakeSink {
     connection_hosts: Vec<String>,
     sequences: Vec<u64>,
     payloads: Vec<Arc<[u8]>>,
+    /// Models an asynchronous transport whose accepted writes do not prove
+    /// the peer received anything.
+    unproven: bool,
 }
 
 impl FakeSink {
@@ -154,6 +157,10 @@ impl TransportSink for FakeSink {
             self.payloads.push(packet.shared_payload());
         }
         result
+    }
+
+    fn session_proven(&self) -> bool {
+        !self.unproven
     }
 
     fn disconnect(&mut self) {
@@ -871,4 +878,174 @@ fn segment(
         format!("{}-{sequence}.ts", rendition.get()),
     )
     .unwrap()
+}
+
+/// A destination with exactly two retries after the first attempt.
+fn budget_config(id: u8) -> DestinationConfig {
+    DestinationConfig::new(
+        destination_id(id),
+        OutputProtocol::Rtmp,
+        Endpoint::new("stream.example.test", 1_935, "/live").unwrap(),
+        None,
+        None,
+        None,
+        QueueCapacity::new(4).unwrap(),
+        ReconnectPolicy::new(100, 800, 2, Some(2)).unwrap(),
+    )
+    .unwrap()
+}
+
+/// One successful admission plus one retryable failure per budget cycle.
+fn budget_sink(unproven: bool, cycles: usize) -> FakeSink {
+    let failure = || SinkError::new(FailureStage::Write, Some(104), "reset", true);
+    let mut write_results = VecDeque::new();
+    for _ in 0..cycles {
+        write_results.push_back(Ok(SinkWrite::Sent(SendObservation::default())));
+        write_results.push_back(Err(failure()));
+    }
+    FakeSink {
+        unproven,
+        write_results,
+        ..FakeSink::default()
+    }
+}
+
+#[test]
+fn an_unproven_session_never_clears_the_reconnect_budget() {
+    let mut outputs = OutputSet::new();
+    outputs.add_destination(budget_config(1)).unwrap();
+    let id = destination_id(1);
+    let rendition = rendition_id(1);
+    let mut sink = budget_sink(true, 3);
+    outputs.start(id).unwrap();
+    assert_eq!(
+        outputs.poll(id, 0, &mut sink).unwrap(),
+        PollEvent::Connected
+    );
+
+    // Each cycle delivers one packet and then hits one retryable failure; the
+    // failed packet replays after the reconnect because it was never popped.
+    outputs
+        .enqueue(id, packet_with_random_access(rendition, 0, true, 1))
+        .unwrap();
+    assert_eq!(
+        outputs.poll(id, 1, &mut sink).unwrap(),
+        PollEvent::PacketSent { sequence: 0 }
+    );
+    let mut now = 2;
+    for cycle in 0..3_u64 {
+        outputs
+            .enqueue(
+                id,
+                packet_with_random_access(rendition, 10 + cycle, true, 1),
+            )
+            .unwrap();
+        let event = outputs.poll(id, now, &mut sink).unwrap();
+        if cycle < 2 {
+            let PollEvent::ReconnectScheduled { retry_at_ms } = event else {
+                panic!("expected a scheduled retry, got {event:?}");
+            };
+            now = retry_at_ms;
+            // The reconnect stays pending because this sink never proves
+            // delivery, so the budget keeps counting failures.
+            let event = outputs.poll(id, now, &mut sink).unwrap();
+            assert!(
+                matches!(event, PollEvent::AwaitingRandomAccess { .. }),
+                "{event:?}"
+            );
+            now += 1;
+            assert_eq!(
+                outputs.poll(id, now, &mut sink).unwrap(),
+                PollEvent::PacketSent {
+                    sequence: 10 + cycle
+                },
+                "the failed packet replays after the reconnect"
+            );
+            now += 1;
+        } else {
+            assert_eq!(
+                event,
+                PollEvent::Failed,
+                "the third failure exhausts the two-retry budget"
+            );
+        }
+    }
+    let telemetry = outputs.telemetry(id).unwrap();
+    assert_eq!(telemetry.connect_attempts(), 3);
+    assert_eq!(telemetry.reconnects(), 0);
+    assert!(telemetry.failures().all(|failure| failure.retryable));
+}
+
+#[test]
+fn a_proven_session_clears_the_reconnect_budget_and_counts_the_recovery() {
+    let mut outputs = OutputSet::new();
+    outputs.add_destination(budget_config(1)).unwrap();
+    let id = destination_id(1);
+    let rendition = rendition_id(1);
+    let mut sink = budget_sink(false, 3);
+    outputs.start(id).unwrap();
+    assert_eq!(
+        outputs.poll(id, 0, &mut sink).unwrap(),
+        PollEvent::Connected
+    );
+
+    outputs
+        .enqueue(id, packet_with_random_access(rendition, 0, true, 1))
+        .unwrap();
+    assert_eq!(
+        outputs.poll(id, 1, &mut sink).unwrap(),
+        PollEvent::PacketSent { sequence: 0 }
+    );
+    let mut now = 2;
+    for cycle in 0..2_u64 {
+        outputs
+            .enqueue(
+                id,
+                packet_with_random_access(rendition, 10 + cycle, true, 1),
+            )
+            .unwrap();
+        let PollEvent::ReconnectScheduled { retry_at_ms } =
+            outputs.poll(id, now, &mut sink).unwrap()
+        else {
+            panic!("a proven session bounds each failure to one attempt");
+        };
+        now = retry_at_ms;
+        let event = outputs.poll(id, now, &mut sink).unwrap();
+        assert!(
+            matches!(event, PollEvent::AwaitingRandomAccess { .. }),
+            "{event:?}"
+        );
+        now += 1;
+        assert_eq!(
+            outputs.poll(id, now, &mut sink).unwrap(),
+            PollEvent::PacketSent {
+                sequence: 10 + cycle
+            }
+        );
+        now += 1;
+    }
+    // A third failure still costs only its own attempt: every reconnect that
+    // delivered a packet cleared the budget.
+    outputs
+        .enqueue(id, packet_with_random_access(rendition, 12, true, 1))
+        .unwrap();
+    let PollEvent::ReconnectScheduled { retry_at_ms } = outputs.poll(id, now, &mut sink).unwrap()
+    else {
+        panic!("a proven session never exhausts the budget");
+    };
+    let telemetry = outputs.telemetry(id).unwrap();
+    assert_eq!(telemetry.connect_attempts(), 3);
+    assert_eq!(
+        telemetry.reconnects(),
+        2,
+        "both reconnects after the first proven session delivered a packet"
+    );
+    assert_eq!(
+        outputs.state(id),
+        Some(DestinationState::WaitingToReconnect {
+            attempt: 1,
+            retry_at_ms,
+        }),
+        "a proven session never exhausts the budget"
+    );
 }

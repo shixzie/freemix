@@ -13261,11 +13261,25 @@ mod tests {
             set.poll(id, retry_at_ms - 1, &mut sink).unwrap(),
             PollEvent::WaitingToReconnect { retry_at_ms }
         );
-        set.poll(id, retry_at_ms, &mut sink).unwrap();
+        assert_eq!(
+            set.poll(id, retry_at_ms, &mut sink).unwrap(),
+            PollEvent::AwaitingRandomAccess {
+                dropped_packets: 0,
+                dropped_bytes: 0,
+            },
+            "a recovery replays from the next random-access packet"
+        );
         assert_eq!(
             sink.hosts,
             ["primary.example.test", "backup.example.test"],
             "the first failure must move the destination to its backup"
+        );
+        // Connecting is not yet proof: the recovery counts and the retry
+        // budget clears only once the queued pair is delivered.
+        assert_eq!(set.telemetry(id).unwrap().reconnects(), 0);
+        assert_eq!(
+            set.poll(id, retry_at_ms, &mut sink).unwrap(),
+            PollEvent::PacketSent { sequence: 1 }
         );
         assert_eq!(set.telemetry(id).unwrap().reconnects(), 1);
     }

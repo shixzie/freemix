@@ -709,6 +709,17 @@ impl TransportSink for FfmpegRtmpSink {
         }
     }
 
+    fn session_proven(&self) -> bool {
+        // `enqueue` admits a pair into the streamer's bounded queue long
+        // before the child has delivered anything. The child's own progress
+        // stream is the proof that the peer accepted the stream and the muxer
+        // produced output; until then the session stays unproven and the
+        // destination's retry budget is not cleared.
+        self.streamer
+            .as_ref()
+            .is_some_and(|streamer| streamer.telemetry().connected)
+    }
+
     fn disconnect(&mut self) {
         let Some(mut streamer) = self.streamer.take() else {
             return;
