@@ -1340,9 +1340,10 @@ and with `--record-wav` absent every argument, file, and report stays
 byte-identical to the previous slice. Bounded pair admission, sticky failure,
 the paced startup barrier, bounded stop/kill/finalization, live start and
 stop, and restart reconciliation are unchanged. The final `FREEMIXD_RECORDER`
-record gains `wav_bytes`, measured from the sidecar when the report is frozen;
-a killed child may leave a truncated sidecar, and only a clean stop finalizes
-it. This is one program-audio file per segment, not an independent second
+record carries `wav_bytes`, `duration_ms` (the exact completed-pair span at the
+project frame rate), and `free_bytes` (the segment parent sampled when the
+report is frozen, zero when unreadable); a killed child may leave a truncated
+sidecar, and only a clean stop finalizes it. This is one program-audio file per segment, not an independent second
 program recorder, automatic segment-rule rotation, per-recorder bus or channel
 selection, multiple tracks or metadata, or duration/space status. The second
 recorder's independent source, codec, resolution, and audio map, the item's
