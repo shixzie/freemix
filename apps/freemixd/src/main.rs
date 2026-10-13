@@ -370,6 +370,10 @@ struct NativeDaemon {
     /// configured exactly like [`Self::record_program`] and deriving its own
     /// segment names.
     record_program_2: Option<PathBuf>,
+    /// Optional project output selection for each recorder slot (`None` selects
+    /// the first realized project output, or the unbound output when the
+    /// project declares no outputs).
+    record_outputs: [Option<fm_types::OutputId>; RECORDER_SLOTS],
     /// Whether each segment also writes a `--record-wav` linear-PCM sidecar
     /// next to the MP4. Applies to every configured recorder slot.
     record_wav: bool,
@@ -2024,11 +2028,11 @@ impl StreamPairLedger {
 }
 
 /// Planner-facing state of one shared-rendition group: the destinations whose
-/// encoder-relevant settings — output protocol plus authored video bitrate,
-/// the only per-target encoder knobs — are identical, so they share ONE
-/// readback, ONE packed pair per frame, and ONE sequence cursor. Record
-/// format, audio, GOP, and every other encoder input derive from project
-/// settings that are identical across targets by construction.
+/// encoder-relevant settings — authored project output, output protocol, plus
+/// authored video bitrate — are identical, so they share ONE readback, ONE
+/// packed pair per frame, and ONE sequence cursor. Record format, audio, GOP,
+/// and every other encoder input derive from project settings that are
+/// identical across targets by construction.
 ///
 /// `variants` pins the group's rendition id inside planner-produced plans:
 /// [`RenditionPlanner`] numbers renditions by first-seen unique profile, so
@@ -2038,6 +2042,8 @@ impl StreamPairLedger {
 /// contract and the reason the pinning exists.
 #[cfg(feature = "native-media")]
 struct StreamRenditionCore {
+    /// Authored project output this rendition group captures from.
+    output: fm_types::OutputId,
     /// Member destination slots in authored order.
     members: Vec<DestinationId>,
     rendition: RenditionId,
@@ -2421,12 +2427,12 @@ struct SplitStreamTarget<'a> {
 #[cfg(feature = "native-media")]
 struct SplitTargets<'a> {
     splits: Vec<SplitStreamTarget<'a>>,
-    group_keys: Vec<(OutputProtocol, u32)>,
+    group_keys: Vec<(fm_types::OutputId, OutputProtocol, u32)>,
 }
 
 /// Splits every target's endpoints and assigns rendition groups by first
-/// appearance of the encoder-relevant key — output protocol plus authored
-/// video bitrate.
+/// appearance of the encoder-relevant key — authored project output, output
+/// protocol, plus authored video bitrate.
 ///
 /// # Errors
 ///
@@ -2445,9 +2451,13 @@ fn split_and_group_targets(targets: &[fm_model::StreamTarget]) -> AppResult<Spli
             group_index: 0,
         });
     }
-    let mut group_keys: Vec<(OutputProtocol, u32)> = Vec::new();
+    let mut group_keys: Vec<(fm_types::OutputId, OutputProtocol, u32)> = Vec::new();
     for split in &mut splits {
-        let key = (split.protocol, split.target.video_bitrate_kbps());
+        let key = (
+            split.target.output(),
+            split.protocol,
+            split.target.video_bitrate_kbps(),
+        );
         split.group_index = group_keys
             .iter()
             .position(|existing| *existing == key)
@@ -2488,14 +2498,15 @@ fn build_stream_groups(
     format: &RecordFormat,
     width: NonZeroU32,
     height: NonZeroU32,
-    group_keys: &[(OutputProtocol, u32)],
+    group_keys: &[(fm_types::OutputId, OutputProtocol, u32)],
     next_sequence: u64,
 ) -> AppResult<Vec<StreamRenditionGroup>> {
     let mut groups = Vec::with_capacity(group_keys.len());
-    for (group_index, (_, video_bitrate_kbps)) in group_keys.iter().enumerate() {
+    for (group_index, (output, _, video_bitrate_kbps)) in group_keys.iter().enumerate() {
         let readback = runtime.create_program_readback_blocking(width, height)?;
         groups.push(StreamRenditionGroup {
             core: StreamRenditionCore {
+                output: *output,
                 members: Vec::new(),
                 rendition: RenditionId::new(
                     NonZeroU32::new(
@@ -2517,6 +2528,49 @@ fn build_stream_groups(
         });
     }
     Ok(groups)
+}
+
+/// Resolves an optional project output selection against the realized per-output
+/// entries for a frame, falling back to `unbound_output` when the project
+/// declares no outputs.
+#[cfg(any(test, feature = "native-media"))]
+fn resolve_project_output_entry<'a, F, T: ?Sized>(
+    selected: Option<fm_types::OutputId>,
+    project_outputs: &'a [F],
+    unbound_output: Option<&'a T>,
+    output_id: impl Fn(&F) -> fm_types::OutputId,
+    extract: impl Fn(&'a F) -> &'a T,
+) -> Option<&'a T> {
+    match selected {
+        Some(target) => {
+            if project_outputs.is_empty() {
+                unbound_output
+            } else {
+                project_outputs
+                    .iter()
+                    .find(|frame| output_id(frame) == target)
+                    .map(extract)
+            }
+        }
+        None => project_outputs.first().map(extract).or(unbound_output),
+    }
+}
+
+/// Resolves an optional project output selection to the realized texture for
+/// the current frame.
+#[cfg(feature = "native-media")]
+fn resolve_project_output_texture<'a>(
+    selected: Option<fm_types::OutputId>,
+    project_outputs: &'a [NativeOutputFrame],
+    unbound_output: Option<&'a NativeTexture>,
+) -> Option<&'a NativeTexture> {
+    resolve_project_output_entry(
+        selected,
+        project_outputs,
+        unbound_output,
+        NativeOutputFrame::output,
+        NativeOutputFrame::texture,
+    )
 }
 
 #[cfg(feature = "native-media")]
@@ -3264,6 +3318,7 @@ impl NativeDaemon {
             recorders: [ProgramRecording::Off, ProgramRecording::Off],
             record_program: None,
             record_program_2: None,
+            record_outputs: [None, None],
             record_wav: false,
             disk_alert: disk::DiskSpaceAlert::new(),
             disk_free_bytes: None,
@@ -3327,22 +3382,25 @@ impl NativeDaemon {
         Ok(())
     }
 
-    /// Records the configured output paths so runtime `RecordStart` commands
-    /// can derive later segment names from them even when startup itself does
-    /// not open a segment.
+    /// Records the configured output paths and optional project output
+    /// selections so runtime `RecordStart` commands can derive later segment
+    /// names from them even when startup itself does not open a segment.
     ///
-    /// Slot 0 is `--record-program` and slot 1 is `--record-program-2`; the
-    /// shared `record_wav` flag applies to every configured slot. The
-    /// whole-run telemetry reports recording as configured whenever at least
-    /// one slot has a destination.
+    /// Slot 0 is `--record-program` (`--record-output`) and slot 1 is
+    /// `--record-program-2` (`--record-output-2`); the shared `record_wav`
+    /// flag applies to every configured slot. The whole-run telemetry reports
+    /// recording as configured whenever at least one slot has a destination.
     fn configure_recordings(
         &mut self,
         primary: Option<PathBuf>,
+        primary_output: Option<fm_types::OutputId>,
         secondary: Option<PathBuf>,
+        secondary_output: Option<fm_types::OutputId>,
         wav: bool,
     ) {
         self.record_program = primary;
         self.record_program_2 = secondary;
+        self.record_outputs = [primary_output, secondary_output];
         self.record_wav = wav;
         self.telemetry.recorder_configured = self.recording_configured();
     }
@@ -3640,28 +3698,52 @@ impl NativeDaemon {
         u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
-    /// Feeds one produced program texture and audio block to every running
+    /// Feeds the selected program texture and audio block to every running
     /// recorder slot.
     ///
-    /// The first running slot consumes the produced block; when both slots run
-    /// the second receives a clone, mirroring how the stream fan-out clones one
-    /// block per target. An idle slot clones nothing, and each slot keeps its
-    /// own readback owner. Takes the recorder pieces separately so the caller
-    /// can hold immutable borrows of other daemon fields.
+    /// Each running slot resolves its own selected [`fm_types::OutputId`]
+    /// independently; a slot whose output is missing latches with
+    /// `"capture:missing_output"`. The first running slot that resolves a
+    /// texture consumes the produced block; when both slots run and resolve a
+    /// texture the second receives a clone, mirroring how the stream fan-out
+    /// clones one block per target. An idle or missing-output slot clones
+    /// nothing, and each slot keeps its own readback owner. Takes the recorder
+    /// pieces separately so the caller can hold immutable borrows of other
+    /// daemon fields.
     fn capture_recorders(
         recorders: &mut [ProgramRecording; RECORDER_SLOTS],
+        record_outputs: &[Option<fm_types::OutputId>; RECORDER_SLOTS],
         runtime: &NativeMediaRuntime,
-        program: &NativeTexture,
+        project_outputs: &[NativeOutputFrame],
+        unbound_output: Option<&NativeTexture>,
         audio: AudioBlock,
     ) {
-        // A clone is made only when a second slot actually runs; the first
-        // running slot consumes the produced block.
-        let two_running = recorders[0].is_running() && recorders[1].is_running();
-        let second = two_running.then(|| audio.clone());
+        let mut resolved: [Option<&NativeTexture>; RECORDER_SLOTS] = [None, None];
+        for (slot_index, slot) in recorders.iter_mut().enumerate() {
+            let ProgramRecording::Running(recorder) = slot else {
+                continue;
+            };
+            if let Some(texture) = resolve_project_output_texture(
+                record_outputs[slot_index],
+                project_outputs,
+                unbound_output,
+            ) {
+                resolved[slot_index] = Some(texture);
+            } else {
+                recorder.fail("capture:missing_output".to_owned(), true);
+            }
+        }
+        // A clone is made only when both slots actually run and resolve a
+        // texture; the first resolved slot consumes the produced block.
+        let two_capturing = resolved[0].is_some() && resolved[1].is_some();
+        let second = two_capturing.then(|| audio.clone());
         let mut pending = [Some(audio), second];
         let mut feed = 0;
-        for slot in recorders.iter_mut() {
+        for (slot_index, slot) in recorders.iter_mut().enumerate() {
             let ProgramRecording::Running(recorder) = slot else {
+                continue;
+            };
+            let Some(program) = resolved[slot_index] else {
                 continue;
             };
             let Some(entry) = pending.get_mut(feed) else {
@@ -3693,7 +3775,8 @@ impl NativeDaemon {
         stream_groups: &mut [StreamRenditionGroup],
         output_set: &mut OutputSet,
         runtime: &NativeMediaRuntime,
-        program: &NativeTexture,
+        project_outputs: &[NativeOutputFrame],
+        unbound_output: Option<&NativeTexture>,
         audio: &AudioBlock,
     ) {
         let sequence = audio.timing().sequence();
@@ -3713,6 +3796,22 @@ impl NativeDaemon {
             if !active.iter().any(|&is_active| is_active) {
                 continue;
             }
+            let Some(program) = resolve_project_output_texture(
+                Some(group.core.output),
+                project_outputs,
+                unbound_output,
+            ) else {
+                for (destination, &is_active) in members.iter().zip(&active) {
+                    if is_active
+                        && let Some(stream) = streams
+                            .iter_mut()
+                            .find(|stream| stream.destination_id == *destination)
+                    {
+                        stream.fail("capture:missing_output", output_set);
+                    }
+                }
+                continue;
+            };
             let rendition = group.core.rendition;
             let outcome = {
                 let StreamRenditionGroup {
@@ -4117,13 +4216,15 @@ impl NativeDaemon {
         self.install_stinger_mutation()?;
         self.projected_frame = None;
         self.pacer.advance()?;
-        let latest_program = self
-            .latest_project_outputs
-            .first()
-            .map(NativeOutputFrame::texture)
-            .or(self.latest_output.as_ref());
         #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
-        if let (Some(program), Some(output)) = (&mut self.program, latest_program) {
+        if let (Some(program), Some(output)) = (
+            &mut self.program,
+            resolve_project_output_texture(
+                None,
+                &self.latest_project_outputs,
+                self.latest_output.as_ref(),
+            ),
+        ) {
             program
                 .present_latest(self.runtime.context(), output)
                 .map_err(|error| -> Box<dyn Error> { Box::new(AppFailure(error)) })?;
@@ -4133,16 +4234,24 @@ impl NativeDaemon {
         } else {
             audio.clone()
         };
-        if let (Some(output), Some(audio)) = (latest_program, audio) {
-            Self::capture_recorders(&mut self.recorders, &self.runtime, output, audio);
+        if let Some(audio) = audio {
+            Self::capture_recorders(
+                &mut self.recorders,
+                &self.record_outputs,
+                &self.runtime,
+                &self.latest_project_outputs,
+                self.latest_output.as_ref(),
+                audio,
+            );
         }
-        if let (Some(output), Some(audio)) = (latest_program, stream_audio) {
+        if let Some(audio) = stream_audio {
             Self::capture_streams(
                 &mut self.streams,
                 &mut self.stream_groups,
                 &mut self.output_set,
                 &self.runtime,
-                output,
+                &self.latest_project_outputs,
+                self.latest_output.as_ref(),
                 &audio,
             );
         }
@@ -4615,7 +4724,9 @@ impl NativeDaemon {
     fn configure_recordings(
         &mut self,
         _primary: Option<PathBuf>,
+        _primary_output: Option<fm_types::OutputId>,
         _secondary: Option<PathBuf>,
+        _secondary_output: Option<fm_types::OutputId>,
         _wav: bool,
     ) {
     }
@@ -5263,7 +5374,9 @@ enum Command {
         fullscreen_display: usize,
         camera_helper: Option<PathBuf>,
         record_program: Option<PathBuf>,
+        record_output: Option<fm_types::OutputId>,
         record_program_2: Option<PathBuf>,
+        record_output_2: Option<fm_types::OutputId>,
         record_wav: bool,
         diagnostic_stop_after: Option<Duration>,
         recover_to_checkpoint: bool,
@@ -5309,7 +5422,9 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut fullscreen_display = None;
             let mut camera_helper = None;
             let mut record_program = None;
+            let mut record_output = None;
             let mut record_program_2 = None;
+            let mut record_output_2 = None;
             let mut record_wav = false;
             let mut diagnostic_stop_after = None;
             let mut recover_to_checkpoint = false;
@@ -5324,6 +5439,16 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                     record_program = Some(PathBuf::from(value));
                     continue;
                 }
+                if let Some(value) = option.strip_prefix("--record-output=") {
+                    if record_output.is_some() {
+                        return Err(AppFailure("duplicate option `--record-output`".into()).into());
+                    }
+                    if value.is_empty() {
+                        return Err(AppFailure("missing value for --record-output".into()).into());
+                    }
+                    record_output = Some(parse_record_output_id("--record-output", value)?);
+                    continue;
+                }
                 if let Some(value) = option.strip_prefix("--record-program-2=") {
                     if record_program_2.is_some() {
                         return Err(
@@ -5336,6 +5461,18 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         );
                     }
                     record_program_2 = Some(PathBuf::from(value));
+                    continue;
+                }
+                if let Some(value) = option.strip_prefix("--record-output-2=") {
+                    if record_output_2.is_some() {
+                        return Err(
+                            AppFailure("duplicate option `--record-output-2`".into()).into()
+                        );
+                    }
+                    if value.is_empty() {
+                        return Err(AppFailure("missing value for --record-output-2".into()).into());
+                    }
+                    record_output_2 = Some(parse_record_output_id("--record-output-2", value)?);
                     continue;
                 }
                 if let Some(value) = option.strip_prefix("--camera-helper=") {
@@ -5467,6 +5604,18 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                             })?;
                         record_program = Some(PathBuf::from(value));
                     }
+                    "--record-output" if record_output.is_some() => {
+                        return Err(AppFailure("duplicate option `--record-output`".into()).into());
+                    }
+                    "--record-output" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-output".into())
+                            })?;
+                        record_output = Some(parse_record_output_id("--record-output", &value)?);
+                    }
                     "--record-program-2" if record_program_2.is_some() => {
                         return Err(
                             AppFailure("duplicate option `--record-program-2`".into()).into()
@@ -5480,6 +5629,21 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                                 AppFailure("missing value for --record-program-2".into())
                             })?;
                         record_program_2 = Some(PathBuf::from(value));
+                    }
+                    "--record-output-2" if record_output_2.is_some() => {
+                        return Err(
+                            AppFailure("duplicate option `--record-output-2`".into()).into()
+                        );
+                    }
+                    "--record-output-2" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-output-2".into())
+                            })?;
+                        record_output_2 =
+                            Some(parse_record_output_id("--record-output-2", &value)?);
                     }
                     "--record-wav" if record_wav => {
                         return Err(AppFailure("duplicate option `--record-wav`".into()).into());
@@ -5516,6 +5680,14 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             }
             if record_program_2.is_some() && !native_media {
                 return Err(AppFailure("--record-program-2 requires --native-media".into()).into());
+            }
+            if record_output.is_some() && record_program.is_none() {
+                return Err(AppFailure("--record-output requires --record-program".into()).into());
+            }
+            if record_output_2.is_some() && record_program_2.is_none() {
+                return Err(
+                    AppFailure("--record-output-2 requires --record-program-2".into()).into(),
+                );
             }
             if record_wav && record_program.is_none() && record_program_2.is_none() {
                 return Err(AppFailure(
@@ -5588,7 +5760,9 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 fullscreen_display: fullscreen_display.unwrap_or(0),
                 camera_helper,
                 record_program,
+                record_output,
                 record_program_2,
+                record_output_2,
                 record_wav,
                 diagnostic_stop_after,
                 recover_to_checkpoint,
@@ -5604,6 +5778,25 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
         }
         _ => Err(AppFailure(format!("unknown command `{command}`")).into()),
     }
+}
+
+/// Parses a nonzero [`fm_types::OutputId`] for `--record-output` or
+/// `--record-output-2`.
+///
+/// # Errors
+///
+/// Returns an [`AppFailure`] when `value` is not a positive `u128`.
+fn parse_record_output_id(flag: &str, value: &str) -> AppResult<fm_types::OutputId> {
+    let parsed = value
+        .parse::<u128>()
+        .ok()
+        .and_then(NonZeroU128::new)
+        .ok_or_else(|| {
+            AppFailure(format!(
+                "invalid value for {flag} `{value}`; expected a positive integer output id"
+            ))
+        })?;
+    Ok(fm_types::OutputId::new(parsed))
 }
 
 fn parse_diagnostic_duration(value: &str) -> AppResult<Duration> {
@@ -5671,7 +5864,9 @@ fn run(command: Command) -> AppResult<()> {
             fullscreen_display,
             camera_helper,
             record_program,
+            record_output,
             record_program_2,
+            record_output_2,
             record_wav,
             diagnostic_stop_after,
             recover_to_checkpoint,
@@ -5684,7 +5879,9 @@ fn run(command: Command) -> AppResult<()> {
                     fullscreen_display,
                     camera_helper,
                     record_program,
+                    record_output,
                     record_program_2,
+                    record_output_2,
                     record_wav,
                 )
             } else {
@@ -5702,7 +5899,9 @@ fn run(command: Command) -> AppResult<()> {
                         NativeServeMode::Disabled
                     },
                     record_program,
+                    record_output,
                     record_program_2,
+                    record_output_2,
                     record_wav,
                     diagnostic_stop_after,
                     recover_to_checkpoint,
@@ -5729,7 +5928,9 @@ fn run_fullscreen_program(
     fullscreen_display: usize,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
+    record_output: Option<fm_types::OutputId>,
     record_program_2: Option<PathBuf>,
+    record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
 ) -> AppResult<()> {
     program_surface::run(
@@ -5739,7 +5940,9 @@ fn run_fullscreen_program(
         fullscreen_display,
         camera_helper,
         record_program,
+        record_output,
         record_program_2,
+        record_output_2,
         record_wav,
     )
 }
@@ -5753,7 +5956,9 @@ fn run_fullscreen_program(
     _fullscreen_display: usize,
     _camera_helper: Option<PathBuf>,
     _record_program: Option<PathBuf>,
+    _record_output: Option<fm_types::OutputId>,
     _record_program_2: Option<PathBuf>,
+    _record_output_2: Option<fm_types::OutputId>,
     _record_wav: bool,
 ) -> AppResult<()> {
     Err(AppFailure(
@@ -5798,7 +6003,9 @@ fn serve_program_worker(
     channels: program_surface::ProgramWorkerChannels,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
+    record_output: Option<fm_types::OutputId>,
     record_program_2: Option<PathBuf>,
+    record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
 ) -> AppResult<()> {
     serve_inner(
@@ -5816,12 +6023,46 @@ fn serve_program_worker(
             camera_helper,
         })),
         record_program,
+        record_output,
         record_program_2,
+        record_output_2,
         record_wav,
         None,
         // `--recover-to-checkpoint` is refused with `--fullscreen-program`.
         false,
     )
+}
+
+/// Validates that every configured recorder slot's output selection names an
+/// output declared by `project`.
+///
+/// # Errors
+///
+/// Returns an [`AppFailure`] naming the CLI flag and the unknown
+/// [`fm_types::OutputId`] when a slot selects an output absent from `project`.
+fn validate_recording_output_selections(
+    project: &fm_model::Project,
+    record_output: Option<fm_types::OutputId>,
+    record_output_2: Option<fm_types::OutputId>,
+) -> AppResult<()> {
+    for (flag, selected) in [
+        ("--record-output", record_output),
+        ("--record-output-2", record_output_2),
+    ] {
+        let Some(output_id) = selected else {
+            continue;
+        };
+        if !project
+            .outputs()
+            .iter()
+            .any(|output| output.id == output_id)
+        {
+            return Err(
+                AppFailure(format!("{flag} selects unknown project output {output_id}")).into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Parent directory of a configured recording output.
@@ -5881,7 +6122,9 @@ fn serve_inner(
     once: bool,
     mode: NativeServeMode,
     record_program: Option<PathBuf>,
+    record_output: Option<fm_types::OutputId>,
     record_program_2: Option<PathBuf>,
+    record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
     diagnostic_stop_after: Option<Duration>,
     recover_to_checkpoint: bool,
@@ -5979,6 +6222,7 @@ fn serve_inner(
             };
             return Err(AppFailure(format!("{flag} requires --native-media")).into());
         }
+        validate_recording_output_selections(durable.project(), record_output, record_output_2)?;
         // Configured recording fails closed before any recorder exists. Each
         // preflight error carries free-space counts and I/O kinds only, never
         // the operator's paths.
@@ -5987,7 +6231,13 @@ fn serve_inner(
             ("--record-program-2", record_program_2.as_deref()),
         ])?;
         let native = native.as_mut().expect("recording requires native state");
-        native.configure_recordings(record_program.clone(), record_program_2.clone(), record_wav);
+        native.configure_recordings(
+            record_program.clone(),
+            record_output,
+            record_program_2.clone(),
+            record_output_2,
+            record_wav,
+        );
         // Startup reconciliation is deliberate: a configured recorder only
         // auto-starts when the restored project's desired flag says so. The
         // capability digest below keeps advertising configured support either
@@ -8220,10 +8470,10 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-program-2 output-2.mp4] [--record-wav]] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
-Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report.\n\
+Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
 --record-wav additionally writes a linear-PCM WAV sidecar for each segment of every configured recorder, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 macOS fullscreen display selection is a zero-based index ordered by physical position, then stable descriptive fields.\n\
@@ -8835,7 +9085,9 @@ mod tests {
                 fullscreen_display: 0,
                 camera_helper: None,
                 record_program: None,
+                record_output: None,
                 record_program_2: None,
+                record_output_2: None,
                 record_wav: false,
                 diagnostic_stop_after: None,
                 recover_to_checkpoint: false,
@@ -9363,6 +9615,324 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn parses_record_output_for_both_recorder_slots() {
+        let output_a = fm_types::OutputId::new(NonZeroU128::new(10).unwrap());
+        let output_b = fm_types::OutputId::new(NonZeroU128::new(20).unwrap());
+        for arguments in [
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program",
+                "capture.mp4",
+                "--record-output",
+                "10",
+                "--record-program-2",
+                "backup.mp4",
+                "--record-output-2",
+                "20",
+            ]),
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program=capture.mp4",
+                "--record-output=10",
+                "--record-program-2=backup.mp4",
+                "--record-output-2=20",
+            ]),
+        ] {
+            assert!(matches!(
+                parse_args(arguments).unwrap(),
+                Command::Serve {
+                    record_program: Some(primary),
+                    record_output: Some(primary_output),
+                    record_program_2: Some(secondary),
+                    record_output_2: Some(secondary_output),
+                    ..
+                } if primary == Path::new("capture.mp4")
+                    && primary_output == output_a
+                    && secondary == Path::new("backup.mp4")
+                    && secondary_output == output_b
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_record_output_options_and_values() {
+        for (arguments, expected) in [
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-output",
+                    "1",
+                ]),
+                "--record-output requires --record-program",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-output-2",
+                    "2",
+                ]),
+                "--record-output-2 requires --record-program-2",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-output",
+                    "1",
+                ]),
+                "--record-output requires --record-program",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-output",
+                ]),
+                "missing value for --record-output",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-output",
+                    "--once",
+                ]),
+                "missing value for --record-output",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-output=",
+                ]),
+                "missing value for --record-output",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-output-2",
+                ]),
+                "missing value for --record-output-2",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-output-2",
+                    "--once",
+                ]),
+                "missing value for --record-output-2",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-output-2=",
+                ]),
+                "missing value for --record-output-2",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-output",
+                    "1",
+                    "--record-output",
+                    "2",
+                ]),
+                "duplicate option `--record-output`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-output=1",
+                    "--record-output=2",
+                ]),
+                "duplicate option `--record-output`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-output-2",
+                    "1",
+                    "--record-output-2",
+                    "2",
+                ]),
+                "duplicate option `--record-output-2`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-output-2=1",
+                    "--record-output-2=2",
+                ]),
+                "duplicate option `--record-output-2`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-output",
+                    "0",
+                ]),
+                "invalid value for --record-output `0`; expected a positive integer output id",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-output=abc",
+                ]),
+                "invalid value for --record-output `abc`; expected a positive integer output id",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-output-2",
+                    "0",
+                ]),
+                "invalid value for --record-output-2 `0`; expected a positive integer output id",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-output-2=-5",
+                ]),
+                "invalid value for --record-output-2 `-5`; expected a positive integer output id",
+            ),
+        ] {
+            assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn recording_output_selection_validation_accepts_known_and_rejects_unknown_outputs() {
+        let project = test_project_with_streams([false, false]).project().clone();
+        let known_output = fm_types::OutputId::new(NonZeroU128::new(902).unwrap());
+        let unknown_output = fm_types::OutputId::new(NonZeroU128::new(999).unwrap());
+
+        validate_recording_output_selections(&project, None, None).unwrap();
+        validate_recording_output_selections(&project, Some(known_output), Some(known_output))
+            .unwrap();
+        assert_eq!(
+            validate_recording_output_selections(&project, Some(unknown_output), None)
+                .unwrap_err()
+                .to_string(),
+            "--record-output selects unknown project output 999"
+        );
+        assert_eq!(
+            validate_recording_output_selections(
+                &project,
+                Some(known_output),
+                Some(unknown_output)
+            )
+            .unwrap_err()
+            .to_string(),
+            "--record-output-2 selects unknown project output 999"
+        );
+    }
+
+    #[test]
+    fn resolve_project_output_entry_selects_distinct_outputs_and_defaults_to_first() {
+        fn resolve<'a>(
+            selected: Option<fm_types::OutputId>,
+            frames: &'a [(fm_types::OutputId, &'static str)],
+            unbound: Option<&'a str>,
+        ) -> Option<&'a str> {
+            resolve_project_output_entry(
+                selected,
+                frames,
+                unbound,
+                |(id, _)| *id,
+                |(_, label)| *label,
+            )
+        }
+
+        let out_1 = fm_types::OutputId::new(NonZeroU128::new(1).unwrap());
+        let out_2 = fm_types::OutputId::new(NonZeroU128::new(2).unwrap());
+        let out_missing = fm_types::OutputId::new(NonZeroU128::new(3).unwrap());
+        let outputs = [(out_1, "program-main"), (out_2, "program-clean")];
+
+        assert_eq!(
+            resolve(None, &outputs, Some("unbound")),
+            Some("program-main")
+        );
+        assert_eq!(
+            resolve(Some(out_1), &outputs, Some("unbound")),
+            Some("program-main")
+        );
+        assert_eq!(
+            resolve(Some(out_2), &outputs, Some("unbound")),
+            Some("program-clean")
+        );
+        assert_eq!(resolve(Some(out_missing), &outputs, Some("unbound")), None);
+        assert_eq!(resolve(None, &[], Some("unbound")), Some("unbound"));
+        assert_eq!(resolve(Some(out_1), &[], Some("unbound")), Some("unbound"));
+        assert_eq!(resolve(None, &[], None), None);
     }
 
     #[test]
@@ -13103,6 +13673,7 @@ mod tests {
         group_count: usize,
     ) -> StreamRenditionCore {
         StreamRenditionCore {
+            output: fm_types::OutputId::new(NonZeroU128::new(1).expect("test output is nonzero")),
             members: members
                 .iter()
                 .map(|id| DestinationId::new(*id).expect("test member fits a slot"))
@@ -13976,14 +14547,14 @@ mod tests {
             target(4, StreamProtocol::Hls, "/var/lib/freemix/live-alt"),
         ];
         let grouped = split_and_group_targets(&targets).unwrap();
-        // One group per distinct protocol/bitrate identity in first-appearance
-        // order: both RTMP targets share the first, both HLS targets the
-        // second, and every HLS target splits with no stream key.
+        // One group per distinct output/protocol/bitrate identity in
+        // first-appearance order: both RTMP targets share the first, both HLS
+        // targets the second, and every HLS target splits with no stream key.
         assert_eq!(
             grouped.group_keys,
             vec![
-                (OutputProtocol::Rtmp, DEFAULT_VIDEO_BITRATE_KBPS),
-                (OutputProtocol::Hls, DEFAULT_VIDEO_BITRATE_KBPS),
+                (output, OutputProtocol::Rtmp, DEFAULT_VIDEO_BITRATE_KBPS),
+                (output, OutputProtocol::Hls, DEFAULT_VIDEO_BITRATE_KBPS),
             ]
         );
         assert_eq!(
@@ -14003,6 +14574,52 @@ mod tests {
             assert_eq!(split.backup_endpoint, None);
         }
         assert_eq!(grouped.splits[2].endpoint.path(), "/var/lib/freemix/live");
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn split_and_group_targets_partitions_rendition_groups_by_output_id() {
+        use fm_model::{
+            DEFAULT_VIDEO_BITRATE_KBPS, StreamEndpoint as ModelStreamEndpoint,
+            StreamKey as ModelStreamKey, StreamProtocol, StreamTarget, StreamTargetId,
+        };
+        use fm_types::OutputId as ModelOutputId;
+
+        let output_a = ModelOutputId::new(NonZeroU128::new(30).unwrap());
+        let output_b = ModelOutputId::new(NonZeroU128::new(31).unwrap());
+        let target = |id: u128, output: ModelOutputId, endpoint: &str| {
+            StreamTarget::new(
+                StreamTargetId::new(NonZeroU128::new(id).unwrap()),
+                format!("Destination {id}"),
+                StreamProtocol::Rtmp,
+                ModelStreamEndpoint::parse_for(StreamProtocol::Rtmp, endpoint).unwrap(),
+                Some(ModelStreamKey::parse("live-key-0001").unwrap()),
+                output,
+            )
+            .unwrap()
+        };
+        let targets = [
+            target(1, output_a, "ingest-a1.example.test:1935/live"),
+            target(2, output_a, "ingest-a2.example.test:1935/live"),
+            target(3, output_b, "ingest-b1.example.test:1935/live"),
+        ];
+        let grouped = split_and_group_targets(&targets).unwrap();
+
+        assert_eq!(
+            grouped.group_keys,
+            vec![
+                (output_a, OutputProtocol::Rtmp, DEFAULT_VIDEO_BITRATE_KBPS),
+                (output_b, OutputProtocol::Rtmp, DEFAULT_VIDEO_BITRATE_KBPS),
+            ]
+        );
+        assert_eq!(
+            grouped
+                .splits
+                .iter()
+                .map(|split| split.group_index)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 1]
+        );
     }
 
     #[cfg(feature = "native-media")]
