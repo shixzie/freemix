@@ -15,6 +15,7 @@ use std::{
 use std::{
     future::Future,
     net::SocketAddr,
+    num::NonZeroU32,
     path::PathBuf,
     pin::pin,
     task::{Context, Poll, Wake, Waker},
@@ -670,6 +671,7 @@ struct ProgramApp {
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
+    record_segment_seconds: Option<NonZeroU32>,
     camera_helper: Option<PathBuf>,
     window: Option<Arc<winit::window::Window>>,
     factory: Option<NativeSurfaceFactory>,
@@ -704,6 +706,7 @@ impl ProgramApp {
         record_program_2: Option<PathBuf>,
         record_output_2: Option<fm_types::OutputId>,
         record_wav: bool,
+        record_segment_seconds: Option<NonZeroU32>,
         camera_helper: Option<PathBuf>,
         proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     ) -> Self {
@@ -722,6 +725,7 @@ impl ProgramApp {
             record_program_2,
             record_output_2,
             record_wav,
+            record_segment_seconds,
             camera_helper,
             window: None,
             factory: None,
@@ -935,6 +939,7 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
         let record_program_2 = self.record_program_2.clone();
         let record_output_2 = self.record_output_2;
         let record_wav = self.record_wav;
+        let record_segment_seconds = self.record_segment_seconds;
         let camera_helper = self.camera_helper.clone();
         let proxy = self.proxy.clone();
         self.worker = Some(
@@ -954,6 +959,7 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
                         record_program_2,
                         record_output_2,
                         record_wav,
+                        record_segment_seconds,
                     )
                     .map_err(|error| error.to_string());
                     let _ = proxy.send_event(UserEvent::Finished(result));
@@ -1088,6 +1094,7 @@ pub(super) fn run(
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
+    record_segment_seconds: Option<NonZeroU32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
@@ -1101,6 +1108,7 @@ pub(super) fn run(
         record_program_2,
         record_output_2,
         record_wav,
+        record_segment_seconds,
         camera_helper,
         proxy,
     );

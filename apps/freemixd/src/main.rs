@@ -5,7 +5,7 @@ use std::{
     fmt,
     io::Write,
     net::{SocketAddr, TcpListener},
-    num::NonZeroU128,
+    num::{NonZeroU32, NonZeroU128},
     path::{Path, PathBuf},
     process::ExitCode,
     rc::Rc,
@@ -25,8 +25,6 @@ use std::{collections::VecDeque, net::TcpStream};
 
 #[cfg(feature = "native-media")]
 use std::fs::{self, File, OpenOptions};
-#[cfg(feature = "native-media")]
-use std::num::NonZeroU32;
 #[cfg(feature = "native-media")]
 use std::sync::mpsc;
 #[cfg(all(feature = "native-media", target_os = "macos"))]
@@ -377,6 +375,10 @@ struct NativeDaemon {
     /// Whether each segment also writes a `--record-wav` linear-PCM sidecar
     /// next to the MP4. Applies to every configured recorder slot.
     record_wav: bool,
+    /// Optional frame-boundary segment rotation target in seconds
+    /// (`--record-segment-seconds <1..=86400>`). Applies to every configured
+    /// recorder slot.
+    record_segment_seconds: Option<NonZeroU32>,
     /// Hysteretic free-space alert for the configured program outputs.
     disk_alert: disk::DiskSpaceAlert,
     /// Latest successfully sampled free bytes across the configured outputs:
@@ -1638,6 +1640,17 @@ fn record_wav_path(segment: &Path) -> PathBuf {
     segment.with_extension("wav")
 }
 
+/// Minimum positive frame count covering at least `seconds` at `rate`:
+/// `ceil(seconds * rate.numerator() / rate.denominator())`.
+#[cfg(feature = "native-media")]
+fn segment_frame_limit(seconds: NonZeroU32, rate: fm_types::FrameRate) -> u64 {
+    let frames = u128::from(seconds.get())
+        .saturating_mul(u128::from(rate.numerator()))
+        .div_ceil(u128::from(rate.denominator()))
+        .max(1);
+    u64::try_from(frames).unwrap_or(u64::MAX)
+}
+
 #[cfg(feature = "native-media")]
 impl NativeProgramRecorder {
     fn start(
@@ -1657,6 +1670,17 @@ impl NativeProgramRecorder {
             settings.audio.channels.clone(),
             SequenceNumber::new(stored.position().frames_rendered),
         )?;
+        Self::start_with_format(runtime, format, path, wav, slot)
+    }
+
+    fn start_with_format(
+        runtime: &NativeMediaRuntime,
+        format: RecordFormat,
+        path: &Path,
+        wav: bool,
+        slot: usize,
+    ) -> AppResult<Self> {
+        let dimensions = format.dimensions();
         let readback = runtime.create_program_readback_blocking(
             NonZeroU32::new(dimensions.width()).expect("project width is nonzero"),
             NonZeroU32::new(dimensions.height()).expect("project height is nonzero"),
@@ -1683,6 +1707,14 @@ impl NativeProgramRecorder {
             parent,
             slot,
         })
+    }
+
+    fn should_rotate(&self, segment_seconds: Option<NonZeroU32>) -> bool {
+        self.capture.active()
+            && segment_seconds.is_some_and(|seconds| {
+                self.recorder.telemetry().accepted_pairs
+                    >= segment_frame_limit(seconds, self.format.frame_rate())
+            })
     }
 
     fn capture(
@@ -3320,6 +3352,7 @@ impl NativeDaemon {
             record_program_2: None,
             record_outputs: [None, None],
             record_wav: false,
+            record_segment_seconds: None,
             disk_alert: disk::DiskSpaceAlert::new(),
             disk_free_bytes: None,
             disk_sampled_at: None,
@@ -3397,11 +3430,13 @@ impl NativeDaemon {
         secondary: Option<PathBuf>,
         secondary_output: Option<fm_types::OutputId>,
         wav: bool,
+        segment_seconds: Option<NonZeroU32>,
     ) {
         self.record_program = primary;
         self.record_program_2 = secondary;
         self.record_outputs = [primary_output, secondary_output];
         self.record_wav = wav;
+        self.record_segment_seconds = segment_seconds;
         self.telemetry.recorder_configured = self.recording_configured();
     }
 
@@ -4068,6 +4103,69 @@ impl NativeDaemon {
         });
     }
 
+    /// Rotates every running recorder slot that has reached
+    /// [`Self::record_segment_seconds`] before capturing `sequence`.
+    ///
+    /// Completed segments are handed off the render path via
+    /// [`Self::retire_running_recording`], finished finalizers are reaped to
+    /// keep [`Self::recording_finalizers`] bounded, and the newly opened
+    /// segment starts at `first_sequence = sequence` so the current frame is
+    /// captured immediately with zero dropped frames between segments.
+    fn rotate_due_recorders(&mut self, sequence: SequenceNumber) {
+        for slot in 0..RECORDER_SLOTS {
+            self.rotate_running_recording(slot, sequence);
+        }
+    }
+
+    fn rotate_running_recording(&mut self, slot: usize, sequence: SequenceNumber) {
+        let next_format = match &self.recorders[slot] {
+            ProgramRecording::Running(recorder)
+                if recorder.should_rotate(self.record_segment_seconds) =>
+            {
+                let old = &recorder.format;
+                RecordFormat::new(
+                    old.dimensions().width(),
+                    old.dimensions().height(),
+                    old.frame_rate(),
+                    old.sample_rate(),
+                    old.channel_layout().clone(),
+                    sequence,
+                )
+            }
+            ProgramRecording::Running(_) | ProgramRecording::Off => return,
+        };
+        self.reap_finished_recording_finalizers();
+        self.retire_running_recording(slot);
+        let rotated = next_format.map_err(Into::into).and_then(|format| {
+            let segment = next_slot_segment_path(
+                slot,
+                self.record_program.as_deref(),
+                self.record_program_2.as_deref(),
+                Path::exists,
+            )?
+            .ok_or_else(|| AppFailure("rotating recorder slot has no configured output".into()))?;
+            NativeProgramRecorder::start_with_format(
+                &self.runtime,
+                format,
+                &segment,
+                self.record_wav,
+                slot + 1,
+            )
+        });
+        match rotated {
+            Ok(recorder) => {
+                self.recorders[slot] = ProgramRecording::Running(Box::new(recorder));
+            }
+            Err(error) => {
+                self.recorders[slot] = ProgramRecording::Off;
+                eprintln!(
+                    "{}",
+                    recorder_failure_notice(slot + 1, &format!("rotate:{error}"), false)
+                );
+            }
+        }
+    }
+
     fn tick_if_due_collect(
         &mut self,
         control: &mut ControlService<Policy>,
@@ -4235,6 +4333,7 @@ impl NativeDaemon {
             audio.clone()
         };
         if let Some(audio) = audio {
+            self.rotate_due_recorders(audio.timing().sequence());
             Self::capture_recorders(
                 &mut self.recorders,
                 &self.record_outputs,
@@ -4728,6 +4827,7 @@ impl NativeDaemon {
         _secondary: Option<PathBuf>,
         _secondary_output: Option<fm_types::OutputId>,
         _wav: bool,
+        _segment_seconds: Option<NonZeroU32>,
     ) {
     }
 
@@ -5358,6 +5458,8 @@ impl ControlPlane for ControlHandle {
     }
 }
 
+const MAX_RECORD_SEGMENT_SECONDS: u32 = 86_400;
+
 // The parse result is built once and matched once; keeping the Serve fields
 // inline beats indirection for a value that never lives in a collection.
 #[allow(clippy::large_enum_variant)]
@@ -5378,6 +5480,7 @@ enum Command {
         record_program_2: Option<PathBuf>,
         record_output_2: Option<fm_types::OutputId>,
         record_wav: bool,
+        record_segment_seconds: Option<NonZeroU32>,
         diagnostic_stop_after: Option<Duration>,
         recover_to_checkpoint: bool,
     },
@@ -5426,6 +5529,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut record_program_2 = None;
             let mut record_output_2 = None;
             let mut record_wav = false;
+            let mut record_segment_seconds = None;
             let mut diagnostic_stop_after = None;
             let mut recover_to_checkpoint = false;
             while let Some(option) = arguments.next() {
@@ -5473,6 +5577,22 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         return Err(AppFailure("missing value for --record-output-2".into()).into());
                     }
                     record_output_2 = Some(parse_record_output_id("--record-output-2", value)?);
+                    continue;
+                }
+                if let Some(value) = option.strip_prefix("--record-segment-seconds=") {
+                    if record_segment_seconds.is_some() {
+                        return Err(AppFailure(
+                            "duplicate option `--record-segment-seconds`".into(),
+                        )
+                        .into());
+                    }
+                    if value.is_empty() {
+                        return Err(AppFailure(
+                            "missing value for --record-segment-seconds".into(),
+                        )
+                        .into());
+                    }
+                    record_segment_seconds = Some(parse_record_segment_seconds(value)?);
                     continue;
                 }
                 if let Some(value) = option.strip_prefix("--camera-helper=") {
@@ -5649,6 +5769,21 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         return Err(AppFailure("duplicate option `--record-wav`".into()).into());
                     }
                     "--record-wav" => record_wav = true,
+                    "--record-segment-seconds" if record_segment_seconds.is_some() => {
+                        return Err(AppFailure(
+                            "duplicate option `--record-segment-seconds`".into(),
+                        )
+                        .into());
+                    }
+                    "--record-segment-seconds" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-segment-seconds".into())
+                            })?;
+                        record_segment_seconds = Some(parse_record_segment_seconds(&value)?);
+                    }
                     "--diagnostic-stop-after" if diagnostic_stop_after.is_some() => {
                         return Err(AppFailure(
                             "duplicate option `--diagnostic-stop-after`".into(),
@@ -5692,6 +5827,16 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             if record_wav && record_program.is_none() && record_program_2.is_none() {
                 return Err(AppFailure(
                     "--record-wav requires --record-program or --record-program-2".into(),
+                )
+                .into());
+            }
+            if record_segment_seconds.is_some()
+                && record_program.is_none()
+                && record_program_2.is_none()
+            {
+                return Err(AppFailure(
+                    "--record-segment-seconds requires --record-program or --record-program-2"
+                        .into(),
                 )
                 .into());
             }
@@ -5764,6 +5909,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 record_program_2,
                 record_output_2,
                 record_wav,
+                record_segment_seconds,
                 diagnostic_stop_after,
                 recover_to_checkpoint,
             })
@@ -5778,6 +5924,26 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
         }
         _ => Err(AppFailure(format!("unknown command `{command}`")).into()),
     }
+}
+
+/// Parses `--record-segment-seconds` as an integer in
+/// `1..=MAX_RECORD_SEGMENT_SECONDS`.
+///
+/// # Errors
+///
+/// Returns an [`AppFailure`] when `value` is not an integer in `1..=86400`.
+fn parse_record_segment_seconds(value: &str) -> AppResult<NonZeroU32> {
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|&seconds| seconds <= MAX_RECORD_SEGMENT_SECONDS)
+        .and_then(NonZeroU32::new)
+        .ok_or_else(|| {
+            AppFailure(format!(
+                "invalid value for --record-segment-seconds `{value}`; expected an integer in 1..=86400"
+            ))
+            .into()
+        })
 }
 
 /// Parses a nonzero [`fm_types::OutputId`] for `--record-output` or
@@ -5868,6 +6034,7 @@ fn run(command: Command) -> AppResult<()> {
             record_program_2,
             record_output_2,
             record_wav,
+            record_segment_seconds,
             diagnostic_stop_after,
             recover_to_checkpoint,
         } => {
@@ -5883,6 +6050,7 @@ fn run(command: Command) -> AppResult<()> {
                     record_program_2,
                     record_output_2,
                     record_wav,
+                    record_segment_seconds,
                 )
             } else {
                 serve_inner(
@@ -5903,6 +6071,7 @@ fn run(command: Command) -> AppResult<()> {
                     record_program_2,
                     record_output_2,
                     record_wav,
+                    record_segment_seconds,
                     diagnostic_stop_after,
                     recover_to_checkpoint,
                 )
@@ -5932,6 +6101,7 @@ fn run_fullscreen_program(
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
+    record_segment_seconds: Option<NonZeroU32>,
 ) -> AppResult<()> {
     program_surface::run(
         project,
@@ -5944,6 +6114,7 @@ fn run_fullscreen_program(
         record_program_2,
         record_output_2,
         record_wav,
+        record_segment_seconds,
     )
 }
 
@@ -5960,6 +6131,7 @@ fn run_fullscreen_program(
     _record_program_2: Option<PathBuf>,
     _record_output_2: Option<fm_types::OutputId>,
     _record_wav: bool,
+    _record_segment_seconds: Option<NonZeroU32>,
 ) -> AppResult<()> {
     Err(AppFailure(
         "--fullscreen-program requires a macOS build with feature `macos-program-surface`".into(),
@@ -6007,6 +6179,7 @@ fn serve_program_worker(
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
+    record_segment_seconds: Option<NonZeroU32>,
 ) -> AppResult<()> {
     serve_inner(
         path,
@@ -6027,6 +6200,7 @@ fn serve_program_worker(
         record_program_2,
         record_output_2,
         record_wav,
+        record_segment_seconds,
         None,
         // `--recover-to-checkpoint` is refused with `--fullscreen-program`.
         false,
@@ -6126,6 +6300,7 @@ fn serve_inner(
     record_program_2: Option<PathBuf>,
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
+    record_segment_seconds: Option<NonZeroU32>,
     diagnostic_stop_after: Option<Duration>,
     recover_to_checkpoint: bool,
 ) -> AppResult<()> {
@@ -6237,6 +6412,7 @@ fn serve_inner(
             record_program_2.clone(),
             record_output_2,
             record_wav,
+            record_segment_seconds,
         );
         // Startup reconciliation is deliberate: a configured recorder only
         // auto-starts when the restored project's desired flag says so. The
@@ -8470,11 +8646,12 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
 --record-wav additionally writes a linear-PCM WAV sidecar for each segment of every configured recorder, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
+--record-segment-seconds rotates each active recorder slot to its next <stem>-<NNN>.mp4 segment on a frame boundary after at least the configured number of seconds.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 macOS fullscreen display selection is a zero-based index ordered by physical position, then stable descriptive fields.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
@@ -9089,6 +9266,7 @@ mod tests {
                 record_program_2: None,
                 record_output_2: None,
                 record_wav: false,
+                record_segment_seconds: None,
                 diagnostic_stop_after: None,
                 recover_to_checkpoint: false,
             }
@@ -9867,6 +10045,204 @@ mod tests {
         ] {
             assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
         }
+    }
+
+    #[test]
+    fn parses_record_segment_seconds_with_either_recorder_slot() {
+        for (arguments, expected) in [
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds",
+                    "1",
+                ]),
+                NonZeroU32::new(1).unwrap(),
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds=86400",
+                ]),
+                NonZeroU32::new(86_400).unwrap(),
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program=capture.mp4",
+                    "--record-program-2=backup.mp4",
+                    "--record-segment-seconds",
+                    "300",
+                ]),
+                NonZeroU32::new(300).unwrap(),
+            ),
+        ] {
+            assert!(matches!(
+                parse_args(arguments).unwrap(),
+                Command::Serve {
+                    record_segment_seconds: Some(seconds),
+                    ..
+                } if seconds == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_record_segment_seconds_options_and_values() {
+        for (arguments, expected) in [
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-segment-seconds",
+                    "60",
+                ]),
+                "--record-segment-seconds requires --record-program or --record-program-2",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds",
+                ]),
+                "missing value for --record-segment-seconds",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds",
+                    "--once",
+                ]),
+                "missing value for --record-segment-seconds",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds=",
+                ]),
+                "missing value for --record-segment-seconds",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds",
+                    "10",
+                    "--record-segment-seconds",
+                    "20",
+                ]),
+                "duplicate option `--record-segment-seconds`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds=10",
+                    "--record-segment-seconds=20",
+                ]),
+                "duplicate option `--record-segment-seconds`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds",
+                    "0",
+                ]),
+                "invalid value for --record-segment-seconds `0`; expected an integer in 1..=86400",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds=86401",
+                ]),
+                "invalid value for --record-segment-seconds `86401`; expected an integer in 1..=86400",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-segment-seconds=abc",
+                ]),
+                "invalid value for --record-segment-seconds `abc`; expected an integer in 1..=86400",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-segment-seconds=-5",
+                ]),
+                "invalid value for --record-segment-seconds `-5`; expected an integer in 1..=86400",
+            ),
+        ] {
+            assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+        }
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn segment_frame_limit_rounds_up_to_cover_requested_seconds_at_integer_and_fractional_rates() {
+        let sec = |value| NonZeroU32::new(value).unwrap();
+        let rate_25 = FrameRate::new(25, 1).unwrap();
+        let rate_30 = FrameRate::new(30, 1).unwrap();
+        let rate_60 = FrameRate::new(60, 1).unwrap();
+        let rate_23_976 = FrameRate::new(24_000, 1_001).unwrap();
+        let rate_29_97 = FrameRate::new(30_000, 1_001).unwrap();
+        let rate_59_94 = FrameRate::new(60_000, 1_001).unwrap();
+
+        assert_eq!(segment_frame_limit(sec(1), rate_25), 25);
+        assert_eq!(segment_frame_limit(sec(2), rate_30), 60);
+        assert_eq!(segment_frame_limit(sec(10), rate_60), 600);
+        assert_eq!(segment_frame_limit(sec(86_400), rate_60), 86_400 * 60);
+
+        // Fractional NTSC rates round up so the segment spans at least the
+        // requested wall duration and hits an exact frame boundary at 1001 s.
+        assert_eq!(segment_frame_limit(sec(1), rate_23_976), 24);
+        assert_eq!(segment_frame_limit(sec(1), rate_29_97), 30);
+        assert_eq!(segment_frame_limit(sec(1), rate_59_94), 60);
+        assert_eq!(segment_frame_limit(sec(1_001), rate_23_976), 24_000);
+        assert_eq!(segment_frame_limit(sec(1_001), rate_29_97), 30_000);
+        assert_eq!(segment_frame_limit(sec(1_001), rate_59_94), 60_000);
     }
 
     #[test]
