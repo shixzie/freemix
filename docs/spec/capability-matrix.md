@@ -85,7 +85,7 @@ Total: 103 features. Status: planned=96, blocked=7. Priority: P0=24, P1=70, P2=9
 | OR-004 | P1 | 4 | planned | codecs-network-recording | accept-or-004 (planned) |
 | OR-005 | P1 | 4 | planned | codecs-network-recording | accept-or-005 (present) |
 | OR-006 | P1 | 4 | planned | codecs-network-recording | accept-or-006 (planned) |
-| OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (planned) |
+| OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (present) |
 | OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
 | OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
@@ -193,7 +193,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | OR-004 | P1 | 4 | planned | codecs-network-recording | accept-or-004 (planned) |
 | OR-005 | P1 | 4 | planned | codecs-network-recording | accept-or-005 (present) |
 | OR-006 | P1 | 4 | planned | codecs-network-recording | accept-or-006 (planned) |
-| OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (planned) |
+| OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (present) |
 | OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
 | OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
@@ -301,7 +301,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | OR-004 | P1 | 4 | planned | codecs-network-recording | accept-or-004 (planned) |
 | OR-005 | P1 | 4 | planned | codecs-network-recording | accept-or-005 (present) |
 | OR-006 | P1 | 4 | planned | codecs-network-recording | accept-or-006 (planned) |
-| OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (planned) |
+| OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (present) |
 | OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
 | OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
@@ -389,7 +389,7 @@ Total: 5 features. Status: planned=5. Priority: P1=5.
 | IN-017 | P1 | 4 | planned | codecs-network-recording | accept-in-017 (planned) |
 | SW-009 | P1 | 8 | planned | gpu-compositor-color | accept-sw-009 (planned) |
 | SW-010 | P1 | 3 | planned | gpu-compositor-color | accept-sw-010 (planned) |
-| OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (planned) |
+| OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (present) |
 
 ## profile-c-replay
 
