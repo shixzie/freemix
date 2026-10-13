@@ -1384,7 +1384,11 @@ optional video and audio encoder bitrates (`--record-bitrate-kbps[-2]` bounded
 1,000 through 100,000 kbps and `--record-audio-bitrate-kbps[-2]` bounded 8
 through 1,024 kbps, each requiring its slot's recorder); a configured bitrate
 becomes the child's `-b:v`/`-maxrate`/`-bufsize` or `-b:a`, while an unset
-value keeps the encoder defaults and the previous byte-identical argv.
+value keeps the encoder defaults and the previous byte-identical argv. Every
+segment also embeds a non-drop-frame start timecode derived from its absolute
+first frame index and the project's nominal frame rate (`-timecode`), so each
+segment, including every automatically rotated one, carries its own timeline
+position.
 
 Program segments also rotate automatically at exact frame boundaries.
 `--record-segment-seconds <1..=86400>` makes every configured slot close its
