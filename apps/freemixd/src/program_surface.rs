@@ -672,6 +672,10 @@ struct ProgramApp {
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
     record_segment_seconds: Option<NonZeroU32>,
+    record_bitrate_kbps: Option<u32>,
+    record_bitrate_kbps_2: Option<u32>,
+    record_audio_bitrate_kbps: Option<u32>,
+    record_audio_bitrate_kbps_2: Option<u32>,
     camera_helper: Option<PathBuf>,
     window: Option<Arc<winit::window::Window>>,
     factory: Option<NativeSurfaceFactory>,
@@ -707,6 +711,10 @@ impl ProgramApp {
         record_output_2: Option<fm_types::OutputId>,
         record_wav: bool,
         record_segment_seconds: Option<NonZeroU32>,
+        record_bitrate_kbps: Option<u32>,
+        record_bitrate_kbps_2: Option<u32>,
+        record_audio_bitrate_kbps: Option<u32>,
+        record_audio_bitrate_kbps_2: Option<u32>,
         camera_helper: Option<PathBuf>,
         proxy: winit::event_loop::EventLoopProxy<UserEvent>,
     ) -> Self {
@@ -726,6 +734,10 @@ impl ProgramApp {
             record_output_2,
             record_wav,
             record_segment_seconds,
+            record_bitrate_kbps,
+            record_bitrate_kbps_2,
+            record_audio_bitrate_kbps,
+            record_audio_bitrate_kbps_2,
             camera_helper,
             window: None,
             factory: None,
@@ -940,6 +952,10 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
         let record_output_2 = self.record_output_2;
         let record_wav = self.record_wav;
         let record_segment_seconds = self.record_segment_seconds;
+        let record_bitrate_kbps = self.record_bitrate_kbps;
+        let record_bitrate_kbps_2 = self.record_bitrate_kbps_2;
+        let record_audio_bitrate_kbps = self.record_audio_bitrate_kbps;
+        let record_audio_bitrate_kbps_2 = self.record_audio_bitrate_kbps_2;
         let camera_helper = self.camera_helper.clone();
         let proxy = self.proxy.clone();
         self.worker = Some(
@@ -960,6 +976,10 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
                         record_output_2,
                         record_wav,
                         record_segment_seconds,
+                        record_bitrate_kbps,
+                        record_bitrate_kbps_2,
+                        record_audio_bitrate_kbps,
+                        record_audio_bitrate_kbps_2,
                     )
                     .map_err(|error| error.to_string());
                     let _ = proxy.send_event(UserEvent::Finished(result));
@@ -1095,6 +1115,10 @@ pub(super) fn run(
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
     record_segment_seconds: Option<NonZeroU32>,
+    record_bitrate_kbps: Option<u32>,
+    record_bitrate_kbps_2: Option<u32>,
+    record_audio_bitrate_kbps: Option<u32>,
+    record_audio_bitrate_kbps_2: Option<u32>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
@@ -1109,6 +1133,10 @@ pub(super) fn run(
         record_output_2,
         record_wav,
         record_segment_seconds,
+        record_bitrate_kbps,
+        record_bitrate_kbps_2,
+        record_audio_bitrate_kbps,
+        record_audio_bitrate_kbps_2,
         camera_helper,
         proxy,
     );

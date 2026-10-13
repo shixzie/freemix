@@ -126,6 +126,34 @@ fn probe(path: &std::path::Path) -> serde_json::Value {
     serde_json::from_slice(&probe.stdout).unwrap()
 }
 
+/// Frame count of a fragmented file that is still being written, or `None`
+/// while it is not yet readable or has no video frame count yet.
+fn live_video_frame_count(path: &std::path::Path) -> Option<u64> {
+    let probe = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-count_frames",
+            "-count_packets",
+            "-show_streams",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !probe.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&probe.stdout).ok()?;
+    let video = value["streams"]
+        .as_array()?
+        .iter()
+        .find(|stream| stream["codec_type"] == "video")?;
+    video["nb_read_frames"].as_str()?.parse().ok()
+}
+
 fn numeric_string(value: &serde_json::Value, field: &str) -> f64 {
     value[field].as_str().unwrap().parse().unwrap()
 }
@@ -313,6 +341,32 @@ fn safe_stop_writes_a_matching_wav_sidecar_alongside_the_mp4() {
 }
 
 #[test]
+fn safe_stop_records_with_configured_video_and_audio_bitrates() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("bitrates.mp4");
+    let output = std::fs::File::create(&path).unwrap();
+    let format = format();
+    let mut config = RecordConfig::new(format.clone());
+    config.video_bitrate_kbps = Some(2_000);
+    config.audio_bitrate_kbps = Some(96);
+    let mut recorder = Recorder::start(output, config).unwrap();
+    enqueue_all(&mut recorder, &format);
+    let report = recorder.stop();
+    assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+    assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");
+    assert_eq!(report.cleanup, CleanupStatus::Complete, "{report:?}");
+    assert_eq!(report.telemetry.completed_pairs, FRAME_COUNT);
+    assert_eq!(recorder.stop(), report);
+    assert_eq!(recorder.telemetry(), report.telemetry);
+    // Bitrate targeting is deliberately loose at this size, so only the
+    // stream identity and decodability are asserted.
+    assert_probe_and_decode(&path, FRAME_COUNT);
+}
+
+#[test]
 fn second_start_refuses_an_existing_wav_sidecar_path() {
     if !tools_available() {
         return;
@@ -360,21 +414,16 @@ fn forced_child_kill_leaves_a_playable_fragmented_prefix() {
         thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(recorder.telemetry().completed_pairs, FRAME_COUNT);
-    // Let the child mux what it has already read. A fixed sleep is too tight
-    // on a loaded host and can kill the child before it has written a full
-    // frame; wait for the output to stop growing, bounded.
-    let settle_deadline = Instant::now() + Duration::from_secs(5);
-    let mut last_bytes = recorder.telemetry().output_bytes;
-    let mut stable_polls = 0;
-    while Instant::now() < settle_deadline && stable_polls < 4 {
+    // Wait until the child has actually muxed the promised prefix before the
+    // forced kill. A fixed sleep or an output-size plateau is too tight on a
+    // loaded host: the muxer can stall between fragments while starved. The
+    // fragmented file is readable while it is written, so poll its frame count
+    // instead and keep the kill's contract exact: at least 30 muxed frames.
+    let settle_deadline = Instant::now() + Duration::from_secs(30);
+    while live_video_frame_count(&path).is_none_or(|frames| frames < 30)
+        && Instant::now() < settle_deadline
+    {
         thread::sleep(Duration::from_millis(25));
-        let bytes = recorder.telemetry().output_bytes;
-        if bytes == last_bytes {
-            stable_polls += 1;
-        } else {
-            stable_polls = 0;
-            last_bytes = bytes;
-        }
     }
     let report = recorder.cancel();
     assert_eq!(report.outcome, StopOutcome::Killed, "{report:?}");

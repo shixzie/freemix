@@ -385,6 +385,15 @@ struct NativeDaemon {
     /// (`--record-segment-seconds <1..=86400>`). Applies to every configured
     /// recorder slot.
     record_segment_seconds: Option<NonZeroU32>,
+    /// Optional per-slot `libx264` video bitrate in kbps
+    /// (`--record-bitrate-kbps` is slot 0 and `--record-bitrate-kbps-2` is
+    /// slot 1). `None` keeps that slot's encoder default.
+    record_bitrates: [Option<u32>; RECORDER_SLOTS],
+    /// Optional per-slot AAC audio bitrate in kbps
+    /// (`--record-audio-bitrate-kbps` is slot 0 and
+    /// `--record-audio-bitrate-kbps-2` is slot 1). `None` keeps that slot's
+    /// encoder default.
+    record_audio_bitrates: [Option<u32>; RECORDER_SLOTS],
     /// Hysteretic free-space alert for the configured program outputs.
     disk_alert: disk::DiskSpaceAlert,
     /// Latest successfully sampled free bytes across the configured outputs:
@@ -1607,6 +1616,12 @@ struct NativeProgramRecorder {
     /// 1-based recorder slot number this segment belongs to; every report and
     /// failure notice this recorder emits is annotated with it.
     slot: usize,
+    /// Configured `libx264` video bitrate for this segment; `None` keeps the
+    /// encoder default. Reported in `FREEMIXD_RECORDER`.
+    video_bitrate_kbps: Option<u32>,
+    /// Configured AAC audio bitrate for this segment; `None` keeps the encoder
+    /// default. Reported in `FREEMIXD_RECORDER`.
+    audio_bitrate_kbps: Option<u32>,
 }
 
 #[cfg(feature = "native-media")]
@@ -1664,6 +1679,8 @@ impl NativeProgramRecorder {
         stored: &StoredProject,
         path: &Path,
         wav: bool,
+        video_bitrate_kbps: Option<u32>,
+        audio_bitrate_kbps: Option<u32>,
         slot: usize,
     ) -> AppResult<Self> {
         let settings = stored.project().settings();
@@ -1676,7 +1693,15 @@ impl NativeProgramRecorder {
             settings.audio.channels.clone(),
             SequenceNumber::new(stored.position().frames_rendered),
         )?;
-        Self::start_with_format(runtime, format, path, wav, slot)
+        Self::start_with_format(
+            runtime,
+            format,
+            path,
+            wav,
+            video_bitrate_kbps,
+            audio_bitrate_kbps,
+            slot,
+        )
     }
 
     fn start_with_format(
@@ -1684,6 +1709,8 @@ impl NativeProgramRecorder {
         format: RecordFormat,
         path: &Path,
         wav: bool,
+        video_bitrate_kbps: Option<u32>,
+        audio_bitrate_kbps: Option<u32>,
         slot: usize,
     ) -> AppResult<Self> {
         let dimensions = format.dimensions();
@@ -1697,6 +1724,8 @@ impl NativeProgramRecorder {
         config.limits.stop_timeout = PROGRAM_RECORDER_STOP_TIMEOUT;
         config.limits.kill_timeout = PROGRAM_RECORDER_KILL_TIMEOUT;
         config.wav = wav.then(|| record_wav_path(path));
+        config.video_bitrate_kbps = video_bitrate_kbps;
+        config.audio_bitrate_kbps = audio_bitrate_kbps;
         let startup_pair_timeout = config
             .limits
             .connect_timeout
@@ -1712,6 +1741,8 @@ impl NativeProgramRecorder {
             startup_pair_timeout,
             parent,
             slot,
+            video_bitrate_kbps,
+            audio_bitrate_kbps,
         })
     }
 
@@ -1852,6 +1883,8 @@ impl NativeProgramRecorder {
                 free_bytes,
                 app_capture_failure,
                 &failure,
+                self.video_bitrate_kbps,
+                self.audio_bitrate_kbps,
             )
         );
         let complete = report.telemetry.state == RecorderState::Stopped
@@ -3442,6 +3475,8 @@ impl NativeDaemon {
             record_outputs: [None, None],
             record_wav: false,
             record_segment_seconds: None,
+            record_bitrates: [None, None],
+            record_audio_bitrates: [None, None],
             disk_alert: disk::DiskSpaceAlert::new(),
             disk_free_bytes: None,
             disk_sampled_at: None,
@@ -3499,6 +3534,8 @@ impl NativeDaemon {
             stored,
             &segment,
             self.record_wav,
+            self.record_bitrates[slot],
+            self.record_audio_bitrates[slot],
             slot + 1,
         )?));
         Ok(())
@@ -3510,8 +3547,10 @@ impl NativeDaemon {
     ///
     /// Slot 0 is `--record-program` (`--record-output`) and slot 1 is
     /// `--record-program-2` (`--record-output-2`); the shared `record_wav`
-    /// flag applies to every configured slot. The whole-run telemetry reports
-    /// recording as configured whenever at least one slot has a destination.
+    /// flag applies to every configured slot, while each bitrate pair applies
+    /// only to its own slot. The whole-run telemetry reports recording as
+    /// configured whenever at least one slot has a destination.
+    #[allow(clippy::too_many_arguments)]
     fn configure_recordings(
         &mut self,
         primary: Option<PathBuf>,
@@ -3520,12 +3559,18 @@ impl NativeDaemon {
         secondary_output: Option<fm_types::OutputId>,
         wav: bool,
         segment_seconds: Option<NonZeroU32>,
+        primary_bitrate: Option<u32>,
+        primary_audio_bitrate: Option<u32>,
+        secondary_bitrate: Option<u32>,
+        secondary_audio_bitrate: Option<u32>,
     ) {
         self.record_program = primary;
         self.record_program_2 = secondary;
         self.record_outputs = [primary_output, secondary_output];
         self.record_wav = wav;
         self.record_segment_seconds = segment_seconds;
+        self.record_bitrates = [primary_bitrate, secondary_bitrate];
+        self.record_audio_bitrates = [primary_audio_bitrate, secondary_audio_bitrate];
         self.telemetry.recorder_configured = self.recording_configured();
     }
 
@@ -4268,6 +4313,8 @@ impl NativeDaemon {
                 format,
                 &segment,
                 self.record_wav,
+                self.record_bitrates[slot],
+                self.record_audio_bitrates[slot],
                 slot + 1,
             )
         });
@@ -4938,7 +4985,7 @@ impl NativeDaemon {
         Ok(true)
     }
 
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::too_many_arguments)]
     fn configure_recordings(
         &mut self,
         _primary: Option<PathBuf>,
@@ -4947,6 +4994,10 @@ impl NativeDaemon {
         _secondary_output: Option<fm_types::OutputId>,
         _wav: bool,
         _segment_seconds: Option<NonZeroU32>,
+        _primary_bitrate: Option<u32>,
+        _primary_audio_bitrate: Option<u32>,
+        _secondary_bitrate: Option<u32>,
+        _secondary_audio_bitrate: Option<u32>,
     ) {
     }
 
@@ -5507,8 +5558,11 @@ fn diagnostic_field(value: &str) -> String {
 ///
 /// Every existing field keeps its name and order; the 1-based `slot` names
 /// which configured recorder wrote the segment and follows `v=1`
-/// immediately.
+/// immediately. `video_bitrate_kbps` and `audio_bitrate_kbps` render the
+/// slot's configured encoder bitrate, or `unset` when it keeps the encoder
+/// default.
 #[cfg(feature = "native-media")]
+#[allow(clippy::too_many_arguments)]
 fn recorder_report(
     slot: usize,
     report: &StopReport,
@@ -5516,19 +5570,30 @@ fn recorder_report(
     free_bytes: u64,
     app_capture_failure: bool,
     failure: &str,
+    video_bitrate_kbps: Option<u32>,
+    audio_bitrate_kbps: Option<u32>,
 ) -> String {
     format!(
-        "FREEMIXD_RECORDER\tv=1\tslot={slot}\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\twav_bytes={}\tduration_ms={duration_ms}\tfree_bytes={free_bytes}\toutput_finalization={:?}\tcleanup={:?}\tapp_capture_failure={app_capture_failure}\tfailure={}",
+        "FREEMIXD_RECORDER\tv=1\tslot={slot}\tstate={:?}\toutcome={:?}\taccepted_pairs={}\tcompleted_pairs={}\toutput_bytes={}\twav_bytes={}\tvideo_bitrate_kbps={}\taudio_bitrate_kbps={}\tduration_ms={duration_ms}\tfree_bytes={free_bytes}\toutput_finalization={:?}\tcleanup={:?}\tapp_capture_failure={app_capture_failure}\tfailure={}",
         report.telemetry.state,
         report.outcome,
         report.telemetry.accepted_pairs,
         report.telemetry.completed_pairs,
         report.telemetry.output_bytes,
         report.telemetry.wav_bytes,
+        record_bitrate_field(video_bitrate_kbps),
+        record_bitrate_field(audio_bitrate_kbps),
         report.output,
         report.cleanup,
         diagnostic_field(failure),
     )
+}
+
+/// Renders one configured recorder bitrate for `FREEMIXD_RECORDER`; `None`
+/// means the slot keeps the encoder's own default and reports `unset`.
+#[cfg(feature = "native-media")]
+fn record_bitrate_field(kbps: Option<u32>) -> String {
+    kbps.map_or_else(|| "unset".to_owned(), |kbps| kbps.to_string())
 }
 
 /// One sanitized, slot-annotated immediate failure notice for a latch that
@@ -5578,6 +5643,16 @@ impl ControlPlane for ControlHandle {
 }
 
 const MAX_RECORD_SEGMENT_SECONDS: u32 = 86_400;
+/// CLI envelope of `--record-bitrate-kbps`/`--record-bitrate-kbps-2`, matching
+/// `fm_codec_ffmpeg::record::{MIN,MAX}_VIDEO_BITRATE_KBPS`. The daemon must
+/// accept these options in builds without the optional codec dependency, so
+/// the bounds are restated here rather than imported.
+const MIN_RECORD_VIDEO_BITRATE_KBPS: u32 = 1_000;
+const MAX_RECORD_VIDEO_BITRATE_KBPS: u32 = 100_000;
+/// CLI envelope of `--record-audio-bitrate-kbps`/`--record-audio-bitrate-kbps-2`,
+/// matching `fm_codec_ffmpeg::record::{MIN,MAX}_AUDIO_BITRATE_KBPS`.
+const MIN_RECORD_AUDIO_BITRATE_KBPS: u32 = 8;
+const MAX_RECORD_AUDIO_BITRATE_KBPS: u32 = 1_024;
 
 // The parse result is built once and matched once; keeping the Serve fields
 // inline beats indirection for a value that never lives in a collection.
@@ -5601,6 +5676,10 @@ enum Command {
         record_output_2: Option<fm_types::OutputId>,
         record_wav: bool,
         record_segment_seconds: Option<NonZeroU32>,
+        record_bitrate_kbps: Option<u32>,
+        record_bitrate_kbps_2: Option<u32>,
+        record_audio_bitrate_kbps: Option<u32>,
+        record_audio_bitrate_kbps_2: Option<u32>,
         diagnostic_stop_after: Option<Duration>,
         recover_to_checkpoint: bool,
     },
@@ -5651,6 +5730,10 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut record_output_2 = None;
             let mut record_wav = false;
             let mut record_segment_seconds = None;
+            let mut record_bitrate_kbps = None;
+            let mut record_bitrate_kbps_2 = None;
+            let mut record_audio_bitrate_kbps = None;
+            let mut record_audio_bitrate_kbps_2 = None;
             let mut diagnostic_stop_after = None;
             let mut recover_to_checkpoint = false;
             while let Some(option) = arguments.next() {
@@ -5714,6 +5797,87 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         .into());
                     }
                     record_segment_seconds = Some(parse_record_segment_seconds(value)?);
+                    continue;
+                }
+                if let Some(value) = option.strip_prefix("--record-bitrate-kbps=") {
+                    if record_bitrate_kbps.is_some() {
+                        return Err(
+                            AppFailure("duplicate option `--record-bitrate-kbps`".into()).into(),
+                        );
+                    }
+                    if value.is_empty() {
+                        return Err(
+                            AppFailure("missing value for --record-bitrate-kbps".into()).into()
+                        );
+                    }
+                    record_bitrate_kbps = Some(parse_record_bitrate_kbps(
+                        "--record-bitrate-kbps",
+                        value,
+                        MIN_RECORD_VIDEO_BITRATE_KBPS,
+                        MAX_RECORD_VIDEO_BITRATE_KBPS,
+                    )?);
+                    continue;
+                }
+                if let Some(value) = option.strip_prefix("--record-bitrate-kbps-2=") {
+                    if record_bitrate_kbps_2.is_some() {
+                        return Err(AppFailure(
+                            "duplicate option `--record-bitrate-kbps-2`".into(),
+                        )
+                        .into());
+                    }
+                    if value.is_empty() {
+                        return Err(
+                            AppFailure("missing value for --record-bitrate-kbps-2".into()).into(),
+                        );
+                    }
+                    record_bitrate_kbps_2 = Some(parse_record_bitrate_kbps(
+                        "--record-bitrate-kbps-2",
+                        value,
+                        MIN_RECORD_VIDEO_BITRATE_KBPS,
+                        MAX_RECORD_VIDEO_BITRATE_KBPS,
+                    )?);
+                    continue;
+                }
+                if let Some(value) = option.strip_prefix("--record-audio-bitrate-kbps=") {
+                    if record_audio_bitrate_kbps.is_some() {
+                        return Err(AppFailure(
+                            "duplicate option `--record-audio-bitrate-kbps`".into(),
+                        )
+                        .into());
+                    }
+                    if value.is_empty() {
+                        return Err(AppFailure(
+                            "missing value for --record-audio-bitrate-kbps".into(),
+                        )
+                        .into());
+                    }
+                    record_audio_bitrate_kbps = Some(parse_record_bitrate_kbps(
+                        "--record-audio-bitrate-kbps",
+                        value,
+                        MIN_RECORD_AUDIO_BITRATE_KBPS,
+                        MAX_RECORD_AUDIO_BITRATE_KBPS,
+                    )?);
+                    continue;
+                }
+                if let Some(value) = option.strip_prefix("--record-audio-bitrate-kbps-2=") {
+                    if record_audio_bitrate_kbps_2.is_some() {
+                        return Err(AppFailure(
+                            "duplicate option `--record-audio-bitrate-kbps-2`".into(),
+                        )
+                        .into());
+                    }
+                    if value.is_empty() {
+                        return Err(AppFailure(
+                            "missing value for --record-audio-bitrate-kbps-2".into(),
+                        )
+                        .into());
+                    }
+                    record_audio_bitrate_kbps_2 = Some(parse_record_bitrate_kbps(
+                        "--record-audio-bitrate-kbps-2",
+                        value,
+                        MIN_RECORD_AUDIO_BITRATE_KBPS,
+                        MAX_RECORD_AUDIO_BITRATE_KBPS,
+                    )?);
                     continue;
                 }
                 if let Some(value) = option.strip_prefix("--camera-helper=") {
@@ -5925,6 +6089,85 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                             })?;
                         record_segment_seconds = Some(parse_record_segment_seconds(&value)?);
                     }
+                    "--record-bitrate-kbps" if record_bitrate_kbps.is_some() => {
+                        return Err(
+                            AppFailure("duplicate option `--record-bitrate-kbps`".into()).into(),
+                        );
+                    }
+                    "--record-bitrate-kbps" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-bitrate-kbps".into())
+                            })?;
+                        record_bitrate_kbps = Some(parse_record_bitrate_kbps(
+                            "--record-bitrate-kbps",
+                            &value,
+                            MIN_RECORD_VIDEO_BITRATE_KBPS,
+                            MAX_RECORD_VIDEO_BITRATE_KBPS,
+                        )?);
+                    }
+                    "--record-bitrate-kbps-2" if record_bitrate_kbps_2.is_some() => {
+                        return Err(AppFailure(
+                            "duplicate option `--record-bitrate-kbps-2`".into(),
+                        )
+                        .into());
+                    }
+                    "--record-bitrate-kbps-2" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-bitrate-kbps-2".into())
+                            })?;
+                        record_bitrate_kbps_2 = Some(parse_record_bitrate_kbps(
+                            "--record-bitrate-kbps-2",
+                            &value,
+                            MIN_RECORD_VIDEO_BITRATE_KBPS,
+                            MAX_RECORD_VIDEO_BITRATE_KBPS,
+                        )?);
+                    }
+                    "--record-audio-bitrate-kbps" if record_audio_bitrate_kbps.is_some() => {
+                        return Err(AppFailure(
+                            "duplicate option `--record-audio-bitrate-kbps`".into(),
+                        )
+                        .into());
+                    }
+                    "--record-audio-bitrate-kbps" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-audio-bitrate-kbps".into())
+                            })?;
+                        record_audio_bitrate_kbps = Some(parse_record_bitrate_kbps(
+                            "--record-audio-bitrate-kbps",
+                            &value,
+                            MIN_RECORD_AUDIO_BITRATE_KBPS,
+                            MAX_RECORD_AUDIO_BITRATE_KBPS,
+                        )?);
+                    }
+                    "--record-audio-bitrate-kbps-2" if record_audio_bitrate_kbps_2.is_some() => {
+                        return Err(AppFailure(
+                            "duplicate option `--record-audio-bitrate-kbps-2`".into(),
+                        )
+                        .into());
+                    }
+                    "--record-audio-bitrate-kbps-2" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-audio-bitrate-kbps-2".into())
+                            })?;
+                        record_audio_bitrate_kbps_2 = Some(parse_record_bitrate_kbps(
+                            "--record-audio-bitrate-kbps-2",
+                            &value,
+                            MIN_RECORD_AUDIO_BITRATE_KBPS,
+                            MAX_RECORD_AUDIO_BITRATE_KBPS,
+                        )?);
+                    }
                     "--diagnostic-stop-after" if diagnostic_stop_after.is_some() => {
                         return Err(AppFailure(
                             "duplicate option `--diagnostic-stop-after`".into(),
@@ -5964,6 +6207,29 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 return Err(
                     AppFailure("--record-output-2 requires --record-program-2".into()).into(),
                 );
+            }
+            if record_bitrate_kbps.is_some() && record_program.is_none() {
+                return Err(
+                    AppFailure("--record-bitrate-kbps requires --record-program".into()).into(),
+                );
+            }
+            if record_bitrate_kbps_2.is_some() && record_program_2.is_none() {
+                return Err(AppFailure(
+                    "--record-bitrate-kbps-2 requires --record-program-2".into(),
+                )
+                .into());
+            }
+            if record_audio_bitrate_kbps.is_some() && record_program.is_none() {
+                return Err(AppFailure(
+                    "--record-audio-bitrate-kbps requires --record-program".into(),
+                )
+                .into());
+            }
+            if record_audio_bitrate_kbps_2.is_some() && record_program_2.is_none() {
+                return Err(AppFailure(
+                    "--record-audio-bitrate-kbps-2 requires --record-program-2".into(),
+                )
+                .into());
             }
             if record_wav && record_program.is_none() && record_program_2.is_none() {
                 return Err(AppFailure(
@@ -6068,6 +6334,10 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 record_output_2,
                 record_wav,
                 record_segment_seconds,
+                record_bitrate_kbps,
+                record_bitrate_kbps_2,
+                record_audio_bitrate_kbps,
+                record_audio_bitrate_kbps_2,
                 diagnostic_stop_after,
                 recover_to_checkpoint,
             })
@@ -6099,6 +6369,25 @@ fn parse_record_segment_seconds(value: &str) -> AppResult<NonZeroU32> {
         .ok_or_else(|| {
             AppFailure(format!(
                 "invalid value for --record-segment-seconds `{value}`; expected an integer in 1..=86400"
+            ))
+            .into()
+        })
+}
+
+/// Parses one recorder bitrate option as an integer in `min..=max` kbps.
+///
+/// # Errors
+///
+/// Returns an [`AppFailure`] when `value` is not an integer in the inclusive
+/// range.
+fn parse_record_bitrate_kbps(option: &str, value: &str, min: u32, max: u32) -> AppResult<u32> {
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|&kbps| (min..=max).contains(&kbps))
+        .ok_or_else(|| {
+            AppFailure(format!(
+                "invalid value for {option} `{value}`; expected an integer in {min}..={max}"
             ))
             .into()
         })
@@ -6194,6 +6483,10 @@ fn run(command: Command) -> AppResult<()> {
             record_output_2,
             record_wav,
             record_segment_seconds,
+            record_bitrate_kbps,
+            record_bitrate_kbps_2,
+            record_audio_bitrate_kbps,
+            record_audio_bitrate_kbps_2,
             diagnostic_stop_after,
             recover_to_checkpoint,
         } => {
@@ -6210,6 +6503,10 @@ fn run(command: Command) -> AppResult<()> {
                     record_output_2,
                     record_wav,
                     record_segment_seconds,
+                    record_bitrate_kbps,
+                    record_bitrate_kbps_2,
+                    record_audio_bitrate_kbps,
+                    record_audio_bitrate_kbps_2,
                 )
             } else {
                 serve_inner(
@@ -6232,6 +6529,10 @@ fn run(command: Command) -> AppResult<()> {
                     record_output_2,
                     record_wav,
                     record_segment_seconds,
+                    record_bitrate_kbps,
+                    record_bitrate_kbps_2,
+                    record_audio_bitrate_kbps,
+                    record_audio_bitrate_kbps_2,
                     diagnostic_stop_after,
                     recover_to_checkpoint,
                 )
@@ -6262,6 +6563,10 @@ fn run_fullscreen_program(
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
     record_segment_seconds: Option<NonZeroU32>,
+    record_bitrate_kbps: Option<u32>,
+    record_bitrate_kbps_2: Option<u32>,
+    record_audio_bitrate_kbps: Option<u32>,
+    record_audio_bitrate_kbps_2: Option<u32>,
 ) -> AppResult<()> {
     program_surface::run(
         project,
@@ -6275,6 +6580,10 @@ fn run_fullscreen_program(
         record_output_2,
         record_wav,
         record_segment_seconds,
+        record_bitrate_kbps,
+        record_bitrate_kbps_2,
+        record_audio_bitrate_kbps,
+        record_audio_bitrate_kbps_2,
     )
 }
 
@@ -6292,6 +6601,10 @@ fn run_fullscreen_program(
     _record_output_2: Option<fm_types::OutputId>,
     _record_wav: bool,
     _record_segment_seconds: Option<NonZeroU32>,
+    _record_bitrate_kbps: Option<u32>,
+    _record_bitrate_kbps_2: Option<u32>,
+    _record_audio_bitrate_kbps: Option<u32>,
+    _record_audio_bitrate_kbps_2: Option<u32>,
 ) -> AppResult<()> {
     Err(AppFailure(
         "--fullscreen-program requires a macOS build with feature `macos-program-surface`".into(),
@@ -6342,6 +6655,10 @@ fn serve_program_worker(
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
     record_segment_seconds: Option<NonZeroU32>,
+    record_bitrate_kbps: Option<u32>,
+    record_bitrate_kbps_2: Option<u32>,
+    record_audio_bitrate_kbps: Option<u32>,
+    record_audio_bitrate_kbps_2: Option<u32>,
 ) -> AppResult<()> {
     serve_inner(
         path,
@@ -6364,6 +6681,10 @@ fn serve_program_worker(
         record_output_2,
         record_wav,
         record_segment_seconds,
+        record_bitrate_kbps,
+        record_bitrate_kbps_2,
+        record_audio_bitrate_kbps,
+        record_audio_bitrate_kbps_2,
         None,
         // `--recover-to-checkpoint` is refused with `--fullscreen-program`.
         false,
@@ -6464,6 +6785,10 @@ fn serve_inner(
     record_output_2: Option<fm_types::OutputId>,
     record_wav: bool,
     record_segment_seconds: Option<NonZeroU32>,
+    record_bitrate_kbps: Option<u32>,
+    record_bitrate_kbps_2: Option<u32>,
+    record_audio_bitrate_kbps: Option<u32>,
+    record_audio_bitrate_kbps_2: Option<u32>,
     diagnostic_stop_after: Option<Duration>,
     recover_to_checkpoint: bool,
 ) -> AppResult<()> {
@@ -6580,6 +6905,10 @@ fn serve_inner(
             record_output_2,
             record_wav,
             record_segment_seconds,
+            record_bitrate_kbps,
+            record_audio_bitrate_kbps,
+            record_bitrate_kbps_2,
+            record_audio_bitrate_kbps_2,
         );
         // Startup reconciliation is deliberate: a configured recorder only
         // auto-starts when the restored project's desired flag says so. The
@@ -8872,12 +9201,13 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
 --record-wav additionally writes a linear-PCM WAV sidecar for each segment of every configured recorder, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
 --record-segment-seconds rotates each active recorder slot to its next <stem>-<NNN>.mp4 segment on a frame boundary after at least the configured number of seconds.\n\
+--record-bitrate-kbps and --record-bitrate-kbps-2 set each slot's libx264 video bitrate in kbps (1000..=100000), and --record-audio-bitrate-kbps and --record-audio-bitrate-kbps-2 set its AAC audio bitrate in kbps (8..=1024); each accepts <option> <value> or <option>=<value>, applies only to its own --record-program/--record-program-2 slot, and leaves that slot's encoder defaults untouched when unset.\n\
 Configured network stream endpoints are probed once at startup and reported as FREEMIXD_PREFLIGHT; the probe is bounded and never blocks or refuses startup, and it is a reachability check rather than a bandwidth or health guarantee.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 macOS fullscreen display selection is a zero-based index ordered by physical position, then stable descriptive fields.\n\
@@ -9468,6 +9798,13 @@ mod tests {
         values.iter().map(ToString::to_string).collect()
     }
 
+    /// `serve show.freemix --native-media` plus the given recorder options.
+    fn record_args(extra: &[&str]) -> Vec<String> {
+        let mut values = strings(&["serve", "show.freemix", "--native-media"]);
+        values.extend(extra.iter().map(ToString::to_string));
+        values
+    }
+
     #[test]
     fn parses_serve_options() {
         assert_eq!(
@@ -9496,6 +9833,10 @@ mod tests {
                 record_output_2: None,
                 record_wav: false,
                 record_segment_seconds: None,
+                record_bitrate_kbps: None,
+                record_bitrate_kbps_2: None,
+                record_audio_bitrate_kbps: None,
+                record_audio_bitrate_kbps_2: None,
                 diagnostic_stop_after: None,
                 recover_to_checkpoint: false,
             }
@@ -10590,6 +10931,290 @@ mod tests {
                     "--record-segment-seconds=-5",
                 ]),
                 "invalid value for --record-segment-seconds `-5`; expected an integer in 1..=86400",
+            ),
+        ] {
+            assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn parses_record_bitrate_options_with_either_form_and_inclusive_bounds() {
+        for (arguments, video, video_2, audio, audio_2) in [
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-bitrate-kbps",
+                    "2000",
+                    "--record-audio-bitrate-kbps",
+                    "96",
+                ]),
+                Some(2_000),
+                None,
+                Some(96),
+                None,
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-bitrate-kbps-2=3000",
+                    "--record-audio-bitrate-kbps-2=128",
+                ]),
+                None,
+                Some(3_000),
+                None,
+                Some(128),
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program=capture.mp4",
+                    "--record-program-2=backup.mp4",
+                    "--record-bitrate-kbps=1000",
+                    "--record-bitrate-kbps-2",
+                    "100000",
+                    "--record-audio-bitrate-kbps",
+                    "8",
+                    "--record-audio-bitrate-kbps-2=1024",
+                ]),
+                Some(MIN_RECORD_VIDEO_BITRATE_KBPS),
+                Some(MAX_RECORD_VIDEO_BITRATE_KBPS),
+                Some(MIN_RECORD_AUDIO_BITRATE_KBPS),
+                Some(MAX_RECORD_AUDIO_BITRATE_KBPS),
+            ),
+        ] {
+            assert!(matches!(
+                parse_args(arguments).unwrap(),
+                Command::Serve {
+                    record_bitrate_kbps,
+                    record_bitrate_kbps_2,
+                    record_audio_bitrate_kbps,
+                    record_audio_bitrate_kbps_2,
+                    ..
+                } if record_bitrate_kbps == video
+                    && record_bitrate_kbps_2 == video_2
+                    && record_audio_bitrate_kbps == audio
+                    && record_audio_bitrate_kbps_2 == audio_2
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_record_bitrate_options_without_their_recorder_slot_or_value() {
+        for (arguments, expected) in [
+            (
+                record_args(&["--record-bitrate-kbps", "2000"]),
+                "--record-bitrate-kbps requires --record-program",
+            ),
+            (
+                record_args(&["--record-bitrate-kbps-2=2000"]),
+                "--record-bitrate-kbps-2 requires --record-program-2",
+            ),
+            (
+                record_args(&["--record-audio-bitrate-kbps", "96"]),
+                "--record-audio-bitrate-kbps requires --record-program",
+            ),
+            (
+                record_args(&["--record-audio-bitrate-kbps-2=96"]),
+                "--record-audio-bitrate-kbps-2 requires --record-program-2",
+            ),
+            (
+                record_args(&["--record-program", "capture.mp4", "--record-bitrate-kbps"]),
+                "missing value for --record-bitrate-kbps",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-bitrate-kbps",
+                    "--once",
+                ]),
+                "missing value for --record-bitrate-kbps",
+            ),
+            (
+                record_args(&["--record-program", "capture.mp4", "--record-bitrate-kbps="]),
+                "missing value for --record-bitrate-kbps",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-bitrate-kbps-2",
+                ]),
+                "missing value for --record-bitrate-kbps-2",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-bitrate-kbps-2=",
+                ]),
+                "missing value for --record-bitrate-kbps-2",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-audio-bitrate-kbps",
+                ]),
+                "missing value for --record-audio-bitrate-kbps",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-audio-bitrate-kbps=",
+                ]),
+                "missing value for --record-audio-bitrate-kbps",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-audio-bitrate-kbps-2",
+                ]),
+                "missing value for --record-audio-bitrate-kbps-2",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-audio-bitrate-kbps-2=",
+                ]),
+                "missing value for --record-audio-bitrate-kbps-2",
+            ),
+        ] {
+            assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_out_of_range_record_bitrate_options() {
+        for (arguments, expected) in [
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-bitrate-kbps",
+                    "999",
+                ]),
+                "invalid value for --record-bitrate-kbps `999`; expected an integer in 1000..=100000",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-bitrate-kbps=100001",
+                ]),
+                "invalid value for --record-bitrate-kbps `100001`; expected an integer in 1000..=100000",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-bitrate-kbps=abc",
+                ]),
+                "invalid value for --record-bitrate-kbps `abc`; expected an integer in 1000..=100000",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-bitrate-kbps-2",
+                    "100001",
+                ]),
+                "invalid value for --record-bitrate-kbps-2 `100001`; expected an integer in 1000..=100000",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-audio-bitrate-kbps",
+                    "7",
+                ]),
+                "invalid value for --record-audio-bitrate-kbps `7`; expected an integer in 8..=1024",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-audio-bitrate-kbps=1025",
+                ]),
+                "invalid value for --record-audio-bitrate-kbps `1025`; expected an integer in 8..=1024",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-audio-bitrate-kbps-2=-5",
+                ]),
+                "invalid value for --record-audio-bitrate-kbps-2 `-5`; expected an integer in 8..=1024",
+            ),
+        ] {
+            assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_record_bitrate_options() {
+        for (arguments, expected) in [
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-bitrate-kbps",
+                    "2000",
+                    "--record-bitrate-kbps",
+                    "3000",
+                ]),
+                "duplicate option `--record-bitrate-kbps`",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-bitrate-kbps=2000",
+                    "--record-bitrate-kbps=3000",
+                ]),
+                "duplicate option `--record-bitrate-kbps`",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-bitrate-kbps-2",
+                    "2000",
+                    "--record-bitrate-kbps-2=3000",
+                ]),
+                "duplicate option `--record-bitrate-kbps-2`",
+            ),
+            (
+                record_args(&[
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-audio-bitrate-kbps",
+                    "96",
+                    "--record-audio-bitrate-kbps=128",
+                ]),
+                "duplicate option `--record-audio-bitrate-kbps`",
+            ),
+            (
+                record_args(&[
+                    "--record-program-2",
+                    "backup.mp4",
+                    "--record-audio-bitrate-kbps-2=96",
+                    "--record-audio-bitrate-kbps-2=128",
+                ]),
+                "duplicate option `--record-audio-bitrate-kbps-2`",
             ),
         ] {
             assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
@@ -11777,14 +12402,54 @@ mod tests {
             },
         };
         assert_eq!(
-            recorder_report(1, &report, 1_000, 2_048, false, "none"),
-            "FREEMIXD_RECORDER\tv=1\tslot=1\tstate=Stopped\toutcome=Clean\taccepted_pairs=30\tcompleted_pairs=30\toutput_bytes=1024\twav_bytes=512\tduration_ms=1000\tfree_bytes=2048\toutput_finalization=Synced\tcleanup=Complete\tapp_capture_failure=false\tfailure=none",
+            recorder_report(1, &report, 1_000, 2_048, false, "none", None, None),
+            "FREEMIXD_RECORDER\tv=1\tslot=1\tstate=Stopped\toutcome=Clean\taccepted_pairs=30\tcompleted_pairs=30\toutput_bytes=1024\twav_bytes=512\tvideo_bitrate_kbps=unset\taudio_bitrate_kbps=unset\tduration_ms=1000\tfree_bytes=2048\toutput_finalization=Synced\tcleanup=Complete\tapp_capture_failure=false\tfailure=none",
         );
         // The second slot is annotated by number, never by position in a
         // combined record, so a mixed run keeps the two segments separable.
         assert!(
-            recorder_report(2, &report, 0, 0, false, "none")
+            recorder_report(2, &report, 0, 0, false, "none", None, None)
                 .starts_with("FREEMIXD_RECORDER\tv=1\tslot=2\tstate=Stopped\t")
+        );
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn recorder_report_renders_configured_and_unset_bitrates() {
+        let report = StopReport {
+            outcome: StopOutcome::Clean,
+            exit_status: Some(0),
+            output: OutputFinalization::Synced,
+            cleanup: CleanupStatus::Complete,
+            wav_bytes: 0,
+            telemetry: fm_codec_ffmpeg::record::RecordTelemetry {
+                state: RecorderState::Stopped,
+                failure: None,
+                accepted_pairs: 1,
+                completed_pairs: 1,
+                failed_pairs: 0,
+                outstanding_pairs: 0,
+                retained_bytes: 0,
+                output_bytes: 128,
+                wav_bytes: 0,
+                stderr_tail: String::new(),
+                stderr_truncated: false,
+            },
+        };
+        assert!(
+            recorder_report(1, &report, 0, 0, false, "none", Some(2_000), Some(96)).contains(
+                "\twav_bytes=0\tvideo_bitrate_kbps=2000\taudio_bitrate_kbps=96\tduration_ms=0\t"
+            )
+        );
+        assert!(
+            recorder_report(2, &report, 0, 0, false, "none", None, None)
+                .contains("\twav_bytes=0\tvideo_bitrate_kbps=unset\taudio_bitrate_kbps=unset\t")
+        );
+        // Each field is independent: one slot can set video while keeping the
+        // encoder's default audio.
+        assert!(
+            recorder_report(2, &report, 0, 0, false, "none", Some(1_000), None)
+                .contains("\tvideo_bitrate_kbps=1000\taudio_bitrate_kbps=unset\t")
         );
     }
 

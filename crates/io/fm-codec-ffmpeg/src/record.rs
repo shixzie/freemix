@@ -41,6 +41,15 @@ const TOKEN_BYTES: usize = 32;
 /// command line, so no input byte needs to be inspected to describe them.
 pub(crate) const PROBE_SIZE: &str = "32";
 
+/// Lowest accepted [`RecordConfig::video_bitrate_kbps`], in kbps.
+pub const MIN_VIDEO_BITRATE_KBPS: u32 = 1_000;
+/// Highest accepted [`RecordConfig::video_bitrate_kbps`], in kbps.
+pub const MAX_VIDEO_BITRATE_KBPS: u32 = 100_000;
+/// Lowest accepted [`RecordConfig::audio_bitrate_kbps`], in kbps.
+pub const MIN_AUDIO_BITRATE_KBPS: u32 = 8;
+/// Highest accepted [`RecordConfig::audio_bitrate_kbps`], in kbps.
+pub const MAX_AUDIO_BITRATE_KBPS: u32 = 1_024;
+
 /// Validated raw input format for one recording.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordFormat {
@@ -276,6 +285,19 @@ pub struct RecordConfig {
     /// are never created. The sidecar is only guaranteed finalized after a
     /// clean stop; a killed child may leave it empty or truncated.
     pub wav: Option<PathBuf>,
+    /// Optional constant video bitrate in kbps, within
+    /// [`MIN_VIDEO_BITRATE_KBPS`]`..=`[`MAX_VIDEO_BITRATE_KBPS`].
+    ///
+    /// `Some` adds `-b:v {kbps}k -maxrate {kbps}k -bufsize {2*kbps}k` to the
+    /// `libx264` encoder arguments. `None` keeps the encoder's own default
+    /// bitrate control and therefore today's output byte for byte.
+    pub video_bitrate_kbps: Option<u32>,
+    /// Optional audio bitrate in kbps, within
+    /// [`MIN_AUDIO_BITRATE_KBPS`]`..=`[`MAX_AUDIO_BITRATE_KBPS`].
+    ///
+    /// `Some` adds `-b:a {kbps}k` to the AAC encoder arguments. `None` keeps
+    /// the encoder's own default bitrate and therefore today's output.
+    pub audio_bitrate_kbps: Option<u32>,
 }
 
 impl RecordConfig {
@@ -286,6 +308,8 @@ impl RecordConfig {
             format,
             limits: RecordLimits::default(),
             wav: None,
+            video_bitrate_kbps: None,
+            audio_bitrate_kbps: None,
         }
     }
 }
@@ -351,6 +375,24 @@ fn validate_limits(format: &RecordFormat, limits: RecordLimits) -> Result<(), Li
             required,
             maximum: limits.max_retained_bytes,
         });
+    }
+    Ok(())
+}
+
+/// Refuses configured encoder bitrates outside their accepted envelopes before
+/// any output, listener, or child exists.
+fn validate_bitrates(config: &RecordConfig) -> Result<(), StartError> {
+    if config
+        .video_bitrate_kbps
+        .is_some_and(|kbps| !(MIN_VIDEO_BITRATE_KBPS..=MAX_VIDEO_BITRATE_KBPS).contains(&kbps))
+    {
+        return Err(StartError::complete(StartErrorKind::InvalidBitrate));
+    }
+    if config
+        .audio_bitrate_kbps
+        .is_some_and(|kbps| !(MIN_AUDIO_BITRATE_KBPS..=MAX_AUDIO_BITRATE_KBPS).contains(&kbps))
+    {
+        return Err(StartError::complete(StartErrorKind::InvalidBitrate));
     }
     Ok(())
 }
@@ -607,6 +649,8 @@ pub enum CleanupStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StartErrorKind {
     InvalidLimits(LimitsError),
+    /// A configured video or audio bitrate is outside its documented envelope.
+    InvalidBitrate,
     InvalidExecutable,
     ToolUnavailable(UnavailableReason),
     Randomness,
@@ -1074,6 +1118,7 @@ impl Recorder {
     pub fn start(output: File, config: RecordConfig) -> Result<Self, StartError> {
         validate_limits(&config.format, config.limits)
             .map_err(|error| StartError::complete(StartErrorKind::InvalidLimits(error)))?;
+        validate_bitrates(&config)?;
         let executable = recorder_executable(config.ffmpeg)?;
         let output = prepare_output(output)?;
         prepare_wav(config.wav.as_deref())?;
@@ -1090,6 +1135,8 @@ impl Recorder {
             &video_token,
             &audio_token,
             config.wav.as_deref(),
+            config.video_bitrate_kbps,
+            config.audio_bitrate_kbps,
         );
         let shared = Arc::new(Shared::new(
             &config.format,
@@ -2432,6 +2479,7 @@ fn retained_environment_names() -> &'static [&'static str] {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn command_args(
     format: &RecordFormat,
     video_address: SocketAddr,
@@ -2439,11 +2487,13 @@ fn command_args(
     video_token: &str,
     audio_token: &str,
     wav: Option<&Path>,
+    video_bitrate_kbps: Option<u32>,
+    audio_bitrate_kbps: Option<u32>,
 ) -> Vec<OsString> {
     let dimensions = format.dimensions;
     let rate = format.frame_rate;
     let gop = u64::from(rate.numerator()).div_ceil(u64::from(rate.denominator()));
-    let values = vec![
+    let mut values = vec![
         "-nostdin".to_owned(),
         "-hide_banner".to_owned(),
         "-loglevel".to_owned(),
@@ -2492,6 +2542,20 @@ fn command_args(
         "libx264".to_owned(),
         "-pix_fmt".to_owned(),
         "yuv420p".to_owned(),
+    ];
+    if let Some(kbps) = video_bitrate_kbps {
+        // `-maxrate` plus a two-second `-bufsize` bounds the instantaneous rate
+        // around the same target; without both, `-b:v` alone is only a hint.
+        values.extend([
+            "-b:v".to_owned(),
+            format!("{kbps}k"),
+            "-maxrate".to_owned(),
+            format!("{kbps}k"),
+            "-bufsize".to_owned(),
+            format!("{}k", kbps.saturating_mul(2)),
+        ]);
+    }
+    values.extend([
         "-g".to_owned(),
         gop.to_string(),
         "-keyint_min".to_owned(),
@@ -2502,6 +2566,11 @@ fn command_args(
         "expr:gte(t,n_forced*1)".to_owned(),
         "-c:a".to_owned(),
         "aac".to_owned(),
+    ]);
+    if let Some(kbps) = audio_bitrate_kbps {
+        values.extend(["-b:a".to_owned(), format!("{kbps}k")]);
+    }
+    values.extend([
         "-movflags".to_owned(),
         "+empty_moov+default_base_moof+frag_keyframe".to_owned(),
         "-flush_packets".to_owned(),
@@ -2509,7 +2578,7 @@ fn command_args(
         "-f".to_owned(),
         "mp4".to_owned(),
         "pipe:1".to_owned(),
-    ];
+    ]);
     let mut args = values.into_iter().map(OsString::from).collect::<Vec<_>>();
     if let Some(path) = wav {
         // A second output for the same child: linear PCM written directly to
@@ -2833,6 +2902,8 @@ mod tests {
             "video-secret",
             "audio-secret",
             None,
+            None,
+            None,
         );
         let args = args
             .iter()
@@ -2858,6 +2929,8 @@ mod tests {
                 "video-secret",
                 "audio-secret",
                 wav,
+                None,
+                None,
             )
         };
         let strings = |args: &[OsString]| {
@@ -2936,6 +3009,146 @@ mod tests {
             .extend(["-map", "1:a:0", "-c:a", "pcm_s16le", "-f", "wav", "-y"].map(str::to_owned));
         expected_wav.push(wav.to_str().unwrap().to_owned());
         assert_eq!(strings(&args(Some(wav))), expected_wav);
+    }
+
+    #[test]
+    fn bitrate_arguments_are_exact_and_only_when_configured() {
+        let args = |video: Option<u32>, audio: Option<u32>| {
+            command_args(
+                &format(),
+                "127.0.0.1:1000".parse().unwrap(),
+                "127.0.0.1:1001".parse().unwrap(),
+                "video-secret",
+                "audio-secret",
+                None,
+                video,
+                audio,
+            )
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+        };
+
+        let unconfigured = args(None, None);
+        assert!(
+            !unconfigured.iter().any(|argument| matches!(
+                argument.as_str(),
+                "-b:v" | "-maxrate" | "-bufsize" | "-b:a"
+            )),
+            "{unconfigured:?}"
+        );
+
+        let configured = args(Some(2_000), Some(96));
+        let video_position = configured
+            .iter()
+            .position(|argument| argument == "yuv420p")
+            .expect("the yuv420p pixel format is present");
+        assert_eq!(
+            configured[video_position + 1..video_position + 8]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "-b:v", "2000k", "-maxrate", "2000k", "-bufsize", "4000k", "-g"
+            ]
+        );
+        let audio_position = configured
+            .iter()
+            .position(|argument| argument == "aac")
+            .expect("the AAC encoder argument is present");
+        assert_eq!(
+            configured[audio_position + 1..]
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            [
+                "-b:a",
+                "96k",
+                "-movflags",
+                "+empty_moov+default_base_moof+frag_keyframe",
+                "-flush_packets",
+                "1",
+                "-f",
+                "mp4",
+                "pipe:1"
+            ]
+        );
+
+        let low = args(Some(MIN_VIDEO_BITRATE_KBPS), Some(MIN_AUDIO_BITRATE_KBPS));
+        assert!(low.windows(2).any(|pair| pair == ["-b:v", "1000k"]));
+        assert!(low.windows(2).any(|pair| pair == ["-b:a", "8k"]));
+        let high = args(Some(MAX_VIDEO_BITRATE_KBPS), Some(MAX_AUDIO_BITRATE_KBPS));
+        assert!(high.windows(2).any(|pair| pair == ["-b:v", "100000k"]));
+        assert!(high.windows(2).any(|pair| pair == ["-bufsize", "200000k"]));
+        assert!(high.windows(2).any(|pair| pair == ["-b:a", "1024k"]));
+    }
+
+    #[test]
+    fn bitrate_validation_envelope_is_inclusive() {
+        let mut config = RecordConfig::new(format());
+        for (video, audio) in [
+            (None, None),
+            (Some(MIN_VIDEO_BITRATE_KBPS), Some(MIN_AUDIO_BITRATE_KBPS)),
+            (Some(MAX_VIDEO_BITRATE_KBPS), Some(MAX_AUDIO_BITRATE_KBPS)),
+        ] {
+            config.video_bitrate_kbps = video;
+            config.audio_bitrate_kbps = audio;
+            assert_eq!(validate_bitrates(&config), Ok(()), "{video:?}/{audio:?}");
+        }
+        for (video, audio) in [
+            (Some(MIN_VIDEO_BITRATE_KBPS - 1), None),
+            (Some(MAX_VIDEO_BITRATE_KBPS + 1), None),
+            (None, Some(MIN_AUDIO_BITRATE_KBPS - 1)),
+            (None, Some(MAX_AUDIO_BITRATE_KBPS + 1)),
+        ] {
+            config.video_bitrate_kbps = video;
+            config.audio_bitrate_kbps = audio;
+            assert_eq!(
+                validate_bitrates(&config).unwrap_err().kind,
+                StartErrorKind::InvalidBitrate,
+                "{video:?}/{audio:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_refuses_out_of_range_bitrates_without_spawning_a_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let marker = directory.path().join("child-ran");
+        let stub = directory.path().join("ffmpeg-stub");
+        fs::write(&stub, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        let mut permissions = fs::metadata(&stub).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&stub, permissions).unwrap();
+
+        for (index, (video, audio)) in [
+            (Some(999), None),
+            (Some(100_001), None),
+            (None, Some(7)),
+            (None, Some(1_025)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut config = RecordConfig::new(format());
+            config.ffmpeg = Executable::Explicit(stub.clone());
+            config.video_bitrate_kbps = video;
+            config.audio_bitrate_kbps = audio;
+            let output =
+                File::create(directory.path().join(format!("output-{index}.mp4"))).unwrap();
+            let Err(error) = Recorder::start(output, config) else {
+                panic!("start accepted the out-of-range bitrate {video:?}/{audio:?}");
+            };
+            assert_eq!(error.kind, StartErrorKind::InvalidBitrate);
+            assert_eq!(error.cleanup, CleanupStatus::Complete);
+        }
+        assert!(
+            !marker.exists(),
+            "start spawned the child before refusing an out-of-range bitrate"
+        );
     }
 
     #[test]
