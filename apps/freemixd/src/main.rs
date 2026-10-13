@@ -94,6 +94,10 @@ mod disk;
 mod journal;
 mod latest_record;
 mod non_native_sessions;
+// The network preflight is wired only into the native daemon; every helper
+// still compiles (and is unit-tested) in every build.
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+mod preflight;
 #[cfg(feature = "macos-program-surface")]
 mod program_surface;
 mod status_listener;
@@ -2517,6 +2521,40 @@ fn local_output_directories(splits: &[SplitStreamTarget<'_>]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Builds the pending network probe for one compiled destination's endpoint,
+/// or `None` when that endpoint cannot or should not be probed.
+///
+/// A local HLS destination is a directory write with no peer, so it yields
+/// `None`. The label must be [`preflight::PRIMARY_ENDPOINT`] or
+/// [`preflight::BACKUP_ENDPOINT`]; a backup probe exists only when the
+/// destination configured a backup endpoint. The returned probe owns a copy
+/// of the host string, and no record ever renders it: the preflight record
+/// carries the target id and endpoint label only.
+#[cfg(feature = "native-media")]
+fn pending_network_probe(
+    config: &DestinationConfig,
+    target: u128,
+    endpoint: &'static str,
+) -> Option<preflight::PendingProbe> {
+    if config.protocol() == OutputProtocol::Hls {
+        return None;
+    }
+    let endpoint_config = if endpoint == preflight::PRIMARY_ENDPOINT {
+        Some(config.endpoint())
+    } else if endpoint == preflight::BACKUP_ENDPOINT {
+        config.backup_endpoint()
+    } else {
+        None
+    }?;
+    Some(preflight::PendingProbe {
+        target,
+        endpoint,
+        host: endpoint_config.host().to_owned(),
+        port: endpoint_config.port(),
+        timeout: preflight::NETWORK_PREFLIGHT_TIMEOUT,
+    })
+}
+
 /// Builds one shared state bundle per rendition group: one readback owner for
 /// the whole group and the planner variants that pin the group's rendition id
 /// inside planner-produced plans. Group ids are their one-based positions.
@@ -3514,6 +3552,36 @@ impl NativeDaemon {
             })?;
         }
         Ok(())
+    }
+
+    /// Probes every configured network stream endpoint exactly once, in
+    /// authored order with each target's primary before its backup, and
+    /// renders one sanitized record per probed endpoint.
+    ///
+    /// The probe is bounded and purely informational: it reads the compiled
+    /// destination configuration, never mutates output-set, recorder, or
+    /// engine state, and cannot fail startup. A destination that cannot be
+    /// reached right now is reported and left alone — an ingest may
+    /// legitimately come up later, and the shared output set owns
+    /// reconnection. Local HLS destinations have no peer and contribute
+    /// nothing. The record set is bounded by twice the five-target cap.
+    fn network_preflight_records(&self) -> Vec<String> {
+        let mut pending = Vec::with_capacity(self.streams.len().saturating_mul(2));
+        for stream in &self.streams {
+            let Some(config) = self.output_set.config(stream.destination_id) else {
+                continue;
+            };
+            let target = stream.target.get().get();
+            for endpoint in [preflight::PRIMARY_ENDPOINT, preflight::BACKUP_ENDPOINT] {
+                if let Some(probe) = pending_network_probe(config, target, endpoint) {
+                    pending.push(probe);
+                }
+            }
+        }
+        preflight::probe_targets(pending)
+            .iter()
+            .map(preflight::probe_record)
+            .collect()
     }
 
     /// Samples the free space shared by the configured outputs at a bounded
@@ -6442,6 +6510,18 @@ fn serve_inner(
             }
         }
     }
+    // Every configured network stream endpoint is probed exactly once here,
+    // after the disk preflights and before readiness is advertised. The probe
+    // is bounded and never refuses startup, changes destination state, or
+    // touches recorder or engine state: an ingest may legitimately come up
+    // later, and the shared output set owns reconnection. Each probed endpoint
+    // emits one sanitized FREEMIXD_PREFLIGHT record.
+    #[cfg(feature = "native-media")]
+    if let Some(native) = native.as_ref() {
+        for record in native.network_preflight_records() {
+            eprintln!("{record}");
+        }
+    }
     #[cfg(not(all(feature = "macos-program-surface", target_os = "macos")))]
     let fullscreen_active = false;
     // Reconciled stream targets start here, after all preflight succeeded and
@@ -8652,6 +8732,7 @@ Native media is opt-in; without it the daemon uses simulated frame realization.\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
 --record-wav additionally writes a linear-PCM WAV sidecar for each segment of every configured recorder, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
 --record-segment-seconds rotates each active recorder slot to its next <stem>-<NNN>.mp4 segment on a frame boundary after at least the configured number of seconds.\n\
+Configured network stream endpoints are probed once at startup and reported as FREEMIXD_PREFLIGHT; the probe is bounded and never blocks or refuses startup, and it is a reachability check rather than a bandwidth or health guarantee.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 macOS fullscreen display selection is a zero-based index ordered by physical position, then stable descriptive fields.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
@@ -14885,6 +14966,59 @@ mod tests {
         assert_eq!(
             redacted_destination_url(OutputProtocol::Hls, &hls, true),
             "hls:///var/lib/freemix/live"
+        );
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn pending_network_probe_skips_hls_and_maps_network_endpoints() {
+        let rtmp = DestinationConfig::new(
+            DestinationId::new(1).unwrap(),
+            OutputProtocol::Rtmp,
+            Endpoint::new("ingest.example.test", 1_935, "/live").unwrap(),
+            Some(Endpoint::new("backup.example.test", 1_935, "/live").unwrap()),
+            None,
+            None,
+            QueueCapacity::new(1).unwrap(),
+            ReconnectPolicy::disabled(),
+        )
+        .unwrap();
+
+        let primary = pending_network_probe(&rtmp, 7, preflight::PRIMARY_ENDPOINT)
+            .expect("an RTMP destination has a primary endpoint to probe");
+        assert_eq!(primary.target, 7);
+        assert_eq!(primary.endpoint, preflight::PRIMARY_ENDPOINT);
+        assert_eq!(primary.host, "ingest.example.test");
+        assert_eq!(u16::from(primary.port), 1_935);
+        assert_eq!(primary.timeout, preflight::NETWORK_PREFLIGHT_TIMEOUT);
+
+        let backup = pending_network_probe(&rtmp, 7, preflight::BACKUP_ENDPOINT)
+            .expect("a configured backup endpoint is probed too");
+        assert_eq!(backup.target, 7);
+        assert_eq!(backup.endpoint, preflight::BACKUP_ENDPOINT);
+        assert_eq!(backup.host, "backup.example.test");
+        assert_eq!(u16::from(backup.port), 1_935);
+
+        // A local HLS destination is a directory write, not a peer, so it has
+        // no network endpoint to probe on either slot.
+        let hls = DestinationConfig::new(
+            DestinationId::new(2).unwrap(),
+            OutputProtocol::Hls,
+            Endpoint::local_directory("/var/lib/freemix/live").unwrap(),
+            None,
+            None,
+            None,
+            QueueCapacity::new(1).unwrap(),
+            ReconnectPolicy::disabled(),
+        )
+        .unwrap();
+        assert_eq!(
+            pending_network_probe(&hls, 8, preflight::PRIMARY_ENDPOINT),
+            None
+        );
+        assert_eq!(
+            pending_network_probe(&hls, 8, preflight::BACKUP_ENDPOINT),
+            None
         );
     }
 
