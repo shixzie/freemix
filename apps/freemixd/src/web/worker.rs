@@ -7,12 +7,12 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TryRecvError},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use tungstenite::{
-    Error as WebSocketError, Message, accept_hdr_with_config,
-    handshake::server::{ErrorResponse, Request, Response},
+    Error as WebSocketError, HandshakeError, Message, ServerHandshake, WebSocket,
+    handshake::server::{Callback, ErrorResponse, Request, Response},
     http::{
         HeaderMap, HeaderValue, StatusCode,
         header::{AUTHORIZATION, HOST, ORIGIN, SEC_WEBSOCKET_PROTOCOL},
@@ -27,6 +27,9 @@ use super::{
     decode_line,
     page::{self, PageOutcome},
 };
+
+/// Poll interval while an upgrade handshake waits for more request bytes.
+const HANDSHAKE_POLL: Duration = Duration::from_millis(2);
 
 pub(super) fn listener_loop(
     listener: &TcpListener,
@@ -104,7 +107,7 @@ pub(super) fn worker_loop(
             .max_frame_size(Some(WEBSOCKET_MESSAGE_LIMIT))
             .accept_unmasked_frames(false);
         let callback_token = Arc::clone(token);
-        let websocket = accept_hdr_with_config(
+        let websocket = accept_within(
             stream,
             move |request: &Request, response: Response| {
                 if request
@@ -117,15 +120,18 @@ pub(super) fn worker_loop(
                 }
                 authorize_upgrade(request.headers(), &callback_token, response)
             },
-            Some(config),
+            config,
+            SOCKET_HANDSHAKE_TIMEOUT,
+            cancel,
         );
-        let Ok(mut websocket) = websocket else {
+        let Some(mut websocket) = websocket else {
             continue;
         };
-        if websocket
-            .get_ref()
-            .set_read_timeout(Some(RELAY_POLL))
-            .is_err()
+        if websocket.get_ref().set_nonblocking(false).is_err()
+            || websocket
+                .get_ref()
+                .set_read_timeout(Some(RELAY_POLL))
+                .is_err()
             || websocket
                 .get_ref()
                 .set_write_timeout(Some(Duration::from_millis(250)))
@@ -160,8 +166,44 @@ pub(super) fn worker_loop(
     }
 }
 
+/// Runs the upgrade handshake under one overall deadline.
+///
+/// The gateway serves a single peer at a time, so a peer that trickles its
+/// upgrade head must not hold the worker for longer than `timeout`. A
+/// blocking socket's read timeout only bounds each individual read, and
+/// tungstenite keeps reading while bytes keep arriving, so the handshake is
+/// driven on a non-blocking socket and abandoned once the deadline passes.
+fn accept_within<C: Callback>(
+    stream: TcpStream,
+    callback: C,
+    config: WebSocketConfig,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Option<WebSocket<TcpStream>> {
+    let deadline = Instant::now() + timeout;
+    if stream.set_nonblocking(true).is_err() {
+        let _ = stream.shutdown(Shutdown::Both);
+        return None;
+    }
+    let mut handshake = ServerHandshake::start(stream, callback, Some(config)).handshake();
+    loop {
+        match handshake {
+            Ok(websocket) => return Some(websocket),
+            Err(HandshakeError::Interrupted(mid)) => {
+                if Instant::now() >= deadline || cancel.load(Ordering::Acquire) {
+                    let _ = mid.get_ref().get_ref().shutdown(Shutdown::Both);
+                    return None;
+                }
+                thread::sleep(HANDSHAKE_POLL);
+                handshake = mid.handshake();
+            }
+            Err(HandshakeError::Failure(_)) => return None,
+        }
+    }
+}
+
 fn relay(
-    websocket: &mut tungstenite::WebSocket<TcpStream>,
+    websocket: &mut WebSocket<TcpStream>,
     inbound: &SyncSender<WireMessage>,
     outbound: &Receiver<Vec<u8>>,
     acknowledgements: &SyncSender<()>,
@@ -304,10 +346,11 @@ fn http_error(status: StatusCode) -> ErrorResponse {
 #[cfg(test)]
 mod tests {
     use std::{
+        io::{self, Read, Write},
         net::{TcpListener, TcpStream},
         sync::{Arc, atomic::AtomicBool, mpsc},
         thread,
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use tungstenite::{
@@ -374,6 +417,67 @@ mod tests {
         worker.join().unwrap();
         assert!(handshake.is_ok(), "the WebSocket handshake must complete");
         assert!(matches!(connected, Ok(WebEvent::Connected(_))));
+    }
+
+    /// A peer that trickles its upgrade head one byte at a time must lose the
+    /// single gateway slot at the handshake deadline instead of holding it for
+    /// as long as each read keeps arriving inside the per-read timeout.
+    #[test]
+    fn trickled_upgrade_head_is_dropped_at_the_handshake_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(address).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+
+        let (accepted_tx, accepted_rx) = mpsc::sync_channel(1);
+        let (events_tx, events_rx) = mpsc::sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_token = Arc::new(token());
+        accepted_tx.send(accepted).unwrap();
+        let worker = thread::spawn(move || {
+            worker_loop(&accepted_rx, &events_tx, &worker_cancel, &worker_token);
+        });
+
+        client
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        client.write_all(b"GET /v1/control HTTP/1.1\r\n").unwrap();
+        let started = Instant::now();
+        let mut closed_after = None;
+        let mut buffer = [0_u8; 256];
+        while started.elapsed() < Duration::from_secs(5) {
+            if client.write_all(b"X").is_err() {
+                closed_after = Some(started.elapsed());
+                break;
+            }
+            // Any reply, EOF, or reset means the worker let go of the peer.
+            match client.read(&mut buffer) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) => {}
+                Ok(_) | Err(_) => {
+                    closed_after = Some(started.elapsed());
+                    break;
+                }
+            }
+            thread::sleep(Duration::from_millis(80));
+        }
+
+        cancel.store(true, std::sync::atomic::Ordering::Release);
+        drop(accepted_tx);
+        worker.join().unwrap();
+        assert!(
+            events_rx.try_recv().is_err(),
+            "no connection may be admitted"
+        );
+        let closed_after = closed_after.expect("a trickling peer must be dropped");
+        assert!(
+            closed_after < Duration::from_secs(2),
+            "the handshake deadline must bound the slot, held for {closed_after:?}"
+        );
     }
 
     fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
