@@ -218,7 +218,9 @@ paths = ["crates/media/fm-audio/tests/bus_matrix.rs"]
 commands = ["cargo test -p fm-audio --test bus_matrix"]
 [[tests]]
 id = "accept-au-003"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-audio/tests/multichannel.rs"]
+commands = ["cargo test -p fm-audio --test multichannel"]
 [[tests]]
 id = "accept-au-004"
 state = "planned"
