@@ -1326,11 +1326,18 @@ copies unity routes bit-exactly. Documented-coefficient downmixes cover
 ITU-R BS.775 5.1-to-stereo with selectable LFE handling and clip-preventing
 normalization, 7.1-to-5.1, and stereo-to-mono, alongside upmix by
 duplication. SDI-style 16-channel groups de-embed by mono, pair, or group, and
-an embedded-audio map re-embeds layouts while preserving labels. Remaining
-gaps: `fm-types` channel labels cannot yet express rear-surround or discrete
-channels, so 7.1 and 16-channel layouts cannot travel through `AudioBlock`,
-the existing channel mapping, or the Master mixer; nothing reaches persisted
-strips, protocol, daemon, or Studio; there is no device ancillary-data
+an embedded-audio map re-embeds layouts while preserving labels. `fm-types`
+channels now include rear surrounds (`Lrs`/`Rrs`) and discrete `1..=16`
+labels with layouts capped at 16 channels, so speaker-label conversions are
+total and 7.1 and 16-channel blocks travel through `AudioBlock`, the channel
+mapping (now up to 16 channels, buildable from any gain matrix), and the
+Master mixer, including gain-matrix downmixes to a stereo Master. The project
+JSON contract names them `left_rear_surround`, `right_rear_surround`, and
+`discrete_1`..`discrete_16`; recordings map them to exact ffmpeg layouts
+(7.1 as `FL FR FC LFE BL BR SL SR`, discrete as unspecified-order `{n}C`).
+Remaining gaps: project settings still allow at most 8 audio channels;
+nothing reaches persisted strips, protocol, daemon, or Studio; streaming
+outputs refuse 7.1 and discrete layouts; there is no device ancillary-data
 extraction, composite or Lt/Rt downmix, or hardware evidence. `AU-003`
 remains planned.
 
