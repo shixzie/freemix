@@ -1,5 +1,7 @@
 use core::fmt;
+use std::sync::Arc;
 
+use fm_grade::CompiledGrade;
 use fm_video::{CropRect, Rgba8, Transform};
 
 use crate::AlphaMode;
@@ -22,6 +24,7 @@ pub struct PlanLayer {
     key_fill: Option<KeyFill>,
     key_refinement: Option<KeyRefinement>,
     effects: Vec<Effect>,
+    grade: Option<Arc<CompiledGrade>>,
     overlay_inclusion: Option<OutputInclusion>,
     inset_border_width: u32,
     scene_index: usize,
@@ -81,6 +84,17 @@ impl PlanLayer {
     #[must_use]
     pub fn effects(&self) -> &[Effect] {
         &self.effects
+    }
+
+    /// The layer's colour grade, applied after its effects.
+    #[must_use]
+    pub const fn grade(&self) -> Option<&Arc<CompiledGrade>> {
+        self.grade.as_ref()
+    }
+
+    /// The grade when it changes pixels; identity grades are skipped.
+    pub(crate) fn active_grade(&self) -> Option<&CompiledGrade> {
+        self.grade.as_deref().filter(|grade| !grade.is_identity())
     }
 
     #[must_use]
@@ -419,6 +433,7 @@ pub fn compile_scene(
                 key_fill: layer.key_fill(),
                 key_refinement: layer.key_refinement(),
                 effects: layer.effects().to_vec(),
+                grade: layer.grade().cloned(),
                 overlay_inclusion: layer.overlay_inclusion(),
                 inset_border_width: layer.inset_border_width(),
                 scene_index,

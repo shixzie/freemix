@@ -1,6 +1,8 @@
 use core::fmt;
+use std::sync::Arc;
 
 use fm_frame::AlphaMode;
+use fm_grade::CompiledGrade;
 use fm_video::{CropRect, Rgba8, Transform};
 
 use crate::keying::{KeyFill, KeyRefinement};
@@ -263,6 +265,7 @@ pub struct SourceLayer {
     key_fill: Option<KeyFill>,
     key_refinement: Option<KeyRefinement>,
     effects: Vec<Effect>,
+    grade: Option<Arc<CompiledGrade>>,
     overlay_inclusion: Option<OutputInclusion>,
     inset_border_width: u32,
 }
@@ -283,6 +286,7 @@ impl SourceLayer {
             key_fill: None,
             key_refinement: None,
             effects: Vec::new(),
+            grade: None,
             overlay_inclusion: None,
             inset_border_width: 0,
         }
@@ -342,6 +346,16 @@ impl SourceLayer {
     #[must_use]
     pub fn with_effect(mut self, effect: Effect) -> Self {
         self.effects.push(effect);
+        self
+    }
+
+    /// Colour-grades the layer after its effect chain, on straight colour
+    /// and before premultiplication. Alpha is never changed. The native GPU
+    /// path does not execute grades yet and rejects graded layers with
+    /// `UnsupportedGrade`.
+    #[must_use]
+    pub fn with_grade(mut self, grade: Arc<CompiledGrade>) -> Self {
+        self.grade = Some(grade);
         self
     }
 
@@ -416,6 +430,11 @@ impl SourceLayer {
     #[must_use]
     pub fn effects(&self) -> &[Effect] {
         &self.effects
+    }
+
+    #[must_use]
+    pub const fn grade(&self) -> Option<&Arc<CompiledGrade>> {
+        self.grade.as_ref()
     }
 
     #[must_use]

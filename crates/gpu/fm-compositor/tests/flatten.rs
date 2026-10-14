@@ -507,6 +507,7 @@ fn plain_outer() -> SourceLayer {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn hoisting_applies_only_when_it_is_exact_and_refusals_still_match() {
     let inside = transform(1, 1, 8, 6);
     let hoistable = wrapper_fixture(
@@ -598,6 +599,21 @@ fn hoisting_applies_only_when_it_is_exact_and_refusals_still_match() {
             overlapping,
             FlattenMode::Auto,
             plain_outer(),
+        ),
+        (
+            "graded consumer",
+            single_layer_wrapper(inside),
+            FlattenMode::Auto,
+            plain_outer().with_grade(std::sync::Arc::new(
+                fm_grade::CompiledGrade::new(
+                    &fm_grade::Grade {
+                        saturation_permille: 0,
+                        ..fm_grade::Grade::IDENTITY
+                    },
+                    None,
+                )
+                .unwrap(),
+            )),
         ),
     ];
     for (case, wrapper, mode, outer) in refusals {

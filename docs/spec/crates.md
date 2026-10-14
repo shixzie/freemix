@@ -38,6 +38,7 @@ tools/
 | `fm-command` | Domain commands, results, events, transactions, inverse intents | Transport and engine runtime |
 | `fm-protocol` | Exact-current wire DTOs, contract validation, and codec | Domain implementation details |
 | `fm-animation` | Pure keyframe animation: Q16 easing library and presets, clip timebases with exact cross-rate sampling, property tracks and clips, atomic retime/stretch/snap/copy-paste edits, built-in In/Out presets | Everything but `fm-types`; no I/O, async runtime, GUI, or serialization framework |
+| `fm-grade` | Pure colour-grading model (white balance, exposure, wheels, contrast, saturation, RGB and hue curves, LUT reference) with typed bounds, the CPU reference evaluator, exact 256-entry stage tables and 3D bake, bounded `.cube` parsing, built-in presets | Everything but std (at most `fm-types`); no GPU, I/O, async runtime, GUI, or serialization framework |
 | `fm-capabilities` | Capability descriptors, matching, limits, compatibility reports | Backend implementations |
 | `fm-plugin-api` | Versioned WIT and C ABI declarations, opaque handles, ownership rules | Plugin host implementation |
 

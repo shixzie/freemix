@@ -197,7 +197,9 @@ paths = ["crates/gpu/fm-compositor/tests/flatten.rs"]
 commands = ["cargo test -p fm-compositor --test flatten"]
 [[tests]]
 id = "accept-sw-019"
-state = "planned"
+state = "present"
+paths = ["crates/foundation/fm-grade/tests/reference.rs", "crates/foundation/fm-grade/tests/curves.rs", "crates/foundation/fm-grade/tests/cube.rs", "crates/gpu/fm-color/tests/grade_parity.rs", "crates/gpu/fm-compositor/tests/grade.rs"]
+commands = ["cargo test -p fm-grade --test reference", "cargo test -p fm-grade --test curves", "cargo test -p fm-grade --test cube", "cargo test -p fm-color --test grade_parity", "cargo test -p fm-compositor --test grade"]
 [[tests]]
 id = "accept-gx-001"
 state = "present"

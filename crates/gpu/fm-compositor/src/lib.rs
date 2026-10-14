@@ -16,8 +16,8 @@ mod stinger;
 mod transition;
 
 pub use cpu::{
-    CpuColorSourceFrame, CpuExecutionError, CpuSourceFrame, execute_cpu, execute_cpu_frame,
-    execute_cpu_with_color, image_from_cpu_frame,
+    CpuColorSourceFrame, CpuExecutionError, CpuSourceFrame, apply_grade, execute_cpu,
+    execute_cpu_frame, execute_cpu_with_color, image_from_cpu_frame,
 };
 pub use effects::{ReferenceEffect, ReferenceEffectError, apply_reference_effect};
 pub use fade_to_black::{
@@ -63,4 +63,5 @@ pub use stinger::{
 pub use transition::{TransitionError, TransitionKind, TransitionPlan, execute_transition};
 
 pub use fm_frame::AlphaMode;
+pub use fm_grade::CompiledGrade;
 pub use fm_video::{CropRect, ImageFrame, Rgba8, Rotation, Transform};

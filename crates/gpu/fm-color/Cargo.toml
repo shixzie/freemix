@@ -16,6 +16,7 @@ fm-types = { path = "../../foundation/fm-types" }
 fm-video = { path = "../../media/fm-video" }
 
 [dev-dependencies]
+fm-grade = { path = "../../foundation/fm-grade" }
 half = "2.7.1"
 
 [lints]

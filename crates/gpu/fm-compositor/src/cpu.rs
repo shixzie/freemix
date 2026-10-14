@@ -4,6 +4,7 @@ use fm_frame::{
     CpuVideoFrame, CpuVideoPayload, CpuVideoPlane, MediaTiming, PixelFormat, VideoDimensions,
     VideoPayloadError,
 };
+use fm_grade::CompiledGrade;
 use fm_video::{
     CompositeError, CropError, FrameError, ImageFrame, Layer, Rgba8, TransformError,
     compose_layers, crop, draw_inset_rect_border, premultiply_alpha, transform_nearest,
@@ -227,19 +228,24 @@ pub fn execute_cpu(
         } else {
             apply_key_and_mask(&frame, layer.key(), layer.mask(), layer.alpha_mode())?
         };
-        // Color effects are defined on straight color and never touch alpha;
-        // run on premultiplied bytes they could lift a channel above its alpha
-        // and the layer would be rejected as not premultiplied.
+        // Color effects and grades are defined on straight color and never
+        // touch alpha; run on premultiplied bytes they could lift a channel
+        // above its alpha and the layer would be rejected as not
+        // premultiplied.
+        let grade = layer.active_grade();
         let straighten = layer.alpha_mode() == AlphaMode::Premultiplied
-            && layer
-                .effects()
-                .iter()
-                .any(|effect| !(effect.name() == "passthrough" && effect.parameters().is_empty()));
+            && (grade.is_some()
+                || layer.effects().iter().any(|effect| {
+                    !(effect.name() == "passthrough" && effect.parameters().is_empty())
+                }));
         if straighten {
             frame = unpremultiply_alpha(&frame)?;
         }
         for (effect_index, effect) in layer.effects().iter().enumerate() {
             frame = apply_effect(plan_index, effect_index, effect, &frame)?;
+        }
+        if let Some(grade) = grade {
+            frame = apply_grade(&frame, grade)?;
         }
         if layer.alpha_mode() == AlphaMode::Straight || straighten {
             frame = premultiply_alpha(&frame)?;
@@ -376,6 +382,37 @@ pub fn image_from_cpu_frame(frame: &CpuVideoFrame) -> Result<ImageFrame, CpuExec
         plane.stride(),
         bytes,
     )?)
+}
+
+/// Colour-grades straight-alpha RGBA8 with a compiled grade.
+///
+/// Each pixel's RGB is graded as straight 8-bit colour (see `fm_grade` for
+/// the evaluation contract); alpha is copied unchanged. An identity grade
+/// returns an exact copy of the source, including its stride; otherwise the
+/// output is tightly packed.
+///
+/// # Errors
+/// Returns a [`FrameError`] if the source layout is inconsistent.
+pub fn apply_grade(source: &ImageFrame, grade: &CompiledGrade) -> Result<ImageFrame, FrameError> {
+    if grade.is_identity() {
+        return Ok(source.clone());
+    }
+    let row_bytes = usize::try_from(source.width())
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or(FrameError::LayoutOverflow)?;
+    let height = usize::try_from(source.height()).map_err(|_| FrameError::LayoutOverflow)?;
+    let mut bytes = Vec::with_capacity(
+        row_bytes
+            .checked_mul(height)
+            .ok_or(FrameError::LayoutOverflow)?,
+    );
+    for row in source.pixels().chunks(source.stride()).take(height) {
+        let start = bytes.len();
+        bytes.extend_from_slice(row.get(..row_bytes).ok_or(FrameError::LayoutOverflow)?);
+        grade.apply_rgba8_in_place(&mut bytes[start..]);
+    }
+    ImageFrame::new(source.width(), source.height(), row_bytes, bytes)
 }
 
 fn validate_unique_sources(sources: &[CpuSourceFrame<'_>]) -> Result<(), CpuExecutionError> {

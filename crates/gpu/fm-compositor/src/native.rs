@@ -325,6 +325,9 @@ pub enum NativeCompositionError {
     UnsupportedSafeAreas {
         count: usize,
     },
+    UnsupportedGrade {
+        layer: usize,
+    },
     Gpu(NativeGpuError),
 }
 
@@ -383,6 +386,10 @@ impl fmt::Display for NativeCompositionError {
             Self::UnsupportedSafeAreas { count } => write!(
                 formatter,
                 "native composition does not support {count} safe-area guides"
+            ),
+            Self::UnsupportedGrade { layer } => write!(
+                formatter,
+                "layer {layer} colour grades are unsupported by native composition"
             ),
             Self::Gpu(error) => error.fmt(formatter),
         }
@@ -570,6 +577,9 @@ fn validate_supported_work(plan: &CompositionPlan) -> Result<(), NativeCompositi
                     name: effect.name().to_owned(),
                 });
             }
+        }
+        if layer.active_grade().is_some() {
+            return Err(NativeCompositionError::UnsupportedGrade { layer: layer_index });
         }
     }
     Ok(())
@@ -1350,6 +1360,28 @@ mod tests {
                 effect: 0,
                 name: "blur".to_owned(),
             })
+        );
+
+        let identity = composition_plan(
+            SourceLayer::new(source, 0, base)
+                .with_grade(std::sync::Arc::new(fm_grade::CompiledGrade::identity())),
+        );
+        assert_eq!(validate_supported_work(&identity), Ok(()));
+        let graded = composition_plan(
+            SourceLayer::new(source, 0, base).with_grade(std::sync::Arc::new(
+                fm_grade::CompiledGrade::new(
+                    &fm_grade::Grade {
+                        saturation_permille: 0,
+                        ..fm_grade::Grade::IDENTITY
+                    },
+                    None,
+                )
+                .unwrap(),
+            )),
+        );
+        assert_eq!(
+            validate_supported_work(&graded),
+            Err(NativeCompositionError::UnsupportedGrade { layer: 0 })
         );
 
         let mut scene = Scene::new(2, 2, Rgba8::new(0, 0, 0, 255)).unwrap();

@@ -12,6 +12,7 @@ native-wgpu = ["dep:fm-gpu", "fm-gpu/native-wgpu", "fm-color/native-wgpu"]
 [dependencies]
 fm-color = { path = "../fm-color" }
 fm-frame = { path = "../../media/fm-frame" }
+fm-grade = { path = "../../foundation/fm-grade" }
 fm-gpu = { path = "../fm-gpu", optional = true }
 fm-types = { path = "../../foundation/fm-types" }
 fm-video = { path = "../../media/fm-video" }

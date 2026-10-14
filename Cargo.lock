@@ -1259,6 +1259,7 @@ version = "0.1.0"
 dependencies = [
  "fm-frame",
  "fm-gpu",
+ "fm-grade",
  "fm-types",
  "fm-video",
  "half",
@@ -1275,6 +1276,7 @@ dependencies = [
  "fm-color",
  "fm-frame",
  "fm-gpu",
+ "fm-grade",
  "fm-types",
  "fm-video",
  "half",
@@ -1340,6 +1342,10 @@ dependencies = [
  "raw-window-handle",
  "wgpu 30.0.0",
 ]
+
+[[package]]
+name = "fm-grade"
+version = "0.1.0"
 
 [[package]]
 name = "fm-graph"

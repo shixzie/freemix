@@ -608,6 +608,7 @@ fn hoisted_layer(
         && outer.key_fill().is_none()
         && outer.key_refinement().is_none()
         && outer.effects().is_empty()
+        && outer.grade().is_none()
         && outer.inset_border_width() == 0
         && transform.rotation == Rotation::Deg0
         && transform.scale_width == nested.width()
