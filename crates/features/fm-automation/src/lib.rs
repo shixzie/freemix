@@ -6,10 +6,15 @@
 
 mod catalog;
 mod condition;
+mod control;
+mod control_map;
 mod controller;
+mod feedback;
 mod go;
 mod intent;
 mod macros;
+mod midi;
+mod osc;
 mod schedule;
 mod script;
 mod shortcut;
@@ -22,10 +27,22 @@ pub use catalog::{
     MAX_INPUT_TRIGGER_BINDINGS, TimelineObservation, TriggerAction,
 };
 pub use condition::{Condition, ConditionContext, Predicate, Value};
+pub use control::{ControlEvent, ControlId, ControlValue};
+pub use control_map::{
+    ActionValue, AttachReport, BindingId, ButtonEdge, ConflictPolicy, ControlBinding, ControlMap,
+    ControlMapError, ControlOutput, DeviceKey, DeviceProfile, DeviceTransport, LearnCandidate,
+    LearnConfirmation, LearnEffect, LearnRequest as ControlLearnRequest, LearnState,
+    MAX_CONTROL_BINDINGS, MAX_CONTROL_KEY_BYTES, MAX_DEVICE_PROFILES, MAX_PORT_NAME_BYTES, Pickup,
+    ProcessReport, RelativeEncoding, Response, Span, Suppressed, VelocityRange,
+};
 pub use controller::{
     ActivatorEngine, ActivatorMapping, ActivatorRule, ControlAddress, ControlMode, ControllerError,
     ControllerFeedback, ControllerInput, ControllerManager, DeviceState, LearnRequest,
     MappedControllerIntent, Mapping, TallySnapshot, ValueRange,
+};
+pub use feedback::{
+    FeedbackBinding, FeedbackError, FeedbackMessage, FeedbackPayload, FeedbackRouter,
+    FeedbackSource, FeedbackTarget, MAX_FEEDBACK_BINDINGS, OscFeedbackFormat,
 };
 pub use go::{
     GoAction, GoActionFire, GoEngine, GoError, GoPreview, GoStart, MAX_GO_START_RECEIPTS,
@@ -35,6 +52,15 @@ pub use intent::{CommandIntent, IntentBuffer};
 pub use macros::{
     AttemptOutcome, CancelPolicy, MacroDecision, MacroDefinition, MacroDispatch, MacroError,
     MacroRun, MacroStatus, RetryPolicy,
+};
+pub use midi::{
+    MAX_MIDI_SYSEX_BYTES, MIDI_14BIT_MAX, MIDI_PITCH_BEND_CENTER, MidiChannel, MidiControlDecoder,
+    MidiError, MidiMessage, MidiParser, MidiRealTime, SysExPolicy,
+};
+pub use osc::{
+    MAX_OSC_PACKET_BYTES, OSC_TIME_TAG_IMMEDIATE, OscArg, OscBundle, OscError, OscLimits,
+    OscMessage, OscPacket, decode_osc_packet, encode_osc_packet, osc_address_matches,
+    osc_control_events, validate_osc_address, validate_osc_pattern,
 };
 pub use schedule::{ScheduleError, ScheduleFire, ScheduleId, ScheduleKind, ScheduleSet};
 pub use script::{
