@@ -1,4 +1,5 @@
-//! Deterministic shortcuts, triggers, macros, schedules, and controllers.
+//! Deterministic shortcuts, triggers, macros, schedules, playlists, and
+//! controllers.
 //!
 //! This crate describes automation intent only. It performs no device I/O and
 //! never reads a clock; every time-sensitive operation receives a caller-owned
@@ -15,6 +16,8 @@ mod intent;
 mod macros;
 mod midi;
 mod osc;
+mod playlist;
+mod playlist_codec;
 mod schedule;
 mod script;
 mod shortcut;
@@ -61,6 +64,16 @@ pub use osc::{
     MAX_OSC_PACKET_BYTES, OSC_TIME_TAG_IMMEDIATE, OscArg, OscBundle, OscError, OscLimits,
     OscMessage, OscPacket, decode_osc_packet, encode_osc_packet, osc_address_matches,
     osc_control_events, validate_osc_address, validate_osc_pattern,
+};
+pub use playlist::{
+    AdvanceCause, EntryDuration, LatePolicy, LoopMode, MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_MS,
+    MAX_PLAYLIST_TIME_MS, Playlist, PlaylistCommand, PlaylistConfig, PlaylistEntry,
+    PlaylistEntryId, PlaylistError, PlaylistEvent, PlaylistEventKind, PlaylistSnapshot,
+    PlaylistState, PlaylistTransition, PlaylistTransitionKind, SnapshotError, StartAt,
+};
+pub use playlist_codec::{
+    PLAYLIST_SNAPSHOT_MAGIC, PLAYLIST_SNAPSHOT_VERSION, SnapshotCodecError,
+    decode_playlist_snapshot, encode_playlist_snapshot,
 };
 pub use schedule::{ScheduleError, ScheduleFire, ScheduleId, ScheduleKind, ScheduleSet};
 pub use script::{
