@@ -357,8 +357,11 @@ impl<S: SegmentStorage> ResilientFmp4Writer<S> {
         let length = bytes.len() as u64;
         if self.rotation_due(length) {
             self.close_current();
-            self.rotate_requested = false;
         }
+        // This fragment starts a fresh segment either way, which satisfies a
+        // pending request; keeping it would split the next segment after its
+        // first fragment.
+        self.rotate_requested = false;
         let mut rewriting = false;
         loop {
             self.ensure_segment()?;

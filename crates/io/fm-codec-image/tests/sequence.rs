@@ -402,6 +402,31 @@ fn held_gaps_show_the_previous_file() {
 }
 
 #[test]
+fn cut_point_decodes_each_held_file_once() {
+    let directory = tempfile::tempdir().unwrap();
+    write_frame(
+        directory.path(),
+        "h_1.png",
+        1,
+        |x| if x < 4 { 255 } else { 0 },
+    );
+    write_frame(directory.path(), "h_100000.png", 2, |_| 255);
+    let mut source = ImageSequenceSource::open(
+        directory.path(),
+        "h_1.png",
+        ImageSequenceConfig {
+            gap_policy: GapPolicy::HoldPrevious,
+            ..config(SequenceEndMode::Once)
+        },
+        timing(),
+    )
+    .unwrap();
+    assert_eq!(source.sequence().frame_count(), 100_000);
+    assert_eq!(source.suggest_cut_point().unwrap(), Some(99_999));
+    assert_eq!(source.decodes(), 2, "a held file is not decoded per frame");
+}
+
+#[test]
 fn inconsistent_or_invalid_files_fail_with_their_name() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path();

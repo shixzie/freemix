@@ -42,9 +42,11 @@ pub fn parse_sequence_name(name: &str) -> Option<SequenceName<'_>> {
     }
     let (stem, extension) = name.rsplit_once('.')?;
     let end = stem.rfind(|c: char| c.is_ascii_digit())? + 1;
+    // A non-ASCII character may precede the digits, so measure the digit
+    // run instead of stepping one byte past the preceding character.
     let start = stem[..end]
-        .rfind(|c: char| !c.is_ascii_digit())
-        .map_or(0, |index| index + 1);
+        .trim_end_matches(|c: char| c.is_ascii_digit())
+        .len();
     let digits = &stem[start..end];
     if digits.len() > MAX_SEQUENCE_DIGITS {
         return None;

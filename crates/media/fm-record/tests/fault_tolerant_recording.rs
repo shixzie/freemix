@@ -722,6 +722,22 @@ fn rotating_session_writes_playable_segments_and_a_closed_manifest() {
 }
 
 #[test]
+fn rotation_requested_before_the_first_fragment_opens_one_segment() {
+    let temp = TempDirectory::new();
+    let config = SessionConfig::new("early", temp.join("primary")).unwrap();
+    let session = RecordingSession::start(config, FileStorage::new(UnknownSpace)).unwrap();
+    let mut writer = ResilientFmp4Writer::new(session, writer_config(None));
+    writer.request_rotation();
+    let (bytes, _) = stream(3);
+    writer.push(&bytes).unwrap();
+    let snapshot = writer.finish().unwrap();
+    assert_eq!(
+        snapshot.segments, 1,
+        "the first segment already satisfies it"
+    );
+}
+
+#[test]
 fn finish_report_stops_the_session_when_the_stream_ends_inside_a_fragment() {
     let temp = TempDirectory::new();
     let config = SessionConfig::new("killed", temp.join("primary"))

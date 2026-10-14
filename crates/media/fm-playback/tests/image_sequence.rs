@@ -49,6 +49,21 @@ fn parses_the_last_digit_run_of_the_stem() {
 }
 
 #[test]
+fn parses_digit_runs_after_multibyte_characters() {
+    let parsed = parse_sequence_name("caf\u{e9}0042.png").unwrap();
+    assert_eq!(parsed.prefix, "caf\u{e9}");
+    assert_eq!(parsed.digits, "0042");
+    assert_eq!(parsed.number, 42);
+    let parsed = parse_sequence_name("\u{1f3ac}7\u{e9}.png").unwrap();
+    assert_eq!(parsed.prefix, "\u{1f3ac}");
+    assert_eq!(parsed.infix, "\u{e9}");
+    assert_eq!(parsed.number, 7);
+    let listing = ["\u{e9}1.png", "\u{e9}2.png", "\u{e9}.png"];
+    let sequence = ImageSequence::discover(&listing, "\u{e9}1.png", GapPolicy::Reject).unwrap();
+    assert_eq!(sequence.frame_count(), 2);
+}
+
+#[test]
 fn discovers_fixed_padding_and_ignores_unrelated_files() {
     let mut listing = names(&["0003", "0001", "0002", "0004"]);
     listing.extend(

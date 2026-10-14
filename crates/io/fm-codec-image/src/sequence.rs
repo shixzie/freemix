@@ -442,10 +442,18 @@ impl ImageSequenceSource {
     ///
     /// Returns a read, decode or dimension error.
     pub fn suggest_cut_point(&mut self) -> Result<Option<u32>, ImageSequenceSourceError> {
-        for timeline_frame in 0..self.sequence.frame_count() {
-            let Some(index) = self.sequence.file_index(timeline_frame) else {
-                continue;
-            };
+        // Each file is examined once, at the first timeline frame showing it:
+        // a held gap repeats one file across many frames.
+        let first_number = self.sequence.files()[0].number();
+        for index in 0..self.sequence.files().len() {
+            // Both are below the frame count, which fits `u32`.
+            let timeline_frame = match self.sequence.gap_policy() {
+                GapPolicy::HoldPrevious => {
+                    u32::try_from(self.sequence.files()[index].number() - first_number)
+                }
+                GapPolicy::Reject | GapPolicy::Skip => u32::try_from(index),
+            }
+            .unwrap_or(u32::MAX);
             let frame = match self.cache.peek(index) {
                 Some(frame) => Arc::clone(frame),
                 None => self.decode(index)?,
