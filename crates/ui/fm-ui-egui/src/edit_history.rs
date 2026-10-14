@@ -259,13 +259,13 @@ impl EditLockSummary {
     pub fn detail(self) -> String {
         let inputs = match self.locked_inputs {
             0 => String::new(),
-            1 => "1 input is locked against rename and move.".to_owned(),
-            count => format!("{count} inputs are locked against rename and move."),
+            1 => "1 input is locked against rename, move, and removal.".to_owned(),
+            count => format!("{count} inputs are locked against rename, move, and removal."),
         };
         if self.project {
             format!(
-                "Project edits are locked: rename, move, Stinger slot setup, undo, and redo are \
-                 blocked. Switching, transitions, audio, overlays, and outputs still work.{}{inputs}",
+                "Project edits are locked: rename, move, adding and removing inputs, Stinger slot \
+                 setup, undo, and redo are blocked. Switching, transitions, audio, overlays, and outputs still work.{}{inputs}",
                 if inputs.is_empty() { "" } else { "\n" }
             )
         } else if inputs.is_empty() {
@@ -315,9 +315,11 @@ pub fn input_edit_lock_reason(state: &StudioUiState, input: InputId) -> Option<&
 
 /// Formats a command rejection for the error toast.
 ///
-/// Undo, redo, and padlock refusals carry a stable reason code in their first
-/// field issue (`project_locked`, `input_locked`, `nothing_to_undo`,
-/// `nothing_to_redo`, `history_conflict`, `history_drift`); the toast leads
+/// Undo, redo, padlock, and input add/remove refusals carry a stable reason
+/// code in their first field issue (`project_locked`, `input_locked`,
+/// `nothing_to_undo`, `nothing_to_redo`, `history_conflict`, `history_drift`,
+/// `input_in_use`, `duplicate_input`, `too_many_inputs`, `duplicate_name`,
+/// `invalid_name`); the toast and status bar lead
 /// with that code and an operator explanation. Other rejections keep the
 /// generic `Command rejected (<code>): <message>` form.
 #[must_use]
@@ -327,7 +329,12 @@ pub fn command_rejection_message(code: &str, message: &str, fields: &[FieldIssue
     };
     let advice = match issue.code.as_str() {
         "project_locked" => "Unlock the padlock in the top bar to edit; switching still works.",
-        "input_locked" => "This input's padlock blocks renaming and moving it.",
+        "input_locked" => "This input's padlock blocks renaming, moving, and removing it.",
+        "input_in_use" => "Take the input off air or out of its slot first.",
+        "duplicate_input" => "Another input already has this id; try again.",
+        "too_many_inputs" => "The show is at its input limit; remove an input first.",
+        "duplicate_name" => "Another input already uses this name.",
+        "invalid_name" => "Use a non-blank name of at most 128 bytes.",
         "nothing_to_undo" => "There is nothing left to undo.",
         "nothing_to_redo" => "There is nothing left to redo.",
         "history_conflict" => "Someone else edited first; their edit is next in the history.",
@@ -635,7 +642,7 @@ mod tests {
         assert_eq!(inputs.bank_chip().as_deref(), Some("1 LOCKED"));
         assert_eq!(
             inputs.detail(),
-            "Project edits are unlocked. 1 input is locked against rename and move."
+            "Project edits are unlocked. 1 input is locked against rename, move, and removal."
         );
 
         let project = edit_lock_summary(&editor(
@@ -651,7 +658,7 @@ mod tests {
         assert!(
             project
                 .detail()
-                .ends_with("2 inputs are locked against rename and move.")
+                .ends_with("2 inputs are locked against rename, move, and removal.")
         );
 
         let offline = StudioUiState::new(StudioConnectionStatus::Disconnected);
@@ -730,6 +737,11 @@ mod tests {
         assert!(toast.contains("Unlock the padlock"));
         for code in [
             "input_locked",
+            "input_in_use",
+            "duplicate_input",
+            "too_many_inputs",
+            "duplicate_name",
+            "invalid_name",
             "nothing_to_undo",
             "nothing_to_redo",
             "history_conflict",

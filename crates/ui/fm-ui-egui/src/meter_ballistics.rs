@@ -17,6 +17,9 @@ pub(crate) const CLIP_THRESHOLD_MDB: i32 = -100;
 /// Floor below which a held marker is considered gone (matches the meter
 /// scale floor of -60 dBFS).
 pub(crate) const FLOOR_MDB: i32 = -60_000;
+/// Meters with no new meter message for longer than this are stale: they
+/// keep the last sample, dimmed and marked `STALE`, like monitor frames.
+pub(crate) const METER_STALE_AFTER_MS: u32 = 1_000;
 /// Longest frame step applied at once, so a stalled frame cannot skip the
 /// whole hold window in one jump.
 const MAX_STEP_MS: u32 = 250;
@@ -114,15 +117,37 @@ pub(crate) struct MeterBallistics {
     last_sequence: Option<u64>,
     /// Whether the current frame carries a meter message not yet folded in.
     fresh: bool,
+    /// Whether the current frame has any meter message at all.
+    has_sample: bool,
+    /// Frame time since the latest new meter message arrived.
+    since_message_ms: u32,
 }
 
 impl MeterBallistics {
-    /// Starts a frame with the sequence of the latest meter message, if any.
-    pub(crate) fn begin_frame(&mut self, sequence: Option<u64>) {
+    /// Starts a frame with the sequence of the latest meter message, if any,
+    /// `dt_ms` after the previous frame.
+    pub(crate) fn begin_frame(&mut self, sequence: Option<u64>, dt_ms: u32) {
         self.fresh = sequence.is_some() && sequence != self.last_sequence;
+        self.has_sample = sequence.is_some();
+        if self.fresh {
+            self.since_message_ms = 0;
+        } else {
+            self.since_message_ms = self.since_message_ms.saturating_add(dt_ms);
+        }
         if sequence.is_some() {
             self.last_sequence = sequence;
         }
+    }
+
+    /// Whether the shown meter message is older than
+    /// [`METER_STALE_AFTER_MS`]; never without a message.
+    pub(crate) const fn stale(&self) -> bool {
+        self.has_sample && self.since_message_ms > METER_STALE_AFTER_MS
+    }
+
+    /// Frame time since the latest new meter message, for the `STALE` label.
+    pub(crate) const fn message_age_ms(&self) -> u32 {
+        self.since_message_ms
     }
 
     /// Advances one meter by `dt_ms` with its current channel samples.
@@ -332,21 +357,21 @@ mod tests {
     fn clearing_releases_one_meter_or_all() {
         let input = InputId::new(NonZeroU128::new(3).unwrap());
         let mut meters = MeterBallistics::default();
-        meters.begin_frame(Some(1));
+        meters.begin_frame(Some(1), 16);
         meters.update(MeterKey::Input(input), Some(&[channel(1_000_000)]), 16);
         meters.update(MeterKey::Master, Some(&[channel(1_000_000)]), 16);
         assert_eq!(meters.clipped_meters(), 2);
         meters.clear_clip(MeterKey::Input(input));
         assert_eq!(meters.clipped_meters(), 1);
         // The same message on a later frame does not re-arm the cleared lamp.
-        meters.begin_frame(Some(1));
+        meters.begin_frame(Some(1), 16);
         assert!(
             !meters.update(MeterKey::Input(input), Some(&[channel(1_000_000)]), 16)[0].clipping()
         );
         meters.clear_all_clips();
         assert_eq!(meters.clipped_meters(), 0);
         // A new clipping message latches again.
-        meters.begin_frame(Some(2));
+        meters.begin_frame(Some(2), 16);
         assert!(meters.update(MeterKey::Master, Some(&[channel(1_000_000)]), 16)[0].clipping());
     }
 
@@ -375,7 +400,7 @@ mod tests {
     fn meters_without_samples_drop_their_state() {
         let input = InputId::new(NonZeroU128::new(3).unwrap());
         let mut meters = MeterBallistics::default();
-        meters.begin_frame(Some(1));
+        meters.begin_frame(Some(1), 16);
         let states = meters.update(
             MeterKey::Input(input),
             Some(&[channel(1_000_000), channel(10)]),
@@ -395,22 +420,48 @@ mod tests {
     #[test]
     fn only_new_meter_messages_feed_peaks() {
         let mut meters = MeterBallistics::default();
-        meters.begin_frame(Some(7));
+        meters.begin_frame(Some(7), 16);
         let held = meters.update(MeterKey::Master, Some(&[channel(500_000)]), 16)[0].held_mdb;
         assert_eq!(held, -6_021);
         // The same message on later frames only ages the marker.
         for _ in 0..12 {
-            meters.begin_frame(Some(7));
+            meters.begin_frame(Some(7), 16);
             meters.update(MeterKey::Master, Some(&[channel(500_000)]), 250);
         }
-        meters.begin_frame(Some(7));
+        meters.begin_frame(Some(7), 16);
         let aged = meters.update(MeterKey::Master, Some(&[channel(500_000)]), 16)[0];
         // The live peak floors the marker at the level last seen.
         assert_eq!(aged.held_mdb, -6_021);
         assert_eq!(aged.hold_remaining_ms, 0);
-        meters.begin_frame(Some(8));
+        meters.begin_frame(Some(8), 16);
         let fresh = meters.update(MeterKey::Master, Some(&[channel(500_000)]), 16)[0];
         assert_eq!(fresh.hold_remaining_ms, PEAK_HOLD_MS);
+    }
+
+    #[test]
+    fn meters_go_stale_without_new_messages() {
+        let mut meters = MeterBallistics::default();
+        meters.begin_frame(None, 16);
+        assert!(!meters.stale(), "no message is not stale, just unavailable");
+        meters.begin_frame(Some(1), 16);
+        assert!(!meters.stale());
+        assert_eq!(meters.message_age_ms(), 0);
+        // The same message keeps aging by frame time.
+        for _ in 0..4 {
+            meters.begin_frame(Some(1), 250);
+        }
+        assert_eq!(meters.message_age_ms(), 1_000);
+        assert!(!meters.stale(), "exactly one second is still current");
+        meters.begin_frame(Some(1), 1);
+        assert!(meters.stale());
+        // A new message is current again.
+        meters.begin_frame(Some(2), 16);
+        assert!(!meters.stale());
+        // Losing the message (reconnect) leaves nothing to mark stale.
+        meters.begin_frame(Some(2), 5_000);
+        assert!(meters.stale());
+        meters.begin_frame(None, 16);
+        assert!(!meters.stale());
     }
 
     #[test]

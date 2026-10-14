@@ -17,6 +17,14 @@ pub(crate) const NOTICE_TOAST_MS: u32 = 5_000;
 pub(crate) const ERROR_TOAST_MS: u32 = 8_000;
 /// Lifetime of a terminal-uncertainty notice.
 pub(crate) const UNCERTAIN_TOAST_MS: u32 = 10_000;
+/// Lifetime of a pending-command toast; its outcome normally replaces it
+/// much sooner.
+pub(crate) const PENDING_TOAST_MS: u32 = 20_000;
+/// Lifetime of a confirmed-outcome toast.
+pub(crate) const SUCCESS_TOAST_MS: u32 = 5_000;
+/// Toast key shared by every "Queued N command(s)" notice, so rapid clicks
+/// update one toast instead of stacking one per count.
+pub(crate) const QUEUED_COMMANDS_KEY: &str = "queued-commands";
 
 /// Severity of one toast.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -24,6 +32,10 @@ pub(crate) enum ToastKind {
     Notice,
     Error,
     Uncertain,
+    /// A command was sent and its outcome is not known yet.
+    Pending,
+    /// A command's effect was confirmed by replicated state.
+    Success,
 }
 
 impl ToastKind {
@@ -32,6 +44,8 @@ impl ToastKind {
             Self::Notice => NOTICE_TOAST_MS,
             Self::Error => ERROR_TOAST_MS,
             Self::Uncertain => UNCERTAIN_TOAST_MS,
+            Self::Pending => PENDING_TOAST_MS,
+            Self::Success => SUCCESS_TOAST_MS,
         }
     }
 
@@ -40,6 +54,8 @@ impl ToastKind {
             Self::Notice => "NOTICE",
             Self::Error => "ERROR",
             Self::Uncertain => "OUTCOME UNCERTAIN",
+            Self::Pending => "PENDING",
+            Self::Success => "DONE",
         }
     }
 }
@@ -52,6 +68,8 @@ pub(crate) struct Toast {
     pub(crate) remaining_ms: u32,
     pub(crate) lifetime_ms: u32,
     pub(crate) id: u64,
+    /// Toasts with the same key replace each other in place.
+    pub(crate) key: Option<String>,
 }
 
 /// Bounded toast queue plus the messages already announced.
@@ -68,6 +86,35 @@ pub(crate) struct ToastQueue {
 impl ToastQueue {
     /// Pushes one toast, dropping the oldest when the queue is full.
     pub(crate) fn push(&mut self, kind: ToastKind, message: String) {
+        self.push_keyed(None, kind, message);
+    }
+
+    /// Replaces the toast with `key` in place (new kind, message, and a full
+    /// lifetime), or pushes a new keyed toast when none is visible.
+    pub(crate) fn upsert(&mut self, key: &str, kind: ToastKind, message: String) {
+        if let Some(toast) = self
+            .toasts
+            .iter_mut()
+            .find(|toast| toast.key.as_deref() == Some(key))
+        {
+            let lifetime_ms = kind.lifetime_ms();
+            toast.kind = kind;
+            toast.message = message;
+            toast.remaining_ms = lifetime_ms;
+            toast.lifetime_ms = lifetime_ms;
+            return;
+        }
+        self.push_keyed(Some(key.to_owned()), kind, message);
+    }
+
+    /// Marks the current error as already announced, so a message another
+    /// toast already explains (a refused input add or removal) is not
+    /// toasted twice.
+    pub(crate) fn acknowledge_error(&mut self, error: Option<&String>) {
+        self.seen_error = error.cloned();
+    }
+
+    fn push_keyed(&mut self, key: Option<String>, kind: ToastKind, message: String) {
         if self.toasts.len() == TOAST_CAPACITY {
             self.toasts.pop_front();
         }
@@ -78,6 +125,7 @@ impl ToastQueue {
             remaining_ms: lifetime_ms,
             lifetime_ms,
             id: self.next_id,
+            key,
         });
         self.next_id = self.next_id.wrapping_add(1);
     }
@@ -99,7 +147,10 @@ impl ToastQueue {
         if let Some(notice) = announce(&mut self.seen_notice, state.notice.as_ref())
             && ready
         {
-            self.push(ToastKind::Notice, notice);
+            match notice_key(&notice) {
+                Some(key) => self.upsert(key, ToastKind::Notice, notice),
+                None => self.push(ToastKind::Notice, notice),
+            }
         }
         if let Some(notice) = announce(
             &mut self.seen_external_notice,
@@ -148,6 +199,11 @@ impl ToastQueue {
     pub(crate) fn is_empty(&self) -> bool {
         self.toasts.is_empty()
     }
+}
+
+/// The coalescing key of a notice whose newer versions supersede older ones.
+fn notice_key(notice: &str) -> Option<&'static str> {
+    (notice.starts_with("Queued ") && notice.contains(" command(s)")).then_some(QUEUED_COMMANDS_KEY)
 }
 
 /// Returns the current message when it differs from the last announced one.
@@ -240,6 +296,66 @@ mod tests {
         let remaining: Vec<_> = queue.iter().map(|toast| toast.kind).collect();
         assert_eq!(remaining, [ToastKind::Error]);
         queue.tick(ERROR_TOAST_MS);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn queued_command_notices_update_one_toast() {
+        let mut queue = ToastQueue::default();
+        let mut state = state();
+        for count in 1..=5 {
+            state.notice = Some(format!("Queued {count} command(s) in operator FIFO"));
+            queue.observe(&state);
+            queue.tick(400);
+        }
+        let toasts: Vec<_> = queue.iter().collect();
+        assert_eq!(toasts.len(), 1, "rapid clicks share one toast");
+        assert_eq!(toasts[0].message, "Queued 5 command(s) in operator FIFO");
+        // The latest count restarts the lifetime.
+        assert_eq!(toasts[0].remaining_ms, NOTICE_TOAST_MS - 400);
+        // Other notices still stack beside it.
+        state.notice = Some("OSC malformed=1 rejected=0 overflow=0".to_owned());
+        queue.observe(&state);
+        assert_eq!(queue.iter().count(), 2);
+        // Once the queued toast expires a new count raises a fresh one.
+        queue.tick(NOTICE_TOAST_MS);
+        state.notice = Some("Queued 1 command(s) in operator FIFO".to_owned());
+        queue.observe(&state);
+        assert_eq!(queue.iter().count(), 1);
+    }
+
+    #[test]
+    fn keyed_toasts_are_replaced_in_place() {
+        let mut queue = ToastQueue::default();
+        queue.push(ToastKind::Notice, "first".to_owned());
+        queue.upsert("add-7", ToastKind::Pending, "Adding Bars 1…".to_owned());
+        queue.push(ToastKind::Notice, "last".to_owned());
+        queue.tick(1_000);
+        queue.upsert("add-7", ToastKind::Success, "Added Bars 1".to_owned());
+        let toasts: Vec<_> = queue
+            .iter()
+            .map(|toast| (toast.kind, toast.message.as_str()))
+            .collect();
+        assert_eq!(
+            toasts,
+            [
+                (ToastKind::Notice, "first"),
+                (ToastKind::Success, "Added Bars 1"),
+                (ToastKind::Notice, "last"),
+            ]
+        );
+        let replaced = queue.iter().nth(1).unwrap();
+        assert_eq!(replaced.remaining_ms, SUCCESS_TOAST_MS);
+        assert_eq!(replaced.lifetime_ms, SUCCESS_TOAST_MS);
+    }
+
+    #[test]
+    fn acknowledged_errors_are_not_toasted_again() {
+        let mut queue = ToastQueue::default();
+        let mut state = state();
+        state.error = Some("Command rejected (conflict): in use".to_owned());
+        queue.acknowledge_error(state.error.as_ref());
+        queue.observe(&state);
         assert!(queue.is_empty());
     }
 

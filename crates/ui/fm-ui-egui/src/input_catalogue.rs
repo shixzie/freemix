@@ -1,0 +1,1777 @@
+//! Live input add and remove (Protocol 2.23).
+//!
+//! Pure view-model helpers pick the new input's identifier and suggested
+//! name, gate both actions with an operator reason, word the refusal toasts,
+//! and track each sent request until replicated state or a refusal resolves
+//! it. The drawing half adds the Add input dialog and the Remove confirmation.
+//!
+//! Only the generators the simulated daemon realizes can be added live: a
+//! solid colour and colour bars, both with silent audio. Every other input
+//! kind is added offline.
+
+use egui::{
+    Align2, Button, Color32, CornerRadius, FontFamily, FontId, Rect, RichText, Sense, Stroke,
+    StrokeKind, Ui, Vec2, pos2,
+};
+use fm_protocol::LiveInputSource;
+use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
+use fm_ui_model::{ClientView, ManualTransitionStatus};
+
+use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
+use crate::gating::{Capability, unavailable_reason};
+use crate::input_bank::project_editing_available;
+use crate::theme::{
+    ACCENT, ACCENT_FILL, AMBER, BORDER_STRONG, ERROR, MONITOR_BLACK, MUTED, PROGRAM, PROGRAM_FILL,
+    TEXT, TEXT_DIM, Tone, WIDGET, mono, paint_lamp, section_label,
+};
+use crate::toasts::ToastKind;
+use crate::{StudioIntent, StudioShell, StudioUiState};
+
+/// Most inputs a show may hold; equals the protocol list bound, which the
+/// engine also enforces (`too_many_inputs`).
+pub const MAX_LIVE_INPUTS: usize = fm_protocol::MAX_LIST_ITEMS;
+
+pub(crate) const INPUT_LIMIT_REASON: &str = "the show already holds the maximum of 256 inputs";
+pub(crate) const UNKNOWN_INPUT_REASON: &str = "the input no longer exists";
+pub(crate) const REMOVAL_PENDING_REASON: &str = "a removal of this input is already pending";
+pub(crate) const ON_PROGRAM_REASON: &str = "this input is on Program";
+pub(crate) const ON_PREVIEW_REASON: &str = "this input is on Preview";
+pub(crate) const IN_TRANSITION_REASON: &str = "this input is in the active manual transition";
+pub(crate) const STINGER_MEDIA_REASON: &str = "this input is a Stinger slot's media";
+pub(crate) const OVERLAY_ON_AIR_REASON: &str = "this input is on air in an overlay";
+pub(crate) const OVERLAY_QUEUED_REASON: &str = "this input is queued on an overlay";
+
+/// An outcome is assumed lost when a request was never seen pending after
+/// this long (for example the queue was full or the payload was refused
+/// locally before sending).
+pub(crate) const CATALOGUE_TIMEOUT_MS: u32 = 15_000;
+
+/// One live input add or remove the client has sent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CatalogueRequest {
+    Add { input: InputId, name: String },
+    Remove { input: InputId },
+}
+
+impl CatalogueRequest {
+    /// The input the request adds or removes.
+    #[must_use]
+    pub const fn input(&self) -> InputId {
+        match self {
+            Self::Add { input, .. } | Self::Remove { input } => *input,
+        }
+    }
+
+    const fn is_add(&self) -> bool {
+        matches!(self, Self::Add { .. })
+    }
+}
+
+/// A refused live input add or remove with its stable reason.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CatalogueRefusal {
+    /// The refused command's identifier; each refusal is announced once.
+    pub command_id: String,
+    pub request: CatalogueRequest,
+    /// Top-level rejection code (`conflict`, `invalid_command`, ...).
+    pub code: String,
+    /// Stable reason code from the first field issue, when present
+    /// (`input_in_use`, `duplicate_name`, `project_locked`, ...).
+    pub reason: Option<String>,
+    /// The field issue's message, else the rejection message.
+    pub message: String,
+}
+
+/// The generator a new input is added with.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NewInputKind {
+    Solid,
+    Bars,
+}
+
+impl NewInputKind {
+    /// Base of the suggested name (`Solid Colour 1`, `Colour Bars 1`).
+    #[must_use]
+    pub const fn base_name(self) -> &'static str {
+        match self {
+            Self::Solid => "Solid Colour",
+            Self::Bars => "Colour Bars",
+        }
+    }
+
+    const fn key_label(self) -> &'static str {
+        match self {
+            Self::Solid => "SOLID COLOUR",
+            Self::Bars => "COLOUR BARS",
+        }
+    }
+}
+
+/// Picks the next free input identifier: one past the largest identifier in
+/// use (current inputs and adds still in flight), so a new input never reuses
+/// an identifier another editor just saw. Falls back to the smallest free
+/// identifier when the largest is exhausted.
+#[must_use]
+pub fn next_free_input_id(taken: &[InputId]) -> Option<InputId> {
+    let largest = taken
+        .iter()
+        .map(|input| input.get().get())
+        .max()
+        .unwrap_or(0);
+    largest
+        .checked_add(1)
+        .and_then(core::num::NonZeroU128::new)
+        .or_else(|| {
+            (1..=u128::MAX)
+                .filter_map(core::num::NonZeroU128::new)
+                .find(|candidate| !taken.iter().any(|input| input.get() == *candidate))
+        })
+        .map(InputId::new)
+}
+
+/// Suggests a unique name: the kind's base name and the lowest number not
+/// already used by an input or an add in flight.
+#[must_use]
+pub fn suggested_input_name(kind: NewInputKind, taken: &[&str]) -> String {
+    // One of the first `taken.len() + 1` numbers is always free.
+    (1..=taken.len() + 1)
+        .map(|number| format!("{} {number}", kind.base_name()))
+        .find(|name| !taken.contains(&name.as_str()))
+        .unwrap_or_else(|| kind.base_name().to_owned())
+}
+
+/// Why a new input's name would be refused, if it would be.
+#[must_use]
+pub fn input_name_problem(name: &str, taken: &[&str]) -> Option<&'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        Some("the name is empty")
+    } else if name.len() > MAX_INPUT_NAME_BYTES {
+        Some("the name is longer than 128 bytes")
+    } else if taken.contains(&name) {
+        Some("another input already uses this name")
+    } else {
+        None
+    }
+}
+
+/// Availability of Add input or of removing one input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CatalogueAvailability {
+    pub enabled: bool,
+    /// Why the action is unavailable; empty when enabled.
+    pub reason: &'static str,
+    /// Right-column menu marker (`LOCKED`, `PGM`, `PVW`, `IN USE`), if any.
+    pub mark: Option<&'static str>,
+}
+
+impl CatalogueAvailability {
+    const AVAILABLE: Self = Self {
+        enabled: true,
+        reason: "",
+        mark: None,
+    };
+
+    const fn blocked(reason: &'static str, mark: Option<&'static str>) -> Self {
+        Self {
+            enabled: false,
+            reason,
+            mark,
+        }
+    }
+
+    /// Whether a padlock is what blocks the action.
+    #[must_use]
+    pub fn locked(self) -> bool {
+        self.mark == Some("LOCKED")
+    }
+}
+
+/// Add input availability, in the order an operator would fix it:
+/// connection, synchronized state, `edit_project`, the project padlock, then
+/// the input limit (counting adds still in flight).
+#[must_use]
+pub fn add_input_availability(
+    state: &StudioUiState,
+    adds_in_flight: usize,
+) -> CatalogueAvailability {
+    if !project_editing_available(state) {
+        return CatalogueAvailability::blocked(
+            unavailable_reason(state, Capability::EditProject),
+            None,
+        );
+    }
+    let Some(view) = &state.view else {
+        return CatalogueAvailability::blocked(
+            unavailable_reason(state, Capability::EditProject),
+            None,
+        );
+    };
+    if view.edit_locks.project {
+        return CatalogueAvailability::blocked(PROJECT_LOCKED_REASON, Some("LOCKED"));
+    }
+    if view.inputs.len() + adds_in_flight >= MAX_LIVE_INPUTS {
+        return CatalogueAvailability::blocked(INPUT_LIMIT_REASON, None);
+    }
+    CatalogueAvailability::AVAILABLE
+}
+
+/// Why the replicated state keeps `input` from being removed, mirroring the
+/// server's rule: desired or realized Program or Preview, a manual transition
+/// endpoint, a Stinger slot's media, an overlay on air, or an overlay queue.
+#[must_use]
+pub fn input_usage_reason(view: &ClientView, input: InputId) -> Option<&'static str> {
+    let switcher = view.switcher;
+    let in_manual = |status: ManualTransitionStatus| match status {
+        ManualTransitionStatus::Active(transition) => {
+            transition.from == input || transition.to == input
+        }
+        ManualTransitionStatus::Inactive => false,
+    };
+    let overlays = || view.desired_overlays.iter().chain(&view.realized_overlays);
+    if switcher.desired.program == input || switcher.realized.program == input {
+        Some(ON_PROGRAM_REASON)
+    } else if switcher.desired.preview == input || switcher.realized.preview == input {
+        Some(ON_PREVIEW_REASON)
+    } else if in_manual(switcher.desired_manual_transition)
+        || in_manual(switcher.realized_manual_transition)
+    {
+        Some(IN_TRANSITION_REASON)
+    } else if view
+        .stingers
+        .iter()
+        .any(|stinger| stinger.media_input == input)
+    {
+        Some(STINGER_MEDIA_REASON)
+    } else if overlays()
+        .any(|overlay| overlay.source == Some(input) && (overlay.active || overlay.opacity > 0))
+    {
+        Some(OVERLAY_ON_AIR_REASON)
+    } else if overlays().any(|overlay| overlay.queued_sources.contains(&input)) {
+        Some(OVERLAY_QUEUED_REASON)
+    } else {
+        None
+    }
+}
+
+/// Remove availability for one input: session gates, the padlocks, a removal
+/// already in flight, then the live references the server refuses.
+#[must_use]
+pub fn remove_input_availability(
+    state: &StudioUiState,
+    input: InputId,
+    removal_in_flight: bool,
+) -> CatalogueAvailability {
+    let Some(view) = state
+        .view
+        .as_ref()
+        .filter(|_| project_editing_available(state))
+    else {
+        return CatalogueAvailability::blocked(
+            unavailable_reason(state, Capability::EditProject),
+            None,
+        );
+    };
+    if view.edit_locks.project {
+        return CatalogueAvailability::blocked(PROJECT_LOCKED_REASON, Some("LOCKED"));
+    }
+    if !view.inputs.contains(&input) {
+        return CatalogueAvailability::blocked(UNKNOWN_INPUT_REASON, None);
+    }
+    if view.edit_locks.is_input_locked(input) {
+        return CatalogueAvailability::blocked(INPUT_LOCKED_REASON, Some("LOCKED"));
+    }
+    if removal_in_flight {
+        return CatalogueAvailability::blocked(REMOVAL_PENDING_REASON, Some("PENDING"));
+    }
+    match input_usage_reason(view, input) {
+        Some(reason) => CatalogueAvailability::blocked(
+            reason,
+            Some(match reason {
+                ON_PROGRAM_REASON => "PGM",
+                ON_PREVIEW_REASON => "PVW",
+                _ => "IN USE",
+            }),
+        ),
+        None => CatalogueAvailability::AVAILABLE,
+    }
+}
+
+/// The detail after `cannot be removed: it is` in an `input_in_use` (or
+/// daemon `conflict`) refusal, such as `on Program` or `the media of
+/// Stinger 2`.
+#[must_use]
+pub fn input_in_use_detail(message: &str) -> Option<&str> {
+    let (_, detail) = message.split_once("cannot be removed: it is ")?;
+    let detail = detail.trim().trim_end_matches('.');
+    (!detail.is_empty()).then_some(detail)
+}
+
+/// Words a refused add or remove for its toast: the action, the stable
+/// reason code, what it means for this input, and what to do next.
+#[must_use]
+pub fn catalogue_refusal_message(refusal: &CatalogueRefusal, name: &str) -> String {
+    let add = refusal.request.is_add();
+    let lead = if add { "Add refused" } else { "Remove refused" };
+    let code = refusal.reason.as_deref().unwrap_or(refusal.code.as_str());
+    let advice = match code {
+        "duplicate_input" => format!(
+            "Input {} already exists; open Add input again for a fresh id.",
+            refusal.request.input()
+        ),
+        "too_many_inputs" => {
+            format!("The show is at its {MAX_LIVE_INPUTS}-input limit; remove an input first.")
+        }
+        "unknown_input" => format!("\"{name}\" no longer exists; another editor removed it."),
+        "invalid_name" => "Use a non-blank name of at most 128 bytes.".to_owned(),
+        "duplicate_name" => format!("Another input is already named \"{name}\"; pick another."),
+        "project_locked" => {
+            "The project is locked; unlock the padlock in the top bar to change inputs.".to_owned()
+        }
+        "input_locked" => format!("\"{name}\" has its own padlock; unlock it to remove it."),
+        "unavailable" => "This daemon cannot change its inputs while running (native media); \
+                          add or remove inputs offline."
+            .to_owned(),
+        _ => match input_in_use_detail(&refusal.message) {
+            Some(detail) => format!("\"{name}\" is {detail}. {}", in_use_advice(detail)),
+            None => refusal.message.clone(),
+        },
+    };
+    format!("{lead} ({code}): {advice}")
+}
+
+/// What to do about one `input_in_use` detail.
+fn in_use_advice(detail: &str) -> &'static str {
+    if detail.starts_with("on Program") || detail.starts_with("on Preview") {
+        "Route another input to that bus first."
+    } else if detail.contains("transition") {
+        "Wait for the transition to finish."
+    } else if detail.contains("overlay") {
+        "Take the overlay off or clear its queue first."
+    } else if detail.contains("Stinger") {
+        "Clear or reassign that Stinger slot first."
+    } else {
+        "Remove that reference offline first."
+    }
+}
+
+/// Builds the Add input intent from the dialog, or says why it is blocked.
+pub(crate) fn add_input_intent(
+    draft: &AddInputDraft,
+    state: &StudioUiState,
+    tracker: &CatalogueTracker,
+) -> Result<StudioIntent, &'static str> {
+    let availability = add_input_availability(state, tracker.adds_in_flight(state));
+    if !availability.enabled {
+        return Err(availability.reason);
+    }
+    let view = state.view.as_ref().ok_or(UNKNOWN_INPUT_REASON)?;
+    let taken = tracker.taken_names(state);
+    if let Some(problem) = input_name_problem(&draft.name, &taken) {
+        return Err(problem);
+    }
+    let input =
+        next_free_input_id(&tracker.taken_ids(view, state)).ok_or("no input identifier is free")?;
+    Ok(StudioIntent::AddInput {
+        input,
+        name: draft.name.trim().to_owned(),
+        source: draft.source(),
+    })
+}
+
+/// Add input dialog state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AddInputDraft {
+    pub(crate) kind: NewInputKind,
+    pub(crate) name: String,
+    /// The operator typed a name; kind changes no longer re-suggest one.
+    pub(crate) name_edited: bool,
+    pub(crate) color: Color32,
+    /// The name field takes keyboard focus once, when the dialog opens.
+    focus_pending: bool,
+}
+
+/// Colour presets offered beside the picker.
+const COLOUR_PRESETS: [(&str, Color32); 8] = [
+    ("Black", Color32::from_rgb(0, 0, 0)),
+    ("White", Color32::from_rgb(235, 235, 235)),
+    ("Grey", Color32::from_rgb(64, 68, 74)),
+    ("Red", Color32::from_rgb(200, 32, 40)),
+    ("Green", Color32::from_rgb(30, 150, 70)),
+    ("Blue", Color32::from_rgb(20, 60, 140)),
+    ("Amber", Color32::from_rgb(240, 168, 40)),
+    ("Magenta", Color32::from_rgb(170, 40, 150)),
+];
+
+impl AddInputDraft {
+    pub(crate) fn new(state: &StudioUiState, tracker: &CatalogueTracker) -> Self {
+        let kind = NewInputKind::Solid;
+        Self {
+            kind,
+            name: suggested_input_name(kind, &tracker.taken_names(state)),
+            name_edited: false,
+            color: COLOUR_PRESETS[5].1,
+            focus_pending: true,
+        }
+    }
+
+    /// Switches the kind, re-suggesting the name unless the operator typed one.
+    pub(crate) fn set_kind(&mut self, kind: NewInputKind, taken: &[&str]) {
+        self.kind = kind;
+        if !self.name_edited {
+            self.name = suggested_input_name(kind, taken);
+        }
+    }
+
+    pub(crate) const fn source(&self) -> LiveInputSource {
+        match self.kind {
+            NewInputKind::Solid => LiveInputSource::Solid {
+                red: self.color.r(),
+                green: self.color.g(),
+                blue: self.color.b(),
+                alpha: 255,
+            },
+            NewInputKind::Bars => LiveInputSource::Bars,
+        }
+    }
+}
+
+/// `#rrggbb` text for a colour.
+pub(crate) fn hex_colour(color: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", color.r(), color.g(), color.b())
+}
+
+/// Remove confirmation state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RemoveConfirm {
+    pub(crate) input: InputId,
+    pub(crate) name: String,
+}
+
+/// One sent add or remove awaiting its outcome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Outstanding {
+    request: CatalogueRequest,
+    /// Display name: the new name, or the removed input's name at send time.
+    name: String,
+    key: String,
+    age_ms: u32,
+    /// The request was seen among the client's pending commands.
+    seen_pending: bool,
+}
+
+/// A toast the tracker raises or replaces, keyed per request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CatalogueToast {
+    pub(crate) key: String,
+    pub(crate) kind: ToastKind,
+    pub(crate) message: String,
+}
+
+/// What one frame of tracking resolved.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CatalogueOutcomes {
+    pub(crate) toasts: Vec<CatalogueToast>,
+    /// A refusal was announced here, so the generic error toast for the same
+    /// rejection is redundant.
+    pub(crate) refusal_announced: bool,
+}
+
+/// Tracks sent adds and removes from pending to success or refusal.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CatalogueTracker {
+    outstanding: Vec<Outstanding>,
+    seen_refusal: Option<String>,
+    next_key: u64,
+}
+
+impl CatalogueTracker {
+    /// Records a sent request and returns its pending toast.
+    pub(crate) fn submit(&mut self, request: CatalogueRequest, name: String) -> CatalogueToast {
+        let key = format!("input-catalogue-{}", self.next_key);
+        self.next_key = self.next_key.wrapping_add(1);
+        let message = match &request {
+            CatalogueRequest::Add { input, .. } => {
+                format!("Adding \"{name}\" as input {input}…")
+            }
+            CatalogueRequest::Remove { input } => format!("Removing \"{name}\" (input {input})…"),
+        };
+        self.outstanding.push(Outstanding {
+            request,
+            name,
+            key: key.clone(),
+            age_ms: 0,
+            seen_pending: false,
+        });
+        CatalogueToast {
+            key,
+            kind: ToastKind::Pending,
+            message,
+        }
+    }
+
+    /// Records every add or remove among this frame's intents, naming a
+    /// removed input from the current view.
+    pub(crate) fn submit_intents(
+        &mut self,
+        intents: &[StudioIntent],
+        view: Option<&ClientView>,
+    ) -> Vec<CatalogueToast> {
+        intents
+            .iter()
+            .filter_map(|intent| match intent {
+                StudioIntent::AddInput { input, name, .. } => Some(self.submit(
+                    CatalogueRequest::Add {
+                        input: *input,
+                        name: name.clone(),
+                    },
+                    name.clone(),
+                )),
+                StudioIntent::RemoveInput { input } => {
+                    let name = view
+                        .and_then(|view| input_name(view, *input))
+                        .map_or_else(|| format!("Input {input}"), str::to_owned);
+                    Some(self.submit(CatalogueRequest::Remove { input: *input }, name))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Resolves requests against this frame's state: the replicated catalogue
+    /// shows success, a matching refusal or a request that left the pending
+    /// set without effect shows a refusal, and a request never seen pending
+    /// times out.
+    pub(crate) fn observe(&mut self, state: &StudioUiState, dt_ms: u32) -> CatalogueOutcomes {
+        let mut outcomes = CatalogueOutcomes::default();
+        let fresh_refusal = state
+            .catalogue_refusal
+            .as_ref()
+            .filter(|refusal| self.seen_refusal.as_deref() != Some(refusal.command_id.as_str()));
+        if let Some(refusal) = fresh_refusal {
+            self.seen_refusal = Some(refusal.command_id.clone());
+        }
+        let ready = state.connection_status.controls_enabled();
+        self.outstanding.retain_mut(|outstanding| {
+            outstanding.age_ms = outstanding.age_ms.saturating_add(dt_ms);
+            let pending = state.catalogue_pending.contains(&outstanding.request);
+            outstanding.seen_pending |= pending;
+            let resolved = resolve(outstanding, state, pending, ready, fresh_refusal);
+            if let Some((kind, message)) = resolved {
+                if kind == ToastKind::Error
+                    && fresh_refusal.is_some_and(|refusal| refusal.request == outstanding.request)
+                {
+                    outcomes.refusal_announced = true;
+                }
+                outcomes.toasts.push(CatalogueToast {
+                    key: outstanding.key.clone(),
+                    kind,
+                    message,
+                });
+                return false;
+            }
+            true
+        });
+        // A refusal of a request this console did not track (sent before a
+        // restart, say) is still worded for the operator.
+        if let Some(refusal) = fresh_refusal
+            && !outcomes.refusal_announced
+        {
+            let name = match &refusal.request {
+                CatalogueRequest::Add { name, .. } => name.clone(),
+                CatalogueRequest::Remove { input } => state
+                    .view
+                    .as_ref()
+                    .and_then(|view| input_name(view, *input))
+                    .map_or_else(|| format!("Input {input}"), str::to_owned),
+            };
+            outcomes.toasts.push(CatalogueToast {
+                key: format!("input-catalogue-refusal-{}", refusal.command_id),
+                kind: ToastKind::Error,
+                message: catalogue_refusal_message(refusal, &name),
+            });
+            outcomes.refusal_announced = true;
+        }
+        outcomes
+    }
+
+    /// Adds still in flight, by this console or seen pending in the client.
+    pub(crate) fn adds_in_flight(&self, state: &StudioUiState) -> usize {
+        self.add_requests(state).count()
+    }
+
+    /// Whether a removal of `input` is in flight.
+    pub(crate) fn removal_in_flight(&self, state: &StudioUiState, input: InputId) -> bool {
+        let removal = CatalogueRequest::Remove { input };
+        self.outstanding
+            .iter()
+            .any(|outstanding| outstanding.request == removal)
+            || state.catalogue_pending.contains(&removal)
+    }
+
+    /// Names in use by inputs and by adds in flight.
+    pub(crate) fn taken_names<'a>(&'a self, state: &'a StudioUiState) -> Vec<&'a str> {
+        let mut names: Vec<&str> = state
+            .view
+            .as_ref()
+            .map(|view| view.input_names.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        names.extend(self.add_requests(state).map(|(_, name)| name));
+        names
+    }
+
+    /// Identifiers in use by inputs and by adds in flight.
+    pub(crate) fn taken_ids(&self, view: &ClientView, state: &StudioUiState) -> Vec<InputId> {
+        let mut ids = view.inputs.clone();
+        ids.extend(self.add_requests(state).map(|(input, _)| input));
+        ids
+    }
+
+    /// Display name of the first add in flight, for the bank's add tile.
+    pub(crate) fn first_add_name(&self) -> Option<&str> {
+        self.outstanding
+            .iter()
+            .find(|outstanding| outstanding.request.is_add())
+            .map(|outstanding| outstanding.name.as_str())
+    }
+
+    fn add_requests<'a>(
+        &'a self,
+        state: &'a StudioUiState,
+    ) -> impl Iterator<Item = (InputId, &'a str)> + 'a {
+        let mut seen: Vec<InputId> = Vec::new();
+        self.outstanding
+            .iter()
+            .map(|outstanding| &outstanding.request)
+            .chain(&state.catalogue_pending)
+            .filter_map(move |request| match request {
+                CatalogueRequest::Add { input, name } if !seen.contains(input) => {
+                    seen.push(*input);
+                    Some((*input, name.as_str()))
+                }
+                _ => None,
+            })
+    }
+}
+
+fn input_name(view: &ClientView, input: InputId) -> Option<&str> {
+    view.inputs
+        .iter()
+        .position(|candidate| *candidate == input)
+        .map(|index| view.input_names[index].as_str())
+}
+
+/// The toast that resolves one request this frame, if it resolves.
+fn resolve(
+    outstanding: &Outstanding,
+    state: &StudioUiState,
+    pending: bool,
+    ready: bool,
+    fresh_refusal: Option<&CatalogueRefusal>,
+) -> Option<(ToastKind, String)> {
+    let name = outstanding.name.as_str();
+    let verb = if outstanding.request.is_add() {
+        "Add"
+    } else {
+        "Removal"
+    };
+    if let Some(view) = state.view.as_ref().filter(|_| ready) {
+        match &outstanding.request {
+            CatalogueRequest::Add { input, .. } => {
+                if let Some(index) = view.inputs.iter().position(|candidate| candidate == input) {
+                    return Some((
+                        ToastKind::Success,
+                        format!(
+                            "Added \"{}\" as input {input} at position {}. Undo removes it again.",
+                            view.input_names[index],
+                            index + 1
+                        ),
+                    ));
+                }
+            }
+            CatalogueRequest::Remove { input } => {
+                if !pending && !view.inputs.contains(input) {
+                    return Some((
+                        ToastKind::Success,
+                        format!("Removed \"{name}\" (input {input}) with its mixer strip."),
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(refusal) = fresh_refusal.filter(|refusal| refusal.request == outstanding.request) {
+        return Some((ToastKind::Error, catalogue_refusal_message(refusal, name)));
+    }
+    if !ready || pending {
+        return None;
+    }
+    let detail = state
+        .error
+        .as_deref()
+        .unwrap_or("no result from the daemon");
+    if outstanding.seen_pending {
+        return Some((
+            ToastKind::Error,
+            format!("{verb} of \"{name}\" was not applied: {detail}"),
+        ));
+    }
+    (outstanding.age_ms >= CATALOGUE_TIMEOUT_MS).then(|| {
+        (
+            ToastKind::Error,
+            format!(
+                "{verb} of \"{name}\" was not confirmed after {} s: {detail}. Check the input bank.",
+                CATALOGUE_TIMEOUT_MS / 1_000
+            ),
+        )
+    })
+}
+
+impl StudioShell {
+    /// Opens the Add input dialog when the action is available.
+    pub(crate) fn open_add_input(&mut self, state: &StudioUiState) {
+        if add_input_availability(state, self.catalogue.adds_in_flight(state)).enabled {
+            self.layout.show_input_bank = true;
+            self.add_input = Some(AddInputDraft::new(state, &self.catalogue));
+        }
+    }
+
+    /// Opens the Remove confirmation for one input.
+    pub(crate) fn open_remove_input(&mut self, input: InputId, name: &str) {
+        self.remove_input = Some(RemoveConfirm {
+            input,
+            name: name.to_owned(),
+        });
+    }
+
+    /// Add input availability for this frame.
+    pub(crate) fn add_input_gate(&self, state: &StudioUiState) -> CatalogueAvailability {
+        add_input_availability(state, self.catalogue.adds_in_flight(state))
+    }
+
+    /// Remove availability of one input for this frame.
+    pub(crate) fn remove_input_gate(
+        &self,
+        state: &StudioUiState,
+        input: InputId,
+    ) -> CatalogueAvailability {
+        remove_input_availability(state, input, self.catalogue.removal_in_flight(state, input))
+    }
+
+    /// Drops a Remove confirmation whose input is gone.
+    pub(crate) fn reconcile_catalogue_dialogs(&mut self, state: &StudioUiState) {
+        if let Some(confirm) = &self.remove_input
+            && state
+                .view
+                .as_ref()
+                .is_some_and(|view| !view.inputs.contains(&confirm.input))
+        {
+            self.remove_input = None;
+        }
+    }
+
+    /// Draws the Add input dialog and the Remove confirmation when open.
+    pub(crate) fn draw_catalogue_dialogs(
+        &mut self,
+        context: &egui::Context,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        self.draw_add_input_dialog(context, state, intents);
+        self.draw_remove_input_dialog(context, state, intents);
+    }
+
+    #[allow(clippy::too_many_lines)] // one modal dialog
+    fn draw_add_input_dialog(
+        &mut self,
+        context: &egui::Context,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let Some(mut draft) = self.add_input.take() else {
+            return;
+        };
+        let submission = add_input_intent(&draft, state, &self.catalogue);
+        let next_id = state
+            .view
+            .as_ref()
+            .and_then(|view| next_free_input_id(&self.catalogue.taken_ids(view, state)));
+        let position = state.view.as_ref().map_or(0, |view| view.inputs.len())
+            + self.catalogue.adds_in_flight(state)
+            + 1;
+        let taken: Vec<String> = self
+            .catalogue
+            .taken_names(state)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let mut submit = false;
+        let mut cancel = false;
+        let closed = crate::menu::help_modal(
+            context,
+            "studio-add-input-window",
+            "Add input",
+            460.0,
+            |ui| {
+                ui.label(
+                    RichText::new(
+                        "Appends a live generator input to the end of the bank with silent audio \
+                         and a default mixer strip. Media, capture, and network inputs are added \
+                         offline.",
+                    )
+                    .size(11.0)
+                    .color(TEXT_DIM),
+                );
+                ui.add_space(8.0);
+                ui.label(section_label("Kind"));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for kind in [NewInputKind::Solid, NewInputKind::Bars] {
+                        let selected = draft.kind == kind;
+                        let response = ui.add(kind_key(kind.key_label(), selected)).on_hover_text(
+                            match kind {
+                                NewInputKind::Solid => "A full-frame solid colour",
+                                NewInputKind::Bars => "Colour bars test signal",
+                            },
+                        );
+                        if response.clicked() && !selected {
+                            let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+                            draft.set_kind(kind, &taken);
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                ui.label(section_label("Name"));
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut draft.name)
+                        .id(egui::Id::new("studio-add-input-name"))
+                        .char_limit(MAX_INPUT_NAME_BYTES)
+                        .desired_width(ui.available_width()),
+                );
+                if draft.focus_pending {
+                    draft.focus_pending = false;
+                    edit.request_focus();
+                }
+                if edit.changed() {
+                    draft.name_edited = true;
+                }
+                if edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    submit = true;
+                }
+                let taken_refs: Vec<&str> = taken.iter().map(String::as_str).collect();
+                match input_name_problem(&draft.name, &taken_refs) {
+                    Some(problem) => {
+                        ui.label(RichText::new(capitalized(problem)).size(10.5).color(ERROR));
+                    }
+                    None if !draft.name_edited => {
+                        ui.label(
+                            RichText::new("Suggested unique name")
+                                .size(10.5)
+                                .color(MUTED),
+                        );
+                    }
+                    None => {
+                        ui.label(RichText::new("Name is free").size(10.5).color(MUTED));
+                    }
+                }
+                ui.add_space(6.0);
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 16.0;
+                    ui.vertical(|ui| {
+                        ui.label(section_label("Preview"));
+                        paint_source_preview(ui, &draft, next_id);
+                        ui.label(
+                            mono(format!(
+                                "{} · position {position}",
+                                next_id.map_or_else(
+                                    || "no free id".to_owned(),
+                                    |input| format!("input {input}")
+                                )
+                            ))
+                            .size(10.5)
+                            .color(TEXT_DIM),
+                        );
+                    });
+                    if draft.kind == NewInputKind::Solid {
+                        ui.vertical(|ui| {
+                            ui.label(section_label("Colour"));
+                            ui.horizontal_wrapped(|ui| {
+                                ui.set_max_width(220.0);
+                                ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
+                                for (label, color) in COLOUR_PRESETS {
+                                    if colour_swatch(ui, color, draft.color == color)
+                                        .on_hover_text(format!("{label}  {}", hex_colour(color)))
+                                        .clicked()
+                                    {
+                                        draft.color = color;
+                                    }
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                egui::color_picker::color_edit_button_srgba(
+                                    ui,
+                                    &mut draft.color,
+                                    egui::color_picker::Alpha::Opaque,
+                                )
+                                .on_hover_text("Pick any colour");
+                                ui.label(mono(hex_colour(draft.color)).size(11.5).color(TEXT));
+                            });
+                        });
+                    }
+                });
+                ui.add_space(8.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if let Err(reason) = submission {
+                        let (lamp, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                        paint_lamp(ui.painter(), lamp.center(), 4.0, Tone::Pending);
+                        ui.label(
+                            RichText::new(format!("Unavailable: {reason}"))
+                                .size(10.5)
+                                .color(AMBER),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("Undo removes an added input again")
+                                .size(10.5)
+                                .color(MUTED),
+                        );
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let add = ui
+                            .add_enabled(
+                                submission.is_ok(),
+                                Button::new(
+                                    RichText::new("ADD INPUT").size(12.0).strong().color(TEXT),
+                                )
+                                .fill(ACCENT_FILL)
+                                .stroke(Stroke::new(1.0, ACCENT))
+                                .min_size(Vec2::new(104.0, 26.0)),
+                            )
+                            .on_hover_text("Add this input  [Enter]")
+                            .on_disabled_hover_text(format!(
+                                "Unavailable: {}",
+                                submission.as_ref().err().copied().unwrap_or("")
+                            ));
+                        if add.clicked() {
+                            submit = true;
+                        }
+                        if ui
+                            .add(
+                                Button::new(RichText::new("CANCEL").size(12.0).color(TEXT_DIM))
+                                    .min_size(Vec2::new(84.0, 26.0)),
+                            )
+                            .on_hover_text("Close without adding  [Esc]")
+                            .clicked()
+                        {
+                            cancel = true;
+                        }
+                    });
+                });
+            },
+        );
+        // Rebuild after this frame's edits so Enter submits what was typed.
+        let submission = add_input_intent(&draft, state, &self.catalogue);
+        if submit && let Ok(intent) = submission {
+            intents.push(intent);
+            return;
+        }
+        if !(closed || cancel) {
+            self.add_input = Some(draft);
+        }
+    }
+
+    fn draw_remove_input_dialog(
+        &mut self,
+        context: &egui::Context,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let Some(confirm) = self.remove_input.clone() else {
+            return;
+        };
+        let availability = self.remove_input_gate(state, confirm.input);
+        let position = state.view.as_ref().and_then(|view| {
+            view.inputs
+                .iter()
+                .position(|input| *input == confirm.input)
+                .map(|index| index + 1)
+        });
+        let mut remove = false;
+        let mut cancel = false;
+        let closed = crate::menu::help_modal(
+            context,
+            "studio-remove-input-window",
+            "Remove input",
+            420.0,
+            |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "Remove \"{}\" (input {}{})?",
+                        confirm.name,
+                        confirm.input,
+                        position
+                            .map_or_else(String::new, |position| format!(", position {position}"))
+                    ))
+                    .size(13.0)
+                    .color(TEXT),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Its mixer strip and padlock go with it. Removal cannot be undone: it \
+                         clears the redo history and forgets undo steps that name this input.",
+                    )
+                    .size(11.0)
+                    .color(TEXT_DIM),
+                );
+                ui.add_space(8.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if !availability.enabled {
+                        let (lamp, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+                        paint_lamp(ui.painter(), lamp.center(), 4.0, Tone::Pending);
+                        ui.label(
+                            RichText::new(format!("Unavailable: {}", availability.reason))
+                                .size(10.5)
+                                .color(AMBER),
+                        );
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(
+                                availability.enabled,
+                                Button::new(
+                                    RichText::new("REMOVE").size(12.0).strong().color(TEXT),
+                                )
+                                .fill(PROGRAM_FILL)
+                                .stroke(Stroke::new(1.0, PROGRAM))
+                                .min_size(Vec2::new(96.0, 26.0)),
+                            )
+                            .on_hover_text("Remove this input from the show")
+                            .on_disabled_hover_text(format!("Unavailable: {}", availability.reason))
+                            .clicked()
+                        {
+                            remove = true;
+                        }
+                        if ui
+                            .add(
+                                Button::new(RichText::new("CANCEL").size(12.0).color(TEXT_DIM))
+                                    .min_size(Vec2::new(84.0, 26.0)),
+                            )
+                            .on_hover_text("Keep this input  [Esc]")
+                            .clicked()
+                        {
+                            cancel = true;
+                        }
+                    });
+                });
+            },
+        );
+        if remove && availability.enabled {
+            intents.push(StudioIntent::RemoveInput {
+                input: confirm.input,
+            });
+            self.remove_input = None;
+        } else if closed || cancel {
+            self.remove_input = None;
+        }
+    }
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// A segmented kind key: lit accent outline and fill when selected.
+fn kind_key(label: &str, selected: bool) -> Button<'static> {
+    Button::new(
+        RichText::new(label.to_owned())
+            .size(11.5)
+            .strong()
+            .color(if selected { TEXT } else { TEXT_DIM }),
+    )
+    .fill(if selected { ACCENT_FILL } else { WIDGET })
+    .stroke(Stroke::new(
+        1.0,
+        if selected { ACCENT } else { BORDER_STRONG },
+    ))
+    .min_size(Vec2::new(150.0, 28.0))
+}
+
+/// One clickable colour preset; the current colour has an accent ring.
+fn colour_swatch(ui: &mut Ui, color: Color32, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(3), color);
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(3),
+            Stroke::new(
+                if selected { 2.0 } else { 1.0 },
+                if selected {
+                    ACCENT
+                } else if response.hovered() {
+                    TEXT_DIM
+                } else {
+                    BORDER_STRONG
+                },
+            ),
+            StrokeKind::Outside,
+        );
+    }
+    response
+}
+
+/// Standard 75 % colour bars, left to right.
+const BARS: [Color32; 7] = [
+    Color32::from_rgb(191, 191, 191),
+    Color32::from_rgb(191, 191, 0),
+    Color32::from_rgb(0, 191, 191),
+    Color32::from_rgb(0, 191, 0),
+    Color32::from_rgb(191, 0, 191),
+    Color32::from_rgb(191, 0, 0),
+    Color32::from_rgb(0, 0, 191),
+];
+
+/// A 16:9 picture of the new source, tagged with its identifier.
+fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<InputId>) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(176.0, 99.0), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CornerRadius::same(3), MONITOR_BLACK);
+    match draft.kind {
+        NewInputKind::Solid => {
+            painter.rect_filled(rect, CornerRadius::same(3), draft.color);
+        }
+        NewInputKind::Bars => {
+            #[allow(clippy::cast_precision_loss)] // seven bars
+            let width = rect.width() / BARS.len() as f32;
+            for (index, color) in BARS.iter().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let x = rect.min.x + index as f32 * width;
+                painter.rect_filled(
+                    Rect::from_min_max(pos2(x, rect.min.y), pos2(x + width + 0.5, rect.max.y)),
+                    CornerRadius::ZERO,
+                    *color,
+                );
+            }
+        }
+    }
+    if let Some(input) = next_id {
+        let tag = painter.layout_no_wrap(
+            format!("INPUT {input}"),
+            FontId::new(9.5, FontFamily::Monospace),
+            TEXT,
+        );
+        let tag_rect = Rect::from_min_size(
+            rect.min + Vec2::new(6.0, 6.0),
+            tag.size() + Vec2::new(8.0, 4.0),
+        );
+        painter.rect_filled(
+            tag_rect,
+            CornerRadius::same(3),
+            Color32::from_black_alpha(190),
+        );
+        painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, TEXT);
+    }
+    painter.text(
+        pos2(rect.max.x - 6.0, rect.max.y - 6.0),
+        Align2::RIGHT_BOTTOM,
+        "SILENT",
+        FontId::new(9.0, FontFamily::Proportional),
+        Color32::from_white_alpha(170),
+    );
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(3),
+        Stroke::new(1.0, BORDER_STRONG),
+        StrokeKind::Inside,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use core::num::NonZeroU128;
+
+    use fm_protocol::EditHistoryStatus;
+    use fm_ui_model::{ClientModel, ProjectSnapshot};
+
+    use super::*;
+    use crate::StudioConnectionStatus;
+
+    fn input(value: u128) -> InputId {
+        InputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn wire(value: u128) -> fm_protocol::WireInputId {
+        fm_protocol::WireInputId::from_domain(input(value))
+    }
+
+    /// Inputs 1 (Program), 2 (Preview), 3, and 4 named `Cam`, `Slides`,
+    /// `Solid Colour 1`, and `Guest`.
+    fn snapshot() -> fm_protocol::SnapshotMessage {
+        fm_protocol::SnapshotMessage {
+            engine: fm_protocol::EngineIdentity {
+                engine_id: "e".into(),
+                state_epoch: 1,
+                log_id: "l".into(),
+            },
+            revision: 9,
+            show_name: "Show".into(),
+            inputs: [
+                (1, "Cam"),
+                (2, "Slides"),
+                (3, "Solid Colour 1"),
+                (4, "Guest"),
+            ]
+            .map(|(id, name)| fm_protocol::InputStatus {
+                input: wire(id),
+                name: name.into(),
+            })
+            .to_vec(),
+            outputs: Vec::new(),
+            input_audio_strips: [1, 2, 3, 4]
+                .map(|id| fm_protocol::InputAudioStripStatus {
+                    input: wire(id),
+                    gain_millidb: 0,
+                    balance_basis_points: 0,
+                    muted: false,
+                    soloed: false,
+                    follow_video: true,
+                    delay_samples: 0,
+                })
+                .to_vec(),
+            desired_program: wire(1),
+            desired_preview: wire(2),
+            realized_program: wire(1),
+            realized_preview: wire(2),
+            desired_manual_transition: fm_protocol::ManualTransitionStatus::Inactive,
+            realized_manual_transition: fm_protocol::ManualTransitionStatus::Inactive,
+            desired_fade_to_black: fm_protocol::FadeToBlackState {
+                target_active: false,
+                position: fm_protocol::FadeToBlackPosition::LIVE,
+            },
+            realized_fade_to_black: fm_protocol::FadeToBlackState {
+                target_active: false,
+                position: fm_protocol::FadeToBlackPosition::LIVE,
+            },
+            stingers: Vec::new(),
+            streams: Vec::new(),
+            recordings: [1, 2]
+                .map(|slot| fm_protocol::RecordingStatus {
+                    recorder: fm_protocol::WireRecorderSlot::new(slot).unwrap(),
+                    desired_active: false,
+                })
+                .to_vec(),
+            desired_overlays: fm_protocol::OverlayStatus::empty_channels(),
+            realized_overlays: fm_protocol::OverlayStatus::empty_channels(),
+            edit_locks: fm_protocol::EditLockStatus::default(),
+            edit_history: EditHistoryStatus::EMPTY,
+        }
+    }
+
+    fn view_of(snapshot: fm_protocol::SnapshotMessage) -> ClientView {
+        let project = fm_types::ProjectId::new(NonZeroU128::new(1).unwrap());
+        let mut model = ClientModel::new(project);
+        model
+            .install_snapshot(ProjectSnapshot::from_protocol(project, snapshot))
+            .unwrap();
+        model.view().unwrap()
+    }
+
+    fn editor(view: ClientView) -> StudioUiState {
+        StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(view)
+            .with_edit_project_permission(true)
+    }
+
+    fn state() -> StudioUiState {
+        editor(view_of(snapshot()))
+    }
+
+    fn add(id: u128, name: &str) -> CatalogueRequest {
+        CatalogueRequest::Add {
+            input: input(id),
+            name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn next_id_follows_the_largest_taken_identifier() {
+        assert_eq!(next_free_input_id(&[]), Some(input(1)));
+        assert_eq!(
+            next_free_input_id(&[input(3), input(1), input(9)]),
+            Some(input(10))
+        );
+        // The largest identifier is exhausted: the smallest gap is used.
+        assert_eq!(
+            next_free_input_id(&[input(u128::MAX), input(1), input(2)]),
+            Some(input(3))
+        );
+    }
+
+    #[test]
+    fn suggested_names_are_unique_per_kind() {
+        assert_eq!(
+            suggested_input_name(NewInputKind::Solid, &[]),
+            "Solid Colour 1"
+        );
+        assert_eq!(
+            suggested_input_name(NewInputKind::Solid, &["Solid Colour 1", "Solid Colour 3"]),
+            "Solid Colour 2"
+        );
+        assert_eq!(
+            suggested_input_name(NewInputKind::Bars, &["Solid Colour 1"]),
+            "Colour Bars 1"
+        );
+    }
+
+    #[test]
+    fn name_problems_mirror_the_server_rules() {
+        let taken = ["Cam", "Slides"];
+        assert_eq!(input_name_problem("Bars 1", &taken), None);
+        assert_eq!(input_name_problem("   ", &taken), Some("the name is empty"));
+        assert_eq!(
+            input_name_problem(" Cam ", &taken),
+            Some("another input already uses this name")
+        );
+        assert_eq!(
+            input_name_problem(&"x".repeat(MAX_INPUT_NAME_BYTES + 1), &taken),
+            Some("the name is longer than 128 bytes")
+        );
+        assert_eq!(
+            input_name_problem(&"x".repeat(MAX_INPUT_NAME_BYTES), &taken),
+            None
+        );
+    }
+
+    #[test]
+    fn add_is_gated_by_session_padlock_and_limit() {
+        assert_eq!(MAX_LIVE_INPUTS, 256, "INPUT_LIMIT_REASON names 256");
+        assert!(add_input_availability(&state(), 0).enabled);
+
+        let mut viewer = state();
+        viewer.can_edit_project = false;
+        let denied = add_input_availability(&viewer, 0);
+        assert!(!denied.enabled);
+        assert_eq!(
+            denied.reason,
+            "this session lacks the edit_project permission"
+        );
+
+        let offline = StudioUiState::new(StudioConnectionStatus::Backoff);
+        assert_eq!(
+            add_input_availability(&offline, 0).reason,
+            "the control connection is not ready yet"
+        );
+
+        let mut locked = snapshot();
+        locked.edit_locks.project = true;
+        let locked = add_input_availability(&editor(view_of(locked)), 0);
+        assert_eq!(locked.reason, PROJECT_LOCKED_REASON);
+        assert!(locked.locked());
+
+        // Four inputs plus adds in flight reach the limit.
+        let full = add_input_availability(&state(), MAX_LIVE_INPUTS - 4);
+        assert_eq!(full.reason, INPUT_LIMIT_REASON);
+        assert!(add_input_availability(&state(), MAX_LIVE_INPUTS - 5).enabled);
+    }
+
+    #[test]
+    fn removal_is_blocked_by_live_references_and_padlocks() {
+        let state = state();
+        let gate = |state: &StudioUiState, id| remove_input_availability(state, input(id), false);
+        assert_eq!(gate(&state, 1).reason, ON_PROGRAM_REASON);
+        assert_eq!(gate(&state, 1).mark, Some("PGM"));
+        assert_eq!(gate(&state, 2).reason, ON_PREVIEW_REASON);
+        assert_eq!(gate(&state, 2).mark, Some("PVW"));
+        assert!(gate(&state, 3).enabled);
+        assert_eq!(gate(&state, 9).reason, UNKNOWN_INPUT_REASON);
+        assert_eq!(
+            remove_input_availability(&state, input(3), true).reason,
+            REMOVAL_PENDING_REASON
+        );
+
+        let mut locked = snapshot();
+        locked.edit_locks.inputs = vec![wire(3)];
+        let locked = editor(view_of(locked));
+        assert_eq!(gate(&locked, 3).reason, INPUT_LOCKED_REASON);
+        assert!(gate(&locked, 3).locked());
+        assert!(gate(&locked, 4).enabled);
+
+        let mut project = snapshot();
+        project.edit_locks.project = true;
+        assert_eq!(
+            gate(&editor(view_of(project)), 3).reason,
+            PROJECT_LOCKED_REASON
+        );
+
+        // Realized Program still on the old source blocks it too.
+        let mut moving = snapshot();
+        moving.desired_program = wire(4);
+        moving.desired_preview = wire(1);
+        let moving = editor(view_of(moving));
+        assert_eq!(gate(&moving, 1).reason, ON_PROGRAM_REASON);
+        assert_eq!(gate(&moving, 4).reason, ON_PROGRAM_REASON);
+        assert_eq!(gate(&moving, 2).reason, ON_PREVIEW_REASON);
+
+        let mut viewer = state.clone();
+        viewer.can_edit_project = false;
+        assert_eq!(
+            gate(&viewer, 3).reason,
+            "this session lacks the edit_project permission"
+        );
+    }
+
+    #[test]
+    fn overlays_and_stingers_keep_their_inputs() {
+        let mut overlay = snapshot();
+        overlay.desired_overlays[0].source = Some(wire(3));
+        overlay.desired_overlays[0].active = true;
+        overlay.desired_overlays[1].queued_sources = vec![wire(4)];
+        let overlay = editor(view_of(overlay));
+        assert_eq!(
+            remove_input_availability(&overlay, input(3), false).reason,
+            OVERLAY_ON_AIR_REASON
+        );
+        assert_eq!(
+            remove_input_availability(&overlay, input(4), false).reason,
+            OVERLAY_QUEUED_REASON
+        );
+        assert_eq!(
+            remove_input_availability(&overlay, input(4), false).mark,
+            Some("IN USE")
+        );
+
+        let mut stinger = view_of(snapshot());
+        stinger.stingers.push(fm_ui_model::StingerStatus {
+            slot: 1,
+            media_input: input(4),
+            preload: true,
+            cut_point_frames: 15,
+            audio_policy: fm_protocol::StingerAudioPolicy::MixWithProgram,
+            missing_media_fallback: fm_protocol::StingerMissingMediaFallback::Cut,
+            readiness: fm_protocol::StingerReadiness::Ready,
+        });
+        assert_eq!(
+            input_usage_reason(&stinger, input(4)),
+            Some(STINGER_MEDIA_REASON)
+        );
+        assert_eq!(input_usage_reason(&stinger, input(3)), None);
+    }
+
+    #[test]
+    fn add_intent_uses_the_next_free_id_and_a_trimmed_unique_name() {
+        let state = state();
+        let mut tracker = CatalogueTracker::default();
+        let mut draft = AddInputDraft::new(&state, &tracker);
+        // `Solid Colour 1` is taken by input 3.
+        assert_eq!(draft.name, "Solid Colour 2");
+        draft.color = Color32::from_rgb(1, 2, 3);
+        assert_eq!(
+            add_input_intent(&draft, &state, &tracker),
+            Ok(StudioIntent::AddInput {
+                input: input(5),
+                name: "Solid Colour 2".to_owned(),
+                source: LiveInputSource::Solid {
+                    red: 1,
+                    green: 2,
+                    blue: 3,
+                    alpha: 255,
+                },
+            })
+        );
+        // An add in flight reserves its id and name.
+        tracker.submit(add(5, "Solid Colour 2"), "Solid Colour 2".to_owned());
+        let next = AddInputDraft::new(&state, &tracker);
+        assert_eq!(next.name, "Solid Colour 3");
+        assert!(matches!(
+            add_input_intent(&next, &state, &tracker),
+            Ok(StudioIntent::AddInput { input: id, .. }) if id == input(6)
+        ));
+        assert_eq!(
+            add_input_intent(&draft, &state, &tracker),
+            Err("another input already uses this name")
+        );
+
+        draft.set_kind(NewInputKind::Bars, &tracker.taken_names(&state));
+        assert_eq!(draft.name, "Colour Bars 1");
+        assert!(matches!(
+            add_input_intent(&draft, &state, &tracker),
+            Ok(StudioIntent::AddInput {
+                source: LiveInputSource::Bars,
+                ..
+            })
+        ));
+        // A typed name survives a kind change.
+        draft.name = "  Test Card ".to_owned();
+        draft.name_edited = true;
+        draft.set_kind(NewInputKind::Solid, &[]);
+        assert!(matches!(
+            add_input_intent(&draft, &state, &tracker),
+            Ok(StudioIntent::AddInput { name, .. }) if name == "Test Card"
+        ));
+
+        let mut viewer = state;
+        viewer.can_edit_project = false;
+        assert_eq!(
+            add_input_intent(&draft, &viewer, &tracker),
+            Err("this session lacks the edit_project permission")
+        );
+    }
+
+    #[test]
+    fn tracked_adds_resolve_to_success_when_the_input_appears() {
+        let mut state = state();
+        let mut tracker = CatalogueTracker::default();
+        let pending = tracker.submit_intents(
+            &[
+                StudioIntent::Cut,
+                StudioIntent::AddInput {
+                    input: input(5),
+                    name: "Colour Bars 1".to_owned(),
+                    source: LiveInputSource::Bars,
+                },
+            ],
+            state.view.as_ref(),
+        );
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].kind, ToastKind::Pending);
+        assert_eq!(pending[0].message, "Adding \"Colour Bars 1\" as input 5…");
+
+        // Sent and awaiting its result: nothing resolves.
+        state.catalogue_pending = vec![add(5, "Colour Bars 1")];
+        assert_eq!(tracker.observe(&state, 16), CatalogueOutcomes::default());
+        assert_eq!(tracker.adds_in_flight(&state), 1);
+
+        // Accepted and applied: the input is in the replicated catalogue.
+        let mut added = snapshot();
+        added.inputs.push(fm_protocol::InputStatus {
+            input: wire(5),
+            name: "Colour Bars 1".into(),
+        });
+        let mut strip = added.input_audio_strips[0];
+        strip.input = wire(5);
+        added.input_audio_strips.push(strip);
+        state.view = Some(view_of(added));
+        state.catalogue_pending.clear();
+        let outcomes = tracker.observe(&state, 16);
+        assert_eq!(
+            outcomes.toasts,
+            [CatalogueToast {
+                key: pending[0].key.clone(),
+                kind: ToastKind::Success,
+                message: "Added \"Colour Bars 1\" as input 5 at position 5. Undo removes it again."
+                    .to_owned(),
+            }]
+        );
+        assert!(!outcomes.refusal_announced);
+        assert_eq!(tracker.adds_in_flight(&state), 0);
+    }
+
+    #[test]
+    fn tracked_removals_map_the_in_use_refusal_into_the_toast() {
+        let mut state = state();
+        let mut tracker = CatalogueTracker::default();
+        let pending = tracker.submit_intents(
+            &[StudioIntent::RemoveInput { input: input(3) }],
+            state.view.as_ref(),
+        );
+        assert_eq!(pending[0].message, "Removing \"Solid Colour 1\" (input 3)…");
+        assert!(tracker.removal_in_flight(&state, input(3)));
+        state.catalogue_refusal = Some(CatalogueRefusal {
+            command_id: "c-1".to_owned(),
+            request: CatalogueRequest::Remove { input: input(3) },
+            code: "conflict".to_owned(),
+            reason: Some("input_in_use".to_owned()),
+            message: "input 3 cannot be removed: it is the source of overlay 2".to_owned(),
+        });
+        let outcomes = tracker.observe(&state, 16);
+        assert!(outcomes.refusal_announced);
+        assert_eq!(outcomes.toasts.len(), 1);
+        assert_eq!(outcomes.toasts[0].kind, ToastKind::Error);
+        assert_eq!(
+            outcomes.toasts[0].message,
+            "Remove refused (input_in_use): \"Solid Colour 1\" is the source of overlay 2. \
+             Take the overlay off or clear its queue first."
+        );
+        assert!(!tracker.removal_in_flight(&state, input(3)));
+        // The same refusal is announced once.
+        assert_eq!(tracker.observe(&state, 16), CatalogueOutcomes::default());
+    }
+
+    #[test]
+    fn tracked_removals_resolve_when_the_input_leaves() {
+        let mut state = state();
+        let mut tracker = CatalogueTracker::default();
+        tracker.submit(
+            CatalogueRequest::Remove { input: input(4) },
+            "Guest".to_owned(),
+        );
+        state.catalogue_pending = vec![CatalogueRequest::Remove { input: input(4) }];
+        assert_eq!(tracker.observe(&state, 16).toasts, Vec::new());
+        let mut removed = snapshot();
+        removed.inputs.pop();
+        removed.input_audio_strips.pop();
+        state.view = Some(view_of(removed));
+        state.catalogue_pending.clear();
+        let outcomes = tracker.observe(&state, 16);
+        assert_eq!(outcomes.toasts[0].kind, ToastKind::Success);
+        assert_eq!(
+            outcomes.toasts[0].message,
+            "Removed \"Guest\" (input 4) with its mixer strip."
+        );
+    }
+
+    #[test]
+    fn unresolved_requests_fail_after_leaving_pending_or_timing_out() {
+        let mut state = state();
+        let mut tracker = CatalogueTracker::default();
+        tracker.submit(add(5, "Bars"), "Bars".to_owned());
+        state.catalogue_pending = vec![add(5, "Bars")];
+        tracker.observe(&state, 16);
+        // Left the pending set without effect and the refusal was missed.
+        state.catalogue_pending.clear();
+        state.error = Some("Command rejected (conflict): busy".to_owned());
+        let outcomes = tracker.observe(&state, 16);
+        assert_eq!(outcomes.toasts[0].kind, ToastKind::Error);
+        assert_eq!(
+            outcomes.toasts[0].message,
+            "Add of \"Bars\" was not applied: Command rejected (conflict): busy"
+        );
+
+        // Never seen pending: waits, then times out.
+        state.error = None;
+        tracker.submit(
+            CatalogueRequest::Remove { input: input(3) },
+            "Solid".to_owned(),
+        );
+        assert_eq!(
+            tracker.observe(&state, CATALOGUE_TIMEOUT_MS - 1).toasts,
+            Vec::new()
+        );
+        // No timeout progress while the console is not ready.
+        state.connection_status = StudioConnectionStatus::Backoff;
+        assert_eq!(tracker.observe(&state, 10).toasts, Vec::new());
+        state.connection_status = StudioConnectionStatus::Ready;
+        let outcomes = tracker.observe(&state, 1);
+        assert!(outcomes.toasts[0].message.starts_with(
+            "Removal of \"Solid\" was not confirmed after 15 s: no result from the daemon"
+        ));
+    }
+
+    #[test]
+    fn untracked_refusals_are_still_worded() {
+        let mut state = state();
+        let mut tracker = CatalogueTracker::default();
+        state.catalogue_refusal = Some(CatalogueRefusal {
+            command_id: "c-9".to_owned(),
+            request: add(5, "Cam"),
+            code: "conflict".to_owned(),
+            reason: Some("duplicate_name".to_owned()),
+            message: "input name is already in use".to_owned(),
+        });
+        let outcomes = tracker.observe(&state, 16);
+        assert!(outcomes.refusal_announced);
+        assert_eq!(
+            outcomes.toasts[0].message,
+            "Add refused (duplicate_name): Another input is already named \"Cam\"; pick another."
+        );
+    }
+
+    #[test]
+    fn refusal_messages_name_the_reason_code_and_next_step() {
+        let refusal = |request, reason: Option<&str>, code: &str, message: &str| CatalogueRefusal {
+            command_id: "c".to_owned(),
+            request,
+            code: code.to_owned(),
+            reason: reason.map(str::to_owned),
+            message: message.to_owned(),
+        };
+        let remove = || CatalogueRequest::Remove { input: input(2) };
+        let cases = [
+            (
+                refusal(add(7, "X"), Some("duplicate_input"), "conflict", "m"),
+                "Add refused (duplicate_input): Input 7 already exists; open Add input again for a fresh id.",
+            ),
+            (
+                refusal(add(7, "X"), Some("too_many_inputs"), "conflict", "m"),
+                "Add refused (too_many_inputs): The show is at its 256-input limit; remove an input first.",
+            ),
+            (
+                refusal(remove(), Some("unknown_input"), "not_found", "m"),
+                "Remove refused (unknown_input): \"X\" no longer exists; another editor removed it.",
+            ),
+            (
+                refusal(add(7, "X"), Some("invalid_name"), "invalid_command", "m"),
+                "Add refused (invalid_name): Use a non-blank name of at most 128 bytes.",
+            ),
+            (
+                refusal(add(7, "X"), Some("project_locked"), "conflict", "m"),
+                "Add refused (project_locked): The project is locked; unlock the padlock in the top bar to change inputs.",
+            ),
+            (
+                refusal(remove(), Some("input_locked"), "conflict", "m"),
+                "Remove refused (input_locked): \"X\" has its own padlock; unlock it to remove it.",
+            ),
+            (
+                refusal(
+                    remove(),
+                    Some("input_in_use"),
+                    "conflict",
+                    "input 2 cannot be removed: it is on Preview",
+                ),
+                "Remove refused (input_in_use): \"X\" is on Preview. Route another input to that bus first.",
+            ),
+            (
+                refusal(
+                    remove(),
+                    None,
+                    "conflict",
+                    "input 2 cannot be removed: it is a layer source of Scene 100",
+                ),
+                "Remove refused (conflict): \"X\" is a layer source of Scene 100. Remove that reference offline first.",
+            ),
+            (
+                refusal(remove(), None, "unavailable", "native"),
+                "Remove refused (unavailable): This daemon cannot change its inputs while running (native media); add or remove inputs offline.",
+            ),
+            (
+                refusal(remove(), None, "stale_revision", "revision moved"),
+                "Remove refused (stale_revision): revision moved",
+            ),
+        ];
+        for (refusal, expected) in cases {
+            assert_eq!(catalogue_refusal_message(&refusal, "X"), expected);
+        }
+        assert_eq!(
+            input_in_use_detail("input 2 cannot be removed: it is on Program."),
+            Some("on Program")
+        );
+        assert_eq!(input_in_use_detail("busy"), None);
+    }
+
+    #[test]
+    fn solid_sources_are_opaque_and_hex_is_lowercase() {
+        let state = state();
+        let mut draft = AddInputDraft::new(&state, &CatalogueTracker::default());
+        draft.color = Color32::from_rgb(0xAB, 0x0C, 0xFF);
+        assert_eq!(
+            draft.source(),
+            LiveInputSource::Solid {
+                red: 0xab,
+                green: 0x0c,
+                blue: 0xff,
+                alpha: 255,
+            }
+        );
+        assert_eq!(hex_colour(draft.color), "#ab0cff");
+        assert_eq!(capitalized("the name is empty"), "The name is empty");
+    }
+}

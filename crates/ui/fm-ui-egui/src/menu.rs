@@ -4,6 +4,7 @@
 //! usual gate; gated items are disabled with the blocking reason as tooltip.
 //! Output covers transitions, Fade to black, the manual T-bar, per-slot
 //! recorders, per-target stream Start/Stop, and Stinger slot assignment.
+//! Inputs also opens the Add input dialog and the Remove confirmation.
 //! View items only change local layout state.
 
 use egui::{Button, RichText, Ui, Vec2};
@@ -314,9 +315,10 @@ impl StudioShell {
         }
     }
 
-    #[allow(clippy::unused_self)] // keeps every menu a shell method
     fn inputs_menu(&mut self, ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
         ui.set_min_width(260.0);
+        self.catalogue_menu_items(ui, state);
+        ui.separator();
         let gate = TransitionGate::from_state(state);
         let preview = preview_selection_available(gate, state.can_select_preview);
         let cut = preview && transition_availability(gate).basic();
@@ -359,6 +361,68 @@ impl StudioShell {
         })
         .response
         .on_disabled_hover_text(format!("Unavailable: {cut_reason}"));
+    }
+
+    /// Inputs › Add input… and the Remove input submenu, whose right column
+    /// says why an input cannot be removed (`PGM`, `PVW`, `LOCKED`, `IN USE`).
+    fn catalogue_menu_items(&mut self, ui: &mut Ui, state: &StudioUiState) {
+        heading(ui, "Catalogue");
+        let add = self.add_input_gate(state);
+        if lockable_item(
+            ui,
+            (add.enabled, add.locked()),
+            "Add input…",
+            None,
+            Some("Append a solid colour or colour bars input to the end of the bank"),
+            add.reason,
+        ) {
+            self.open_add_input(state);
+        }
+        let editing = project_editing_available(state);
+        let reason = if editing {
+            "the show has no inputs"
+        } else {
+            unavailable_reason(state, Capability::EditProject)
+        };
+        let inputs: Vec<(InputId, String)> = state.view.as_ref().map_or_else(Vec::new, |view| {
+            view.inputs
+                .iter()
+                .copied()
+                .zip(view.input_names.iter().cloned())
+                .collect()
+        });
+        let mut open = None;
+        ui.add_enabled_ui(editing && !inputs.is_empty(), |ui| {
+            ui.menu_button("Remove input", |ui| {
+                ui.set_min_width(260.0);
+                for (index, (input, name)) in inputs.iter().enumerate() {
+                    let gate = self.remove_input_gate(state, *input);
+                    let label = format!("{:>2}  {}", index + 1, ellipsize(name, MENU_LABEL_CHARS));
+                    let tone = match gate.mark {
+                        Some("PGM") => Tone::OnAir,
+                        Some("PVW") => Tone::Ready,
+                        Some(_) => Tone::Pending,
+                        None => Tone::Idle,
+                    };
+                    if status_item(
+                        ui,
+                        gate.enabled,
+                        &label,
+                        (gate.mark.unwrap_or(""), tone),
+                        &format!("Remove {name} (asks for confirmation)"),
+                        gate.reason,
+                    ) {
+                        open = Some((*input, name.clone()));
+                    }
+                }
+            })
+        })
+        .response
+        .on_hover_text("Remove an input that is not on air or in use")
+        .on_disabled_hover_text(format!("Unavailable: {reason}"));
+        if let Some((input, name)) = open {
+            self.open_remove_input(input, &name);
+        }
     }
 
     #[allow(clippy::too_many_lines)] // one menu, one immediate-mode region
@@ -730,7 +794,7 @@ impl StudioShell {
 
 /// A centered modal dialog with a title row and close key; returns `true`
 /// when the operator closed it (close key, Escape, or a click outside).
-fn help_modal(
+pub(crate) fn help_modal(
     context: &egui::Context,
     id: &str,
     title: &str,

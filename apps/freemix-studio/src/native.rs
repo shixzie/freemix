@@ -21,9 +21,9 @@ use fm_protocol::{
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
-    ExternalStudioAction, InputAudioStripUpdate, InputMoveDirection, ReconnectStatus,
-    RecordingAction, StreamAction, StudioConnectionStatus, StudioIntent, StudioShell,
-    StudioUiState, TerminalUncertaintyNotice, external_intent,
+    CatalogueRefusal, CatalogueRequest, ExternalStudioAction, InputAudioStripUpdate,
+    InputMoveDirection, ReconnectStatus, RecordingAction, StreamAction, StudioConnectionStatus,
+    StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice, external_intent,
 };
 use fm_ui_model::ClientView;
 
@@ -1479,9 +1479,11 @@ fn consume_command_sequence(
             fields,
             ..
         } => {
+            let refusal = catalogue_refusal(runtime.session().client(), command_id, &result);
             publication.rejection(
                 runtime,
                 fm_ui_egui::command_rejection_message(code, message, fields),
+                refusal,
                 *deferred_rejections,
             );
             return Ok(());
@@ -1585,17 +1587,24 @@ impl CommandPublication<'_> {
         }
     }
 
-    fn rejection(self, runtime: &mut StudioRuntime, error: String, deferred_rejections: usize) {
+    fn rejection(
+        self,
+        runtime: &mut StudioRuntime,
+        error: String,
+        catalogue_refusal: Option<CatalogueRefusal>,
+        deferred_rejections: usize,
+    ) {
         if self.publish_updates {
-            publish_runtime_with_uncertainties(
+            let mut state = runtime_state(
                 runtime,
-                self.publisher,
                 combined_error(
                     join_errors(Some(error), self.persistent_error.map(str::to_owned)),
                     deferred_rejections,
                 ),
-                self.terminal_uncertainties,
             );
+            state.terminal_uncertainties = self.terminal_uncertainties.to_vec();
+            state.catalogue_refusal = catalogue_refusal;
+            self.publisher.publish(state);
         }
     }
 }
@@ -1922,8 +1931,87 @@ fn intent_payload(
             scope: EditLockScope::Project,
             locked,
         },
+        StudioIntent::AddInput {
+            input,
+            name,
+            source,
+        } => {
+            let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
+            if view.inputs.contains(&input) {
+                return Err(format!(
+                    "Input {input} already exists; open Add input again for a fresh id"
+                ));
+            }
+            CommandPayload::AddInput {
+                input: WireInputId::from_domain(input),
+                name,
+                source,
+            }
+        }
+        StudioIntent::RemoveInput { input } => {
+            let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
+            if !view.inputs.contains(&input) {
+                return Err("Input no longer exists".to_owned());
+            }
+            CommandPayload::RemoveInput {
+                input: WireInputId::from_domain(input),
+            }
+        }
     };
     Ok(payload)
+}
+
+/// The live input add or remove a command payload carries, if any.
+fn catalogue_request(payload: &CommandPayload) -> Option<CatalogueRequest> {
+    match payload {
+        CommandPayload::AddInput { input, name, .. } => Some(CatalogueRequest::Add {
+            input: input.to_domain(),
+            name: name.clone(),
+        }),
+        CommandPayload::RemoveInput { input } => Some(CatalogueRequest::Remove {
+            input: input.to_domain(),
+        }),
+        _ => None,
+    }
+}
+
+/// The refusal of a live input add or remove, with its stable reason code,
+/// for the console's refusal toast.
+fn catalogue_refusal(
+    client: &Client,
+    command_id: &str,
+    result: &CommandResult,
+) -> Option<CatalogueRefusal> {
+    let CommandResult::Rejected {
+        code,
+        message,
+        fields,
+        ..
+    } = result
+    else {
+        return None;
+    };
+    let request = catalogue_request(&client.command(command_id)?.command.payload)?;
+    let issue = fields.first();
+    Some(CatalogueRefusal {
+        command_id: command_id.to_owned(),
+        request,
+        code: code.clone(),
+        reason: issue.map(|issue| issue.code.clone()),
+        message: issue.map_or_else(|| message.clone(), |issue| issue.message.clone()),
+    })
+}
+
+/// Unresolved live input adds and removes, in send order. Like the recorder
+/// flags, a request clears exactly when its command resolves.
+fn catalogue_pending_requests(client: &Client) -> Vec<CatalogueRequest> {
+    client
+        .model()
+        .pending_commands()
+        .iter()
+        .filter_map(|command| client.command(command.id.as_str()))
+        .filter_map(|record| catalogue_request(&record.command.payload))
+        .collect()
 }
 
 const fn lifecycle_status(lifecycle: LifecycleState) -> StudioConnectionStatus {
@@ -2001,6 +2089,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
     state.pending_commands = client.model().pending_commands().len();
     state.recording_pending = recording_command_pending(client);
     state.stream_pending = stream_command_pending_targets(client);
+    state.catalogue_pending = catalogue_pending_requests(client);
     state.error = error.or(lifecycle_error);
     state
 }
@@ -3858,6 +3947,170 @@ mod tests {
                 inputs: vec![ids[1], ids[2], ids[0]]
             })
         );
+    }
+
+    #[test]
+    fn input_catalogue_intents_map_to_add_and_remove_payloads() {
+        let project = ProjectId::new(NonZeroU128::new(7).unwrap());
+        let mut model = ClientModel::new(project);
+        model
+            .install_snapshot(ProjectSnapshot::from_protocol(
+                project,
+                heartbeat_snapshot(),
+            ))
+            .unwrap();
+        let view = model.view().unwrap();
+        let existing = view.inputs[0];
+        let fresh = WireInputId::new(NonZeroU128::new(9).unwrap());
+        let source = fm_protocol::LiveInputSource::Solid {
+            red: 1,
+            green: 2,
+            blue: 3,
+            alpha: 255,
+        };
+        assert_eq!(
+            intent_payload(
+                StudioIntent::AddInput {
+                    input: fresh.to_domain(),
+                    name: "Solid Colour 1".to_owned(),
+                    source,
+                },
+                Some(&view),
+            ),
+            Ok(CommandPayload::AddInput {
+                input: fresh,
+                name: "Solid Colour 1".to_owned(),
+                source,
+            })
+        );
+        // A reused identifier is refused before sending.
+        assert!(
+            intent_payload(
+                StudioIntent::AddInput {
+                    input: existing,
+                    name: "Bars".to_owned(),
+                    source: fm_protocol::LiveInputSource::Bars,
+                },
+                Some(&view),
+            )
+            .unwrap_err()
+            .contains("already exists")
+        );
+        assert_eq!(
+            intent_payload(StudioIntent::RemoveInput { input: existing }, Some(&view)),
+            Ok(CommandPayload::RemoveInput {
+                input: WireInputId::from_domain(existing),
+            })
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::RemoveInput {
+                    input: fresh.to_domain()
+                },
+                Some(&view)
+            ),
+            Err("Input no longer exists".to_owned())
+        );
+        assert!(intent_payload(StudioIntent::RemoveInput { input: existing }, None).is_err());
+    }
+
+    #[test]
+    fn catalogue_commands_publish_pending_requests_and_refusal_reasons() {
+        let project = ProjectId::new(NonZeroU128::new(1).unwrap());
+        let mut client = Client::new(crate::native_client_config(
+            Role::Admin,
+            "studio-catalogue",
+            project,
+        ))
+        .unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client
+            .accept_handshake(heartbeat_handshake(HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            }))
+            .unwrap();
+        client.apply_snapshot(heartbeat_snapshot()).unwrap();
+        let fresh = WireInputId::new(NonZeroU128::new(9).unwrap());
+        let existing = WireInputId::new(NonZeroU128::new(2).unwrap());
+        let add = client
+            .queue_command(
+                CommandPayload::AddInput {
+                    input: fresh,
+                    name: "Colour Bars 1".to_owned(),
+                    source: fm_protocol::LiveInputSource::Bars,
+                },
+                "catalogue-add",
+                Some(4),
+                None,
+            )
+            .unwrap();
+        client
+            .queue_command(CommandPayload::Cut, "catalogue-cut", Some(4), None)
+            .unwrap();
+        let remove = client
+            .queue_command(
+                CommandPayload::RemoveInput { input: existing },
+                "catalogue-remove",
+                Some(4),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            catalogue_pending_requests(&client),
+            [
+                CatalogueRequest::Add {
+                    input: fresh.to_domain(),
+                    name: "Colour Bars 1".to_owned(),
+                },
+                CatalogueRequest::Remove {
+                    input: existing.to_domain(),
+                },
+            ]
+        );
+        let rejected = |id: &str, fields: Vec<fm_protocol::FieldIssue>| CommandResult::Rejected {
+            id: id.to_owned(),
+            code: "conflict".to_owned(),
+            message: "input 2 cannot be removed: it is on Program".to_owned(),
+            fields,
+            current_revision: 4,
+            retryable: false,
+        };
+        let in_use = rejected(
+            &remove.id,
+            vec![fm_protocol::FieldIssue {
+                field: "input".to_owned(),
+                code: "input_in_use".to_owned(),
+                message: "input 2 cannot be removed: it is on Program".to_owned(),
+            }],
+        );
+        assert_eq!(
+            catalogue_refusal(&client, &remove.id, &in_use),
+            Some(CatalogueRefusal {
+                command_id: remove.id.clone(),
+                request: CatalogueRequest::Remove {
+                    input: existing.to_domain(),
+                },
+                code: "conflict".to_owned(),
+                reason: Some("input_in_use".to_owned()),
+                message: "input 2 cannot be removed: it is on Program".to_owned(),
+            })
+        );
+        // A daemon refusal without a field issue keeps its message as detail.
+        let refusal = catalogue_refusal(&client, &add.id, &rejected(&add.id, Vec::new())).unwrap();
+        assert_eq!(refusal.reason, None);
+        assert!(refusal.message.contains("cannot be removed"));
+        // Other commands and accepted results carry no catalogue refusal.
+        assert_eq!(
+            catalogue_refusal(&client, "unknown", &rejected("unknown", Vec::new())),
+            None
+        );
+        let accepted = CommandResult::Accepted {
+            id: add.id.clone(),
+            revision: 5,
+            scheduled_frame: None,
+        };
+        assert_eq!(catalogue_refusal(&client, &add.id, &accepted), None);
     }
 
     #[test]

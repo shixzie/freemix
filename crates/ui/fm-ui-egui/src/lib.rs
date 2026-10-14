@@ -12,16 +12,17 @@
 //! over the monitors), and `toasts` (transient notices). Pure helpers live in
 //! `gating` (disabled-control reasons), `meter_ballistics` (peak hold),
 //! `stream_control` (per-target stream Start/Stop gating), and
-//! `stinger_config` (Stinger slot assignment and clearing).
+//! `stinger_config` (Stinger slot assignment and clearing), and
+//! `input_catalogue` (live input add and remove, with its dialogs).
 
 use egui::{
     Align, CentralPanel, Event, Frame, Key, Layout, Margin, Modifiers, Panel, ScrollArea, Stroke,
     Ui, Vec2,
 };
 use fm_protocol::{
-    AudioMetersMessage, ManualTransitionKind, ManualTransitionPosition, MonitorFrameOrigin,
-    MonitorImage, MonitorTap, StreamStatusMessage, WireOverlayChannelId, WireRecorderSlot,
-    WireStingerSlotId, WireStreamTargetId,
+    AudioMetersMessage, LiveInputSource, ManualTransitionKind, ManualTransitionPosition,
+    MonitorFrameOrigin, MonitorImage, MonitorTap, StreamStatusMessage, WireOverlayChannelId,
+    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_types::{InputId, OutputId};
 use fm_ui_model::{ClientView, ManualTransitionStatus, StreamStatus, SwitcherState};
@@ -32,6 +33,7 @@ mod edit_history;
 mod fade_to_black;
 mod gating;
 mod input_bank;
+mod input_catalogue;
 mod menu;
 mod meter_ballistics;
 mod mixer;
@@ -52,6 +54,11 @@ pub use edit_history::{
     edit_lock_summary, input_edit_lock_reason, padlock_toggle, stinger_edit_lock_reason,
 };
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
+pub use input_catalogue::{
+    CatalogueAvailability, CatalogueRefusal, CatalogueRequest, MAX_LIVE_INPUTS, NewInputKind,
+    add_input_availability, catalogue_refusal_message, input_in_use_detail, input_name_problem,
+    input_usage_reason, next_free_input_id, remove_input_availability, suggested_input_name,
+};
 pub use menu::ConsoleLayout;
 pub use stinger_config::{
     default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
@@ -185,6 +192,14 @@ pub enum StudioIntent {
     Redo { expected_edit: u64 },
     /// Engages or releases the project-wide edit padlock.
     SetProjectLock { locked: bool },
+    /// Appends a live generator input with a Studio-chosen unused identifier.
+    AddInput {
+        input: InputId,
+        name: String,
+        source: LiveInputSource,
+    },
+    /// Removes one input nothing on air or configured references.
+    RemoveInput { input: InputId },
 }
 
 /// External control actions accepted by native Studio ingress.
@@ -292,6 +307,12 @@ pub struct StudioUiState {
     /// Latest decoded encoded-fallback monitor frame per
     /// [`MonitorTap::index`] and when the client completed it.
     pub monitor_images: [Option<(MonitorImage, std::time::Instant)>; 2],
+    /// Live input adds and removes sent by this client and not yet resolved,
+    /// in send order.
+    pub catalogue_pending: Vec<CatalogueRequest>,
+    /// The latest refused input add or remove, published once with its
+    /// rejection.
+    pub catalogue_refusal: Option<CatalogueRefusal>,
 }
 
 impl StudioUiState {
@@ -318,6 +339,8 @@ impl StudioUiState {
             stream_pending: Vec::new(),
             reconnect: None,
             monitor_images: [None, None],
+            catalogue_pending: Vec::new(),
+            catalogue_refusal: None,
         }
     }
 
@@ -731,7 +754,7 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 11] = [
     ShortcutEntry {
         group: ShortcutGroup::InputBank,
         keys: "Right-click",
-        action: "Input menu: Preview, Cut, Rename, Move",
+        action: "Input menu: Preview, Cut, Rename, Move, Remove",
         key: None,
     },
     ShortcutEntry {
@@ -936,6 +959,12 @@ pub struct StudioShell {
     monitor_textures: monitors::MonitorTextures,
     /// Canvas shape of the latest monitor frame, kept while frames lapse.
     canvas: (u16, u16),
+    /// The open Add input dialog.
+    add_input: Option<input_catalogue::AddInputDraft>,
+    /// The open Remove input confirmation.
+    remove_input: Option<input_catalogue::RemoveConfirm>,
+    /// Sent input adds and removes awaiting their outcome.
+    catalogue: input_catalogue::CatalogueTracker,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1010,9 +1039,7 @@ impl StudioShell {
         state: &StudioUiState,
         manual_transition_controls: ManualTransitionAvailability,
     ) -> Vec<StudioIntent> {
-        // A Help dialog is modal: Esc closes it and must not also cancel a
-        // live manual transition, nor may console keys act behind it.
-        if self.show_shortcuts || self.show_about {
+        if self.console_keys_blocked(ui.ctx()) {
             return Vec::new();
         }
         let inputs = state
@@ -1035,6 +1062,17 @@ impl StudioShell {
         intents
     }
 
+    /// Whether a dialog, menu, or popup owns the keyboard. Dialogs are modal
+    /// and an open menu or popup closes on Esc, so Esc must not also cancel a
+    /// live manual transition, nor may console keys act behind them.
+    fn console_keys_blocked(&self, context: &egui::Context) -> bool {
+        self.show_shortcuts
+            || self.show_about
+            || self.add_input.is_some()
+            || self.remove_input.is_some()
+            || egui::Popup::is_any_open(context)
+    }
+
     /// Draws one complete shell frame and returns operator intents in UI order.
     ///
     /// The UI must belong to an active `egui` pass, as is customary for
@@ -1052,6 +1090,7 @@ impl StudioShell {
         self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
 
         self.reconcile_rename_draft(state);
+        self.reconcile_catalogue_dialogs(state);
         let manual_transition_controls = manual_transition_availability(
             ManualTransitionGate::from_state(state),
             state.view.as_ref().is_some_and(|view| {
@@ -1069,7 +1108,7 @@ impl StudioShell {
         // Age existing toasts before announcing new messages, so a message
         // arriving after a long idle gap still gets its full lifetime.
         self.toasts.tick(dt_ms);
-        self.toasts.observe(state);
+        self.observe_toasts(state, dt_ms);
         let bar_frame = Frame::new()
             .fill(PANEL)
             .stroke(Stroke::new(1.0, BORDER))
@@ -1146,7 +1185,40 @@ impl StudioShell {
             });
         self.draw_toasts(ui.ctx(), central.response.rect);
         self.draw_help_windows(ui.ctx(), state);
+        self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
+        self.track_catalogue_intents(ui.ctx(), state, &intents);
         intents
+    }
+
+    /// Announces this frame's new messages and input add/remove outcomes.
+    fn observe_toasts(&mut self, state: &StudioUiState, dt_ms: u32) {
+        let catalogue = self.catalogue.observe(state, dt_ms);
+        if catalogue.refusal_announced {
+            // The refusal toast below already explains this rejection.
+            self.toasts.acknowledge_error(state.error.as_ref());
+        }
+        self.toasts.observe(state);
+        for toast in catalogue.toasts {
+            self.toasts.upsert(&toast.key, toast.kind, toast.message);
+        }
+    }
+
+    /// Starts tracking this frame's input adds and removes with a pending
+    /// toast each.
+    fn track_catalogue_intents(
+        &mut self,
+        context: &egui::Context,
+        state: &StudioUiState,
+        intents: &[StudioIntent],
+    ) {
+        let pending = self.catalogue.submit_intents(intents, state.view.as_ref());
+        if pending.is_empty() {
+            return;
+        }
+        for toast in pending {
+            self.toasts.upsert(&toast.key, toast.kind, toast.message);
+        }
+        context.request_repaint_after(std::time::Duration::from_millis(100));
     }
 
     /// Stacked toasts at the bottom-right of the console area.
@@ -1330,6 +1402,9 @@ impl Default for StudioShell {
             meters: meter_ballistics::MeterBallistics::default(),
             monitor_textures: monitors::MonitorTextures::default(),
             canvas: monitors::DEFAULT_CANVAS,
+            add_input: None,
+            remove_input: None,
+            catalogue: input_catalogue::CatalogueTracker::default(),
         }
     }
 }
@@ -1625,6 +1700,61 @@ mod tests {
                 Event::Key { key: Key::F, .. }
             ]
         ));
+    }
+
+    #[test]
+    fn open_menus_and_dialogs_keep_esc_for_themselves() {
+        let context = egui::Context::default();
+        let state = StudioUiState::new(StudioConnectionStatus::Ready);
+        let manual = ManualTransitionAvailability {
+            start: false,
+            alpha_fade_start_exposed: true,
+            active_controls: true,
+        };
+        let run = |shell: &StudioShell, popup: bool| {
+            context.begin_pass(egui::RawInput {
+                events: vec![Event::Key {
+                    key: Key::Escape,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                }],
+                ..Default::default()
+            });
+            if popup {
+                egui::Popup::open_id(&context, egui::Id::new("studio-menu-under-test"));
+            }
+            let mut ui = egui::Ui::new(
+                context.clone(),
+                egui::Id::new("studio-blocked-keys"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(context.viewport_rect()),
+            );
+            let intents = shell.keyboard_intents(&mut ui, &state, manual);
+            let remaining = context.input(|input| input.events.len());
+            drop(ui);
+            egui::Popup::close_all(&context);
+            let _ = context.end_pass();
+            (intents, remaining)
+        };
+        let mut shell = StudioShell::default();
+        assert_eq!(
+            run(&shell, false),
+            (vec![StudioIntent::CancelManualTransition], 0)
+        );
+        // An open menu or context menu closes on Esc instead.
+        assert_eq!(run(&shell, true), (Vec::new(), 1));
+        // So do the modal input dialogs.
+        shell.remove_input = Some(input_catalogue::RemoveConfirm {
+            input: input(3),
+            name: "Graphics".to_owned(),
+        });
+        assert_eq!(run(&shell, false), (Vec::new(), 1));
+        shell.remove_input = None;
+        shell.show_shortcuts = true;
+        assert_eq!(run(&shell, false), (Vec::new(), 1));
     }
 
     #[test]

@@ -2,7 +2,9 @@
 //!
 //! Click selects Preview; double-click (or the tile's CUT key) selects the
 //! source on Preview and then cuts it to Program, using only the existing
-//! Preview-selection and Cut intents under their usual gates.
+//! Preview-selection and Cut intents under their usual gates. A `+` tile at
+//! the end of the bank opens the Add input dialog; the tile menu offers
+//! Remove with a confirmation step.
 
 use egui::{
     Align2, Color32, CornerRadius, FontFamily, FontId, Rect, RichText, ScrollArea, Sense, Stroke,
@@ -13,11 +15,12 @@ use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
 use fm_ui_model::{EditLocks, SwitcherState};
 
 use crate::gating::{self, Capability, Hint, unavailable_reason};
+use crate::input_catalogue::{CatalogueAvailability, MAX_LIVE_INPUTS};
 use crate::monitors::{FrameFacts, MonitorPicture, letterbox, picture_visible};
 use crate::theme::{
-    ACCENT, AMBER, BORDER_STRONG, GRAPHITE_RAISED, LOCK_BADGE_SIZE, MONITOR_BLACK, MUTED, PROGRAM,
-    TEXT, TEXT_DIM, Tone, elided, lock_badge, mono, paint_lock_badge, pill, section_header,
-    small_button, status_chip, tally_badge, tally_color,
+    ACCENT, AMBER, BORDER_STRONG, GRAPHITE_RAISED, LOCK_BADGE_SIZE, MONITOR_BLACK, MUTED, PREVIEW,
+    PROGRAM, TEXT, TEXT_DIM, Tone, elided, lock_badge, mono, paint_lock_badge, pill,
+    section_header, small_button, status_chip, tally_badge, tally_color,
 };
 use crate::{
     InputMoveDirection, RenameDraft, StudioIntent, StudioShell, StudioUiState, TransitionGate,
@@ -268,13 +271,21 @@ impl StudioShell {
                 };
                 let spacing = 8.0;
                 let available = ui.available_width() - 4.0;
-                let (columns, tile_width) =
-                    bank_grid(available, bank_height, view.inputs.len(), spacing);
-                for (row_index, row) in view.inputs.chunks(columns).enumerate() {
+                // The `+` tile takes one more grid cell after the inputs.
+                let cells = view.inputs.len() + 1;
+                let (columns, tile_width) = bank_grid(available, bank_height, cells, spacing);
+                let cell_indices: Vec<usize> = (0..cells).collect();
+                for row in cell_indices.chunks(columns) {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = spacing;
-                        for (column, input) in row.iter().copied().enumerate() {
-                            let index = row_index * columns + column;
+                        for index in row.iter().copied() {
+                            let Some(input) = view.inputs.get(index).copied() else {
+                                ui.vertical(|ui| {
+                                    ui.set_width(tile_width);
+                                    self.draw_add_tile(ui, state, tile_width);
+                                });
+                                continue;
+                            };
                             ui.vertical(|ui| {
                                 ui.set_width(tile_width);
                                 self.draw_tile(
@@ -302,6 +313,7 @@ impl StudioShell {
                                         reorder_enabled: reorder_enabled
                                             && input_edit_lock_reason(state, input).is_none(),
                                         locked: input_edit_lock_reason(state, input).is_some(),
+                                        removal: self.remove_input_gate(state, input),
                                         move_locks: [
                                             InputMoveDirection::Up,
                                             InputMoveDirection::Down,
@@ -443,7 +455,7 @@ impl StudioShell {
                 );
             })
             .0
-            .on_hover_text("More: Preview, Cut, Rename, Move");
+            .on_hover_text("More: Preview, Cut, Rename, Move, Remove");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let cut = ui
                     .add_enabled(
@@ -504,7 +516,10 @@ impl StudioShell {
         let locked = tile.locked;
         let item = |ui: &mut Ui, enabled: bool, label: &str, shortcut: &str, reason: &str| {
             let mut button = egui::Button::new(label);
-            if shortcut == LOCKED_MARK {
+            if let Some(color) = mark_color(shortcut) {
+                button =
+                    button.shortcut_text(RichText::new(shortcut).size(10.0).strong().color(color));
+            } else if shortcut == LOCKED_MARK {
                 button =
                     button.shortcut_text(RichText::new(shortcut).size(10.0).strong().color(AMBER));
             } else if !shortcut.is_empty() {
@@ -575,12 +590,19 @@ impl StudioShell {
                 direction: InputMoveDirection::Down,
             });
         }
+        ui.separator();
+        let removal = tile.removal;
+        let remove_mark = removal.mark.unwrap_or("");
+        if item(ui, removal.enabled, "Remove…", remove_mark, removal.reason) {
+            self.open_remove_input(input, name);
+        }
         let notes = tile_menu_notes(
             TileGates {
                 preview: enabled,
                 transition: cut_enabled,
             },
             reorder_enabled,
+            (!removal.enabled).then_some(removal.reason),
             reasons,
         );
         if !notes.is_empty() {
@@ -700,9 +722,188 @@ fn draw_tile_menu_header(ui: &mut Ui, index: usize, name: &str, tally: crate::Ta
     });
 }
 
+/// Tone of a tile-menu right-column marker for Remove (`PGM`, `PVW`, ...).
+fn mark_color(mark: &str) -> Option<Color32> {
+    match mark {
+        "PGM" => Some(PROGRAM),
+        "PVW" => Some(PREVIEW),
+        "IN USE" | "PENDING" => Some(AMBER),
+        _ => None,
+    }
+}
+
+impl StudioShell {
+    /// The `+` tile at the end of the bank: opens the Add input dialog, or
+    /// explains why adding is unavailable.
+    fn draw_add_tile(&mut self, ui: &mut Ui, state: &StudioUiState, width: f32) {
+        let gate = self.add_input_gate(state);
+        let thumb_height = (width * 9.0 / 16.0).round();
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(width, thumb_height + TILE_NAME_HEIGHT),
+            Sense::click(),
+        );
+        if ui.is_rect_visible(rect) {
+            paint_add_tile(
+                ui,
+                rect,
+                gate.enabled,
+                gate.locked(),
+                response.hovered(),
+                response.has_focus(),
+            );
+        }
+        let action = "Add input…\nA solid colour or colour bars, appended to the end of the bank";
+        let response = if gate.enabled {
+            response.on_hover_text(action)
+        } else {
+            response.on_hover_text(gating::disabled_text(action, gate.reason))
+        };
+        if response.clicked() && gate.enabled {
+            self.open_add_input(state);
+        }
+        ui.horizontal(|ui| {
+            ui.set_min_height(20.0);
+            let count = state.view.as_ref().map_or(0, |view| view.inputs.len());
+            match self.catalogue.first_add_name() {
+                Some(name) => {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("ADDING {name}…"))
+                                .size(10.0)
+                                .strong()
+                                .color(AMBER),
+                        )
+                        .truncate(),
+                    );
+                }
+                None => {
+                    ui.label(
+                        mono(format!("{count} / {MAX_LIVE_INPUTS}"))
+                            .size(10.0)
+                            .color(MUTED),
+                    )
+                    .on_hover_text("Inputs in the show / the most a show may hold");
+                }
+            }
+        });
+    }
+}
+
+#[allow(clippy::fn_params_excessive_bools)] // independent paint states
+fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: bool, focused: bool) {
+    let painter = ui.painter_at(rect.expand(4.0));
+    let radius = CornerRadius::same(4);
+    let thumb = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - TILE_NAME_HEIGHT));
+    let name_bar = Rect::from_min_max(pos2(rect.min.x, thumb.max.y), rect.max);
+    let lit = enabled && hovered;
+    painter.rect_filled(
+        rect,
+        radius,
+        if lit {
+            Color32::from_rgb(14, 18, 24)
+        } else {
+            Color32::from_rgb(9, 10, 12)
+        },
+    );
+    let accent = if lit {
+        ACCENT
+    } else if enabled {
+        ACCENT.gamma_multiply(0.75)
+    } else {
+        MUTED.gamma_multiply(0.6)
+    };
+    // A dashed outline reads as an empty slot rather than a source.
+    let outline = rect.shrink(0.5);
+    let corners = [
+        outline.left_top(),
+        outline.right_top(),
+        outline.right_bottom(),
+        outline.left_bottom(),
+        outline.left_top(),
+    ];
+    painter.extend(egui::Shape::dashed_line(
+        &corners,
+        Stroke::new(1.0, if lit { ACCENT } else { BORDER_STRONG }),
+        6.0,
+        4.0,
+    ));
+    let center = thumb.center() + Vec2::new(0.0, 2.0);
+    let size = (thumb.height() * 0.34).clamp(22.0, 54.0);
+    painter.circle_stroke(center, size / 2.0, Stroke::new(1.5, accent));
+    let arm = size * 0.22;
+    for (from, to) in [
+        (center - Vec2::new(arm, 0.0), center + Vec2::new(arm, 0.0)),
+        (center - Vec2::new(0.0, arm), center + Vec2::new(0.0, arm)),
+    ] {
+        painter.line_segment([from, to], Stroke::new(2.0, accent));
+    }
+    painter.text(
+        pos2(thumb.center().x, thumb.max.y - 10.0),
+        Align2::CENTER_CENTER,
+        "solid colour · colour bars",
+        FontId::new(9.0, FontFamily::Proportional),
+        MUTED.gamma_multiply(if enabled { 0.9 } else { 0.6 }),
+    );
+    painter.rect_filled(
+        name_bar.shrink(1.0),
+        CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: 4,
+            se: 4,
+        },
+        GRAPHITE_RAISED.gamma_multiply(0.7),
+    );
+    let lock_room = if locked {
+        let badge = Rect::from_center_size(
+            pos2(
+                name_bar.max.x - 4.0 - LOCK_BADGE_SIZE.x / 2.0,
+                name_bar.center().y,
+            ),
+            Vec2::new(LOCK_BADGE_SIZE.x, LOCK_BADGE_SIZE.y - 2.0),
+        );
+        paint_lock_badge(&painter, badge);
+        LOCK_BADGE_SIZE.x + 6.0
+    } else {
+        0.0
+    };
+    let label = elided(
+        &painter,
+        "Add input",
+        FontId::new(12.0, FontFamily::Proportional),
+        if enabled { TEXT } else { MUTED },
+        name_bar.width() - 12.0 - lock_room,
+    );
+    painter.galley(
+        pos2(
+            name_bar.min.x + 6.0,
+            name_bar.center().y - label.size().y / 2.0,
+        ),
+        label,
+        TEXT,
+    );
+    if focused {
+        painter.rect_stroke(
+            rect.expand(2.0),
+            CornerRadius::same(6),
+            Stroke::new(2.0, ACCENT),
+            StrokeKind::Outside,
+        );
+    }
+}
+
 /// One muted line per disabled action group, so a greyed-out menu item is
 /// explained without hovering it.
-pub(crate) fn tile_menu_notes(gates: TileGates, edit: bool, reasons: TileReasons) -> Vec<String> {
+///
+/// Remove shares the edit gate: when Rename and Move are unavailable their
+/// note (the session or a padlock) covers Remove too, so Remove gets its own
+/// note only for its own reasons, such as the input being on Program.
+pub(crate) fn tile_menu_notes(
+    gates: TileGates,
+    edit: bool,
+    remove_blocked: Option<&str>,
+    reasons: TileReasons,
+) -> Vec<String> {
     let mut notes = Vec::new();
     if !gates.preview {
         notes.push(format!("Preview and Cut unavailable: {}", reasons.preview));
@@ -710,7 +911,12 @@ pub(crate) fn tile_menu_notes(gates: TileGates, edit: bool, reasons: TileReasons
         notes.push(format!("Cut unavailable: {}", reasons.cut));
     }
     if !edit {
-        notes.push(format!("Rename and Move unavailable: {}", reasons.edit));
+        notes.push(format!(
+            "Rename, Move, and Remove unavailable: {}",
+            reasons.edit
+        ));
+    } else if let Some(reason) = remove_blocked {
+        notes.push(format!("Remove unavailable: {reason}"));
     }
     notes
 }
@@ -740,6 +946,8 @@ struct TileContext<'a> {
     locked: bool,
     /// Why moving left / right is blocked by a neighbour's padlock, if it is.
     move_locks: [Option<&'static str>; 2],
+    /// Whether this input may be removed, and why not.
+    removal: CatalogueAvailability,
 }
 
 /// Per-frame facts that change how one tile is painted.
@@ -968,17 +1176,26 @@ mod tests {
             preview: true,
             transition: true,
         };
-        assert_eq!(tile_menu_notes(open, true, reasons), Vec::<String>::new());
         assert_eq!(
-            tile_menu_notes(open, false, reasons),
-            ["Rename and Move unavailable: this session lacks the edit_project permission"]
+            tile_menu_notes(open, true, None, reasons),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            tile_menu_notes(open, false, Some("ignored"), reasons),
+            [
+                "Rename, Move, and Remove unavailable: this session lacks the edit_project permission"
+            ]
+        );
+        assert_eq!(
+            tile_menu_notes(open, true, Some("this input is on Program"), reasons),
+            ["Remove unavailable: this input is on Program"]
         );
         let no_cut = TileGates {
             transition: false,
             ..open
         };
         assert_eq!(
-            tile_menu_notes(no_cut, true, reasons),
+            tile_menu_notes(no_cut, true, None, reasons),
             ["Cut unavailable: a manual T-bar transition is in progress"]
         );
         // Without Preview selection, Cut is covered by the same note.
@@ -987,10 +1204,10 @@ mod tests {
             transition: false,
         };
         assert_eq!(
-            tile_menu_notes(closed, false, reasons),
+            tile_menu_notes(closed, false, None, reasons),
             [
                 "Preview and Cut unavailable: no preview permission",
-                "Rename and Move unavailable: this session lacks the edit_project permission",
+                "Rename, Move, and Remove unavailable: this session lacks the edit_project permission",
             ]
         );
     }

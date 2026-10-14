@@ -9,9 +9,9 @@ use fm_protocol::StreamRealizedState;
 
 use crate::panels::latest_stream_sample;
 use crate::theme::{
-    ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PROGRAM, TEXT,
-    TEXT_DIM, WIDGET_ACTIVE, WIDGET_HOVER, connection_color, mono, paint_lock_glyph, pill,
-    status_dot,
+    ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PREVIEW,
+    PROGRAM, TEXT, TEXT_DIM, WIDGET_ACTIVE, WIDGET_HOVER, connection_color, mono, paint_lock_glyph,
+    pill, status_dot,
 };
 use crate::toasts::{Toast, ToastKind};
 use crate::{
@@ -399,7 +399,8 @@ fn on_air_badge(ui: &mut Ui, label: &str, color: Color32, lit: bool) -> egui::Re
 pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
     let color = match toast.kind {
         ToastKind::Error => ERROR,
-        ToastKind::Notice | ToastKind::Uncertain => AMBER,
+        ToastKind::Notice | ToastKind::Uncertain | ToastKind::Pending => AMBER,
+        ToastKind::Success => PREVIEW,
     };
     let mut dismissed = false;
     let response = Frame::new()

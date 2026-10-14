@@ -3,7 +3,10 @@
 //! Meters display the latest lossy daemon sample only (per-channel peak and
 //! RMS); with no sample the meter wells stay unlit and the header reports
 //! meters as unavailable. Peak hold and the clip latch are Studio-local
-//! ballistics over those samples; a clip lamp stays lit until clicked.
+//! ballistics over those samples; a clip lamp stays lit until clicked. When
+//! no new meter message has arrived for over a second the meters keep the
+//! last sample dimmed, each readout reads `STALE`, and the header carries a
+//! `STALE` badge with the message age, as stale monitor frames do.
 
 use egui::{
     Align2, Color32, CornerRadius, DragValue, FontFamily, FontId, Key, Rect, RichText, ScrollArea,
@@ -217,6 +220,28 @@ const fn meters_unavailable(state: &StudioUiState) -> bool {
         && state.view.is_some()
 }
 
+/// Header badge text for stale meters: `METERS STALE · 2.4 s`.
+pub(crate) fn stale_meter_label(age_ms: u32) -> String {
+    format!(
+        "METERS STALE · {}.{} s",
+        age_ms / 1_000,
+        (age_ms % 1_000) / 100
+    )
+}
+
+/// Paints a meter element at its full colour, or dimmed while stale.
+fn stale_dim(color: Color32, stale: bool) -> Color32 {
+    if stale {
+        color.gamma_multiply(0.35)
+    } else {
+        color
+    }
+}
+
+/// Repaint cadence while meters are shown, so they go stale without a new
+/// state arriving.
+const METER_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Header text for the latched clip lamps, when any are lit.
 pub(crate) fn clip_reset_label(clipped: usize) -> Option<String> {
     match clipped {
@@ -240,6 +265,14 @@ pub(crate) fn draw_mixer(
         && state.can_control_audio
         && state.view.is_some();
     let mut reset_all = false;
+    ballistics.begin_frame(
+        state.audio_meters.as_ref().map(|meters| meters.sequence),
+        dt_ms,
+    );
+    let meters_stale = ballistics.stale();
+    if state.audio_meters.is_some() {
+        ui.ctx().request_repaint_after(METER_REPAINT_INTERVAL);
+    }
     section_header(ui, "Audio mixer", |ui| {
         if meters_unavailable(state) {
             ui.label(RichText::new("METERS UNAVAILABLE").size(10.0).color(AMBER))
@@ -261,6 +294,9 @@ pub(crate) fn draw_mixer(
                     .on_hover_text("Clear every latched clip lamp")
                     .clicked();
             }
+            if meters_stale {
+                stale_badge(ui, &stale_meter_label(ballistics.message_age_ms()));
+            }
             ui.label(
                 RichText::new("RMS · PEAK HOLD · CLIP")
                     .size(10.0)
@@ -276,7 +312,6 @@ pub(crate) fn draw_mixer(
     if reset_all {
         ballistics.clear_all_clips();
     }
-    ballistics.begin_frame(state.audio_meters.as_ref().map(|meters| meters.sequence));
     let Some(view) = &state.view else {
         ballistics.retain(|_| false);
         crate::theme::empty_state(
@@ -328,6 +363,7 @@ pub(crate) fn draw_mixer(
                                     MeterFeed {
                                         channels,
                                         holds: &holds,
+                                        stale: meters_stale,
                                     },
                                     StripGate {
                                         enabled,
@@ -353,6 +389,7 @@ pub(crate) fn draw_mixer(
             MeterFeed {
                 channels: master,
                 holds: &holds,
+                stale: meters_stale,
             },
             fader_height,
         ) {
@@ -373,6 +410,26 @@ pub(crate) fn draw_mixer(
 struct MeterFeed<'a> {
     channels: Option<&'a [AudioMeterChannel]>,
     holds: &'a [ChannelBallistics],
+    /// No new meter message for over a second: draw the last sample dimmed.
+    stale: bool,
+}
+
+/// The muted `STALE` badge, as on a stale monitor frame.
+fn stale_badge(ui: &mut Ui, text: &str) {
+    let galley = ui.painter().layout_no_wrap(
+        text.to_owned(),
+        FontId::new(9.5, FontFamily::Proportional),
+        Color32::BLACK,
+    );
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(galley.size().x + 12.0, 18.0), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(3), MUTED);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, Color32::BLACK);
+    response.on_hover_text(
+        "No audio meter message has arrived for over a second; the meters show the last \
+         levels dimmed",
+    );
 }
 
 /// Whether strip controls are enabled, and why not.
@@ -465,7 +522,7 @@ fn name_plate(ui: &mut Ui, ordinal: Option<usize>, name: &str, tally: TallyState
 
 /// The peak-hold readout: the held level, or a red `CLIP` while latched.
 /// Returns `true` when clicked while latched (clear request).
-fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool) -> bool {
+fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: bool) -> bool {
     let clipped = holds.iter().any(|hold| hold.clipping());
     let sense = if clipped {
         Sense::click()
@@ -486,19 +543,33 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool) -> bool 
                 MONITOR_BLACK
             },
         );
+        let stale_readout = stale && has_sample && !clipped;
         painter.rect_stroke(
             rect,
             CornerRadius::same(2),
-            Stroke::new(1.0, if clipped { PROGRAM } else { BORDER }),
+            Stroke::new(
+                1.0,
+                if clipped {
+                    PROGRAM
+                } else if stale_readout {
+                    MUTED
+                } else {
+                    BORDER
+                },
+            ),
             StrokeKind::Inside,
         );
-        let text = if has_sample {
+        let text = if stale_readout {
+            "STALE".to_owned()
+        } else if has_sample {
             peak_readout(holds)
         } else {
             "--".to_owned()
         };
         let color = if clipped {
             Color32::WHITE
+        } else if stale_readout {
+            MUTED
         } else {
             held_peak_mdb(holds).map_or(MUTED, |mdb| {
                 #[allow(clippy::cast_precision_loss)] // milli-dB fits f32 exactly
@@ -520,6 +591,11 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool) -> bool 
     }
     let response = if clipped {
         response.on_hover_text("Clipped at 0 dBFS; click to clear the clip lamp")
+    } else if stale && has_sample {
+        response.on_hover_text(format!(
+            "Stale: no new meter message for over a second; last peak hold {}",
+            peak_readout(holds)
+        ))
     } else {
         response.on_hover_text("Peak hold: highest recent peak (dBFS)")
     };
@@ -565,7 +641,7 @@ fn draw_input_strip(
     let mut clear_clip = false;
     strip_frame(ui, accent, |ui| {
         name_plate(ui, ordinal, &name, tally);
-        clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some());
+        clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some(), feed.stale);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             clear_clip |= draw_meter(ui, feed, fader_height);
@@ -979,7 +1055,7 @@ fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> boo
             FontId::new(8.5, FontFamily::Proportional),
             MUTED,
         );
-        clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some());
+        clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some(), feed.stale);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             clear_clip |= draw_meter(ui, feed, fader_height);
@@ -1008,7 +1084,11 @@ fn meter_width(bars: usize) -> f32 {
 /// clicked (clear request).
 #[allow(clippy::too_many_lines)] // one painter pass per meter region
 fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
-    let MeterFeed { channels, holds } = feed;
+    let MeterFeed {
+        channels,
+        holds,
+        stale,
+    } = feed;
     let bars = channels.map_or(2, |channels| channels.len().clamp(1, 2));
     let clipped = channels.is_some() && holds.iter().any(|hold| hold.clipping());
     let sense = if clipped {
@@ -1075,7 +1155,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
                 segment_rect,
                 CornerRadius::ZERO,
                 if lit {
-                    color
+                    stale_dim(color, stale)
                 } else {
                     color.gamma_multiply(0.12)
                 },
@@ -1087,8 +1167,11 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
                 [pos2(x, y), pos2(x + 5.0, y)],
                 Stroke::new(
                     1.0,
-                    meter_segment_color(METER_FLOOR_DB + peak * -METER_FLOOR_DB)
-                        .gamma_multiply(0.8),
+                    stale_dim(
+                        meter_segment_color(METER_FLOOR_DB + peak * -METER_FLOOR_DB)
+                            .gamma_multiply(0.8),
+                        stale,
+                    ),
                 ),
             );
         }
@@ -1101,7 +1184,10 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
                 let y = inner.max.y - fraction * inner.height();
                 painter.line_segment(
                     [pos2(x - 0.5, y), pos2(x + 5.5, y)],
-                    Stroke::new(2.0, meter_segment_color(held_db).gamma_multiply(1.15)),
+                    Stroke::new(
+                        2.0,
+                        stale_dim(meter_segment_color(held_db).gamma_multiply(1.15), stale),
+                    ),
                 );
             }
         }
@@ -1313,6 +1399,14 @@ mod tests {
         assert!(!meters_unavailable(&state));
         let state = StudioUiState::new(StudioConnectionStatus::Connecting);
         assert!(!meters_unavailable(&state));
+    }
+
+    #[test]
+    fn stale_meters_are_labelled_with_their_age_and_dimmed() {
+        assert_eq!(stale_meter_label(1_049), "METERS STALE · 1.0 s");
+        assert_eq!(stale_meter_label(12_380), "METERS STALE · 12.3 s");
+        assert_eq!(stale_dim(PREVIEW, false), PREVIEW);
+        assert_eq!(stale_dim(PREVIEW, true), PREVIEW.gamma_multiply(0.35));
     }
 
     #[test]

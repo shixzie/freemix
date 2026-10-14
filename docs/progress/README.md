@@ -132,16 +132,49 @@ for that target's earlier command to resolve (`PENDING`), and Stinger
 configuration is blocked during a manual T-bar transition. Assigning media to a
 configured slot keeps its preload, cut point, audio policy, and fallback; an
 unconfigured slot is preloaded, mixes with Program audio, falls back to Cut,
-and cuts at half the shared transition duration. The protocol has no
-add/remove/duplicate-input command, so none is offered.
+and cuts at half the shared transition duration.
+
+Live input catalogue (protocol 2.23 `add_input` / `remove_input`): the input
+bank ends with a dashed `+` tile ("Add input", "solid colour · colour bars")
+and a `n / 256` count beneath it (`ADDING name…` while an add is pending);
+Inputs › Catalogue repeats it as `Add input…` and a `Remove input` submenu with
+one item per input. The Add input dialog picks a kind (`SOLID COLOUR` /
+`COLOUR BARS`), pre-fills a unique name ("Solid Colour 1", "Colour Bars 1", …;
+editing the name stops the suggestion from following the kind), validates it
+(empty, too long, or already used), and for Solid offers eight preset swatches,
+an egui colour picker, and the hex value; a preview swatch shows the colour or
+75 % bars tagged with the input id Studio will use (the next free id: one past
+the highest, or the smallest gap at the id ceiling) and `SILENT`. Enter or
+`ADD INPUT` submits. Remove input is in the tile's right-click menu
+(`Remove…`) and the Inputs menu, and asks for confirmation in a dialog that
+names the input and warns that removal cannot be undone. The `+` tile and
+menu item are disabled with their reason when the session lacks
+`edit_project`, the project is locked (padlock badge on the tile), or 256
+inputs exist; Remove is disabled with a `PGM` / `PVW` / `LOCKED` / `IN USE` /
+`PENDING` mark when the input is on Program or Preview, in a manual or
+automatic transition, used as Stinger media or by an overlay, locked, or
+already being removed. Submitting raises an amber `PENDING` toast that turns
+into a green `DONE` toast once the change is reflected in synchronized state,
+or into a refusal toast that names the reason code and the server's detail
+(for example `Remove refused (conflict): "Camera 1 Wide" is a layer source of
+scene 100. Remove that reference offline first.` or `… (input_in_use): … is on
+Program`); the generic rejection toast for the same command is suppressed.
+
+While an egui menu, popup, or the help, about, add, or remove dialog is open,
+console shortcuts are suspended, so Esc closes the menu or dialog instead of
+cancelling a manual transition. Repeated "Queued N command(s)" notices update
+one toast instead of stacking. Audio meters go stale when no meter message has
+arrived for more than a second: lit segments, peak lines, and hold markers dim,
+peak readouts read `STALE`, and the mixer header shows `METERS STALE · x.y s`
+(not visible in these simulated captures, which have no meters).
 View toggles the input bank, mixer, side panel, and status bar. Every gated
 control, menu item, and tile action shows its action and shortcut as a tooltip
 and, when disabled, the first blocking gate ("Unavailable: this session lacks
 the edit_project permission"). Input tiles have hover, pressed, and keyboard
 focus states (Tab to focus, Enter/Space selects Preview) and a right-click menu
 whose header shows the input's key, ellipsized name, and tally badge, and
-whose footer explains each disabled group in one line (for example "Rename and
-Move unavailable: this session lacks the edit_project permission"). Tile
+whose footer explains each disabled group in one line (for example "Rename,
+Move, and Remove unavailable: this session lacks the edit_project permission"). Tile
 names, monitor header names, the show name, and the monitor placeholder title
 are single-line with an ellipsis; the full text is in the tooltip. When the
 console is not Ready a centered card over the monitors reports connecting /
@@ -173,7 +206,7 @@ the counts and lock chips.
 | `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click: both wells show `SIMULATED` encoded frames (Camera 1 Wide on Preview, Camera 2 Close on Program), and the two tiles borrow those frames. |
 | `studio-console-monitors-scene.png` | 1920x1080 with the Main Scene input on Program: Preview shows a simulated frame of Camera 2 Close and Program the simulated composite of the scene's layers. Both recorders `STOPPED`, the HLS ladder amber `NOT LIVE` (desired on, no transport sample), RTMP Backup `OFF`. |
 | `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder `NOT LIVE` with its `STOP` key, the stopped RTMP target with `START`. |
-| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: header `T-BAR 31%`, the amber status card `FADE · Main Scene ▶ Camera 2 Close · 31%`, and the active `COMMIT`/`CANCEL` keys while automatic transitions are blocked. |
+| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: header `T-BAR 39%`, the amber status card `FADE · Main Scene ▶ Camera 2 Close · 39%`, and the active `COMMIT`/`CANCEL` keys while automatic transitions are blocked. |
 | `studio-console-fade-to-black.png` | 1920x1080 after `FTB`: the lit `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program canvas. |
 | `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with `STOP` keys and amber `NOT LIVE` chips, and the Output menu with `NOT LIVE` beside both Stop items and `STOPPED` beside the recorder items. |
 | `studio-console-stingers.png` | 1920x1080, Stingers tab after choosing Playback Clip in the Configure media picker and clicking `ASSIGN` for S1: the S1 card lit green `READY` with its media name, the Configure card's green `READY` chip, enabled `CLEAR`, and the replicated cut point (15 fr), preload, audio, and fallback. |
@@ -188,11 +221,25 @@ the counts and lock chips.
 | `studio-console-2560.png` | 2560x1440: larger monitors, input tiles of about 290 px in four columns, and mixer faders with the full 620 px travel; the side panel stops at 560 px. |
 | `studio-console-portrait.png` | 1920x1080 with the demo project's video settings changed to 1080x1920 (Main Scene layers refitted): both wells grow to half the console height and pillarbox the 202x360 portrait frames; the tiles borrowing the frames pillarbox them too. |
 | `studio-console-shortcuts.png` | Help › Keyboard shortcuts: the green `Keys active` lamp, the reference generated from the same table the console's key handler is tested against, with fixed-width key caps (including Ctrl+Z / Ctrl+Shift+Z). |
-| `studio-console-input-menu.png` | Right-click menu on the Host Laptop tile: key cap and name header, Select on Preview / Cut to Program enabled, Rename and Move disabled, and the footer note that the operator session lacks `edit_project`. |
+| `studio-console-input-menu.png` | Right-click menu on the Host Laptop tile: key cap and name header, Select on Preview / Cut to Program enabled, Rename, Move, and Remove disabled, and the footer note that the operator session lacks `edit_project`. |
+| `studio-console-add-input.png` | 1920x1080 admin session after clicking the `+` tile: the Add input dialog with `SOLID COLOUR` selected, the suggested name "Solid Colour 1", the amber preset chosen (`#f0a828`), and the preview swatch tagged `INPUT 8` / `SILENT`. |
+| `studio-console-add-input-bars.png` | The same dialog for a second add with `COLOUR BARS`: the suggestion "Colour Bars 1", the bars preview tagged `INPUT 9`, no colour row. |
+| `studio-console-input-added.png` | After both adds and selecting Solid Colour 1 on Preview: tiles 8 (Solid Colour 1, `PVW`) and 9 (Colour Bars 1), the `+` tile with `9 / 256`, `9 SOURCES`, and a mixer strip for the new solid input. |
+| `studio-console-remove-input.png` | Remove input confirmation for Colour Bars 1 (input 9): the question, the warning that removal clears redo history and cannot be undone, and the red `REMOVE` key. |
+| `studio-console-input-refused.png` | After removing Colour Bars 1 and then asking to remove Camera 1 Wide: the single refusal toast `Remove refused (conflict): "Camera 1 Wide" is a layer source of scene 100. Remove that reference offline first.` and the bank back at `8 / 256`. |
+| `studio-console-inputs-menu.png` | Inputs menu with the Catalogue group: `Add input…` and the `Remove input` submenu, where Main Scene (`PGM`) and Solid Colour 1 (`PVW`) are disabled with their tally marks. |
+| `studio-console-add-input-disabled.png` | Operator session hovering the dimmed `+` tile: the tooltip "Add input… A solid colour or colour bars, appended to the end of the bank. Unavailable: this session lacks the edit_project permission". |
 | `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with attempt count, retry delay, the last error, and the disabled-controls footer over the dimmed monitors; `NO STATE` chips, `— TARGETS`, `— SOURCES`, centered empty states for the input bank and mixer, and "No synchronized show" in the top bar (no edit group without synchronized state). |
 
-Every screenshot was regenerated in this round; `-edit-menu`, `-locked`,
-`-mixer`, `-2560`, and `-portrait` are new. Pointer hover is not
+In this round the `-add-input`, `-add-input-bars`, `-input-added`,
+`-remove-input`, `-input-refused`, `-inputs-menu`, and `-add-input-disabled`
+captures are new, and `-monitors`, `-monitors-scene`, `-manual-transition`,
+`-top`, `-stopped`, `-compact-720`, `-menu`, `-edit-menu`, `-locked`,
+`-shortcuts`, and `-input-menu` were regenerated to show the `+` tile, the
+Remove menu entries, and the updated shortcut text. `-overview`,
+`-fade-to-black`, `-streams`, `-stingers`, `-recording`, `-2560`, and
+`-portrait` are from the previous round and do not yet show the `+` tile;
+`-mixer` and `-reconnecting` are unchanged. Pointer hover is not
 delivered to open menus on this headless Xvfb host (also with the previous
 build), so the menu captures show no hover tooltips; disabled menu items still
 carry their `Unavailable: …` reason as a tooltip.
@@ -259,6 +306,15 @@ tab; then `remote-lock … off` and `remote-audio-strip` for inputs 1, 2, 4,
 window to 2560x1440. The portrait capture edits the demo project's
 `project.settings.video` to 1080x1920 (and the Main Scene layer geometry to
 fit) in `project.json` before launching Studio.
+
+The input catalogue captures also run with `--role admin`: click the `+` tile
+for `-add-input.png` (pick the amber preset), click `ADD INPUT`, open it again
+and choose `COLOUR BARS` for `-add-input-bars.png`, add, and click the Solid
+Colour 1 tile for `-input-added.png`; right-click Colour Bars 1 and choose
+`Remove…` for `-remove-input.png`, confirm, then choose Camera 1 Wide's
+`Remove…` and confirm for `-input-refused.png`; open `Inputs` and hover
+`Remove input` for `-inputs-menu.png`. `-add-input-disabled.png` uses the
+default operator role and hovers the `+` tile.
 
 Software Vulkan is slow; allow roughly ten seconds after the window maps
 before capturing. The overview's overlay take was a click on O1 `TAKE` in the
