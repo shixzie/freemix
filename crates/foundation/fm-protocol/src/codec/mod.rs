@@ -29,6 +29,39 @@ pub const MAX_STREAM_LOCAL_SEGMENTS: u32 = 4_096;
 /// hour in whole milliseconds.
 pub const MAX_STREAM_LOCAL_TARGET_DURATION_MS: u32 = 3_600_000;
 
+use crate::{
+    MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS,
+    MAX_MONITOR_FRAME_WIDTH,
+};
+
+/// Enforces the `monitor_frame` bounds shared by the encoder and decoder.
+fn validate_monitor_frame(
+    width: u16,
+    height: u16,
+    part: u16,
+    parts: u16,
+    data_len: usize,
+) -> Result<(), CodecError> {
+    let invalid =
+        |field: &'static str, value: String| Err(CodecError::InvalidField { field, value });
+    if !(1..=MAX_MONITOR_FRAME_WIDTH).contains(&width) {
+        return invalid("width", width.to_string());
+    }
+    if !(1..=MAX_MONITOR_FRAME_HEIGHT).contains(&height) {
+        return invalid("height", height.to_string());
+    }
+    if !(1..=MAX_MONITOR_FRAME_PARTS).contains(&parts) {
+        return invalid("parts", parts.to_string());
+    }
+    if part >= parts {
+        return invalid("part", part.to_string());
+    }
+    if !(1..=MAX_MONITOR_FRAME_PART_BYTES).contains(&data_len) {
+        return invalid("data", format!("{data_len} bytes"));
+    }
+    Ok(())
+}
+
 fn validate_request_id(value: &str) -> Result<(), CodecError> {
     if value.is_empty()
         || value.len() > MAX_REQUEST_ID_BYTES

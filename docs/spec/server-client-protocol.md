@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.20 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.21 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -182,6 +182,30 @@ ends at the `failure` field exactly as protocol 2.18 did, so `local=none` is
 never encoded. The local fields are lossy and latest-wins like the rest of the
 record: never durable, never resumable, and never projected into snapshots or
 durable events.
+
+Protocol 2.21 defines `monitor_frame`, the encoded-fallback Preview/Program
+monitor image, with the same lossy, non-resumable semantics as `audio_meters`.
+Each record carries server identity, `tap=preview|program`, a per-tap strictly
+increasing `sequence`, the realized `frame`, the realized source `input`,
+`origin=simulated|native`, `width` (1–640) and `height` (1–360), and one
+`part` of `parts` (1–32). The frame payload is one standard QOI stream (three
+channels, sRGB colorspace, exact end marker) split into contiguous parts of at
+most 32 KiB raw bytes, each carried as canonical unpadded base64url `data`
+(padding, the standard `+`/`/` alphabet, and nonzero trailing bits are
+rejected). Every part repeats the header fields and shares the frame's
+sequence. A frame group is atomic on the wire: once its first part is written,
+its remaining parts follow before any other record, and a client treats any
+interleaving, a group not starting at part 0, a skipped part, a header change
+within a group, a non-increasing sequence, a foreign server identity, or a
+completed stream that fails strict QOI decoding as a protocol violation and
+disconnects. Clients retain only the latest decoded image per tap and clear it
+on disconnect. The 640x360 cap keeps the record a bounded preview consistent
+with the thumbnail and loopback encoded-preview fallback rules here; it never
+carries full-resolution frames, and the worst-case 640x360 stream fits in 29
+parts. As a deviation from the requested-cadence model below, there is not yet
+a subscription command: eligibility is implicit, like meters, and covers active
+non-Web Studio peers permitted to view status. The record never advances or
+carries a durable revision.
 
 Each telemetry class has requested cadence, aggregation, and maximum bandwidth.
 Slow clients receive coalesced latest data, never unbounded queues.

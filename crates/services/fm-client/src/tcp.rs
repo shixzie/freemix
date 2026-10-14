@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 use fm_protocol::{
     AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CodecError, CommandPayload, CommandResult,
     DiagnosticsRequest, DiagnosticsResponse, DurableGap, ErrorMessage, EventMessage,
-    HandshakeOutcome, HeartbeatAcknowledgementMessage, LineDecoder, RuntimeEventMessage,
-    StreamStatusMessage, WireMessage, encode_line,
+    HandshakeOutcome, HeartbeatAcknowledgementMessage, LineDecoder, MonitorFrameAssembler,
+    MonitorFrameMessage, MonitorImage, MonitorTap, RuntimeEventMessage, StreamStatusMessage,
+    WireMessage, encode_line,
 };
 
 #[cfg(feature = "std-websocket")]
@@ -366,6 +367,13 @@ pub enum SessionEvent {
     StreamStatus {
         status: StreamStatusMessage,
     },
+    /// One valid `monitor_frame` part arrived for `tap`. When `complete` is
+    /// `true` it finished its group and the decoded image is available from
+    /// [`TcpSession::latest_monitor_frame`]; pixels are never carried here.
+    MonitorFrame {
+        tap: MonitorTap,
+        complete: bool,
+    },
     DiagnosticsResponse {
         response: DiagnosticsResponse,
     },
@@ -458,6 +466,10 @@ pub struct TcpSession {
     latest_audio_meters: Option<AudioMetersMessage>,
     last_stream_status_sequence: Option<u64>,
     latest_stream_status: Option<StreamStatusMessage>,
+    /// Last completed monitor frame sequence per [`MonitorTap::index`].
+    monitor_sequences: [Option<u64>; 2],
+    monitor_assemblers: [MonitorFrameAssembler; 2],
+    latest_monitor: [Option<(MonitorImage, Instant)>; 2],
 }
 
 #[derive(Debug)]
@@ -568,6 +580,9 @@ impl TcpSession {
             latest_audio_meters: None,
             last_stream_status_sequence: None,
             latest_stream_status: None,
+            monitor_sequences: [None, None],
+            monitor_assemblers: [MonitorFrameAssembler::new(), MonitorFrameAssembler::new()],
+            latest_monitor: [None, None],
         }
     }
 
@@ -607,6 +622,15 @@ impl TcpSession {
     #[must_use]
     pub const fn latest_stream_status(&self) -> Option<&StreamStatusMessage> {
         self.latest_stream_status.as_ref()
+    }
+
+    /// The latest fully assembled and decoded monitor image for `tap` and
+    /// when it completed. Cleared on disconnect.
+    #[must_use]
+    pub fn latest_monitor_frame(&self, tap: MonitorTap) -> Option<(&MonitorImage, Instant)> {
+        self.latest_monitor[tap.index()]
+            .as_ref()
+            .map(|(image, received_at)| (image, *received_at))
     }
 
     #[must_use]
@@ -995,6 +1019,7 @@ impl TcpSession {
                 let Some(message) = self.read_wire_wait(Some(&mut wait))? else {
                     return Err(self.disconnected(DisconnectCause::Eof));
                 };
+                self.reject_interleaved_monitor_group(&message)?;
                 match message {
                     WireMessage::DiagnosticsResponse(response) => {
                         if response.protocol != CURRENT_PROTOCOL_VERSION
@@ -1028,6 +1053,9 @@ impl TcpSession {
                     WireMessage::StreamStatus(status) => {
                         self.validate_stream_status(&status)?;
                     }
+                    WireMessage::MonitorFrame(frame) => {
+                        self.validate_monitor_frame(&frame)?;
+                    }
                     _ => {
                         self.transition_disconnect();
                         return Err(TcpSessionError::UnexpectedMessage);
@@ -1050,6 +1078,7 @@ impl TcpSession {
                 backoff,
             });
         };
+        self.reject_interleaved_monitor_group(&message)?;
 
         match message {
             WireMessage::Event(event) => {
@@ -1082,6 +1111,13 @@ impl TcpSession {
             WireMessage::StreamStatus(status) => {
                 self.validate_stream_status(&status)?;
                 Ok(SessionEvent::StreamStatus { status })
+            }
+            WireMessage::MonitorFrame(frame) => {
+                let complete = self.validate_monitor_frame(&frame)?;
+                Ok(SessionEvent::MonitorFrame {
+                    tap: frame.tap,
+                    complete,
+                })
             }
             WireMessage::DurableGap(gap) => {
                 let result = self.client.intake(WireMessage::DurableGap(gap.clone()));
@@ -1331,6 +1367,11 @@ impl TcpSession {
         self.latest_audio_meters = None;
         self.last_stream_status_sequence = None;
         self.latest_stream_status = None;
+        self.monitor_sequences = [None, None];
+        for assembler in &mut self.monitor_assemblers {
+            assembler.reset();
+        }
+        self.latest_monitor = [None, None];
         self.connection.take();
         self.client.transport_disconnected()
     }
@@ -1373,6 +1414,60 @@ impl TcpSession {
         self.last_stream_status_sequence = Some(status.sequence);
         self.latest_stream_status = Some(status.clone());
         Ok(())
+    }
+}
+
+impl TcpSession {
+    /// A started `monitor_frame` group is atomic on the wire: any other record
+    /// before its last part is a protocol violation.
+    fn reject_interleaved_monitor_group(
+        &mut self,
+        message: &WireMessage,
+    ) -> Result<(), TcpSessionError> {
+        if !matches!(message, WireMessage::MonitorFrame(_))
+            && self
+                .monitor_assemblers
+                .iter()
+                .any(MonitorFrameAssembler::is_in_progress)
+        {
+            self.transition_disconnect();
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        Ok(())
+    }
+
+    /// Validates and assembles one `monitor_frame` part, returning whether it
+    /// completed its group. Any violation disconnects the session.
+    fn validate_monitor_frame(
+        &mut self,
+        frame: &MonitorFrameMessage,
+    ) -> Result<bool, TcpSessionError> {
+        let index = frame.tap.index();
+        let valid_identity = self
+            .client
+            .session()
+            .is_some_and(|session| session.server == frame.server);
+        let valid_sequence = match self.monitor_assemblers[index].in_progress_sequence() {
+            Some(sequence) => frame.sequence == sequence,
+            None => self.monitor_sequences[index].is_none_or(|sequence| frame.sequence > sequence),
+        };
+        let interleaved = self.monitor_assemblers[1 - index].is_in_progress();
+        if !valid_identity || !valid_sequence || interleaved {
+            self.transition_disconnect();
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        match self.monitor_assemblers[index].push(frame) {
+            Ok(None) => Ok(false),
+            Ok(Some(image)) => {
+                self.monitor_sequences[index] = Some(image.sequence);
+                self.latest_monitor[index] = Some((image, Instant::now()));
+                Ok(true)
+            }
+            Err(_) => {
+                self.transition_disconnect();
+                Err(TcpSessionError::UnexpectedMessage)
+            }
+        }
     }
 }
 

@@ -14,13 +14,14 @@ use fm_client::{
 };
 use fm_protocol::{
     AudioMeterChannel, AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CapabilityReportSummary,
-    ClientType, CodecError, CommandPayload, CommandResult, EngineIdentity, EventCursor,
-    EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, HandshakeOutcome,
-    HandshakeRequest, HandshakeResponse, InputAudioMeters, LineDecoder, MAX_LINE_BYTES,
-    ManualTransitionStatus, OverlayStatus, ProtocolVersion, RecordingStatus, ResumeCursor, Role,
-    RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason,
-    StreamRealizedState, StreamStatusMessage, StreamStatusSample, WireInputId, WireMessage,
-    WireRecorderSlot, WireStreamTargetId, encode_line,
+    ClientType, CodecError, CommandPayload, CommandResult, DiagnosticsResponse, EngineIdentity,
+    EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState,
+    HandshakeOutcome, HandshakeRequest, HandshakeResponse, InputAudioMeters, LineDecoder,
+    MAX_LINE_BYTES, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin, MonitorTap,
+    OverlayStatus, ProtocolVersion, RecordingStatus, ResumeCursor, Role, RuntimeEventMessage,
+    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StreamRealizedState,
+    StreamStatusMessage, StreamStatusSample, WireInputId, WireMessage, WireRecorderSlot,
+    WireStreamTargetId, encode_line, encode_qoi_rgb, monitor_frame_parts,
 };
 use fm_types::ProjectId;
 use fm_ui_model::ModelError;
@@ -306,6 +307,17 @@ impl Peer {
             self.pending
                 .extend(self.decoder.push(&buffer[..read]).unwrap());
         }
+    }
+
+    /// Writes every record in one burst so the client observes them
+    /// regardless of when it reacts to an earlier one.
+    fn send_all(&mut self, messages: &[WireMessage]) {
+        let bytes: String = messages
+            .iter()
+            .map(|message| encode_line(message).unwrap())
+            .collect();
+        self.stream.write_all(bytes.as_bytes()).unwrap();
+        self.stream.flush().unwrap();
     }
 
     fn send(&mut self, message: &WireMessage) {
@@ -1192,4 +1204,272 @@ fn input_audio_strips() -> Vec<fm_protocol::InputAudioStripStatus> {
             delay_samples: 0,
         })
         .collect()
+}
+
+/// A deterministic, poorly compressible RGB image.
+fn monitor_pixels(width: u16, height: u16, seed: u32) -> Vec<u8> {
+    let mut state = seed | 1;
+    (0..usize::from(width) * usize::from(height) * 3)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[0]
+        })
+        .collect()
+}
+
+fn monitor_frame(tap: MonitorTap, sequence: u64, width: u16, height: u16) -> Vec<WireMessage> {
+    let pixels = monitor_pixels(width, height, u32::try_from(sequence).unwrap());
+    let qoi = encode_qoi_rgb(width, height, &pixels, usize::from(width) * 3, 3).unwrap();
+    monitor_frame_parts(
+        &server(),
+        tap,
+        sequence,
+        sequence * 10,
+        input(1),
+        MonitorFrameOrigin::Simulated,
+        width,
+        height,
+        &qoi,
+    )
+    .into_iter()
+    .map(WireMessage::MonitorFrame)
+    .collect()
+}
+
+fn monitor_part(message: &WireMessage) -> MonitorFrameMessage {
+    let WireMessage::MonitorFrame(part) = message else {
+        panic!("expected a monitor_frame part");
+    };
+    part.clone()
+}
+
+fn connect_with_records(records: Vec<WireMessage>) -> (TcpSession, JoinHandle<()>) {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        release_rx.recv().unwrap();
+        peer.send_all(&records);
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    release_tx.send(()).unwrap();
+    (session, server_thread)
+}
+
+fn assert_monitor_violation(session: &mut TcpSession) {
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    assert!(matches!(
+        session.client().state(),
+        ConnectionState::Backoff(_)
+    ));
+    for tap in MonitorTap::ALL {
+        assert!(session.latest_monitor_frame(tap).is_none());
+    }
+}
+
+#[test]
+fn monitor_frames_assemble_per_tap_and_clear_on_disconnect() {
+    let program = monitor_frame(MonitorTap::Program, 5, 200, 100);
+    assert!(program.len() > 1, "the test frame must span several parts");
+    let preview = monitor_frame(MonitorTap::Preview, 2, 4, 3);
+    let newer_program = monitor_frame(MonitorTap::Program, 6, 2, 2);
+    let mut records = program.clone();
+    records.extend(preview);
+    records.extend(newer_program);
+    records.push(WireMessage::AudioMeters(audio_meters(1)));
+    let (mut session, server_thread) = connect_with_records(records);
+
+    for index in 0..program.len() {
+        let complete = index + 1 == program.len();
+        assert_eq!(
+            session.receive().unwrap(),
+            SessionEvent::MonitorFrame {
+                tap: MonitorTap::Program,
+                complete
+            }
+        );
+        if !complete {
+            assert!(session.latest_monitor_frame(MonitorTap::Program).is_none());
+        }
+    }
+    let (image, received_at) = session.latest_monitor_frame(MonitorTap::Program).unwrap();
+    assert!(received_at <= Instant::now());
+    assert_eq!(
+        (image.tap, image.sequence, image.frame, image.input),
+        (MonitorTap::Program, 5, 50, input(1))
+    );
+    assert_eq!(image.origin, MonitorFrameOrigin::Simulated);
+    assert_eq!((image.width, image.height), (200, 100));
+    let expected: Vec<u8> = monitor_pixels(200, 100, 5)
+        .chunks(3)
+        .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+        .collect();
+    assert_eq!(&*image.rgba, expected.as_slice());
+    assert!(session.latest_monitor_frame(MonitorTap::Preview).is_none());
+
+    assert_eq!(
+        session.receive().unwrap(),
+        SessionEvent::MonitorFrame {
+            tap: MonitorTap::Preview,
+            complete: true
+        }
+    );
+    let (preview, _) = session.latest_monitor_frame(MonitorTap::Preview).unwrap();
+    assert_eq!((preview.sequence, preview.width, preview.height), (2, 4, 3));
+    assert_eq!(preview.rgba.len(), 4 * 3 * 4);
+
+    assert_eq!(
+        session.receive().unwrap(),
+        SessionEvent::MonitorFrame {
+            tap: MonitorTap::Program,
+            complete: true
+        }
+    );
+    let (newer, _) = session.latest_monitor_frame(MonitorTap::Program).unwrap();
+    assert_eq!((newer.sequence, newer.width), (6, 2));
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::AudioMeters { .. }
+    ));
+    assert_eq!(session.client().last_applied_cursor().unwrap().revision, 4);
+
+    session.disconnect().unwrap();
+    for tap in MonitorTap::ALL {
+        assert!(session.latest_monitor_frame(tap).is_none());
+    }
+    server_thread.join().unwrap();
+}
+
+#[test]
+fn monitor_frame_sequence_must_strictly_increase_per_tap() {
+    let mut records = monitor_frame(MonitorTap::Preview, 5, 2, 2);
+    // The other tap keeps its own sequence space.
+    records.extend(monitor_frame(MonitorTap::Program, 1, 2, 2));
+    records.extend(monitor_frame(MonitorTap::Preview, 5, 2, 2));
+    let (mut session, server_thread) = connect_with_records(records);
+    for tap in [MonitorTap::Preview, MonitorTap::Program] {
+        assert_eq!(
+            session.receive().unwrap(),
+            SessionEvent::MonitorFrame {
+                tap,
+                complete: true
+            }
+        );
+    }
+    assert_monitor_violation(&mut session);
+    server_thread.join().unwrap();
+}
+
+#[test]
+fn monitor_frame_rejects_foreign_server_identity() {
+    let mut foreign = monitor_part(&monitor_frame(MonitorTap::Program, 1, 2, 2)[0]);
+    foreign.server.state_epoch += 1;
+    let (mut session, server_thread) =
+        connect_with_records(vec![WireMessage::MonitorFrame(foreign)]);
+    assert_monitor_violation(&mut session);
+    server_thread.join().unwrap();
+}
+
+#[test]
+fn monitor_frame_groups_are_atomic_on_the_wire() {
+    let program = monitor_frame(MonitorTap::Program, 1, 200, 100);
+    let preview = monitor_frame(MonitorTap::Preview, 1, 2, 2);
+
+    // Another record inside a started group.
+    let records = vec![
+        program[0].clone(),
+        WireMessage::AudioMeters(audio_meters(1)),
+    ];
+    let (mut session, server_thread) = connect_with_records(records);
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::MonitorFrame {
+            complete: false,
+            ..
+        }
+    ));
+    assert_monitor_violation(&mut session);
+    server_thread.join().unwrap();
+
+    // The other tap inside a started group.
+    let records = vec![program[0].clone(), preview[0].clone()];
+    let (mut session, server_thread) = connect_with_records(records);
+    session.receive().unwrap();
+    assert_monitor_violation(&mut session);
+    server_thread.join().unwrap();
+
+    // A skipped part.
+    let records = vec![program[0].clone(), program[2].clone()];
+    let (mut session, server_thread) = connect_with_records(records);
+    session.receive().unwrap();
+    assert_monitor_violation(&mut session);
+    server_thread.join().unwrap();
+
+    // A group that does not start at part zero.
+    let (mut session, server_thread) = connect_with_records(vec![program[1].clone()]);
+    assert_monitor_violation(&mut session);
+    server_thread.join().unwrap();
+
+    // A part whose header differs from its group.
+    let mut changed = monitor_part(&program[1]);
+    changed.frame += 1;
+    let records = vec![program[0].clone(), WireMessage::MonitorFrame(changed)];
+    let (mut session, server_thread) = connect_with_records(records);
+    session.receive().unwrap();
+    assert_monitor_violation(&mut session);
+    server_thread.join().unwrap();
+}
+
+#[test]
+fn monitor_frame_with_invalid_qoi_disconnects() {
+    let mut corrupt = monitor_part(&monitor_frame(MonitorTap::Preview, 1, 2, 2)[0]);
+    corrupt.data[0] = b'Q';
+    let earlier = monitor_frame(MonitorTap::Program, 1, 2, 2);
+    let mut records = earlier;
+    records.push(WireMessage::MonitorFrame(corrupt));
+    let (mut session, server_thread) = connect_with_records(records);
+    session.receive().unwrap();
+    assert!(session.latest_monitor_frame(MonitorTap::Program).is_some());
+    assert_monitor_violation(&mut session);
+    server_thread.join().unwrap();
+}
+
+#[test]
+fn diagnostics_wait_assembles_monitor_frames() {
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        let WireMessage::DiagnosticsRequest(request) = peer.receive() else {
+            panic!("expected a diagnostics request");
+        };
+        let mut records = monitor_frame(MonitorTap::Program, 3, 200, 100);
+        records.push(WireMessage::DiagnosticsResponse(DiagnosticsResponse {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request.request_id,
+            engine: engine(),
+            current_revision: 4,
+            oldest_retained_revision: None,
+            newest_retained_revision: None,
+            subscriber_count: 1,
+            retained_events_limit: 16,
+            subscriber_limit: 4,
+            subscriber_queue_limit: 8,
+        }));
+        peer.send_all(&records);
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    let event = session
+        .send_diagnostics_cancellable("diag-1", Duration::from_millis(5), || false)
+        .unwrap();
+    assert!(matches!(event, SessionEvent::DiagnosticsResponse { .. }));
+    let (image, _) = session.latest_monitor_frame(MonitorTap::Program).unwrap();
+    assert_eq!(image.sequence, 3);
+    server_thread.join().unwrap();
 }

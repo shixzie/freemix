@@ -959,6 +959,105 @@ pub struct StreamStatusMessage {
     pub samples: Vec<StreamStatusSample>,
 }
 
+/// Largest encoded monitor frame width in pixels.
+pub const MAX_MONITOR_FRAME_WIDTH: u16 = 640;
+/// Largest encoded monitor frame height in pixels.
+pub const MAX_MONITOR_FRAME_HEIGHT: u16 = 360;
+/// Largest raw (pre-base64url) payload carried by one `monitor_frame` part.
+pub const MAX_MONITOR_FRAME_PART_BYTES: usize = 32 * 1024;
+/// Largest number of `monitor_frame` parts in one frame group.
+pub const MAX_MONITOR_FRAME_PARTS: u16 = 32;
+
+/// Which monitor an encoded monitor frame belongs to.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum MonitorTap {
+    Preview,
+    Program,
+}
+
+impl MonitorTap {
+    /// Both taps in stable index order.
+    pub const ALL: [Self; 2] = [Self::Preview, Self::Program];
+
+    /// Stable array index: `Preview` is `0`, `Program` is `1`.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Preview => 0,
+            Self::Program => 1,
+        }
+    }
+
+    /// Exact wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Preview => "preview",
+            Self::Program => "program",
+        }
+    }
+}
+
+/// How the server produced an encoded monitor frame.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum MonitorFrameOrigin {
+    /// Rendered from the simulated pipeline's realized state.
+    Simulated,
+    /// Read back from the native compositor.
+    Native,
+}
+
+impl MonitorFrameOrigin {
+    /// Exact wire spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Simulated => "simulated",
+            Self::Native => "native",
+        }
+    }
+}
+
+/// One lossy, non-resumable part of an encoded monitor frame.
+///
+/// A frame is one QOI stream (3 channels, sRGB colorspace) split into
+/// `parts` contiguous chunks of at most [`MAX_MONITOR_FRAME_PART_BYTES`] raw
+/// bytes. Every part repeats the frame header fields; all parts of one frame
+/// share `sequence`, which strictly increases per tap. Like
+/// [`AudioMetersMessage`] this is latest-wins transport state: never durable,
+/// never resumable, and never projected into snapshots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MonitorFrameMessage {
+    pub server: ServerIdentity,
+    pub tap: MonitorTap,
+    pub sequence: u64,
+    pub frame: u64,
+    pub input: WireInputId,
+    pub origin: MonitorFrameOrigin,
+    pub width: u16,
+    pub height: u16,
+    pub part: u16,
+    pub parts: u16,
+    /// Raw QOI bytes for this part; base64url (no padding) on the wire.
+    pub data: Vec<u8>,
+}
+
+/// One fully assembled and decoded monitor frame, ready for display.
+///
+/// `rgba` holds exactly `width * height` straight RGBA8 pixels with alpha
+/// `255`, row-major and tightly packed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MonitorImage {
+    pub tap: MonitorTap,
+    pub sequence: u64,
+    pub frame: u64,
+    pub input: WireInputId,
+    pub origin: MonitorFrameOrigin,
+    pub width: u16,
+    pub height: u16,
+    pub rgba: std::sync::Arc<[u8]>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapabilityReportSummary {
     pub digest: String,
@@ -1010,6 +1109,7 @@ pub enum WireMessage {
     HeartbeatAcknowledgement(HeartbeatAcknowledgementMessage),
     AudioMeters(AudioMetersMessage),
     StreamStatus(StreamStatusMessage),
+    MonitorFrame(MonitorFrameMessage),
     CapabilityReport(CapabilityReportMessage),
     DiagnosticsRequest(DiagnosticsRequest),
     DiagnosticsResponse(DiagnosticsResponse),

@@ -6,9 +6,9 @@ use crate::{
     DurableEventBatch, DurableGap, EngineIdentity, ErrorMessage, EventCursor, EventMessage,
     EventPayload, FadeToBlackState, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
     HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioStripStatus,
-    MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionStatus, OverlayStatus,
-    ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent,
-    ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
+    MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage,
+    OverlayStatus, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
+    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
     StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
     StructuredError, WireMessage,
 };
@@ -49,6 +49,7 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         }
         WireMessage::AudioMeters(message) => encode_audio_meters(&mut record, message)?,
         WireMessage::StreamStatus(message) => encode_stream_status(&mut record, message)?,
+        WireMessage::MonitorFrame(message) => encode_monitor_frame(&mut record, message)?,
         WireMessage::CapabilityReport(message) => encode_capability_report(&mut record, message)?,
         WireMessage::DiagnosticsRequest(message) => {
             encode_diagnostics_request(&mut record, message)?;
@@ -1084,6 +1085,34 @@ fn encode_stream_status(
     encode_server_identity(record, &message.server)?;
     record.field("sequence", message.sequence)?;
     record.field_string("samples", samples.join(";"))
+}
+
+fn encode_monitor_frame(
+    record: &mut Record,
+    message: &MonitorFrameMessage,
+) -> Result<(), CodecError> {
+    super::validate_monitor_frame(
+        message.width,
+        message.height,
+        message.part,
+        message.parts,
+        message.data.len(),
+    )?;
+    record.kind("monitor_frame");
+    encode_server_identity(record, &message.server)?;
+    record.field_str("tap", message.tap.as_str())?;
+    record.field("sequence", message.sequence)?;
+    record.field("frame", message.frame)?;
+    record.field("input", message.input)?;
+    record.field_str("origin", message.origin.as_str())?;
+    record.field("width", message.width)?;
+    record.field("height", message.height)?;
+    record.field("part", message.part)?;
+    record.field("parts", message.parts)?;
+    record.field_string(
+        "data",
+        crate::monitor_image::base64url_encode(&message.data),
+    )
 }
 
 fn encode_audio_meters(

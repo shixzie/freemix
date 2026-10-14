@@ -8,12 +8,13 @@ use crate::{
     EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, HandshakeOutcome,
     HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage,
     InputAudioMeters, InputAudioStripStatus, MAX_AUDIO_METER_CHANNELS, ManualTransitionKind,
-    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, OverlayStatus,
-    ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent,
-    ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
-    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
-    StreamStatusMessage, StreamStatusSample, StructuredError, WireInputId, WireMessage,
-    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage,
+    MonitorFrameOrigin, MonitorTap, OverlayStatus, ResumeCursor, RuntimeEventMessage,
+    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
+    StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample, StructuredError,
+    WireInputId, WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId, WireStreamTargetId,
 };
 
 use super::value::{
@@ -72,6 +73,7 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         }
         "audio_meters" => WireMessage::AudioMeters(decode_audio_meters(&mut fields)?),
         "stream_status" => WireMessage::StreamStatus(decode_stream_status(&mut fields)?),
+        "monitor_frame" => WireMessage::MonitorFrame(decode_monitor_frame(&mut fields)?),
         "capability_report" => {
             WireMessage::CapabilityReport(decode_capability_report(&mut fields)?)
         }
@@ -1488,6 +1490,64 @@ fn decode_stream_status_sample(
         dropped_pairs: fields.dropped_pairs.parse().map_err(|_| invalid())?,
         failure,
         local,
+    })
+}
+
+fn decode_monitor_frame(fields: &mut Fields) -> Result<MonitorFrameMessage, CodecError> {
+    let server = decode_server_identity(fields)?;
+    let tap_value = fields.required("tap")?;
+    let tap = match tap_value.as_str() {
+        "preview" => MonitorTap::Preview,
+        "program" => MonitorTap::Program,
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "tap",
+                value: tap_value,
+            });
+        }
+    };
+    let sequence = fields.parse_required("sequence")?;
+    let frame = fields.parse_required("frame")?;
+    let input = fields.input("input")?;
+    let origin_value = fields.required("origin")?;
+    let origin = match origin_value.as_str() {
+        "simulated" => MonitorFrameOrigin::Simulated,
+        "native" => MonitorFrameOrigin::Native,
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "origin",
+                value: origin_value,
+            });
+        }
+    };
+    let width = fields.parse_required("width")?;
+    let height = fields.parse_required("height")?;
+    let part = fields.parse_required("part")?;
+    let parts = fields.parse_required("parts")?;
+    let data_value = fields.required("data")?;
+    let encoded_limit = (super::MAX_MONITOR_FRAME_PART_BYTES * 4).div_ceil(3);
+    let data = if data_value.len() > encoded_limit {
+        None
+    } else {
+        crate::monitor_image::base64url_decode(&data_value)
+    }
+    .ok_or_else(|| CodecError::InvalidField {
+        field: "data",
+        value: format!("{} characters", data_value.len()),
+    })?;
+    super::validate_monitor_frame(width, height, part, parts, data.len())?;
+    Ok(MonitorFrameMessage {
+        server,
+        tap,
+        sequence,
+        frame,
+        input,
+        origin,
+        width,
+        height,
+        part,
+        parts,
+        data,
     })
 }
 

@@ -2,6 +2,7 @@
 
 mod codec;
 mod dto;
+mod monitor_image;
 mod version;
 
 pub use codec::{
@@ -17,8 +18,10 @@ pub use dto::{
     EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload, FadeToBlackPosition,
     FadeToBlackState, FieldIssue, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
     HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioMeters, InputAudioStripStatus,
-    InputStatus, MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionPosition,
-    ManualTransitionState, ManualTransitionStatus, OutputStatus, OverlayBorderPreset,
+    InputStatus, MAX_AUDIO_METER_CHANNELS, MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES,
+    MAX_MONITOR_FRAME_PARTS, MAX_MONITOR_FRAME_WIDTH, ManualTransitionKind,
+    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage,
+    MonitorFrameOrigin, MonitorImage, MonitorTap, OutputStatus, OverlayBorderPreset,
     OverlayPositionPreset, OverlayStatus, OverlayTransitionKind, RecordingStatus, ResumeCursor,
     Role, RuntimeDomainBoundary, RuntimeEventMessage, RuntimeFailureDisposition,
     RuntimeLifecycleEvent, ServerHello, ServerIdentity, SnapshotMessage, SnapshotReason,
@@ -26,5 +29,8 @@ pub use dto::{
     StreamLocalStatus, StreamRealizedState, StreamStatus, StreamStatusMessage, StreamStatusSample,
     StructuredError, WireInputId, WireMessage, WireOutputId, WireOverlayChannelId,
     WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, choose_handshake_outcome,
+};
+pub use monitor_image::{
+    MonitorFrameAssembler, MonitorImageError, decode_qoi_rgb, encode_qoi_rgb, monitor_frame_parts,
 };
 pub use version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};

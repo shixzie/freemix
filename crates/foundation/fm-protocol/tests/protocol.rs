@@ -9,14 +9,17 @@ use fm_protocol::{
     FadeToBlackState, FieldIssue, HandshakeOutcome, HeartbeatAcknowledgementMessage,
     HeartbeatMessage, InputAudioMeters, InputAudioStripStatus, InputStatus, LineDecoder,
     MAX_FIELD_VALUE_BYTES, MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS,
-    MAX_MESSAGES_PER_PUSH, ManualTransitionKind, ManualTransitionPosition, ManualTransitionState,
-    ManualTransitionStatus, OutputStatus, OverlayStatus, OverlayTransitionKind, ProtocolVersion,
-    RecordingStatus, ResumeCursor, RuntimeDomainBoundary, RuntimeEventMessage,
-    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
-    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
-    StingerStatus, StreamRealizedState, StreamStatus, StructuredError, WireInputId, WireMessage,
-    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
-    choose_handshake_outcome, decode_line, encode_line,
+    MAX_MESSAGES_PER_PUSH, MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES,
+    MAX_MONITOR_FRAME_PARTS, MAX_MONITOR_FRAME_WIDTH, ManualTransitionKind,
+    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, MonitorFrameAssembler,
+    MonitorFrameMessage, MonitorFrameOrigin, MonitorTap, OutputStatus, OverlayStatus,
+    OverlayTransitionKind, ProtocolVersion, RecordingStatus, ResumeCursor, RuntimeDomainBoundary,
+    RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
+    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
+    StingerReadiness, StingerStatus, StreamRealizedState, StreamStatus, StructuredError,
+    WireInputId, WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId, WireStreamTargetId, choose_handshake_outcome, decode_line, decode_qoi_rgb,
+    encode_line, encode_qoi_rgb, monitor_frame_parts,
 };
 
 fn input(value: u128) -> WireInputId {
@@ -175,7 +178,6 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
 
 #[test]
 fn protocol_2_20_heartbeat_acknowledgement_codec_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 20));
     let acknowledgement = WireMessage::HeartbeatAcknowledgement(HeartbeatAcknowledgementMessage {
         server: server_identity(),
         heartbeat_sequence: 88,
@@ -251,6 +253,19 @@ fn audio_meter_codec_is_bounded_and_exact() {
 #[allow(clippy::too_many_lines)]
 fn every_message_variant_round_trips() {
     let messages = vec![
+        WireMessage::MonitorFrame(MonitorFrameMessage {
+            server: server_identity(),
+            tap: MonitorTap::Preview,
+            sequence: 1,
+            frame: 2,
+            input: input(3),
+            origin: MonitorFrameOrigin::Native,
+            width: 1,
+            height: 1,
+            part: 0,
+            parts: 1,
+            data: vec![0xfb, 0xff, 0x00],
+        }),
         WireMessage::AudioMeters(AudioMetersMessage {
             server: server_identity(),
             sequence: 1,
@@ -2014,4 +2029,208 @@ fn stream_status_failure_bounds_are_enforced_by_the_encoder() {
             )),
         }
     }
+}
+
+fn monitor_frame(data: Vec<u8>) -> MonitorFrameMessage {
+    MonitorFrameMessage {
+        server: server_identity(),
+        tap: MonitorTap::Program,
+        sequence: 12,
+        frame: 340,
+        input: input(3),
+        origin: MonitorFrameOrigin::Simulated,
+        width: 2,
+        height: 1,
+        part: 0,
+        parts: 1,
+        data,
+    }
+}
+
+#[test]
+fn protocol_2_21_monitor_frame_codec_is_exact() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 21));
+    let qoi = encode_qoi_rgb(2, 1, &[0, 0, 0, 255, 0, 0], 6, 3).unwrap();
+    let message = WireMessage::MonitorFrame(monitor_frame(qoi.clone()));
+    let encoded = encode_line(&message).unwrap();
+    assert_eq!(
+        encoded,
+        "monitor_frame\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\ttap=program\tsequence=12\tframe=340\tinput=3\torigin=simulated\twidth=2\theight=1\tpart=0\tparts=1\tdata=cW9pZgAAAAIAAAABAwDAWgAAAAAAAAAB\n"
+    );
+    let decoded = decode_line(&encoded).unwrap();
+    assert_eq!(decoded, message);
+    let WireMessage::MonitorFrame(decoded) = decoded else {
+        unreachable!()
+    };
+    assert_eq!(
+        decode_qoi_rgb(decoded.width, decoded.height, &decoded.data).unwrap(),
+        [0, 0, 0, 255, 255, 0, 0, 255]
+    );
+
+    let preview = encoded
+        .replace("tap=program", "tap=preview")
+        .replace("origin=simulated", "origin=native");
+    let WireMessage::MonitorFrame(preview) = decode_line(&preview).unwrap() else {
+        panic!("expected a monitor_frame record");
+    };
+    assert_eq!(preview.tap, MonitorTap::Preview);
+    assert_eq!(preview.origin, MonitorFrameOrigin::Native);
+}
+
+#[test]
+fn monitor_frame_decoder_rejects_out_of_contract_records() {
+    let encoded = encode_line(&WireMessage::MonitorFrame(monitor_frame(vec![1, 2, 3, 4]))).unwrap();
+    assert!(encoded.contains("\tdata=AQIDBA\n"));
+    for (from, to, field) in [
+        ("tap=program", "tap=multiview", "tap"),
+        ("origin=simulated", "origin=gpu", "origin"),
+        ("input=3", "input=0", "input"),
+        ("width=2", "width=0", "width"),
+        ("width=2", "width=641", "width"),
+        ("height=1", "height=0", "height"),
+        ("height=1", "height=361", "height"),
+        ("width=2", "width=70000", "width"),
+        ("parts=1", "parts=0", "parts"),
+        ("parts=1", "parts=33", "parts"),
+        ("part=0", "part=1", "part"),
+        ("data=AQIDBA", "data=", "data"),
+        ("data=AQIDBA", "data=AQIDBA%3D%3D", "data"),
+        ("data=AQIDBA", "data=AQIDBB", "data"),
+        ("data=AQIDBA", "data=AQID%2BA", "data"),
+        ("data=AQIDBA", "data=AQID%2FA", "data"),
+        ("data=AQIDBA", "data=AQIDB", "data"),
+        ("data=AQIDBA", "data=AQ%20IDBA", "data"),
+    ] {
+        let line = encoded.replace(from, to);
+        assert_ne!(line, encoded, "{from} -> {to}");
+        assert!(
+            matches!(
+                decode_line(&line),
+                Err(CodecError::InvalidField { field: rejected, .. }) if rejected == field
+            ),
+            "{to}: {:?}",
+            decode_line(&line)
+        );
+    }
+    assert!(matches!(
+        decode_line(&encoded.replace("\tpart=0", "\tpart=0\textra=1")),
+        Err(CodecError::UnknownField(field)) if field == "extra"
+    ));
+    assert!(matches!(
+        decode_line(&encoded.replace("\tframe=340", "")),
+        Err(CodecError::MissingField("frame"))
+    ));
+
+    let oversized = "A".repeat((MAX_MONITOR_FRAME_PART_BYTES * 4).div_ceil(3) + 4);
+    assert!(matches!(
+        decode_line(&encoded.replace("data=AQIDBA", &format!("data={oversized}"))),
+        Err(CodecError::InvalidField { field: "data", .. })
+    ));
+}
+
+#[test]
+fn monitor_frame_encoder_enforces_bounds() {
+    type Mutation = fn(&mut MonitorFrameMessage);
+    let full = monitor_frame(vec![7; MAX_MONITOR_FRAME_PART_BYTES]);
+    let line = encode_line(&WireMessage::MonitorFrame(full.clone())).unwrap();
+    assert!(line.len() <= MAX_LINE_BYTES);
+    assert!(!line.contains('%'), "base64url data must never be escaped");
+    assert_eq!(decode_line(&line).unwrap(), WireMessage::MonitorFrame(full));
+
+    let cases: [(&str, Mutation); 8] = [
+        ("data", |message| message.data.clear()),
+        ("data", |message| {
+            message.data = vec![0; MAX_MONITOR_FRAME_PART_BYTES + 1];
+        }),
+        ("width", |message| message.width = 0),
+        ("width", |message| {
+            message.width = MAX_MONITOR_FRAME_WIDTH + 1;
+        }),
+        ("height", |message| {
+            message.height = MAX_MONITOR_FRAME_HEIGHT + 1;
+        }),
+        ("parts", |message| message.parts = 0),
+        ("parts", |message| {
+            message.parts = MAX_MONITOR_FRAME_PARTS + 1;
+        }),
+        ("part", |message| message.part = 1),
+    ];
+    for (field, mutate) in cases {
+        let mut message = monitor_frame(vec![1]);
+        mutate(&mut message);
+        assert!(
+            matches!(
+                encode_line(&WireMessage::MonitorFrame(message)),
+                Err(CodecError::InvalidField { field: rejected, .. }) if rejected == field
+            ),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn maximum_monitor_frame_round_trips_through_the_wire() {
+    let width = MAX_MONITOR_FRAME_WIDTH;
+    let height = MAX_MONITOR_FRAME_HEIGHT;
+    let mut state = 0x9e37_79b9_u32;
+    let rgb: Vec<u8> = (0..usize::from(width) * usize::from(height) * 3)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[1]
+        })
+        .collect();
+    let qoi = encode_qoi_rgb(width, height, &rgb, usize::from(width) * 3, 3).unwrap();
+    let parts = monitor_frame_parts(
+        &server_identity(),
+        MonitorTap::Preview,
+        3,
+        99,
+        input(5),
+        MonitorFrameOrigin::Simulated,
+        width,
+        height,
+        &qoi,
+    );
+    assert!(parts.len() > 1);
+    assert!(parts.len() <= usize::from(MAX_MONITOR_FRAME_PARTS));
+
+    let mut stream = String::new();
+    for part in &parts {
+        stream.push_str(&encode_line(&WireMessage::MonitorFrame(part.clone())).unwrap());
+    }
+    let mut decoder = LineDecoder::new();
+    let mut assembler = MonitorFrameAssembler::new();
+    let mut images = Vec::new();
+    for chunk in stream.as_bytes().chunks(7_919) {
+        for message in decoder.push(chunk).unwrap() {
+            let WireMessage::MonitorFrame(part) = message else {
+                panic!("expected monitor_frame");
+            };
+            images.extend(assembler.push(&part).unwrap());
+        }
+    }
+    decoder.finish().unwrap();
+    assert_eq!(images.len(), 1);
+    let image = &images[0];
+    assert_eq!((image.width, image.height), (width, height));
+    assert_eq!(
+        (image.tap, image.sequence, image.frame),
+        (MonitorTap::Preview, 3, 99)
+    );
+    assert_eq!(image.input, input(5));
+    assert_eq!(
+        image.rgba.len(),
+        usize::from(width) * usize::from(height) * 4
+    );
+    assert!(
+        image
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(rgb.as_chunks::<3>().0)
+            .all(|(rgba, rgb)| rgba[..3] == *rgb && rgba[3] == 255)
+    );
 }
