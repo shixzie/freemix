@@ -1279,8 +1279,12 @@ fn colour_swatch(ui: &mut Ui, color: Color32, selected: bool) -> egui::Response 
     response
 }
 
-/// Standard 75 % colour bars, left to right.
-const BARS: [Color32; 7] = [
+/// Standard 75 % colour bars, left to right: the eight-bar 75/0/75/0 signal
+/// simulated `Bars` sources emit (75 % of 255, rounded, is 191).
+///
+/// Mirrors `BARS_75` in `fm-video`'s `test_signal` module; the UI layer may
+/// not depend on media crates (`xtask deps check`), so keep the two in sync.
+const BARS: [Color32; 8] = [
     Color32::from_rgb(191, 191, 191),
     Color32::from_rgb(191, 191, 0),
     Color32::from_rgb(0, 191, 191),
@@ -1288,6 +1292,7 @@ const BARS: [Color32; 7] = [
     Color32::from_rgb(191, 0, 191),
     Color32::from_rgb(191, 0, 0),
     Color32::from_rgb(0, 0, 191),
+    Color32::from_rgb(0, 0, 0),
 ];
 
 /// A 16:9 picture of the new source, tagged with its identifier.
@@ -1304,7 +1309,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
             painter.rect_filled(rect, CornerRadius::same(3), draft.color);
         }
         NewInputKind::Bars => {
-            #[allow(clippy::cast_precision_loss)] // seven bars
+            #[allow(clippy::cast_precision_loss)] // eight bars
             let width = rect.width() / BARS.len() as f32;
             for (index, color) in BARS.iter().enumerate() {
                 #[allow(clippy::cast_precision_loss)]
@@ -1472,6 +1477,28 @@ mod tests {
             next_free_input_id(&[input(u128::MAX), input(1), input(2)]),
             Some(input(3))
         );
+    }
+
+    #[test]
+    fn bars_thumbnail_matches_simulated_75_percent_bars() {
+        // White, yellow, cyan, green, magenta, red, blue at 75 %, then black,
+        // as `fm-video`'s `BarsPattern::Bars75` renders them.
+        let expected = [
+            (191, 191, 191),
+            (191, 191, 0),
+            (0, 191, 191),
+            (0, 191, 0),
+            (191, 0, 191),
+            (191, 0, 0),
+            (0, 0, 191),
+            (0, 0, 0),
+        ];
+        let actual: Vec<_> = BARS
+            .iter()
+            .map(|color| (color.r(), color.g(), color.b()))
+            .collect();
+        assert_eq!(actual, expected);
+        assert!(BARS.iter().all(|color| color.a() == 255));
     }
 
     #[test]
