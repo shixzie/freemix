@@ -201,7 +201,7 @@ fn blocked(url: &str, reason: NavigationBlockReason) -> NavigationBlocked {
     }
 }
 
-fn split_scheme(url: &str) -> Option<(&str, &str)> {
+pub(crate) fn split_scheme(url: &str) -> Option<(&str, &str)> {
     let (scheme, remainder) = url.split_once(':')?;
     if scheme.is_empty()
         || !scheme.as_bytes()[0].is_ascii_alphabetic()
@@ -289,7 +289,7 @@ fn is_private_ipv6(address: Ipv6Addr) -> bool {
 }
 
 // Browsers accept legacy integer, hexadecimal, octal, and shortened IPv4 forms.
-fn parse_whatwg_ipv4(host: &str) -> Option<Ipv4Addr> {
+pub(crate) fn parse_whatwg_ipv4(host: &str) -> Option<Ipv4Addr> {
     let components: Vec<_> = host.trim_end_matches('.').split('.').collect();
     if components.is_empty() || components.len() > 4 {
         return None;
@@ -556,11 +556,13 @@ impl SurfaceConfig {
         self.custom_css.as_deref()
     }
 
-    /// Sets CSS after enforcing the configured byte bound.
+    /// Sets CSS after enforcing the configured byte bound and the structural
+    /// rules of [`crate::CustomCss`].
     ///
     /// # Errors
     ///
-    /// Returns a resource-limit error when the CSS is too large.
+    /// Returns a resource-limit error when the CSS is too large, or
+    /// [`BrowserError::Css`] when it fails structural validation.
     pub fn set_custom_css(
         &mut self,
         css: Option<String>,
@@ -575,6 +577,12 @@ impl SurfaceConfig {
                 maximum: limits.max_css_bytes,
             });
         }
+        let css = css
+            .map(|css| {
+                crate::css::CustomCss::parse(css, limits).map(crate::css::CustomCss::into_string)
+            })
+            .transpose()
+            .map_err(BrowserError::Css)?;
         self.custom_css = css;
         Ok(())
     }
@@ -930,6 +938,8 @@ pub enum BrowserError {
     },
     NetworkLimit(NetworkLimitError),
     Cookie(CookieError),
+    Css(crate::css::CssError),
+    NetworkPolicy(crate::network::NetworkPolicyError),
     InvalidFixture(String),
     Media(String),
 }
@@ -960,6 +970,8 @@ impl fmt::Display for BrowserError {
             } => write!(formatter, "{resource} {requested} exceeds {maximum}"),
             Self::NetworkLimit(error) => error.fmt(formatter),
             Self::Cookie(error) => error.fmt(formatter),
+            Self::Css(error) => error.fmt(formatter),
+            Self::NetworkPolicy(error) => error.fmt(formatter),
             Self::InvalidFixture(detail) | Self::Media(detail) => formatter.write_str(detail),
         }
     }
@@ -970,6 +982,18 @@ impl std::error::Error for BrowserError {}
 impl From<NavigationBlocked> for BrowserError {
     fn from(value: NavigationBlocked) -> Self {
         Self::Navigation(value)
+    }
+}
+
+impl From<crate::css::CssError> for BrowserError {
+    fn from(value: crate::css::CssError) -> Self {
+        Self::Css(value)
+    }
+}
+
+impl From<crate::network::NetworkPolicyError> for BrowserError {
+    fn from(value: crate::network::NetworkPolicyError) -> Self {
+        Self::NetworkPolicy(value)
     }
 }
 
