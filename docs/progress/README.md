@@ -83,8 +83,29 @@ thinning, hold, decay, and latch logic are unit-tested.
 
 The console layout continues with a side panel
 whose outputs card lists one fixed-height status row per recorder slot and
-per stream target, above Overlays/Stingers tabs; and a bottom status bar with
-the latest result/notice and keyboard hints.
+per stream target, above Overlays/Stingers/Titles tabs; and a bottom status
+bar with the latest result/notice, keyboard hints, and a health strip.
+
+The Overlays tab (UI round 8) draws its eight channels as compact 30 px rows
+(channel, state chip, source, `TAKE`, `TAKE OFF`), so all eight fit beside
+the outputs card; a row grows only while its details are open.
+
+Health strip (UI round 8). The trailing end of the status bar carries small
+status lamps derived only from data Studio already receives, each with a
+tooltip: `PGM FEED` (green while a Program monitor frame is under one second
+old, amber `PGM FEED 2.3 s` once it lapses, unlit `NO PGM FEED`; the tooltip
+names the frame size and age), `METERS` (green / amber `METERS STALE` /
+unlit `NO METERS`), and, when the show has stream targets, `TX {rate}`: the
+total muxed bitrate measured by Studio from the growth of each target's
+`muxed_bytes` counter between transport samples (`TX —` until two samples a
+fifth of a second or more apart exist, or after five seconds without one),
+red while a target is live, amber while desired but not live. `DROP n`
+(amber) appears once the stream outputs report dropped A/V pairs and `HLS
+DISK 1.5 GB` shows the lowest free space a local HLS output reports (amber
+below 2 GB, red below 512 MB). The protocol reports no round-trip time,
+recorder file size, or recorder disk space, so the strip shows none. The key
+hints read `… · ? ALL SHORTCUTS` and shorten to `? SHORTCUTS` (full hints in
+the tooltip) when the leading message needs the width.
 
 Edit history and the padlock (Protocol 2.22). The top-bar edit group is a
 fixed-width padlock key, `UNLOCKED` as an unlit outline with an open shackle
@@ -191,7 +212,17 @@ one toast instead of stacking. Audio meters go stale when no meter message has
 arrived for more than a second: lit segments, peak lines, and hold markers dim,
 peak readouts read `STALE`, and the mixer header shows `METERS STALE · x.y s`
 (not visible in these captures, whose synthetic feed never stalls).
-View toggles the input bank, mixer, side panel, and status bar. Every gated
+View toggles the input bank, mixer, side panel, and status bar; the side
+panel's left edge drags to resize it (300 px up to a quarter of the window,
+at most 560 px). Studio remembers the shown panels and the dragged width in
+`studio.conf` (`layout.input_bank = shown`, `layout.mixer = hidden`, …,
+`layout.side_panel_width = 480` or `auto`) and restores them at the next
+launch; a narrower window clamps the drawn width without forgetting the
+choice. View › Reset layout (enabled whenever the layout differs from the
+default; its tooltip says what it restores) shows every panel and returns the
+side panel to its default width, and a note under it says the layout is
+remembered on this console. Changing only the layout never writes back a
+`--lang`/`--clock` session override, and vice versa. Every gated
 control, menu item, and tile action shows its action and shortcut as a tooltip
 and, when disabled, the first blocking gate ("Unavailable: this session lacks
 the edit_project permission"). Input tiles have hover, pressed, and keyboard
@@ -208,8 +239,11 @@ controls are disabled. Regions without synchronized state say so rather than
 showing defaults: `NO STATE` recorder and overlay chips, `— SOURCES` /
 `— TARGETS`, centered "No input state" / "No audio state" empty states, and
 "No synchronized show" in the top bar. The Help › Keyboard shortcuts modal
-leads with a lamp stating whether the keys currently act (and why not), lists
-fixed-width key caps beside their actions, and ends with how to close it. The
+(also `?` or F1 from anywhere, in any connection state, unless a text field,
+menu, or other dialog has the keyboard; the same key closes it) leads with a lamp stating whether the keys currently act (and why not), lists
+fixed-width key caps beside their actions in five groups (Switching,
+Transitions, Editing, Input bank, Console: `? · F1` and `Esc`; short windows
+such as 1280x720 scroll the key list), and ends with how to close it. The
 side panel is at most a quarter of the window wide (minimum 320 px), so the
 monitors keep their width in compact windows. Command rejections, notices, and
 terminal-uncertainty notices raise bounded, auto-expiring toasts at the
@@ -246,16 +280,19 @@ the counts and lock chips.
 | `studio-console-mixer.png` | Mixer crop at 1920x1080 (admin) with Camera 1 Wide at -6.0 dB, Camera 2 Close muted and balanced L25 (lit red M, red cap index line, grey fill), Guest Remote soloed at +4.5 dB with AFV off and 480 samples delay (lit amber S), Lower Third at -18.0 dB with AFV off, Playback Clip muted at -inf, on the synthetic meter feed: expanded-scale meters with green/amber/red zones, bright RMS and dim peak segments, held-peak markers, Guest Remote's latched clip lamps and red `CLIP` readout, `RESET CLIP`, and the signed Master scale `0 … -60`. The synthetic levels ignore strip gain and mute. |
 | `studio-console-2560.png` | 2560x1440: larger monitors, input tiles of about 290 px in four columns, mixer faders with the full 620 px travel, and 120-segment meters; the side panel stops at 560 px. |
 | `studio-console-portrait.png` | 1920x1080 with the demo project's video settings changed to 1080x1920 (Main Scene layers refitted): both wells grow to half the console height and pillarbox the 202x360 portrait frames; the tiles borrowing the frames pillarbox them too. |
-| `studio-console-shortcuts.png` | Help › Keyboard shortcuts: the green `Keys active` lamp, the reference generated from the same table the console's key handler is tested against, with fixed-width key caps (including Ctrl+Z / Ctrl+Shift+Z). |
+| `studio-console-shortcuts.png` | The keyboard reference opened with `?`: the green `Keys active` lamp, the reference generated from the same table the console's key handler is tested against, with fixed-width key caps (including Ctrl+Z / Ctrl+Shift+Z) and the new Console group (`? · F1`, `Esc`). |
+| `studio-console-spanish-shortcuts.png` | The same reference in Spanish, opened with F1 during the `--lang es` session (REC 2 recording, O1 on air and open): `Atajos de teclado`, `Teclas activas`, the `Consola` group. |
+| `studio-console-health-strip.png` | 1920x1080 demo show hovering the `TX —` lamp: the status bar's health strip (`PGM FEED` and `METERS` green, `TX —` amber because the HLS ladder is desired but not live and the simulated daemon sends no transport samples) and its tooltip `Streams: 0 of 2 live · no recent transport samples to measure the rate · 0 A/V pairs dropped`. The key hints end in `? ALL SHORTCUTS`. |
+| `studio-console-layout-restored.png` | Studio restarted on a `studio.conf` saved after dragging the side panel edge to 480 px and hiding the mixer from View: the restored layout (input bank across the full width, 480 px side panel) with View open, the enabled `Reset layout` item and its tooltip, and the layout note. |
 | `studio-console-input-menu.png` | Right-click menu on the Host Laptop tile: key cap and name header, Select on Preview / Cut to Program enabled, Rename, Move, and Remove disabled, and the footer note that the operator session lacks `edit_project`. |
 | `studio-console-add-input.png` | 1920x1080 admin session after clicking the `+` tile: the Add input dialog with `SOLID COLOUR` selected, the suggested name "Solid Colour 1", the amber preset chosen (`#f0a828`), and the preview swatch tagged `INPUT 8` / `SILENT`. |
 | `studio-console-add-input-bars.png` | The same dialog for a second add with `COLOUR BARS`: the suggestion "Colour Bars 1", the bars preview tagged `INPUT 9`, no colour row. |
 | `studio-console-input-added.png` | After both adds and selecting Solid Colour 1 on Preview: tiles 8 (Solid Colour 1, `PVW`) and 9 (Colour Bars 1), the `+` tile with `9 / 256`, `9 SOURCES`, and a mixer strip for the new solid input. |
-| `studio-console-remove-input.png` | Admin session after adding Solid Colour 1: the Remove input confirmation for Solid Colour 1 (input 8), the question, the warning that removal clears redo history and cannot be undone, and the red `REMOVE` key (tooltip hint `[Enter]`, Cancel `[Esc]`). |
+| `studio-console-remove-input.png` | Admin session after both adds: the Remove input confirmation for Colour Bars 1 (input 9, position 9), the question, the warning that removal clears redo history and cannot be undone, and the red `REMOVE` key (tooltip hint `[Enter]`, Cancel `[Esc]`). |
 | `studio-console-input-refused.png` | After removing Colour Bars 1 and then asking to remove Camera 1 Wide: the single refusal toast `Remove refused (conflict): "Camera 1 Wide" is a layer source of scene 100. Remove that reference offline first.` and the bank back at `8 / 256`. |
 | `studio-console-inputs-menu.png` | Inputs menu with the Catalogue group: `Add input…` and the `Remove input` submenu, where Main Scene (`PGM`) and Solid Colour 1 (`PVW`) are disabled with their tally marks. |
 | `studio-console-add-input-disabled.png` | Operator session hovering the dimmed `+` tile: the tooltip "Add input… A solid colour or colour bars, appended to the end of the bank. Unavailable: this session lacks the edit_project permission". |
-| `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with attempt count, retry delay, the last error, and the disabled-controls footer over the dimmed monitors; `NO STATE` chips, `— TARGETS`, `— SOURCES`, centered empty states for the input bank and mixer, and "No synchronized show" in the top bar (no edit group without synchronized state). |
+| `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with attempt count, retry delay, the last error, and the disabled-controls footer over the dimmed monitors; `NO STATE` chips, `— TARGETS`, `— SOURCES`, centered empty states for the input bank and mixer, and "No synchronized show" in the top bar (no edit group without synchronized state); the health strip's unlit `NO PGM FEED` and `NO METERS` lamps. |
 | `studio-console-spanish.png` | 1920x1080 demo show with Studio started with `--lang es`, REC 2 recording, and O1 taken and opened: the `PREVIO`/`PROGRAMA` tally chips, the lit red `DETENER` key of REC 2, neutral `INICIAR` keys, the overlay keys `TOMAR` / `RETIRAR` beside the `APAGADO` / `AL AIRE` state chips (button and state are distinct catalog keys since round 7), and the open O1 card's Spanish diagnostic line (`O1 · pedido: Camera 2 Close, activo, opacidad 255, cola 0, completo, sin borde · confirmado: …`), plus the Spanish mixer header (`RMS · RETENCIÓN · CLIP`, `BORRAR CLIP`). |
 | `studio-console-spanish-menu.png` | The same session with `Salida` open: every transition, Fade to black, T-bar, recorder (`Detener grabador 2` / `GRABANDO`), stream, and Stinger item worded in Spanish. |
 | `studio-console-spanish-input-refused.png` | 1920x1080 `--lang es --role admin` after asking to remove Camera 1 Wide: the localized refusal toast `Baja rechazada (conflict): «Camera 1 Wide» está en uso: a layer source of scene 100. Quite esa referencia sin conexión primero.` (the daemon's own reference detail is quoted as sent). |
@@ -267,6 +304,24 @@ the counts and lock chips.
 | `studio-console-spanish-add-input.png` | 1920x1080 `--lang es --role admin`: the Añadir entrada dialog with `COLOR SÓLIDO`, the suggested name "Color sólido 1", the amber preset, and the preview tagged `ENTRADA 8` / `SIN AUDIO`. |
 | `studio-console-spanish-remove-input.png` | The Quitar entrada confirmation for "Color sólido 1" (entrada 8, posición 8) with the Spanish warning and the red `QUITAR` key. |
 | `studio-console-spanish-reconnecting.png` | 1600x940 `--lang es --connect` with no daemon: the Spanish Reconectando card (attempt, retry delay, last error, disabled-controls footer). |
+
+UI round 8 added the status bar health strip, the `?`/F1 keyboard reference
+with its Console group, a remembered panel layout (shown panels and the
+dragged side panel width in `studio.conf`, View › Reset layout), and compact
+overlay rows. Every new string is a catalog key with Spanish. This round
+regenerated `-monitors-scene`, `-top`, `-stopped`, `-compact-720`,
+`-shortcuts`, `-spanish`, `-edit-menu`, `-locked`, the Add/Remove input
+captures (`-add-input`, `-add-input-bars`, `-input-added`, `-remove-input`,
+`-input-refused`, `-inputs-menu`, `-add-input-disabled`), `-reconnecting`,
+and `-spanish-transition`, `-spanish-stingers`, `-spanish-compact`,
+`-spanish-add-input`, `-spanish-remove-input`, and `-spanish-reconnecting`,
+and added `-health-strip`, `-layout-restored`, and `-spanish-shortcuts`.
+`-monitors`, `-overview`, `-manual-transition`, `-fade-to-black`, `-streams`,
+`-stingers`, `-titles`, `-recording`, `-menu`, `-mixer`, `-2560`,
+`-portrait`, `-input-menu`, `-overlay-details`, `-spanish-menu`,
+`-spanish-input-refused`, and `-spanish-titles` are from round 7 or the
+Titles round: they still show the taller overlay rows and a status bar
+without the health strip.
 
 UI round 7 reviewed every capture as an operator would. The main fixes:
 red is reserved for on air (neutral `START`, tile `CUT`, transition `CUT`,
@@ -378,7 +433,15 @@ or `~/.config/freemix/` on Linux); `--lang` and `--clock` override the saved
 choice for one session without rewriting it. Point `FREEMIX_STUDIO_PREFS` at
 a scratch file when capturing so the captures do not depend on, or change,
 your own preferences. The Spanish transition, Stingers, compact, add/remove,
-and reconnecting captures repeat the English steps with `--lang es`.
+and reconnecting captures repeat the English steps with `--lang es`; the
+Spanish shortcuts capture focuses the window (`xdotool windowfocus "$WIN"`)
+and presses F1, and the English one presses `?` (`xdotool key question`).
+
+The layout capture drags the side panel's left edge (`xdotool mousemove 1550
+700`, `mousedown 1`, `mousemove` in steps to x 1430, `mouseup 1`), unticks
+View › Audio mixer, restarts Studio with the same `FREEMIX_STUDIO_PREFS`
+file, opens View, and hovers `Reset layout`. The health-strip capture hovers
+the `TX` lamp at the right end of the status bar.
 
 The edit-menu, locked, and mixer captures run Studio with `--role admin`
 (the default operator role lacks `edit_project`), then drive the daemon with

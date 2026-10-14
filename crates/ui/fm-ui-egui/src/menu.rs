@@ -36,7 +36,8 @@ use crate::{
 };
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
-/// Which console regions are visible; stored in the shell between frames.
+/// Which console regions are visible and how wide the side panel is;
+/// stored in the shell between frames and, by the host, between sessions.
 #[allow(clippy::struct_excessive_bools)] // each flag is one independent panel toggle
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConsoleLayout {
@@ -44,6 +45,9 @@ pub struct ConsoleLayout {
     pub show_mixer: bool,
     pub show_side_panel: bool,
     pub show_status_bar: bool,
+    /// The side panel width the operator dragged to, in points; `None`
+    /// follows the default width. Clamped to the window when drawn.
+    pub side_panel_width: Option<u16>,
 }
 
 impl Default for ConsoleLayout {
@@ -53,7 +57,110 @@ impl Default for ConsoleLayout {
             show_mixer: true,
             show_side_panel: true,
             show_status_bar: true,
+            side_panel_width: None,
         }
+    }
+}
+
+impl ConsoleLayout {
+    /// Narrowest side panel width the console draws, in points.
+    pub const MIN_SIDE_PANEL_WIDTH: u16 = 300;
+    /// Widest side panel width kept in preferences, in points.
+    pub const MAX_SIDE_PANEL_WIDTH: u16 = 1_200;
+
+    /// Preference keys, in the order [`Self::preference_entries`] writes them.
+    pub const PREFERENCE_KEYS: [&'static str; 5] = [
+        "layout.input_bank",
+        "layout.mixer",
+        "layout.side_panel",
+        "layout.status_bar",
+        "layout.side_panel_width",
+    ];
+
+    /// `key = value` pairs that reproduce this layout in a preferences file.
+    /// An automatic side panel width is written as `auto`.
+    #[must_use]
+    pub fn preference_entries(&self) -> [(&'static str, String); 5] {
+        let shown = |shown: bool| if shown { "shown" } else { "hidden" }.to_owned();
+        let [bank, mixer, side, status, width] = Self::PREFERENCE_KEYS;
+        [
+            (bank, shown(self.show_input_bank)),
+            (mixer, shown(self.show_mixer)),
+            (side, shown(self.show_side_panel)),
+            (status, shown(self.show_status_bar)),
+            (
+                width,
+                self.side_panel_width
+                    .map_or_else(|| "auto".to_owned(), |width| width.to_string()),
+            ),
+        ]
+    }
+
+    /// Applies one preference entry. Returns `false`, leaving the layout
+    /// unchanged, for an unknown key or a value it cannot use.
+    pub fn apply_preference(&mut self, key: &str, value: &str) -> bool {
+        let shown = match value {
+            "shown" | "true" | "on" => Some(true),
+            "hidden" | "false" | "off" => Some(false),
+            _ => None,
+        };
+        let [bank, mixer, side, status, width] = Self::PREFERENCE_KEYS;
+        let flag = match key {
+            key if key == bank => &mut self.show_input_bank,
+            key if key == mixer => &mut self.show_mixer,
+            key if key == side => &mut self.show_side_panel,
+            key if key == status => &mut self.show_status_bar,
+            key if key == width => {
+                if value == "auto" {
+                    self.side_panel_width = None;
+                    return true;
+                }
+                return match value.parse::<u16>() {
+                    Ok(points)
+                        if (Self::MIN_SIDE_PANEL_WIDTH..=Self::MAX_SIDE_PANEL_WIDTH)
+                            .contains(&points) =>
+                    {
+                        self.side_panel_width = Some(points);
+                        true
+                    }
+                    _ => false,
+                };
+            }
+            _ => return false,
+        };
+        match shown {
+            Some(shown) => {
+                *flag = shown;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The side panel width to draw in a window allowing at most
+    /// `max_width`, given the default width.
+    #[must_use]
+    pub fn side_panel_width_within(&self, default_width: f32, max_width: f32) -> f32 {
+        let min = f32::from(Self::MIN_SIDE_PANEL_WIDTH);
+        let max = max_width.max(min);
+        self.side_panel_width
+            .map_or(default_width, f32::from)
+            .clamp(min, max)
+    }
+
+    /// Records a side panel width the operator dragged to: the default
+    /// width, within a point, is stored as automatic.
+    pub fn record_side_panel_width(&mut self, width: f32, default_width: f32) {
+        self.side_panel_width = if (width - default_width).abs() < 1.0 {
+            None
+        } else {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped first
+            let points = width.round().clamp(
+                f32::from(Self::MIN_SIDE_PANEL_WIDTH),
+                f32::from(Self::MAX_SIDE_PANEL_WIDTH),
+            ) as u16;
+            Some(points)
+        };
     }
 }
 
@@ -103,6 +210,13 @@ fn slot_status(state: &StudioUiState, slot: u8) -> (&'static str, Tone) {
         stinger_slot_tone(slot_state),
     )
 }
+
+/// Height the keyboard reference keeps for its title, status, intro, and
+/// footer around the scrolling key list.
+const SHORTCUTS_CHROME_HEIGHT: f32 = 230.0;
+
+/// Width of the View menu, which wraps its layout note to it.
+const VIEW_MENU_WIDTH: f32 = 230.0;
 
 /// Longest menu label, in characters, before it ends in an ellipsis.
 const MENU_LABEL_CHARS: usize = 32;
@@ -303,7 +417,7 @@ impl StudioShell {
 
     fn view_menu(&mut self, ui: &mut Ui) {
         let l = self.locale;
-        ui.set_min_width(230.0);
+        ui.set_min_width(VIEW_MENU_WIDTH);
         heading(ui, l.text(Msg::ViewPanels));
         ui.checkbox(&mut self.layout.show_input_bank, l.text(Msg::InputBank))
             .on_hover_text(l.text(Msg::ViewInputBankHover));
@@ -334,11 +448,24 @@ impl StudioShell {
                 self.layout != ConsoleLayout::default(),
                 Button::new(l.text(Msg::ViewResetLayout)),
             )
+            .on_hover_text(l.text(Msg::ViewResetLayoutHover))
             .on_disabled_hover_text(l.text(Msg::ViewResetLayoutDisabled))
             .clicked()
         {
-            self.layout = ConsoleLayout::default();
+            self.reset_layout(ui.ctx());
         }
+        ui.scope(|ui| {
+            // Wrap the note to the menu's own width instead of widening it.
+            ui.set_max_width(VIEW_MENU_WIDTH);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(l.text(Msg::ViewLayoutRemembered))
+                        .size(10.0)
+                        .color(MUTED),
+                )
+                .wrap(),
+            );
+        });
         ui.separator();
         self.language_menu_items(ui);
     }
@@ -781,7 +908,13 @@ impl StudioShell {
     fn help_menu(&mut self, ui: &mut Ui) {
         let l = self.locale;
         ui.set_min_width(220.0);
-        if ui.button(l.text(Msg::KeyboardShortcuts)).clicked() {
+        if ui
+            .add(
+                Button::new(l.text(Msg::KeyboardShortcuts))
+                    .shortcut_text(RichText::new(l.text(Msg::KeyHelp)).color(MUTED)),
+            )
+            .clicked()
+        {
             self.show_shortcuts = true;
         }
         if ui.button(l.text(Msg::AboutStudio)).clicked() {
@@ -816,28 +949,34 @@ impl StudioShell {
                             .size(11.0)
                             .color(TEXT_DIM),
                     );
-                    for group in [
-                        ShortcutGroup::Switching,
-                        ShortcutGroup::Transitions,
-                        ShortcutGroup::Editing,
-                        ShortcutGroup::InputBank,
-                    ] {
-                        ui.add_space(10.0);
-                        ui.label(section_label(l.tr(group.title())));
-                        ui.add_space(2.0);
-                        egui::Grid::new(("studio-shortcuts", group.title()))
-                            .num_columns(2)
-                            .spacing(Vec2::new(16.0, 6.0))
-                            .show(ui, |ui| {
-                                for entry in
-                                    STUDIO_SHORTCUTS.iter().filter(|entry| entry.group == group)
-                                {
-                                    key_cap(ui, l.tr(entry.keys));
-                                    ui.label(RichText::new(l.tr(entry.action)).color(TEXT));
-                                    ui.end_row();
-                                }
-                            });
-                    }
+                    // Short windows scroll the reference instead of
+                    // pushing its footer off screen.
+                    let max_height =
+                        (context.viewport_rect().height() - SHORTCUTS_CHROME_HEIGHT).max(160.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("studio-shortcuts-scroll")
+                        .auto_shrink([false, true])
+                        .max_height(max_height)
+                        .show(ui, |ui| {
+                            for group in ShortcutGroup::ALL {
+                                ui.add_space(10.0);
+                                ui.label(section_label(l.tr(group.title())));
+                                ui.add_space(2.0);
+                                egui::Grid::new(("studio-shortcuts", group.title()))
+                                    .num_columns(2)
+                                    .spacing(Vec2::new(16.0, 6.0))
+                                    .show(ui, |ui| {
+                                        for entry in STUDIO_SHORTCUTS
+                                            .iter()
+                                            .filter(|entry| entry.group == group)
+                                        {
+                                            key_cap(ui, l.tr(entry.keys));
+                                            ui.label(RichText::new(l.tr(entry.action)).color(TEXT));
+                                            ui.end_row();
+                                        }
+                                    });
+                            }
+                        });
                     ui.add_space(10.0);
                     ui.separator();
                     ui.label(

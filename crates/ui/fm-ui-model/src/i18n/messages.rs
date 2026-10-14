@@ -176,8 +176,34 @@ messages! {
     StatusIdleFailed => t("Connection failed"),
     StatusIdleDisconnected => t("No control connection"),
     StatusIdleWaiting => t("Waiting for synchronized state"),
-    StatusBarKeyHints => t("1–8 PVW   C CUT   F FADE   B FTB   ESC CANCEL T-BAR   ·   HELP › SHORTCUTS"),
+    StatusBarKeyHints => t("1–8 PVW   C CUT   F FADE   B FTB   ESC CANCEL T-BAR   ·   ? ALL SHORTCUTS"),
     StatusBarKeys => t("KEYS"),
+    StatusBarHelpHint => t("? SHORTCUTS"),
+
+    // Status bar health strip.
+    HealthFeedLive => t("PGM FEED"),
+    HealthFeedStale => t("PGM FEED {age}"),
+    HealthFeedNone => t("NO PGM FEED"),
+    HealthFeedHover => t("Program monitor preview: {width}×{height} frame received {age} ago. Turns amber after 1 s without a new frame."),
+    HealthFeedNoneHover => t("No Program monitor frame has arrived from the daemon"),
+    HealthMetersLive => t("METERS"),
+    HealthMetersStale => t("METERS STALE"),
+    HealthMetersNone => t("NO METERS"),
+    HealthMetersHover => t("Audio meters: the latest message arrived {age} ago. Turns amber after 1 s without a new message."),
+    HealthStream => t("TX {rate}"),
+    HealthStreamUnknown => t("TX —"),
+    HealthStreamHover => t("Streams: {live} of {total} live · {rate} · {dropped} A/V pairs dropped"),
+    HealthRateMeasured => t("{rate} muxed in total, measured between transport samples"),
+    HealthRateUnknown => t("no recent transport samples to measure the rate"),
+    HealthDropped => t("DROP {count}"),
+    HealthDroppedHover => plural(
+        "{count} audio/video pair dropped by the stream outputs since they started",
+        "{count} audio/video pairs dropped by the stream outputs since they started"
+    ),
+    HealthDisk => t("HLS DISK {free}"),
+    HealthDiskHover => t("Lowest free space on a local HLS output directory's filesystem: {free}. Amber below 2 GB, red below 512 MB."),
+    BitrateKbps => t("{value} kb/s"),
+    BitrateMbps => t("{value} Mb/s"),
 
     // Toasts.
     ToastNotice => t("NOTICE"),
@@ -229,7 +255,9 @@ messages! {
     TabStingers => t("Stingers"),
     TabTitles => t("Titles"),
     ViewResetLayout => t("Reset layout"),
-    ViewResetLayoutDisabled => t("Every panel is already shown"),
+    ViewResetLayoutDisabled => t("The layout is already the default"),
+    ViewResetLayoutHover => t("Show every panel and restore the default side panel width"),
+    ViewLayoutRemembered => t("Panels and the side panel width (drag its edge) are remembered on this console"),
     ViewLanguage => t("Language"),
     ViewLanguageHover => t("Console language; local to this console and never sent to the daemon"),
     ViewClock12h => t("12-hour clock"),
@@ -298,6 +326,10 @@ messages! {
     KeyDoubleClickShort => t("Dbl-click"),
     KeyRightClick => t("Right-click"),
     KeyTabEnter => t("Tab · Enter"),
+    ShortcutGroupConsole => t("Console"),
+    ShortcutHelp => t("Show or hide this keyboard reference"),
+    ShortcutCloseDialog => t("Close the open menu, dialog, or reference"),
+    KeyHelp => t("? · F1"),
 
     // Output rows.
     StatusNoState => t("NO STATE"),

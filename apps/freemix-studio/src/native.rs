@@ -249,7 +249,9 @@ impl StudioApp {
         );
         let locale = config.ui.locale_with(saved, env);
         shell.set_locale(locale);
-        let preferences = PreferenceStore::new(path, locale);
+        let layout = saved.layout.unwrap_or_default();
+        shell.set_layout(layout);
+        let preferences = PreferenceStore::new(path, saved, locale, layout);
         let (request_sender, request_receiver) = sync_channel(REQUEST_CAPACITY);
         let repaint_context = creation_context.egui_ctx.clone();
         let (publisher, updates) = state_mailbox(repaint_context);
@@ -416,7 +418,10 @@ impl eframe::App for StudioApp {
         for intent in self.shell.draw(ui, &self.state) {
             self.enqueue_intent(intent);
         }
-        if let Err(error) = self.preferences.observe(self.shell.locale()) {
+        if let Err(error) = self
+            .preferences
+            .observe(self.shell.locale(), self.shell.layout())
+        {
             self.preferences_notice = Some(format!("Console preferences not saved: {error}"));
         }
     }
@@ -2917,7 +2922,12 @@ mod tests {
             osc: None,
             osc_rejected: 0,
             osc_notice: None,
-            preferences: PreferenceStore::new(None, fm_ui_model::i18n::Locale::ENGLISH),
+            preferences: PreferenceStore::new(
+                None,
+                SavedPreferences::default(),
+                fm_ui_model::i18n::Locale::ENGLISH,
+                fm_ui_egui::ConsoleLayout::default(),
+            ),
             preferences_notice: None,
         };
 
@@ -4588,7 +4598,12 @@ mod tests {
             osc: Some(receiver),
             osc_rejected: 0,
             osc_notice: None,
-            preferences: PreferenceStore::new(None, fm_ui_model::i18n::Locale::ENGLISH),
+            preferences: PreferenceStore::new(
+                None,
+                SavedPreferences::default(),
+                fm_ui_model::i18n::Locale::ENGLISH,
+                fm_ui_egui::ConsoleLayout::default(),
+            ),
             preferences_notice: None,
         };
         app.shell.set_transition_duration_frames(42);

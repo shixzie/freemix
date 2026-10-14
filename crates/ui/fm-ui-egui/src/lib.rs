@@ -34,6 +34,7 @@ mod connection_overlay;
 mod edit_history;
 mod fade_to_black;
 mod gating;
+mod health;
 mod input_bank;
 mod input_catalogue;
 mod l10n;
@@ -77,6 +78,8 @@ use theme::{BORDER, GRAPHITE, PANEL};
 
 const NARROW_MONITOR_WIDTH: f32 = 700.0;
 const SIDE_PANEL_WIDTH: f32 = 370.0;
+/// The side panel's egui id; its dragged width lives in egui memory.
+const SIDE_PANEL_ID: &str = "studio-side-panel";
 const MIN_LOWER_ROW_HEIGHT: f32 = 370.0;
 
 /// Changed controls for one input's Master audio strip.
@@ -703,11 +706,22 @@ pub(crate) enum ShortcutGroup {
     Transitions,
     Editing,
     InputBank,
+    Console,
 }
 
 impl ShortcutGroup {
+    /// Every group in reference order.
+    pub(crate) const ALL: [Self; 5] = [
+        Self::Switching,
+        Self::Transitions,
+        Self::Editing,
+        Self::InputBank,
+        Self::Console,
+    ];
+
     pub(crate) const fn title(self) -> &'static str {
         match self {
+            Self::Console => Msg::ShortcutGroupConsole.en(),
             Self::Switching => Msg::ShortcutGroupSwitching.en(),
             Self::Transitions => Msg::ShortcutGroupTransitions.en(),
             Self::Editing => Msg::ShortcutGroupEditing.en(),
@@ -728,7 +742,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 11] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 13] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -795,7 +809,31 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 11] = [
         action: Msg::ShortcutTileFocus.en(),
         key: None,
     },
+    // Handled by [`help_key`], which works whatever the connection state.
+    ShortcutEntry {
+        group: ShortcutGroup::Console,
+        keys: Msg::KeyHelp.en(),
+        action: Msg::ShortcutHelp.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Console,
+        keys: "Esc",
+        action: Msg::ShortcutCloseDialog.en(),
+        key: None,
+    },
 ];
+
+/// Whether a key press toggles the keyboard reference: `?` (any Shift
+/// state, so it works on layouts where `?` needs Shift) or a bare F1.
+pub(crate) fn help_key(key: Key, modifiers: Modifiers) -> bool {
+    let plain = !(modifiers.ctrl || modifiers.alt || modifiers.command || modifiers.mac_cmd);
+    match key {
+        Key::Questionmark => plain,
+        Key::F1 => modifiers.is_none(),
+        _ => false,
+    }
+}
 
 fn studio_shortcuts(
     ui: &mut Ui,
@@ -1001,6 +1039,10 @@ pub struct StudioShell {
     locale: Locale,
     /// The Titles tab and its title editor.
     titles: titles::TitlesPanel,
+    /// Meter and stream message arrival times for the status bar strip.
+    health: health::HealthTracker,
+    /// Whether the side panel's edge was being dragged last frame.
+    side_panel_resizing: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1067,6 +1109,46 @@ impl StudioShell {
         self.layout = layout;
     }
 
+    /// Restores every panel and the default side panel width, forgetting
+    /// the width egui keeps for the dragged panel edge.
+    pub(crate) fn reset_layout(&mut self, context: &egui::Context) {
+        self.layout = ConsoleLayout::default();
+        self.side_panel_resizing = false;
+        context.data_mut(|data| data.remove::<egui::PanelState>(egui::Id::new(SIDE_PANEL_ID)));
+    }
+
+    /// Keeps the side panel at the layout's width for this window: egui
+    /// remembers the panel's last width itself, so after a window resize or
+    /// a restored preference that width is dropped and the panel takes
+    /// `width` as its default. Never during a drag of the panel edge.
+    fn apply_side_panel_width(&self, context: &egui::Context, width: f32) {
+        let id = egui::Id::new(SIDE_PANEL_ID);
+        if !self.side_panel_resizing
+            && egui::PanelState::load(context, id)
+                .is_some_and(|panel| (panel.size().x - width).abs() > 0.5)
+        {
+            context.data_mut(|data| data.remove::<egui::PanelState>(id));
+        }
+    }
+
+    /// Records the side panel width once a drag of its edge ends, so the
+    /// host can remember it; window resizes that clamp the panel are not
+    /// operator choices and are not recorded.
+    fn track_side_panel_width(&mut self, context: &egui::Context, default_width: f32) {
+        let id = egui::Id::new(SIDE_PANEL_ID);
+        let dragging = context
+            .read_response(id.with("__resize"))
+            .is_some_and(|response| response.dragged());
+        if self.side_panel_resizing
+            && !dragging
+            && let Some(panel) = egui::PanelState::load(context, id)
+        {
+            self.layout
+                .record_side_panel_width(panel.size().x, default_width);
+        }
+        self.side_panel_resizing = dragging;
+    }
+
     /// Returns the console's UI language and clock preference.
     #[must_use]
     pub const fn locale(&self) -> Locale {
@@ -1108,6 +1190,40 @@ impl StudioShell {
             edit_history_availability(state),
         ));
         intents
+    }
+
+    /// `?` or F1 opens the keyboard reference, and closes it again, unless
+    /// a text field, another dialog, or a menu owns the keyboard. Works in
+    /// every connection state, unlike the console keys.
+    fn toggle_help_on_key(&mut self, ui: &mut Ui) {
+        let context = ui.ctx().clone();
+        let other_owner = self.show_about
+            || self.add_input.is_some()
+            || self.remove_input.is_some()
+            || (!self.show_shortcuts && egui::Popup::is_any_open(&context));
+        if other_owner || context.egui_wants_keyboard_input() {
+            return;
+        }
+        let pressed = ui.input_mut(|input| {
+            let mut pressed = false;
+            input.events.retain(|event| match event {
+                Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } if help_key(*key, *modifiers) => {
+                    pressed = true;
+                    false
+                }
+                _ => true,
+            });
+            pressed
+        });
+        if pressed {
+            self.show_shortcuts = !self.show_shortcuts;
+        }
     }
 
     /// Whether a dialog, menu, or popup owns the keyboard. Dialogs are modal
@@ -1178,6 +1294,7 @@ impl StudioShell {
                 )
             }),
         );
+        self.toggle_help_on_key(ui);
         let mut intents = self.keyboard_intents(ui, state, manual_transition_controls);
         // Studio repaints on timers, so egui's `stable_dt` stays at its 1/60 s
         // prediction however long a frame gap really is; toasts and meter
@@ -1206,28 +1323,18 @@ impl StudioShell {
             .exact_size(46.0)
             .frame(bar_frame)
             .show(ui, |ui| chrome::draw_top_bar(ui, state, &mut intents));
+        let now = std::time::Instant::now();
+        self.health.observe(state, now);
         if self.layout.show_status_bar {
+            // The lamps age with the monitor, meter, and clock repaints.
+            let health = health::health_items(self.locale, state, &self.health, now);
             Panel::bottom("studio-status-bar")
                 .exact_size(26.0)
                 .frame(bar_frame)
-                .show(ui, |ui| chrome::draw_status_bar(ui, state));
+                .show(ui, |ui| chrome::draw_status_bar(ui, state, &health));
         }
         if self.layout.show_side_panel {
-            // Compact windows give the monitors the width; wide ones may grow
-            // the side panel up to a quarter of the window.
-            let max_side = (ui.available_width() * 0.25).clamp(320.0, 560.0);
-            Panel::right("studio-side-panel")
-                .resizable(true)
-                .default_size(SIDE_PANEL_WIDTH.min(max_side))
-                .min_size(300.0)
-                .max_size(max_side)
-                .frame(
-                    Frame::new()
-                        .fill(PANEL)
-                        .stroke(Stroke::new(1.0, BORDER))
-                        .inner_margin(Margin::same(10)),
-                )
-                .show(ui, |ui| self.draw_side_panel(ui, state, &mut intents));
+            self.draw_side_panel_region(ui, state, &mut intents);
         }
         let central = CentralPanel::default()
             .frame(Frame::new().fill(GRAPHITE).inner_margin(Margin::same(12)))
@@ -1267,6 +1374,36 @@ impl StudioShell {
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
         self.track_catalogue_intents(ui.ctx(), state, &intents);
         intents
+    }
+
+    /// The resizable side panel at the layout's remembered width.
+    fn draw_side_panel_region(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        // Compact windows give the monitors the width; wide ones may grow
+        // the side panel up to a quarter of the window.
+        let max_side = (ui.available_width() * 0.25).clamp(320.0, 560.0);
+        let default_side = SIDE_PANEL_WIDTH.min(max_side);
+        let side_width = self.layout.side_panel_width_within(default_side, max_side);
+        self.apply_side_panel_width(ui.ctx(), side_width);
+        Panel::right(SIDE_PANEL_ID)
+            .resizable(true)
+            .default_size(side_width)
+            .min_size(f32::from(ConsoleLayout::MIN_SIDE_PANEL_WIDTH))
+            .max_size(max_side)
+            .frame(
+                Frame::new()
+                    .fill(PANEL)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(Margin::same(10)),
+            )
+            .show(ui, |ui| self.draw_side_panel(ui, state, intents));
+        // After the panel stored this frame's width, so the width on
+        // the frame a drag ends is the released one.
+        self.track_side_panel_width(ui.ctx(), default_side);
     }
 
     /// Announces this frame's new messages and input add/remove outcomes.
@@ -1486,6 +1623,8 @@ impl Default for StudioShell {
             catalogue: input_catalogue::CatalogueTracker::default(),
             locale: Locale::ENGLISH,
             titles: titles::TitlesPanel::default(),
+            health: health::HealthTracker::default(),
+            side_panel_resizing: false,
         }
     }
 }
@@ -1908,6 +2047,148 @@ mod tests {
         };
         shell.set_layout(layout);
         assert_eq!(shell.layout(), layout);
+    }
+
+    #[test]
+    fn console_layout_preferences_round_trip_key_by_key() {
+        let layout = ConsoleLayout {
+            show_input_bank: false,
+            show_side_panel: false,
+            side_panel_width: Some(512),
+            ..ConsoleLayout::default()
+        };
+        let mut read = ConsoleLayout::default();
+        for (key, value) in layout.preference_entries() {
+            assert!(read.apply_preference(key, &value), "{key} = {value}");
+        }
+        assert_eq!(read, layout);
+        let keys = layout.preference_entries().map(|(key, _)| key);
+        assert_eq!(keys, ConsoleLayout::PREFERENCE_KEYS);
+        // Unknown keys and unusable values leave the layout unchanged.
+        let mut unchanged = ConsoleLayout::default();
+        for (key, value) in [
+            ("layout.mixer", "sometimes"),
+            ("layout.side_panel_width", "299"),
+            ("layout.side_panel_width", "1201"),
+            ("layout.side_panel_width", "-4"),
+            ("language", "es"),
+        ] {
+            assert!(!unchanged.apply_preference(key, value), "{key} = {value}");
+        }
+        assert_eq!(unchanged, ConsoleLayout::default());
+        assert!(unchanged.apply_preference("layout.status_bar", "off"));
+        assert!(!unchanged.show_status_bar);
+        assert!(unchanged.apply_preference("layout.side_panel_width", "300"));
+        assert!(unchanged.apply_preference("layout.side_panel_width", "auto"));
+        assert_eq!(unchanged.side_panel_width, None);
+    }
+
+    #[test]
+    fn side_panel_width_is_recorded_from_drags_and_clamped_to_the_window() {
+        let mut layout = ConsoleLayout::default();
+        // Automatic: the default width, clamped like any other.
+        assert!((layout.side_panel_width_within(370.0, 480.0) - 370.0).abs() < f32::EPSILON);
+        assert!((layout.side_panel_width_within(320.0, 320.0) - 320.0).abs() < f32::EPSILON);
+        layout.record_side_panel_width(452.4, 370.0);
+        assert_eq!(layout.side_panel_width, Some(452));
+        assert!((layout.side_panel_width_within(370.0, 560.0) - 452.0).abs() < f32::EPSILON);
+        // A smaller window clamps the drawn width but keeps the choice.
+        assert!((layout.side_panel_width_within(320.0, 320.0) - 320.0).abs() < f32::EPSILON);
+        assert_eq!(layout.side_panel_width, Some(452));
+        // Dragging back to the default width returns to automatic.
+        layout.record_side_panel_width(370.4, 370.0);
+        assert_eq!(layout.side_panel_width, None);
+        assert_eq!(layout, ConsoleLayout::default());
+        layout.record_side_panel_width(9_000.0, 370.0);
+        assert_eq!(
+            layout.side_panel_width,
+            Some(ConsoleLayout::MAX_SIDE_PANEL_WIDTH)
+        );
+    }
+
+    #[test]
+    fn reset_layout_restores_panels_and_forgets_the_dragged_width() {
+        let context = egui::Context::default();
+        let id = egui::Id::new(SIDE_PANEL_ID);
+        context.data_mut(|data| {
+            data.insert_persisted(
+                id,
+                egui::PanelState {
+                    outer_rect: egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(500.0, 400.0),
+                    ),
+                },
+            );
+        });
+        let mut shell = StudioShell::default();
+        shell.set_layout(ConsoleLayout {
+            show_mixer: false,
+            side_panel_width: Some(500),
+            ..ConsoleLayout::default()
+        });
+        shell.reset_layout(&context);
+        assert_eq!(shell.layout(), ConsoleLayout::default());
+        assert!(egui::PanelState::load(&context, id).is_none());
+    }
+
+    #[test]
+    fn question_mark_and_f1_toggle_the_keyboard_reference() {
+        let shift = Modifiers::SHIFT;
+        assert!(help_key(Key::Questionmark, Modifiers::NONE));
+        assert!(help_key(Key::Questionmark, shift));
+        assert!(help_key(Key::F1, Modifiers::NONE));
+        assert!(!help_key(Key::F1, shift));
+        assert!(!help_key(Key::Questionmark, Modifiers::CTRL));
+        assert!(!help_key(Key::Slash, Modifiers::NONE));
+        // The reference lists the help key in its own Console group, which
+        // the key handler does not own (it works in every connection state).
+        let console: Vec<_> = STUDIO_SHORTCUTS
+            .iter()
+            .filter(|entry| entry.group == ShortcutGroup::Console)
+            .collect();
+        assert_eq!(console.len(), 2);
+        assert_eq!(console[0].keys, Msg::KeyHelp.en());
+        assert!(console.iter().all(|entry| entry.key.is_none()));
+        // Every group has entries, and every entry's group is drawn.
+        for group in ShortcutGroup::ALL {
+            assert!(STUDIO_SHORTCUTS.iter().any(|entry| entry.group == group));
+        }
+
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let press = |shell: &mut StudioShell, key| {
+            let event = |pressed| Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: shift,
+            };
+            context.begin_pass(egui::RawInput {
+                // Released in the same pass, so the next press is not a repeat.
+                events: vec![event(true), event(false)],
+                ..Default::default()
+            });
+            let mut ui = egui::Ui::new(
+                context.clone(),
+                egui::Id::new("studio-help-key"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(context.viewport_rect()),
+            );
+            shell.toggle_help_on_key(&mut ui);
+            drop(ui);
+            let _ = context.end_pass();
+        };
+        press(&mut shell, Key::Questionmark);
+        assert!(shell.show_shortcuts);
+        press(&mut shell, Key::Questionmark);
+        assert!(!shell.show_shortcuts);
+        // Another dialog owns the keyboard.
+        shell.show_about = true;
+        press(&mut shell, Key::Questionmark);
+        assert!(!shell.show_shortcuts);
     }
 
     #[test]

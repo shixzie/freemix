@@ -1,5 +1,6 @@
-//! Local console preferences that survive a restart: the UI language and
-//! the top-bar clock.
+//! Local console preferences that survive a restart: the UI language, the
+//! top-bar clock, and the panel layout (which regions are shown and the
+//! side panel width).
 //!
 //! The file is plain `key = value` text in the platform configuration
 //! directory (`$XDG_CONFIG_HOME/freemix/studio.conf`, else
@@ -12,6 +13,7 @@
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
+use fm_ui_egui::ConsoleLayout;
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
 /// Environment variable naming the preferences file explicitly.
@@ -24,6 +26,8 @@ const FILE_NAME: &str = "studio.conf";
 pub struct SavedPreferences {
     pub language: Option<Language>,
     pub hour_cycle: Option<HourCycle>,
+    /// The panel layout; `None` when the file has no layout keys.
+    pub layout: Option<ConsoleLayout>,
 }
 
 impl SavedPreferences {
@@ -33,6 +37,7 @@ impl SavedPreferences {
         Self {
             language: Some(locale.language),
             hour_cycle: Some(locale.hour_cycle),
+            layout: None,
         }
     }
 
@@ -53,7 +58,12 @@ impl SavedPreferences {
             match key.trim() {
                 "language" => saved.language = Language::from_tag(value).or(saved.language),
                 "clock" => saved.hour_cycle = HourCycle::from_flag(value).or(saved.hour_cycle),
-                _ => {}
+                key => {
+                    let mut layout = saved.layout.unwrap_or_default();
+                    if layout.apply_preference(key, value) {
+                        saved.layout = Some(layout);
+                    }
+                }
             }
         }
         saved
@@ -73,6 +83,14 @@ impl SavedPreferences {
                 HourCycle::H23 => "clock = 24h\n",
                 HourCycle::H12 => "clock = 12h\n",
             });
+        }
+        if let Some(layout) = self.layout {
+            for (key, value) in layout.preference_entries() {
+                text.push_str(key);
+                text.push_str(" = ");
+                text.push_str(&value);
+                text.push('\n');
+            }
         }
         text
     }
@@ -136,38 +154,62 @@ pub fn preferences_path(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf>
     Some(directory.join(FILE_NAME))
 }
 
-/// Saves the console locale whenever the operator changes it.
+/// Saves the console locale and layout whenever the operator changes them.
+///
+/// Each preference is written only once the operator changes it, so a
+/// `--lang` or `--clock` override for one session is never written back
+/// when only the layout changes, and vice versa.
 #[derive(Debug)]
 pub struct PreferenceStore {
     path: Option<PathBuf>,
-    /// The locale last loaded, chosen at startup, or saved.
-    known: Locale,
+    /// The preferences as last loaded or saved.
+    saved: SavedPreferences,
+    /// The locale in effect at startup or last saved.
+    known_locale: Locale,
+    /// The layout in effect at startup or last saved.
+    known_layout: ConsoleLayout,
 }
 
 impl PreferenceStore {
-    /// A store for `path` whose current locale is `startup`; nothing is
-    /// written until the locale changes.
+    /// A store for `path` whose file held `saved` and whose console started
+    /// in `locale` with `layout`; nothing is written until either changes.
     #[must_use]
-    pub const fn new(path: Option<PathBuf>, startup: Locale) -> Self {
+    pub const fn new(
+        path: Option<PathBuf>,
+        saved: SavedPreferences,
+        locale: Locale,
+        layout: ConsoleLayout,
+    ) -> Self {
         Self {
             path,
-            known: startup,
+            saved,
+            known_locale: locale,
+            known_layout: layout,
         }
     }
 
-    /// Saves `locale` when it differs from the last known one. Returns the
-    /// write error, if any; a failed save is retried on the next change.
+    /// Saves `locale` and `layout` when either differs from the last known
+    /// one. Returns the write error, if any; a failed save is retried on
+    /// the next change.
     ///
     /// # Errors
     ///
     /// Returns the error from [`SavedPreferences::save`].
-    pub fn observe(&mut self, locale: Locale) -> io::Result<()> {
-        if locale == self.known {
+    pub fn observe(&mut self, locale: Locale, layout: ConsoleLayout) -> io::Result<()> {
+        if locale == self.known_locale && layout == self.known_layout {
             return Ok(());
         }
-        self.known = locale;
+        if locale != self.known_locale {
+            self.known_locale = locale;
+            self.saved.language = Some(locale.language);
+            self.saved.hour_cycle = Some(locale.hour_cycle);
+        }
+        if layout != self.known_layout {
+            self.known_layout = layout;
+            self.saved.layout = Some(layout);
+        }
         match &self.path {
-            Some(path) => SavedPreferences::from_locale(locale).save(path),
+            Some(path) => self.saved.save(path),
             None => Ok(()),
         }
     }

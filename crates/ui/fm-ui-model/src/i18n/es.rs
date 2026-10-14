@@ -303,9 +303,64 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::StatusBarKeyHints,
-        t("1–8 PVW   C CORTE   F FUNDIDO   B FTB   ESC CANCELAR T-BAR   ·   AYUDA › ATAJOS"),
+        t("1–8 PVW   C CORTE   F FUNDIDO   B FTB   ESC CANCELAR T-BAR   ·   ? TODOS LOS ATAJOS"),
     ),
     (Msg::StatusBarKeys, t("TECLAS")),
+    (Msg::StatusBarHelpHint, t("? ATAJOS")),
+    // Status bar health strip.
+    (Msg::HealthFeedLive, t("SEÑAL PGM")),
+    (Msg::HealthFeedStale, t("SEÑAL PGM {age}")),
+    (Msg::HealthFeedNone, t("SIN SEÑAL PGM")),
+    (
+        Msg::HealthFeedHover,
+        t(
+            "Vista del monitor de Programa: fotograma de {width}×{height} recibido hace {age}. Pasa a ámbar tras 1 s sin un fotograma nuevo.",
+        ),
+    ),
+    (
+        Msg::HealthFeedNoneHover,
+        t("No ha llegado ningún fotograma del monitor de Programa desde el daemon"),
+    ),
+    (Msg::HealthMetersLive, t("MEDIDORES")),
+    (Msg::HealthMetersStale, t("MEDIDORES OBSOLETOS")),
+    (Msg::HealthMetersNone, t("SIN MEDIDORES")),
+    (
+        Msg::HealthMetersHover,
+        t(
+            "Medidores de audio: el último mensaje llegó hace {age}. Pasa a ámbar tras 1 s sin un mensaje nuevo.",
+        ),
+    ),
+    (Msg::HealthStream, t("TX {rate}")),
+    (Msg::HealthStreamUnknown, t("TX —")),
+    (
+        Msg::HealthStreamHover,
+        t("Emisiones: {live} de {total} en vivo · {rate} · {dropped} pares A/V descartados"),
+    ),
+    (
+        Msg::HealthRateMeasured,
+        t("{rate} multiplexados en total, medidos entre muestras de transporte"),
+    ),
+    (
+        Msg::HealthRateUnknown,
+        t("sin muestras de transporte recientes para medir la tasa"),
+    ),
+    (Msg::HealthDropped, t("DESCARTES {count}")),
+    (
+        Msg::HealthDroppedHover,
+        plural(
+            "{count} par de audio/vídeo descartado por las salidas de emisión desde que se iniciaron",
+            "{count} pares de audio/vídeo descartados por las salidas de emisión desde que se iniciaron",
+        ),
+    ),
+    (Msg::HealthDisk, t("DISCO HLS {free}")),
+    (
+        Msg::HealthDiskHover,
+        t(
+            "Menor espacio libre en el sistema de archivos de un directorio de salida HLS local: {free}. Ámbar por debajo de 2 GB, rojo por debajo de 512 MB.",
+        ),
+    ),
+    (Msg::BitrateKbps, t("{value} kb/s")),
+    (Msg::BitrateMbps, t("{value} Mb/s")),
     // Toasts.
     (Msg::ToastNotice, t("AVISO")),
     (Msg::ToastError, t("ERROR")),
@@ -422,7 +477,17 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::ViewResetLayout, t("Restablecer diseño")),
     (
         Msg::ViewResetLayoutDisabled,
-        t("Todos los paneles ya están visibles"),
+        t("El diseño ya es el predeterminado"),
+    ),
+    (
+        Msg::ViewResetLayoutHover,
+        t("Mostrar todos los paneles y restaurar el ancho predeterminado del panel lateral"),
+    ),
+    (
+        Msg::ViewLayoutRemembered,
+        t(
+            "Los paneles y el ancho del panel lateral (arrastre su borde) se recuerdan en esta consola",
+        ),
     ),
     (Msg::ViewLanguage, t("Idioma")),
     (
@@ -567,6 +632,16 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::KeyDoubleClickShort, t("Doble clic")),
     (Msg::KeyRightClick, t("Clic derecho")),
     (Msg::KeyTabEnter, t("Tab · Intro")),
+    (Msg::ShortcutGroupConsole, t("Consola")),
+    (
+        Msg::ShortcutHelp,
+        t("Mostrar u ocultar esta referencia de teclado"),
+    ),
+    (
+        Msg::ShortcutCloseDialog,
+        t("Cerrar el menú, diálogo o referencia abiertos"),
+    ),
+    (Msg::KeyHelp, t("? · F1")),
     // Output rows.
     (Msg::StatusNoState, t("SIN ESTADO")),
     (Msg::StreamStarting, t("INICIANDO")),

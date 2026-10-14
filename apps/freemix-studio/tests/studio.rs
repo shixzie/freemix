@@ -30,6 +30,7 @@ use fm_protocol::{
     WireMessage, WireRecorderSlot, encode_line, encode_qoi_rgb, monitor_frame_parts,
 };
 use fm_types::{InputId, ProjectId};
+use fm_ui_egui::ConsoleLayout;
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 use freemix_studio::{
     ArgsError, Command, ConnectionConfig, ControlTransport, ExistingConfig, LifecycleState,
@@ -1652,6 +1653,7 @@ fn saved_preferences_round_trip_and_tolerate_hand_edits() {
     let spanish_12h = SavedPreferences {
         language: Some(Language::Spanish),
         hour_cycle: Some(HourCycle::H12),
+        layout: None,
     };
     let text = spanish_12h.render();
     assert!(text.contains("language = es\n"), "{text}");
@@ -1662,6 +1664,7 @@ fn saved_preferences_round_trip_and_tolerate_hand_edits() {
         SavedPreferences {
             language: Some(Language::English),
             hour_cycle: Some(HourCycle::H23),
+            layout: None,
         }
     );
     // Comments, blank lines, unknown keys, and bad values are skipped; a
@@ -1673,6 +1676,7 @@ fn saved_preferences_round_trip_and_tolerate_hand_edits() {
         SavedPreferences {
             language: Some(Language::Spanish),
             hour_cycle: None,
+            layout: None,
         }
     );
     assert_eq!(
@@ -1690,18 +1694,24 @@ fn saved_preferences_persist_in_a_file_created_on_first_change() {
         SavedPreferences::load(&path).unwrap(),
         SavedPreferences::default()
     );
-    let mut store = PreferenceStore::new(Some(path.clone()), Locale::ENGLISH);
+    let layout = ConsoleLayout::default();
+    let mut store = PreferenceStore::new(
+        Some(path.clone()),
+        SavedPreferences::default(),
+        Locale::ENGLISH,
+        layout,
+    );
     // The startup locale is never written back.
-    store.observe(Locale::ENGLISH).unwrap();
+    store.observe(Locale::ENGLISH, layout).unwrap();
     assert!(!path.exists());
     let spanish = Locale::new(Language::Spanish);
-    store.observe(spanish).unwrap();
+    store.observe(spanish, layout).unwrap();
     assert_eq!(
         SavedPreferences::load(&path).unwrap(),
         SavedPreferences::from_locale(spanish)
     );
     store
-        .observe(spanish.with_hour_cycle(HourCycle::H12))
+        .observe(spanish.with_hour_cycle(HourCycle::H12), layout)
         .unwrap();
     let saved = SavedPreferences::load(&path).unwrap();
     assert_eq!(saved.hour_cycle, Some(HourCycle::H12));
@@ -1727,8 +1737,94 @@ fn saved_preferences_persist_in_a_file_created_on_first_change() {
         .collect();
     assert_eq!(leftovers, ["studio.conf"]);
     // Without a known path the store never fails.
-    let mut detached = PreferenceStore::new(None, Locale::ENGLISH);
-    detached.observe(spanish).unwrap();
+    let mut detached =
+        PreferenceStore::new(None, SavedPreferences::default(), Locale::ENGLISH, layout);
+    detached.observe(spanish, layout).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn saved_layout_round_trips_and_ignores_bad_values() {
+    let layout = ConsoleLayout {
+        show_mixer: false,
+        show_status_bar: false,
+        side_panel_width: Some(480),
+        ..ConsoleLayout::default()
+    };
+    let saved = SavedPreferences {
+        layout: Some(layout),
+        ..SavedPreferences::default()
+    };
+    let text = saved.render();
+    assert!(text.contains("layout.mixer = hidden\n"), "{text}");
+    assert!(text.contains("layout.input_bank = shown\n"), "{text}");
+    assert!(text.contains("layout.side_panel_width = 480\n"), "{text}");
+    assert!(!text.contains("language"), "{text}");
+    assert_eq!(SavedPreferences::parse(&text), saved);
+    // An automatic width is written as `auto` and reads back as `None`.
+    let automatic = SavedPreferences {
+        layout: Some(ConsoleLayout::default()),
+        ..SavedPreferences::default()
+    };
+    assert!(
+        automatic
+            .render()
+            .contains("layout.side_panel_width = auto\n")
+    );
+    assert_eq!(SavedPreferences::parse(&automatic.render()), automatic);
+    // Out-of-range widths and unknown values are skipped key by key.
+    assert_eq!(
+        SavedPreferences::parse(
+            "layout.side_panel_width = 40\nlayout.mixer = maybe\nlayout.side_panel = hidden\n"
+        ),
+        SavedPreferences {
+            layout: Some(ConsoleLayout {
+                show_side_panel: false,
+                ..ConsoleLayout::default()
+            }),
+            ..SavedPreferences::default()
+        }
+    );
+    assert_eq!(
+        SavedPreferences::parse("layout.side_panel_width = 99999\n"),
+        SavedPreferences::default()
+    );
+}
+
+#[test]
+fn layout_changes_save_without_writing_back_a_session_language_override() {
+    let directory = scratch_directory("layout-prefs");
+    let path = directory.join("studio.conf");
+    // The file chose English; this session runs `--lang es`.
+    let file = SavedPreferences::from_locale(Locale::ENGLISH);
+    file.save(&path).unwrap();
+    let spanish = Locale::new(Language::Spanish);
+    let mut store =
+        PreferenceStore::new(Some(path.clone()), file, spanish, ConsoleLayout::default());
+    store.observe(spanish, ConsoleLayout::default()).unwrap();
+    assert_eq!(SavedPreferences::load(&path).unwrap(), file);
+    // Hiding the mixer saves the layout and keeps the file's language.
+    let hidden = ConsoleLayout {
+        show_mixer: false,
+        ..ConsoleLayout::default()
+    };
+    store.observe(spanish, hidden).unwrap();
+    let saved = SavedPreferences::load(&path).unwrap();
+    assert_eq!(saved.language, Some(Language::English));
+    assert_eq!(saved.layout, Some(hidden));
+    // Reset layout saves the default layout again.
+    store.observe(spanish, ConsoleLayout::default()).unwrap();
+    assert_eq!(
+        SavedPreferences::load(&path).unwrap().layout,
+        Some(ConsoleLayout::default())
+    );
+    // A language change later is saved alongside the layout.
+    store
+        .observe(Locale::ENGLISH, ConsoleLayout::default())
+        .unwrap();
+    let saved = SavedPreferences::load(&path).unwrap();
+    assert_eq!(saved.language, Some(Language::English));
+    assert_eq!(saved.layout, Some(ConsoleLayout::default()));
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
@@ -1738,6 +1834,7 @@ fn saved_language_wins_over_the_environment_but_not_over_the_flag() {
     let saved = SavedPreferences {
         language: Some(Language::Spanish),
         hour_cycle: None,
+        layout: None,
     };
     let locale = UiPreferences::default().locale_with(saved, env);
     assert_eq!(locale, Locale::new(Language::Spanish));

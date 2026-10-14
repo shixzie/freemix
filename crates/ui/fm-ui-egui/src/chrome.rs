@@ -7,12 +7,13 @@ use egui::{
 };
 use fm_protocol::StreamRealizedState;
 
+use crate::health::HealthItem;
 use crate::l10n::{self, Arg, Locale, Msg, trailing_layout};
 use crate::panels::latest_stream_sample;
 use crate::theme::{
     ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PREVIEW,
-    PROGRAM, TEXT, TEXT_DIM, WIDGET_ACTIVE, WIDGET_HOVER, connection_color, mono, paint_lock_glyph,
-    pill, status_dot,
+    PROGRAM, TEXT, TEXT_DIM, WIDGET_ACTIVE, WIDGET_HOVER, connection_color, mono, paint_lamp,
+    paint_lock_glyph, pill, status_dot,
 };
 use crate::toasts::{Toast, ToastKind};
 use crate::{
@@ -508,47 +509,27 @@ pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
 }
 
 /// One-line bottom status bar: connection, last result, and key hints.
-pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState) {
+pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[HealthItem]) {
     let l = l10n::locale(ui.ctx());
-    l10n::leading_row(ui, l, |ui| {
+    // The trailing cluster is laid out first so the leading message
+    // truncates into whatever width remains.
+    ui.with_layout(trailing_layout(l), |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
-        let status = state.connection_status;
-        status_dot(ui, connection_color(status));
-        ui.label(
-            RichText::new(l.tr(status.operator_label()))
-                .size(10.5)
-                .color(connection_color(status)),
-        );
-        bar_divider(ui);
-        ui.label(
-            mono(l.format(
-                Msg::PendingCount,
-                &[("count", Arg::from(state.pending_commands))],
-            ))
-            .size(10.5)
-            .color(if state.pending_commands > 0 {
-                AMBER
-            } else {
-                MUTED
-            }),
-        );
-        bar_divider(ui);
-        if edit_lock_summary(state).project {
-            ui.label(
-                RichText::new(l.text(Msg::EditsLocked))
-                    .size(10.0)
-                    .strong()
-                    .extra_letter_spacing(0.6)
-                    .color(AMBER),
-            )
-            .on_hover_text(edit_lock_summary(state).detail(l));
-            bar_divider(ui);
+        for item in health.iter().rev() {
+            health_lamp(ui, item);
         }
-        let (message, color) = status_message(l, state);
-        ui.add(egui::Label::new(RichText::new(message).size(10.5).color(color)).truncate());
-        ui.with_layout(trailing_layout(l), |ui| {
+        bar_divider(ui);
+        let status = state.connection_status;
+        let hints = l.text(Msg::StatusBarKeyHints);
+        let hint_width = ui
+            .painter()
+            .layout_no_wrap(hints.to_owned(), egui::FontId::proportional(10.0), MUTED)
+            .size()
+            .x;
+        // Keep room for the connection, pending, and message on the leading side.
+        if ui.available_width() - hint_width > STATUS_BAR_LEADING_WIDTH {
             ui.label(
-                RichText::new(l.text(Msg::StatusBarKeyHints))
+                RichText::new(hints)
                     .size(10.0)
                     .extra_letter_spacing(0.5)
                     .color(MUTED),
@@ -560,8 +541,84 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState) {
                         .color(TEXT_DIM),
                 );
             }
+        } else {
+            ui.label(
+                RichText::new(l.text(Msg::StatusBarHelpHint))
+                    .size(10.0)
+                    .extra_letter_spacing(0.5)
+                    .color(MUTED),
+            )
+            .on_hover_text(hints);
+        }
+        ui.with_layout(l10n::leading_layout(l), |ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            status_dot(ui, connection_color(status));
+            ui.label(
+                RichText::new(l.tr(status.operator_label()))
+                    .size(10.5)
+                    .color(connection_color(status)),
+            );
+            bar_divider(ui);
+            ui.label(
+                mono(l.format(
+                    Msg::PendingCount,
+                    &[("count", Arg::from(state.pending_commands))],
+                ))
+                .size(10.5)
+                .color(if state.pending_commands > 0 {
+                    AMBER
+                } else {
+                    MUTED
+                }),
+            );
+            bar_divider(ui);
+            if edit_lock_summary(state).project {
+                ui.label(
+                    RichText::new(l.text(Msg::EditsLocked))
+                        .size(10.0)
+                        .strong()
+                        .extra_letter_spacing(0.6)
+                        .color(AMBER),
+                )
+                .on_hover_text(edit_lock_summary(state).detail(l));
+                bar_divider(ui);
+            }
+            let (message, color) = status_message(l, state);
+            ui.add(egui::Label::new(RichText::new(message).size(10.5).color(color)).truncate());
         });
     });
+}
+
+/// Width the status bar keeps for its leading connection, pending count,
+/// and message before it shortens the key hints to `? SHORTCUTS`.
+const STATUS_BAR_LEADING_WIDTH: f32 = 420.0;
+
+/// One health lamp: a small status lamp and its label in the lamp's tone.
+fn health_lamp(ui: &mut Ui, item: &HealthItem) {
+    let font = FontId::new(10.0, FontFamily::Proportional);
+    let color = if item.tone.lit() {
+        item.tone.color()
+    } else {
+        TEXT_DIM
+    };
+    let galley = ui.painter().layout_no_wrap(item.label.clone(), font, color);
+    let size = Vec2::new(galley.size().x + 14.0, 18.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        paint_lamp(
+            painter,
+            egui::pos2(rect.min.x + 4.0, rect.center().y),
+            3.0,
+            item.tone,
+        );
+        painter.galley(
+            egui::pos2(rect.min.x + 12.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            color,
+        );
+    }
+    response.on_hover_text(&item.hover);
 }
 
 fn bar_divider(ui: &mut Ui) {

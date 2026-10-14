@@ -32,10 +32,20 @@ pub(crate) fn draw_overlays(
     ui.add(egui::Label::new(caption(l.text(Msg::OverlaysIntro))).wrap())
         .on_hover_text(l.text(Msg::OverlaysIntroHover));
     ui.add_space(2.0);
-    for channel_number in 1_u8..=8 {
-        draw_overlay_channel(ui, state, channel_number, duration_frames, enabled, intents);
-    }
+    // Eight rows stay compact so the side panel keeps room for outputs; a
+    // row grows only while its details are open.
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = OVERLAY_ROW_GAP;
+        for channel_number in 1_u8..=8 {
+            draw_overlay_channel(ui, state, channel_number, duration_frames, enabled, intents);
+        }
+    });
 }
+
+/// Vertical gap between overlay rows.
+const OVERLAY_ROW_GAP: f32 = 4.0;
+/// Height of an overlay row's header controls.
+const OVERLAY_ROW_HEIGHT: f32 = 20.0;
 
 /// Operator state of one overlay channel derived from desired and confirmed
 /// flags, as catalog English (worded in the console language when drawn).
@@ -100,17 +110,12 @@ fn draw_overlay_channel(
                 BORDER
             },
         ))
-        .corner_radius(CornerRadius::same(5))
-        .inner_margin(Margin::symmetric(8, 6))
-        .outer_margin(Margin {
-            left: 0,
-            right: 0,
-            top: 0,
-            bottom: 6,
-        })
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(Margin::symmetric(8, 2))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing = Vec2::new(4.0, 4.0);
+            ui.spacing_mut().interact_size.y = OVERLAY_ROW_HEIGHT;
             let id = ui.make_persistent_id(("studio-overlay-channel", channel_number));
             egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),
@@ -138,7 +143,7 @@ fn draw_overlay_channel(
                                     .size(11.0)
                                     .strong(),
                             )
-                            .min_size(Vec2::new(0.0, 20.0)),
+                            .min_size(Vec2::new(0.0, OVERLAY_ROW_HEIGHT - 2.0)),
                         )
                         .hint(
                             l.text(Msg::OverlayOffHover),
@@ -152,6 +157,7 @@ fn draw_overlay_channel(
                         .add_enabled(
                             enabled && source.is_some(),
                             small_button(l.text(Msg::TakeKey))
+                                .min_size(Vec2::new(0.0, OVERLAY_ROW_HEIGHT - 2.0))
                                 .fill(crate::theme::ACCENT_FILL)
                                 .stroke(Stroke::new(1.0, ACCENT.gamma_multiply(0.6))),
                         )
