@@ -1832,9 +1832,13 @@ receipts; and append with id remapping and name-conflict reports. Remaining
 gaps: append skips outputs, buses, stream targets, and stingers; relink matches
 by name only because assets carry no size or hash; external media references
 are not in the current schema; there is no cross-process lock on recent
-projects, crash-temp cleanup, cancellation, or progress; and nothing in the
-CLI, daemon, Studio, or protocol calls these operations. `RC-012` remains
-planned.
+projects, crash-temp cleanup, cancellation, or progress. `freemix-cli` exposes
+every operation as a local command (`project-export-bundle`,
+`project-from-template`, `project-append`, `project-import-media`,
+`project-relink` with preview by default, `project-autosave`,
+`project-recover` with journal-checkpoint guards, and `recent-projects*` on an
+explicit file), but nothing autosaves on a timer and the daemon, Studio, and
+protocol do not call these operations. `RC-012` remains planned.
 
 Current implementation boundary for item 1: `fm-titles` provides dependent,
 bounded title scenes and a deterministic CPU renderer. Templates carry typed

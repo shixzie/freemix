@@ -396,8 +396,8 @@ state = "planned"
 [[tests]]
 id = "accept-rc-012"
 state = "present"
-paths = ["crates/services/fm-persistence/tests/autosave_recent.rs", "crates/services/fm-persistence/tests/project_bundles.rs"]
-commands = ["cargo test -p fm-persistence --test project_bundles", "cargo test -p fm-persistence --test autosave_recent"]
+paths = ["crates/services/fm-persistence/tests/autosave_recent.rs", "crates/services/fm-persistence/tests/project_bundles.rs", "apps/freemix-cli/tests/project_bundles.rs"]
+commands = ["cargo test -p fm-persistence --test project_bundles", "cargo test -p fm-persistence --test autosave_recent", "cargo test -p freemix-cli --test project_bundles"]
 [[tests]]
 id = "accept-rc-013"
 state = "present"
