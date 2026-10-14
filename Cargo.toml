@@ -105,6 +105,14 @@ pedantic = "warn"
 [profile.dev]
 debug = "line-tables-only"
 
+# Per-pixel CPU composition is unusably slow unoptimized; debug builds of the
+# daemon, CLI renders, and tests spend seconds per 1080p frame otherwise.
+[profile.dev.package.fm-video]
+opt-level = 2
+
+[profile.dev.package.fm-compositor]
+opt-level = 2
+
 [profile.release]
 lto = "thin"
 codegen-units = 16
