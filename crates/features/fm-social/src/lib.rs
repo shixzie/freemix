@@ -4,6 +4,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 
+mod desk;
+
+pub use desk::{
+    Actor, AuditAction, AuditEntry, AuditResult, DeskCommand, DeskConfig, DeskConfigError,
+    DeskError, ModerationDesk, OnAir, OnAirSource, Role, TitleMappingError, TitleSyncError,
+    TypedTitleBinding, TypedTitleMapping,
+};
+
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -51,6 +59,7 @@ string_id!(ProviderId);
 string_id!(AccountId);
 string_id!(MessageId);
 string_id!(AuthorId);
+string_id!(OperatorId);
 
 /// Milliseconds since the Unix epoch.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -390,7 +399,7 @@ impl MessageFilter {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TitleSourceField {
     AuthorName,
     AuthorHandle,
@@ -744,6 +753,35 @@ impl SocialAggregator {
             author: message.author_id.clone(),
         });
         self.transition_pending(key, ModerationState::Blocked)
+    }
+
+    /// Lifts an author block for one provider account. Returns whether a block existed.
+    /// Messages already stored as [`ModerationState::Blocked`] keep that state.
+    pub fn unblock_author(
+        &mut self,
+        provider_id: &ProviderId,
+        account_id: &AccountId,
+        author_id: &AuthorId,
+    ) -> bool {
+        self.blocked_authors.remove(&BlockedAuthor {
+            provider: provider_id.clone(),
+            account: account_id.clone(),
+            author: author_id.clone(),
+        })
+    }
+
+    #[must_use]
+    pub fn is_author_blocked(
+        &self,
+        provider_id: &ProviderId,
+        account_id: &AccountId,
+        author_id: &AuthorId,
+    ) -> bool {
+        self.blocked_authors.contains(&BlockedAuthor {
+            provider: provider_id.clone(),
+            account: account_id.clone(),
+            author: author_id.clone(),
+        })
     }
 
     /// Expires pending messages whose provider expiry has elapsed.
@@ -1130,7 +1168,7 @@ mod tests {
             social.message(&key).unwrap().moderation,
             ModerationState::Expired
         );
-        assert!(social.pending_messages().is_empty());
+        assert_eq!(social.pending_len(), 0);
     }
 
     #[test]
@@ -1187,7 +1225,7 @@ mod tests {
             social.poll_provider(&mut provider, Timestamp(10)),
             Err(ProviderError::Authorization(AuthorizationState::Required))
         );
-        assert!(provider.cursors.is_empty());
+        assert_eq!(provider.cursors.len(), 0);
 
         provider.authorization = AuthorizationState::Authorized;
         assert_eq!(
