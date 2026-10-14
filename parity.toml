@@ -352,10 +352,14 @@ paths = ["crates/features/fm-automation/tests/templates.rs", "crates/features/fm
 commands = ["cargo test -p fm-automation --test templates", "cargo test -p fm-automation --test automation"]
 [[tests]]
 id = "accept-rc-005"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-automation/tests/control_surfaces.rs"]
+commands = ["cargo test -p fm-automation --test control_surfaces"]
 [[tests]]
 id = "accept-rc-006"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-automation/tests/control_surfaces.rs"]
+commands = ["cargo test -p fm-automation --test control_surfaces"]
 [[tests]]
 id = "accept-rc-007"
 state = "planned"
