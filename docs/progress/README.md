@@ -17,12 +17,24 @@ double-click or `CUT` = Preview then Cut); the audio mixer with vertical
 channel strips (segmented RMS meters with a peak line, a peak-hold marker that
 holds 1.5 s then falls 20 dB/s, and a clip lamp latched 3 s at 0 dBFS; fader,
 gain/balance/delay, M/S/AFV) and a pinned Master meter strip; a side panel
-with recording and stream status above Overlays/Stingers tabs; and a bottom
+with per-slot recorder keys and per-target stream rows (desired `ON`/`OFF`,
+realized state, and one `START`/`STOP` key) above Overlays/Stingers tabs, the
+Stingers tab ending in a Configure slot row (slot and media pickers with
+`ASSIGN`/`CLEAR`); and a bottom
 status bar with the latest result/notice and keyboard hints.
 
 Menu items map only to existing Studio intents under their usual gates (the
-Edit menu acts on the Preview input; there is no add/remove-input or stream
-start/stop intent, so none is offered, and the Streams item explains that).
+Edit menu acts on the Preview input). Output › Streams lists one Start/Stop
+item per configured target (`stream_start`/`stream_stop`), and Output ›
+Stingers assigns the Preview input to a slot (`configure_stinger`) or clears a
+configured slot (`remove_stinger`). Stream and Stinger actions require the
+`transition` permission, as the daemon admits them; a stream key also waits
+for that target's earlier command to resolve (`PENDING`), and Stinger
+configuration is blocked during a manual T-bar transition. Assigning media to a
+configured slot keeps its preload, cut point, audio policy, and fallback; an
+unconfigured slot is preloaded, mixes with Program audio, falls back to Cut,
+and cuts at half the shared transition duration. The protocol has no
+add/remove/duplicate-input command, so none is offered.
 View toggles the input bank, mixer, side panel, and status bar. Every gated
 control, menu item, and tile action shows its action and shortcut as a tooltip
 and, when disabled, the first blocking gate ("Unavailable: this session lacks
@@ -38,14 +50,20 @@ and clip lamps are not visible here.
 
 | File | What it shows |
 |---|---|
-| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder desired running but not reported live (amber `LIVE` outline), Camera 2 Close on Preview and Main Scene on Program. |
+| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder desired running but not reported live (amber `LIVE` outline) with its `STOP` key, the stopped RTMP target with `START`, Camera 2 Close on Preview and Main Scene on Program. |
+| `studio-console-streams.png` | After clicking `START` on the RTMP Backup row: both targets desired `ON` with `STOP` keys (realized `STOPPED` in simulated mode), and the Output menu's Streams items (`Stop Local HLS Ladder`, `Stop RTMP Backup`) with the action tooltip. |
+| `studio-console-stingers.png` | The Stingers tab after choosing Playback Clip in the Configure slot media picker and clicking `ASSIGN` for S1: S1 `READY`, `CLEAR` enabled, and the slot summary (cut 15 fr, preload, mixed audio, fallback cut). |
 | `studio-console-top.png` | The default 1600x940 window, idle: both recorder slots `STOPPED` with their `START` keys, overlays collapsed to one row per channel. |
 | `studio-console-stopped.png` | The compact 1280x800 layout with both recorder slots `STOPPED`; the input bank and mixer scroll inside their cards and the Master strip stays pinned. |
 | `studio-console-recording.png` | 1600x940 with independent per-slot recording (`REC 1 STOPPED` / `START` beside `REC 2 RECORDING` / `STOP`) and the Stingers tab showing all eight unconfigured slots. |
-| `studio-console-menu.png` | 1920x1080 with the Output menu open (transitions with their `C`/`F` keys, Fade to black `B`, manual T-bar Commit/Cancel `Esc`, per-slot recorder Start, and the read-only Streams note), hovering the disabled Commit item to show its reason. |
+| `studio-console-menu.png` | 1920x1080 with the Output menu open (transitions with their `C`/`F` keys, Fade to black `B`, manual T-bar Commit/Cancel `Esc`, per-slot recorder Start/Stop, per-target stream Start/Stop, and the Stingers assign/clear submenus), hovering the disabled Commit item to show its reason. |
 | `studio-console-shortcuts.png` | Help › Keyboard shortcuts: the modal reference generated from the same table the console's key handler is tested against. |
 | `studio-console-input-menu.png` | Right-click menu on the Host Laptop tile: Select on Preview / Cut to Program enabled; Rename and Move disabled because the operator session lacks `edit_project`. |
 | `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with its attempt count and retry delay over the dimmed monitors, every control disabled, and the full error in the status bar. |
+
+`studio-console-top.png`, `-stopped.png`, `-recording.png`, `-shortcuts.png`,
+`-input-menu.png`, and `-reconnecting.png` predate the stream keys and the
+Stinger configuration row.
 
 The demo show used for the captures ("Evening Broadcast") has six simulated
 inputs, one scene input ("Main Scene") with two picture-in-picture layers, an
@@ -101,7 +119,10 @@ DISPLAY=:99 import -window root shot.png
 
 Software Vulkan is slow; allow roughly ten seconds after the window maps
 before capturing. The overview's overlay take was a click on O1 `TAKE` in the
-side panel; the recording capture clicked the `STINGERS` tab. The menu,
+side panel; the recording capture clicked the `STINGERS` tab. The streams
+capture clicked `START` on the RTMP Backup row, then opened `Output` and
+hovered `Stop RTMP Backup`; the stingers capture clicked the `STINGERS` tab,
+picked Playback Clip in the Configure slot media picker, and clicked `ASSIGN`. The menu,
 shortcuts, and input-menu captures click `Output`, `Help` › `Keyboard
 shortcuts`, and right-click the third tile (`xdotool click 3`); keyboard input
 such as `Escape` needs `xdotool windowfocus "$WIN"` first because Xvfb runs
