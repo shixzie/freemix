@@ -305,8 +305,8 @@ impl TitleScene {
     ///
     /// # Errors
     ///
-    /// Returns a conflict, unknown/duplicate field, type mismatch, or revision
-    /// exhaustion without changing any field.
+    /// Returns a conflict, unknown/duplicate field, type mismatch, blank image
+    /// asset, or revision exhaustion without changing any field.
     pub fn update_fields(
         &mut self,
         expected_revision: u64,
@@ -337,6 +337,9 @@ impl TitleScene {
                     expected,
                     actual,
                 });
+            }
+            if matches!(value, FieldValue::Image(image) if image.asset.trim().is_empty()) {
+                return Err(UpdateError::EmptyImageAsset(*field));
             }
         }
         let revision = self
@@ -378,6 +381,8 @@ pub enum UpdateError {
         expected: FieldType,
         actual: FieldType,
     },
+    /// An image value names a blank asset, which template validation rejects.
+    EmptyImageAsset(FieldId),
     RevisionExhausted,
 }
 
@@ -400,6 +405,9 @@ impl fmt::Display for UpdateError {
                 formatter,
                 "field {field} expects {expected:?}, received {actual:?}"
             ),
+            Self::EmptyImageAsset(field) => {
+                write!(formatter, "field {field} names an empty image asset")
+            }
             Self::RevisionExhausted => formatter.write_str("title revision is exhausted"),
         }
     }

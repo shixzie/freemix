@@ -53,11 +53,23 @@ impl AnimationTrack {
 }
 
 fn interpolate(from: Keyframe, to: Keyframe, time_ms: u64) -> i64 {
-    let elapsed = i128::from(time_ms - from.at_ms);
-    let duration = i128::from(to.at_ms - from.at_ms);
+    let elapsed = u128::from(time_ms - from.at_ms);
+    let duration = u128::from(to.at_ms - from.at_ms);
     let start = i128::from(from.value);
     let difference = i128::from(to.value) - start;
-    i64::try_from(start + difference * elapsed / duration).unwrap_or_else(|_| {
+    // `|difference| * elapsed` can reach ~2^128 and overflow `i128`. Split the
+    // magnitude by `duration`: `elapsed < duration`, so `remainder * elapsed`
+    // stays below `duration^2 <= 2^128` and fits `u128`, and the sum is the
+    // exact truncated quotient because the first term is a whole number.
+    let magnitude = difference.unsigned_abs();
+    let scaled = (magnitude / duration) * elapsed + (magnitude % duration) * elapsed / duration;
+    let scaled = i128::try_from(scaled).unwrap_or(i128::MAX);
+    let offset = if difference.is_negative() {
+        -scaled
+    } else {
+        scaled
+    };
+    i64::try_from(start + offset).unwrap_or_else(|_| {
         if difference.is_negative() {
             i64::MIN
         } else {

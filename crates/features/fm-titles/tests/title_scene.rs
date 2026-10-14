@@ -191,6 +191,36 @@ fn animation_interpolation_is_integer_and_deterministic() {
 }
 
 #[test]
+fn linear_animation_spanning_the_full_value_and_time_range_does_not_overflow() {
+    let track = |from: i64, to: i64| AnimationTrack {
+        property: AnimatedProperty::X,
+        keyframes: vec![
+            Keyframe {
+                at_ms: 0,
+                value: from,
+                interpolation: Interpolation::Linear,
+            },
+            Keyframe {
+                at_ms: u64::MAX,
+                value: to,
+                interpolation: Interpolation::Hold,
+            },
+        ],
+    };
+    let rising = track(i64::MIN, i64::MAX);
+    assert_eq!(rising.value_at(1 << 63), Some(0));
+    assert_eq!(rising.value_at(u64::MAX - 1), Some(i64::MAX - 1));
+    assert_eq!(rising.value_at(u64::MAX), Some(i64::MAX));
+    let falling = track(i64::MAX, i64::MIN);
+    assert_eq!(falling.value_at(1 << 63), Some(-1));
+    assert_eq!(falling.value_at(u64::MAX - 1), Some(i64::MIN + 1));
+    // Truncation stays toward zero on both sides of the split division.
+    let small = track(0, -3);
+    assert_eq!(small.value_at(u64::MAX / 2), Some(-1));
+    assert_eq!(track(0, 3).value_at(u64::MAX / 2), Some(1));
+}
+
+#[test]
 fn ticker_wrap_and_both_clock_directions_are_stable() {
     let ticker = TickerSpec {
         field: field_id(1),
@@ -264,6 +294,35 @@ fn optimistic_conflicts_and_batch_errors_are_atomic() {
     );
     assert_eq!(scene.field_value(field_id(2)), Some(&FieldValue::Number(2)));
     assert_eq!(scene.revision(), 1);
+}
+
+#[test]
+fn live_update_rejects_a_blank_image_asset_the_template_would_reject() {
+    let logo = FieldDefinition {
+        id: field_id(1),
+        name: "logo".into(),
+        default: FieldValue::Image(ImageSource::new("logo.png")),
+    };
+    let mut blank_default = logo.clone();
+    blank_default.default = FieldValue::Image(ImageSource::new("  "));
+    assert!(
+        template(vec![blank_default], Vec::new(), 1, 1)
+            .instantiate(title_id(1))
+            .is_err()
+    );
+
+    let mut scene = template(vec![logo], Vec::new(), 1, 1)
+        .instantiate(title_id(1))
+        .unwrap();
+    assert_eq!(
+        scene.update_field(0, field_id(1), FieldValue::Image(ImageSource::new(" "))),
+        Err(UpdateError::EmptyImageAsset(field_id(1)))
+    );
+    assert_eq!(
+        scene.field_value(field_id(1)),
+        Some(&FieldValue::Image(ImageSource::new("logo.png")))
+    );
+    assert_eq!(scene.revision(), 0);
 }
 
 #[test]
