@@ -34,12 +34,20 @@
 //! Spanish, no line that is still the English text of a catalog message.
 //! It also requires each single-key console shortcut to be named in the
 //! tooltip of a control that performs it.
+//!
+//! The keyframe animation timeline is not part of the console yet, so it is
+//! audited standalone under the same rules: in Simple and Advanced modes,
+//! with keys selected and an active row, with nothing selected, and with a
+//! refused edit showing, each pinned to the audited language.
 
 use core::fmt::Write as _;
 use core::num::NonZeroU128;
 use std::collections::{BTreeMap, BTreeSet};
 
 use egui::{Id, LayerId, Order, Rect, Vec2, WidgetRect};
+use fm_animation::{
+    Clip, Easing, KeyRef, KeySelection, Keyframe, Phase, Property, Timebase, Track, TrackKey, Value,
+};
 use fm_protocol::{
     AudioMeterChannel, AudioMetersMessage, EditHistoryStatus, EditLockStatus, EngineIdentity,
     FadeToBlackPosition, FadeToBlackState, InputAudioMeters, InputStatus, ManualTransitionKind,
@@ -53,10 +61,14 @@ use fm_protocol::{
     WireTitleFieldId,
 };
 use fm_types::{FrameRate, InputId, ProjectId};
+use fm_ui_model::animation_editor::{
+    AnimDocument, AnimEditorError, EditorMode, TargetBounds, TargetKind, TargetOutline,
+};
 use fm_ui_model::i18n::{Arg, Language, Locale, Msg};
 use fm_ui_model::title_editor::TitleAccess;
 use fm_ui_model::{ClientModel, ProjectSnapshot};
 
+use crate::animation_timeline::{AnimationTimelineState, AnimationTimelineWidget, TimelineAction};
 use crate::panels::SideTab;
 use crate::{StudioConnectionStatus, StudioShell, StudioUiState};
 
@@ -366,11 +378,22 @@ fn ready(operator: bool, variant: Variant) -> StudioUiState {
 /// Puts the console in one configuration before a scene renders.
 type Configure<'a> = &'a dyn Fn(&mut StudioShell);
 
-/// One audited console configuration.
+/// One audited configuration: a name and what draws it each pass.
 struct Scene {
     name: String,
-    shell: StudioShell,
-    state: StudioUiState,
+    draw: Box<dyn FnMut(&mut egui::Ui)>,
+}
+
+impl Scene {
+    /// The console in `shell`'s configuration over `state`.
+    fn console(name: impl Into<String>, mut shell: StudioShell, state: StudioUiState) -> Self {
+        Self {
+            name: name.into(),
+            draw: Box::new(move |ui| {
+                let _intents = shell.draw(ui, &state);
+            }),
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)] // one list of scenes
@@ -391,26 +414,26 @@ fn scenes(language: Language) -> Vec<Scene> {
     ];
     for (operator, role) in [(true, "operator"), (false, "viewer")] {
         for (tab_name, tab) in tabs {
-            scenes.push(Scene {
-                name: format!("{role}/{tab_name}"),
-                shell: shell(&|shell| shell.side_tab = tab),
-                state: ready(operator, Variant::default()),
-            });
+            scenes.push(Scene::console(
+                format!("{role}/{tab_name}"),
+                shell(&|shell| shell.side_tab = tab),
+                ready(operator, Variant::default()),
+            ));
         }
         // The advanced controls behind the mixer and manual T-bar
         // disclosures.
-        scenes.push(Scene {
-            name: format!("{role}/details"),
-            shell: shell(&|shell| {
+        scenes.push(Scene::console(
+            format!("{role}/details"),
+            shell(&|shell| {
                 shell.layout.show_mixer_details = true;
                 shell.layout.show_manual_details = true;
             }),
-            state: ready(operator, Variant::default()),
-        });
+            ready(operator, Variant::default()),
+        ));
     }
-    scenes.push(Scene {
-        name: "operator/playlist-entry".into(),
-        shell: shell(&|shell| {
+    scenes.push(Scene::console(
+        "operator/playlist-entry",
+        shell(&|shell| {
             shell.side_tab = SideTab::Playlist;
             let state = ready(true, Variant::default());
             shell.playlist.sync(&state, std::time::Instant::now());
@@ -420,34 +443,34 @@ fn scenes(language: Language) -> Vec<Scene> {
                     .select(&playlist.entries[1], FrameRate::new(25, 1).unwrap());
             }
         }),
-        state: ready(true, Variant::default()),
-    });
-    scenes.push(Scene {
-        name: "operator/manual-transition".into(),
-        shell: shell(&|_| {}),
-        state: ready(
+        ready(true, Variant::default()),
+    ));
+    scenes.push(Scene::console(
+        "operator/manual-transition",
+        shell(&|_| {}),
+        ready(
             true,
             Variant {
                 manual: true,
                 ..Variant::default()
             },
         ),
-    });
-    scenes.push(Scene {
-        name: "operator/locked".into(),
-        shell: shell(&|_| {}),
-        state: ready(
+    ));
+    scenes.push(Scene::console(
+        "operator/locked",
+        shell(&|_| {}),
+        ready(
             true,
             Variant {
                 locked: true,
                 ..Variant::default()
             },
         ),
-    });
-    scenes.push(Scene {
-        name: "operator/black-and-playing".into(),
-        shell: shell(&|shell| shell.side_tab = SideTab::Playlist),
-        state: ready(
+    ));
+    scenes.push(Scene::console(
+        "operator/black-and-playing",
+        shell(&|shell| shell.side_tab = SideTab::Playlist),
+        ready(
             true,
             Variant {
                 black: true,
@@ -455,18 +478,14 @@ fn scenes(language: Language) -> Vec<Scene> {
                 ..Variant::default()
             },
         ),
-    });
-    scenes.push(Scene {
-        name: "operator/notices".into(),
-        shell: shell(&|_| {}),
-        state: {
-            let mut state = ready(true, Variant::default());
-            state.notice = Some("saved".into());
-            state.error = Some("refused".into());
-            state.recording_pending = [true, false];
-            state
-        },
-    });
+    ));
+    scenes.push(Scene::console("operator/notices", shell(&|_| {}), {
+        let mut state = ready(true, Variant::default());
+        state.notice = Some("saved".into());
+        state.error = Some("refused".into());
+        state.recording_pending = [true, false];
+        state
+    }));
     let operator = ready(true, Variant::default());
     let dialogs: [(&str, Configure); 6] = [
         ("shortcuts", &|shell| shell.show_shortcuts = true),
@@ -481,17 +500,116 @@ fn scenes(language: Language) -> Vec<Scene> {
         }),
     ];
     for (name, open) in dialogs {
-        scenes.push(Scene {
-            name: format!("dialog/{name}"),
-            shell: shell(open),
-            state: operator.clone(),
-        });
+        scenes.push(Scene::console(
+            format!("dialog/{name}"),
+            shell(open),
+            operator.clone(),
+        ));
     }
-    scenes.push(Scene {
-        name: "disconnected".into(),
-        shell: shell(&|_| {}),
-        state: StudioUiState::new(StudioConnectionStatus::Backoff),
-    });
+    scenes.push(Scene::console(
+        "disconnected",
+        shell(&|_| {}),
+        StudioUiState::new(StudioConnectionStatus::Backoff),
+    ));
+    scenes
+}
+
+/// IN 50 frames / OUT 25 frames at 25 fps with two elements: a lower
+/// third animated on opacity, position, and colour, and an unanimated logo.
+fn animation_document() -> AnimDocument<u32> {
+    let track = |property| TrackKey::new(1_u32, Phase::In, property);
+    let keys = |from: i64, to: i64| {
+        vec![
+            Keyframe::new(0, Value::Scalar(from), Easing::Linear),
+            Keyframe::new(20, Value::Scalar(to), Easing::CubicOut),
+        ]
+    };
+    let colour = |r| Value::Color(fm_animation::Rgba::new(r, 40, 40, 255));
+    let clip = Clip::from_tracks(
+        Timebase::new(FrameRate::new(25, 1).unwrap()),
+        50,
+        25,
+        vec![
+            Track::new(track(Property::Opacity), keys(0, 255)),
+            Track::new(track(Property::PositionX), keys(-100, 0)),
+            Track::new(
+                track(Property::Color),
+                vec![
+                    Keyframe::new(0, colour(10), Easing::Hold),
+                    Keyframe::new(30, colour(200), Easing::Linear),
+                ],
+            ),
+        ],
+    )
+    .unwrap();
+    let mut document = AnimDocument::new(clip, 1, 1_920, 1_080);
+    document.set_targets([
+        TargetOutline::new(
+            1,
+            "Lower third",
+            TargetKind::Shape,
+            TargetBounds::new(100, 800, 900, 160),
+        ),
+        TargetOutline::new(
+            2,
+            "Logo",
+            TargetKind::Image,
+            TargetBounds::new(1_700, 60, 160, 160),
+        ),
+    ]);
+    document
+}
+
+/// The animation timeline drawn standalone, in `language`.
+fn timeline_scenes(language: Language) -> Vec<Scene> {
+    let locale = Locale::new(language);
+    let opacity = TrackKey::new(1_u32, Phase::In, Property::Opacity);
+    let mut scenes = Vec::new();
+    for (mode_name, mode) in [
+        ("simple", EditorMode::Simple),
+        ("advanced", EditorMode::Advanced),
+    ] {
+        for (variant, selected, refused) in [
+            ("selection", true, false),
+            ("empty", false, false),
+            ("refused", true, true),
+        ] {
+            let mut document = animation_document();
+            document.set_mode(mode);
+            let mut state = AnimationTimelineState::default();
+            if selected {
+                document.set_selection(&KeySelection::from_iter([
+                    KeyRef {
+                        track: opacity,
+                        frame: 20,
+                    },
+                    KeyRef {
+                        track: TrackKey::new(1, Phase::In, Property::PositionX),
+                        frame: 20,
+                    },
+                ]));
+                document.set_playhead(10);
+                if mode == EditorMode::Advanced {
+                    state.active_row = Some(opacity);
+                }
+                document.copy_selection().unwrap();
+            }
+            if refused {
+                state.show_error(&AnimEditorError::RetimeCollision {
+                    track: opacity,
+                    min_len: 7,
+                });
+            }
+            scenes.push(Scene {
+                name: format!("timeline/{mode_name}-{variant}"),
+                draw: Box::new(move |ui| {
+                    let _output = AnimationTimelineWidget::new(&mut document, &mut state)
+                        .locale(locale)
+                        .show(ui);
+                }),
+            });
+        }
+    }
     scenes
 }
 
@@ -527,14 +645,10 @@ impl Control {
 /// under the pointer, so each submenu button found is then hovered in turn
 /// and its items collected too.
 fn audit_scene(scene: Scene) -> Vec<Control> {
-    let Scene {
-        name,
-        mut shell,
-        state,
-    } = scene;
+    let Scene { name, mut draw } = scene;
     let context = egui::Context::default();
     let mut time = 1.0;
-    let mut pass = |shell: &mut StudioShell, events: Vec<egui::Event>| {
+    let mut pass = |draw: &mut dyn FnMut(&mut egui::Ui), events: Vec<egui::Event>| {
         context.begin_pass(egui::RawInput {
             screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, SCREEN)),
             time: Some(time),
@@ -549,14 +663,14 @@ fn audit_scene(scene: Scene) -> Vec<Control> {
                 .layer_id(LayerId::background())
                 .max_rect(context.viewport_rect()),
         );
-        let _intents = shell.draw(&mut ui, &state);
+        draw(&mut ui);
         drop(ui);
         let _output = context.end_pass();
         collect(&context, &name)
     };
     // The first pass installs the console style; widget info is recorded
     // from the next one, and a third settles popup and area sizes.
-    pass(&mut shell, Vec::new());
+    pass(&mut draw, Vec::new());
     context.all_styles_mut(|style| {
         style.debug.show_interactive_widgets = true;
         // Selectable text is not a control; a label that acts on a click
@@ -564,8 +678,8 @@ fn audit_scene(scene: Scene) -> Vec<Control> {
         style.interaction.selectable_labels = false;
     });
     context.memory_mut(|memory| memory.set_everything_is_visible(true));
-    pass(&mut shell, Vec::new());
-    let mut controls = pass(&mut shell, Vec::new());
+    pass(&mut draw, Vec::new());
+    let mut controls = pass(&mut draw, Vec::new());
     let submenus: Vec<Rect> = controls
         .iter()
         .filter(|control| control.enabled && control.label.ends_with("⏵\""))
@@ -573,8 +687,8 @@ fn audit_scene(scene: Scene) -> Vec<Control> {
         .collect();
     for rect in submenus {
         let hover = vec![egui::Event::PointerMoved(rect.center())];
-        pass(&mut shell, hover);
-        controls.extend(pass(&mut shell, Vec::new()));
+        pass(&mut draw, hover);
+        controls.extend(pass(&mut draw, Vec::new()));
     }
     controls
 }
@@ -696,14 +810,14 @@ struct Findings {
     untranslated: BTreeMap<String, String>,
 }
 
-fn audit(language: Language) -> (Findings, Vec<Control>) {
+fn audit(language: Language, scenes: Vec<Scene>) -> (Findings, Vec<Control>) {
     let locale = Locale::new(language);
     let unavailable = locale.format(Msg::Unavailable, &[("reason", Arg::Str(""))]);
     let unavailable = unavailable.trim();
     let mut findings = Findings::default();
     let mut all = Vec::new();
     let mut seen = BTreeSet::new();
-    for scene in scenes(language) {
+    for scene in scenes {
         for control in audit_scene(scene) {
             let key = format!("{}|{}", control.path, control.enabled);
             let first = seen.insert(key.clone());
@@ -795,16 +909,13 @@ fn report(language: Language, findings: &Findings) -> String {
     out
 }
 
-/// Audits every scene in `language` and panics with a report of every
-/// control whose help is missing, unexplained, too long, or untranslated.
-fn check(language: Language) {
-    let (findings, controls) = audit(language);
-    // `FM_HOVER_AUDIT_DUMP=dir` writes every audited control with its help,
-    // one file per language, for reviewing the wording.
+/// `FM_HOVER_AUDIT_DUMP=dir` writes every audited control with its help,
+/// one file per audit and language, for reviewing the wording.
+fn dump(file: &str, language: Language, controls: &[Control]) {
     if let Some(dir) = std::env::var_os("FM_HOVER_AUDIT_DUMP") {
         let mut dump = String::new();
         let mut seen = BTreeSet::new();
-        for control in &controls {
+        for control in controls {
             if seen.insert((control.path.clone(), control.enabled)) {
                 let _ = writeln!(
                     dump,
@@ -818,9 +929,26 @@ fn check(language: Language) {
                 );
             }
         }
-        let path = std::path::Path::new(&dir).join(format!("hover-{}.txt", language.code()));
+        let path = std::path::Path::new(&dir).join(format!("{file}-{}.txt", language.code()));
         std::fs::write(path, dump).unwrap();
     }
+}
+
+/// Whether any rule failed.
+fn failed(findings: &Findings) -> bool {
+    !(findings.missing.is_empty()
+        && findings.no_reason.is_empty()
+        && findings.no_action.is_empty()
+        && findings.too_long.is_empty()
+        && findings.untranslated.is_empty())
+}
+
+/// Audits every console scene in `language` and panics with a report of
+/// every control whose help is missing, unexplained, too long, or
+/// untranslated.
+fn check(language: Language) {
+    let (findings, controls) = audit(language, scenes(language));
+    dump("hover", language, &controls);
     println!("{}", report(language, &findings));
     assert!(
         findings.controls > 500,
@@ -828,12 +956,7 @@ fn check(language: Language) {
         findings.controls
     );
     let mut failures = String::new();
-    if !(findings.missing.is_empty()
-        && findings.no_reason.is_empty()
-        && findings.no_action.is_empty()
-        && findings.too_long.is_empty()
-        && findings.untranslated.is_empty())
-    {
+    if failed(&findings) {
         failures.push_str(&report(language, &findings));
     }
     // Each single-key console shortcut is named on a control that performs it.
@@ -861,6 +984,45 @@ fn every_interactive_widget_explains_itself_in_english() {
 #[test]
 fn every_interactive_widget_explains_itself_in_spanish() {
     check(Language::Spanish);
+}
+
+/// Audits the standalone animation timeline in `language` under the same
+/// rules, and requires every transport shortcut to be named on its button.
+fn check_timeline(language: Language) {
+    let locale = Locale::new(language);
+    let (findings, controls) = audit(language, timeline_scenes(language));
+    dump("hover-timeline", language, &controls);
+    println!("{}", report(language, &findings));
+    assert!(
+        findings.controls > 40,
+        "the timeline audit found only {} widgets; is the fixture still rich?",
+        findings.controls
+    );
+    let mut failures = String::new();
+    if failed(&findings) {
+        failures.push_str(&report(language, &findings));
+    }
+    for action in TimelineAction::ALL {
+        let hint = format!("[{}]", action.shortcut(locale));
+        if !controls
+            .iter()
+            .filter_map(|control| control.tooltip.as_deref())
+            .any(|text| text.contains(&hint))
+        {
+            let _ = writeln!(failures, "no timeline tooltip names the {hint} shortcut");
+        }
+    }
+    assert!(failures.is_empty(), "{failures}");
+}
+
+#[test]
+fn every_animation_timeline_widget_explains_itself_in_english() {
+    check_timeline(Language::English);
+}
+
+#[test]
+fn every_animation_timeline_widget_explains_itself_in_spanish() {
+    check_timeline(Language::Spanish);
 }
 
 #[test]

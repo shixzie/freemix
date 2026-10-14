@@ -7,6 +7,7 @@ use fm_types::FrameRate;
 use fm_ui_model::animation_editor::{
     AnimDocument, EditorMode, TargetBounds, TargetKind, TargetOutline,
 };
+use fm_ui_model::i18n::{Language, Locale};
 
 use super::*;
 
@@ -51,6 +52,7 @@ struct Harness {
     state: AnimationTimelineState<u32>,
     time: f64,
     modifiers: egui::Modifiers,
+    locale: Option<Locale>,
 }
 
 impl Harness {
@@ -63,6 +65,7 @@ impl Harness {
             state: AnimationTimelineState::default(),
             time: 0.0,
             modifiers: egui::Modifiers::NONE,
+            locale: None,
         }
     }
 
@@ -82,8 +85,11 @@ impl Harness {
                 .layer_id(egui::LayerId::background())
                 .max_rect(self.context.viewport_rect()),
         );
-        let output =
-            AnimationTimelineWidget::new(&mut self.document, &mut self.state).show(&mut ui);
+        let mut widget = AnimationTimelineWidget::new(&mut self.document, &mut self.state);
+        if let Some(locale) = self.locale {
+            widget = widget.locale(locale);
+        }
+        let output = widget.show(&mut ui);
         let full = self.context.end_pass();
         (output, full)
     }
@@ -276,7 +282,14 @@ fn space_toggles_playback_once_the_timeline_owns_the_keyboard() {
 
 #[test]
 fn every_transport_button_has_hover_text_naming_its_shortcut() {
+    for language in Language::ALL {
+        transport_hover_names_shortcuts(Locale::new(language));
+    }
+}
+
+fn transport_hover_names_shortcuts(locale: Locale) {
     let mut harness = Harness::new(EditorMode::Advanced);
+    harness.locale = Some(locale);
     harness.idle();
     // Show every tooltip at once so one pass paints them all.
     harness
@@ -288,9 +301,12 @@ fn every_transport_button_has_hover_text_naming_its_shortcut() {
     let painted = painted_text(&full);
     assert_eq!(output.transport.len(), TimelineAction::ALL.len());
     for action in TimelineAction::ALL {
-        let spec = action_spec(action, &harness.document, &harness.state);
+        let spec = action_spec(action, &harness.document, &harness.state, locale);
         let hover = spec.hover(action);
-        assert!(hover.contains(action.shortcut()), "{action:?}: {hover}");
+        assert!(
+            hover.contains(&format!("[{}]", action.shortcut(locale))),
+            "{action:?}: {hover}"
+        );
         assert!(
             painted.iter().any(|text| text.contains(&hover)),
             "{action:?} hover {hover:?} was not shown"
@@ -312,7 +328,7 @@ fn every_transport_button_has_hover_text_naming_its_shortcut() {
         TimelineAction::KeyAtPlayhead,
     ] {
         assert!(
-            action_spec(action, &harness.document, &harness.state)
+            action_spec(action, &harness.document, &harness.state, locale)
                 .disabled_reason
                 .is_some(),
             "{action:?}"
@@ -396,4 +412,47 @@ fn ctrl_wheel_zooms_about_the_pointer() {
     harness.frame(vec![Event::Zoom(2.0)]);
     let after = harness.document.view().frames_per_pixel();
     assert!(after < before, "zoomed in: {before} -> {after}");
+}
+
+#[test]
+fn a_pinned_locale_words_the_whole_timeline_and_its_notices() {
+    let spanish = Locale::new(Language::Spanish);
+    let mut harness = Harness::new(EditorMode::Advanced);
+    harness.locale = Some(spanish);
+    let (output, full) = harness.frame(Vec::new());
+    let painted = painted_text(&full);
+    assert!(
+        painted.iter().any(|text| text == "SUAVIZADO"),
+        "{painted:?}"
+    );
+    assert!(painted.iter().any(|text| text.starts_with("ENTRADA")));
+    assert!(!painted.iter().any(|text| text == "EASING"));
+    assert_eq!(harness.state.locale(), spanish);
+
+    // Refusals and shortcut hints read in the pinned language too.
+    let error = perform(
+        TimelineAction::Paste,
+        &mut harness.document,
+        &mut harness.state,
+        false,
+    )
+    .unwrap_err();
+    harness.state.show_error(&error);
+    assert_eq!(
+        harness.state.notice().unwrap().text,
+        "Aún no hay nada copiado: copie claves primero."
+    );
+    harness.state.keyboard_active = true;
+    harness.key(Key::Delete, egui::Modifiers::NONE);
+    assert!(
+        harness
+            .state
+            .notice()
+            .unwrap()
+            .text
+            .starts_with("No hay claves seleccionadas"),
+        "{:?}",
+        harness.state.notice()
+    );
+    assert_eq!(output.transport.len(), TimelineAction::ALL.len());
 }

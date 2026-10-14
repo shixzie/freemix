@@ -72,11 +72,19 @@ pub(crate) fn disabled_text(action: &str, reason: &str) -> String {
 pub(crate) trait Hint {
     /// Shows `action` while enabled and `action` plus `reason` while disabled.
     fn hint(self, action: &str, reason: &str) -> Self;
+
+    /// [`Self::hint`] worded in `locale` instead of the frame's locale, for
+    /// widgets that callers can pin to a language.
+    fn hint_in(self, locale: l10n::Locale, action: &str, reason: &str) -> Self;
 }
 
 impl Hint for Response {
     fn hint(self, action: &str, reason: &str) -> Self {
         let locale = l10n::locale(&self.ctx);
+        self.hint_in(locale, action, reason)
+    }
+
+    fn hint_in(self, locale: l10n::Locale, action: &str, reason: &str) -> Self {
         self.on_hover_text(action)
             .on_disabled_hover_text(l10n::disabled_text(locale, action, reason))
     }

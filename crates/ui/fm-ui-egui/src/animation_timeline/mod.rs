@@ -17,7 +17,12 @@
 //!   for the selected keys, the active row's value at the playhead, an
 //!   "animate property" menu, and a value graph;
 //! * an inline notice for refused edits, worded from
-//!   [`AnimEditorError::msg_key`] ([`strings`]).
+//!   [`AnimEditorError::msg_key`] ([`text`]).
+//!
+//! Every string comes from the shared Studio catalog
+//! ([`fm_ui_model::i18n::Msg`]). The widget words itself in the locale the
+//! Studio shell set for the frame, or in the one pinned with
+//! [`AnimationTimelineWidget::locale`].
 //!
 //! [`overlay`] draws the proxy quads and onion skins over a preview image.
 //!
@@ -32,8 +37,10 @@ use fm_animation::{MAX_PHASE_FRAMES, Phase, TrackKey};
 use fm_ui_model::animation_editor::{
     AnimDocument, AnimEditorError, EditorMode, MAX_FRAMES_PER_PIXEL, MIN_FRAMES_PER_PIXEL,
 };
+use fm_ui_model::i18n::{Arg, Locale, Msg};
 
 use crate::gating::Hint;
+use crate::l10n;
 use crate::theme::{
     ACCENT_FILL, AMBER, ERROR, accent_color, border_color, border_strong_color, legible,
     line_width, muted_color, panel_color, section_label, text_color, text_dim_color, widget_color,
@@ -41,7 +48,7 @@ use crate::theme::{
 
 pub mod inspector;
 pub mod overlay;
-pub mod strings;
+pub mod text;
 pub mod tracks;
 pub mod transport;
 
@@ -61,21 +68,22 @@ const MAX_TICK: f64 = 0.25;
 pub struct Notice {
     /// The core's stable error id, `None` for hints.
     pub msg_key: Option<&'static str>,
-    /// The English text shown.
+    /// The text shown, in the locale it was raised in.
     pub text: String,
 }
 
 impl Notice {
-    /// A refused edit.
+    /// A refused edit, worded in `locale`.
     #[must_use]
-    pub fn error<T>(error: &AnimEditorError<T>) -> Self {
+    pub fn error<T>(locale: Locale, error: &AnimEditorError<T>) -> Self {
         Self {
             msg_key: Some(error.msg_key()),
-            text: strings::describe_error(error),
+            text: text::describe_error(locale, error),
         }
     }
 
-    /// A hint (for example why a shortcut did nothing).
+    /// A hint (for example why a shortcut did nothing) from an already
+    /// localized reason.
     #[must_use]
     pub fn hint(reason: &str) -> Self {
         let mut chars = reason.chars();
@@ -103,6 +111,9 @@ pub struct AnimationTimelineState<T> {
     length_edit: Option<u32>,
     pub(crate) value_edit: Option<f64>,
     track_width: f32,
+    /// The language of the last frame drawn, for notices raised between
+    /// frames.
+    locale: Locale,
 }
 
 impl<T> Default for AnimationTimelineState<T> {
@@ -115,6 +126,7 @@ impl<T> Default for AnimationTimelineState<T> {
             length_edit: None,
             value_edit: None,
             track_width: 0.0,
+            locale: Locale::ENGLISH,
         }
     }
 }
@@ -126,9 +138,16 @@ impl<T> AnimationTimelineState<T> {
         self.notice.as_ref()
     }
 
-    /// Shows `error` inline.
+    /// The language the timeline was last drawn in (English before the
+    /// first frame).
+    #[must_use]
+    pub const fn locale(&self) -> Locale {
+        self.locale
+    }
+
+    /// Shows `error` inline, worded in [`Self::locale`].
     pub fn show_error(&mut self, error: &AnimEditorError<T>) {
-        self.notice = Some(Notice::error(error));
+        self.notice = Some(Notice::error(self.locale, error));
     }
 
     pub fn clear_notice(&mut self) {
@@ -157,20 +176,40 @@ pub struct TimelineOutput {
 pub struct AnimationTimelineWidget<'a, T> {
     document: &'a mut AnimDocument<T>,
     state: &'a mut AnimationTimelineState<T>,
+    locale: Option<Locale>,
 }
 
 impl<'a, T: Copy + Ord> AnimationTimelineWidget<'a, T> {
+    /// A timeline worded in the locale the Studio shell set for the frame
+    /// (English outside a shell).
     #[must_use]
     pub const fn new(
         document: &'a mut AnimDocument<T>,
         state: &'a mut AnimationTimelineState<T>,
     ) -> Self {
-        Self { document, state }
+        Self {
+            document,
+            state,
+            locale: None,
+        }
+    }
+
+    /// Words the timeline in `locale` instead of the frame's locale.
+    #[must_use]
+    pub const fn locale(mut self, locale: Locale) -> Self {
+        self.locale = Some(locale);
+        self
     }
 
     /// Draws the timeline and applies the operator's input to the document.
     pub fn show(self, ui: &mut Ui) -> TimelineOutput {
-        let Self { document, state } = self;
+        let Self {
+            document,
+            state,
+            locale,
+        } = self;
+        let l = locale.unwrap_or_else(|| l10n::locale(ui.ctx()));
+        state.locale = l;
         let generation = document.generation();
         let mut actions = Vec::new();
 
@@ -196,21 +235,21 @@ impl<'a, T: Copy + Ord> AnimationTimelineWidget<'a, T> {
             .inner_margin(Margin::same(8))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
-                header(ui, document, state, &mut phase_tabs);
+                header(ui, l, document, state, &mut phase_tabs);
                 for (action, shift) in
-                    transport::draw_transport(ui, document, state, &mut transport_rects)
+                    transport::draw_transport(ui, l, document, state, &mut transport_rects)
                 {
                     match perform(action, document, state, shift) {
                         Ok(()) => actions.push(action),
                         Err(error) => state.show_error(&error),
                     }
                 }
-                let geometry = tracks::draw(ui, document, state);
+                let geometry = tracks::draw(ui, l, document, state);
                 state.track_width = geometry.track_width();
                 if document.mode() == EditorMode::Advanced {
-                    inspector::draw(ui, document, state, &geometry);
+                    inspector::draw(ui, l, document, state, &geometry);
                 }
-                notice(ui, state);
+                notice(ui, l, state);
                 geometry
             });
         let response = inner.response;
@@ -269,33 +308,37 @@ fn follow_playhead<T: Copy + Ord>(document: &mut AnimDocument<T>, geometry: &Tra
 /// Phase tabs, the hold segment, the phase length, and zoom-to-fit.
 fn header<T: Copy + Ord>(
     ui: &mut Ui,
+    l: Locale,
     document: &mut AnimDocument<T>,
     state: &mut AnimationTimelineState<T>,
     tabs: &mut Vec<(Phase, Rect)>,
 ) {
     let idle = document.drag().is_none();
+    let busy = l.text(Msg::AnimReasonDrag);
     ui.horizontal(|ui| {
-        ui.label(section_label("Animation")).on_hover_text(
-            "Keyframe animation of this graphic. IN plays when it is taken to air, OUT when \
-             it is taken off. Click inside the timeline to use its keyboard shortcuts.",
-        );
+        ui.label(section_label(l.text(Msg::AnimSection)))
+            .on_hover_text(l.text(Msg::AnimSectionHover));
         ui.add_space(8.0);
         for phase in [Phase::In, Phase::Out] {
             if phase == Phase::Out {
-                crate::theme::pill(ui, "HOLD", muted_color(), false)
-                    .on_hover_text(strings::HOLD_HOVER);
+                crate::theme::pill(ui, l.text(Msg::AnimPhaseHold), muted_color(), false)
+                    .on_hover_text(l.text(Msg::AnimHoldHover));
             }
             let shown = document.phase() == phase;
             let frames = document.clip().phase_frames(phase);
             let tab = egui::Button::new(
-                RichText::new(format!("{}  {frames} fr", strings::phase_label(phase)))
-                    .size(legible(11.0))
-                    .strong()
-                    .color(if shown {
-                        text_color()
-                    } else {
-                        text_dim_color()
-                    }),
+                RichText::new(format!(
+                    "{}  {}",
+                    text::phase_label(l, phase),
+                    l10n::frames(l, frames)
+                ))
+                .size(legible(11.0))
+                .strong()
+                .color(if shown {
+                    text_color()
+                } else {
+                    text_dim_color()
+                }),
             )
             .fill(if shown { ACCENT_FILL } else { widget_color() })
             .stroke(Stroke::new(
@@ -307,9 +350,14 @@ fn header<T: Copy + Ord>(
                 },
             ))
             .min_size(Vec2::new(64.0, 22.0));
-            let response = ui.add_enabled(idle, tab).hint(
-                &format!("{}\nClick to edit this phase.", strings::phase_hover(phase)),
-                "finish the current drag first",
+            let response = ui.add_enabled(idle, tab).hint_in(
+                l,
+                &format!(
+                    "{}\n{}",
+                    text::phase_hover(l, phase),
+                    l.text(Msg::AnimPhaseTabClick)
+                ),
+                busy,
             );
             tabs.push((phase, response.rect));
             if response.clicked() {
@@ -321,7 +369,7 @@ fn header<T: Copy + Ord>(
             }
         }
         ui.add_space(8.0);
-        ui.label(crate::theme::field_label("Length"));
+        ui.label(crate::theme::field_label(l.text(Msg::AnimLength)));
         let mut length = state.length_edit.unwrap_or_else(|| document.phase_frames());
         let response = ui
             .add_enabled(
@@ -331,13 +379,7 @@ fn header<T: Copy + Ord>(
                     .speed(0.25)
                     .suffix(" fr"),
             )
-            .hint(
-                "Length of this phase in frames. Changing it stretches every key of the \
-                 phase proportionally (one undo step), like dragging the phase end on the \
-                 ruler. Drag the ruler handle with Alt held to change the length without \
-                 moving keys.",
-                "finish the current drag first",
-            );
+            .hint_in(l, l.text(Msg::AnimLengthHover), busy);
         if response.changed() {
             state.length_edit = Some(length);
         }
@@ -349,12 +391,8 @@ fn header<T: Copy + Ord>(
             state.show_error(&error);
         }
         let fit = ui
-            .add_enabled(idle, crate::theme::small_button("Fit"))
-            .hint(
-                "Zoom the timeline so the whole phase fits. Ctrl+wheel zooms around the \
-                 pointer; Shift+wheel (or a sideways swipe) scrolls in time.",
-                "finish the current drag first",
-            );
+            .add_enabled(idle, crate::theme::small_button(l.text(Msg::AnimFit)))
+            .hint_in(l, l.text(Msg::AnimFitHover), busy);
         if fit.clicked() {
             fit_view(document, state.track_width);
         }
@@ -374,7 +412,7 @@ pub fn fit_view<T: Copy + Ord>(document: &mut AnimDocument<T>, width: f32) {
 }
 
 /// The inline notice with a dismiss key.
-fn notice<T>(ui: &mut Ui, state: &mut AnimationTimelineState<T>) {
+fn notice<T>(ui: &mut Ui, l: Locale, state: &mut AnimationTimelineState<T>) {
     let Some(notice) = state.notice.clone() else {
         return;
     };
@@ -393,14 +431,13 @@ fn notice<T>(ui: &mut Ui, state: &mut AnimationTimelineState<T>) {
             ui.horizontal(|ui| {
                 let label = ui.label(RichText::new(&notice.text).color(color));
                 match notice.msg_key {
-                    Some(key) => label.on_hover_text(format!(
-                        "The edit was refused and nothing changed. Message id: {key}"
-                    )),
-                    None => label.on_hover_text("Why the last shortcut did nothing"),
+                    Some(key) => label
+                        .on_hover_text(l.format(Msg::AnimRefusedHover, &[("key", Arg::Str(key))])),
+                    None => label.on_hover_text(l.text(Msg::AnimHintHover)),
                 };
                 if ui
                     .add(crate::theme::close_key(12.0))
-                    .on_hover_text("Dismiss this message")
+                    .on_hover_text(l.text(Msg::AnimDismissHover))
                     .clicked()
                 {
                     dismissed = true;

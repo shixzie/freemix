@@ -2104,4 +2104,593 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Ocultarlos hasta que empiece una transición manual; se muestran mientras haya una activa",
         ),
     ),
+    // Animation timeline (GX-011). The keyframe is a "clave" (short for
+    // "fotograma clave"); the phases read ENTRADA, EN AIRE, and SALIDA.
+    (Msg::AnimSection, t("Animación")),
+    (
+        Msg::AnimSectionHover,
+        t(
+            "Animación por fotogramas clave de este gráfico. ENTRADA se reproduce al sacarlo al aire y SALIDA al retirarlo. Haga clic dentro de la línea de tiempo para usar sus atajos de teclado.",
+        ),
+    ),
+    (Msg::AnimPhaseIn, t("ENTRADA")),
+    (Msg::AnimPhaseOut, t("SALIDA")),
+    (Msg::AnimPhaseHold, t("EN AIRE")),
+    (
+        Msg::AnimPhaseInHover,
+        t(
+            "ENTRADA: la animación que se reproduce al sacar el gráfico al aire. Su último fotograma se mantiene mientras el gráfico siga al aire.",
+        ),
+    ),
+    (
+        Msg::AnimPhaseOutHover,
+        t("SALIDA: la animación que se reproduce al retirar el gráfico del aire."),
+    ),
+    (
+        Msg::AnimPhaseTabClick,
+        t("Haga clic para editar esta fase."),
+    ),
+    (
+        Msg::AnimHoldHover,
+        t(
+            "EN AIRE: mientras está al aire, el gráfico se queda en el último fotograma de ENTRADA. Aquí no hay nada que animar; anime ENTRADA y SALIDA.",
+        ),
+    ),
+    (Msg::AnimLength, t("Duración")),
+    (
+        Msg::AnimLengthHover,
+        t(
+            "Duración de esta fase en fotogramas. Al cambiarla, todas las claves de la fase se estiran en proporción (un solo paso de deshacer), igual que al arrastrar el final de la fase en la regla. Arrastre el tirador de la regla con Alt pulsado para cambiar la duración sin mover claves.",
+        ),
+    ),
+    (Msg::AnimFit, t("Ajustar")),
+    (
+        Msg::AnimFitHover,
+        t(
+            "Ajustar el zoom para que quepa la fase entera. Ctrl+rueda amplía alrededor del puntero; Mayús+rueda (o un deslizamiento lateral) desplaza en el tiempo.",
+        ),
+    ),
+    (
+        Msg::AnimPlayHover,
+        t("Reproducir esta fase desde el cabezal"),
+    ),
+    (Msg::AnimPauseHover, t("Pausar la reproducción")),
+    (
+        Msg::AnimLoopOnHover,
+        t(
+            "Repetición activada: la reproducción vuelve al inicio de la fase. Haga clic para detenerse al final",
+        ),
+    ),
+    (
+        Msg::AnimLoopOffHover,
+        t(
+            "Repetición desactivada: la reproducción se detiene al final de la fase. Haga clic para repetir",
+        ),
+    ),
+    (
+        Msg::AnimStepBackHover,
+        t("Retroceder un fotograma (Mayús: diez fotogramas)"),
+    ),
+    (
+        Msg::AnimStepForwardHover,
+        t("Avanzar un fotograma (Mayús: diez fotogramas)"),
+    ),
+    (Msg::AnimKeyButton, t("◆ Clave")),
+    (
+        Msg::AnimKeyHover,
+        t("Añadir una clave en el cabezal en la fila de propiedad activa, con su valor actual"),
+    ),
+    (Msg::AnimDelete, t("Eliminar")),
+    (Msg::AnimDeleteHover, t("Eliminar las claves seleccionadas")),
+    (Msg::AnimCopy, t("Copiar")),
+    (
+        Msg::AnimCopyHover,
+        t("Copiar las claves seleccionadas (tiempos, valores y suavizado)"),
+    ),
+    (Msg::AnimPaste, t("Pegar")),
+    (
+        Msg::AnimPasteHover,
+        t("Pegar las claves copiadas con la primera en el cabezal"),
+    ),
+    (
+        Msg::AnimUndoHover,
+        t("Deshacer la última edición de la animación (un arrastre entero es un solo paso)"),
+    ),
+    (
+        Msg::AnimRedoHover,
+        t("Rehacer la última edición de la animación que se deshizo"),
+    ),
+    (Msg::AnimAdvanced, t("Avanzado")),
+    (Msg::AnimSimple, t("Simple")),
+    (
+        Msg::AnimToAdvancedHover,
+        t(
+            "Pasar al modo Avanzado: una fila por propiedad con claves individuales, suavizado y un gráfico de valores",
+        ),
+    ),
+    (
+        Msg::AnimToSimpleHover,
+        t(
+            "Pasar al modo Simple: una barra por elemento; estírela para cambiar su tiempo y elija preajustes listos para usar",
+        ),
+    ),
+    (
+        Msg::AnimTimecodeHover,
+        t(
+            "Cabezal / duración de la fase en HH:MM:SS:FF (fotograma {frame} de {total}). Arrastre en la regla para recorrerla.",
+        ),
+    ),
+    (Msg::AnimKeySpace, t("Espacio")),
+    (
+        Msg::AnimKeyStepBack,
+        t("Re Pág, o ← sin claves seleccionadas"),
+    ),
+    (
+        Msg::AnimKeyStepForward,
+        t("Av Pág, o → sin claves seleccionadas"),
+    ),
+    (Msg::AnimKeyDelete, t("Supr")),
+    (Msg::AnimKeyRedo, t("Ctrl+Mayús+Z")),
+    (
+        Msg::AnimReasonDrag,
+        t("termine primero el arrastre en curso"),
+    ),
+    (
+        Msg::AnimReasonNoLength,
+        t(
+            "esta fase aún no tiene duración; aplique un preajuste o arrastre el final de la fase en la regla",
+        ),
+    ),
+    (
+        Msg::AnimReasonNoSelection,
+        t(
+            "no hay claves seleccionadas; haga clic en una clave o arrastre un recuadro alrededor de varias",
+        ),
+    ),
+    (
+        Msg::AnimReasonSimpleKey,
+        t(
+            "las claves se fijan por propiedad en el modo Avanzado; en el modo Simple, elija un preajuste",
+        ),
+    ),
+    (
+        Msg::AnimReasonNoRow,
+        t("haga clic en una fila de propiedad (o en una de sus claves) para elegir qué animar"),
+    ),
+    (
+        Msg::AnimReasonFirstFrame,
+        t("el cabezal está en el primer fotograma"),
+    ),
+    (
+        Msg::AnimReasonLastFrame,
+        t("el cabezal está en el último fotograma"),
+    ),
+    (
+        Msg::AnimReasonNothingCopied,
+        t("aún no se ha copiado nada; seleccione claves y cópielas primero"),
+    ),
+    (
+        Msg::AnimReasonNothingToUndo,
+        t("no hay ninguna edición de la animación que deshacer"),
+    ),
+    (
+        Msg::AnimReasonNothingToRedo,
+        t("no hay ninguna edición de la animación que rehacer"),
+    ),
+    (
+        Msg::AnimReasonNoValueRow,
+        t("haga clic en una fila de propiedad (o en una de sus claves) para elegir qué editar"),
+    ),
+    (
+        Msg::AnimReasonAlreadyAnimated,
+        t("esta propiedad ya está animada en esta fase"),
+    ),
+    (
+        Msg::AnimReasonNoTargets,
+        t("el diseño no tiene elementos que animar"),
+    ),
+    (
+        Msg::AnimReasonUnknownTarget,
+        t("este elemento ya no está en el diseño"),
+    ),
+    (
+        Msg::AnimRefusedHover,
+        t("La edición se rechazó y no cambió nada. Id. del mensaje: {key}"),
+    ),
+    (
+        Msg::AnimHintHover,
+        t("Por qué el último atajo no hizo nada"),
+    ),
+    (Msg::AnimDismissHover, t("Descartar este mensaje")),
+    (
+        Msg::AnimErrRetimeCollision,
+        t("Demasiado corto: dos claves de una propiedad caerían en el mismo fotograma"),
+    ),
+    (
+        Msg::AnimErrKeyCollision,
+        t("Ya hay otra clave en ese fotograma"),
+    ),
+    (
+        Msg::AnimErrLimitExceeded,
+        t("Eso superaría el límite de tamaño de la animación"),
+    ),
+    (
+        Msg::AnimErrKeyOutsidePhase,
+        t("Una clave quedaría después del final de la fase"),
+    ),
+    (
+        Msg::AnimErrInvalidValue,
+        t("Ese valor está fuera del rango de la propiedad"),
+    ),
+    (Msg::AnimErrUnknownKey, t("Esa clave ya no existe")),
+    (
+        Msg::AnimErrUnknownTarget,
+        t("Ese elemento ya no está en el diseño"),
+    ),
+    (
+        Msg::AnimErrZeroSpan,
+        t(
+            "Todas las claves seleccionadas están en el mismo fotograma, así que no hay nada que estirar",
+        ),
+    ),
+    (
+        Msg::AnimErrEmptySelection,
+        t("Seleccione primero una o más claves"),
+    ),
+    (
+        Msg::AnimErrEmptyClipboard,
+        t("Aún no hay nada copiado: copie claves primero"),
+    ),
+    (Msg::AnimErrNoDrag, t("No hay ningún arrastre en curso")),
+    (
+        Msg::AnimErrDragActive,
+        t("Termine primero el arrastre en curso"),
+    ),
+    (Msg::AnimErrNothingToUndo, t("Nada que deshacer")),
+    (Msg::AnimErrNothingToRedo, t("Nada que rehacer")),
+    (
+        Msg::AnimErrInvalidClip,
+        t("La animación es incoherente; vuelva a cargarla"),
+    ),
+    (Msg::AnimErrRefused, t("Se rechazó la edición")),
+    (Msg::AnimErrSentence, t("{message}.")),
+    (Msg::AnimErrAtFrame, t("{message} (fotograma {frame}).")),
+    (
+        Msg::AnimErrShortestFits,
+        t("{message}. Duración mínima que cabe: {length}."),
+    ),
+    (
+        Msg::AnimErrMaxPhaseFrames,
+        t("{message}: como máximo {max} fotogramas por fase."),
+    ),
+    (
+        Msg::AnimErrMaxTracks,
+        t("{message}: como máximo {max} propiedades animadas."),
+    ),
+    (
+        Msg::AnimErrMaxTrackKeys,
+        t("{message}: como máximo {max} claves por propiedad."),
+    ),
+    (
+        Msg::AnimErrMaxClipKeys,
+        t("{message}: como máximo {max} claves en total."),
+    ),
+    (Msg::AnimPropPositionX, t("Posición X")),
+    (Msg::AnimPropPositionY, t("Posición Y")),
+    (Msg::AnimPropScaleX, t("Escala X")),
+    (Msg::AnimPropScaleY, t("Escala Y")),
+    (Msg::AnimPropRotation, t("Rotación")),
+    (Msg::AnimPropOpacity, t("Opacidad")),
+    (Msg::AnimPropCropLeft, t("Recorte izquierdo")),
+    (Msg::AnimPropCropTop, t("Recorte superior")),
+    (Msg::AnimPropCropRight, t("Recorte derecho")),
+    (Msg::AnimPropCropBottom, t("Recorte inferior")),
+    (
+        Msg::AnimPropPositionXHover,
+        t("Desplazamiento horizontal en píxeles, sumado a la posición del elemento"),
+    ),
+    (
+        Msg::AnimPropPositionYHover,
+        t("Desplazamiento vertical en píxeles, sumado a la posición del elemento"),
+    ),
+    (
+        Msg::AnimPropScaleXHover,
+        t("Escala de anchura; 100 % es el tamaño diseñado"),
+    ),
+    (
+        Msg::AnimPropScaleYHover,
+        t("Escala de altura; 100 % es el tamaño diseñado"),
+    ),
+    (
+        Msg::AnimPropRotationHover,
+        t("Rotación en grados, sumada a la rotación diseñada"),
+    ),
+    (
+        Msg::AnimPropOpacityHover,
+        t("Opacidad que multiplica la opacidad diseñada; 100 % la deja igual"),
+    ),
+    (
+        Msg::AnimPropCropLeftHover,
+        t("Píxeles recortados del borde izquierdo"),
+    ),
+    (
+        Msg::AnimPropCropTopHover,
+        t("Píxeles recortados del borde superior"),
+    ),
+    (
+        Msg::AnimPropCropRightHover,
+        t("Píxeles recortados del borde derecho"),
+    ),
+    (
+        Msg::AnimPropCropBottomHover,
+        t("Píxeles recortados del borde inferior"),
+    ),
+    (
+        Msg::AnimPropColourHover,
+        t("Color que sustituye al color diseñado"),
+    ),
+    (
+        Msg::AnimPresetSlideFromLeft,
+        t("Deslizar desde la izquierda"),
+    ),
+    (
+        Msg::AnimPresetSlideFromRight,
+        t("Deslizar desde la derecha"),
+    ),
+    (Msg::AnimPresetSlideFromTop, t("Deslizar desde arriba")),
+    (Msg::AnimPresetSlideFromBottom, t("Deslizar desde abajo")),
+    (Msg::AnimPresetPop, t("Emerger")),
+    (Msg::AnimPresetDrop, t("Caída")),
+    (
+        Msg::AnimPresetFadeHover,
+        t("Hace aparecer (o desaparecer) el elemento con un fundido de opacidad"),
+    ),
+    (
+        Msg::AnimPresetSlideFromLeftHover,
+        t("Desliza el elemento desde fuera del borde izquierdo"),
+    ),
+    (
+        Msg::AnimPresetSlideFromRightHover,
+        t("Desliza el elemento desde fuera del borde derecho"),
+    ),
+    (
+        Msg::AnimPresetSlideFromTopHover,
+        t("Desliza el elemento desde encima del cuadro"),
+    ),
+    (
+        Msg::AnimPresetSlideFromBottomHover,
+        t("Desliza el elemento desde debajo del cuadro"),
+    ),
+    (
+        Msg::AnimPresetPopHover,
+        t("Amplía el elemento desde cero con un pequeño rebase"),
+    ),
+    (
+        Msg::AnimPresetWipeHover,
+        t("Descubre el elemento de izquierda a derecha animando su recorte"),
+    ),
+    (
+        Msg::AnimPresetDropHover,
+        t("Deja caer el elemento desde arriba con un rebote"),
+    ),
+    (Msg::AnimEaseLinear, t("Lineal")),
+    (Msg::AnimEaseHold, t("Mantener")),
+    (Msg::AnimEaseGentleIn, t("Aceleración suave")),
+    (Msg::AnimEaseGentleOut, t("Frenada suave")),
+    (Msg::AnimEaseGentleInOut, t("Acelerar y frenar suave")),
+    (Msg::AnimEaseStrongIn, t("Aceleración fuerte")),
+    (Msg::AnimEaseStrongOut, t("Frenada fuerte")),
+    (Msg::AnimEaseStrongInOut, t("Acelerar y frenar fuerte")),
+    (Msg::AnimEaseSoftIn, t("Aceleración leve")),
+    (Msg::AnimEaseSoftOut, t("Frenada leve")),
+    (Msg::AnimEaseSoftInOut, t("Acelerar y frenar leve")),
+    (Msg::AnimEaseAnticipate, t("Anticipación")),
+    (Msg::AnimEaseOvershoot, t("Rebase")),
+    (Msg::AnimEaseAnticipateOvershoot, t("Anticipación + rebase")),
+    (Msg::AnimEaseBounceIn, t("Rebote al inicio")),
+    (Msg::AnimEaseBounceOut, t("Rebote al final")),
+    (Msg::AnimEaseBounceInOut, t("Rebote en ambos extremos")),
+    (Msg::AnimEaseStep, t("Escalón")),
+    (Msg::AnimEaseCustom, t("Curva personalizada")),
+    (Msg::AnimEaseMixed, t("Mixto")),
+    (
+        Msg::AnimEaseLinearHover,
+        t("Velocidad constante desde esta clave hasta la siguiente"),
+    ),
+    (
+        Msg::AnimEaseHoldHover,
+        t("Mantiene este valor y salta al de la siguiente clave en su fotograma"),
+    ),
+    (
+        Msg::AnimEaseInHover,
+        t("Empieza despacio y acelera hacia la siguiente clave"),
+    ),
+    (
+        Msg::AnimEaseOutHover,
+        t("Empieza rápido y se asienta suavemente en la siguiente clave (la entrada más natural)"),
+    ),
+    (
+        Msg::AnimEaseInOutHover,
+        t("Acelera y luego frena: suave en ambas claves"),
+    ),
+    (
+        Msg::AnimEaseAnticipateHover,
+        t("Retrocede un poco antes de avanzar hacia la siguiente clave"),
+    ),
+    (
+        Msg::AnimEaseOvershootHover,
+        t("Sobrepasa un poco el valor de la siguiente clave y luego vuelve"),
+    ),
+    (
+        Msg::AnimEaseAnticipateOvershootHover,
+        t("Retrocede al principio y se pasa al final"),
+    ),
+    (
+        Msg::AnimEaseBounceInHover,
+        t("Rebota unas cuantas veces antes de salir"),
+    ),
+    (
+        Msg::AnimEaseBounceOutHover,
+        t("Llega al valor de la siguiente clave con unos rebotes"),
+    ),
+    (Msg::AnimEaseBounceInOutHover, t("Rebota en ambos extremos")),
+    (Msg::AnimEasing, t("Suavizado")),
+    (
+        Msg::AnimEasingHover,
+        t(
+            "Cómo avanza el movimiento desde cada clave seleccionada hasta la siguiente. Elija una curva para aplicarla a todas las claves seleccionadas (un solo paso de deshacer).",
+        ),
+    ),
+    (
+        Msg::AnimEasingShapeHover,
+        t("{easing}: la forma del valor en el tiempo entre dos claves"),
+    ),
+    (Msg::AnimValue, t("Valor")),
+    (
+        Msg::AnimValueNoRowHover,
+        t("El valor de la fila activa en el cabezal"),
+    ),
+    (
+        Msg::AnimColourAtPlayheadHover,
+        t(
+            "Color en el cabezal: {value}. Las claves de color se editan en el diseñador de títulos.",
+        ),
+    ),
+    (
+        Msg::AnimValueHover,
+        t(
+            "{property} en el cabezal. Al cambiar el valor se añade una clave aquí o se actualiza la que ya hay (un solo paso de deshacer al soltar).",
+        ),
+    ),
+    (Msg::AnimAnimateProperty, t("+ Animar propiedad")),
+    (
+        Msg::AnimAnimatePropertyHover,
+        t(
+            "Empezar a animar otra propiedad: añade una clave en el cabezal con su valor actual y la convierte en la fila activa.",
+        ),
+    ),
+    (
+        Msg::AnimAnimateTargetHover,
+        t("Animar una propiedad de {name}"),
+    ),
+    (
+        Msg::AnimGraphEmpty,
+        t("Gráfico de valores: haga clic en una fila de propiedad para trazarla aquí"),
+    ),
+    (
+        Msg::AnimGraphEmptyHover,
+        t(
+            "El gráfico de valores traza la propiedad activa a lo largo de esta fase, alineado con la línea de tiempo. Haga clic arriba en una fila de propiedad para elegirla.",
+        ),
+    ),
+    (
+        Msg::AnimGraphHover,
+        t(
+            "Gráfico de valores de {property}: su valor a lo largo de esta fase, alineado fotograma a fotograma con la línea de tiempo. Los puntos son claves; la curva entre ellas sigue el suavizado de cada clave.",
+        ),
+    ),
+    (Msg::AnimGraphReadout, t("fotograma {frame}: {value}")),
+    (Msg::AnimElement, t("Elemento")),
+    (Msg::AnimNoElements, t("No hay elementos que animar")),
+    (
+        Msg::AnimNothingAnimated,
+        t(
+            "Aún no hay nada animado en esta fase: use «+ Animar propiedad» debajo o un preajuste en el modo Simple",
+        ),
+    ),
+    (
+        Msg::AnimTracksHover,
+        t(
+            "Línea de tiempo: la regla mueve el cabezal y las filas contienen la animación de esta fase. Ctrl+rueda amplía, Mayús+rueda desplaza.",
+        ),
+    ),
+    (
+        Msg::AnimRulerHover,
+        t(
+            "Regla de tiempo: haga clic o arrastre para mover el cabezal (se ajusta a las claves; mantenga Mayús para recorrerla libremente). Ctrl+rueda amplía, Mayús+rueda desplaza.",
+        ),
+    ),
+    (
+        Msg::AnimPhaseEndHover,
+        t(
+            "Final de la fase ({length}): arrastre para estirar o comprimir todas las claves de esta fase. Mantenga Alt para cambiar la duración sin mover claves.",
+        ),
+    ),
+    (
+        Msg::AnimStripHover,
+        t(
+            "Tirador de tiempo: arrastre para estirar o comprimir en proporción las claves seleccionadas. Mantenga Alt para mover solo las claves de este borde; Mayús desactiva el ajuste.",
+        ),
+    ),
+    (
+        Msg::AnimKeyInfo,
+        t(
+            "{target} · clave de {property} en el fotograma {frame}: {value}, suavizado {easing} ({shape}).",
+        ),
+    ),
+    (
+        Msg::AnimKeyDragHelp,
+        t(
+            "Arrastre para mover las claves seleccionadas (se ajustan a claves, al cabezal y a segundos enteros; Mayús desactiva el ajuste). Ctrl+clic la añade o la quita de la selección; Mayús+clic selecciona un intervalo.",
+        ),
+    ),
+    (Msg::AnimShapeLinear, t("rombo: lineal")),
+    (Msg::AnimShapeHold, t("cuadrado: mantiene su valor")),
+    (Msg::AnimShapeEased, t("círculo: suavizado")),
+    (
+        Msg::AnimBarBodyHover,
+        t(
+            "{name}: su animación en esta fase. Arrástrela para moverla en el tiempo; arrastre cualquiera de sus extremos para hacerla más rápida o más lenta. Haga clic para seleccionar sus claves.",
+        ),
+    ),
+    (
+        Msg::AnimBarEndHover,
+        t(
+            "Tirador de duración: arrastre para estirar o comprimir la animación de {name}. Mantenga Alt para mover solo este extremo; Mayús desactiva el ajuste.",
+        ),
+    ),
+    (
+        Msg::AnimRowEmptyHover,
+        t(
+            "Arrastre para seleccionar claves con un recuadro (Mayús añade, Ctrl alterna). Haga clic para vaciar la selección y convertir esta fila en la activa para K.",
+        ),
+    ),
+    (
+        Msg::AnimTargetEmptyHover,
+        t(
+            "{name} no tiene animación en esta fase. Elija un preajuste a la izquierda o pase al modo Avanzado para animar propiedades. Arrastre aquí para mover el cabezal.",
+        ),
+    ),
+    (Msg::AnimRowLabelInfo, t("{target} · {property}: {help}.")),
+    (
+        Msg::AnimRowLabelClick,
+        t(
+            "Haga clic para convertirla en la fila activa: K le añade una clave en el cabezal y el gráfico de valores de abajo la muestra.",
+        ),
+    ),
+    (
+        Msg::AnimTargetLabelHover,
+        t(
+            "{name}: una barra muestra toda su animación en esta fase. Arrastre la barra para moverla y sus extremos para cambiar su tiempo.",
+        ),
+    ),
+    (Msg::AnimPresetPick, t("Preajuste…")),
+    (
+        Msg::AnimPresetPickHover,
+        t(
+            "Elegir una animación lista para usar para {name} en esta fase. Sustituye las claves del elemento en las propiedades que usa el preajuste y dura lo que la fase (un solo paso de deshacer).",
+        ),
+    ),
+    (
+        Msg::AnimBarNoAnimation,
+        t("Sin animación · elija un preajuste"),
+    ),
+    (Msg::AnimSnapPlayhead, t("ajuste: cabezal")),
+    (Msg::AnimSnapKey, t("ajuste: clave")),
+    (Msg::AnimSnapPhaseEdge, t("ajuste: borde de la fase")),
+    (Msg::AnimSnapSecond, t("ajuste: segundo entero")),
+    (
+        Msg::AnimRetimeModifiers,
+        t("Alt: mover un borde · Mayús: sin ajuste · Esc: cancelar"),
+    ),
 ];

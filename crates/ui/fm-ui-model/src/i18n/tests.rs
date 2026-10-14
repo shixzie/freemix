@@ -260,3 +260,41 @@ fn dates_follow_the_language() {
     assert_eq!(Locale::ENGLISH.date(11_016), "Feb 29, 2000");
     assert_eq!(ES.date(-1), "31 dic 1969");
 }
+
+#[test]
+fn every_animation_editor_refusal_has_a_message() {
+    use crate::animation_editor::{AnimEditorError, AnimLimit};
+    use fm_animation::{Phase, Property, TrackKey};
+
+    let track = TrackKey::new(1_u32, Phase::In, Property::Opacity);
+    let errors = [
+        AnimEditorError::RetimeCollision { track, min_len: 3 },
+        AnimEditorError::KeyCollision { track, frame: 1 },
+        AnimEditorError::LimitExceeded(AnimLimit::Tracks { max: 1 }),
+        AnimEditorError::KeyOutsidePhase { track, frame: 1 },
+        AnimEditorError::InvalidValue { track, frame: 1 },
+        AnimEditorError::UnknownKey { track, frame: 1 },
+        AnimEditorError::UnknownTarget(1),
+        AnimEditorError::ZeroSpan,
+        AnimEditorError::EmptySelection,
+        AnimEditorError::EmptyClipboard,
+        AnimEditorError::NoDrag,
+        AnimEditorError::DragActive,
+        AnimEditorError::NothingToUndo,
+        AnimEditorError::NothingToRedo,
+        AnimEditorError::InvalidClip,
+    ];
+    let mut seen = std::collections::BTreeSet::new();
+    for error in &errors {
+        let msg = Msg::anim_editor_error(error.msg_key())
+            .unwrap_or_else(|| panic!("{} has no message", error.msg_key()));
+        assert!(seen.insert(msg), "{} shares a message", error.msg_key());
+        assert_ne!(
+            ES.text(msg),
+            msg.en(),
+            "{} is untranslated",
+            error.msg_key()
+        );
+    }
+    assert_eq!(Msg::anim_editor_error("anim-editor-something-new"), None);
+}

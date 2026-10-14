@@ -18,7 +18,10 @@ use fm_ui_model::animation_editor::{
     AnimDocument, DragKind, DragStart, EditorMode, Modifiers, Pointer, RetimeHandle, TimelineView,
 };
 
-use super::{AnimationTimelineState, Notice, strings};
+use fm_ui_model::i18n::{Arg, Locale, Msg};
+
+use super::{AnimationTimelineState, Notice, text};
+use crate::gating::Hint;
 use crate::theme::{
     ACCENT_FILL, AMBER, ERROR, accent_color, border_color, border_strong_color, faded, legible,
     muted_color, raised_color, text_color, text_dim_color, widget_color,
@@ -170,10 +173,11 @@ pub fn target_keys<T: Copy + Ord>(document: &AnimDocument<T>, target: T) -> KeyS
         .collect()
 }
 
-fn target_name<T: Copy + Ord>(document: &AnimDocument<T>, target: T) -> String {
-    document
-        .target(target)
-        .map_or_else(|| "Element".to_owned(), |outline| outline.name.clone())
+fn target_name<T: Copy + Ord>(l: Locale, document: &AnimDocument<T>, target: T) -> String {
+    document.target(target).map_or_else(
+        || l.text(Msg::AnimElement).to_owned(),
+        |outline| outline.name.clone(),
+    )
 }
 
 fn modifiers(ui: &Ui) -> Modifiers {
@@ -187,6 +191,7 @@ fn modifiers(ui: &Ui) -> Modifiers {
 /// Lays out, draws, and handles input for the ruler and rows.
 pub(super) fn draw<T: Copy + Ord>(
     ui: &mut Ui,
+    l: Locale,
     document: &mut AnimDocument<T>,
     state: &mut AnimationTimelineState<T>,
 ) -> TrackGeometry {
@@ -223,37 +228,46 @@ pub(super) fn draw<T: Copy + Ord>(
     let painter = ui.painter_at(rect);
     paint_background(&painter, document, &geometry, &rows, state);
     paint_ruler(&painter, document, &geometry);
-    labels(ui, document, state, &geometry, &rows);
+    labels(ui, l, document, state, &geometry, &rows);
     let track_painter = painter.with_clip_rect(area);
     for (index, row) in rows.iter().enumerate() {
         match *row {
             Row::Track(track) => paint_track(&track_painter, document, &geometry, index, track),
-            Row::Target(target) => paint_bar(&track_painter, document, &geometry, index, target),
+            Row::Target(target) => {
+                paint_bar(&track_painter, l, document, &geometry, index, target);
+            }
         }
     }
     if rows.is_empty() {
         painter.text(
             geometry.row_rect(0).center(),
             Align2::CENTER_CENTER,
-            if simple {
-                "No elements to animate"
+            l.text(if simple {
+                Msg::AnimNoElements
             } else {
-                "Nothing animated in this phase yet: use “+ Animate property” below, or a \
-                 preset in Simple mode"
-            },
+                Msg::AnimNothingAnimated
+            }),
             FontId::new(legible(11.0), FontFamily::Proportional),
             muted_color(),
         );
     }
-    paint_overlays(&track_painter, document, &geometry, &response);
+    paint_overlays(&track_painter, l, document, &geometry, &response);
 
+    // Help for what is under the pointer, or for the whole area when the
+    // pointer is elsewhere (a forced tooltip, or a touch press).
     if document.drag().is_none() {
         let hover = response
             .hover_pos()
-            .map(|position| hover_text(document, &rows, hit(document, &geometry, &rows, position)));
-        if let Some(text) = hover.flatten() {
-            response.on_hover_text(text);
-        }
+            .and_then(|position| {
+                hover_text(
+                    l,
+                    document,
+                    &rows,
+                    hit(document, &geometry, &rows, position),
+                )
+            })
+            .unwrap_or_else(|| l.text(Msg::AnimTracksHover).to_owned());
+        response.on_hover_text(hover);
     }
     geometry
 }
@@ -486,71 +500,63 @@ fn click<T: Copy + Ord>(
 }
 
 fn hover_text<T: Copy + Ord>(
+    l: Locale,
     document: &AnimDocument<T>,
     rows: &[Row<T>],
     hit: Hit<T>,
 ) -> Option<String> {
     Some(match hit {
-        Hit::Ruler => "Time ruler: click or drag to move the playhead (it snaps to keys; hold \
-                       Shift to scrub freely). Ctrl+wheel zooms, Shift+wheel scrolls."
-            .to_owned(),
-        Hit::PhaseEnd => format!(
-            "Phase end ({} fr): drag to stretch or squeeze every key of this phase. Hold Alt to \
-             change the length without moving keys.",
-            document.phase_frames()
+        Hit::Ruler => l.text(Msg::AnimRulerHover).to_owned(),
+        Hit::PhaseEnd => l.format(
+            Msg::AnimPhaseEndHover,
+            &[(
+                "length",
+                Arg::Str(&crate::l10n::frames(l, document.phase_frames())),
+            )],
         ),
-        Hit::Strip(_) => "Retime handle: drag to stretch or squeeze the selected keys \
-                          proportionally. Hold Alt to move only the keys on this edge; Shift \
-                          disables snapping."
-            .to_owned(),
+        Hit::Strip(_) => l.text(Msg::AnimStripHover).to_owned(),
         Hit::Key(key) => {
             let found = document.clip().key(key.track, key.frame)?;
-            format!(
-                "{} · {} key at frame {}: {}, easing {} ({}).\nDrag to move the selected keys \
-                 (snaps to keys, the playhead, and whole seconds; Shift disables snapping). \
-                 Ctrl-click toggles it in the selection; Shift-click selects a range.",
-                target_name(document, key.track.target),
-                strings::property_name(key.track.property),
-                key.frame,
-                strings::format_value(key.track.property, found.value),
-                strings::easing_name(found.easing),
-                key_shape_name(found.easing),
-            )
+            let info = l.format(
+                Msg::AnimKeyInfo,
+                &[
+                    (
+                        "target",
+                        Arg::Str(&target_name(l, document, key.track.target)),
+                    ),
+                    (
+                        "property",
+                        Arg::Str(text::property_name(l, key.track.property)),
+                    ),
+                    ("frame", Arg::from(key.frame)),
+                    (
+                        "value",
+                        Arg::Str(&text::format_value(l, key.track.property, found.value)),
+                    ),
+                    ("easing", Arg::Str(text::easing_name(l, found.easing))),
+                    ("shape", Arg::Str(text::key_shape_name(l, found.easing))),
+                ],
+            );
+            format!("{info}\n{}", l.text(Msg::AnimKeyDragHelp))
         }
         Hit::Bar { target, part } => {
-            let name = target_name(document, target);
-            match part {
-                BarPart::Body => format!(
-                    "{name}: its animation in this phase. Drag to move it in time; drag either \
-                     end to make it faster or slower. Click to select its keys."
-                ),
-                BarPart::End | BarPart::Start => format!(
-                    "Duration handle: drag to stretch or squeeze {name}'s animation (retime). \
-                     Hold Alt to move only this end; Shift disables snapping."
-                ),
-            }
+            let name = target_name(l, document, target);
+            let msg = match part {
+                BarPart::Body => Msg::AnimBarBodyHover,
+                BarPart::End | BarPart::Start => Msg::AnimBarEndHover,
+            };
+            l.format(msg, &[("name", Arg::Str(&name))])
         }
         Hit::Empty { row } => match rows.get(row) {
-            Some(Row::Track(_)) => "Drag to box-select keys (Shift adds, Ctrl toggles). Click \
-                                    to clear the selection and make this the active row for K."
-                .to_owned(),
-            Some(Row::Target(target)) => format!(
-                "{} has no animation in this phase. Pick a preset on the left, or switch to \
-                 Advanced mode to key properties. Drag here to scrub the playhead.",
-                target_name(document, *target)
+            Some(Row::Track(_)) => l.text(Msg::AnimRowEmptyHover).to_owned(),
+            Some(Row::Target(target)) => l.format(
+                Msg::AnimTargetEmptyHover,
+                &[("name", Arg::Str(&target_name(l, document, *target)))],
             ),
             None => return None,
         },
         Hit::Outside => return None,
     })
-}
-
-const fn key_shape_name(easing: Easing) -> &'static str {
-    match easing {
-        Easing::Linear => "diamond: linear",
-        Easing::Hold | Easing::Step => "square: holds its value",
-        _ => "circle: eased",
-    }
 }
 
 /// Row stripes, the region past the phase end, and the active row marker.
@@ -719,6 +725,7 @@ fn paint_ruler<T: Copy + Ord>(
 #[allow(clippy::too_many_lines)] // Both row kinds share one label pass.
 fn labels<T: Copy + Ord>(
     ui: &mut Ui,
+    l: Locale,
     document: &mut AnimDocument<T>,
     state: &mut AnimationTimelineState<T>,
     geometry: &TrackGeometry,
@@ -738,11 +745,16 @@ fn labels<T: Copy + Ord>(
                         Sense::click(),
                     )
                     .on_hover_text(format!(
-                        "{} · {}: {}.\nClick to make this the active row: K keys it at the \
-                         playhead and the value graph below shows it.",
-                        target_name(document, track.target),
-                        strings::property_name(track.property),
-                        strings::property_hover(track.property)
+                        "{}\n{}",
+                        l.format(
+                            Msg::AnimRowLabelInfo,
+                            &[
+                                ("target", Arg::Str(&target_name(l, document, track.target)),),
+                                ("property", Arg::Str(text::property_name(l, track.property)),),
+                                ("help", Arg::Str(text::property_hover(l, track.property))),
+                            ],
+                        ),
+                        l.text(Msg::AnimRowLabelClick)
                     ));
                 if response.clicked() {
                     state.active_row = Some(track);
@@ -754,7 +766,7 @@ fn labels<T: Copy + Ord>(
                     painter.text(
                         pos2(rect.left() + 6.0, rect.center().y),
                         Align2::LEFT_CENTER,
-                        crate::theme::ellipsize(&target_name(document, track.target), 14),
+                        crate::theme::ellipsize(&target_name(l, document, track.target), 14),
                         font.clone(),
                         text_color(),
                     );
@@ -762,7 +774,7 @@ fn labels<T: Copy + Ord>(
                 painter.text(
                     pos2(rect.right() - 4.0, rect.center().y),
                     Align2::RIGHT_CENTER,
-                    strings::property_name(track.property),
+                    text::property_name(l, track.property),
                     font.clone(),
                     if state.active_row == Some(track) {
                         accent_color()
@@ -772,7 +784,7 @@ fn labels<T: Copy + Ord>(
                 );
             }
             Row::Target(target) => {
-                let name = target_name(document, target);
+                let name = target_name(l, document, target);
                 let (text_rect, picker_rect) = {
                     let split = rect.right() - 104.0;
                     (
@@ -788,10 +800,7 @@ fn labels<T: Copy + Ord>(
                     ui.id().with(("anim-target-label", index)),
                     Sense::hover(),
                 )
-                .on_hover_text(format!(
-                    "{name}: one bar shows its whole animation in this phase. Drag the bar \
-                         to move it, drag its ends to retime it."
-                ));
+                .on_hover_text(l.format(Msg::AnimTargetLabelHover, &[("name", Arg::Str(&name))]));
                 ui.painter_at(text_rect).text(
                     pos2(text_rect.left() + 6.0, text_rect.center().y),
                     Align2::LEFT_CENTER,
@@ -800,27 +809,32 @@ fn labels<T: Copy + Ord>(
                     text_color(),
                 );
                 let enabled = document.drag().is_none() && document.target(target).is_some();
+                let reason = if document.drag().is_some() {
+                    l.text(Msg::AnimReasonDrag)
+                } else {
+                    l.text(Msg::AnimReasonUnknownTarget)
+                };
                 ui.scope_builder(UiBuilder::new().max_rect(picker_rect), |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
                         let combo = egui::ComboBox::from_id_salt(("anim-preset", index))
-                            .selected_text("Preset…")
+                            .selected_text(l.text(Msg::AnimPresetPick))
                             .width(picker_rect.width() - 8.0)
                             .show_ui(ui, |ui| {
                                 for preset in AnimationPreset::ALL {
                                     if ui
-                                        .selectable_label(false, strings::preset_name(preset))
-                                        .on_hover_text(strings::preset_hover(preset))
+                                        .selectable_label(false, text::preset_name(l, preset))
+                                        .on_hover_text(text::preset_hover(l, preset))
                                         .clicked()
                                     {
                                         preset_choice = Some((target, preset));
                                     }
                                 }
                             });
-                        combo.response.on_hover_text(format!(
-                            "Pick a ready-made animation for {name} in this phase. It replaces \
-                             this element's keys for the properties the preset uses and runs \
-                             over the phase length (one undo step)."
-                        ));
+                        combo.response.hint_in(
+                            l,
+                            &l.format(Msg::AnimPresetPickHover, &[("name", Arg::Str(&name))]),
+                            reason,
+                        );
                     });
                 });
             }
@@ -834,7 +848,7 @@ fn labels<T: Copy + Ord>(
         };
         match document.apply_preset(target, document.phase(), preset, duration) {
             Ok(()) => state.notice = None,
-            Err(error) => state.notice = Some(Notice::error(&error)),
+            Err(error) => state.notice = Some(Notice::error(l, &error)),
         }
     }
 }
@@ -926,6 +940,7 @@ pub(crate) fn paint_key(painter: &Painter, center: Pos2, easing: Easing, selecte
 /// One element bar with grips at both ends.
 fn paint_bar<T: Copy + Ord>(
     painter: &Painter,
+    l: Locale,
     document: &AnimDocument<T>,
     geometry: &TrackGeometry,
     row: usize,
@@ -940,7 +955,7 @@ fn paint_bar<T: Copy + Ord>(
         painter.text(
             pos2(geometry.track_left + 8.0, row_rect.center().y),
             Align2::LEFT_CENTER,
-            "No animation · pick a preset",
+            l.text(Msg::AnimBarNoAnimation),
             FontId::new(legible(10.0), FontFamily::Proportional),
             muted_color(),
         );
@@ -977,7 +992,7 @@ fn paint_bar<T: Copy + Ord>(
             accent_color(),
         );
     }
-    let text = format!("{} fr", last - first);
+    let text = crate::l10n::frames(l, last - first);
     if bar.width() > 56.0 {
         painter.text(
             bar.center(),
@@ -1000,6 +1015,7 @@ fn paint_bar<T: Copy + Ord>(
 /// Box selection, snapping guide, playhead, and a refused-drag message.
 fn paint_overlays<T: Copy + Ord>(
     painter: &Painter,
+    l: Locale,
     document: &AnimDocument<T>,
     geometry: &TrackGeometry,
     response: &Response,
@@ -1030,12 +1046,12 @@ fn paint_overlays<T: Copy + Ord>(
         if let Some(snap) = drag.snap() {
             let x = geometry.x_of(view, snap.frame);
             dashed_line(painter, x, top, bottom, AMBER);
-            let label = match snap.kind {
-                SnapKind::Playhead => "snap: playhead",
-                SnapKind::Key => "snap: key",
-                SnapKind::PhaseBound => "snap: phase edge",
-                SnapKind::WholeSecond => "snap: whole second",
-            };
+            let label = l.text(match snap.kind {
+                SnapKind::Playhead => Msg::AnimSnapPlayhead,
+                SnapKind::Key => Msg::AnimSnapKey,
+                SnapKind::PhaseBound => Msg::AnimSnapPhaseEdge,
+                SnapKind::WholeSecond => Msg::AnimSnapSecond,
+            });
             painter.text(
                 pos2(x + 4.0, geometry.ruler.bottom() + 2.0),
                 Align2::LEFT_TOP,
@@ -1048,7 +1064,7 @@ fn paint_overlays<T: Copy + Ord>(
             && let Some(position) = response.interact_pointer_pos()
         {
             let galley = painter.layout(
-                strings::describe_error(error),
+                text::describe_error(l, error),
                 FontId::new(legible(10.5), FontFamily::Proportional),
                 ERROR,
                 280.0,
@@ -1062,7 +1078,7 @@ fn paint_overlays<T: Copy + Ord>(
             painter.text(
                 pos2(geometry.track_left + 6.0, bottom - 4.0),
                 Align2::LEFT_BOTTOM,
-                "Alt: move one edge · Shift: no snapping · Esc: cancel",
+                l.text(Msg::AnimRetimeModifiers),
                 FontId::new(legible(9.5), FontFamily::Proportional),
                 text_dim_color(),
             );

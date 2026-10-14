@@ -6,6 +6,8 @@
 use egui::{Event, Key, Modifiers, Rect, RichText, Stroke, Ui, Vec2};
 use fm_ui_model::animation_editor::{AnimDocument, AnimEditorError, EditorMode};
 
+use fm_ui_model::i18n::{Arg, Locale, Msg};
+
 use super::AnimationTimelineState;
 use crate::gating::Hint;
 use crate::l10n;
@@ -45,26 +47,27 @@ impl TimelineAction {
         Self::ToggleMode,
     ];
 
-    /// The keyboard shortcut, as shown in hover text.
+    /// The keyboard shortcut in `locale`'s key names, as shown in hover
+    /// text.
     #[must_use]
-    pub const fn shortcut(self) -> &'static str {
+    pub fn shortcut(self, locale: Locale) -> &'static str {
         match self {
-            Self::PlayPause => "Space",
+            Self::PlayPause => locale.text(Msg::AnimKeySpace),
             Self::ToggleLoop => "L",
-            Self::StepBack => "Page Up, or ← with no keys selected",
-            Self::StepForward => "Page Down, or → with no keys selected",
+            Self::StepBack => locale.text(Msg::AnimKeyStepBack),
+            Self::StepForward => locale.text(Msg::AnimKeyStepForward),
             Self::KeyAtPlayhead => "K",
-            Self::Delete => "Delete",
+            Self::Delete => locale.text(Msg::AnimKeyDelete),
             Self::Copy => "Ctrl+C",
             Self::Paste => "Ctrl+V",
             Self::Undo => "Ctrl+Z",
-            Self::Redo => "Ctrl+Shift+Z",
+            Self::Redo => locale.text(Msg::AnimKeyRedo),
             Self::ToggleMode => "M",
         }
     }
 }
 
-/// How one transport control looks and reads right now.
+/// How one transport control looks and reads right now, in one locale.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActionSpec {
     /// Button caption.
@@ -75,129 +78,132 @@ pub struct ActionSpec {
     pub disabled_reason: Option<&'static str>,
     /// Whether the control is a toggle that is currently on.
     pub active: bool,
+    /// The language the texts are in.
+    pub locale: Locale,
 }
 
 impl ActionSpec {
     /// The hover text: the action with its shortcut.
     #[must_use]
     pub fn hover(&self, action: TimelineAction) -> String {
-        l10n::with_key(l10n::Locale::ENGLISH, self.action, action.shortcut())
+        l10n::with_key(self.locale, self.action, action.shortcut(self.locale))
     }
 }
 
-const REASON_DRAG: &str = "finish the current drag first";
-const REASON_NO_LENGTH: &str =
-    "this phase has no length yet; apply a preset or drag the phase end on the ruler";
-const REASON_NO_SELECTION: &str = "no keys are selected; click a key or drag a box around keys";
-const REASON_SIMPLE_KEY: &str =
-    "keys are set per property in Advanced mode; in Simple mode pick a preset instead";
-const REASON_NO_ROW: &str = "click a property row (or one of its keys) to choose what to key";
-
-/// The current look and availability of `action`.
+/// The current look and availability of `action`, worded in `locale`.
 #[must_use]
 #[allow(clippy::too_many_lines)] // One arm per control keeps the table readable.
 pub fn action_spec<T: Copy + Ord>(
     action: TimelineAction,
     document: &AnimDocument<T>,
     state: &AnimationTimelineState<T>,
+    locale: Locale,
 ) -> ActionSpec {
+    let l = locale;
     let dragging = document.drag().is_some();
-    let busy = dragging.then_some(REASON_DRAG);
+    let busy = dragging.then(|| l.text(Msg::AnimReasonDrag));
     let no_selection = document
         .selection()
         .is_empty()
-        .then_some(REASON_NO_SELECTION);
+        .then(|| l.text(Msg::AnimReasonNoSelection));
     let (label, text, reason, active) = match action {
         TimelineAction::PlayPause => {
             let playing = document.transport().is_playing();
             (
                 if playing { "⏸" } else { "▶" },
-                if playing {
-                    "Pause playback"
+                l.text(if playing {
+                    Msg::AnimPauseHover
                 } else {
-                    "Play this phase from the playhead"
-                },
-                busy.or((document.phase_frames() == 0).then_some(REASON_NO_LENGTH)),
+                    Msg::AnimPlayHover
+                }),
+                busy.or_else(|| {
+                    (document.phase_frames() == 0).then(|| l.text(Msg::AnimReasonNoLength))
+                }),
                 playing,
             )
         }
         TimelineAction::ToggleLoop => (
-            "Loop",
-            if document.transport().is_looping() {
-                "Looping is on: playback wraps to the start of the phase. Click to stop at the end"
+            l.text(Msg::PlaylistLoop),
+            l.text(if document.transport().is_looping() {
+                Msg::AnimLoopOnHover
             } else {
-                "Looping is off: playback stops at the end of the phase. Click to loop"
-            },
+                Msg::AnimLoopOffHover
+            }),
             None,
             document.transport().is_looping(),
         ),
         TimelineAction::StepBack => (
             "◀ 1",
-            "Step back one frame (Shift: ten frames)",
-            busy.or((document.playhead() == 0).then_some("the playhead is on the first frame")),
+            l.text(Msg::AnimStepBackHover),
+            busy.or_else(|| (document.playhead() == 0).then(|| l.text(Msg::AnimReasonFirstFrame))),
             false,
         ),
         TimelineAction::StepForward => (
             "1 ▶",
-            "Step forward one frame (Shift: ten frames)",
-            busy.or((document.playhead() >= document.phase_frames())
-                .then_some("the playhead is on the last frame")),
+            l.text(Msg::AnimStepForwardHover),
+            busy.or_else(|| {
+                (document.playhead() >= document.phase_frames())
+                    .then(|| l.text(Msg::AnimReasonLastFrame))
+            }),
             false,
         ),
         TimelineAction::KeyAtPlayhead => (
-            "◆ Key",
-            "Add a key at the playhead on the active property row, holding its current value",
-            busy.or(match document.mode() {
-                EditorMode::Simple => Some(REASON_SIMPLE_KEY),
-                EditorMode::Advanced => state.active_row.is_none().then_some(REASON_NO_ROW),
+            l.text(Msg::AnimKeyButton),
+            l.text(Msg::AnimKeyHover),
+            busy.or_else(|| match document.mode() {
+                EditorMode::Simple => Some(l.text(Msg::AnimReasonSimpleKey)),
+                EditorMode::Advanced => state
+                    .active_row
+                    .is_none()
+                    .then(|| l.text(Msg::AnimReasonNoRow)),
             }),
             false,
         ),
         TimelineAction::Delete => (
-            "Delete",
-            "Delete the selected keys",
+            l.text(Msg::AnimDelete),
+            l.text(Msg::AnimDeleteHover),
             busy.or(no_selection),
             false,
         ),
         TimelineAction::Copy => (
-            "Copy",
-            "Copy the selected keys (timing, values, and easing)",
+            l.text(Msg::AnimCopy),
+            l.text(Msg::AnimCopyHover),
             no_selection,
             false,
         ),
         TimelineAction::Paste => (
-            "Paste",
-            "Paste copied keys with the earliest one at the playhead",
-            busy.or(document
-                .clipboard()
-                .is_none_or(|clipboard| clipboard.keys.is_empty())
-                .then_some("nothing has been copied yet; select keys and copy them first")),
+            l.text(Msg::AnimPaste),
+            l.text(Msg::AnimPasteHover),
+            busy.or_else(|| {
+                document
+                    .clipboard()
+                    .is_none_or(|clipboard| clipboard.keys.is_empty())
+                    .then(|| l.text(Msg::AnimReasonNothingCopied))
+            }),
             false,
         ),
         TimelineAction::Undo => (
-            "Undo",
-            "Undo the last animation edit (a whole drag is one step)",
-            busy.or((!document.can_undo()).then_some("there is nothing to undo")),
+            l.text(Msg::Undo),
+            l.text(Msg::AnimUndoHover),
+            busy.or_else(|| (!document.can_undo()).then(|| l.text(Msg::AnimReasonNothingToUndo))),
             false,
         ),
         TimelineAction::Redo => (
-            "Redo",
-            "Redo the last undone animation edit",
-            busy.or((!document.can_redo()).then_some("there is nothing to redo")),
+            l.text(Msg::Redo),
+            l.text(Msg::AnimRedoHover),
+            busy.or_else(|| (!document.can_redo()).then(|| l.text(Msg::AnimReasonNothingToRedo))),
             false,
         ),
         TimelineAction::ToggleMode => match document.mode() {
             EditorMode::Simple => (
-                "Advanced",
-                "Switch to Advanced mode: one row per property with individual keys, easing, \
-                 and a value graph",
+                l.text(Msg::AnimAdvanced),
+                l.text(Msg::AnimToAdvancedHover),
                 busy,
                 false,
             ),
             EditorMode::Advanced => (
-                "Simple",
-                "Switch to Simple mode: one bar per element, stretch it to retime and pick \
-                 ready-made presets",
+                l.text(Msg::AnimSimple),
+                l.text(Msg::AnimToSimpleHover),
                 busy,
                 true,
             ),
@@ -208,6 +214,7 @@ pub fn action_spec<T: Copy + Ord>(
         action: text,
         disabled_reason: reason,
         active,
+        locale,
     }
 }
 
@@ -276,6 +283,7 @@ impl<T: Copy + Ord> DragGuard<T> for AnimDocument<T> {
 /// clicked.
 pub(super) fn draw_transport<T: Copy + Ord>(
     ui: &mut Ui,
+    l: Locale,
     document: &AnimDocument<T>,
     state: &AnimationTimelineState<T>,
     rects: &mut Vec<(TimelineAction, Rect)>,
@@ -291,10 +299,10 @@ pub(super) fn draw_transport<T: Copy + Ord>(
                 ui.separator();
             }
             if action == TimelineAction::ToggleMode {
-                timecode_readout(ui, document);
+                timecode_readout(ui, l, document);
                 ui.separator();
             }
-            let spec = action_spec(action, document, state);
+            let spec = action_spec(action, document, state, l);
             let button = egui::Button::new(
                 RichText::new(spec.label)
                     .size(legible(11.0))
@@ -316,7 +324,7 @@ pub(super) fn draw_transport<T: Copy + Ord>(
             .min_size(Vec2::new(30.0, 22.0));
             let response = ui
                 .add_enabled(spec.disabled_reason.is_none(), button)
-                .hint(&spec.hover(action), spec.disabled_reason.unwrap_or(""));
+                .hint_in(l, &spec.hover(action), spec.disabled_reason.unwrap_or(""));
             rects.push((action, response.rect));
             if response.clicked() {
                 clicked.push((action, ui.input(|input| input.modifiers.shift)));
@@ -326,7 +334,7 @@ pub(super) fn draw_transport<T: Copy + Ord>(
     clicked
 }
 
-fn timecode_readout<T: Copy + Ord>(ui: &mut Ui, document: &AnimDocument<T>) {
+fn timecode_readout<T: Copy + Ord>(ui: &mut Ui, l: Locale, document: &AnimDocument<T>) {
     let rate = document.clip().timebase().rate();
     let text = format!(
         "{} / {}",
@@ -338,11 +346,12 @@ fn timecode_readout<T: Copy + Ord>(ui: &mut Ui, document: &AnimDocument<T>) {
             .size(legible(11.0))
             .color(text_color()),
     )
-    .on_hover_text(format!(
-        "Playhead / phase length as HH:MM:SS:FF (frame {} of {}). \
-             Drag on the ruler to scrub.",
-        document.playhead(),
-        document.phase_frames()
+    .on_hover_text(l.format(
+        Msg::AnimTimecodeHover,
+        &[
+            ("frame", Arg::from(document.playhead())),
+            ("total", Arg::from(document.phase_frames())),
+        ],
     ));
 }
 
@@ -365,7 +374,7 @@ pub(super) fn handle_keys<T: Copy + Ord>(
      -> Option<Result<TimelineAction, AnimEditorError<T>>> {
         // A key for a disabled control explains itself with the same reason
         // the button's hover gives, instead of failing silently.
-        if let Some(reason) = action_spec(action, document, state).disabled_reason {
+        if let Some(reason) = action_spec(action, document, state, state.locale()).disabled_reason {
             state.notice = Some(super::Notice::hint(reason));
             return None;
         }

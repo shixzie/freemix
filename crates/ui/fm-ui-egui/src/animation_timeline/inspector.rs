@@ -8,8 +8,9 @@ use egui::{
 };
 use fm_animation::{EASE_ONE, Easing, EasingPreset, Property, TrackKey, Value};
 use fm_ui_model::animation_editor::{AnimDocument, phase_state};
+use fm_ui_model::i18n::{Arg, Locale, Msg};
 
-use super::{AnimationTimelineState, TrackGeometry, strings};
+use super::{AnimationTimelineState, TrackGeometry, text};
 use crate::gating::Hint;
 use crate::theme::{
     AMBER, accent_color, border_color, field_label, legible, muted_color, raised_color, text_color,
@@ -21,6 +22,7 @@ pub const CURVE_HEIGHT: f32 = 96.0;
 
 pub(super) fn draw<T: Copy + Ord>(
     ui: &mut Ui,
+    l: Locale,
     document: &mut AnimDocument<T>,
     state: &mut AnimationTimelineState<T>,
     geometry: &TrackGeometry,
@@ -32,13 +34,13 @@ pub(super) fn draw<T: Copy + Ord>(
         state.active_row = None;
     }
     ui.horizontal(|ui| {
-        easing_picker(ui, document, state);
+        easing_picker(ui, l, document, state);
         ui.separator();
-        value_field(ui, document, state);
+        value_field(ui, l, document, state);
         ui.separator();
-        add_property_menu(ui, document, state);
+        add_property_menu(ui, l, document, state);
     });
-    curve(ui, document, state, geometry);
+    curve(ui, l, document, state, geometry);
 }
 
 /// The easing shared by every selected key, `None` when mixed or empty.
@@ -54,18 +56,24 @@ fn selected_easing<T: Copy + Ord>(document: &AnimDocument<T>) -> Option<Easing> 
 
 fn easing_picker<T: Copy + Ord>(
     ui: &mut Ui,
+    l: Locale,
     document: &mut AnimDocument<T>,
     state: &mut AnimationTimelineState<T>,
 ) {
-    ui.label(field_label("Easing"));
+    ui.label(field_label(l.text(Msg::AnimEasing)));
     let current = selected_easing(document);
     let empty = document.selection().is_empty();
     let selected_text = match (current, empty) {
         (_, true) => "—".to_owned(),
-        (Some(easing), false) => strings::easing_name(easing).to_owned(),
-        (None, false) => "Mixed".to_owned(),
+        (Some(easing), false) => text::easing_name(l, easing).to_owned(),
+        (None, false) => l.text(Msg::AnimEaseMixed).to_owned(),
     };
     let enabled = !empty && document.drag().is_none();
+    let reason = if empty {
+        l.text(Msg::AnimReasonNoSelection)
+    } else {
+        l.text(Msg::AnimReasonDrag)
+    };
     let mut chosen = None;
     let response = ui
         .add_enabled_ui(enabled, |ui| {
@@ -79,11 +87,11 @@ fn easing_picker<T: Copy + Ord>(
                                 easing_thumbnail(ui, preset.easing(), vec2(28.0, 16.0));
                                 ui.selectable_label(
                                     current == Some(preset.easing()),
-                                    strings::easing_preset_name(preset),
+                                    text::easing_preset_name(l, preset),
                                 )
                             })
                             .inner
-                            .on_hover_text(strings::easing_preset_hover(preset));
+                            .on_hover_text(text::easing_preset_hover(l, preset));
                         if response.clicked() {
                             chosen = Some(preset.easing());
                         }
@@ -92,15 +100,11 @@ fn easing_picker<T: Copy + Ord>(
                 .response
         })
         .inner;
-    response.hint(
-        "How the motion travels from each selected key to the next one. Pick a curve to \
-         apply it to every selected key (one undo step).",
-        "no keys are selected; click a key or drag a box around keys",
-    );
+    response.hint_in(l, l.text(Msg::AnimEasingHover), reason);
     if let Some(easing) = current.filter(|_| !empty) {
-        easing_thumbnail(ui, easing, vec2(36.0, 22.0)).on_hover_text(format!(
-            "{}: the shape of value over time between two keys",
-            strings::easing_name(easing)
+        easing_thumbnail(ui, easing, vec2(36.0, 22.0)).on_hover_text(l.format(
+            Msg::AnimEasingShapeHover,
+            &[("easing", Arg::Str(text::easing_name(l, easing)))],
         ));
     }
     if let Some(easing) = chosen
@@ -135,14 +139,16 @@ fn easing_thumbnail(ui: &mut Ui, easing: Easing, size: egui::Vec2) -> egui::Resp
 
 fn value_field<T: Copy + Ord>(
     ui: &mut Ui,
+    l: Locale,
     document: &mut AnimDocument<T>,
     state: &mut AnimationTimelineState<T>,
 ) {
-    ui.label(field_label("Value"));
+    ui.label(field_label(l.text(Msg::AnimValue)));
     let Some(row) = state.active_row else {
-        ui.add_enabled(false, egui::Button::new("—")).hint(
-            "The active row's value at the playhead",
-            "click a property row (or one of its keys) to choose what to edit",
+        ui.add_enabled(false, egui::Button::new("—")).hint_in(
+            l,
+            l.text(Msg::AnimValueNoRowHover),
+            l.text(Msg::AnimReasonNoValueRow),
         );
         return;
     };
@@ -158,13 +164,16 @@ fn value_field<T: Copy + Ord>(
                 CornerRadius::same(2),
                 Color32::from_rgba_unmultiplied(color.r, color.g, color.b, color.a),
             );
-            response.on_hover_text(format!(
-                "Colour at the playhead: {}. Colour keys are edited in the title designer.",
-                strings::format_value(row.property, value)
+            response.on_hover_text(l.format(
+                Msg::AnimColourAtPlayheadHover,
+                &[(
+                    "value",
+                    Arg::Str(&text::format_value(l, row.property, value)),
+                )],
             ));
         }
         Value::Scalar(raw) => {
-            let (unit, divisor) = strings::property_unit(row.property);
+            let (unit, divisor) = text::property_unit(row.property);
             #[allow(clippy::cast_precision_loss)] // Display only.
             let mut shown = state.value_edit.unwrap_or(raw as f64 / divisor);
             let range = row.property.range().map_or(
@@ -181,13 +190,13 @@ fn value_field<T: Copy + Ord>(
                         .max_decimals(1)
                         .suffix(unit),
                 )
-                .hint(
-                    &format!(
-                        "{} at the playhead. Changing it adds a key here, or updates the key \
-                         already here (one undo step when you let go).",
-                        strings::property_name(row.property)
+                .hint_in(
+                    l,
+                    &l.format(
+                        Msg::AnimValueHover,
+                        &[("property", Arg::Str(text::property_name(l, row.property)))],
                     ),
-                    "finish the current drag first",
+                    l.text(Msg::AnimReasonDrag),
                 );
             if response.changed() {
                 state.value_edit = Some(shown);
@@ -213,6 +222,7 @@ fn value_field<T: Copy + Ord>(
 
 fn add_property_menu<T: Copy + Ord>(
     ui: &mut Ui,
+    l: Locale,
     document: &mut AnimDocument<T>,
     state: &mut AnimationTimelineState<T>,
 ) {
@@ -224,11 +234,16 @@ fn add_property_menu<T: Copy + Ord>(
         .collect();
     let mut chosen = None;
     let enabled = document.drag().is_none() && !targets.is_empty();
+    let reason = if targets.is_empty() {
+        l.text(Msg::AnimReasonNoTargets)
+    } else {
+        l.text(Msg::AnimReasonDrag)
+    };
     let response = ui
         .add_enabled_ui(enabled, |ui| {
-            ui.menu_button("+ Animate property", |ui| {
+            ui.menu_button(l.text(Msg::AnimAnimateProperty), |ui| {
                 for (target, name) in &targets {
-                    ui.menu_button(name.as_str(), |ui| {
+                    let submenu = ui.menu_button(name.as_str(), |ui| {
                         for property in Property::ALL {
                             let animated = document
                                 .clip()
@@ -237,11 +252,12 @@ fn add_property_menu<T: Copy + Ord>(
                             let response = ui
                                 .add_enabled(
                                     !animated,
-                                    egui::Button::new(strings::property_name(property)),
+                                    egui::Button::new(text::property_name(l, property)),
                                 )
-                                .hint(
-                                    strings::property_hover(property),
-                                    "this property is already animated in this phase",
+                                .hint_in(
+                                    l,
+                                    text::property_hover(l, property),
+                                    l.text(Msg::AnimReasonAlreadyAnimated),
                                 );
                             if response.clicked() {
                                 chosen = Some((*target, property));
@@ -249,16 +265,15 @@ fn add_property_menu<T: Copy + Ord>(
                             }
                         }
                     });
+                    submenu.response.on_hover_text(
+                        l.format(Msg::AnimAnimateTargetHover, &[("name", Arg::Str(name))]),
+                    );
                 }
             })
             .response
         })
         .inner;
-    response.hint(
-        "Start animating another property: adds a key at the playhead holding its current \
-         value and makes it the active row.",
-        "there are no elements to animate, or a drag is in progress",
-    );
+    response.hint_in(l, l.text(Msg::AnimAnimatePropertyHover), reason);
     if let Some((target, property)) = chosen {
         match document.key_at_playhead(target, property) {
             Ok(key) => state.active_row = Some(key.track),
@@ -272,6 +287,7 @@ fn add_property_menu<T: Copy + Ord>(
 #[allow(clippy::too_many_lines)] // One painter pass over the graph.
 fn curve<T: Copy + Ord>(
     ui: &mut Ui,
+    l: Locale,
     document: &AnimDocument<T>,
     state: &AnimationTimelineState<T>,
     geometry: &TrackGeometry,
@@ -298,20 +314,17 @@ fn curve<T: Copy + Ord>(
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
-            "Value graph: click a property row to plot it here",
+            l.text(Msg::AnimGraphEmpty),
             small,
             muted_color(),
         );
-        response.on_hover_text(
-            "The value graph plots the active property over this phase, aligned with the \
-             timeline. Click a property row above to choose it.",
-        );
+        response.on_hover_text(l.text(Msg::AnimGraphEmptyHover));
         return;
     };
     painter.text(
         pos2(rect.left() + 6.0, rect.top() + 4.0),
         Align2::LEFT_TOP,
-        strings::property_name(row.property),
+        text::property_name(l, row.property),
         FontId::new(legible(11.0), FontFamily::Proportional),
         text_color(),
     );
@@ -381,7 +394,7 @@ fn curve<T: Copy + Ord>(
             let (top, bottom) = (plot.top() + 10.0, plot.bottom() - 10.0);
             #[allow(clippy::cast_possible_truncation)] // Screen coordinates.
             let y_of = |value: f64| bottom - ((value - low) / (high - low)) as f32 * (bottom - top);
-            let (unit, divisor) = strings::property_unit(row.property);
+            let (unit, divisor) = text::property_unit(row.property);
             for (value, align) in [(high, Align2::LEFT_TOP), (low, Align2::LEFT_BOTTOM)] {
                 painter.text(
                     pos2(
@@ -393,7 +406,7 @@ fn curve<T: Copy + Ord>(
                         },
                     ),
                     align,
-                    format!("{:.1}{unit}", value / divisor),
+                    text::format_number(l, value / divisor, 1, unit),
                     small.clone(),
                     text_dim_color(),
                 );
@@ -423,11 +436,10 @@ fn curve<T: Copy + Ord>(
         [pos2(end, plot.top()), pos2(end, plot.bottom())],
         Stroke::new(1.0, AMBER.gamma_multiply(0.6)),
     );
-    hover_readout(&painter, &response, document, row, plot);
-    response.on_hover_text(format!(
-        "Value graph of {}: its value over this phase, frame-aligned with the timeline. Dots \
-         are keys; the curve between them follows each key's easing.",
-        strings::property_name(row.property)
+    hover_readout(&painter, &response, l, document, row, plot);
+    response.on_hover_text(l.format(
+        Msg::AnimGraphHover,
+        &[("property", Arg::Str(text::property_name(l, row.property)))],
     ));
 }
 
@@ -435,6 +447,7 @@ fn curve<T: Copy + Ord>(
 fn hover_readout<T: Copy + Ord>(
     painter: &Painter,
     response: &egui::Response,
+    l: Locale,
     document: &AnimDocument<T>,
     row: TrackKey<T>,
     plot: Rect,
@@ -461,9 +474,15 @@ fn hover_readout<T: Copy + Ord>(
         painter.text(
             pos2(plot.right() - 6.0, plot.top() + 4.0),
             Align2::RIGHT_TOP,
-            format!(
-                "frame {frame}: {}",
-                strings::format_value(row.property, value)
+            l.format(
+                Msg::AnimGraphReadout,
+                &[
+                    ("frame", Arg::from(frame)),
+                    (
+                        "value",
+                        Arg::Str(&text::format_value(l, row.property, value)),
+                    ),
+                ],
             ),
             FontId::new(legible(10.0), FontFamily::Monospace),
             text_color(),
