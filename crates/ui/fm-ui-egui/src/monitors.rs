@@ -169,6 +169,47 @@ pub(crate) fn letterbox(video: Rect, width: u16, height: u16) -> Rect {
     Rect::from_center_size(video.center(), Vec2::new(width * scale, height * scale))
 }
 
+/// Fill of the well outside the canvas (pillar- or letterbox bars), a shade
+/// apart from the canvas black so the canvas edge stays visible.
+const PILLAR_BLACK: Color32 = Color32::from_rgb(13, 14, 17);
+
+/// Canvas shape assumed until the first monitor frame arrives.
+pub(crate) const DEFAULT_CANVAS: (u16, u16) = (16, 9);
+
+/// The canvas shape the monitor wells follow: the latest Program frame's
+/// dimensions, else the latest Preview frame's, else the previous shape. The
+/// client receives no project video settings, and the encoded fallback frames
+/// keep the canvas aspect, so the frames are the shape's only source; keeping
+/// the previous shape when frames lapse keeps the layout stable.
+pub(crate) fn canvas_shape(
+    images: &[Option<(MonitorImage, std::time::Instant)>; 2],
+    previous: (u16, u16),
+) -> (u16, u16) {
+    [MonitorTap::Program, MonitorTap::Preview]
+        .into_iter()
+        .filter_map(|tap| images[tap.index()].as_ref())
+        .map(|(image, _)| (image.width, image.height))
+        .find(|(width, height)| *width > 0 && *height > 0)
+        .unwrap_or(previous)
+}
+
+/// Height of a monitor well `width` points wide for a `canvas` shape.
+///
+/// A 16:9 canvas fills the width exactly. Taller canvases (4:3, square,
+/// portrait) may grow beyond the 16:9 height up to `height_budget`, so a
+/// portrait program is pillarboxed in a tall well instead of shrunk into a
+/// 16:9 box; wider canvases get a shorter well.
+pub(crate) fn monitor_video_height(width: f32, canvas: (u16, u16), height_budget: f32) -> f32 {
+    let (canvas_width, canvas_height) = if canvas.0 == 0 || canvas.1 == 0 {
+        DEFAULT_CANVAS
+    } else {
+        canvas
+    };
+    let natural = width * f32::from(canvas_height) / f32::from(canvas_width);
+    let widescreen = width * 9.0 / 16.0;
+    natural.min(widescreen.max(height_budget)).max(1.0).round()
+}
+
 /// Whether a delivered frame may be shown as current: it must be fresh, and
 /// a simulated frame must show the currently realized source. Native frames
 /// are read back from the compositor's own output, so they carry the
@@ -350,20 +391,33 @@ fn image_well_formed(image: &MonitorImage) -> bool {
         && image.rgba.len() == usize::from(image.width) * usize::from(image.height) * 4
 }
 
-/// Draws one monitor well of exactly `width` points, 16:9 plus its header.
+/// Size and shape of one monitor well.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WellShape {
+    pub(crate) width: f32,
+    pub(crate) video_height: f32,
+    pub(crate) canvas: (u16, u16),
+}
+
+/// Draws one monitor well: its header plus a video area of
+/// `shape.video_height`, with the canvas pillar- or letterboxed inside it.
 #[allow(clippy::too_many_lines)] // one immediate-mode region
 pub(crate) fn draw_monitor(
     ui: &mut Ui,
     bus: Bus,
     view: Option<&ClientView>,
-    width: f32,
+    shape: WellShape,
     picture: Option<MonitorPicture>,
     native_runtime: bool,
 ) {
+    let WellShape {
+        width,
+        video_height,
+        canvas,
+    } = shape;
     let routing = view.map(|view| bus.routing(view));
     let fade_to_black = bus == Bus::Program
         && view.is_some_and(|view| view.switcher.desired_fade_to_black.target_active);
-    let video_height = (width * 9.0 / 16.0).round();
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(width, MONITOR_HEADER_HEIGHT + video_height),
         Sense::hover(),
@@ -466,7 +520,10 @@ pub(crate) fn draw_monitor(
             .map(|routing| WireInputId::from_domain(routing.realized.0)),
         native_runtime,
     );
-    painter.rect_filled(video, CornerRadius::ZERO, MONITOR_BLACK);
+    // The canvas area inside the well; the rest is a darker pillar or letterbox.
+    let canvas_area = letterbox(video, canvas.0, canvas.1);
+    painter.rect_filled(video, CornerRadius::ZERO, PILLAR_BLACK);
+    painter.rect_filled(canvas_area, CornerRadius::ZERO, MONITOR_BLACK);
     if let Some(picture) = picture.filter(|_| caption.picture != PictureMode::Hidden) {
         let tint = if caption.picture == PictureMode::Live {
             Color32::WHITE
@@ -475,7 +532,7 @@ pub(crate) fn draw_monitor(
         };
         painter.image(
             picture.texture,
-            letterbox(video, picture.facts.width, picture.facts.height),
+            letterbox(canvas_area, picture.facts.width, picture.facts.height),
             Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
             tint,
         );
@@ -484,7 +541,7 @@ pub(crate) fn draw_monitor(
     let center = video.center();
     let title_size = (width / 22.0).clamp(15.0, 30.0);
     if !live {
-        draw_safe_area(&painter, video);
+        draw_safe_area(&painter, canvas_area);
         let (title, size, title_color) = match &routing {
             Some(routing) => (routing.realized.1.as_str(), title_size, TEXT_DIM),
             None => ("ROUTING STATE UNAVAILABLE", title_size * 0.7, MUTED),
@@ -549,7 +606,7 @@ pub(crate) fn draw_monitor(
             MUTED.gamma_multiply(0.75),
         );
     }
-    let mut badge_right = video.max.x - 10.0;
+    let mut badge_right = canvas_area.max.x - 10.0;
     for badge in caption.badges.iter().rev() {
         let galley = painter.layout_no_wrap(
             (*badge).to_owned(),
@@ -557,8 +614,11 @@ pub(crate) fn draw_monitor(
             Color32::BLACK,
         );
         let badge_rect = Rect::from_min_max(
-            pos2(badge_right - galley.size().x - 12.0, video.min.y + 10.0),
-            pos2(badge_right, video.min.y + 28.0),
+            pos2(
+                badge_right - galley.size().x - 12.0,
+                canvas_area.min.y + 10.0,
+            ),
+            pos2(badge_right, canvas_area.min.y + 28.0),
         );
         let fill = if *badge == "STALE" { MUTED } else { AMBER };
         painter.rect_filled(badge_rect, CornerRadius::same(3), fill);
@@ -572,7 +632,10 @@ pub(crate) fn draw_monitor(
         badge_right = badge_rect.min.x - 6.0;
     }
     if fade_to_black {
-        let badge = Rect::from_min_size(video.min + Vec2::new(10.0, 10.0), Vec2::new(44.0, 18.0));
+        let badge = Rect::from_min_size(
+            canvas_area.min + Vec2::new(10.0, 10.0),
+            Vec2::new(44.0, 18.0),
+        );
         painter.rect_filled(badge, CornerRadius::same(3), PROGRAM);
         painter.text(
             badge.center(),

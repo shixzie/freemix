@@ -17,6 +17,16 @@ daemon, Program frames are GPU-downscaled CPU readbacks captioned
 `ENCODED PREVIEW {w}×{h} · CPU readback`, and Preview reads
 `NO PREVIEW TAP · native Preview image not produced`.
 
+The wells follow the canvas shape. The client receives no project video
+settings, so Studio takes the shape from the latest Program frame (else
+Preview) and keeps it while frames lapse, starting at 16:9. A 16:9 canvas
+fills the well's width exactly as before. A taller canvas (4:3, square,
+portrait) grows the well into up to half the console height, so a 1080x1920
+program is pillarboxed in a tall well instead of shrunk into a 16:9 box. Bars
+outside the canvas are a shade lighter than the canvas black, and the
+title-safe marks, `SIMULATED`/`STALE` badges, and `FTB` badge sit on the
+canvas.
+
 Input tiles have no per-input thumbnail feed. A tile borrows the Preview or
 Program tap frame only while that frame is current (under one second old) and
 shows exactly that tile's input as the tap's realized source; the picture is
@@ -25,8 +35,8 @@ tile keeps its dim ordinal and reads `no thumbnail`. When a frame goes stale
 the tile drops back to the ordinal while the monitor well dims it.
 
 The console layout: a menu bar (File / Edit / View / Inputs / Output / Help);
-a top bar (show name, connection pill, revision, `REC` and `LIVE` on-air
-badges, UTC clock); Preview and Program monitors with tally
+a top bar (show name, connection pill, revision, the edit group of padlock,
+Undo, and Redo keys, `REC` and `LIVE` on-air badges, UTC clock); Preview and Program monitors with tally
 headers around the transition column (Cut/Fade/Wipe/Alpha/Slide/Zoom keys,
 shared duration, vertical manual T-bar with a travel readout in its header
 and its start/commit/cancel keys, a manual-transition status card naming the
@@ -35,14 +45,56 @@ daemon's realized state differs, and Fade-to-Black with a realized on-air
 status line: `PROGRAM LIVE`, `FADING TO BLACK n%`, `PROGRAM BLACK`,
 `RESTORING · n% BLACK`, plus `· BLACK/LIVE REQUESTED` until the daemon adopts
 a new target); the input bank as tally-bordered tiles with a tally strip
-along the top edge (click = Preview, double-click or `CUT` = Preview then Cut,
+along the top edge, sized to fill the card (up to 320 px wide; the bank
+scrolls only when even minimum-width tiles do not fit) (click = Preview, double-click or `CUT` = Preview then Cut,
 `···` or right-click = Preview/Cut/Rename/Move menu); the audio mixer with vertical
-channel strips whose meters and faders grow with the window (segmented RMS meters with a peak line, a peak-hold marker that
-holds 1.5 s then falls 20 dB/s, and a clip lamp latched 3 s at 0 dBFS; fader,
-gain/balance/delay, M/S/AFV) and a pinned Master meter strip; a side panel
+channel strips whose meters and faders grow with the window, and a pinned
+Master meter strip. Each strip has a fixed-height name plate (the input's key
+cap, tally-tinted, and up to two lines of name ending in an ellipsis; full
+name on hover), a peak-hold readout, a segmented meter (RMS segments, a thin
+latest-peak line, a held-peak marker that holds 1.5 s then falls 20 dB/s, and
+a clip lamp), scale ticks in a gutter beside the meter at 0/-6/-12/-18/-30/
+-48/-60 dBFS (labelled on the Master strip, 0 in red), a console fader, the
+gain/balance/delay entries, and LED keys for M (red), S (amber), and AFV
+(accent): lit keys show a lit LED bar, a tinted fill, and a coloured border;
+unlit keys have a dark LED and a dim label. The fader has a taper that gives
+most travel to the range around unity (0 dB at 72 %), a slot with scale
+marks (+10, 0, 10, 20, 40, 60, ∞; unity longer and brighter), a trailing
+level fill (grey while muted), and a ridged two-tone cap with a white index
+line (red while muted) and an accent outline while dragged or focused. Drags
+are relative, so grabbing the cap never jumps the gain; double-click returns
+to 0 dB and Up/Down nudge 0.5 dB. The clip lamp, the readout (red `CLIP`),
+and the meter outline latch at 0 dBFS until the operator clicks the meter or
+readout, or `RESET n CLIPS` in the mixer header. Meters use only the
+per-channel peak and RMS the daemon already sends; a side panel
 whose outputs card lists one fixed-height status row per recorder slot and
 per stream target, above Overlays/Stingers tabs; and a bottom status bar with
 the latest result/notice and keyboard hints.
+
+Edit history and the padlock (Protocol 2.22). The top-bar edit group is a
+fixed-width padlock key, `UNLOCKED` as an unlit outline with an open shackle
+or `LOCKED` as an amber chip with a closed one (a deliberate hold, read like a
+pending state), then compact Undo and Redo keys with painted turn-back arrows.
+The keys are disabled, and their tooltips name the reason, when there is
+nothing to undo or redo, the session lacks `edit_project`, or the project is
+locked; the enabled tooltip names the revision the action targets and the
+history depth (`Undo the project edit at REV 10  [Ctrl+Z]` / `2 steps in the
+shared history`). Edit › History labels the items with that revision
+(`Undo edit at REV 10`), shows the shortcut in the right-hand column or an
+amber `LOCKED` when the padlock blocks the item, and shows the padlock item
+with its state (`UNLOCKED` / `LOCKED`). While the project is locked: the
+status bar reads `EDITS LOCKED`; the input bank header shows a padlock badge
+and an `EDITS LOCKED` chip (`n LOCKED` when only inputs are locked); every
+tile's name bar carries a small amber padlock badge (only the locked inputs'
+tiles when just inputs are locked); Rename and Move items in the tile menu
+and the Edit menu show `LOCKED` and the footer note names the padlock; the
+Stinger Configure card shows a padlock badge and disables `ASSIGN`/`CLEAR`
+with "the project is locked against edits", as do Output › Stingers (slot
+setup is a project edit, while firing a Stinger stays live switching). Moves
+that would shift a neighbour with its own padlock are disabled with "the
+neighbouring input is locked against moves", and an open rename editor
+closes when a padlock engages. Switching, transitions, audio, overlays, and
+outputs are never locked.
 
 Every status surface shares one tone vocabulary: a lamp plus a fixed-width
 chip that is solid red only when on air (recording, a stream reported live,
@@ -108,25 +160,39 @@ bottom-right while the console is Ready; the status bar keeps the latest
 message. The meters stay unlit in these simulated-mode captures, so peak hold
 and clip lamps are not visible here.
 
+Window sizes: the side panel takes at most a quarter of the window (320-560
+px). At 2560x1440 the monitors, the input bank tiles (four columns of about
+290 px), and the mixer faders (up to 620 px of travel) grow to use the space.
+At 1280x720 the switcher row keeps its full height and the console scrolls to
+reach the lower row; the lower row is at least 370 px tall so the bank and
+mixer cards stay level, and narrow card headers drop the gesture hint before
+the counts and lock chips.
+
 | File | What it shows |
 |---|---|
-| `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click: both wells show `SIMULATED` encoded frames (Camera 1 Wide on Preview, Camera 2 Close on Program), the two tiles borrow those frames, and the Program tooltip names what the simulated render omits. |
-| `studio-console-monitors-scene.png` | 1920x1080 with the Main Scene input on Program: Preview shows a simulated frame of Camera 2 Close and Program the simulated composite of the scene's layers. The outputs card shows both recorders `STOPPED`, the HLS ladder amber `NOT LIVE` (desired on, no transport sample), and RTMP Backup `OFF`. |
-| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, red-outlined row, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder `NOT LIVE` with its `STOP` key (amber `LIVE` outline in the top bar), the stopped RTMP target with `START`. |
-| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: header `T-BAR 27%`, the amber status card `FADE · Camera 2 Close ▶ Camera 1 Wide · 27%`, and the active `COMMIT`/`CANCEL` keys while automatic transitions are blocked. |
-| `studio-console-fade-to-black.png` | 1920x1080 after `FTB`: the lit `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program header. |
-| `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with `STOP` keys and amber `NOT LIVE` chips (simulated mode reports no transport), and the Output menu with `NOT LIVE` in the right-hand column of both Stop items and `STOPPED` beside the recorder items. |
-| `studio-console-stingers.png` | 1920x1080, Stingers tab after choosing Playback Clip in the Configure media picker and clicking `ASSIGN` for S1: the S1 card lit green `READY` with its media name and accent selection outline, the Configure card's green `READY` chip, enabled `CLEAR`, and the replicated cut point (15 fr), preload, audio, and fallback. REC 2 is still recording from the overview. |
-| `studio-console-top.png` | The default 1600x940 window, idle: both recorder rows `STOPPED` with `START` keys, stream rows with their keys, overlays collapsed to one row per channel. |
-| `studio-console-stopped.png` | The compact 1280x800 layout: the side panel narrows to 320 px so the monitors keep their width; the input bank and mixer scroll inside their cards and the Master strip stays pinned. |
-| `studio-console-compact-720.png` | 1280x720: the same compact layout at the smallest supported height; long output names and details end in an ellipsis. |
-| `studio-console-recording.png` | 1600x940 with independent per-slot recording (REC 1 `STOPPED` / `START`, REC 2 `RECORDING` / `STOP`) and the Stingers tab: eight empty slot cards (S1 outlined as the slot being configured), the shared duration line, and the Configure card listing the defaults `ASSIGN` would apply. |
-| `studio-console-menu.png` | 1920x1080 with the Output menu open: transitions with their `C`/`F` keys, Fade to black `B`, the disabled manual T-bar Commit/Cancel, recorder items with `STOPPED`, stream items with `NOT LIVE`/`OFF`, and the Stingers submenus (Clear disabled with no configured slot). |
-| `studio-console-shortcuts.png` | Help › Keyboard shortcuts: the green `Keys active` lamp, the reference generated from the same table the console's key handler is tested against, with fixed-width key caps. |
+| `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click: both wells show `SIMULATED` encoded frames (Camera 1 Wide on Preview, Camera 2 Close on Program), and the two tiles borrow those frames. |
+| `studio-console-monitors-scene.png` | 1920x1080 with the Main Scene input on Program: Preview shows a simulated frame of Camera 2 Close and Program the simulated composite of the scene's layers. Both recorders `STOPPED`, the HLS ladder amber `NOT LIVE` (desired on, no transport sample), RTMP Backup `OFF`. |
+| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder `NOT LIVE` with its `STOP` key, the stopped RTMP target with `START`. |
+| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: header `T-BAR 31%`, the amber status card `FADE · Main Scene ▶ Camera 2 Close · 31%`, and the active `COMMIT`/`CANCEL` keys while automatic transitions are blocked. |
+| `studio-console-fade-to-black.png` | 1920x1080 after `FTB`: the lit `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program canvas. |
+| `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with `STOP` keys and amber `NOT LIVE` chips, and the Output menu with `NOT LIVE` beside both Stop items and `STOPPED` beside the recorder items. |
+| `studio-console-stingers.png` | 1920x1080, Stingers tab after choosing Playback Clip in the Configure media picker and clicking `ASSIGN` for S1: the S1 card lit green `READY` with its media name, the Configure card's green `READY` chip, enabled `CLEAR`, and the replicated cut point (15 fr), preload, audio, and fallback. |
+| `studio-console-top.png` | The default 1600x940 window, idle: the top-bar padlock (`UNLOCKED`) with disabled Undo/Redo keys (the operator session lacks `edit_project`), both recorder rows `STOPPED`, overlays collapsed to one row per channel. |
+| `studio-console-stopped.png` | The compact 1280x800 layout: the side panel narrows to 320 px so the monitors keep their width; the input bank header keeps `7 SOURCES` and drops the gesture hint; the mixer scrolls inside its card and the Master strip stays pinned. |
+| `studio-console-compact-720.png` | 1280x720: the same compact layout at the smallest supported height; the console scrolls to reach the lower row. |
+| `studio-console-recording.png` | 1600x940 with REC 2 `RECORDING` / `STOP` and the Stingers tab: eight empty slot cards (S1 outlined), the shared duration line, and the Configure card listing the defaults `ASSIGN` would apply. |
+| `studio-console-menu.png` | 1920x1080 with the Output menu open: transitions with their keys, Fade to black `B`, the disabled manual T-bar Commit/Cancel, recorder items with `STOPPED`, stream items with `NOT LIVE`/`OFF`, and the Stingers submenus. |
+| `studio-console-edit-menu.png` | 1920x1080, admin session after two renames and an undo, with Host Laptop's own padlock engaged: Edit › History with `Undo edit at REV 10  Ctrl+Z` and `Redo edit at REV 11  Ctrl+Shift+Z`, `Lock project edits` with `UNLOCKED` in the state column, and under Preview input (Camera 2 Close) `Move later` disabled with an amber `LOCKED` (its neighbour is locked). The enabled Undo/Redo keys sit beside the padlock in the top bar. |
+| `studio-console-locked.png` | The same session after `remote-lock on`: the amber `LOCKED` padlock with disabled Undo/Redo keys, `EDITS LOCKED` in the status bar and the input bank header (with a padlock badge), a padlock badge on every tile's name bar, and on the Stingers tab the Configure card's padlock badge with `ASSIGN`/`CLEAR` disabled. Switching, audio, and output keys stay live. |
+| `studio-console-mixer.png` | Mixer crop at 1920x1080 with Camera 1 Wide at -6.0 dB, Camera 2 Close muted and balanced L25 (lit red M, red cap index line, grey fill), Guest Remote soloed at +4.5 dB with AFV off and 480 samples delay (lit amber S), Lower Third at -18.0 dB with AFV off, Playback Clip muted at -inf: two-line name plates with tally-tinted key caps, peak readouts (`--` without meter samples), meter tick gutters, fader scales with the brighter unity mark, and the Master scale. |
+| `studio-console-2560.png` | 2560x1440: larger monitors, input tiles of about 290 px in four columns, and mixer faders with the full 620 px travel; the side panel stops at 560 px. |
+| `studio-console-portrait.png` | 1920x1080 with the demo project's video settings changed to 1080x1920 (Main Scene layers refitted): both wells grow to half the console height and pillarbox the 202x360 portrait frames; the tiles borrowing the frames pillarbox them too. |
+| `studio-console-shortcuts.png` | Help › Keyboard shortcuts: the green `Keys active` lamp, the reference generated from the same table the console's key handler is tested against, with fixed-width key caps (including Ctrl+Z / Ctrl+Shift+Z). |
 | `studio-console-input-menu.png` | Right-click menu on the Host Laptop tile: key cap and name header, Select on Preview / Cut to Program enabled, Rename and Move disabled, and the footer note that the operator session lacks `edit_project`. |
-| `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with attempt count, retry delay, the last error, and the disabled-controls footer over the dimmed monitors; `NO STATE` recorder and overlay chips, `— TARGETS`, `— SOURCES`, centered empty states for the input bank and mixer, and "No synchronized show" in the top bar. |
+| `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with attempt count, retry delay, the last error, and the disabled-controls footer over the dimmed monitors; `NO STATE` chips, `— TARGETS`, `— SOURCES`, centered empty states for the input bank and mixer, and "No synchronized show" in the top bar (no edit group without synchronized state). |
 
-Every screenshot was regenerated in this round. Pointer hover is not
+Every screenshot was regenerated in this round; `-edit-menu`, `-locked`,
+`-mixer`, `-2560`, and `-portrait` are new. Pointer hover is not
 delivered to open menus on this headless Xvfb host (also with the previous
 build), so the menu captures show no hover tooltips; disabled menu items still
 carry their `Unavailable: …` reason as a tooltip.
@@ -182,6 +248,17 @@ freemix-cli remote-record-start 127.0.0.1:7000 --recorder 2
 
 DISPLAY=:99 import -window root shot.png
 ```
+
+The edit-menu, locked, and mixer captures run Studio with `--role admin`
+(the default operator role lacks `edit_project`), then drive the daemon with
+`freemix-cli remote-rename 127.0.0.1:7000 6 "Playback Clip B"`, a rename
+back, `remote-rename … 3 "Host Laptop 2"`, `remote-undo`, `remote-lock … on
+--input 3`, click `Edit`; then `remote-lock … on` and click the `STINGERS`
+tab; then `remote-lock … off` and `remote-audio-strip` for inputs 1, 2, 4,
+5, and 6 before cropping the mixer. The 2560 capture sizes the screen and
+window to 2560x1440. The portrait capture edits the demo project's
+`project.settings.video` to 1080x1920 (and the Main Scene layer geometry to
+fit) in `project.json` before launching Studio.
 
 Software Vulkan is slow; allow roughly ten seconds after the window maps
 before capturing. The overview's overlay take was a click on O1 `TAKE` in the

@@ -47,15 +47,15 @@ mod toasts;
 mod transitions;
 
 pub use edit_history::{
-    EditHistoryAvailability, HistoryActionAvailability, PadlockToggle, REDO_SHORTCUT,
-    UNDO_SHORTCUT, command_rejection_message, edit_history_availability, input_edit_lock_reason,
-    padlock_toggle,
+    EditHistoryAvailability, EditLockSummary, HistoryActionAvailability, PadlockToggle,
+    REDO_SHORTCUT, UNDO_SHORTCUT, command_rejection_message, edit_history_availability,
+    edit_lock_summary, input_edit_lock_reason, padlock_toggle, stinger_edit_lock_reason,
 };
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
 pub use menu::ConsoleLayout;
 pub use stinger_config::{
     default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
-    stinger_remove_intent,
+    stinger_remove_intent, stinger_setup_block_reason,
 };
 pub use stream_control::{StreamAction, stream_action, stream_command_pending};
 
@@ -64,7 +64,7 @@ use theme::{BORDER, GRAPHITE, PANEL};
 
 const NARROW_MONITOR_WIDTH: f32 = 700.0;
 const SIDE_PANEL_WIDTH: f32 = 370.0;
-const MIN_LOWER_ROW_HEIGHT: f32 = 340.0;
+const MIN_LOWER_ROW_HEIGHT: f32 = 370.0;
 
 /// Changed controls for one input's Master audio strip.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -934,6 +934,8 @@ pub struct StudioShell {
     toasts: toasts::ToastQueue,
     meters: meter_ballistics::MeterBallistics,
     monitor_textures: monitors::MonitorTextures,
+    /// Canvas shape of the latest monitor frame, kept while frames lapse.
+    canvas: (u16, u16),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1035,6 +1037,7 @@ impl StudioShell {
     pub fn draw(&mut self, ui: &mut Ui, state: &StudioUiState) -> Vec<StudioIntent> {
         theme::apply_console_visuals(ui.ctx());
         self.monitor_textures.sync(ui.ctx(), &state.monitor_images);
+        self.canvas = monitors::canvas_shape(&state.monitor_images, self.canvas);
         if state.monitor_images.iter().any(Option::is_some) {
             // Frames age into STALE without any new state arriving.
             ui.ctx()
@@ -1102,13 +1105,22 @@ impl StudioShell {
         let central = CentralPanel::default()
             .frame(Frame::new().fill(GRAPHITE).inner_margin(Margin::same(12)))
             .show(ui, |ui| {
+                // Tall canvases may grow their wells into about half the
+                // console height; 16:9 wells always fill their width.
+                let well_budget = (ui.available_height() * 0.5).max(200.0);
                 // Small windows keep every region reachable by scrolling.
                 ScrollArea::vertical()
                     .id_salt("studio-console")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let top = ui.cursor().min;
-                        self.draw_switcher_row(ui, state, manual_transition_controls, &mut intents);
+                        self.draw_switcher_row(
+                            ui,
+                            state,
+                            manual_transition_controls,
+                            well_budget,
+                            &mut intents,
+                        );
                         let monitors = egui::Rect::from_min_max(
                             top,
                             egui::pos2(top.x + ui.available_width(), ui.min_rect().max.y),
@@ -1159,9 +1171,11 @@ impl StudioShell {
         ui: &mut Ui,
         state: &StudioUiState,
         manual: ManualTransitionAvailability,
+        well_budget: f32,
         intents: &mut Vec<StudioIntent>,
     ) {
         let gap = 12.0;
+        let canvas = self.canvas;
         let available = ui.available_width();
         let column = transitions::TRANSITION_COLUMN_WIDTH + 2.0 * gap;
         let now = std::time::Instant::now();
@@ -1179,7 +1193,11 @@ impl StudioShell {
                 ui,
                 bus,
                 state.view.as_ref(),
-                width,
+                monitors::WellShape {
+                    width,
+                    video_height: monitors::monitor_video_height(width, canvas, well_budget),
+                    canvas,
+                },
                 pictures[bus.tap().index()],
                 native_runtime,
             );
@@ -1301,6 +1319,7 @@ impl Default for StudioShell {
             toasts: toasts::ToastQueue::default(),
             meters: meter_ballistics::MeterBallistics::default(),
             monitor_textures: monitors::MonitorTextures::default(),
+            canvas: monitors::DEFAULT_CANVAS,
         }
     }
 }
@@ -2250,6 +2269,29 @@ mod tests {
     }
 
     #[test]
+    fn project_padlock_blocks_stinger_setup_but_names_its_reason() {
+        let mut state = stinger_state(vec![configured_slot(3, 2)]);
+        assert_eq!(stinger_setup_block_reason(&state), None);
+        if let Some(view) = state.view.as_mut() {
+            view.edit_locks.project = true;
+        }
+        // The session gates still pass; only the padlock blocks setup.
+        assert!(stinger_configuration_available(&state));
+        assert_eq!(
+            stinger_setup_block_reason(&state),
+            Some("the project is locked against edits")
+        );
+        assert_eq!(stinger_assign_intent(&state, S3, input(2), 30), None);
+        assert_eq!(stinger_remove_intent(&state, S3), None);
+        // A session gate is reported before the padlock.
+        state.can_transition = false;
+        assert_eq!(
+            stinger_setup_block_reason(&state),
+            Some("this session lacks the transition permission")
+        );
+    }
+
+    #[test]
     fn stinger_editor_media_prefers_choice_then_slot_media_then_preview() {
         use crate::stinger_config::{StingerEditor, stinger_editor_media, stinger_summary};
         let state = stinger_state(vec![configured_slot(3, 1)]);
@@ -2778,6 +2820,42 @@ mod tests {
             height: 360,
             age: std::time::Duration::from_millis(age_ms),
         }
+    }
+
+    #[test]
+    fn monitor_wells_follow_the_canvas_shape_and_keep_it_while_frames_lapse() {
+        use crate::monitors::{DEFAULT_CANVAS, canvas_shape, monitor_video_height};
+        let now = std::time::Instant::now();
+        let image = |tap, size| {
+            Some((
+                monitor_image(tap, MonitorFrameOrigin::Simulated, wire(1), size),
+                now,
+            ))
+        };
+        // No frame yet: the default 16:9 shape.
+        assert_eq!(canvas_shape(&[None, None], DEFAULT_CANVAS), (16, 9));
+        // Program wins over Preview; Preview stands in when Program is absent.
+        let portrait = [
+            image(MonitorTap::Preview, (640, 360)),
+            image(MonitorTap::Program, (202, 360)),
+        ];
+        assert_eq!(canvas_shape(&portrait, DEFAULT_CANVAS), (202, 360));
+        let preview_only = [image(MonitorTap::Preview, (360, 360)), None];
+        assert_eq!(canvas_shape(&preview_only, DEFAULT_CANVAS), (360, 360));
+        // Frames lapse: the last shape is kept so the layout does not jump.
+        assert_eq!(canvas_shape(&[None, None], (202, 360)), (202, 360));
+
+        // 16:9 always fills the width, whatever the budget.
+        assert!((monitor_video_height(640.0, (16, 9), 900.0) - 360.0).abs() < f32::EPSILON);
+        assert!((monitor_video_height(640.0, (1920, 1080), 100.0) - 360.0).abs() < f32::EPSILON);
+        // Portrait grows into the height budget instead of a 16:9 box...
+        assert!((monitor_video_height(640.0, (1080, 1920), 540.0) - 540.0).abs() < f32::EPSILON);
+        // ...but never below the 16:9 height, and never beyond its own shape.
+        assert!((monitor_video_height(640.0, (1080, 1920), 100.0) - 360.0).abs() < f32::EPSILON);
+        assert!((monitor_video_height(640.0, (1, 1), 5_000.0) - 640.0).abs() < f32::EPSILON);
+        // Wider canvases get a shorter well; a zero shape falls back to 16:9.
+        assert!((monitor_video_height(640.0, (64, 27), 900.0) - 270.0).abs() < f32::EPSILON);
+        assert!((monitor_video_height(640.0, (0, 0), 900.0) - 360.0).abs() < f32::EPSILON);
     }
 
     #[test]

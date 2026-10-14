@@ -15,10 +15,12 @@ use fm_ui_model::{ClientView, StingerStatus};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::panels::{stinger_slot_presentation, stinger_slot_state, stinger_slot_tone};
 use crate::theme::{
-    ACCENT, ACCENT_FILL, BORDER_STRONG, MUTED, TEXT, TEXT_DIM, WIDGET, card, mono, section_label,
-    status_chip,
+    ACCENT, ACCENT_FILL, BORDER_STRONG, MUTED, TEXT, TEXT_DIM, WIDGET, card, lock_badge, mono,
+    section_label, status_chip,
 };
-use crate::{StudioIntent, StudioUiState, TransitionGate, transition_availability};
+use crate::{
+    StudioIntent, StudioUiState, TransitionGate, stinger_edit_lock_reason, transition_availability,
+};
 
 /// Number of Stinger slots the protocol addresses.
 pub(crate) const STINGER_SLOT_COUNT: u8 = 8;
@@ -55,8 +57,19 @@ pub const fn stinger_configuration_available(state: &StudioUiState) -> bool {
     transition_availability(TransitionGate::from_state(state)).basic()
 }
 
-/// Returns the assignment intent when the session allows Stinger configuration
-/// and `media_input` is an input of the replicated view.
+/// Returns why Stinger slot setup is unavailable, if it is: a session gate
+/// first, then the project padlock (slot setup is a project edit).
+#[must_use]
+pub fn stinger_setup_block_reason(state: &StudioUiState) -> Option<&'static str> {
+    if stinger_configuration_available(state) {
+        stinger_edit_lock_reason(state)
+    } else {
+        Some(unavailable_reason(state, Capability::Transition))
+    }
+}
+
+/// Returns the assignment intent when the session allows Stinger configuration,
+/// the project is unlocked, and `media_input` is an input of the replicated view.
 #[must_use]
 pub fn stinger_assign_intent(
     state: &StudioUiState,
@@ -65,7 +78,7 @@ pub fn stinger_assign_intent(
     duration_frames: u32,
 ) -> Option<StudioIntent> {
     let view = state.view.as_ref()?;
-    (stinger_configuration_available(state) && view.inputs.contains(&media_input)).then_some(
+    (stinger_setup_block_reason(state).is_none() && view.inputs.contains(&media_input)).then_some(
         StudioIntent::AssignStingerMedia {
             slot,
             media_input,
@@ -82,8 +95,9 @@ pub fn stinger_remove_intent(
     slot: WireStingerSlotId,
 ) -> Option<StudioIntent> {
     let view = state.view.as_ref()?;
-    (stinger_configuration_available(state) && configured_stinger(view, slot.number()).is_some())
-        .then_some(StudioIntent::RemoveStinger { slot })
+    (stinger_setup_block_reason(state).is_none()
+        && configured_stinger(view, slot.number()).is_some())
+    .then_some(StudioIntent::RemoveStinger { slot })
 }
 
 /// The replicated descriptor of one configured slot.
@@ -255,7 +269,9 @@ pub(crate) fn draw_stinger_configuration(
     intents: &mut Vec<StudioIntent>,
 ) {
     ui.add_space(8.0);
-    let reason = unavailable_reason(state, Capability::Transition);
+    let blocked = stinger_setup_block_reason(state);
+    let reason = blocked.unwrap_or_else(|| unavailable_reason(state, Capability::Transition));
+    let locked = blocked.is_some() && stinger_edit_lock_reason(state) == blocked;
     editor.slot = editor.slot.clamp(1, STINGER_SLOT_COUNT);
     let stingers = state.view.as_ref().map(|view| view.stingers.as_slice());
     let slot_state = stinger_slot_state(stingers, editor.slot);
@@ -272,6 +288,11 @@ pub(crate) fn draw_stinger_configuration(
                     104.0,
                 )
                 .on_hover_text("Replicated readiness of the selected slot");
+                if locked {
+                    lock_badge(ui).on_hover_text(
+                        "Slot setup is locked with the project; firing Stingers still works",
+                    );
+                }
             });
         });
         let Some(view) = &state.view else {
@@ -290,7 +311,7 @@ pub(crate) fn draw_stinger_configuration(
         let assign =
             media.and_then(|media| stinger_assign_intent(state, slot, media, duration_frames));
         let remove = stinger_remove_intent(state, slot);
-        let session_ok = stinger_configuration_available(state);
+        let session_ok = blocked.is_none();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let width = ((ui.available_width() - 6.0) / 2.0).floor().max(80.0);

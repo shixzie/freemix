@@ -32,6 +32,10 @@ pub struct HistoryActionAvailability {
     pub expected_edit: Option<u64>,
     /// Why the action is unavailable; empty when enabled.
     pub reason: &'static str,
+    /// Whether the project padlock is what blocks the action.
+    pub locked: bool,
+    /// Entries on this side of the shared history.
+    pub depth: u16,
 }
 
 impl HistoryActionAvailability {
@@ -40,17 +44,48 @@ impl HistoryActionAvailability {
         self.expected_edit.is_some()
     }
 
-    const fn available(edit: u64) -> Self {
+    const fn available(edit: u64, depth: u16) -> Self {
         Self {
             expected_edit: Some(edit),
             reason: "",
+            locked: false,
+            depth,
         }
     }
 
-    const fn unavailable(reason: &'static str) -> Self {
+    const fn unavailable(reason: &'static str, locked: bool, depth: u16) -> Self {
         Self {
             expected_edit: None,
             reason,
+            locked,
+            depth,
+        }
+    }
+
+    /// Menu label: the verb plus the revision it reverts or reapplies, so the
+    /// operator sees which shared edit the action targets.
+    #[must_use]
+    pub fn menu_label(self, verb: &str) -> String {
+        match self.expected_edit {
+            Some(edit) => format!("{verb} edit at REV {edit}"),
+            None => verb.to_owned(),
+        }
+    }
+
+    /// Hover text: what the action does, its key, and the history depth.
+    #[must_use]
+    pub fn hover(self, verb: &str, shortcut: &str) -> String {
+        let steps = match self.depth {
+            0 => "history empty".to_owned(),
+            1 => "1 step in the shared history".to_owned(),
+            depth => format!("{depth} steps in the shared history"),
+        };
+        match self.expected_edit {
+            Some(edit) => format!("{verb} the project edit at REV {edit}  [{shortcut}]\n{steps}"),
+            None => format!(
+                "{verb}  [{shortcut}]\n{steps}\nUnavailable: {}",
+                self.reason
+            ),
         }
     }
 }
@@ -89,9 +124,9 @@ impl EditHistoryAvailability {
 pub fn edit_history_availability(state: &StudioUiState) -> EditHistoryAvailability {
     let blocked = match &state.view {
         _ if !project_editing_available(state) => {
-            Some(unavailable_reason(state, Capability::EditProject))
+            Some((unavailable_reason(state, Capability::EditProject), false))
         }
-        Some(view) if view.edit_locks.project => Some(PROJECT_LOCKED_REASON),
+        Some(view) if view.edit_locks.project => Some((PROJECT_LOCKED_REASON, true)),
         _ => None,
     };
     let history = state
@@ -99,14 +134,24 @@ pub fn edit_history_availability(state: &StudioUiState) -> EditHistoryAvailabili
         .as_ref()
         .map(|view| view.edit_history)
         .unwrap_or_default();
-    let side = |next: Option<u64>, empty: &'static str| match (blocked, next) {
-        (Some(reason), _) => HistoryActionAvailability::unavailable(reason),
-        (None, None) => HistoryActionAvailability::unavailable(empty),
-        (None, Some(edit)) => HistoryActionAvailability::available(edit),
+    let side = |next: Option<u64>, depth: u16, empty: &'static str| match (blocked, next) {
+        (Some((reason, locked)), _) => {
+            HistoryActionAvailability::unavailable(reason, locked, depth)
+        }
+        (None, None) => HistoryActionAvailability::unavailable(empty, false, depth),
+        (None, Some(edit)) => HistoryActionAvailability::available(edit, depth),
     };
     EditHistoryAvailability {
-        undo: side(history.next_undo, NOTHING_TO_UNDO_REASON),
-        redo: side(history.next_redo, NOTHING_TO_REDO_REASON),
+        undo: side(
+            history.next_undo,
+            history.undo_depth,
+            NOTHING_TO_UNDO_REASON,
+        ),
+        redo: side(
+            history.next_redo,
+            history.redo_depth,
+            NOTHING_TO_REDO_REASON,
+        ),
     }
 }
 
@@ -179,6 +224,80 @@ pub fn padlock_toggle(state: &StudioUiState) -> PadlockToggle {
             unavailable_reason(state, Capability::EditProject)
         },
     }
+}
+
+/// Console-wide padlock facts that badge editable controls.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EditLockSummary {
+    /// The project-wide padlock is engaged.
+    pub project: bool,
+    /// Inputs with their own padlock engaged.
+    pub locked_inputs: usize,
+}
+
+impl EditLockSummary {
+    /// Whether any padlock is engaged.
+    #[must_use]
+    pub const fn any(self) -> bool {
+        self.project || self.locked_inputs > 0
+    }
+
+    /// Short chip text for the input bank header, if any lock applies.
+    #[must_use]
+    pub fn bank_chip(self) -> Option<String> {
+        if self.project {
+            Some("EDITS LOCKED".to_owned())
+        } else if self.locked_inputs > 0 {
+            Some(format!("{} LOCKED", self.locked_inputs))
+        } else {
+            None
+        }
+    }
+
+    /// One-paragraph explanation of what the padlocks block and keep.
+    #[must_use]
+    pub fn detail(self) -> String {
+        let inputs = match self.locked_inputs {
+            0 => String::new(),
+            1 => "1 input is locked against rename and move.".to_owned(),
+            count => format!("{count} inputs are locked against rename and move."),
+        };
+        if self.project {
+            format!(
+                "Project edits are locked: rename, move, Stinger slot setup, undo, and redo are \
+                 blocked. Switching, transitions, audio, overlays, and outputs still work.{}{inputs}",
+                if inputs.is_empty() { "" } else { "\n" }
+            )
+        } else if inputs.is_empty() {
+            "Project edits are unlocked.".to_owned()
+        } else {
+            format!("Project edits are unlocked. {inputs}")
+        }
+    }
+}
+
+/// Summarizes the replicated padlocks; empty without synchronized state.
+#[must_use]
+pub fn edit_lock_summary(state: &StudioUiState) -> EditLockSummary {
+    state
+        .view
+        .as_ref()
+        .map_or_else(EditLockSummary::default, |view| EditLockSummary {
+            project: view.edit_locks.project,
+            locked_inputs: view.edit_locks.inputs.len(),
+        })
+}
+
+/// Returns why Stinger slot setup is blocked by the project padlock, if it is.
+/// Slot configuration is a project edit; firing a Stinger is live switching
+/// and is never locked.
+#[must_use]
+pub fn stinger_edit_lock_reason(state: &StudioUiState) -> Option<&'static str> {
+    state
+        .view
+        .as_ref()
+        .is_some_and(|view| view.edit_locks.project)
+        .then_some(PROJECT_LOCKED_REASON)
 }
 
 /// Returns why one input's rename or move is blocked by a padlock, if it is.
@@ -453,6 +572,112 @@ mod tests {
         assert_eq!(
             read_only.reason,
             "this session lacks the edit_project permission"
+        );
+    }
+
+    #[test]
+    fn history_labels_name_the_target_revision_and_depth() {
+        let available = edit_history_availability(&editor(EditLocks::default(), HISTORY));
+        assert_eq!(available.undo.menu_label("Undo"), "Undo edit at REV 7");
+        assert_eq!(available.redo.menu_label("Redo"), "Redo edit at REV 8");
+        assert_eq!(
+            available.undo.hover("Undo", UNDO_SHORTCUT),
+            "Undo the project edit at REV 7  [Ctrl+Z]\n2 steps in the shared history"
+        );
+        assert!(
+            available
+                .redo
+                .hover("Redo", REDO_SHORTCUT)
+                .ends_with("1 step in the shared history")
+        );
+        assert!(!available.undo.locked);
+
+        let locked = edit_history_availability(&editor(
+            EditLocks {
+                project: true,
+                inputs: Vec::new(),
+            },
+            HISTORY,
+        ));
+        assert!(locked.undo.locked && locked.redo.locked);
+        assert_eq!(locked.undo.menu_label("Undo"), "Undo");
+        assert_eq!(
+            locked.undo.hover("Undo", UNDO_SHORTCUT),
+            "Undo  [Ctrl+Z]\n2 steps in the shared history\nUnavailable: the project is locked against edits"
+        );
+
+        let empty =
+            edit_history_availability(&editor(EditLocks::default(), EditHistoryStatus::EMPTY));
+        assert!(!empty.undo.locked);
+        assert!(
+            empty
+                .undo
+                .hover("Undo", UNDO_SHORTCUT)
+                .contains("history empty")
+        );
+    }
+
+    #[test]
+    fn lock_summary_badges_project_and_known_input_locks() {
+        let none = edit_lock_summary(&editor(EditLocks::default(), HISTORY));
+        assert!(!none.any());
+        assert_eq!(none.bank_chip(), None);
+        assert_eq!(none.detail(), "Project edits are unlocked.");
+
+        let inputs = edit_lock_summary(&editor(
+            EditLocks {
+                project: false,
+                inputs: vec![input(2)],
+            },
+            HISTORY,
+        ));
+        assert_eq!(inputs.locked_inputs, 1);
+        assert_eq!(inputs.bank_chip().as_deref(), Some("1 LOCKED"));
+        assert_eq!(
+            inputs.detail(),
+            "Project edits are unlocked. 1 input is locked against rename and move."
+        );
+
+        let project = edit_lock_summary(&editor(
+            EditLocks {
+                project: true,
+                inputs: vec![input(1), input(2)],
+            },
+            HISTORY,
+        ));
+        assert!(project.any());
+        assert_eq!(project.bank_chip().as_deref(), Some("EDITS LOCKED"));
+        assert!(project.detail().starts_with("Project edits are locked"));
+        assert!(
+            project
+                .detail()
+                .ends_with("2 inputs are locked against rename and move.")
+        );
+
+        let offline = StudioUiState::new(StudioConnectionStatus::Disconnected);
+        assert_eq!(edit_lock_summary(&offline), EditLockSummary::default());
+    }
+
+    #[test]
+    fn stinger_setup_is_blocked_only_by_the_project_padlock() {
+        let input_only = editor(
+            EditLocks {
+                project: false,
+                inputs: vec![input(1)],
+            },
+            HISTORY,
+        );
+        assert_eq!(stinger_edit_lock_reason(&input_only), None);
+        let project = editor(
+            EditLocks {
+                project: true,
+                inputs: Vec::new(),
+            },
+            HISTORY,
+        );
+        assert_eq!(
+            stinger_edit_lock_reason(&project),
+            Some(PROJECT_LOCKED_REASON)
         );
     }
 

@@ -267,6 +267,63 @@ pub(crate) fn paint_lamp(painter: &egui::Painter, center: egui::Pos2, radius: f3
     }
 }
 
+/// Paints a padlock glyph centered on `center`; `scale` 1.0 is 11 x 15 px.
+/// An open padlock lifts and offsets its shackle.
+pub(crate) fn paint_lock_glyph(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    scale: f32,
+    color: Color32,
+    locked: bool,
+) {
+    let body = egui::Rect::from_center_size(
+        center + Vec2::new(0.0, 3.0 * scale),
+        Vec2::new(11.0 * scale, 8.0 * scale),
+    );
+    let lift = if locked { 0.0 } else { 3.0 * scale };
+    let shackle = egui::Rect::from_min_max(
+        egui::pos2(
+            body.left() + 2.0 * scale + lift,
+            body.top() - 6.0 * scale - lift,
+        ),
+        egui::pos2(
+            body.right() - 2.0 * scale + lift,
+            body.top() + 3.0 * scale - lift,
+        ),
+    );
+    painter.rect_stroke(
+        shackle,
+        CornerRadius::same(3),
+        Stroke::new(1.6 * scale.max(0.75), color),
+        StrokeKind::Middle,
+    );
+    painter.rect_filled(body, CornerRadius::same(1), color);
+}
+
+/// Size of the small padlock badge shown on locked editable controls.
+pub(crate) const LOCK_BADGE_SIZE: Vec2 = Vec2::new(20.0, 18.0);
+
+/// Paints the small amber padlock badge into `rect`.
+pub(crate) fn paint_lock_badge(painter: &egui::Painter, rect: egui::Rect) {
+    painter.rect_filled(rect, CornerRadius::same(3), AMBER.gamma_multiply(0.14));
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(3),
+        Stroke::new(1.0, AMBER.gamma_multiply(0.5)),
+        StrokeKind::Inside,
+    );
+    paint_lock_glyph(painter, rect.center(), 0.72, AMBER, true);
+}
+
+/// A small amber padlock badge marking a control blocked by an edit lock.
+pub(crate) fn lock_badge(ui: &mut Ui) -> Response {
+    let (rect, response) = ui.allocate_exact_size(LOCK_BADGE_SIZE, Sense::hover());
+    if ui.is_rect_visible(rect) {
+        paint_lock_badge(ui.painter(), rect);
+    }
+    response
+}
+
 /// A fixed-width status chip so stacked rows keep their columns aligned.
 pub(crate) fn status_chip(ui: &mut Ui, text: &str, tone: Tone, width: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());

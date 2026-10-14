@@ -1,4 +1,5 @@
-//! Pure meter ballistics: peak-hold markers that decay and latched clip lamps.
+//! Pure meter ballistics: peak-hold markers that decay and clip lamps that
+//! latch until the operator clears them.
 //!
 //! The state advances only by the frame time passed in (`dt_ms`); it never
 //! reads a clock. Levels are integer milli-dBFS so the shell stays `Eq`.
@@ -11,8 +12,6 @@ pub(crate) const PEAK_HOLD_MS: u32 = 1_500;
 /// Fall rate of a released peak-hold marker in milli-dB per millisecond
 /// (20 dB/s).
 pub(crate) const PEAK_DECAY_MDB_PER_MS: i32 = 20;
-/// How long a clip lamp stays lit after the last clipping sample.
-pub(crate) const CLIP_HOLD_MS: u32 = 3_000;
 /// Peaks at or above this level (milli-dBFS) light the clip lamp.
 pub(crate) const CLIP_THRESHOLD_MDB: i32 = -100;
 /// Floor below which a held marker is considered gone (matches the meter
@@ -41,8 +40,8 @@ pub(crate) struct ChannelBallistics {
     pub(crate) held_mdb: i32,
     /// Remaining hold time before the marker starts to fall.
     pub(crate) hold_remaining_ms: u32,
-    /// Remaining time the clip lamp stays lit.
-    pub(crate) clip_remaining_ms: u32,
+    /// The clip lamp is latched until the operator clears it.
+    pub(crate) clip_latched: bool,
     /// Latest observed peak; a released marker never falls below it.
     pub(crate) live_mdb: i32,
 }
@@ -52,7 +51,7 @@ impl Default for ChannelBallistics {
         Self {
             held_mdb: FLOOR_MDB,
             hold_remaining_ms: 0,
-            clip_remaining_ms: 0,
+            clip_latched: false,
             live_mdb: FLOOR_MDB,
         }
     }
@@ -61,8 +60,8 @@ impl Default for ChannelBallistics {
 impl ChannelBallistics {
     /// Advances by `dt_ms` and folds in a newly received peak sample, if any.
     ///
-    /// Without a new sample the state only ages: the clip lamp is not re-armed
-    /// by a repeated stale sample.
+    /// Without a new sample the state only ages: a repeated stale sample
+    /// does not re-arm a cleared clip lamp.
     pub(crate) fn step(&mut self, sample_mdb: Option<i32>, dt_ms: u32) {
         let dt_ms = dt_ms.min(MAX_STEP_MS);
         // Age the existing hold first, then let a louder sample capture it.
@@ -75,7 +74,6 @@ impl ChannelBallistics {
                 PEAK_DECAY_MDB_PER_MS.saturating_mul(i32::try_from(falling_ms).unwrap_or(i32::MAX));
             self.held_mdb = self.held_mdb.saturating_sub(fall).max(FLOOR_MDB);
         }
-        self.clip_remaining_ms = self.clip_remaining_ms.saturating_sub(dt_ms);
         if let Some(peak_mdb) = sample_mdb {
             self.live_mdb = peak_mdb;
             if peak_mdb >= self.held_mdb {
@@ -83,7 +81,7 @@ impl ChannelBallistics {
                 self.hold_remaining_ms = PEAK_HOLD_MS;
             }
             if peak_mdb >= CLIP_THRESHOLD_MDB {
-                self.clip_remaining_ms = CLIP_HOLD_MS;
+                self.clip_latched = true;
             }
         }
         self.held_mdb = self.held_mdb.max(self.live_mdb);
@@ -91,12 +89,13 @@ impl ChannelBallistics {
 
     /// Whether the clip lamp is lit.
     pub(crate) const fn clipping(self) -> bool {
-        self.clip_remaining_ms > 0
+        self.clip_latched
     }
 
-    /// Whether the marker or lamp still changes over time without new input.
+    /// Whether the marker still moves over time without new input. A latched
+    /// clip lamp is static until cleared.
     pub(crate) const fn animating(self) -> bool {
-        self.clip_remaining_ms > 0 || self.held_mdb > self.live_mdb
+        self.held_mdb > self.live_mdb
     }
 }
 
@@ -162,6 +161,36 @@ impl MeterBallistics {
         &self.meters[index].1
     }
 
+    /// Clears the latched clip lamps of one meter.
+    pub(crate) fn clear_clip(&mut self, key: MeterKey) {
+        for (_, states) in self
+            .meters
+            .iter_mut()
+            .filter(|(existing, _)| *existing == key)
+        {
+            for state in states {
+                state.clip_latched = false;
+            }
+        }
+    }
+
+    /// Clears every latched clip lamp.
+    pub(crate) fn clear_all_clips(&mut self) {
+        for (_, states) in &mut self.meters {
+            for state in states {
+                state.clip_latched = false;
+            }
+        }
+    }
+
+    /// Number of meters with a latched clip lamp.
+    pub(crate) fn clipped_meters(&self) -> usize {
+        self.meters
+            .iter()
+            .filter(|(_, states)| states.iter().any(|state| state.clip_latched))
+            .count()
+    }
+
     /// Drops meters whose keys are no longer shown.
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(MeterKey) -> bool) {
         self.meters.retain(|(key, _)| keep(*key));
@@ -172,6 +201,34 @@ impl MeterBallistics {
         self.meters
             .iter()
             .any(|(_, states)| states.iter().any(|state| state.animating()))
+    }
+}
+
+/// The highest held peak across a meter's channels, in milli-dBFS.
+pub(crate) fn held_peak_mdb(states: &[ChannelBallistics]) -> Option<i32> {
+    states.iter().map(|state| state.held_mdb).max()
+}
+
+/// Peak-hold readout text: `--` without a sample, `-inf` at the floor,
+/// `CLIP` while latched, else the held level to one decimal (`-12.4`).
+pub(crate) fn peak_readout(states: &[ChannelBallistics]) -> String {
+    if states.iter().any(|state| state.clip_latched) {
+        return "CLIP".to_owned();
+    }
+    match held_peak_mdb(states) {
+        None => "--".to_owned(),
+        Some(mdb) if mdb <= FLOOR_MDB => "-inf".to_owned(),
+        Some(mdb) => {
+            // Tenths of a dB, rounded half away from zero.
+            #[allow(clippy::cast_possible_truncation)] // bounded milli-dB
+            let tenths = (f64::from(mdb) / 100.0).round() as i32;
+            let sign = match tenths.cmp(&0) {
+                core::cmp::Ordering::Greater => "+",
+                core::cmp::Ordering::Less => "-",
+                core::cmp::Ordering::Equal => "",
+            };
+            format!("{sign}{}.{}", tenths.abs() / 10, tenths.abs() % 10)
+        }
     }
 }
 
@@ -258,19 +315,62 @@ mod tests {
     }
 
     #[test]
-    fn clip_lamp_latches_for_the_hold_time() {
+    fn clip_lamp_latches_until_cleared() {
         let mut state = ChannelBallistics::default();
         state.step(Some(-1_000), 16);
         assert!(!state.clipping());
         state.step(Some(0), 16);
         assert!(state.clipping());
-        // A stale clipping sample does not re-arm the lamp.
-        for _ in 0..11 {
-            state.step(None, 250);
+        // Time and quieter samples never release the lamp.
+        for _ in 0..100 {
+            state.step(Some(-40_000), 250);
         }
         assert!(state.clipping());
-        state.step(None, 250);
-        assert!(!state.clipping());
+        // A latched lamp is static: it needs no animation repaints.
+        assert!(!state.animating());
+    }
+
+    #[test]
+    fn clearing_releases_one_meter_or_all() {
+        let input = InputId::new(NonZeroU128::new(3).unwrap());
+        let mut meters = MeterBallistics::default();
+        meters.begin_frame(Some(1));
+        meters.update(MeterKey::Input(input), Some(&[channel(1_000_000)]), 16);
+        meters.update(MeterKey::Master, Some(&[channel(1_000_000)]), 16);
+        assert_eq!(meters.clipped_meters(), 2);
+        meters.clear_clip(MeterKey::Input(input));
+        assert_eq!(meters.clipped_meters(), 1);
+        // The same message on a later frame does not re-arm the cleared lamp.
+        meters.begin_frame(Some(1));
+        assert!(
+            !meters.update(MeterKey::Input(input), Some(&[channel(1_000_000)]), 16)[0].clipping()
+        );
+        meters.clear_all_clips();
+        assert_eq!(meters.clipped_meters(), 0);
+        // A new clipping message latches again.
+        meters.begin_frame(Some(2));
+        assert!(meters.update(MeterKey::Master, Some(&[channel(1_000_000)]), 16)[0].clipping());
+    }
+
+    #[test]
+    fn peak_readout_shows_the_highest_hold_or_clip() {
+        assert_eq!(peak_readout(&[]), "--");
+        let mut low = ChannelBallistics::default();
+        assert_eq!(peak_readout(&[low]), "-inf");
+        low.step(Some(-12_449), 16);
+        let mut high = ChannelBallistics::default();
+        high.step(Some(-6_050), 16);
+        assert_eq!(held_peak_mdb(&[low, high]), Some(-6_050));
+        assert_eq!(peak_readout(&[low, high]), "-6.1");
+        assert_eq!(peak_readout(&[low]), "-12.4");
+        let mut quiet = ChannelBallistics::default();
+        quiet.step(Some(-140), 16);
+        assert_eq!(peak_readout(&[quiet]), "-0.1");
+        let mut hot = ChannelBallistics::default();
+        hot.step(Some(-250), 16);
+        assert_eq!(peak_readout(&[hot]), "-0.3");
+        hot.step(Some(0), 16);
+        assert_eq!(peak_readout(&[low, hot]), "CLIP");
     }
 
     #[test]
@@ -287,8 +387,9 @@ mod tests {
         assert!(states[0].clipping());
         assert!(!states[1].clipping());
         meters.update(MeterKey::Master, Some(&[channel(500_000)]), 16);
-        assert!(meters.animating());
+        assert_eq!(meters.clipped_meters(), 1);
         assert_eq!(meters.update(MeterKey::Input(input), None, 16), &[]);
+        assert_eq!(meters.clipped_meters(), 0);
         meters.retain(|key| key != MeterKey::Master);
         assert!(!meters.animating());
     }
@@ -297,16 +398,21 @@ mod tests {
     fn only_new_meter_messages_feed_peaks() {
         let mut meters = MeterBallistics::default();
         meters.begin_frame(Some(7));
-        assert!(meters.update(MeterKey::Master, Some(&[channel(1_000_000)]), 16)[0].clipping());
-        // The same message on later frames only ages the lamp.
+        let held = meters.update(MeterKey::Master, Some(&[channel(500_000)]), 16)[0].held_mdb;
+        assert_eq!(held, -6_021);
+        // The same message on later frames only ages the marker.
         for _ in 0..12 {
             meters.begin_frame(Some(7));
-            meters.update(MeterKey::Master, Some(&[channel(1_000_000)]), 250);
+            meters.update(MeterKey::Master, Some(&[channel(500_000)]), 250);
         }
         meters.begin_frame(Some(7));
-        assert!(!meters.update(MeterKey::Master, Some(&[channel(1_000_000)]), 16)[0].clipping());
+        let aged = meters.update(MeterKey::Master, Some(&[channel(500_000)]), 16)[0];
+        // The live peak floors the marker at the level last seen.
+        assert_eq!(aged.held_mdb, -6_021);
+        assert_eq!(aged.hold_remaining_ms, 0);
         meters.begin_frame(Some(8));
-        assert!(meters.update(MeterKey::Master, Some(&[channel(1_000_000)]), 16)[0].clipping());
+        let fresh = meters.update(MeterKey::Master, Some(&[channel(500_000)]), 16)[0];
+        assert_eq!(fresh.hold_remaining_ms, PEAK_HOLD_MS);
     }
 
     #[test]

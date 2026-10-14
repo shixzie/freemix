@@ -11,7 +11,7 @@ use fm_protocol::{WireRecorderSlot, WireStingerSlotId, WireStreamTargetId};
 use fm_types::InputId;
 
 use crate::gating::{Capability, unavailable_reason};
-use crate::input_bank::project_editing_available;
+use crate::input_bank::{neighbour_move_lock_reason, project_editing_available};
 use crate::outputs::{recorder_row, stream_row};
 use crate::panels::SideTab;
 use crate::panels::{
@@ -25,7 +25,7 @@ use crate::{
     InputMoveDirection, ManualTransitionAvailability, RECORDER_SLOT_COUNT, RecordingAction,
     RenameDraft, STUDIO_SHORTCUTS, ShortcutGroup, StreamAction, StudioIntent, StudioShell,
     StudioUiState, TransitionGate, fade_to_black, preview_selection_available, recording_action,
-    stinger_assign_intent, stinger_configuration_available, stinger_remove_intent, stream_action,
+    stinger_assign_intent, stinger_remove_intent, stinger_setup_block_reason, stream_action,
     stream_command_pending, transition_availability,
 };
 use crate::{
@@ -209,10 +209,12 @@ impl StudioShell {
             .color(if name.is_some() { TEXT } else { MUTED }),
         );
         let no_preview = "no input is selected on Preview";
-        if item(
+        let locked = lock_reason.is_some();
+        if lockable_item(
             ui,
-            editing && preview.is_some(),
+            (editing && preview.is_some(), locked),
             "Rename…",
+            None,
             None,
             if editing { no_preview } else { reason },
         ) && let Some((_, input)) = preview
@@ -221,16 +223,33 @@ impl StudioShell {
             self.layout.show_input_bank = true;
             self.rename_draft = Some(RenameDraft::new(input, name));
         }
+        let neighbour_lock = |direction| {
+            state
+                .view
+                .as_ref()
+                .zip(preview)
+                .and_then(|(view, (index, _))| {
+                    neighbour_move_lock_reason(&view.inputs, &view.edit_locks, index, direction)
+                })
+        };
+        let earlier_lock = neighbour_lock(InputMoveDirection::Up);
+        let later_lock = neighbour_lock(InputMoveDirection::Down);
         let earlier = preview.is_some_and(|(index, _)| index > 0);
-        if item(
+        if lockable_item(
             ui,
-            editing && earlier,
+            (
+                editing && earlier && earlier_lock.is_none(),
+                locked || earlier_lock.is_some(),
+            ),
             "Move earlier",
             None,
-            if editing {
-                "the Preview input is already first"
-            } else {
+            None,
+            if !editing {
                 reason
+            } else if earlier {
+                earlier_lock.unwrap_or("")
+            } else {
+                "the Preview input is already first"
             },
         ) && let Some((_, input)) = preview
         {
@@ -240,15 +259,21 @@ impl StudioShell {
             });
         }
         let later = preview.is_some_and(|(index, _)| index + 1 < count);
-        if item(
+        if lockable_item(
             ui,
-            editing && later,
+            (
+                editing && later && later_lock.is_none(),
+                locked || later_lock.is_some(),
+            ),
             "Move later",
             None,
-            if editing {
-                "the Preview input is already last"
-            } else {
+            None,
+            if !editing {
                 reason
+            } else if later {
+                later_lock.unwrap_or("")
+            } else {
+                "the Preview input is already last"
             },
         ) && let Some((_, input)) = preview
         {
@@ -514,7 +539,7 @@ impl StudioShell {
         }
         ui.separator();
         heading(ui, "Stingers");
-        self.stinger_menu(ui, state, reason, intents);
+        self.stinger_menu(ui, state, intents);
     }
 
     /// Output ▸ Stingers: assign the Preview input to a slot, or clear a slot.
@@ -522,16 +547,12 @@ impl StudioShell {
         &mut self,
         ui: &mut Ui,
         state: &StudioUiState,
-        reason: &str,
         intents: &mut Vec<StudioIntent>,
     ) {
-        let available = stinger_configuration_available(state);
+        let blocked = stinger_setup_block_reason(state);
+        let available = blocked.is_none();
         let preview = preview_input(state).map(|(_, input)| input);
-        let assign_reason = if available {
-            "no input is selected on Preview"
-        } else {
-            reason
-        };
+        let assign_reason = blocked.unwrap_or("no input is selected on Preview");
         let duration_frames = self.transition_duration_frames;
         ui.add_enabled_ui(available && preview.is_some(), |ui| {
             ui.menu_button("Assign Preview as stinger media", |ui| {
@@ -562,11 +583,7 @@ impl StudioShell {
             .view
             .as_ref()
             .is_some_and(|view| !view.stingers.is_empty());
-        let clear_reason = if available {
-            "no Stinger slot is configured"
-        } else {
-            reason
-        };
+        let clear_reason = blocked.unwrap_or("no Stinger slot is configured");
         ui.add_enabled_ui(available && configured, |ui| {
             ui.menu_button("Clear stinger slot", |ui| {
                 for number in 1..=8_u8 {
@@ -812,36 +829,74 @@ pub(crate) fn shortcut_status(state: &StudioUiState) -> (String, Tone) {
     }
 }
 
-/// Edit-menu History items: Undo/Redo with shortcut hints and the padlock.
+/// Right-column marker for a menu item blocked by a padlock.
+const LOCKED_MARK: &str = "LOCKED";
+
+/// A menu entry whose right column reads `LOCKED` (amber) while a padlock
+/// blocks it, and its shortcut otherwise.
+fn lockable_item(
+    ui: &mut Ui,
+    (enabled, locked): (bool, bool),
+    label: &str,
+    shortcut: Option<&str>,
+    hover: Option<&str>,
+    reason: &str,
+) -> bool {
+    let mut button = Button::new(label);
+    if locked {
+        button = button.shortcut_text(
+            RichText::new(LOCKED_MARK)
+                .size(10.0)
+                .strong()
+                .color(Tone::Pending.color()),
+        );
+    } else if let Some(shortcut) = shortcut {
+        button = button.shortcut_text(RichText::new(shortcut).color(MUTED));
+    }
+    let response = ui.add_enabled(enabled, button);
+    let response = match hover {
+        Some(hover) => response.on_hover_text(hover),
+        None => response,
+    };
+    response
+        .on_disabled_hover_text(format!("Unavailable: {reason}"))
+        .clicked()
+}
+
+/// Edit-menu History items: Undo/Redo naming the revision they target, with
+/// shortcut hints (or `LOCKED`), and the padlock with its current state.
 fn history_menu_items(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
     let history = edit_history_availability(state);
     heading(ui, "History");
-    if item(
-        ui,
-        history.undo.enabled(),
-        "Undo",
-        Some(UNDO_SHORTCUT),
-        history.undo.reason,
-    ) && let Some(intent) = history.undo_intent()
-    {
-        intents.push(intent);
+    for (verb, shortcut, side, intent) in [
+        ("Undo", UNDO_SHORTCUT, history.undo, history.undo_intent()),
+        ("Redo", REDO_SHORTCUT, history.redo, history.redo_intent()),
+    ] {
+        if lockable_item(
+            ui,
+            (side.enabled(), side.locked),
+            &side.menu_label(verb),
+            Some(shortcut),
+            Some(&side.hover(verb, shortcut)),
+            side.reason,
+        ) && let Some(intent) = intent
+        {
+            intents.push(intent);
+        }
     }
-    if item(
-        ui,
-        history.redo.enabled(),
-        "Redo",
-        Some(REDO_SHORTCUT),
-        history.redo.reason,
-    ) && let Some(intent) = history.redo_intent()
-    {
-        intents.push(intent);
-    }
+    ui.separator();
     let padlock = padlock_toggle(state);
-    if item(
+    let (status, tone) = if padlock.locked {
+        ("LOCKED", Tone::Pending)
+    } else {
+        ("UNLOCKED", Tone::Idle)
+    };
+    if status_item(
         ui,
         padlock.enabled,
         padlock.menu_label(),
-        None,
+        (status, tone),
+        padlock.hover(),
         padlock.reason,
     ) && let Some(intent) = padlock.intent()
     {

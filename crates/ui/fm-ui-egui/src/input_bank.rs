@@ -10,25 +10,55 @@ use egui::{
 };
 use fm_protocol::{MonitorFrameOrigin, MonitorTap, WireInputId};
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
-use fm_ui_model::SwitcherState;
+use fm_ui_model::{EditLocks, SwitcherState};
 
 use crate::gating::{self, Capability, Hint, unavailable_reason};
 use crate::monitors::{FrameFacts, MonitorPicture, letterbox, picture_visible};
 use crate::theme::{
-    ACCENT, BORDER_STRONG, GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PROGRAM, TEXT, TEXT_DIM, elided,
-    mono, pill, section_header, small_button, tally_badge, tally_color,
+    ACCENT, AMBER, BORDER_STRONG, GRAPHITE_RAISED, LOCK_BADGE_SIZE, MONITOR_BLACK, MUTED, PROGRAM,
+    TEXT, TEXT_DIM, Tone, elided, lock_badge, mono, paint_lock_badge, pill, section_header,
+    small_button, status_chip, tally_badge, tally_color,
 };
 use crate::{
     InputMoveDirection, RenameDraft, StudioIntent, StudioShell, StudioUiState, TransitionGate,
-    input_edit_lock_reason, preview_selection_available, tally_state, transition_availability,
+    edit_lock_summary, input_edit_lock_reason, preview_selection_available, tally_state,
+    transition_availability,
 };
 
 pub(crate) const MIN_TILE_WIDTH: f32 = 156.0;
-const MAX_TILE_WIDTH: f32 = 220.0;
+const MAX_TILE_WIDTH: f32 = 320.0;
 const TILE_NAME_HEIGHT: f32 = 22.0;
+/// Vertical space one tile row needs besides its 16:9 thumbnail: the name
+/// bar, the key row, and row spacing.
+const TILE_ROW_CHROME: f32 = TILE_NAME_HEIGHT + 20.0 + 14.0;
 
 pub(crate) fn project_editing_available(state: &StudioUiState) -> bool {
     state.connection_status.controls_enabled() && state.can_edit_project && state.view.is_some()
+}
+
+/// Picks the tile grid for `count` inputs: the largest tiles (up to the
+/// maximum) whose rows all fit `available_height`, else the densest grid of
+/// minimum-width tiles (the bank scrolls). Returns `(columns, tile_width)`.
+#[allow(clippy::cast_precision_loss)] // column and row counts are tiny
+pub(crate) fn bank_grid(
+    available_width: f32,
+    available_height: f32,
+    count: usize,
+    spacing: f32,
+) -> (usize, f32) {
+    let max_columns = dynamic_columns(available_width, spacing).min(count.max(1));
+    let width_for = |columns: usize| {
+        ((available_width - spacing * (columns as f32 - 1.0)) / columns as f32)
+            .clamp(MIN_TILE_WIDTH, MAX_TILE_WIDTH)
+            .floor()
+    };
+    (1..=max_columns)
+        .map(|columns| (columns, width_for(columns)))
+        .find(|(columns, width)| {
+            let rows = count.max(1).div_ceil(*columns) as f32;
+            rows * ((width * 9.0 / 16.0).round() + TILE_ROW_CHROME) <= available_height
+        })
+        .unwrap_or_else(|| (max_columns, width_for(max_columns)))
 }
 
 /// Returns the number of tile columns that fit the available width.
@@ -40,6 +70,28 @@ pub(crate) fn dynamic_columns(available_width: f32, spacing: f32) -> usize {
         occupied += spacing + MIN_TILE_WIDTH;
     }
     columns
+}
+
+/// Right-column marker for a tile menu item blocked by a padlock.
+const LOCKED_MARK: &str = "LOCKED";
+
+/// Why moving the input at `index` one step is blocked by the neighbour it
+/// would swap with, if that neighbour has its own padlock. The server refuses
+/// any reorder that changes a locked input's position.
+pub(crate) fn neighbour_move_lock_reason(
+    inputs: &[InputId],
+    locks: &EditLocks,
+    index: usize,
+    direction: InputMoveDirection,
+) -> Option<&'static str> {
+    let neighbour = match direction {
+        InputMoveDirection::Up => index.checked_sub(1)?,
+        InputMoveDirection::Down => index + 1,
+    };
+    let neighbour = *inputs.get(neighbour)?;
+    locks
+        .is_input_locked(neighbour)
+        .then_some("the neighbouring input is locked against moves")
 }
 
 /// Picks the monitor tap whose current frame shows exactly `input`, if any.
@@ -135,6 +187,12 @@ impl StudioShell {
             self.rename_draft = None;
             return;
         };
+        if view.edit_locks.blocks_input_edit(draft.input) {
+            // A padlock engaged while the editor was open: drop the draft
+            // rather than offer an Apply the server would refuse.
+            self.rename_draft = None;
+            return;
+        }
         let current = &view.input_names[index];
         if current != &draft.confirmed_name {
             if draft.name == draft.confirmed_name {
@@ -144,6 +202,7 @@ impl StudioShell {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one immediate-mode region
     pub(crate) fn draw_inputs(
         &mut self,
         ui: &mut Ui,
@@ -151,12 +210,15 @@ impl StudioShell {
         intents: &mut Vec<StudioIntent>,
     ) {
         let count = state.view.as_ref().map(|view| view.inputs.len());
+        let locks = edit_lock_summary(state);
         section_header(ui, "Input bank", |ui| {
-            ui.label(
-                RichText::new("click PVW · double-click CUT · right-click more")
-                    .size(10.0)
-                    .color(MUTED),
-            );
+            if let Some(chip) = locks.bank_chip() {
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    status_chip(ui, &chip, Tone::Pending, 92.0).on_hover_text(locks.detail());
+                    lock_badge(ui).on_hover_text(locks.detail());
+                });
+            }
             ui.label(
                 mono(count.map_or_else(
                     || "— SOURCES".to_owned(),
@@ -165,6 +227,14 @@ impl StudioShell {
                 .size(10.5)
                 .color(TEXT_DIM),
             );
+            // The gesture hint is dropped first when the header is narrow.
+            if ui.available_width() > 250.0 {
+                ui.label(
+                    RichText::new("click PVW · double-click CUT · right-click more")
+                        .size(10.0)
+                        .color(MUTED),
+                );
+            }
         });
         ui.add_space(2.0);
 
@@ -177,6 +247,7 @@ impl StudioShell {
             self.monitor_textures
                 .picture(tap, &state.monitor_images, now)
         });
+        let bank_height = ui.available_height();
         ScrollArea::vertical()
             .id_salt("studio-input-bank")
             .auto_shrink([false, false])
@@ -191,10 +262,8 @@ impl StudioShell {
                 };
                 let spacing = 8.0;
                 let available = ui.available_width() - 4.0;
-                let columns = dynamic_columns(available, spacing).min(view.inputs.len().max(1));
-                #[allow(clippy::cast_precision_loss)] // column counts are tiny
-                let tile_width = ((available - spacing * (columns as f32 - 1.0)) / columns as f32)
-                    .clamp(MIN_TILE_WIDTH, MAX_TILE_WIDTH);
+                let (columns, tile_width) =
+                    bank_grid(available, bank_height, view.inputs.len(), spacing);
                 for (row_index, row) in view.inputs.chunks(columns).enumerate() {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = spacing;
@@ -226,6 +295,19 @@ impl StudioShell {
                                         cut_enabled,
                                         reorder_enabled: reorder_enabled
                                             && input_edit_lock_reason(state, input).is_none(),
+                                        locked: input_edit_lock_reason(state, input).is_some(),
+                                        move_locks: [
+                                            InputMoveDirection::Up,
+                                            InputMoveDirection::Down,
+                                        ]
+                                        .map(|direction| {
+                                            neighbour_move_lock_reason(
+                                                &view.inputs,
+                                                &view.edit_locks,
+                                                index,
+                                                direction,
+                                            )
+                                        }),
                                     },
                                     intents,
                                 );
@@ -282,6 +364,7 @@ impl StudioShell {
                     tally,
                     thumbnail,
                     enabled,
+                    locked: tile.locked,
                     hovered: response.hovered(),
                     focused: response.has_focus(),
                     pressed: response.is_pointer_button_down_on(),
@@ -381,6 +464,7 @@ impl StudioShell {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one menu with its footer notes
     fn draw_tile_menu(
         &mut self,
         ui: &mut Ui,
@@ -411,9 +495,13 @@ impl StudioShell {
         ui.set_max_width(260.0);
         draw_tile_menu_header(ui, index, name, tile.tally);
         ui.separator();
+        let locked = tile.locked;
         let item = |ui: &mut Ui, enabled: bool, label: &str, shortcut: &str, reason: &str| {
             let mut button = egui::Button::new(label);
-            if !shortcut.is_empty() {
+            if shortcut == LOCKED_MARK {
+                button =
+                    button.shortcut_text(RichText::new(shortcut).size(10.0).strong().color(AMBER));
+            } else if !shortcut.is_empty() {
                 button = button.shortcut_text(RichText::new(shortcut).color(MUTED));
             }
             ui.add_enabled(enabled, button)
@@ -432,18 +520,26 @@ impl StudioShell {
             intents.extend(tile_intents(input, TileGesture::Cut, gates));
         }
         ui.separator();
-        if item(ui, reorder_enabled, "Rename…", "", edit_reason) {
+        let edit_mark = if locked { LOCKED_MARK } else { "" };
+        let [left_lock, right_lock] = tile.move_locks;
+        if item(ui, reorder_enabled, "Rename…", edit_mark, edit_reason) {
             self.rename_draft = Some(RenameDraft::new(input, name));
         }
         if item(
             ui,
-            reorder_enabled && index > 0,
+            reorder_enabled && index > 0 && left_lock.is_none(),
             "Move left",
-            "",
-            if reorder_enabled {
+            if left_lock.is_some() {
+                LOCKED_MARK
+            } else {
+                edit_mark
+            },
+            if !reorder_enabled {
+                edit_reason
+            } else if index == 0 {
                 "this input is already first"
             } else {
-                edit_reason
+                left_lock.unwrap_or("")
             },
         ) {
             intents.push(StudioIntent::MoveInput {
@@ -453,13 +549,19 @@ impl StudioShell {
         }
         if item(
             ui,
-            reorder_enabled && index + 1 < count,
+            reorder_enabled && index + 1 < count && right_lock.is_none(),
             "Move right",
-            "",
-            if reorder_enabled {
+            if right_lock.is_some() {
+                LOCKED_MARK
+            } else {
+                edit_mark
+            },
+            if !reorder_enabled {
+                edit_reason
+            } else if index + 1 >= count {
                 "this input is already last"
             } else {
-                edit_reason
+                right_lock.unwrap_or("")
             },
         ) {
             intents.push(StudioIntent::MoveInput {
@@ -615,6 +717,7 @@ pub(crate) struct TileReasons {
     pub(crate) edit: &'static str,
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent per-tile gates
 #[derive(Clone, Copy)]
 struct TileContext<'a> {
     input: InputId,
@@ -627,6 +730,10 @@ struct TileContext<'a> {
     enabled: bool,
     cut_enabled: bool,
     reorder_enabled: bool,
+    /// A padlock blocks renaming or moving this input.
+    locked: bool,
+    /// Why moving left / right is blocked by a neighbour's padlock, if it is.
+    move_locks: [Option<&'static str>; 2],
 }
 
 /// Per-frame facts that change how one tile is painted.
@@ -638,6 +745,7 @@ struct TilePaint<'a> {
     tally: crate::TallyState,
     thumbnail: Option<(MonitorTap, MonitorPicture)>,
     enabled: bool,
+    locked: bool,
     hovered: bool,
     focused: bool,
     pressed: bool,
@@ -651,6 +759,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         tally,
         thumbnail,
         enabled,
+        locked,
         hovered,
         focused,
         pressed,
@@ -779,13 +888,26 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             GRAPHITE_RAISED
         },
     );
+    let lock_room = if locked {
+        let badge = Rect::from_center_size(
+            pos2(
+                name_bar.max.x - 4.0 - LOCK_BADGE_SIZE.x / 2.0,
+                name_bar.center().y,
+            ),
+            Vec2::new(LOCK_BADGE_SIZE.x, LOCK_BADGE_SIZE.y - 2.0),
+        );
+        paint_lock_badge(&painter, badge);
+        LOCK_BADGE_SIZE.x + 6.0
+    } else {
+        0.0
+    };
     // One line, ending in an ellipsis; the tile tooltip carries the full name.
     let name_galley = elided(
         &painter,
         name,
         FontId::new(12.0, FontFamily::Proportional),
         TEXT,
-        name_bar.width() - 12.0,
+        name_bar.width() - 12.0 - lock_room,
     );
     painter.galley(
         pos2(
@@ -864,6 +986,36 @@ mod tests {
                 "Preview and Cut unavailable: no preview permission",
                 "Rename and Move unavailable: this session lacks the edit_project permission",
             ]
+        );
+    }
+
+    #[test]
+    fn moves_that_would_shift_a_locked_neighbour_are_blocked() {
+        let inputs = [id(1), id(2), id(3)];
+        let locks = EditLocks {
+            project: false,
+            inputs: vec![id(2)],
+        };
+        let reason = Some("the neighbouring input is locked against moves");
+        assert_eq!(
+            neighbour_move_lock_reason(&inputs, &locks, 0, InputMoveDirection::Down),
+            reason
+        );
+        assert_eq!(
+            neighbour_move_lock_reason(&inputs, &locks, 2, InputMoveDirection::Up),
+            reason
+        );
+        assert_eq!(
+            neighbour_move_lock_reason(&inputs, &locks, 0, InputMoveDirection::Up),
+            None
+        );
+        assert_eq!(
+            neighbour_move_lock_reason(&inputs, &locks, 2, InputMoveDirection::Down),
+            None
+        );
+        assert_eq!(
+            neighbour_move_lock_reason(&inputs, &EditLocks::default(), 1, InputMoveDirection::Up),
+            None
         );
     }
 
@@ -993,5 +1145,20 @@ mod tests {
         assert_eq!(dynamic_columns(100.0, 8.0), 1);
         assert_eq!(dynamic_columns(MIN_TILE_WIDTH * 2.0 + 8.0, 8.0), 2);
         assert_eq!(dynamic_columns(MIN_TILE_WIDTH * 2.0 + 7.0, 8.0), 1);
+    }
+
+    #[test]
+    fn bank_grid_grows_tiles_to_fill_tall_areas_and_scrolls_when_short() {
+        // A wide, tall bank: four columns of large tiles fit in two rows.
+        assert_eq!(bank_grid(1180.0, 560.0, 7, 8.0), (4, 289.0));
+        // Huge area: tiles stop at the maximum width.
+        assert_eq!(bank_grid(1180.0, 2_000.0, 7, 8.0), (1, MAX_TILE_WIDTH));
+        // The 1920x1080 bank keeps four columns.
+        assert_eq!(bank_grid(760.0, 480.0, 7, 8.0), (4, 184.0));
+        // Too short for any grid: the densest grid of minimum tiles scrolls.
+        assert_eq!(bank_grid(330.0, 80.0, 7, 8.0), (2, 161.0));
+        assert_eq!(bank_grid(100.0, 80.0, 7, 8.0), (1, MIN_TILE_WIDTH));
+        // Never more columns than inputs.
+        assert_eq!(bank_grid(1180.0, 100.0, 2, 8.0).0, 2);
     }
 }

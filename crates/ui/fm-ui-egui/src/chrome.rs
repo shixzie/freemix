@@ -10,10 +10,14 @@ use fm_protocol::StreamRealizedState;
 use crate::panels::latest_stream_sample;
 use crate::theme::{
     ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PROGRAM, TEXT,
-    TEXT_DIM, connection_color, mono, pill, status_dot,
+    TEXT_DIM, WIDGET_ACTIVE, WIDGET_HOVER, connection_color, mono, paint_lock_glyph, pill,
+    status_dot,
 };
 use crate::toasts::{Toast, ToastKind};
-use crate::{PadlockToggle, StudioConnectionStatus, StudioIntent, StudioUiState, padlock_toggle};
+use crate::{
+    PadlockToggle, REDO_SHORTCUT, StudioConnectionStatus, StudioIntent, StudioUiState,
+    UNDO_SHORTCUT, edit_history_availability, edit_lock_summary, padlock_toggle,
+};
 
 /// On-air indicator facts for the top bar, derived only from replicated state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -56,24 +60,124 @@ fn utc_now_seconds() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-/// The top-bar edit padlock with its hover explanation and toggle intent.
-fn padlock_control(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+/// The top-bar edit group: the project padlock beside Undo and Redo keys,
+/// each with its hover explanation and (when available) its intent.
+fn edit_controls(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
     let padlock = padlock_toggle(state);
+    let summary = edit_lock_summary(state);
     let response = padlock_button(ui, padlock);
+    let hover = format!(
+        "{}\n{}",
+        if padlock.locked {
+            "Click to unlock project edits."
+        } else {
+            "Click to lock project edits; live switching stays available."
+        },
+        summary.detail()
+    );
     let response = if padlock.enabled {
-        response.on_hover_text(padlock.hover())
+        response.on_hover_text(hover)
     } else {
-        response.on_hover_text(format!(
-            "{}\nUnavailable: {}",
-            padlock.hover(),
-            padlock.reason
-        ))
+        response.on_hover_text(format!("{hover}\nUnavailable: {}", padlock.reason))
     };
     if response.clicked()
         && let Some(intent) = padlock.intent()
     {
         intents.push(intent);
     }
+    let history = edit_history_availability(state);
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (verb, shortcut, side, intent, redo) in [
+            (
+                "Undo",
+                UNDO_SHORTCUT,
+                history.undo,
+                history.undo_intent(),
+                false,
+            ),
+            (
+                "Redo",
+                REDO_SHORTCUT,
+                history.redo,
+                history.redo_intent(),
+                true,
+            ),
+        ] {
+            if history_key(ui, side.enabled(), redo)
+                .on_hover_text(side.hover(verb, shortcut))
+                .clicked()
+                && let Some(intent) = intent
+            {
+                intents.push(intent);
+            }
+        }
+    });
+}
+
+/// A compact Undo or Redo key with a painted turn-back arrow.
+fn history_key(ui: &mut Ui, enabled: bool, redo: bool) -> egui::Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(28.0, 24.0), sense);
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let hovered = enabled && response.hovered();
+        painter.rect_filled(
+            rect,
+            CornerRadius::same(4),
+            if response.is_pointer_button_down_on() && enabled {
+                WIDGET_ACTIVE
+            } else if hovered {
+                WIDGET_HOVER
+            } else {
+                GRAPHITE
+            },
+        );
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(4),
+            Stroke::new(1.0, if hovered { BORDER_STRONG } else { BORDER }),
+            StrokeKind::Inside,
+        );
+        let color = if !enabled {
+            MUTED.gamma_multiply(0.55)
+        } else if hovered {
+            TEXT
+        } else {
+            TEXT_DIM
+        };
+        paint_turn_arrow(painter, rect.center() + Vec2::new(0.0, 1.0), color, redo);
+    }
+    response
+}
+
+/// Paints a turn-back arrow: over the top and down on the left for Undo,
+/// mirrored for Redo.
+fn paint_turn_arrow(painter: &egui::Painter, center: egui::Pos2, color: Color32, redo: bool) {
+    let radius = 5.5;
+    let mirror = if redo { -1.0 } else { 1.0 };
+    let points: Vec<egui::Pos2> = (0..=14)
+        .map(|step| {
+            #[allow(clippy::cast_precision_loss)] // fourteen arc steps
+            let angle = std::f32::consts::PI - (step as f32 / 14.0) * 1.2 * std::f32::consts::PI;
+            center + Vec2::new(mirror * radius * angle.cos(), -radius * angle.sin())
+        })
+        .collect();
+    let tip_base = points[0];
+    painter.add(egui::Shape::line(points, Stroke::new(1.6, color)));
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            tip_base + Vec2::new(0.0, 3.5),
+            tip_base + Vec2::new(-3.2, -1.0),
+            tip_base + Vec2::new(3.2, -1.0),
+        ],
+        color,
+        Stroke::NONE,
+    ));
 }
 
 /// The show name, ellipsized so on-air badges and the clock keep their place.
@@ -146,7 +250,8 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             );
         }
         if state.view.is_some() {
-            padlock_control(ui, state, intents);
+            divider(ui);
+            edit_controls(ui, state, intents);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -190,8 +295,10 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
     });
 }
 
-/// The project edit padlock: a painted lock glyph plus its state, amber
-/// while locked. Clicks are reported only when toggling is available.
+/// The project edit padlock: a painted lock glyph plus its state. Locked
+/// reads as an amber chip (a deliberate hold on edits, like a pending state);
+/// unlocked is an unlit outline. Clicks are reported only when toggling is
+/// available.
 fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
     let size = Vec2::new(104.0, 24.0);
     let sense = if padlock.enabled {
@@ -201,46 +308,44 @@ fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
     };
     let (rect, response) = ui.allocate_exact_size(size, sense);
     if ui.is_rect_visible(rect) {
-        let color = if padlock.locked { AMBER } else { MUTED };
+        let hovered = response.hovered() && padlock.enabled;
         let painter = ui.painter();
-        let fill = if response.hovered() && padlock.enabled {
-            GRAPHITE_RAISED
+        let (fill, stroke, glyph, text) = if padlock.locked {
+            (
+                AMBER.gamma_multiply(if hovered { 0.24 } else { 0.16 }),
+                AMBER.gamma_multiply(0.75),
+                AMBER,
+                AMBER,
+            )
         } else {
-            GRAPHITE
+            (
+                if hovered { WIDGET_HOVER } else { GRAPHITE },
+                if hovered { BORDER_STRONG } else { BORDER },
+                MUTED,
+                TEXT_DIM,
+            )
         };
+        let dim = if padlock.enabled { 1.0 } else { 0.55 };
         painter.rect_filled(rect, CornerRadius::same(4), fill);
         painter.rect_stroke(
             rect,
             CornerRadius::same(4),
-            Stroke::new(
-                1.0,
-                color.gamma_multiply(if padlock.enabled { 0.8 } else { 0.4 }),
-            ),
+            Stroke::new(1.0, stroke.gamma_multiply(dim)),
             StrokeKind::Inside,
         );
-        // Shackle: a rounded loop above the body, lifted and offset when open.
-        let body = egui::Rect::from_center_size(
-            rect.left_center() + Vec2::new(14.0, 3.0),
-            Vec2::new(11.0, 8.0),
+        paint_lock_glyph(
+            painter,
+            rect.left_center() + Vec2::new(15.0, 0.0),
+            1.0,
+            glyph.gamma_multiply(dim),
+            padlock.locked,
         );
-        let lift = if padlock.locked { 0.0 } else { 3.0 };
-        let shackle = egui::Rect::from_min_max(
-            egui::pos2(body.left() + 2.0 + lift, body.top() - 6.0 - lift),
-            egui::pos2(body.right() - 2.0 + lift, body.top() + 3.0 - lift),
-        );
-        painter.rect_stroke(
-            shackle,
-            CornerRadius::same(3),
-            Stroke::new(1.6, color),
-            StrokeKind::Middle,
-        );
-        painter.rect_filled(body, CornerRadius::same(1), color);
         painter.text(
-            rect.left_center() + Vec2::new(28.0, 0.0),
+            rect.left_center() + Vec2::new(29.0, 0.5),
             Align2::LEFT_CENTER,
             padlock.label(),
             FontId::new(10.5, FontFamily::Proportional),
-            if padlock.enabled { color } else { TEXT_DIM },
+            text.gamma_multiply(dim),
         );
     }
     response
@@ -392,6 +497,17 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState) {
                 }),
         );
         bar_divider(ui);
+        if edit_lock_summary(state).project {
+            ui.label(
+                RichText::new("EDITS LOCKED")
+                    .size(10.0)
+                    .strong()
+                    .extra_letter_spacing(0.6)
+                    .color(AMBER),
+            )
+            .on_hover_text(edit_lock_summary(state).detail());
+            bar_divider(ui);
+        }
         let (message, color) = status_message(state);
         ui.add(egui::Label::new(RichText::new(message).size(10.5).color(color)).truncate());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
