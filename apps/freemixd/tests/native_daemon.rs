@@ -4761,6 +4761,7 @@ fn scene_layer(source: SourceRef, z_order: i32) -> Layer {
         geometry: LayerGeometry::new(0, 0, 64, 48, Rotation::Deg0),
         crop: None,
         mask: None,
+        effects: Vec::new(),
         opacity: u8::MAX,
         z_order,
     }

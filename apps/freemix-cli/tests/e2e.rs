@@ -11,9 +11,9 @@ use std::{
 };
 
 use fm_model::{
-    AudioBus, BusSend, Input, InputAudioStripState, InputKind, Layer, LayerGeometry, RectMask,
-    Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
-    StartupPolicy, StreamLadderRung, StreamProtocol,
+    AudioBus, BusSend, Input, InputAudioStripState, InputKind, Layer, LayerEffect, LayerGeometry,
+    RectMask, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
+    SourceRef, StartupPolicy, StreamLadderRung, StreamProtocol,
 };
 use fm_persistence::{MutationBatch, ProjectStore, StoredProject};
 use fm_protocol::{
@@ -3155,13 +3155,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        23
+        24
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 23);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 24);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -3174,7 +3174,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 23);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 24);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -3250,7 +3250,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        23
+        24
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -3258,7 +3258,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 23);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 24);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -3268,7 +3268,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 23);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 24);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -3276,7 +3276,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 23);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 24);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -5221,6 +5221,7 @@ fn local_scene_layer_rename_persists_exact_name_and_rejects_invalid_target() {
                 geometry: LayerGeometry::new(-12, 34, 640, 480, Rotation::Deg270),
                 crop: Some(fm_model::CropRect::new(10, 20, 640, 480)),
                 mask: Some(RectMask::new(10, 20, 600, 400).inverted(true)),
+                effects: Vec::new(),
                 opacity: 96,
                 z_order: 9,
             },
@@ -6215,6 +6216,202 @@ fn local_scene_layer_mask_checked_preserves_manifest_and_journal() {
     assert_eq!(manifest(&context.project), before_invalid);
     assert_eq!(journal_bytes(&store), journal_before_invalid);
     fs::remove_dir_all(context.root).unwrap();
+}
+
+#[allow(clippy::too_many_lines)]
+#[test]
+fn local_scene_layer_effects_author_render_and_clear_exactly() {
+    let root = unique_test_root();
+    let project = root.join("effects.freemix");
+    let plain = root.join("plain.ppm");
+    let leveled = root.join("leveled.ppm");
+    let replaced = root.join("replaced.ppm");
+    let cleared = root.join("cleared.ppm");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+    macro_rules! apply {
+        ($arguments:expr) => {
+            assert_success(&invoke_bounded($arguments));
+        };
+    }
+
+    apply!(&["new", path]);
+    // A dark-gray source proves the exact effect math: `levels 0 128` maps 64
+    // to exactly 128, so the rendered pixel is mid-gray rather than the source.
+    apply!(&["input-replace-solid", path, "1", "64", "64", "64", "255"]);
+    apply!(&["scene-input-add", path, "3", "11", "Program"]);
+    apply!(&["scene-layer-add", path, "11", "1", "0", "Layer"]);
+    apply!(&["preview", path, "3"]);
+    apply!(&["cut", path]);
+    apply!(&[
+        "render",
+        path,
+        plain.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "4",
+    ]);
+    assert_solid_ppm(&plain, 4, 4, [64, 64, 64]);
+
+    apply!(&[
+        "scene-layer-effect-add",
+        path,
+        "11",
+        "0",
+        "levels",
+        "0",
+        "128",
+    ]);
+    let stored = ProjectStore::new(&project).unwrap().load().unwrap();
+    assert_eq!(
+        stored.project().scenes()[0].layers[0].effects,
+        vec![LayerEffect::new("levels", vec![0, 128])]
+    );
+    let scenes = invoke(&["scenes", path]);
+    assert_success(&scenes);
+    assert!(stdout(&scenes).contains("effects=levels(0,128)"));
+    apply!(&[
+        "render",
+        path,
+        leveled.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "4",
+    ]);
+    assert_solid_ppm(&leveled, 4, 4, [128, 128, 128]);
+
+    // A second effect appends after the first and a replacement keeps the
+    // order, so the render sees `levels 0 64` then `saturation 50`.
+    apply!(&[
+        "scene-layer-effect-add",
+        path,
+        "11",
+        "0",
+        "saturation",
+        "50"
+    ]);
+    apply!(&[
+        "scene-layer-effect-set",
+        path,
+        "11",
+        "0",
+        "0",
+        "levels",
+        "0",
+        "64",
+    ]);
+    let stored = ProjectStore::new(&project).unwrap().load().unwrap();
+    assert_eq!(
+        stored.project().scenes()[0].layers[0].effects,
+        vec![
+            LayerEffect::new("levels", vec![0, 64]),
+            LayerEffect::new("saturation", vec![50]),
+        ]
+    );
+    let scenes = invoke(&["scenes", path]);
+    assert_success(&scenes);
+    assert!(stdout(&scenes).contains("effects=levels(0,64);saturation(50)"));
+    apply!(&[
+        "render",
+        path,
+        replaced.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "4",
+    ]);
+    assert_solid_ppm(&replaced, 4, 4, [255, 255, 255]);
+
+    // Removing the second effect leaves the first, and clearing removes both,
+    // restoring the unmodified render exactly.
+    apply!(&["scene-layer-effect-remove", path, "11", "0", "1"]);
+    let stored = ProjectStore::new(&project).unwrap().load().unwrap();
+    assert_eq!(
+        stored.project().scenes()[0].layers[0].effects,
+        vec![LayerEffect::new("levels", vec![0, 64])]
+    );
+    apply!(&["scene-layer-effect-clear", path, "11", "0"]);
+    let stored = ProjectStore::new(&project).unwrap().load().unwrap();
+    assert!(stored.project().scenes()[0].layers[0].effects.is_empty());
+    let scenes = invoke(&["scenes", path]);
+    assert_success(&scenes);
+    assert!(stdout(&scenes).contains("effects=none"));
+    apply!(&[
+        "render",
+        path,
+        cleared.to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "4",
+    ]);
+    assert_solid_ppm(&cleared, 4, 4, [64, 64, 64]);
+
+    // Unknown-but-bounded names are preserved for a later executor, while a
+    // bounded rejection leaves the manifest byte-identical.
+    apply!(&[
+        "scene-layer-effect-add",
+        path,
+        "11",
+        "0",
+        "future.effect",
+        "1",
+        "-2",
+    ]);
+    let stored = ProjectStore::new(&project).unwrap().load().unwrap();
+    assert_eq!(
+        stored.project().scenes()[0].layers[0].effects,
+        vec![LayerEffect::new("future.effect", vec![1, -2])]
+    );
+    // The persisted unknown name reaches the executor, which rejects it
+    // without publishing a frame.
+    let unsupported = invoke(&[
+        "render",
+        path,
+        root.join("unsupported.ppm").to_str().unwrap(),
+        "--width",
+        "4",
+        "--height",
+        "4",
+    ]);
+    assert_failure_contains(&unsupported, "future.effect");
+    assert!(!root.join("unsupported.ppm").exists());
+    let before = fs::read(project.join("project.json")).unwrap();
+    let too_many_parameters = (0..=LayerEffect::MAX_PARAMETERS)
+        .map(|parameter| parameter.to_string())
+        .collect::<Vec<_>>();
+    let mut arguments = vec!["scene-layer-effect-add", path, "11", "0", "levels"];
+    arguments.extend(too_many_parameters.iter().map(String::as_str));
+    assert_failure_contains(
+        &invoke_bounded(&arguments),
+        "effect must not carry more than 32 parameters",
+    );
+    assert_failure_contains(
+        &invoke(&["scene-layer-effect-add", path, "11", "0", ""]),
+        "effect name must not be empty",
+    );
+    assert_failure_contains(
+        &invoke(&["scene-layer-effect-remove", path, "11", "0", "9"]),
+        "effect index 9 out of range for layer 0 in scene 11 with 1 effects",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "scene-layer-effect-set",
+            path,
+            "11",
+            "0",
+            "9",
+            "levels",
+            "0",
+            "64",
+        ]),
+        "effect index 9 out of range for layer 0 in scene 11 with 1 effects",
+    );
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), before);
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -7430,7 +7627,7 @@ fn edit_current_configuration(project: &Path) {
     replace_once(
         &mut source,
         r#""scenes": []"#,
-        r#""scenes": [{"id": 11, "name": "Edited scene", "background": {"red": 0, "green": 0, "blue": 0, "alpha": 255}, "layers": [{"name": "Source", "source": {"type": "input", "id": 1}, "enabled": true, "geometry": {"translation_x": 0, "translation_y": 0, "width": 1280, "height": 720, "rotation": "deg0"}, "crop": null, "mask": null, "opacity": 255, "z_order": 0}]}]"#,
+        r#""scenes": [{"id": 11, "name": "Edited scene", "background": {"red": 0, "green": 0, "blue": 0, "alpha": 255}, "layers": [{"name": "Source", "source": {"type": "input", "id": 1}, "enabled": true, "geometry": {"translation_x": 0, "translation_y": 0, "width": 1280, "height": 720, "rotation": "deg0"}, "crop": null, "mask": null, "effects": [], "opacity": 255, "z_order": 0}]}]"#,
     );
     replace_once(
         &mut source,

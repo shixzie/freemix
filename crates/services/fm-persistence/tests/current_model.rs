@@ -7,12 +7,12 @@ use std::{
 
 use fm_model::{
     AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, Input, InputAudioStripState,
-    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerGeometry,
-    MainMix, Output, Project, ProjectSettings, RecorderSlot, RectMask, RestartPolicy, Rgba8,
-    Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
-    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
-    StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol,
-    StreamTarget, StreamTargetId,
+    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerEffect,
+    LayerGeometry, MainMix, Output, Project, ProjectSettings, RecorderSlot, RectMask,
+    RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo,
+    SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
+    StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
+    StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetId,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
@@ -262,6 +262,7 @@ fn rich_project() -> Project {
             geometry: LayerGeometry::new(-20, 30, 1920, 1080, Rotation::Deg90),
             crop: Some(CropRect::new(10, 20, 1000, 700)),
             mask: Some(RectMask::new(11, 12, 500, 300).inverted(true)),
+            effects: Vec::new(),
             opacity: 200,
             z_order: -7,
         }],
@@ -278,6 +279,7 @@ fn rich_project() -> Project {
                 geometry: LayerGeometry::new(0, 0, 3840, 2160, Rotation::Deg0),
                 crop: None,
                 mask: None,
+                effects: Vec::new(),
                 opacity: u8::MAX,
                 z_order: 3,
             },
@@ -288,6 +290,7 @@ fn rich_project() -> Project {
                 geometry: LayerGeometry::new(100, -200, 640, 360, Rotation::Deg270),
                 crop: Some(CropRect::new(1, 2, 3, 4)),
                 mask: Some(RectMask::new(1, 1, 2, 3)),
+                effects: Vec::new(),
                 opacity: 127,
                 z_order: 3,
             },
@@ -590,7 +593,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 23"));
+    assert!(encoded.contains("\"schema_version\": 24"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -660,7 +663,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 23"));
+    assert!(encoded.contains("\"schema_version\": 24"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -816,7 +819,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 23"));
+    assert!(valid.contains("\"schema_version\": 24"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -832,7 +835,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 23", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 24", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1181,4 +1184,247 @@ fn strict_rect_mask_parser_rejects_malformed_and_out_of_bounds_values() {
         fs::write(store.manifest_path(), invalid).unwrap();
         assert!(matches!(store.load(), Err(StoreError::Validation(_))));
     }
+}
+
+/// A minimal current-contract project whose scene has one effect-free layer
+/// and one layer with two ordered descriptors, the second an unknown name.
+fn effected_project() -> Project {
+    let mut project = Project::new(project_id(1), "Effects", rich_settings())
+        .with_main_mix(MainMix::new(input_id(1), input_id(2)));
+    for value in [1_u128, 2] {
+        project.add_input(Input {
+            id: input_id(value),
+            name: format!("Input {value}"),
+            kind: InputKind::Simulated(SimulatedInput::new(
+                SimulatedVideo::Bars,
+                SimulatedAudio::Silence,
+            )),
+            required_capabilities: Vec::new(),
+        });
+    }
+    project.add_scene(Scene {
+        id: scene_id(1),
+        name: "Effects".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![
+            Layer {
+                name: "Plain".into(),
+                source: SourceRef::Input(input_id(1)),
+                enabled: true,
+                geometry: LayerGeometry::new(0, 0, 1920, 1080, Rotation::Deg0),
+                crop: None,
+                mask: None,
+                effects: Vec::new(),
+                opacity: u8::MAX,
+                z_order: 0,
+            },
+            Layer {
+                name: "Effected".into(),
+                source: SourceRef::Input(input_id(2)),
+                enabled: true,
+                geometry: LayerGeometry::new(0, 0, 1920, 1080, Rotation::Deg0),
+                crop: None,
+                mask: None,
+                effects: vec![
+                    LayerEffect::new("levels", vec![0, 128]),
+                    LayerEffect::new("future.effect", vec![i32::MIN, -1, 0, 7]),
+                ],
+                opacity: 255,
+                z_order: 1,
+            },
+        ],
+    });
+    project
+}
+
+#[test]
+fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
+    let temp = TestDirectory::new("scene-layer-effects");
+    let store = temp.store("show");
+    let expected = StoredProject::from_project(
+        effected_project(),
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(encoded.contains("\"schema_version\": 24"));
+    // Every layer writes the field explicitly in layer order: the plain layer
+    // as an empty array, the effected layer as inline ordered descriptors.
+    assert!(
+        encoded.contains(
+            "\"effects\": [],\n            \"opacity\": 255,\n            \"z_order\": 0"
+        )
+    );
+    assert!(encoded.contains(
+        "\"effects\": [{\"name\": \"levels\", \"parameters\": [0, 128]}, {\"name\": \
+         \"future.effect\", \"parameters\": [-2147483648, -1, 0, 7]}]"
+    ));
+
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded, expected);
+    assert_eq!(loaded.project().schema_version(), CURRENT_SCHEMA_VERSION);
+    assert!(loaded.project().scenes()[0].layers[0].effects.is_empty());
+    assert_eq!(
+        loaded.project().scenes()[0].layers[1].effects,
+        vec![
+            LayerEffect::new("levels", vec![0, 128]),
+            LayerEffect::new("future.effect", vec![i32::MIN, -1, 0, 7]),
+        ]
+    );
+}
+
+/// Saves [`effected_project`] and returns its store plus the encoded manifest.
+fn stored_effected_manifest(name: &str) -> (TestDirectory, ProjectStore, String) {
+    let temp = TestDirectory::new(name);
+    let store = temp.store("show");
+    store
+        .save(
+            &StoredProject::from_project(
+                effected_project(),
+                RuntimeRouting::default(),
+                ProjectPosition::default(),
+                Vec::new(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    (temp, store, encoded)
+}
+
+#[test]
+fn strict_layer_effect_parser_rejects_missing_mistyped_unknown_and_duplicate_fields() {
+    let (_temp, store, valid) = stored_effected_manifest("strict-effects-fields");
+    let descriptor = "{\"name\": \"levels\", \"parameters\": [0, 128]}";
+    let effects_array = format!(
+        "[{descriptor}, {{\"name\": \"future.effect\", \"parameters\": [-2147483648, -1, 0, 7]}}]"
+    );
+
+    for (index, malformed) in [
+        // Missing and mistyped fields: the current contract carries `effects`
+        // explicitly as an array of descriptor objects.
+        valid.replacen(
+            ",\n            \"effects\": [],\n            \"opacity\"",
+            ",\n            \"opacity\"",
+            1,
+        ),
+        valid.replacen(
+            &format!("\"effects\": {effects_array}"),
+            "\"effects\": null",
+            1,
+        ),
+        valid.replacen(
+            &format!("\"effects\": {effects_array}"),
+            "\"effects\": 7",
+            1,
+        ),
+        valid.replacen(
+            &format!("\"effects\": {effects_array}"),
+            "\"effects\": [7]",
+            1,
+        ),
+        valid.replacen(descriptor, "{\"parameters\": [0, 128]}", 1),
+        valid.replacen(descriptor, "{\"name\": 7, \"parameters\": [0, 128]}", 1),
+        valid.replacen(descriptor, "{\"name\": \"levels\"}", 1),
+        valid.replacen(descriptor, "{\"name\": \"levels\", \"parameters\": 0}", 1),
+        valid.replacen(
+            descriptor,
+            "{\"name\": \"levels\", \"parameters\": [0, \"128\"]}",
+            1,
+        ),
+        valid.replacen(
+            descriptor,
+            "{\"name\": \"levels\", \"parameters\": [0, 1.5]}",
+            1,
+        ),
+        valid.replacen(
+            descriptor,
+            "{\"name\": \"levels\", \"parameters\": [0, 4294967296]}",
+            1,
+        ),
+        valid.replacen(
+            descriptor,
+            "{\"name\": \"levels\", \"parameters\": [0, 128], \"future\": 1}",
+            1,
+        ),
+        valid.replacen(
+            descriptor,
+            "{\"name\": \"levels\", \"name\": \"levels\", \"parameters\": [0, 128]}",
+            1,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fs::write(store.manifest_path(), malformed).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "malformed effects {index} were accepted"
+        );
+    }
+
+    // The untouched manifest still loads after every rejected rewrite.
+    fs::write(store.manifest_path(), valid).unwrap();
+    assert_eq!(store.load().unwrap().project().scenes()[0].layers.len(), 2);
+}
+
+#[test]
+fn layer_effect_bounds_are_rejected_at_the_current_schema() {
+    let (_temp, store, valid) = stored_effected_manifest("strict-effects-bounds");
+    let descriptor = "{\"name\": \"levels\", \"parameters\": [0, 128]}";
+    let effects_array = format!(
+        "[{descriptor}, {{\"name\": \"future.effect\", \"parameters\": [-2147483648, -1, 0, 7]}}]"
+    );
+    let high_parameters = (0..=LayerEffect::MAX_PARAMETERS)
+        .map(|parameter| parameter.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let many_effects = (0..=LayerEffect::MAX_EFFECTS_PER_LAYER)
+        .map(|_| descriptor)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // The compositor descriptor bounds are part of the current contract.
+    for (index, malformed) in [
+        valid.replacen(descriptor, "{\"name\": \"\", \"parameters\": [0, 128]}", 1),
+        valid.replacen(
+            descriptor,
+            &format!(
+                "{{\"name\": \"{}\", \"parameters\": [0, 128]}}",
+                "x".repeat(65)
+            ),
+            1,
+        ),
+        valid.replacen(
+            descriptor,
+            "{\"name\": \"levels\\u0007\", \"parameters\": [0, 128]}",
+            1,
+        ),
+        valid.replacen(
+            descriptor,
+            &format!("{{\"name\": \"levels\", \"parameters\": [{high_parameters}]}}"),
+            1,
+        ),
+        valid.replacen(
+            &format!("\"effects\": {effects_array}"),
+            &format!("\"effects\": [{many_effects}]"),
+            1,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        fs::write(store.manifest_path(), malformed).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "out-of-bounds effects {index} were accepted"
+        );
+    }
+
+    fs::write(store.manifest_path(), valid).unwrap();
+    assert_eq!(store.load().unwrap().project().scenes()[0].layers.len(), 2);
 }

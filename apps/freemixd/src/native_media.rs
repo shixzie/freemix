@@ -39,7 +39,7 @@ use fm_color::{
     NativeImportError, NativeImportNormalizer, NativeSdrOutputTransform, NativeWorkingFrame,
 };
 use fm_compositor::{
-    CompositionPlan, FadeToBlackPlan, FadeToBlackPlanError,
+    CompositionPlan, Effect as CompositorEffect, FadeToBlackPlan, FadeToBlackPlanError,
     FadeToBlackPosition as CompositorFadeToBlackPosition, NativeCompositionError,
     NativeCompositionRenderer, NativeFadeToBlackError, NativeFadeToBlackRenderer,
     NativeSourceFrame, NativeStingerError, NativeStingerRenderer, NativeTransitionError,
@@ -449,6 +449,12 @@ impl NativeProjectPlan {
                         CompositorRectMask::new(mask.x, mask.y, mask.width, mask.height)
                             .inverted(mask.invert),
                     );
+                }
+                for effect in &layer.effects {
+                    native_layer = native_layer.with_effect(CompositorEffect::new(
+                        effect.name.clone(),
+                        effect.parameters.clone(),
+                    ));
                 }
                 scene.push_layer(native_layer);
             }
@@ -7347,6 +7353,7 @@ mod tests {
             geometry: LayerGeometry::new(0, 0, 4, 2, Rotation::Deg0),
             crop: None,
             mask: None,
+            effects: Vec::new(),
             opacity: u8::MAX,
             z_order,
         }
@@ -8029,6 +8036,10 @@ mod tests {
                 geometry: LayerGeometry::new(-7, 9, 3, 2, Rotation::Deg270),
                 crop: Some(fm_model::CropRect::new(1, 0, 2, 2)),
                 mask: Some(fm_model::RectMask::new(1, 0, 1, 2).inverted(true)),
+                effects: vec![
+                    fm_model::LayerEffect::new("levels", vec![0, 200]),
+                    fm_model::LayerEffect::new("future.effect", vec![-1, 7]),
+                ],
                 opacity: 123,
                 z_order: -4,
             }],
@@ -8055,6 +8066,11 @@ mod tests {
             mapped.mask(),
             Some(fm_compositor::RectMask::new(1, 0, 1, 2).inverted(true))
         );
+        let expected_effects = vec![
+            CompositorEffect::new("levels", vec![0, 200]),
+            CompositorEffect::new("future.effect", vec![-1, 7]),
+        ];
+        assert_eq!(mapped.effects(), expected_effects.as_slice());
         assert_eq!(mapped.opacity(), 123);
     }
 
@@ -8075,6 +8091,7 @@ mod tests {
                     geometry: LayerGeometry::new(1, 0, 3, 2, Rotation::Deg180),
                     crop: Some(fm_model::CropRect::new(1, 0, 3, 2)),
                     mask,
+                    effects: Vec::new(),
                     opacity: u8::MAX,
                     z_order: 0,
                 }],

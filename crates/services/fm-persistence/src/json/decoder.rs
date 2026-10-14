@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, num::NonZeroU128};
 
 use fm_model::{
     AudioBus, BusSend, CropRect, Input, InputAudioStrip, InputAudioStripState,
-    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerGeometry,
-    MainMix, Output, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RectMask,
-    RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo,
-    SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
+    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerEffect,
+    LayerGeometry, MainMix, Output, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot,
+    RectMask, RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput,
+    SimulatedVideo, SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
     StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
     StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetId,
 };
@@ -455,6 +455,7 @@ fn parse_layer(value: Value) -> Result<Layer, DecodeError> {
     let geometry = parse_geometry(object.take("geometry")?)?;
     let crop = parse_optional(object.take("crop")?, parse_crop)?;
     let mask = parse_optional(object.take("mask")?, parse_mask)?;
+    let effects = parse_layer_effects(object.take("effects")?)?;
     let opacity = object.u8("opacity")?;
     let z_order = object.i32("z_order")?;
     let layer = Layer {
@@ -464,11 +465,43 @@ fn parse_layer(value: Value) -> Result<Layer, DecodeError> {
         geometry,
         crop,
         mask,
+        effects,
         opacity,
         z_order,
     };
     object.finish()?;
     Ok(layer)
+}
+
+/// Parses one layer's ordered effect array.
+///
+/// `effects` is part of the current contract: the field is required, must be
+/// an array of `{"name": <string>, "parameters": [<i32>, ...]}` objects in
+/// layer order, and must satisfy the compositor descriptor bounds. Unknown
+/// effect names are preserved: only execution rejects them.
+fn parse_layer_effects(value: Value) -> Result<Vec<LayerEffect>, DecodeError> {
+    let effects = parse_array(value, "layer effects", parse_layer_effect)?;
+    if effects.len() > LayerEffect::MAX_EFFECTS_PER_LAYER {
+        return Err(syntax(format!(
+            "layer must not carry more than {} effects",
+            LayerEffect::MAX_EFFECTS_PER_LAYER
+        )));
+    }
+    Ok(effects)
+}
+
+fn parse_layer_effect(value: Value) -> Result<LayerEffect, DecodeError> {
+    let mut object = Object::new(value, "layer effect")?;
+    let name = object.string("name")?;
+    let parameters = parse_array(object.take("parameters")?, "effect parameters", |value| {
+        parse_i32(&value, "effect parameter")
+    })?;
+    object.finish()?;
+    let effect = LayerEffect::new(name, parameters);
+    effect
+        .validate()
+        .map_err(|error| syntax(format!("layer effect is invalid: {error}")))?;
+    Ok(effect)
 }
 
 fn parse_rgba(value: Value) -> Result<Rgba8, DecodeError> {
@@ -1019,6 +1052,20 @@ fn parse_array<T>(
         return Err(syntax(format!("{context} must be an array")));
     };
     values.into_iter().map(parse).collect()
+}
+
+fn parse_i32(value: &Value, context: &str) -> Result<i32, DecodeError> {
+    match value {
+        Value::Number(value) => {
+            i32::try_from(*value).map_err(|_| syntax(format!("{context} exceeds i32")))
+        }
+        Value::NegativeNumber(value) => {
+            let magnitude =
+                i128::try_from(*value).map_err(|_| syntax(format!("{context} exceeds i32")))?;
+            i32::try_from(-magnitude).map_err(|_| syntax(format!("{context} exceeds i32")))
+        }
+        _ => Err(syntax(format!("{context} must be an integer"))),
+    }
 }
 
 fn parse_strings(value: Value, context: &'static str) -> Result<Vec<String>, DecodeError> {

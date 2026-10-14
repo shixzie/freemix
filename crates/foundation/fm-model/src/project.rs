@@ -368,6 +368,22 @@ pub enum SceneLayerError {
         scene: SceneId,
         index: usize,
     },
+    TooManyEffects {
+        scene: SceneId,
+        index: usize,
+    },
+    InvalidEffect {
+        scene: SceneId,
+        index: usize,
+        effect_index: usize,
+        reason: LayerEffectError,
+    },
+    EffectIndexOutOfRange {
+        scene: SceneId,
+        index: usize,
+        effect_index: usize,
+        length: usize,
+    },
     CropWouldInvalidateMask {
         scene: SceneId,
         index: usize,
@@ -430,6 +446,30 @@ impl std::fmt::Display for SceneLayerError {
             Self::InvalidMask { scene, index } => {
                 write!(formatter, "invalid mask for layer {index} in scene {scene}")
             }
+            Self::TooManyEffects { scene, index } => write!(
+                formatter,
+                "layer {index} in scene {scene} cannot carry more than {} effects",
+                LayerEffect::MAX_EFFECTS_PER_LAYER
+            ),
+            Self::InvalidEffect {
+                scene,
+                index,
+                effect_index,
+                reason,
+            } => write!(
+                formatter,
+                "invalid effect {effect_index} for layer {index} in scene {scene}: {reason}"
+            ),
+            Self::EffectIndexOutOfRange {
+                scene,
+                index,
+                effect_index,
+                length,
+            } => write!(
+                formatter,
+                "effect index {effect_index} out of range for layer {index} in scene {scene} with \
+                 {length} effects"
+            ),
             Self::CropWouldInvalidateMask { scene, index } => write!(
                 formatter,
                 "crop would invalidate the mask for layer {index} in scene {scene}"
@@ -684,7 +724,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(23);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(24);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1790,6 +1830,137 @@ impl Project {
         Ok(())
     }
 
+    fn scene_layer_position(&self, scene: SceneId, index: usize) -> Result<usize, SceneLayerError> {
+        let scene_index = self
+            .scenes
+            .iter()
+            .position(|candidate| candidate.id == scene)
+            .ok_or(SceneLayerError::UnknownScene(scene))?;
+        let length = self.scenes[scene_index].layers.len();
+        if index >= length {
+            return Err(SceneLayerError::LayerIndexOutOfRange {
+                scene,
+                index,
+                length,
+            });
+        }
+        Ok(scene_index)
+    }
+
+    fn check_layer_effects(
+        scene: SceneId,
+        index: usize,
+        effects: &[LayerEffect],
+    ) -> Result<(), SceneLayerError> {
+        if effects.len() > LayerEffect::MAX_EFFECTS_PER_LAYER {
+            return Err(SceneLayerError::TooManyEffects { scene, index });
+        }
+        for (effect_index, effect) in effects.iter().enumerate() {
+            effect
+                .validate()
+                .map_err(|reason| SceneLayerError::InvalidEffect {
+                    scene,
+                    index,
+                    effect_index,
+                    reason,
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Replaces one layer's ordered effect list.
+    ///
+    /// The new list is checked as a whole before the layer changes, so a
+    /// rejection leaves every effect exactly as it was. Unknown effect names
+    /// are accepted and preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SceneLayerError::UnknownScene`] when the scene does not
+    /// exist, [`SceneLayerError::LayerIndexOutOfRange`] when the index is
+    /// beyond the scene's layer count, [`SceneLayerError::TooManyEffects`]
+    /// when the list exceeds [`LayerEffect::MAX_EFFECTS_PER_LAYER`], and
+    /// [`SceneLayerError::InvalidEffect`] when one descriptor has an empty,
+    /// oversized, or control-character name or too many parameters.
+    pub fn set_scene_layer_effects(
+        &mut self,
+        scene: SceneId,
+        index: usize,
+        effects: Vec<LayerEffect>,
+    ) -> Result<(), SceneLayerError> {
+        let scene_index = self.scene_layer_position(scene, index)?;
+        Self::check_layer_effects(scene, index, &effects)?;
+        self.scenes[scene_index].layers[index].effects = effects;
+        Ok(())
+    }
+
+    /// Appends one effect to a layer, preserving the existing order.
+    ///
+    /// The layer is checked before it changes, so a rejection leaves every
+    /// effect exactly as it was. Unknown effect names are accepted and
+    /// preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SceneLayerError::UnknownScene`] when the scene does not
+    /// exist, [`SceneLayerError::LayerIndexOutOfRange`] when the index is
+    /// beyond the scene's layer count, [`SceneLayerError::TooManyEffects`]
+    /// when the layer already carries [`LayerEffect::MAX_EFFECTS_PER_LAYER`]
+    /// effects, and [`SceneLayerError::InvalidEffect`] when the descriptor
+    /// has an empty, oversized, or control-character name or too many
+    /// parameters.
+    pub fn add_scene_layer_effect(
+        &mut self,
+        scene: SceneId,
+        index: usize,
+        effect: LayerEffect,
+    ) -> Result<(), SceneLayerError> {
+        let scene_index = self.scene_layer_position(scene, index)?;
+        let length = self.scenes[scene_index].layers[index].effects.len();
+        if length == LayerEffect::MAX_EFFECTS_PER_LAYER {
+            return Err(SceneLayerError::TooManyEffects { scene, index });
+        }
+        effect
+            .validate()
+            .map_err(|reason| SceneLayerError::InvalidEffect {
+                scene,
+                index,
+                effect_index: length,
+                reason,
+            })?;
+        self.scenes[scene_index].layers[index].effects.push(effect);
+        Ok(())
+    }
+
+    /// Removes one effect from a layer, shifting later effects down.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SceneLayerError::UnknownScene`] when the scene does not
+    /// exist, [`SceneLayerError::LayerIndexOutOfRange`] when the index is
+    /// beyond the scene's layer count, and
+    /// [`SceneLayerError::EffectIndexOutOfRange`] when the effect index is
+    /// beyond the layer's effect count.
+    pub fn remove_scene_layer_effect(
+        &mut self,
+        scene: SceneId,
+        index: usize,
+        effect_index: usize,
+    ) -> Result<(), SceneLayerError> {
+        let scene_index = self.scene_layer_position(scene, index)?;
+        let effects = &mut self.scenes[scene_index].layers[index].effects;
+        if effect_index >= effects.len() {
+            return Err(SceneLayerError::EffectIndexOutOfRange {
+                scene,
+                index,
+                effect_index,
+                length: effects.len(),
+            });
+        }
+        effects.remove(effect_index);
+        Ok(())
+    }
+
     pub fn add_audio_bus(&mut self, bus: AudioBus) {
         self.audio_buses.push(bus);
     }
@@ -2758,9 +2929,120 @@ pub struct Layer {
     pub geometry: LayerGeometry,
     pub crop: Option<CropRect>,
     pub mask: Option<RectMask>,
+    pub effects: Vec<LayerEffect>,
     pub opacity: u8,
     pub z_order: i32,
 }
+
+/// One ordered, backend-neutral video effect persisted on a scene layer.
+///
+/// An effect is a descriptor name plus exact integer parameters, mirroring the
+/// compositor's backend-neutral descriptor. The model preserves the authored
+/// name and parameter order verbatim and enforces the same descriptor bounds
+/// as the compositor plan: a layer carries at most
+/// [`LayerEffect::MAX_EFFECTS_PER_LAYER`] effects, a name is nonempty, at most
+/// [`LayerEffect::MAX_NAME_BYTES`] bytes, and free of control characters, and
+/// an effect carries at most [`LayerEffect::MAX_PARAMETERS`] parameters.
+///
+/// Effect names are intentionally not restricted to the reference effects the
+/// CPU executor understands (`levels`, `brightness_contrast`, `saturation`,
+/// `sharpen`, `flip`, and the parameterless `passthrough` no-op). Unknown
+/// names are preserved by validation and persistence instead of being
+/// rejected here; execution is where an unrecognized name fails.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LayerEffect {
+    pub name: String,
+    pub parameters: Vec<i32>,
+}
+
+impl LayerEffect {
+    /// Maximum effects one layer may carry, matching the compositor plan.
+    pub const MAX_EFFECTS_PER_LAYER: usize = 16;
+    /// Maximum effect name length in bytes, matching the compositor plan.
+    pub const MAX_NAME_BYTES: usize = 64;
+    /// Maximum parameters one effect may carry, matching the compositor plan.
+    pub const MAX_PARAMETERS: usize = 32;
+
+    /// Creates one effect descriptor without checking the descriptor bounds.
+    ///
+    /// The name and parameter bounds are enforced when the effect enters a
+    /// layer ([`Project::set_scene_layer_effects`],
+    /// [`Project::add_scene_layer_effect`]) and by [`Project::validate`]; see
+    /// the type-level documentation for the exact rules.
+    #[must_use]
+    pub fn new(name: impl Into<String>, parameters: Vec<i32>) -> Self {
+        Self {
+            name: name.into(),
+            parameters,
+        }
+    }
+
+    /// Checks this descriptor against the bounded name and parameter rules.
+    ///
+    /// The per-layer effect count is enforced when effects enter a layer, not
+    /// here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LayerEffectError::EmptyName`] for an empty name,
+    /// [`LayerEffectError::NameTooLong`] for a name beyond
+    /// [`LayerEffect::MAX_NAME_BYTES`] bytes,
+    /// [`LayerEffectError::NameContainsControlCharacter`] for a name that
+    /// contains a control character, and
+    /// [`LayerEffectError::TooManyParameters`] beyond
+    /// [`LayerEffect::MAX_PARAMETERS`] parameters.
+    pub fn validate(&self) -> Result<(), LayerEffectError> {
+        if self.name.is_empty() {
+            return Err(LayerEffectError::EmptyName);
+        }
+        if self.name.len() > Self::MAX_NAME_BYTES {
+            return Err(LayerEffectError::NameTooLong);
+        }
+        if self.name.chars().any(char::is_control) {
+            return Err(LayerEffectError::NameContainsControlCharacter);
+        }
+        if self.parameters.len() > Self::MAX_PARAMETERS {
+            return Err(LayerEffectError::TooManyParameters);
+        }
+        Ok(())
+    }
+}
+
+/// Failure of one [`LayerEffect`] descriptor to satisfy the compositor bounds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LayerEffectError {
+    /// The effect name is empty.
+    EmptyName,
+    /// The effect name exceeds [`LayerEffect::MAX_NAME_BYTES`] bytes.
+    NameTooLong,
+    /// The effect name contains a control character.
+    NameContainsControlCharacter,
+    /// The effect carries more than [`LayerEffect::MAX_PARAMETERS`] parameters.
+    TooManyParameters,
+}
+
+impl std::fmt::Display for LayerEffectError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyName => formatter.write_str("effect name must not be empty"),
+            Self::NameTooLong => write!(
+                formatter,
+                "effect name must not exceed {} bytes",
+                LayerEffect::MAX_NAME_BYTES
+            ),
+            Self::NameContainsControlCharacter => {
+                formatter.write_str("effect name must not contain control characters")
+            }
+            Self::TooManyParameters => write!(
+                formatter,
+                "effect must not carry more than {} parameters",
+                LayerEffect::MAX_PARAMETERS
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LayerEffectError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LayerGeometry {

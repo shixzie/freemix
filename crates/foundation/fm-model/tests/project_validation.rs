@@ -4,18 +4,19 @@ use fm_model::{
     AddInputError, AddSceneInputError, AddSceneLayerError, AddStreamTargetError, AudioBus, BusSend,
     CURRENT_SCHEMA_VERSION, CropRect, DEFAULT_VIDEO_BITRATE_KBPS, DuplicateSceneInputError,
     EntityRef, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
-    InputGainMilliDb, InputKind, Layer, LayerGeometry, MAX_STREAM_ENDPOINT_BYTES,
-    MAX_STREAM_LADDER_HEIGHT, MAX_STREAM_LADDER_RUNGS, MAX_STREAM_LADDER_WIDTH,
-    MAX_VIDEO_BITRATE_KBPS, MIN_STREAM_LADDER_DIMENSION, MIN_STREAM_LADDER_RUNGS,
-    MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project, ProjectSettings,
-    RECORDER_SLOT_COUNT, REDACTED_STREAM_KEY, RecorderSlot, RecorderSlotError, RectMask,
-    RemoveAudioBusError, RemoveInputError, RemoveOutputError, RemoveSceneError, RenameSceneError,
-    ReplaceInputError, RestartPolicy, Rgba8, Rotation, Scene, SceneLayerError, SetStingerError,
-    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
-    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
-    StreamEndpoint, StreamEndpointError, StreamKey, StreamKeyError, StreamLadder,
-    StreamLadderError, StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetError,
-    StreamTargetId, StreamVideoBitrateError, ValidationError, ValidationErrorKind,
+    InputGainMilliDb, InputKind, Layer, LayerEffect, LayerEffectError, LayerGeometry,
+    MAX_STREAM_ENDPOINT_BYTES, MAX_STREAM_LADDER_HEIGHT, MAX_STREAM_LADDER_RUNGS,
+    MAX_STREAM_LADDER_WIDTH, MAX_VIDEO_BITRATE_KBPS, MIN_STREAM_LADDER_DIMENSION,
+    MIN_STREAM_LADDER_RUNGS, MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project,
+    ProjectSettings, RECORDER_SLOT_COUNT, REDACTED_STREAM_KEY, RecorderSlot, RecorderSlotError,
+    RectMask, RemoveAudioBusError, RemoveInputError, RemoveOutputError, RemoveSceneError,
+    RenameSceneError, ReplaceInputError, RestartPolicy, Rgba8, Rotation, Scene, SceneLayerError,
+    SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
+    StingerSlotNumber, StreamEndpoint, StreamEndpointError, StreamKey, StreamKeyError,
+    StreamLadder, StreamLadderError, StreamLadderRung, StreamProtocol, StreamTarget,
+    StreamTargetError, StreamTargetId, StreamVideoBitrateError, ValidationError,
+    ValidationErrorKind,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, MAX_INPUT_NAME_BYTES,
@@ -74,6 +75,7 @@ fn layer(name: &str, source: SourceRef) -> Layer {
         geometry: identity_geometry(),
         crop: None,
         mask: None,
+        effects: Vec::new(),
         opacity: u8::MAX,
         z_order: 0,
     }
@@ -1847,6 +1849,206 @@ fn rectangular_masks_use_half_open_post_crop_source_bounds() {
             "mask {mask:?} was accepted"
         );
     }
+}
+
+#[test]
+fn layer_effects_persist_ordered_bounded_descriptors() {
+    let mut project = Project::new(project_id(99), "Effects", settings());
+    project.add_input(Input {
+        id: input_id(99),
+        name: "Source".into(),
+        kind: InputKind::Color,
+        required_capabilities: Vec::new(),
+    });
+    let mut layered = layer("With effects", SourceRef::Input(input_id(99)));
+    layered.effects = vec![
+        LayerEffect::new("levels", vec![0, 128]),
+        LayerEffect::new("brightness_contrast", vec![-20, 35]),
+        // Unknown names are preserved by validation, not rejected here.
+        LayerEffect::new("future.effect", vec![-1, 0, 7]),
+    ];
+    project.add_scene(Scene {
+        id: scene_id(99),
+        name: "Effects scene".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![layered],
+    });
+
+    assert_eq!(project.validate(), Ok(()));
+    assert_eq!(
+        project.scenes()[0].layers[0].effects,
+        vec![
+            LayerEffect::new("levels", vec![0, 128]),
+            LayerEffect::new("brightness_contrast", vec![-20, 35]),
+            LayerEffect::new("future.effect", vec![-1, 0, 7]),
+        ]
+    );
+}
+
+#[test]
+fn layer_effects_are_bounded_and_names_stay_unrestricted() {
+    let project_with_effects = |effects| {
+        let mut project = Project::new(project_id(99), "Effect bounds", settings());
+        project.add_input(Input {
+            id: input_id(99),
+            name: "Source".into(),
+            kind: InputKind::Color,
+            required_capabilities: Vec::new(),
+        });
+        let mut layered = layer("Effects", SourceRef::Input(input_id(99)));
+        layered.effects = effects;
+        project.add_scene(Scene {
+            id: scene_id(99),
+            name: "Effects scene".into(),
+            background: Rgba8::OPAQUE_BLACK,
+            layers: vec![layered],
+        });
+        project
+    };
+    let assert_effects_rejected = |effects| {
+        let errors = project_with_effects(effects).validate().unwrap_err();
+        assert!(
+            errors.iter().any(|error| {
+                error.field == "layers.effects" && error.kind == ValidationErrorKind::OutOfRange
+            }),
+            "effects were accepted"
+        );
+    };
+
+    assert_effects_rejected(
+        (0..=LayerEffect::MAX_EFFECTS_PER_LAYER)
+            .map(|_| LayerEffect::new("levels", vec![0, 128]))
+            .collect::<Vec<_>>(),
+    );
+    for effect in [
+        LayerEffect::new("", vec![0, 128]),
+        LayerEffect::new("x".repeat(LayerEffect::MAX_NAME_BYTES + 1), Vec::new()),
+        LayerEffect::new("levels\u{7}", vec![0, 128]),
+        LayerEffect::new("levels", vec![0; LayerEffect::MAX_PARAMETERS + 1]),
+    ] {
+        assert!(effect.validate().is_err(), "{effect:?} was accepted");
+        assert_effects_rejected(vec![effect]);
+    }
+
+    assert_eq!(
+        LayerEffect::new("", Vec::new()).validate(),
+        Err(LayerEffectError::EmptyName)
+    );
+    assert_eq!(
+        LayerEffect::new("x".repeat(LayerEffect::MAX_NAME_BYTES + 1), Vec::new()).validate(),
+        Err(LayerEffectError::NameTooLong)
+    );
+    assert_eq!(
+        LayerEffect::new("levels\u{1f}", Vec::new()).validate(),
+        Err(LayerEffectError::NameContainsControlCharacter)
+    );
+    assert_eq!(
+        LayerEffect::new("levels", vec![0; LayerEffect::MAX_PARAMETERS + 1]).validate(),
+        Err(LayerEffectError::TooManyParameters)
+    );
+
+    // Exactly the bounds are accepted, unknown names included.
+    let boundary = (0..LayerEffect::MAX_EFFECTS_PER_LAYER)
+        .map(|_| {
+            LayerEffect::new(
+                "x".repeat(LayerEffect::MAX_NAME_BYTES),
+                vec![0; LayerEffect::MAX_PARAMETERS],
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(project_with_effects(boundary).validate(), Ok(()));
+}
+
+#[test]
+fn scene_layer_effect_mutations_are_bounded_and_atomic() {
+    let mut project = Project::new(project_id(99), "Effect mutations", settings());
+    project.add_input(Input {
+        id: input_id(99),
+        name: "Source".into(),
+        kind: InputKind::Color,
+        required_capabilities: Vec::new(),
+    });
+    let mut layered = layer("Effects", SourceRef::Input(input_id(99)));
+    layered.effects = vec![LayerEffect::new("levels", vec![0, 128])];
+    project.add_scene(Scene {
+        id: scene_id(99),
+        name: "Effects scene".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![layered],
+    });
+    let scene = scene_id(99);
+
+    let effects = |project: &Project| project.scenes()[0].layers[0].effects.clone();
+    project
+        .add_scene_layer_effect(scene, 0, LayerEffect::new("saturation", vec![-50]))
+        .unwrap();
+    assert_eq!(
+        effects(&project),
+        vec![
+            LayerEffect::new("levels", vec![0, 128]),
+            LayerEffect::new("saturation", vec![-50]),
+        ]
+    );
+    project
+        .set_scene_layer_effects(
+            scene,
+            0,
+            vec![LayerEffect::new("future.effect", vec![-1, 7])],
+        )
+        .unwrap();
+    assert_eq!(
+        effects(&project),
+        vec![LayerEffect::new("future.effect", vec![-1, 7])]
+    );
+    project.remove_scene_layer_effect(scene, 0, 0).unwrap();
+    assert!(effects(&project).is_empty());
+
+    let full = (0..LayerEffect::MAX_EFFECTS_PER_LAYER)
+        .map(|_| LayerEffect::new("levels", vec![0, 128]))
+        .collect::<Vec<_>>();
+    project
+        .set_scene_layer_effects(scene, 0, full.clone())
+        .unwrap();
+    for error in [
+        project.add_scene_layer_effect(scene, 0, LayerEffect::new("flip", vec![1, 0])),
+        project.set_scene_layer_effects(
+            scene,
+            0,
+            (0..=LayerEffect::MAX_EFFECTS_PER_LAYER)
+                .map(|_| LayerEffect::new("levels", vec![0, 128]))
+                .collect(),
+        ),
+        project.set_scene_layer_effects(scene, 0, vec![LayerEffect::new("", Vec::new())]),
+        project.set_scene_layer_effects(
+            scene,
+            0,
+            vec![LayerEffect::new(
+                "levels",
+                vec![0; LayerEffect::MAX_PARAMETERS + 1],
+            )],
+        ),
+        project.remove_scene_layer_effect(scene, 0, LayerEffect::MAX_EFFECTS_PER_LAYER),
+        project.set_scene_layer_effects(scene_id(1), 0, Vec::new()),
+        project.set_scene_layer_effects(scene, 1, Vec::new()),
+        project.add_scene_layer_effect(scene, 1, LayerEffect::new("levels", vec![0, 128])),
+        project.remove_scene_layer_effect(scene, 1, 0),
+    ] {
+        assert!(error.is_err());
+        assert_eq!(effects(&project), full, "a rejection mutated the layer");
+    }
+    assert_eq!(
+        project.add_scene_layer_effect(scene, 0, LayerEffect::new("flip", vec![1, 0])),
+        Err(SceneLayerError::TooManyEffects { scene, index: 0 })
+    );
+    assert_eq!(
+        project.remove_scene_layer_effect(scene, 0, LayerEffect::MAX_EFFECTS_PER_LAYER),
+        Err(SceneLayerError::EffectIndexOutOfRange {
+            scene,
+            index: 0,
+            effect_index: LayerEffect::MAX_EFFECTS_PER_LAYER,
+            length: LayerEffect::MAX_EFFECTS_PER_LAYER,
+        })
+    );
 }
 
 #[test]

@@ -376,6 +376,32 @@ pub enum Command {
         scene: u128,
         index: usize,
     },
+    SceneLayerEffectAdd {
+        path: PathBuf,
+        scene: u128,
+        index: usize,
+        name: String,
+        parameters: Vec<i32>,
+    },
+    SceneLayerEffectSet {
+        path: PathBuf,
+        scene: u128,
+        index: usize,
+        effect_index: usize,
+        name: String,
+        parameters: Vec<i32>,
+    },
+    SceneLayerEffectRemove {
+        path: PathBuf,
+        scene: u128,
+        index: usize,
+        effect_index: usize,
+    },
+    SceneLayerEffectClear {
+        path: PathBuf,
+        scene: u128,
+        index: usize,
+    },
     InputRemove {
         path: PathBuf,
         input: u128,
@@ -917,6 +943,10 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "scene-layer-crop-clear" => parse_scene_layer_crop_clear(arguments),
         "scene-layer-mask" => parse_scene_layer_mask(arguments),
         "scene-layer-mask-clear" => parse_scene_layer_mask_clear(arguments),
+        "scene-layer-effect-add" => parse_scene_layer_effect(arguments, EffectEdit::Add),
+        "scene-layer-effect-set" => parse_scene_layer_effect(arguments, EffectEdit::Set),
+        "scene-layer-effect-remove" => parse_scene_layer_effect_remove(arguments),
+        "scene-layer-effect-clear" => parse_scene_layer_effect_clear(arguments),
         "input-remove" => parse_input_remove(arguments),
         "input-duplicate" => parse_input_duplicate(arguments),
         "input-replace-simulated" => parse_input_replace_simulated(arguments),
@@ -2182,6 +2212,84 @@ fn parse_scene_layer_mask_clear(
     let index = number(&required(&mut arguments, "layer index")?, "layer index")?;
     reject_extra(&mut arguments)?;
     Ok(Command::SceneLayerMaskClear { path, scene, index })
+}
+
+/// Which of the two effect authoring shapes `parse_scene_layer_effect` reads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EffectEdit {
+    /// `scene-layer-effect-add`: appends an effect after the layer index.
+    Add,
+    /// `scene-layer-effect-set`: replaces the effect at an additional index.
+    Set,
+}
+
+/// Parses `scene-layer-effect-add` and `scene-layer-effect-set`.
+///
+/// Every trailing argument becomes one exact `i32` parameter, so the parameter
+/// count is bounded by the model rather than by this parser. The name is also
+/// bounded by the model, which refuses an empty, oversized, or control-bearing
+/// name the same way masks refuse invalid bounds.
+fn parse_scene_layer_effect(
+    mut arguments: impl Iterator<Item = String>,
+    edit: EffectEdit,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let index = number(&required(&mut arguments, "layer index")?, "layer index")?;
+    let effect_index = match edit {
+        EffectEdit::Add => None,
+        EffectEdit::Set => Some(number(
+            &required(&mut arguments, "effect index")?,
+            "effect index",
+        )?),
+    };
+    let name = required(&mut arguments, "effect name")?;
+    let parameters = arguments
+        .map(|value| number::<i32>(&value, "effect parameter"))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(match effect_index {
+        None => Command::SceneLayerEffectAdd {
+            path,
+            scene,
+            index,
+            name,
+            parameters,
+        },
+        Some(effect_index) => Command::SceneLayerEffectSet {
+            path,
+            scene,
+            index,
+            effect_index,
+            name,
+            parameters,
+        },
+    })
+}
+
+fn parse_scene_layer_effect_remove(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let index = number(&required(&mut arguments, "layer index")?, "layer index")?;
+    let effect_index = number(&required(&mut arguments, "effect index")?, "effect index")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::SceneLayerEffectRemove {
+        path,
+        scene,
+        index,
+        effect_index,
+    })
+}
+
+fn parse_scene_layer_effect_clear(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let index = number(&required(&mut arguments, "layer index")?, "layer index")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::SceneLayerEffectClear { path, scene, index })
 }
 
 fn parse_input_remove(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
