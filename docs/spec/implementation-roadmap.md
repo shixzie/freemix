@@ -1284,6 +1284,22 @@ leaving a state no checkpoint could persist. Fullscreen presentation,
 Windows/Linux adapters, and complete profile acceptance remain absent, so Phase
 3 item 5 and `SW-002`/`SW-004` remain planned.
 
+Current implementation boundary for logical outputs (`SW-012`): `fm-switcher`
+provides a deterministic resolver for four logical output slots. Each slot
+selects Program, Preview, an input, a mix, or a MultiView of up to 16 cells
+(which may show other outputs), with all, clean, chosen-subset, or routed
+overlays and a master, bus, or follow-video audio map. Edits are
+all-or-nothing and reject duplicate project outputs, disabled dependencies, and
+direct or chained MultiView recursion; resolution isolates live failures per
+output, follows timed/T-bar transitions and FTB only on Program feeds, follows
+secondary mixes through `MixBank` frames, and emits a render order that places
+every output before the MultiViews showing it. Remaining gaps: the routing is
+not persisted in `fm-model`/`fm-persistence`, has no switcher command,
+protocol, engine, compositor, or delivery wiring, does not drive `MixBank` Main
+from the bank itself, has no MultiView grid geometry for mixes or outputs, and
+switches follow-video audio only at take completion. `SW-012` remains planned.
+
+
 Exit: `P0` switcher, composition, audio, display, record, and control rows pass.
 
 Current implementation boundary for automix and monitoring (`AU-007`,
