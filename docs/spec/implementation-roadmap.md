@@ -1754,6 +1754,22 @@ Google Sheets, chat, or database adapters, no real HTTP or file polling, and
 mapped values do not yet feed `fm-titles` templates, the project schema, or
 ticker updates. Item 4 remains incomplete and `GX-004` remains planned.
 
+Current implementation boundary for item 4 title binding (`GX-005`):
+`fm-data` binds rows onto text, integer, color, validated image URI (scheme
+allow-list, length limit, required host for HTTP), and visibility fields
+(explicit truth values, non-empty, exact numeric comparison, inversion).
+Formatted fields render exact fixed-decimal numbers with selectable rounding,
+separators, sign style, and affixes without floating point, and dates from
+ISO-8601 text or Unix seconds at a caller-supplied fixed UTC offset through a
+bounded strftime-like pattern. Bindings can follow the cursor-selected row. A
+preview state stages a result with a per-field change list against live values
+and commits atomically with a revision counter, stale-stage detection, and a
+choice between refusing errored results and keeping live values for failed
+fields. Remaining gaps: bound values do not reach `fm-titles`, the renderer,
+the project schema, the protocol, or a UI preview; there is no time-zone
+database or localization; image URIs are never fetched; and preview state is
+in memory only. `GX-005` remains planned.
+
 Current implementation boundary for item 5: `fm-playback` provides a
 fixture-backed `ListPlayer` that advances once per monotonic engine frame tick
 with ordered auto-next, loop, auto-first, per-item in/out marks, exact
