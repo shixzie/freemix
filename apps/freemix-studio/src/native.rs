@@ -15,9 +15,9 @@ use fm_client::{
     Client, ClientError, CommandStatus, CommandUncertainty, SessionEvent, SyncMode, TcpSessionError,
 };
 use fm_protocol::{
-    CommandPayload, CommandResult, DurableGap, OverlayBorderPreset, OverlayPositionPreset,
-    OverlayTransitionKind, StingerAudioPolicy, StingerMissingMediaFallback, WireInputId,
-    WireMessage, WireOutputId, WireRecorderSlot, WireStreamTargetId,
+    CommandPayload, CommandResult, DurableGap, MonitorTap, OverlayBorderPreset,
+    OverlayPositionPreset, OverlayTransitionKind, StingerAudioPolicy, StingerMissingMediaFallback,
+    WireInputId, WireMessage, WireOutputId, WireRecorderSlot, WireStreamTargetId,
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
@@ -836,6 +836,8 @@ fn run_worker(
                     | SessionEvent::AudioMeters { .. }
                     | SessionEvent::StreamStatus { .. },
                 )) => true,
+                // Lossy monitor parts publish only once a frame completes.
+                Ok(Some(SessionEvent::MonitorFrame { complete, .. })) => complete,
                 Ok(Some(SessionEvent::Disconnected { cause, .. })) => {
                     recovery.visible_error = Some(format!("Disconnected while idle: {cause:?}"));
                     recovery.reconnect_wait = ReconnectWait::from_runtime(&runtime);
@@ -1195,14 +1197,16 @@ fn handle_heartbeat_timeout(
                         .map_err(|error| {
                             worker_error("Heartbeat acknowledgement failed", &error)
                         })?;
-                    if matches!(
-                        event,
+                    let publish = match &event {
                         SessionEvent::AudioMeters { .. }
-                            | SessionEvent::RuntimeEvent { .. }
-                            | SessionEvent::Event { .. }
-                            | SessionEvent::StreamStatus { .. }
-                    ) {
-                        if !publish_recovery_runtime(runtime, publisher, recovery) {
+                        | SessionEvent::RuntimeEvent { .. }
+                        | SessionEvent::Event { .. }
+                        | SessionEvent::StreamStatus { .. } => Some(true),
+                        SessionEvent::MonitorFrame { complete, .. } => Some(*complete),
+                        _ => None,
+                    };
+                    if let Some(publish) = publish {
+                        if publish && !publish_recovery_runtime(runtime, publisher, recovery) {
                             return Err(WorkerFailure::Fatal("Studio UI disconnected".to_owned()));
                         }
                         continue;
@@ -1610,6 +1614,14 @@ fn receive_command_event(
             publication.update(runtime, *deferred_rejections)?;
             continue;
         }
+        // Lossy monitor parts are status, never command records: they are not
+        // counted and publish only once a frame completes.
+        if let SessionEvent::MonitorFrame { complete, .. } = event {
+            if complete {
+                publication.update(runtime, *deferred_rejections)?;
+            }
+            continue;
+        }
         count_record(consumed)?;
         if matches!(
             event,
@@ -1944,6 +1956,12 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
             state.recording_desired = recording_desired_slots(view);
         }
         state.view = view;
+        for tap in MonitorTap::ALL {
+            state.monitor_images[tap.index()] = runtime
+                .session()
+                .latest_monitor_frame(tap)
+                .map(|(image, received_at)| (image.clone(), received_at));
+        }
     }
     state.pending_commands = client.model().pending_commands().len();
     state.recording_pending = recording_command_pending(client);
@@ -2192,6 +2210,32 @@ mod tests {
                 };
                 sequence += 1;
                 self.send(&WireMessage::StreamStatus(stream_status_message(sequence)));
+                self.send(&WireMessage::HeartbeatAcknowledgement(
+                    HeartbeatAcknowledgementMessage {
+                        server: heartbeat.server,
+                        heartbeat_sequence: heartbeat.sequence,
+                        received_at_ms: heartbeat.sent_at_ms,
+                    },
+                ));
+            }
+        }
+
+        /// Answers every heartbeat with one complete multi-part Program
+        /// monitor frame ahead of its acknowledgement.
+        fn acknowledge_heartbeats_with_monitor_frames_until_eof(&mut self) {
+            let mut sequence = 0;
+            loop {
+                let mut line = String::new();
+                if self.reader.read_line(&mut line).unwrap() == 0 {
+                    return;
+                }
+                let WireMessage::Heartbeat(heartbeat) = decode_line(&line).unwrap() else {
+                    panic!("expected heartbeat");
+                };
+                sequence += 1;
+                for record in monitor_frame_records(MonitorTap::Program, sequence) {
+                    self.send(&record);
+                }
                 self.send(&WireMessage::HeartbeatAcknowledgement(
                     HeartbeatAcknowledgementMessage {
                         server: heartbeat.server,
@@ -3022,6 +3066,255 @@ mod tests {
             {
                 assert_eq!(state.streams.len(), 1);
                 assert_eq!(status.samples[0].muxed_bytes, 2048);
+                break;
+            }
+        }
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    /// Pixels for one deterministic noise monitor frame; noise defeats QOI
+    /// runs so every frame needs more than one `monitor_frame` part.
+    fn monitor_frame_pixels(sequence: u64) -> (u16, u16, Vec<u8>) {
+        let (width, height) = (128_u16, 72_u16);
+        let mut state = 0x9E37_79B9_u32 ^ u32::try_from(sequence).unwrap();
+        let pixels = (0..usize::from(width) * usize::from(height) * 3)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state.to_le_bytes()[0]
+            })
+            .collect();
+        (width, height, pixels)
+    }
+
+    fn monitor_frame_records(tap: MonitorTap, sequence: u64) -> Vec<WireMessage> {
+        let (width, height, pixels) = monitor_frame_pixels(sequence);
+        let qoi =
+            fm_protocol::encode_qoi_rgb(width, height, &pixels, usize::from(width) * 3, 3).unwrap();
+        let parts = fm_protocol::monitor_frame_parts(
+            &heartbeat_handshake(HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            })
+            .server,
+            tap,
+            sequence,
+            sequence,
+            heartbeat_snapshot().inputs[0].input,
+            fm_protocol::MonitorFrameOrigin::Simulated,
+            width,
+            height,
+            &qoi,
+        );
+        assert!(parts.len() >= 2, "test frames must span several parts");
+        parts.into_iter().map(WireMessage::MonitorFrame).collect()
+    }
+
+    fn assert_monitor_frame(state: &StudioUiState, tap: MonitorTap, sequence: u64) {
+        let (image, _) = state.monitor_images[tap.index()]
+            .as_ref()
+            .expect("monitor frame published");
+        assert_eq!(image.tap, tap);
+        assert_eq!(image.sequence, sequence);
+        assert_eq!(image.origin, fm_protocol::MonitorFrameOrigin::Simulated);
+        assert_eq!(image.input, heartbeat_snapshot().inputs[0].input);
+        let (width, height, pixels) = monitor_frame_pixels(sequence);
+        assert_eq!((image.width, image.height), (width, height));
+        let expected = pixels
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect::<Vec<_>>();
+        assert_eq!(&image.rgba[..], &expected[..]);
+    }
+
+    #[test]
+    fn idle_worker_publishes_monitor_frames_to_the_ui_state() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut peer = HeartbeatPeer::accept(&listener);
+            peer.handshake_request();
+            peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+                HandshakeOutcome::Snapshot {
+                    reason: SnapshotReason::NoCursor,
+                },
+            )));
+            peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+            // Unsolicited lossy frames while idle; neither may surface as an
+            // "Unexpected idle response" failure.
+            for tap in MonitorTap::ALL {
+                for record in monitor_frame_records(tap, 1) {
+                    peer.send(&record);
+                }
+            }
+            peer.acknowledge_heartbeats_until_eof();
+        });
+        let (request_sender, updates, worker) =
+            spawn_existing_worker(address, "monitor-frame-idle-test");
+
+        receive_connection_state(&updates, StudioConnectionStatus::Ready);
+        let state = receive_state_where(&updates, |state| {
+            state.monitor_images.iter().all(Option::is_some)
+        });
+        assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+        assert!(state.error.is_none(), "{:?}", state.error);
+        for tap in MonitorTap::ALL {
+            assert_monitor_frame(&state, tap, 1);
+        }
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn heartbeat_ack_wait_swallows_monitor_frames() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut peer = HeartbeatPeer::accept(&listener);
+            peer.handshake_request();
+            peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+                HandshakeOutcome::Snapshot {
+                    reason: SnapshotReason::NoCursor,
+                },
+            )));
+            peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+            peer.acknowledge_heartbeats_with_monitor_frames_until_eof();
+        });
+        let (request_sender, updates, worker) =
+            spawn_existing_worker(address, "monitor-frame-heartbeat-test");
+
+        receive_connection_state(&updates, StudioConnectionStatus::Ready);
+        // Each frame sits between a heartbeat and its acknowledgement, so a
+        // failed swallow would abort the wait with an unexpected-event error.
+        for sequence in 1..=4 {
+            let state = receive_state_where(&updates, |state| {
+                state.monitor_images[MonitorTap::Program.index()]
+                    .as_ref()
+                    .is_some_and(|(image, _)| image.sequence >= sequence)
+            });
+            assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+            assert!(state.error.is_none(), "{:?}", state.error);
+            let published = state.monitor_images[MonitorTap::Program.index()]
+                .as_ref()
+                .unwrap()
+                .0
+                .sequence;
+            assert_monitor_frame(&state, MonitorTap::Program, published);
+        }
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scripted peer conversation
+    fn command_wait_swallows_monitor_frames_without_counting_them_as_records() {
+        // More parts than the command record limit arrive mid-wait; counting
+        // them would fail the command.
+        const FRAMES_PER_TAP: u64 = 3;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut peer = HeartbeatPeer::accept(&listener);
+            peer.handshake_request();
+            peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+                HandshakeOutcome::Snapshot {
+                    reason: SnapshotReason::NoCursor,
+                },
+            )));
+            peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+            let mut command_seen = false;
+            loop {
+                let mut line = String::new();
+                if peer.reader.read_line(&mut line).unwrap() == 0 {
+                    return;
+                }
+                match decode_line(&line).unwrap() {
+                    WireMessage::Heartbeat(heartbeat) => {
+                        peer.send(&WireMessage::HeartbeatAcknowledgement(
+                            HeartbeatAcknowledgementMessage {
+                                server: heartbeat.server,
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        ));
+                    }
+                    WireMessage::Command(command) => {
+                        assert!(!command_seen, "worker retried the command unexpectedly");
+                        command_seen = true;
+                        let accepted_revision = heartbeat_snapshot().revision + 1;
+                        let records = (1..=FRAMES_PER_TAP)
+                            .flat_map(|sequence| {
+                                MonitorTap::ALL.map(|tap| monitor_frame_records(tap, sequence))
+                            })
+                            .flatten()
+                            .collect::<Vec<_>>();
+                        assert!(records.len() > MAX_COMMAND_RECORDS);
+                        for record in &records {
+                            peer.send(record);
+                        }
+                        peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                            id: command.id,
+                            revision: accepted_revision,
+                            scheduled_frame: None,
+                        }));
+                        for record in monitor_frame_records(MonitorTap::Program, FRAMES_PER_TAP + 1)
+                        {
+                            peer.send(&record);
+                        }
+                        peer.send(&WireMessage::Event(command_event(accepted_revision)));
+                        peer.send(&WireMessage::RuntimeEvent(command_runtime_event(
+                            accepted_revision,
+                        )));
+                    }
+                    other => panic!("unexpected peer message: {other:?}"),
+                }
+            }
+        });
+        let (request_sender, updates, worker) =
+            spawn_existing_worker(address, "monitor-frame-command-test");
+
+        receive_connection_state(&updates, StudioConnectionStatus::Ready);
+        request_sender
+            .send(WorkerRequest::Intent(StudioIntent::Cut))
+            .unwrap();
+        let deadline = Instant::now() + HEARTBEAT_TEST_TIMEOUT;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "command sequence did not complete"
+            );
+            updates
+                .receiver
+                .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
+                .unwrap();
+            let state = updates
+                .latest
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                .unwrap();
+            assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+            assert!(
+                state.error.is_none(),
+                "command publication carried an error: {:?}",
+                state.error
+            );
+            if state.pending_commands == 0
+                && state.monitor_images[MonitorTap::Program.index()]
+                    .as_ref()
+                    .is_some_and(|(image, _)| image.sequence == FRAMES_PER_TAP + 1)
+            {
+                assert_monitor_frame(&state, MonitorTap::Program, FRAMES_PER_TAP + 1);
+                assert_monitor_frame(&state, MonitorTap::Preview, FRAMES_PER_TAP);
                 break;
             }
         }

@@ -95,7 +95,8 @@ fn diagnose(config: freemix_studio::StudioConfig) -> Result<(), io::Error> {
             | SessionEvent::RuntimeEvent {
                 intake: Intake::RuntimeEventObserved,
                 ..
-            } => {}
+            }
+            | SessionEvent::MonitorFrame { .. } => {}
             SessionEvent::Disconnected { .. } => {
                 return Err(diagnostic_failure("EOF"));
             }

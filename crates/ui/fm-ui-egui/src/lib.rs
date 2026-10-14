@@ -18,8 +18,9 @@ use egui::{
     Ui, Vec2,
 };
 use fm_protocol::{
-    AudioMetersMessage, ManualTransitionKind, ManualTransitionPosition, StreamStatusMessage,
-    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    AudioMetersMessage, ManualTransitionKind, ManualTransitionPosition, MonitorFrameOrigin,
+    MonitorImage, MonitorTap, StreamStatusMessage, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId, WireStreamTargetId,
 };
 use fm_types::{InputId, OutputId};
 use fm_ui_model::{ClientView, ManualTransitionStatus, StreamStatus, SwitcherState};
@@ -272,6 +273,9 @@ pub struct StudioUiState {
     pub stream_pending: Vec<WireStreamTargetId>,
     /// Reconnect attempt and delay while the connection is in backoff.
     pub reconnect: Option<ReconnectStatus>,
+    /// Latest decoded encoded-fallback monitor frame per
+    /// [`MonitorTap::index`] and when the client completed it.
+    pub monitor_images: [Option<(MonitorImage, std::time::Instant)>; 2],
 }
 
 impl StudioUiState {
@@ -297,6 +301,7 @@ impl StudioUiState {
             recording_pending: [false; RECORDER_SLOT_COUNT],
             stream_pending: Vec::new(),
             reconnect: None,
+            monitor_images: [None, None],
         }
     }
 
@@ -898,6 +903,7 @@ pub struct StudioShell {
     show_about: bool,
     toasts: toasts::ToastQueue,
     meters: meter_ballistics::MeterBallistics,
+    monitor_textures: monitors::MonitorTextures,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -970,6 +976,12 @@ impl StudioShell {
     /// immediate-mode drawing.
     pub fn draw(&mut self, ui: &mut Ui, state: &StudioUiState) -> Vec<StudioIntent> {
         theme::apply_console_visuals(ui.ctx());
+        self.monitor_textures.sync(ui.ctx(), &state.monitor_images);
+        if state.monitor_images.iter().any(Option::is_some) {
+            // Frames age into STALE without any new state arriving.
+            ui.ctx()
+                .request_repaint_after(monitors::MONITOR_REPAINT_INTERVAL);
+        }
         self.set_transition_duration_frames(self.transition_duration_frames);
         self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
 
@@ -1103,42 +1115,42 @@ impl StudioShell {
         let gap = 12.0;
         let available = ui.available_width();
         let column = transitions::TRANSITION_COLUMN_WIDTH + 2.0 * gap;
+        let now = std::time::Instant::now();
+        let native_runtime = state
+            .monitor_images
+            .iter()
+            .flatten()
+            .any(|(image, _)| image.origin == MonitorFrameOrigin::Native);
+        let pictures = MonitorTap::ALL.map(|tap| {
+            self.monitor_textures
+                .picture(tap, &state.monitor_images, now)
+        });
+        let draw_bus = |ui: &mut Ui, bus: monitors::Bus, width: f32| {
+            monitors::draw_monitor(
+                ui,
+                bus,
+                state.view.as_ref(),
+                width,
+                pictures[bus.tap().index()],
+                native_runtime,
+            );
+        };
         if available >= NARROW_MONITOR_WIDTH {
             let monitor_width = ((available - column) / 2.0).floor();
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-                monitors::draw_monitor(
-                    ui,
-                    monitors::Bus::Preview,
-                    state.view.as_ref(),
-                    monitor_width,
-                );
+                draw_bus(ui, monitors::Bus::Preview, monitor_width);
                 ui.vertical(|ui| {
                     transitions::draw_transition_column(ui, self, state, manual, intents);
                 });
-                monitors::draw_monitor(
-                    ui,
-                    monitors::Bus::Program,
-                    state.view.as_ref(),
-                    monitor_width,
-                );
+                draw_bus(ui, monitors::Bus::Program, monitor_width);
             });
         } else {
             let monitor_width = ((available - gap) / 2.0).floor();
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-                monitors::draw_monitor(
-                    ui,
-                    monitors::Bus::Preview,
-                    state.view.as_ref(),
-                    monitor_width,
-                );
-                monitors::draw_monitor(
-                    ui,
-                    monitors::Bus::Program,
-                    state.view.as_ref(),
-                    monitor_width,
-                );
+                draw_bus(ui, monitors::Bus::Preview, monitor_width);
+                draw_bus(ui, monitors::Bus::Program, monitor_width);
             });
             ui.add_space(gap);
             ui.vertical(|ui| {
@@ -1232,6 +1244,7 @@ impl Default for StudioShell {
             show_about: false,
             toasts: toasts::ToastQueue::default(),
             meters: meter_ballistics::MeterBallistics::default(),
+            monitor_textures: monitors::MonitorTextures::default(),
         }
     }
 }
@@ -2612,5 +2625,334 @@ mod tests {
             queued_sources: Vec::new(),
             included_outputs: Vec::new(),
         }
+    }
+
+    fn wire(value: u128) -> fm_protocol::WireInputId {
+        fm_protocol::WireInputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn monitor_image(
+        tap: MonitorTap,
+        origin: MonitorFrameOrigin,
+        input: fm_protocol::WireInputId,
+        (width, height): (u16, u16),
+    ) -> MonitorImage {
+        let pixels = usize::from(width) * usize::from(height);
+        MonitorImage {
+            tap,
+            sequence: 1,
+            frame: 7,
+            input,
+            origin,
+            width,
+            height,
+            rgba: std::iter::repeat_n([200_u8, 40, 30, 255], pixels)
+                .flatten()
+                .collect::<Vec<_>>()
+                .into(),
+        }
+    }
+
+    fn facts(origin: MonitorFrameOrigin, input: u128, age_ms: u64) -> crate::monitors::FrameFacts {
+        crate::monitors::FrameFacts {
+            origin,
+            input: wire(input),
+            width: 640,
+            height: 360,
+            age: std::time::Duration::from_millis(age_ms),
+        }
+    }
+
+    #[test]
+    fn letterbox_fits_and_centers_every_aspect() {
+        use crate::monitors::letterbox;
+        let video = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), Vec2::new(320.0, 180.0));
+        // 16:9 fills the well exactly.
+        assert_eq!(letterbox(video, 640, 360), video);
+        // 4:3 pillarboxes: full height, centered horizontally.
+        let pillar = letterbox(video, 480, 360);
+        assert_eq!(pillar.size(), Vec2::new(240.0, 180.0));
+        assert_eq!(pillar.center(), video.center());
+        assert_eq!(pillar.min.x, 50.0);
+        // 9:16 portrait is a narrow centered column.
+        let portrait = letterbox(video, 202, 360);
+        assert!((portrait.height() - 180.0).abs() < 1e-3);
+        assert!((portrait.width() - 101.0).abs() < 1e-3);
+        assert_eq!(portrait.center(), video.center());
+        // A wider-than-16:9 image letterboxes top and bottom.
+        let wide = letterbox(video, 640, 200);
+        assert_eq!(wide.width(), 320.0);
+        assert!((wide.height() - 100.0).abs() < 1e-3);
+        assert_eq!(wide.center(), video.center());
+        // Degenerate sizes never produce NaN rectangles.
+        assert_eq!(letterbox(video, 0, 360), video);
+    }
+
+    #[test]
+    fn picture_visibility_requires_fresh_frames_of_the_realized_source() {
+        use crate::monitors::picture_visible;
+        use std::time::Duration;
+        let fresh = Duration::from_millis(999);
+        let stale = Duration::from_secs(1);
+        let cases = [
+            (MonitorFrameOrigin::Simulated, 1, Some(1), fresh, true),
+            (MonitorFrameOrigin::Simulated, 1, Some(2), fresh, false),
+            (MonitorFrameOrigin::Simulated, 1, None, fresh, false),
+            (MonitorFrameOrigin::Simulated, 1, Some(1), stale, false),
+            (MonitorFrameOrigin::Native, 1, Some(2), fresh, true),
+            (MonitorFrameOrigin::Native, 1, None, fresh, true),
+            (MonitorFrameOrigin::Native, 1, Some(1), stale, false),
+        ];
+        for (origin, frame, realized, age, expected) in cases {
+            assert_eq!(
+                picture_visible(origin, wire(frame), realized.map(wire), age),
+                expected,
+                "{origin:?} frame={frame} realized={realized:?} age={age:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn monitor_captions_state_origin_size_staleness_and_absence() {
+        use crate::monitors::{Bus, PictureMode, monitor_caption};
+        let sim = MonitorFrameOrigin::Simulated;
+        let native = MonitorFrameOrigin::Native;
+        #[allow(clippy::type_complexity)]
+        let cases: [(
+            Bus,
+            Option<crate::monitors::FrameFacts>,
+            bool,
+            PictureMode,
+            &[&str],
+            &str,
+        ); 9] = [
+            (
+                Bus::Program,
+                Some(facts(sim, 1, 100)),
+                false,
+                PictureMode::Live,
+                &["SIMULATED"],
+                "SIMULATED RENDER · 640×360 encoded preview",
+            ),
+            (
+                Bus::Preview,
+                Some(facts(sim, 1, 100)),
+                false,
+                PictureMode::Live,
+                &["SIMULATED"],
+                "SIMULATED RENDER · 640×360 encoded preview",
+            ),
+            (
+                Bus::Program,
+                Some(facts(native, 9, 100)),
+                true,
+                PictureMode::Live,
+                &[],
+                "ENCODED PREVIEW 640×360 · CPU readback",
+            ),
+            (
+                Bus::Program,
+                Some(facts(sim, 1, 2_500)),
+                false,
+                PictureMode::Stale,
+                &["SIMULATED", "STALE"],
+                "STALE · last encoded frame 2.5 s old",
+            ),
+            (
+                Bus::Program,
+                Some(facts(native, 1, 1_000)),
+                true,
+                PictureMode::Stale,
+                &["STALE"],
+                "STALE · last encoded frame 1.0 s old",
+            ),
+            (
+                Bus::Preview,
+                Some(facts(sim, 2, 100)),
+                false,
+                PictureMode::Stale,
+                &["SIMULATED", "STALE"],
+                "STALE · encoded frame does not match the realized source",
+            ),
+            (
+                Bus::Program,
+                None,
+                false,
+                PictureMode::Hidden,
+                &[],
+                "NO VIDEO FEED · waiting for encoded preview",
+            ),
+            (
+                Bus::Program,
+                None,
+                true,
+                PictureMode::Hidden,
+                &[],
+                "NO VIDEO FEED · waiting for encoded preview",
+            ),
+            (
+                Bus::Preview,
+                None,
+                true,
+                PictureMode::Hidden,
+                &[],
+                "NO PREVIEW TAP · native Preview image not produced",
+            ),
+        ];
+        for (bus, frame, native_runtime, picture, badges, text) in cases {
+            let caption = monitor_caption(bus, frame, Some(wire(1)), native_runtime);
+            assert_eq!(caption.picture, picture, "{bus:?} {frame:?}");
+            assert_eq!(caption.badges, badges, "{bus:?} {frame:?}");
+            assert_eq!(caption.text, text, "{bus:?} {frame:?}");
+            assert_ne!(caption.note, "");
+        }
+        // A simulated live frame is honest about what it does not composite.
+        let note = monitor_caption(Bus::Program, Some(facts(sim, 1, 0)), Some(wire(1)), false).note;
+        for omitted in ["overlays", "scenes", "Fade to Black", "not composited"] {
+            assert!(note.contains(omitted), "{note}");
+        }
+    }
+
+    fn run_frame(
+        context: &egui::Context,
+        shell: &mut StudioShell,
+        state: &StudioUiState,
+    ) -> egui::FullOutput {
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1600.0, 1000.0),
+            )),
+            ..egui::RawInput::default()
+        });
+        let mut ui = egui::Ui::new(
+            context.clone(),
+            egui::Id::new("fm-ui-egui-monitor-test"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(context.viewport_rect()),
+        );
+        let _intents = shell.draw(&mut ui, state);
+        context.end_pass()
+    }
+
+    #[test]
+    fn monitor_textures_upload_once_per_frame_buffer_and_free_on_absence() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready);
+        let now = std::time::Instant::now();
+        let first = monitor_image(
+            MonitorTap::Program,
+            MonitorFrameOrigin::Simulated,
+            wire(1),
+            (64, 36),
+        );
+        state.monitor_images[MonitorTap::Program.index()] = Some((first.clone(), now));
+
+        let output = run_frame(&context, &mut shell, &state);
+        let program = shell
+            .monitor_textures
+            .texture_id(MonitorTap::Program)
+            .expect("program texture uploaded");
+        assert_eq!(shell.monitor_textures.texture_id(MonitorTap::Preview), None);
+        let uploads = |output: &egui::FullOutput| {
+            output
+                .textures_delta
+                .set
+                .iter()
+                .filter(|(id, _)| *id == program)
+                .count()
+        };
+        assert_eq!(uploads(&output), 1);
+        assert_eq!(output.textures_delta.free, Vec::<egui::TextureId>::new());
+
+        // The same Arc (even inside a cloned state) is never re-uploaded.
+        let output = run_frame(&context, &mut shell, &state.clone());
+        assert_eq!(uploads(&output), 0);
+        assert_eq!(
+            shell.monitor_textures.texture_id(MonitorTap::Program),
+            Some(program)
+        );
+
+        // Equal pixels in a new Arc are a new frame: one in-place upload.
+        let mut second = first.clone();
+        second.sequence = 2;
+        second.rgba = first.rgba.to_vec().into();
+        state.monitor_images[MonitorTap::Program.index()] = Some((second, now));
+        let output = run_frame(&context, &mut shell, &state);
+        assert_eq!(uploads(&output), 1);
+        assert_eq!(
+            shell.monitor_textures.texture_id(MonitorTap::Program),
+            Some(program)
+        );
+
+        // No frame for the tap frees its texture.
+        state.monitor_images[MonitorTap::Program.index()] = None;
+        let output = run_frame(&context, &mut shell, &state);
+        assert_eq!(shell.monitor_textures.texture_id(MonitorTap::Program), None);
+        assert!(output.textures_delta.free.contains(&program));
+        assert_eq!(uploads(&output), 0);
+
+        // A malformed buffer is never uploaded.
+        let mut malformed = first;
+        malformed.rgba = vec![0_u8; 3].into();
+        state.monitor_images[MonitorTap::Program.index()] = Some((malformed, now));
+        let _output = run_frame(&context, &mut shell, &state);
+        assert_eq!(shell.monitor_textures.texture_id(MonitorTap::Program), None);
+    }
+
+    #[test]
+    fn monitors_draw_live_stale_and_absent_frames_without_panicking() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let view = recording_view([false, false]);
+        let program = fm_protocol::WireInputId::from_domain(view.switcher.realized.program);
+        let preview = fm_protocol::WireInputId::from_domain(view.switcher.realized.preview);
+        let now = std::time::Instant::now();
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready).with_view(view);
+        state.monitor_images = [
+            Some((
+                monitor_image(
+                    MonitorTap::Preview,
+                    MonitorFrameOrigin::Simulated,
+                    preview,
+                    (48, 36),
+                ),
+                now.checked_sub(std::time::Duration::from_secs(3))
+                    .unwrap_or(now),
+            )),
+            Some((
+                monitor_image(
+                    MonitorTap::Program,
+                    MonitorFrameOrigin::Simulated,
+                    program,
+                    (64, 36),
+                ),
+                now,
+            )),
+        ];
+        let output = run_frame(&context, &mut shell, &state);
+        assert!(output.textures_delta.set.len() >= 2);
+        // A frame on screen keeps the UI repainting so it can age into STALE.
+        let repaint = output
+            .viewport_output
+            .values()
+            .map(|viewport| viewport.repaint_delay)
+            .min()
+            .unwrap();
+        assert!(repaint <= crate::monitors::MONITOR_REPAINT_INTERVAL);
+
+        state.monitor_images[MonitorTap::Program.index()] = Some((
+            monitor_image(
+                MonitorTap::Program,
+                MonitorFrameOrigin::Native,
+                program,
+                (64, 36),
+            ),
+            now,
+        ));
+        state.monitor_images[MonitorTap::Preview.index()] = None;
+        let _output = run_frame(&context, &mut shell, &state);
     }
 }

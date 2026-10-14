@@ -25,9 +25,9 @@ use fm_protocol::{
     DiagnosticsResponse, EngineIdentity, EventCursor, EventMessage, EventPayload,
     FadeToBlackPosition, FadeToBlackState, HandshakeOutcome, HandshakeResponse,
     HeartbeatAcknowledgementMessage, HeartbeatMessage, LineDecoder, ManualTransitionStatus,
-    OverlayStatus, ProtocolVersion, Role, RuntimeEventMessage, RuntimeLifecycleEvent,
-    ServerIdentity, SnapshotMessage, SnapshotReason, WireInputId, WireMessage, WireRecorderSlot,
-    encode_line,
+    MonitorFrameOrigin, MonitorTap, OverlayStatus, ProtocolVersion, Role, RuntimeEventMessage,
+    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, WireInputId,
+    WireMessage, WireRecorderSlot, encode_line, encode_qoi_rgb, monitor_frame_parts,
 };
 use fm_types::{InputId, ProjectId};
 use freemix_studio::{
@@ -1034,6 +1034,85 @@ fn diagnose_reports_validated_heartbeat_and_control_diagnostics() {
                 .bytes()
                 .all(|byte| byte.is_ascii_graphic())
         );
+        peer.send_until(
+            &WireMessage::DiagnosticsResponse(DiagnosticsResponse {
+                protocol: CURRENT_PROTOCOL_VERSION,
+                request_id: request.request_id,
+                engine: engine(),
+                current_revision: 5,
+                oldest_retained_revision: Some(4),
+                newest_retained_revision: Some(5),
+                subscriber_count: 1,
+                retained_events_limit: 64,
+                subscriber_limit: 8,
+                subscriber_queue_limit: 16,
+            }),
+            deadline,
+        );
+    });
+
+    let output = run_diagnose(address, None);
+    let server = server_thread.join();
+    assert!(server.is_ok(), "Studio diagnostic server failed");
+    assert_diagnose_success(output);
+}
+
+/// One complete multi-part simulated monitor frame group for `tap`.
+fn monitor_frame_records(tap: MonitorTap, sequence: u64) -> Vec<WireMessage> {
+    let (width, height) = (128_u16, 72_u16);
+    // Deterministic noise defeats QOI runs so the frame spans several parts.
+    let mut state = 0x2545_F491_u32 ^ u32::try_from(sequence).unwrap();
+    let pixels = (0..usize::from(width) * usize::from(height) * 3)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[0]
+        })
+        .collect::<Vec<_>>();
+    let qoi = encode_qoi_rgb(width, height, &pixels, usize::from(width) * 3, 3).unwrap();
+    let parts = monitor_frame_parts(
+        &server(project_id()),
+        tap,
+        sequence,
+        sequence,
+        input(1),
+        MonitorFrameOrigin::Simulated,
+        width,
+        height,
+        &qoi,
+    );
+    assert!(parts.len() >= 2);
+    parts.into_iter().map(WireMessage::MonitorFrame).collect()
+}
+
+#[test]
+fn diagnose_swallows_monitor_frames_during_heartbeat_and_diagnostics_waits() {
+    let (address, server_thread) = spawn_server(|listener| {
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        let mut peer = Peer::accept_until(&listener, deadline);
+        let heartbeat = receive_diagnose_heartbeat(&mut peer, deadline);
+        // Both taps arrive while the heartbeat acknowledgement is pending.
+        for tap in MonitorTap::ALL {
+            for record in monitor_frame_records(tap, 1) {
+                peer.send_until(&record, deadline);
+            }
+        }
+        peer.send_until(
+            &WireMessage::HeartbeatAcknowledgement(HeartbeatAcknowledgementMessage {
+                server: heartbeat.server,
+                heartbeat_sequence: heartbeat.sequence,
+                received_at_ms: 1_234,
+            }),
+            deadline,
+        );
+        let WireMessage::DiagnosticsRequest(request) = peer.receive_until(deadline) else {
+            panic!("expected diagnostics request");
+        };
+        // And again while the diagnostics response is pending.
+        for record in monitor_frame_records(MonitorTap::Program, 2) {
+            peer.send_until(&record, deadline);
+        }
         peer.send_until(
             &WireMessage::DiagnosticsResponse(DiagnosticsResponse {
                 protocol: CURRENT_PROTOCOL_VERSION,
