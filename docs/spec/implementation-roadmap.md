@@ -1708,6 +1708,24 @@ editor, no project-schema instantiation, and no animation/ticker integration
 with real data sources. Item 1 therefore remains incomplete and `GX-001`
 remains planned.
 
+Current implementation boundary for item 1 scoreboards and tickers
+(`GX-003`): `fm-titles` provides a deterministic ticker crawl (horizontal
+crawl and vertical roll) driven only by the engine frame index and an exact
+rational pixels-per-second speed against the frame rate, with separator wrap,
+bounded item lists, and live updates spliced in at the next unseen item so
+visible text never jumps; crawls render above scene elements through the CPU
+reference renderer with exact pixel tests. A typed scoreboard covers team
+names, abbreviations, scores, a featured player, and the period with atomic
+revision-checked action batches, saturating increment/decrement shortcuts,
+and a frame-exact count-up or count-down game clock whose expiry is reported
+once; changed values publish onto template fields in one scene revision, and
+a strict key/value parser maps external data onto actions. Remaining gaps:
+crawls are runtime overlays outside template z-order and the project schema,
+with fixed directions and no per-item styling, logos, or easing; the
+scoreboard has two teams, no rosters, sport presets, shot clocks, tenths, or
+persistence; and there are no feed transports, shortcut or control-surface
+wiring, or engine output. `GX-003` remains planned.
+
 Current implementation boundary for item 3: `fm-browser-input` provides a
 deterministic network policy that strictly normalizes URLs (including numeric
 IPv4 and IPv6 literal forms and dot segments), rejects credentials and
