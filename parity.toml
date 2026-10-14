@@ -44,7 +44,9 @@ id = "accept-in-012"
 state = "planned"
 [[tests]]
 id = "accept-in-013"
-state = "planned"
+state = "present"
+paths = ["crates/io/fm-browser-input/tests/network_policy.rs"]
+commands = ["cargo test -p fm-browser-input --test network_policy"]
 [[tests]]
 id = "accept-in-014"
 state = "planned"
