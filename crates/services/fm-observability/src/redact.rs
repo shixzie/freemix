@@ -52,13 +52,19 @@ impl Redactor {
 }
 
 fn redact_secrets(value: &str) -> String {
-    const NAMES: [&str; 10] = [
+    const NAMES: [&str; 16] = [
         "authorization",
         "password",
         "passwd",
         "api_key",
         "api-key",
+        "apikey",
         "stream_key",
+        "stream-key",
+        "streamkey",
+        "private_key",
+        "private-key",
+        "privatekey",
         "credential",
         "cookie",
         "token",
@@ -96,8 +102,8 @@ fn redact_secrets(value: &str) -> String {
                 secret_start += 1;
             }
             let mut secret_end = secret_start;
-            if name == "authorization" && lower[secret_start..].starts_with("bearer ") {
-                secret_end += "bearer ".len();
+            if name == "authorization" {
+                secret_end += authorization_scheme_len(&bytes[secret_start..]);
             }
             while let Some(byte) = bytes.get(secret_end) {
                 let end = if let Some(quote) = quote {
@@ -139,7 +145,7 @@ fn redact_secrets(value: &str) -> String {
             .iter()
             .position(|byte| matches!(byte, b'/' | b'?' | b'#') || byte.is_ascii_whitespace())
             .map_or(bytes.len(), |offset| authority_start + offset);
-        if let Some(at) = value[authority_start..authority_end].find('@') {
+        if let Some(at) = value[authority_start..authority_end].rfind('@') {
             ranges.push((
                 authority_start,
                 authority_start + at,
@@ -151,9 +157,23 @@ fn redact_secrets(value: &str) -> String {
     replace_ranges(value, ranges)
 }
 
+/// Length of a leading `Bearer `/`Basic `/`Digest ` style scheme word, so the
+/// credential that follows it is covered by the same redaction range.
+fn authorization_scheme_len(bytes: &[u8]) -> usize {
+    let scheme = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_alphabetic())
+        .count();
+    if scheme > 0 && bytes.get(scheme) == Some(&b' ') {
+        scheme + 1
+    } else {
+        0
+    }
+}
+
 fn is_name_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
-    let valid_start =
-        start == 0 || !bytes[start - 1].is_ascii_alphanumeric() && bytes[start - 1] != b'_';
+    // A leading `_` still names a secret (`access_token`, `client_secret`).
+    let valid_start = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
     let valid_end = end == bytes.len() || !bytes[end].is_ascii_alphanumeric() && bytes[end] != b'_';
     valid_start && valid_end
 }
@@ -230,8 +250,10 @@ fn redact_ips(value: &str) -> String {
             {
                 end += 1;
             }
-            let candidate = &value[index..end];
+            // Sentence punctuation after an address is not part of it.
+            let candidate = value[index..end].trim_end_matches('.');
             if candidate.contains('.') && candidate.parse::<Ipv4Addr>().is_ok() {
+                let end = index + candidate.len();
                 ranges.push((index, end, Redactor::IP_MARKER));
                 index = end;
                 continue;
@@ -317,6 +339,46 @@ mod tests {
         assert!(redacted.contains(Redactor::SECRET_MARKER));
         assert!(redacted.contains(Redactor::PATH_MARKER));
         assert!(redacted.contains(Redactor::IP_MARKER));
+    }
+
+    #[test]
+    fn underscore_prefixed_secret_names_are_redacted() {
+        let redacted = Redactor
+            .redact("url?access_token=tok-leak&x=1 client_secret=sec-leak db_password: pw-leak");
+        for leaked in ["tok-leak", "sec-leak", "pw-leak"] {
+            assert!(!redacted.contains(leaked), "leaked {leaked}: {redacted}");
+        }
+        assert!(redacted.contains("x=1"));
+        assert_eq!(Redactor.redact("max_tokens=5"), "max_tokens=5");
+    }
+
+    #[test]
+    fn compact_api_and_stream_key_names_are_redacted() {
+        let redacted = Redactor
+            .redact("apiKey=api-leak stream-key=live-leak streamKey: sk-leak private_key=pk-leak");
+        for leaked in ["api-leak", "live-leak", "sk-leak", "pk-leak"] {
+            assert!(!redacted.contains(leaked), "leaked {leaked}: {redacted}");
+        }
+    }
+
+    #[test]
+    fn non_bearer_authorization_credentials_are_redacted() {
+        let redacted = Redactor.redact("Authorization: Basic dXNlcjpodW50ZXIy next");
+        assert!(!redacted.contains("dXNlcjpodW50ZXIy"), "{redacted}");
+        assert!(redacted.ends_with(" next"), "{redacted}");
+    }
+
+    #[test]
+    fn url_userinfo_with_unencoded_at_sign_is_fully_redacted() {
+        let redacted = Redactor.redact("rtmp://user:p@ss@ingest.example/app");
+        assert!(!redacted.contains("ss@"), "{redacted}");
+        assert!(redacted.contains("ingest.example/app"), "{redacted}");
+    }
+
+    #[test]
+    fn ipv4_at_sentence_end_is_redacted() {
+        let redacted = Redactor.redact("connected to 10.1.2.3.");
+        assert_eq!(redacted, "connected to [REDACTED_IP].");
     }
 
     #[test]
