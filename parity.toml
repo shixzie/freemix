@@ -224,10 +224,14 @@ id = "accept-au-006"
 state = "planned"
 [[tests]]
 id = "accept-au-007"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-audio/tests/automix_monitor.rs"]
+commands = ["cargo test -p fm-audio --test automix_monitor"]
 [[tests]]
 id = "accept-au-008"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-audio/tests/automix_monitor.rs"]
+commands = ["cargo test -p fm-audio --test automix_monitor"]
 [[tests]]
 id = "accept-au-009"
 state = "planned"
