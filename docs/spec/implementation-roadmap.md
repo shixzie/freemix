@@ -865,6 +865,25 @@ certification, Windows/Linux adapters, audio-device daemon/Master realization,
 and screen/window/application-audio capture. Items 1 and 2, plus `IN-001`,
 `IN-005`, and `IN-011`, therefore remain incomplete and planned.
 
+Current implementation boundary for item 3 sample-rate conversion (`AU-004`):
+`fm-audio` adds a polyphase windowed-sinc resampler into the 48 kHz engine
+clock for 8–192 kHz sources, with exact integer ratio accounting so a
+zero-correction run consumes exactly `floor(rendered * in / out)` input
+samples. Measured fixed-ratio THD+N is at least 105.9 dB from 44.1 kHz and
+about 150 dB from 48/96 kHz, with at least 107 dB alias rejection. A per-source
+`SourceSync` with a bounded buffer converts planar blocks through a
+critically damped PI drift controller on buffer fill (±500 ppm range,
+slew-limited); simulated ±100 ppm clocks run 30 s without underrun or overrun
+and settle within 0.2 ppm. Gaps up to 100 ms are filled with silence, overlaps
+are trimmed, larger jumps splice or flush per policy, underruns and overruns
+recover with 1 ms fades, and allocation-free telemetry reports drift,
+correction, fill, and every recovery count. Remaining gaps: nothing wires
+`SourceSync` into capture backends, the mixer, or `freemixd`; there is no
+`AudioBlock`/`MediaTiming` adapter, shared filter tables, keyed source set,
+quality measurement under active drift, jitter or bursty-delivery coverage,
+crossfaded splices, or real-device evidence. `AU-004` remains planned.
+
+
 Current implementation boundary for item 4: native `freemixd` now realizes
 current-schema scene inputs through an immutable `NativeProjectPlan` compiled before
 opening media or GPU resources. The planner rejects missing references and
