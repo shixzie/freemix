@@ -869,7 +869,7 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn crc32(bytes: &[u8]) -> u32 {
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
     !crc32_update(u32::MAX, bytes)
 }
 
@@ -912,12 +912,12 @@ pub(crate) fn sync_directory(path: &Path) -> Result<(), RecorderError> {
 }
 
 #[cfg(unix)]
-fn sync_directory_io(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory_io(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
 #[cfg(windows)]
-fn sync_directory_io(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory_io(path: &Path) -> io::Result<()> {
     use std::os::windows::fs::OpenOptionsExt;
 
     const FILE_SHARE_READ: u32 = 0x0000_0001;
@@ -934,7 +934,7 @@ fn sync_directory_io(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn sync_directory_io(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory_io(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
