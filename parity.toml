@@ -86,7 +86,9 @@ id = "accept-in-026"
 state = "planned"
 [[tests]]
 id = "accept-in-027"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-automation/tests/catalog_scripts.rs"]
+commands = ["cargo test -p fm-automation --test catalog_scripts"]
 [[tests]]
 id = "accept-in-028"
 state = "present"
@@ -335,7 +337,9 @@ paths = ["crates/services/fm-vmix-compat/tests/tcp_session.rs"]
 commands = ["cargo test -p fm-vmix-compat --test tcp_session"]
 [[tests]]
 id = "accept-rc-010"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-automation/tests/catalog_scripts.rs"]
+commands = ["cargo test -p fm-automation --test catalog_scripts"]
 [[tests]]
 id = "accept-rc-011"
 state = "planned"
