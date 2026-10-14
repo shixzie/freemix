@@ -1319,6 +1319,25 @@ from the bank itself, has no MultiView grid geometry for mixes or outputs, and
 switches follow-video audio only at take completion. `SW-012` remains planned.
 
 
+Current implementation boundary for layer flattening (`SW-018`):
+`fm-compositor` plans and executes on the CPU path a flattening of nested scenes
+held in a `SceneGraph`. A scene reference is inlined only when provably exact
+(one fully contained layer under an untransformed, opaque, full-size
+reference); `Precompose` marks a deliberate boundary; every other referenced
+scene, including key/fill key sources, renders once per frame into a reusable
+intermediate slot. Dependencies render most-memory-first and the reported peak
+is simulated exactly and matched by the executor; depth, scene count, live
+slots, and peak bytes are bounded with typed errors; each intermediate reports
+its bytes, consumers, rescales, and straight-alpha reads; and output timing
+passes through unchanged. Results are pixel-identical to recursive nested
+composition across crops, masks, keys, effects, rotations, and Program,
+Preview, and Operator outputs. Remaining gaps: no mapping from the project
+model, no flatten flag in the model, persistence, or protocol, no freemixd, CLI,
+or engine use, no GPU path, no cross-tick caching or memory fallback, and
+counts rather than numeric error in the quality report. `SW-018` remains
+planned.
+
+
 Exit: `P0` switcher, composition, audio, display, record, and control rows pass.
 
 Current implementation boundary for automix and monitoring (`AU-007`,

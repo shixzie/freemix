@@ -186,8 +186,9 @@ paths = ["crates/services/fm-engine/tests/undo_lock.rs"]
 commands = ["cargo test -p fm-engine --test undo_lock"]
 [[tests]]
 id = "accept-sw-018"
-state = "planned"
-
+state = "present"
+paths = ["crates/gpu/fm-compositor/tests/flatten.rs"]
+commands = ["cargo test -p fm-compositor --test flatten"]
 [[tests]]
 id = "accept-gx-001"
 state = "present"
