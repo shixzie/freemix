@@ -3,6 +3,7 @@
 mod cpu;
 mod effects;
 mod fade_to_black;
+mod fit;
 mod flatten;
 mod keying;
 mod multiview;
@@ -23,6 +24,7 @@ pub use fade_to_black::{
     FadeToBlackPlan, FadeToBlackPlanError, FadeToBlackPosition, MAX_FADE_TO_BLACK_DENOMINATOR,
     execute_fade_to_black_cpu,
 };
+pub use fit::{CanvasRect, FitError, FitPolicy, SourcePlacement, center_cut, place_source};
 pub use flatten::{
     FlattenError, FlattenExecutionError, FlattenLimits, FlattenMode, FlattenOutput, FlattenPlan,
     FlattenStep, FlattenedScene, HoistedLayer, SceneGraph, execute_flatten_cpu,
@@ -35,8 +37,8 @@ pub use keying::{
 pub use multiview::{
     ConfidenceMode, GridLayout, MAX_MULTIVIEW_CELLS, MAX_MULTIVIEW_COLUMNS,
     MAX_MULTIVIEW_NAME_BYTES, MAX_MULTIVIEW_ROWS, MultiviewCell, MultiviewDefinition,
-    MultiviewError, MultiviewOverlays, MultiviewPlan, MultiviewSource, compile_multiview_scene,
-    plan_multiview,
+    MultiviewError, MultiviewOverlays, MultiviewPlan, MultiviewSource, MultiviewSourceFrame,
+    compile_multiview_scene, compile_multiview_scene_fitted, plan_multiview,
 };
 #[cfg(feature = "native-wgpu")]
 pub use native::{

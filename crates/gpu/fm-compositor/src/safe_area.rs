@@ -1,7 +1,10 @@
 //! Preset and custom operator safe-area guide generation.
 //!
 //! A safe-area guide is a free-form operator rectangle: the SMPTE action-safe
-//! and title-safe boundaries, or a caller-defined custom guide. This module
+//! and title-safe boundaries, an aspect-ratio center cut (for example the 9:16
+//! vertical strip of a landscape program), or a caller-defined custom guide.
+//! Every preset is defined per canvas axis, so the same preset is equally
+//! valid on landscape, portrait, square, and odd-sized canvases. This module
 //! turns a [`SafeAreaPreset`] plus a canvas size into exact integer
 //! [`SafeAreaGuide`] rectangles. Geometry is pure and deterministic: every
 //! dimension is derived with truncating integer division and never floating
@@ -42,8 +45,7 @@ const FULL_BASIS_POINTS: u32 = 10_000;
 
 /// One selectable safe-area guide preset.
 ///
-/// The fixed presets generate plain rectangles: no crosshairs, thirds lines, or
-/// aspect-ratio markers.
+/// Every preset generates plain rectangles: no crosshairs or thirds lines.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SafeAreaPreset {
     /// A centered rectangle at 93% of each canvas dimension.
@@ -52,6 +54,19 @@ pub enum SafeAreaPreset {
     Title,
     /// The nested SMPTE pair: 93% action safe, then 90% title safe.
     Smpte,
+    /// The largest centered rectangle with aspect ratio
+    /// `aspect_width:aspect_height`, as computed by
+    /// [`center_cut`](crate::center_cut). A `9:16` cut on a landscape canvas
+    /// outlines exactly the source region a portrait
+    /// [`FitPolicy::Fill`](crate::FitPolicy::Fill) placement keeps; a `16:9`
+    /// cut on a portrait canvas outlines the band a landscape source fills
+    /// under [`FitPolicy::Fit`](crate::FitPolicy::Fit).
+    CenterCut {
+        /// Aspect-ratio width term; must be nonzero.
+        aspect_width: u16,
+        /// Aspect-ratio height term; must be nonzero.
+        aspect_height: u16,
+    },
     /// A caller-supplied rectangle in basis points of each canvas dimension.
     ///
     /// Each component is measured in basis points (1/100 of a percent) and must
@@ -76,7 +91,8 @@ pub enum SafeAreaPreset {
 /// `canvas * percent / 100` with truncating division (`93%` and `90%`
 /// respectively) and positioned at `(canvas - size) / 2` per axis. `Smpte`
 /// produces exactly two guides in that order: 93% action safe, then 90% title
-/// safe. `Custom` uses the recorded basis points directly: each axis is
+/// safe. `CenterCut` produces one [`center_cut`](crate::center_cut)
+/// rectangle. `Custom` uses the recorded basis points directly: each axis is
 /// `canvas * basis_points / 10_000`, truncated.
 ///
 /// Every generated rectangle is half-open: it covers `x..x + width` and
@@ -88,7 +104,8 @@ pub enum SafeAreaPreset {
 /// Returns [`SafeAreaError::ZeroCanvasWidth`] or
 /// [`SafeAreaError::ZeroCanvasHeight`] for a degenerate canvas, and
 /// [`SafeAreaError::CanvasTooSmall`] when a fixed preset would truncate to a
-/// zero-size guide. A custom rectangle that truncates to zero size is rejected
+/// zero-size guide, and [`SafeAreaError::ZeroAspect`] for a center cut with a
+/// zero aspect term. A custom rectangle that truncates to zero size is rejected
 /// with [`SafeAreaError::CustomGuideEmpty`]; one that does not fit inside the
 /// canvas, or records basis points above 10,000, is rejected with
 /// [`SafeAreaError::CustomGuideOutOfBounds`].
@@ -149,6 +166,24 @@ pub fn preset_guides(
                 color,
             )?,
         ]),
+        SafeAreaPreset::CenterCut {
+            aspect_width,
+            aspect_height,
+        } => {
+            let cut = crate::fit::center_cut(
+                canvas_width,
+                canvas_height,
+                u32::from(aspect_width),
+                u32::from(aspect_height),
+            )
+            .map_err(|_| SafeAreaError::ZeroAspect {
+                aspect_width,
+                aspect_height,
+            })?;
+            Ok(vec![SafeAreaGuide::new(
+                cut.x, cut.y, cut.width, cut.height, color,
+            )])
+        }
         SafeAreaPreset::Custom {
             x_basis_points,
             y_basis_points,
@@ -217,6 +252,13 @@ pub enum SafeAreaError {
         /// The preset that could not produce a nonzero guide.
         preset: SafeAreaPreset,
     },
+    /// A center-cut preset has a zero aspect-ratio term.
+    ZeroAspect {
+        /// Requested aspect-ratio width term.
+        aspect_width: u16,
+        /// Requested aspect-ratio height term.
+        aspect_height: u16,
+    },
     /// A custom rectangle truncates to zero pixels on at least one axis.
     CustomGuideEmpty {
         /// Truncated rectangle width in pixels.
@@ -264,6 +306,13 @@ impl fmt::Display for SafeAreaError {
             } => write!(
                 formatter,
                 "canvas {canvas_width}x{canvas_height} is too small for the {preset:?} safe-area preset"
+            ),
+            Self::ZeroAspect {
+                aspect_width,
+                aspect_height,
+            } => write!(
+                formatter,
+                "center-cut safe-area aspect {aspect_width}:{aspect_height} must be nonzero"
             ),
             Self::CustomGuideEmpty { width, height } => write!(
                 formatter,

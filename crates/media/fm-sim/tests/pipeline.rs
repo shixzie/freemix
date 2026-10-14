@@ -61,6 +61,46 @@ fn pipeline_rejects_unbounded_dimensions() {
 }
 
 #[test]
+fn pipeline_bounds_are_orientation_independent() {
+    for (width, height) in [
+        (7_680, 4_320),
+        (4_320, 7_680),
+        (1_080, 1_920),
+        (4_320, 4_320),
+    ] {
+        let pipeline = SimulatedPipeline::new(width, height).unwrap();
+        assert_eq!((pipeline.width(), pipeline.height()), (width, height));
+    }
+    assert_eq!(
+        SimulatedPipeline::new(4_321, 7_680).unwrap_err(),
+        PipelineConfigError::DimensionsExceedLimit {
+            width: 4_321,
+            height: 7_680,
+            maximum_width: 4_320,
+            maximum_height: 7_680,
+        }
+    );
+    assert_eq!(
+        SimulatedPipeline::new(4_320, 7_681).unwrap_err(),
+        PipelineConfigError::DimensionsExceedLimit {
+            width: 4_320,
+            height: 7_681,
+            maximum_width: 4_320,
+            maximum_height: 7_680,
+        }
+    );
+    assert_eq!(
+        SimulatedPipeline::new(4_321, 4_321).unwrap_err(),
+        PipelineConfigError::DimensionsExceedLimit {
+            width: 4_321,
+            height: 4_321,
+            maximum_width: 7_680,
+            maximum_height: 4_320,
+        }
+    );
+}
+
+#[test]
 fn cut_program_frame_renders_only_primary_source() {
     let mut pipeline = SimulatedPipeline::new(2, 2).unwrap();
     let red = Rgba8::new(255, 0, 0, 255);

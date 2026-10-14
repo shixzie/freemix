@@ -907,6 +907,74 @@ fn bad_routing_generator_rate_and_format_are_reported() {
     }
 }
 
+fn canvas_project(width: u32, height: u32, pixel_format: PixelFormat) -> Project {
+    let mut settings = settings();
+    settings.video.dimensions = VideoDimensions::new(width, height).unwrap();
+    settings.video.pixel_format = pixel_format;
+    let mut project = Project::new(project_id(4), "Vertical show", settings);
+    project.add_input(Input {
+        id: input_id(1),
+        name: "Camera".into(),
+        kind: InputKind::Device {
+            stable_key: "camera-1".into(),
+        },
+        required_capabilities: Vec::new(),
+    });
+    let mut full = layer("Full canvas", SourceRef::Input(input_id(1)));
+    full.geometry = LayerGeometry::new(0, 0, width, height, Rotation::Deg0);
+    // A quarter-turned layer authored in pre-rotation size: its footprint is
+    // the whole canvas with the axes swapped.
+    let mut turned = layer("Turned", SourceRef::Input(input_id(1)));
+    turned.geometry = LayerGeometry::new(0, 0, height, width, Rotation::Deg90);
+    turned.z_order = 1;
+    project.add_scene(Scene {
+        id: scene_id(1),
+        name: "Vertical".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![full, turned],
+    });
+    project
+}
+
+#[test]
+fn portrait_square_and_odd_canvases_validate_within_the_format_bounds() {
+    for (width, height, format) in [
+        (1_080, 1_920, PixelFormat::Nv12),
+        (1_080, 1_080, PixelFormat::Nv12),
+        (2_160, 3_840, PixelFormat::P010),
+        (1_080, 1_921, PixelFormat::Yuv422),
+        (1_081, 1_921, PixelFormat::Rgba8),
+        (ProjectSettings::MAX_VIDEO_WIDTH, 1, PixelFormat::Bgra8),
+        (
+            1,
+            ProjectSettings::MAX_VIDEO_HEIGHT,
+            PixelFormat::Rgba16Float,
+        ),
+    ] {
+        assert_eq!(
+            canvas_project(width, height, format).validate(),
+            Ok(()),
+            "{width}x{height} {format:?}"
+        );
+    }
+    for (width, height, format) in [
+        (1_081, 1_920, PixelFormat::Nv12),
+        (1_080, 1_921, PixelFormat::Nv12),
+        (1_079, 1_079, PixelFormat::P010),
+        (1_081, 1_920, PixelFormat::Yuv422),
+    ] {
+        assert_eq!(
+            canvas_project(width, height, format).validate(),
+            Err(vec![ValidationError {
+                entity: None,
+                field: "settings.video.dimensions",
+                kind: ValidationErrorKind::FormatMismatch,
+            }]),
+            "{width}x{height} {format:?}"
+        );
+    }
+}
+
 #[test]
 fn duplicate_routes_are_rejected() {
     let mut project = simulated_project();

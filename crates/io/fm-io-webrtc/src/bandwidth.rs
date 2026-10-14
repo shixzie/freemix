@@ -3,7 +3,7 @@
 //! Receiver estimates (REMB) and transport-wide feedback estimates (TWCC)
 //! arrive as plain numbers; the controller takes the minimum of the fresh
 //! estimates, applies headroom, and walks a resolution ladder capped at
-//! 1920×1080 and 4 Mbps. Downgrades are immediate, upgrades require the next
+//! 1920×1080 (or 1080×1920 for a vertical return feed) and 4 Mbps. Downgrades are immediate, upgrades require the next
 //! rung's floor plus a margin to hold continuously for a configured time, and
 //! high loss steps down at most once per hold period.
 
@@ -13,9 +13,9 @@ use crate::sdp::MAX_VIDEO_BITRATE_BPS;
 
 /// Maximum rungs in a ladder.
 pub const MAX_LADDER_RUNGS: usize = 8;
-/// Largest permitted rung width.
+/// Largest permitted landscape rung width; a portrait rung swaps the axes.
 pub const MAX_RUNG_WIDTH: u32 = 1920;
-/// Largest permitted rung height.
+/// Largest permitted landscape rung height; a portrait rung swaps the axes.
 pub const MAX_RUNG_HEIGHT: u32 = 1080;
 /// Largest permitted rung frame rate.
 pub const MAX_RUNG_FRAME_RATE: u16 = 60;
@@ -103,7 +103,9 @@ pub struct BitrateLadder {
 impl BitrateLadder {
     /// # Errors
     /// Rejects empty or oversize ladders, rungs above 1080p60/4 Mbps, odd or
-    /// zero dimensions, `min > max`, and non-ascending rungs.
+    /// zero dimensions, `min > max`, and non-ascending rungs. The 1080p bound
+    /// is orientation independent: a landscape or square rung may be at most
+    /// 1920x1080 and a portrait rung at most 1080x1920.
     pub fn new(rungs: Vec<LadderRung>) -> Result<Self, BandwidthError> {
         if rungs.is_empty() {
             return Err(BandwidthError::EmptyLadder);
@@ -121,7 +123,12 @@ impl BitrateLadder {
             if rung.width % 2 != 0 || rung.height % 2 != 0 {
                 return Err(invalid("dimensions must be even"));
             }
-            if rung.width > MAX_RUNG_WIDTH || rung.height > MAX_RUNG_HEIGHT {
+            let (long_side, short_side) = if rung.height > rung.width {
+                (rung.height, rung.width)
+            } else {
+                (rung.width, rung.height)
+            };
+            if long_side > MAX_RUNG_WIDTH || short_side > MAX_RUNG_HEIGHT {
                 return Err(invalid("exceeds 1920x1080"));
             }
             if rung.frame_rate > MAX_RUNG_FRAME_RATE {

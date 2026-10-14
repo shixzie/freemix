@@ -12,14 +12,22 @@ pub struct SimulatedPipeline {
 }
 
 impl SimulatedPipeline {
+    /// Longest side of a landscape bound; a portrait pipeline swaps the axes.
     pub const MAX_WIDTH: u32 = 7_680;
+    /// Shortest side of a landscape bound; a portrait pipeline swaps the axes.
     pub const MAX_HEIGHT: u32 = 4_320;
 
     /// Creates an empty simulated pipeline with bounded output dimensions.
     ///
+    /// The bound is orientation independent: a landscape or square canvas may
+    /// be at most [`Self::MAX_WIDTH`]x[`Self::MAX_HEIGHT`], and a portrait
+    /// canvas at most [`Self::MAX_HEIGHT`]x[`Self::MAX_WIDTH`], so a vertical
+    /// 4320x7680 production is as valid as an 8K UHD landscape one.
+    ///
     /// # Errors
     ///
-    /// Returns a typed error for zero or out-of-range dimensions.
+    /// Returns a typed error for zero or out-of-range dimensions; the reported
+    /// maximum is the bound for the requested orientation.
     pub fn new(width: u32, height: u32) -> Result<Self, PipelineConfigError> {
         if width == 0 {
             return Err(PipelineConfigError::ZeroWidth);
@@ -27,12 +35,17 @@ impl SimulatedPipeline {
         if height == 0 {
             return Err(PipelineConfigError::ZeroHeight);
         }
-        if width > Self::MAX_WIDTH || height > Self::MAX_HEIGHT {
+        let (maximum_width, maximum_height) = if height > width {
+            (Self::MAX_HEIGHT, Self::MAX_WIDTH)
+        } else {
+            (Self::MAX_WIDTH, Self::MAX_HEIGHT)
+        };
+        if width > maximum_width || height > maximum_height {
             return Err(PipelineConfigError::DimensionsExceedLimit {
                 width,
                 height,
-                maximum_width: Self::MAX_WIDTH,
-                maximum_height: Self::MAX_HEIGHT,
+                maximum_width,
+                maximum_height,
             });
         }
         Ok(Self {

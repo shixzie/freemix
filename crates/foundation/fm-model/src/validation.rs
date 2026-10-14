@@ -1,4 +1,4 @@
-use fm_types::{BusId, InputId, MAX_INPUT_NAME_BYTES, OutputId, SceneId};
+use fm_types::{BusId, InputId, MAX_INPUT_NAME_BYTES, OutputId, PixelFormat, SceneId};
 
 use crate::{
     CropRect, InputKind, Layer, LayerEffect, MAX_STREAM_TARGET_NAME_BYTES, Project,
@@ -138,6 +138,27 @@ fn validate_settings(project: &Project, errors: &mut Vec<ValidationError>) {
             entity: None,
             field: "settings.video.dimensions",
             kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    // The canvas may be any orientation (landscape, portrait, square), but a
+    // chroma-subsampled program format needs whole chroma samples: 4:2:0
+    // formats require an even width and height, 4:2:2 an even width.
+    let (width, height) = (
+        settings.video.dimensions.width(),
+        settings.video.dimensions.height(),
+    );
+    let subsampling_fits = match settings.video.pixel_format {
+        PixelFormat::Nv12 | PixelFormat::P010 => {
+            width.is_multiple_of(2) && height.is_multiple_of(2)
+        }
+        PixelFormat::Yuv422 => width.is_multiple_of(2),
+        PixelFormat::Rgba8 | PixelFormat::Bgra8 | PixelFormat::Rgba16Float => true,
+    };
+    if !subsampling_fits {
+        errors.push(ValidationError {
+            entity: None,
+            field: "settings.video.dimensions",
+            kind: ValidationErrorKind::FormatMismatch,
         });
     }
 

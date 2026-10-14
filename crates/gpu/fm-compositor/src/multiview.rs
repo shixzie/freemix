@@ -13,8 +13,9 @@
 use core::fmt;
 
 use fm_types::InputId;
-use fm_video::{Rgba8, Rotation, Transform};
+use fm_video::{CropRect, Rgba8, Rotation, Transform};
 
+use crate::fit::{CanvasRect, FitError, FitPolicy, place_source};
 use crate::scene::{Scene, SceneError, SourceId, SourceLayer};
 
 /// Maximum number of cells in one multiview grid.
@@ -457,9 +458,12 @@ pub fn plan_multiview(
 ///
 /// Every cell becomes one enabled [`SourceLayer`] at the cell's exact position
 /// and size with `z` equal to its row-major index, so later cells composite on
-/// top. Each layer receives an inset white border when `border_width` is
-/// nonzero. `background` must be premultiplied RGBA8. A cell whose source
-/// cannot be resolved is rejected instead of skipped.
+/// top. Each source is stretched to its cell; use
+/// [`compile_multiview_scene_fitted`] to keep source aspect ratios when the
+/// sources and cells differ in shape (a portrait Program in a landscape
+/// multiview, for example). Each layer receives an inset white border when
+/// `border_width` is nonzero. `background` must be premultiplied RGBA8. A cell
+/// whose source cannot be resolved is rejected instead of skipped.
 ///
 /// The definition overlay flags are modeled but not rasterized: this reference
 /// scene contains no labels, tally, clocks, or audio meters.
@@ -475,6 +479,106 @@ pub fn compile_multiview_scene(
     background: Rgba8,
     border_width: u32,
     resolve: impl Fn(MultiviewSource) -> Option<SourceId>,
+) -> Result<Scene, MultiviewError> {
+    compile_cells(
+        plan,
+        canvas_width,
+        canvas_height,
+        background,
+        border_width,
+        |index, cell| {
+            let source = resolve(cell.source).ok_or(MultiviewError::UnresolvedSource {
+                source: cell.source,
+            })?;
+            let x = i32::try_from(cell.x)
+                .map_err(|_| MultiviewError::CellPositionOutOfRange { cell: index })?;
+            let y = i32::try_from(cell.y)
+                .map_err(|_| MultiviewError::CellPositionOutOfRange { cell: index })?;
+            Ok((
+                source,
+                None,
+                Transform::new(x, y, cell.width, cell.height, Rotation::Deg0),
+            ))
+        },
+    )
+}
+
+/// One resolved multiview cell source with its frame size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MultiviewSourceFrame {
+    pub source: SourceId,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl MultiviewSourceFrame {
+    #[must_use]
+    pub const fn new(source: SourceId, width: u32, height: u32) -> Self {
+        Self {
+            source,
+            width,
+            height,
+        }
+    }
+}
+
+/// Compiles one multiview plan into a [`Scene`], placing each source inside
+/// its cell by `policy` with [`place_source`].
+///
+/// This is [`compile_multiview_scene`] for sources whose shape differs from
+/// their cell: [`FitPolicy::Fit`] letterboxes or pillarboxes a portrait,
+/// square, or landscape source inside its cell so the cell background shows
+/// the bars, and [`FitPolicy::Fill`] center-crops it. `resolve` reports each
+/// cell source's identifier and frame size. The inset border, when
+/// `border_width` is nonzero, is drawn inside the placed picture rather than
+/// the cell.
+///
+/// # Errors
+///
+/// Returns the errors of [`compile_multiview_scene`], or
+/// [`MultiviewError::Placement`] when a source cannot be placed in its cell.
+pub fn compile_multiview_scene_fitted(
+    plan: &MultiviewPlan,
+    canvas_width: u32,
+    canvas_height: u32,
+    background: Rgba8,
+    border_width: u32,
+    policy: FitPolicy,
+    resolve: impl Fn(MultiviewSource) -> Option<MultiviewSourceFrame>,
+) -> Result<Scene, MultiviewError> {
+    compile_cells(
+        plan,
+        canvas_width,
+        canvas_height,
+        background,
+        border_width,
+        |index, cell| {
+            let frame = resolve(cell.source).ok_or(MultiviewError::UnresolvedSource {
+                source: cell.source,
+            })?;
+            let placement = place_source(
+                frame.width,
+                frame.height,
+                None,
+                CanvasRect::new(cell.x, cell.y, cell.width, cell.height),
+                Rotation::Deg0,
+                policy,
+            )
+            .map_err(|error| MultiviewError::Placement { cell: index, error })?;
+            Ok((frame.source, placement.crop(), placement.transform()))
+        },
+    )
+}
+
+type CellLayer = (SourceId, Option<CropRect>, Transform);
+
+fn compile_cells(
+    plan: &MultiviewPlan,
+    canvas_width: u32,
+    canvas_height: u32,
+    background: Rgba8,
+    border_width: u32,
+    cell_layer: impl Fn(usize, &MultiviewCell) -> Result<CellLayer, MultiviewError>,
 ) -> Result<Scene, MultiviewError> {
     if canvas_width == 0 {
         return Err(MultiviewError::ZeroCanvasWidth);
@@ -509,22 +613,15 @@ pub fn compile_multiview_scene(
 
     let mut scene = Scene::new(canvas_width, canvas_height, background)?;
     for (index, cell) in plan.cells.iter().enumerate() {
-        let source = resolve(cell.source).ok_or(MultiviewError::UnresolvedSource {
-            source: cell.source,
-        })?;
-        let x = i32::try_from(cell.x)
-            .map_err(|_| MultiviewError::CellPositionOutOfRange { cell: index })?;
-        let y = i32::try_from(cell.y)
-            .map_err(|_| MultiviewError::CellPositionOutOfRange { cell: index })?;
+        let (source, crop, transform) = cell_layer(index, cell)?;
         let z = i32::try_from(index).map_err(|_| MultiviewError::TooManyCells {
             actual: plan.cells.len(),
             maximum: MAX_MULTIVIEW_CELLS,
         })?;
-        let layer = SourceLayer::new(
-            source,
-            z,
-            Transform::new(x, y, cell.width, cell.height, Rotation::Deg0),
-        );
+        let mut layer = SourceLayer::new(source, z, transform);
+        if let Some(crop) = crop {
+            layer = layer.with_crop(crop);
+        }
         scene.push_layer(if border_width == 0 {
             layer
         } else {
@@ -595,6 +692,10 @@ pub enum MultiviewError {
     },
     UnresolvedSource {
         source: MultiviewSource,
+    },
+    Placement {
+        cell: usize,
+        error: FitError,
     },
     Scene(SceneError),
 }
@@ -674,6 +775,10 @@ impl fmt::Display for MultiviewError {
                 formatter,
                 "multiview cell source {source:?} could not be resolved"
             ),
+            Self::Placement { cell, error } => write!(
+                formatter,
+                "multiview cell {cell} source cannot be placed: {error}"
+            ),
             Self::Scene(error) => error.fmt(formatter),
         }
     }
@@ -683,6 +788,7 @@ impl std::error::Error for MultiviewError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Scene(error) => Some(error),
+            Self::Placement { error, .. } => Some(error),
             _ => None,
         }
     }

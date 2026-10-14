@@ -2628,7 +2628,11 @@ pub struct ProjectSettings {
 impl ProjectSettings {
     pub const MIN_FRAME_RATE_FPS: u32 = 1;
     pub const MAX_FRAME_RATE_FPS: u32 = 240;
+    /// Widest program canvas. Width and height share one bound, so portrait,
+    /// square, and landscape canvases are equally valid; a chroma-subsampled
+    /// pixel format additionally requires even subsampled dimensions.
     pub const MAX_VIDEO_WIDTH: u32 = 8_192;
+    /// Tallest program canvas; see [`Self::MAX_VIDEO_WIDTH`].
     pub const MAX_VIDEO_HEIGHT: u32 = 8_192;
     pub const MIN_AUDIO_SAMPLE_RATE_HZ: u32 = 8_000;
     pub const MAX_AUDIO_SAMPLE_RATE_HZ: u32 = 384_000;

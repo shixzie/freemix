@@ -1328,6 +1328,28 @@ fn ladders_are_validated() {
         BitrateLadder::new(vec![LadderRung::new(320, 180, 15, 150_000, 300_000); 9]),
         Err(BandwidthError::TooManyRungs { maximum: 8 })
     );
+    // The 1080p cap is orientation independent: a vertical return feed may
+    // reach 1080x1920 but not beyond either swapped bound.
+    let portrait = vec![
+        LadderRung::new(180, 320, 15, 150_000, 300_000),
+        LadderRung::new(1080, 1920, 30, 2_500_000, 4_000_000),
+    ];
+    assert_eq!(
+        BitrateLadder::new(portrait.clone()).map(|ladder| ladder.rungs().to_vec()),
+        Ok(portrait)
+    );
+    for (width, height) in [(1082, 1920), (1080, 1922), (1082, 1082)] {
+        assert_eq!(
+            BitrateLadder::new(vec![LadderRung::new(
+                width, height, 30, 1_000_000, 4_000_000
+            )]),
+            Err(BandwidthError::InvalidRung {
+                index: 0,
+                reason: "exceeds 1920x1080"
+            }),
+            "{width}x{height}"
+        );
+    }
     let config = ControllerConfig {
         moderate_loss_permille: 100,
         ..ControllerConfig::default()
