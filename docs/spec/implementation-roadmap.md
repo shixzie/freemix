@@ -1811,6 +1811,18 @@ gaps: no daemon, protocol, persistence, or vMix API wiring, no cross-input GO
 bank, no M3U or file-list import, no transitions or variable speed between
 items, and no real-media acceptance. `IN-006` and `OR-015` remain planned.
 
+Current implementation boundary for item 5 slideshows (`IN-009`):
+`fm-playback` provides a deterministic slideshow with per-slide frame
+durations, ordered or seeded-random cycles without repeats, cut or crossfade
+frames with exact basis-point weights, exact rational Ken Burns crops that
+edits cannot disturb on air, live insert, remove, and move that refuse to drop
+on-air slides, large-set thumbnail suppression with filename labels, and
+natural-sorted, extension-filtered folder listing from caller-supplied names.
+Remaining gaps: nothing decodes images or produces thumbnails, the compositor
+does not consume crops or mix weights, there is no filesystem scan or watch,
+no engine, protocol, persistence, daemon, or Studio wiring, and only cut and
+crossfade transitions exist. `IN-009` remains planned.
+
 Current implementation boundary for item 6: `fm-automation` provides a typed
 per-input trigger catalog (transition and overlay in/out, completion,
 countdown and playback-time thresholds, call state, active speaker, and replay
