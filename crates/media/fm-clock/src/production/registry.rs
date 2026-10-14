@@ -512,24 +512,31 @@ impl ProductionClocks {
     }
 
     /// Settles every timer at `now` and drains their events in name order.
+    /// The registry is unchanged on error.
     ///
     /// # Errors
     ///
-    /// Returns [`ProductionClockError::TimeRegression`].
+    /// Returns [`ProductionClockError::TimeRegression`], or a timer's
+    /// [`TimerError::TimeRegression`] when a timer was operated after `now`
+    /// before it was inserted.
     pub fn poll(
         &mut self,
         now: ClockTime,
     ) -> Result<Vec<(ClockName, TimerEvent)>, ProductionClockError> {
         self.check_time(now)?;
-        self.last_operation = Some(now);
+        // Poll copies so a timer rejecting `now` (one inserted after being
+        // operated at a later time) leaves every timer's events undrained.
+        let mut polled = self.clocks.clone();
         let mut events = Vec::new();
-        for (name, clock) in &mut self.clocks {
+        for (name, clock) in &mut polled {
             if let ProductionClock::Timer { timer, .. } = clock {
                 for event in timer.poll(now)? {
                     events.push((name.clone(), event));
                 }
             }
         }
+        self.clocks = polled;
+        self.last_operation = Some(now);
         Ok(events)
     }
 

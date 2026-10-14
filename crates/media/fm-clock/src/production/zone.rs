@@ -273,10 +273,11 @@ impl TimeZone {
 
     /// Returns the offset and abbreviation in effect at `instant`.
     ///
-    /// Each transition is evaluated in the year of the instant's local
-    /// standard time. Daylight time covers `[start, end)`; when the end falls
-    /// before the start in the year (southern hemisphere) it covers the year
-    /// outside `[end, start)`. Equal transitions mean no daylight time.
+    /// Each year's rule gives one daylight interval: `[start, end)`, or
+    /// `[start, next year's end)` when the end falls before the start in the
+    /// year (southern hemisphere). Equal transitions mean no daylight time
+    /// that year. Intervals of neighbouring years are considered too, so
+    /// transition times beyond a day that cross a year boundary still apply.
     #[must_use]
     pub fn resolve(&self, instant: UtcInstant) -> ZoneResolution<'_> {
         let standard = ZoneResolution {
@@ -291,16 +292,30 @@ impl TimeZone {
         let local_standard = seconds + i64::from(self.utc_offset_seconds);
         let (year, _, _) =
             super::civil::civil_from_days(local_standard.div_euclid(SECONDS_PER_DAY));
-        let start = rule.start.days_in_year(year) * SECONDS_PER_DAY
-            + i64::from(rule.start_time_seconds)
-            - i64::from(self.utc_offset_seconds);
-        let end = rule.end.days_in_year(year) * SECONDS_PER_DAY + i64::from(rule.end_time_seconds)
-            - i64::from(rule.utc_offset_seconds);
-        let is_dst = match start.cmp(&end) {
-            core::cmp::Ordering::Less => start <= seconds && seconds < end,
-            core::cmp::Ordering::Greater => !(end <= seconds && seconds < start),
-            core::cmp::Ordering::Equal => false,
+        // Each rule year contributes one daylight interval: `[start, end)`,
+        // or, when the end precedes the start (southern hemisphere),
+        // `[start, next year's end)`. Transition times of up to ±167 hours
+        // can move a year's transitions into a neighbouring year, so the
+        // intervals of the surrounding years are checked too; years outside
+        // `year - 2..=year + 1` cannot reach the instant.
+        let start = |rule_year: i32| {
+            rule.start.days_in_year(rule_year) * SECONDS_PER_DAY
+                + i64::from(rule.start_time_seconds)
+                - i64::from(self.utc_offset_seconds)
         };
+        let end = |rule_year: i32| {
+            rule.end.days_in_year(rule_year) * SECONDS_PER_DAY + i64::from(rule.end_time_seconds)
+                - i64::from(rule.utc_offset_seconds)
+        };
+        let is_dst = (year - 2..=year + 1).any(|rule_year| {
+            let (start, same_year_end) = (start(rule_year), end(rule_year));
+            let end = match start.cmp(&same_year_end) {
+                core::cmp::Ordering::Less => same_year_end,
+                core::cmp::Ordering::Greater => end(rule_year + 1),
+                core::cmp::Ordering::Equal => return false,
+            };
+            start <= seconds && seconds < end
+        });
         if is_dst {
             ZoneResolution {
                 utc_offset_seconds: rule.utc_offset_seconds,

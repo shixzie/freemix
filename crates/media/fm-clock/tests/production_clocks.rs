@@ -959,6 +959,52 @@ fn permanent_daylight_rule_from_rfc_8536() {
 }
 
 #[test]
+fn transition_times_beyond_a_day_cross_the_year_boundary() {
+    // Daylight time starts on "December 31 at 25:00", i.e. 01:00 standard
+    // time on January 1 of the next year, and ends in March.
+    let zone = TimeZone::parse_posix("AAA3BBB,J365/25,M3.1.0").unwrap();
+    // 2027-01-01 00:30 AAA is still standard time.
+    assert_local(
+        &zone,
+        utc(2027, 1, 1, 3, 30, 0),
+        "2027-01-01T00:30:00-03:00",
+        "AAA",
+    );
+    // 2027-01-01 01:00 AAA = 04:00Z starts daylight time.
+    assert_local(
+        &zone,
+        utc(2027, 1, 1, 4, 0, 0),
+        "2027-01-01T02:00:00-02:00",
+        "BBB",
+    );
+    // The first Sunday of March 2027 (the 7th) at 02:00 BBB ends it.
+    assert_local(
+        &zone,
+        utc(2027, 3, 7, 3, 59, 59),
+        "2027-03-07T01:59:59-02:00",
+        "BBB",
+    );
+    assert_local(
+        &zone,
+        utc(2027, 3, 7, 4, 0, 0),
+        "2027-03-07T01:00:00-03:00",
+        "AAA",
+    );
+
+    // An end moved 150 hours past the last Saturday of 2029 (the 29th)
+    // still applies in January 2030, whose own start is moved 100 hours
+    // before its first Monday (the 7th): daylight time continues through
+    // 2030-01-01.
+    let zone = TimeZone::parse_posix("AAA-14BBB-13,M1.1.1/-100,M12.5.6/150").unwrap();
+    assert_local(
+        &zone,
+        utc(2029, 12, 31, 22, 0, 0),
+        "2030-01-01T11:00:00+13:00",
+        "BBB",
+    );
+}
+
+#[test]
 fn posix_parse_errors_are_specific() {
     let cases: [(&str, ZoneError); 12] = [
         ("", ZoneError::InvalidAbbreviation),
@@ -1383,6 +1429,40 @@ fn registry_poll_names_expired_timers() {
         ]
     );
     assert_eq!(clocks.poll(at_s(401)).unwrap(), vec![]);
+}
+
+#[test]
+fn registry_poll_failure_keeps_every_pending_event() {
+    let mut early =
+        Timer::new(TimerConfig::countdown(secs(5), OverrunPolicy::StopAtTarget)).unwrap();
+    early.start(at_s(0)).unwrap();
+    // A timer last operated at 100 s, inserted into a registry that has
+    // never seen that time.
+    let mut late = Timer::new(TimerConfig::stopwatch()).unwrap();
+    late.start(at_s(100)).unwrap();
+    let mut clocks = ProductionClocks::new();
+    for (clock_name, timer) in [("a", early), ("b", late)] {
+        clocks
+            .insert(
+                name(clock_name),
+                ProductionClock::Timer {
+                    timer,
+                    format: DurationFormat::MinutesSeconds,
+                },
+            )
+            .unwrap();
+    }
+    assert!(matches!(
+        clocks.poll(at_s(50)),
+        Err(ProductionClockError::Timer(
+            TimerError::TimeRegression { .. }
+        ))
+    ));
+    // The failed poll must not have drained "a".
+    assert_eq!(
+        clocks.poll(at_s(150)).unwrap(),
+        vec![(name("a"), TimerEvent::Expired { at: at_s(5) })]
+    );
 }
 
 #[test]
