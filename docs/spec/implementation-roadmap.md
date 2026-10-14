@@ -1823,6 +1823,20 @@ scoreboard has two teams, no rosters, sport presets, shot clocks, tenths, or
 persistence; and there are no feed transports, shortcut or control-surface
 wiring, or engine output. `GX-003` remains planned.
 
+Current implementation boundary for item 2: `fm-titles` provides a designer
+document model with a bounded tree of elements and nested groups whose offsets
+compose exactly, whose opacity multiplies through ancestors and rounds once,
+and whose rectangular or rounded-rect clip masks apply per pixel in the CPU
+renderer. Frame-indexed TransitionIn and TransitionOut timelines use a
+fixed-point easing library (polynomial curves and a bisection-solved
+cubic-bezier with a documented error bound) under a take, hold, and off-air
+playback state machine driven only by engine frame indices, and a designer
+edit API validates every edit atomically with bounded snapshot undo and redo.
+Remaining gaps: group transforms are translation and opacity only, mask edges
+are not anti-aliased, timelines animate only offset and opacity, rendering is
+CPU-only, and there is no designer UI, live field editor, persistence,
+protocol, or engine playback. `GX-002` remains planned.
+
 Current implementation boundary for item 3: `fm-browser-input` provides a
 deterministic network policy that strictly normalizes URLs (including numeric
 IPv4 and IPv6 literal forms and dot segments), rejects credentials and
