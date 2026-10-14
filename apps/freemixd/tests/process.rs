@@ -3147,3 +3147,75 @@ fn output_id(value: u128) -> OutputId {
 fn stream_target(offset: u128) -> WireStreamTargetId {
     WireStreamTargetId::new(NonZeroU128::new(U64_MAX_ID + 500 + offset).unwrap())
 }
+
+/// A client that pipelines its commands and then half-closes its write side is
+/// still owed an answer to every command the daemon already received.
+#[test]
+fn pipelined_commands_before_a_write_half_close_are_all_answered() {
+    let directory = TestDirectory::new("half-close-pipelined");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+
+    let daemon = Daemon::start(&project_path);
+    let mut client = daemon.connect();
+    client
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    assert_eq!(client.handshake(None).current_revision, 0);
+    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+
+    let mut pipelined = encode_line(&command(
+        "pipelined-preview",
+        "pipelined-preview-key",
+        CommandPayload::SelectPreview { input: input(3) },
+    ))
+    .unwrap();
+    pipelined.push_str(
+        &encode_line(&command(
+            "pipelined-cut",
+            "pipelined-cut-key",
+            CommandPayload::Cut,
+        ))
+        .unwrap(),
+    );
+    client.writer.write_all(pipelined.as_bytes()).unwrap();
+    client.writer.flush().unwrap();
+    client.writer.shutdown(std::net::Shutdown::Write).unwrap();
+
+    let mut results = Vec::new();
+    loop {
+        let mut line = String::new();
+        match client.reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if let WireMessage::CommandResult(result) = decode_line(&line).unwrap() {
+                    results.push(result);
+                }
+            }
+            Err(error) => panic!("could not read daemon answers: {error}"),
+        }
+    }
+    assert!(
+        matches!(
+            results.as_slice(),
+            [
+                CommandResult::Accepted { revision: 1, .. },
+                CommandResult::Accepted { revision: 2, .. }
+            ]
+        ),
+        "every pipelined command must be answered: {results:?}"
+    );
+    drop(client);
+    daemon.wait_success();
+    assert_eq!(
+        ProjectStore::new(&project_path)
+            .unwrap()
+            .load()
+            .unwrap()
+            .position()
+            .revision,
+        2
+    );
+}

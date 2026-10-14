@@ -3537,20 +3537,38 @@ impl NativeMasterRuntime {
             .saturating_sub(occupancy.buffered_blocks());
         let count = available_blocks
             .min(usize::try_from(self.limits.max_blocks_per_page.get()).unwrap_or(usize::MAX));
-        let Some(count) = u32::try_from(count).ok().and_then(NonZeroU32::new) else {
+        let Some(mut count) = u32::try_from(count).ok().and_then(NonZeroU32::new) else {
             return if needs_coverage {
                 Err(NativeMasterError::BoundsExceeded)
             } else {
                 Ok(None)
             };
         };
-        let samples = proportional_page_samples(count, self.limits)?;
-        let charge = NativeAudioCharge {
-            blocks: count.get() as usize,
-            samples,
-            bytes: audio_sample_bytes(samples, synchronizer.channel_layout().channels().len())?,
-        };
         let source_limits = synchronizer.limits();
+        // A source's share of the retained budget can be smaller than one full
+        // proportional page, so the page shrinks block by block until the
+        // source can hold it instead of refusing every refill it could take.
+        // The global budget stays all-or-nothing.
+        let charge = loop {
+            let samples = proportional_page_samples(count, self.limits)?;
+            let charge = NativeAudioCharge {
+                blocks: count.get() as usize,
+                samples,
+                bytes: audio_sample_bytes(samples, synchronizer.channel_layout().channels().len())?,
+            };
+            let exceeds_source = occupancy
+                .buffered_samples()
+                .checked_add(charge.samples)
+                .is_none_or(|samples| samples > source_limits.max_samples())
+                || occupancy
+                    .buffered_bytes()
+                    .checked_add(charge.bytes)
+                    .is_none_or(|bytes| bytes > source_limits.max_bytes());
+            match NonZeroU32::new(count.get() - 1) {
+                Some(smaller) if exceeds_source => count = smaller,
+                _ => break charge,
+            }
+        };
         let exceeds_bounds = retained
             .checked_add(reserved)
             .and_then(|allocated| allocated.checked_add(charge))
@@ -7568,6 +7586,20 @@ mod tests {
         end_of_stream: bool,
         master_origin_sample: u64,
     ) -> NativeAudioSource {
+        audio_source_at_master_with_limits(
+            chunks,
+            end_of_stream,
+            master_origin_sample,
+            AudioSynchronizerLimits::default(),
+        )
+    }
+
+    fn audio_source_at_master_with_limits(
+        chunks: &[TestAudioChunk],
+        end_of_stream: bool,
+        master_origin_sample: u64,
+        limits: AudioSynchronizerLimits,
+    ) -> NativeAudioSource {
         let format = mono_audio_format();
         let clock_domain = ClockDomainId::new(NonZeroU128::new(9).unwrap());
         let first_sample = chunks.first().map_or(0, |chunk| chunk.start_sample);
@@ -7600,7 +7632,7 @@ mod tests {
                 ),
                 master_origin_sample,
             ),
-            AudioSynchronizerLimits::default(),
+            limits,
         )
         .unwrap();
         let blocks = chunks
@@ -7713,6 +7745,45 @@ mod tests {
             revision: Revision::new(0),
             runtime_generation: RuntimeGeneration::new(0),
         }
+    }
+
+    /// A project with many media inputs divides the retained audio budget so
+    /// that one source holds fewer samples than a full proportional refill
+    /// page reserves. The refill must shrink to what the source can hold
+    /// instead of failing the whole master on the first uncovered frame.
+    #[test]
+    fn audio_refill_shrinks_to_a_source_capacity_below_one_full_page() {
+        let source = input(1);
+        let full_page = proportional_page_samples(
+            NativeAudioLimits::default().max_blocks_per_page,
+            NativeAudioLimits::default(),
+        )
+        .unwrap();
+        // Sixteen media inputs split the default retained budget so that one
+        // source's share is below one full page.
+        let capacity = (NativeAudioLimits::default().max_retained_samples - 1_920 * 17) / 16;
+        assert!(capacity < full_page);
+        let mut master = audio_test_master(&[(source, 0.5)], 1);
+        master.sources.insert(
+            source,
+            audio_source_at_master_with_limits(
+                &[audio_chunk(0, &[0.5; 1_024])],
+                false,
+                0,
+                AudioSynchronizerLimits::new(32, capacity, 64 << 20, 1_920).unwrap(),
+            ),
+        );
+
+        let serviced = master.service_next_frame();
+
+        assert!(
+            matches!(serviced, Ok(false)),
+            "an uncovered frame must wait for a refill that fits: {serviced:?}"
+        );
+        let reservation = master.sources[&source]
+            .in_flight
+            .expect("a refill that fits the source was requested");
+        assert!(reservation.charge.samples <= capacity);
     }
 
     fn audio_test_master(sources: &[(InputId, f32)], sink_blocks: usize) -> NativeMasterRuntime {

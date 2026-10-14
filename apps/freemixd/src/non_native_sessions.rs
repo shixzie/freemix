@@ -91,12 +91,16 @@ impl Transport {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)] // each flag is a distinct per-peer transport fact
 struct Peer {
     id: u64,
     transport: Transport,
     principal: Principal,
     decoder: LineDecoder,
     inbound: VecDeque<WireMessage>,
+    /// The raw peer half-closed its write side; what it already sent is still
+    /// owed an answer.
+    read_closed: bool,
     handshake_deadline: Instant,
     phase: Phase,
     handshake_written: bool,
@@ -125,6 +129,7 @@ impl Peer {
             principal,
             decoder: LineDecoder::new(),
             inbound: VecDeque::new(),
+            read_closed: false,
             handshake_deadline,
             phase: Phase::AwaitHandshake,
             handshake_written: false,
@@ -473,6 +478,9 @@ fn read_peer(peer: &mut Peer) -> bool {
         }
         return false;
     }
+    if peer.read_closed {
+        return finish_after_read_close(peer);
+    }
     let mut chunk = [0_u8; 8 * 1024];
     let Transport::Raw(stream) = &mut peer.transport else {
         unreachable!("web transport returned above")
@@ -481,7 +489,8 @@ fn read_peer(peer: &mut Peer) -> bool {
         Ok(0) => {
             let decoder = std::mem::replace(&mut peer.decoder, LineDecoder::new());
             let _ = decoder.finish();
-            true
+            peer.read_closed = true;
+            finish_after_read_close(peer)
         }
         Ok(read) => match peer.decoder.push(&chunk[..read]) {
             Ok(messages)
@@ -502,6 +511,20 @@ fn read_peer(peer: &mut Peer) -> bool {
         }
         Err(_) => true,
     }
+}
+
+/// Decides what a half-closed raw peer still needs: every message it sent
+/// before the close is dispatched and answered, then the peer closes once its
+/// queued answers are written. Returns whether the peer closes now.
+fn finish_after_read_close(peer: &mut Peer) -> bool {
+    if !peer.inbound.is_empty() || peer.phase == Phase::Syncing {
+        return false;
+    }
+    if peer.phase == Phase::AwaitHandshake || peer.outbound.is_empty() {
+        return true;
+    }
+    peer.phase = Phase::Closing;
+    false
 }
 
 fn raw_peer_count(peers: &[Peer]) -> usize {

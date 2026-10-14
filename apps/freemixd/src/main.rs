@@ -1963,7 +1963,6 @@ impl NativeProgramRecorder {
             NonZeroU32::new(dimensions.width()).expect("project width is nonzero"),
             NonZeroU32::new(dimensions.height()).expect("project height is nonzero"),
         )?;
-        let output = create_record_output(path)?;
         let parent = recording_parent(path).to_path_buf();
         let mut config = RecordConfig::new(format.clone());
         config.limits.stop_timeout = PROGRAM_RECORDER_STOP_TIMEOUT;
@@ -1977,7 +1976,7 @@ impl NativeProgramRecorder {
             .connect_timeout
             .checked_add(config.limits.no_progress_timeout)
             .ok_or_else(|| AppFailure("Program recorder startup timeout overflow".into()))?;
-        let recorder = Recorder::start(output, config)?;
+        let recorder = start_record_output(path, |output| Ok(Recorder::start(output, config)?))?;
         Ok(Self {
             readback,
             format,
@@ -3169,6 +3168,14 @@ impl NativeProgramStream {
         let _ = output_set.stop(self.destination_id, &mut self.sink);
     }
 
+    /// Stops this target because the operator asked to. The deliberate stop
+    /// also clears a latched failure, so a later `StreamStart` relaunches the
+    /// target instead of leaving it failed for the rest of the run.
+    fn stop_requested(&mut self, output_set: &mut OutputSet) {
+        self.stop_live(output_set);
+        self.first_failure = None;
+    }
+
     /// Whether any transport child this target started was not reaped within
     /// its deadline; shutdown reports this instead of abandoning it silently.
     fn shutdown_error(&self) -> Option<AppResult<()>> {
@@ -4260,7 +4267,7 @@ impl NativeDaemon {
             .iter_mut()
             .find(|stream| stream.target == target_id)
         {
-            stream.stop_live(&mut self.output_set);
+            stream.stop_requested(&mut self.output_set);
         }
     }
 
@@ -5909,6 +5916,19 @@ fn native_clock_domain() -> MediaClockDomainId {
     MediaClockDomainId::new(NonZeroU128::new(1).expect("one is nonzero"))
 }
 
+/// Creates the segment file at `path` and hands it to `start`.
+///
+/// A start that fails after the file exists removes it again, so a refused
+/// recorder start leaves no empty segment behind to push the next start onto a
+/// later ordinal.
+#[cfg(feature = "native-media")]
+fn start_record_output<T>(path: &Path, start: impl FnOnce(File) -> AppResult<T>) -> AppResult<T> {
+    let output = create_record_output(path)?;
+    start(output).inspect_err(|_| {
+        let _ = fs::remove_file(path);
+    })
+}
+
 #[cfg(feature = "native-media")]
 fn create_record_output(path: &Path) -> AppResult<File> {
     let file_name = path
@@ -6149,6 +6169,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 .map(PathBuf::from)
                 .ok_or_else(|| AppFailure("missing project path".into()))?;
             let mut listen = DEFAULT_LISTEN.parse()?;
+            let mut listen_set = false;
             let mut web_listen: Option<SocketAddr> = None;
             let mut status_listen: Option<SocketAddr> = None;
             let mut hls_listen: Option<SocketAddr> = None;
@@ -6384,7 +6405,11 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                     continue;
                 }
                 match option.as_str() {
+                    "--listen" if listen_set => {
+                        return Err(AppFailure("duplicate option `--listen`".into()).into());
+                    }
                     "--listen" => {
+                        listen_set = true;
                         listen = arguments
                             .next()
                             .ok_or_else(|| AppFailure("missing value for --listen".into()))?
@@ -10569,6 +10594,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_listen_option() {
+        let error = parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--listen",
+            "127.0.0.1:4100",
+            "--listen",
+            "127.0.0.1:4200",
+        ]))
+        .unwrap_err();
+        assert_eq!(error.to_string(), "duplicate option `--listen`");
+    }
+
+    #[test]
     fn rejects_duplicate_native_media_option() {
         let error = parse_args(strings(&[
             "serve",
@@ -13131,6 +13170,38 @@ mod tests {
                 .to_string()
                 .contains("existing canonical directory")
         );
+    }
+
+    /// A recorder that refuses to start after its segment file was created
+    /// must not leave that empty file behind: here a stale WAV sidecar makes
+    /// the real recorder refuse with `AlreadyExists`.
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn refused_recorder_start_removes_the_created_segment() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("show.mp4");
+        let wav = record_wav_path(&path);
+        fs::write(&wav, b"stale").unwrap();
+        let mut config = RecordConfig::new(
+            RecordFormat::new(
+                64,
+                36,
+                fm_types::FrameRate::new(30, 1).unwrap(),
+                fm_types::SampleRate::new(48_000).unwrap(),
+                fm_types::ChannelLayout::stereo(),
+                SequenceNumber::new(0),
+            )
+            .unwrap(),
+        );
+        config.wav = Some(wav.clone());
+
+        let error = start_record_output(&path, |output| Ok(Recorder::start(output, config)?))
+            .err()
+            .expect("a stale sidecar refuses the recorder start");
+
+        assert!(error.to_string().contains("AlreadyExists"), "{error}");
+        assert!(!path.exists(), "the refused start left its segment behind");
+        assert_eq!(fs::read(wav).unwrap(), b"stale");
     }
 
     #[cfg(feature = "native-media")]
@@ -16341,6 +16412,38 @@ mod tests {
             PollEvent::PacketSent { sequence: 1 }
         );
         assert_eq!(set.telemetry(id).unwrap().reconnects(), 1);
+    }
+
+    /// A target that latched a failure must come back when the operator stops
+    /// and starts it again, exactly like a recorder slot does.
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn operator_stop_then_start_relaunches_a_failed_stream_target() {
+        let mut set = OutputSet::new();
+        set.add_destination(mock_destination(1)).unwrap();
+        let destination_id = DestinationId::new(1).unwrap();
+        let mut stream = NativeProgramStream {
+            target: SwitcherStreamTargetId::from_non_zero(NonZeroU128::new(7).unwrap()),
+            destination_id,
+            redacted_destination: "rtmp://primary.example.test:1935/live".to_owned(),
+            sink: FfmpegRtmpSink::new(RtmpSinkConfig::new(test_rendition(1), test_stream_format())),
+            ledger: StreamPairLedger::default(),
+            first_failure: None,
+            enqueue_backpressure: false,
+            started: false,
+        };
+        stream.start(&mut set);
+        stream.fail("transport:budget_exhausted", &mut set);
+        assert!(!route_active(&stream, &set));
+
+        stream.stop_requested(&mut set);
+        stream.start(&mut set);
+
+        assert_eq!(
+            set.state(destination_id),
+            Some(DestinationState::Connecting)
+        );
+        assert!(route_active(&stream, &set));
     }
 
     #[cfg(feature = "native-media")]
