@@ -376,9 +376,13 @@ so a client keeps its placeholder instead of seeing invented video:
   reference renderer, scaled nearest-neighbor onto the fitted monitor size,
   and shown over black. Templates and their fonts load once at daemon
   startup; a template that does not load renders nothing, and a family whose
-  font does not load draws no text. Image fields are registered by name only
-  and draw the renderer's image placeholder (no image is decoded yet).
-  Renders are cached per title input, template, field revision, and field
+  font does not load draws no text. Image assets load on demand when a render
+  first needs them, including an image URI first set at runtime: at most
+  32 MiB encoded and the `fm_titles` decoded-image bound, PNG or JPEG decoded
+  by `fm-codec-image`, at most 64 kept per template. Only `native-media`
+  builds link that decoder; any other build, and any image that does not
+  resolve, read, or decode within those bounds, draws the renderer's image
+  placeholder. Renders are cached per title input, template, field revision, and field
   values; the frame cursor joins the key only for templates with clock,
   ticker, or animated elements. Title scene time is the frame cursor times
   the project frame duration, an approximation: the simulated daemon has no
@@ -393,9 +397,24 @@ so a client keeps its placeholder instead of seeing invented video:
   program bus rather than any one output, so it shows every active overlay.
   Preview never shows overlays.
 
-Native daemons (`--native-media`) still refuse a project containing a title
-input at startup, before readiness, so native monitor frames never carry a
-title.
+Native daemons (`--native-media`) realize every title input as a live
+source frame at the project video size: the template is rendered as above
+(field values, on-demand images, nearest-neighbor scale), converted from
+premultiplied to straight-alpha sRGB RGBA8, and held as that input's latest
+frame, so a title's transparency survives on Program (over black), in Scene
+layers, and as an overlay source on the project outputs that include it.
+Each title's first frame renders at startup, before readiness; a title whose
+template does not load or whose first frame does not render refuses
+startup. Afterwards rendering never runs on the session loop: one title
+worker re-renders a title when its persisted template, field revision, or
+field values change, and re-renders clock, ticker, or animated templates at
+most once per frame interval and never more often than every 40 ms (25 Hz),
+always at the latest published frame cursor (the same frame-zero scene time
+approximation as above). Handoff is latest-wins in both directions, so a
+slow render lowers the refresh rate instead of queueing. A failed re-render
+keeps the previous frame on air and is reported once on stderr. A title
+cannot be preloaded as Stinger media, because it is a live source. Native
+monitor frames show titles exactly as Program realizes them.
 
 Each telemetry class has requested cadence, aggregation, and maximum bandwidth.
 Slow clients receive coalesced latest data, never unbounded queues.

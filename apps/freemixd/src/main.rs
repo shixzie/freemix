@@ -96,6 +96,8 @@ mod hls_server;
 mod journal;
 mod latest_record;
 mod monitor_tap;
+#[cfg(feature = "native-media")]
+mod native_titles;
 mod non_native_sessions;
 // The network preflight is wired only into the native daemon; every helper
 // still compiles (and is unit-tested) in every build.
@@ -655,6 +657,9 @@ struct NativeDaemon {
     pending_stream_status: Option<StreamStatusMessage>,
     /// Encoded-fallback Program monitor tap; see [`NativeMonitorTap`].
     monitor: NativeMonitorTap,
+    /// Title inputs realized as live source frames rendered off the loop;
+    /// see [`native_titles`].
+    titles: native_titles::NativeTitleSources,
     #[cfg(target_os = "macos")]
     cameras: NativeCameraInputs,
     #[cfg(target_os = "macos")]
@@ -4326,7 +4331,8 @@ impl NativeDaemon {
         let mut resolution = resolve_native_sources(store, stored, camera_helper)?;
         #[cfg(not(target_os = "macos"))]
         let resolution = resolve_native_sources(store, stored, camera_helper)?;
-        let sources = resolution.sources;
+        let mut sources = resolution.sources;
+        let titles = resolve_native_title_sources(store, stored, &mut sources)?;
         validate_native_stinger_sources(stored, &sources)?;
         let requires_ffmpeg = sources
             .iter()
@@ -4428,6 +4434,7 @@ impl NativeDaemon {
             stream_status_sequence: 0,
             pending_stream_status: None,
             monitor: NativeMonitorTap::new(stored.project().settings()),
+            titles,
             #[cfg(target_os = "macos")]
             cameras: resolution.cameras,
             #[cfg(target_os = "macos")]
@@ -5487,6 +5494,11 @@ impl NativeDaemon {
     fn service_playback(&mut self, control: &ControlService<Policy>) -> AppResult<bool> {
         #[cfg(target_os = "macos")]
         self.cameras.poll_into(&self.runtime, &mut self.playback)?;
+        self.titles.set_frame(self.pacer.next_frame().get());
+        for (input, frame) in self.titles.take_completed() {
+            self.runtime
+                .ingest_live_video_frame_blocking(&mut self.playback, input, frame)?;
+        }
         let deadline = control.next_frame_deadline()?;
         let video_covered = self
             .runtime
@@ -6365,7 +6377,8 @@ fn resolve_native_sources(
                 input.id
             ))
             .into()),
-            InputKind::Device { .. } | InputKind::Scene { .. } => continue,
+            // Title inputs are rendered by [`resolve_native_title_sources`].
+            InputKind::Device { .. } | InputKind::Scene { .. } | InputKind::Title(_) => continue,
             InputKind::Network { .. } => Err(AppFailure(format!(
                 "native network input {} is not supported by this playback mode",
                 input.id
@@ -6374,11 +6387,6 @@ fn resolve_native_sources(
             // Model-only so far: refuse rather than play some other picture.
             InputKind::Alias { .. } | InputKind::MixFeed(_) => Err(AppFailure(format!(
                 "native alias or program/preview feed input {} is not yet realized",
-                input.id
-            ))
-            .into()),
-            InputKind::Title(_) => Err(AppFailure(format!(
-                "native title input {} is not yet realized",
                 input.id
             ))
             .into()),
@@ -6409,6 +6417,35 @@ fn resolve_native_sources(
         }
         Ok(NativeSourceResolution { sources })
     }
+}
+
+/// Renders the first frame of every title input and appends it to `sources`
+/// as a live frame, returning the worker that re-renders them off the loop.
+#[cfg(feature = "native-media")]
+fn resolve_native_title_sources(
+    store: &ProjectStore,
+    stored: &StoredProject,
+    sources: &mut Vec<NativeResolvedSource>,
+) -> AppResult<native_titles::NativeTitleSources> {
+    let project = stored.project();
+    let assets = if project
+        .inputs()
+        .iter()
+        .any(|input| matches!(input.kind, InputKind::Title(_)))
+    {
+        title_render::TitleAssets::load(store, project)
+    } else {
+        title_render::TitleAssets::default()
+    };
+    let (titles, seeds) =
+        native_titles::NativeTitleSources::start(Arc::new(assets), project, native_clock_domain())
+            .map_err(AppFailure)?;
+    sources.extend(
+        seeds
+            .into_iter()
+            .map(|(input, frame)| NativeResolvedSource::LiveFrame { input, frame }),
+    );
+    Ok(titles)
 }
 
 #[cfg(all(feature = "native-media", target_os = "macos"))]
@@ -8472,8 +8509,8 @@ fn serve_inner(
     }
 
     // Title templates and fonts load once, before serving, for the simulated
-    // monitor tap. Native media refuses title inputs at startup, so it never
-    // needs them.
+    // monitor tap. Native media loads its own for its title render worker
+    // (see `native_titles`), so the session loop needs none.
     let titles = Arc::new(if native.is_none() {
         title_render::TitleAssets::load(&store, durable.project())
     } else {
@@ -9570,6 +9607,10 @@ fn execute_admitted_command(
             native.observe_stream_command(command, &execution.submission.output.result);
             #[cfg(feature = "native-media")]
             native.observe_recording_command(command, &execution.submission.output.result, durable);
+            // Changed title fields re-render on the title worker; this only
+            // compares and hands over state.
+            #[cfg(feature = "native-media")]
+            native.titles.observe(durable.project());
             execution
         } else {
             execute_durable_command(

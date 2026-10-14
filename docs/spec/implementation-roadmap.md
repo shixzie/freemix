@@ -1999,9 +1999,15 @@ carries `title_fields`, `title_take`, `title_off_air`, `title_changed`, and a
 `title_state` record after each snapshot; Graphics may save, Operators may
 take and clear, and a take with fields needs both. freemixd restores and
 persists title values, and its simulated monitors render title inputs and
-composite active overlays on Program. Native freemixd still refuses title
-inputs, runtime image URIs are not loaded until restart, and there is no
-Studio title panel yet, so `GX-001` remains planned.
+composite active overlays on Program. Native freemixd realizes each title
+input as a live source frame rendered by the reference renderer on a title
+worker off the session loop, re-rendered after field changes (and at a
+bounded refresh of at most 25 Hz for clock, ticker, and animated templates),
+so titles reach Program, Scenes, and project-output overlays. Image fields
+load their PNG/JPEG assets on demand, including URIs first set at runtime, in
+`native-media` builds; a build without `fm-codec-image` keeps the image
+placeholder. There is no Studio title panel yet, so `GX-001` remains
+planned.
 
 Current implementation boundary for item 1 scoreboards and tickers
 (`GX-003`): `fm-titles` provides a deterministic ticker crawl (horizontal
