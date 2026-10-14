@@ -87,10 +87,14 @@ pub(crate) fn segment_path(directory: &Path, index: u64) -> PathBuf {
 }
 
 pub(crate) fn parse_segment_name(name: &str) -> Option<u64> {
-    name.strip_prefix("segment-")?
+    let index = name
+        .strip_prefix("segment-")?
         .strip_suffix(".fms")?
         .parse()
-        .ok()
+        .ok()?;
+    // Only the exact `segment_name` layout is a segment; aliases such as
+    // `segment-0.fms` must not be scanned, truncated, or removed as one.
+    (name == segment_name(index)).then_some(index)
 }
 
 pub(crate) fn encoded_event(event: &RecordEvent) -> Result<(u8, Vec<u8>), RecorderError> {

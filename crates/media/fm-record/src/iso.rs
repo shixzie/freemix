@@ -928,10 +928,11 @@ fn parse_start_timecode(field: &str, line: usize) -> Result<Option<Timecode>, Is
         })
 }
 
-/// Parses a strict `HH:MM:SS:FF` timecode with two digits per component.
+/// Parses a strict `HH:MM:SS:FF` timecode in the exact `{:02}` rendering.
 ///
 /// A timecode carries no frame-rate domain, so the nominal rate used to bound
-/// the frame component is `u8::MAX`: any two-digit frame value is accepted.
+/// the frame component is `u8::MAX`. High-rate frame values of 100 or more
+/// render with three digits and are accepted in that canonical form only.
 fn parse_manifest_timecode(field: &str) -> Option<Timecode> {
     let mut components = field.split(':');
     let hours = parse_timecode_component(components.next()?)?;
@@ -945,10 +946,11 @@ fn parse_manifest_timecode(field: &str) -> Option<Timecode> {
 }
 
 fn parse_timecode_component(component: &str) -> Option<u8> {
-    if component.len() != 2 || !component.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !(2..=3).contains(&component.len()) || !component.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    component.parse::<u8>().ok()
+    let value = component.parse::<u8>().ok()?;
+    (format!("{value:02}") == component).then_some(value)
 }
 
 fn parse_optional_bound(

@@ -979,5 +979,8 @@ pub fn repair_recording(directory: impl AsRef<Path>) -> Result<RecoveryReport, R
 fn recorder_id_from_directory(directory: &Path) -> Option<RecorderId> {
     let name = directory.file_name()?.to_str()?;
     let value = u128::from_str_radix(name.strip_prefix("recorder-")?, 16).ok()?;
-    NonZeroU128::new(value).map(RecorderId::new)
+    let id = NonZeroU128::new(value).map(RecorderId::new)?;
+    // Only the exact layout written by `recorder_directory` identifies a
+    // recorder; aliases such as `recorder-1` would otherwise shadow it.
+    (name == format!("recorder-{value:032x}")).then_some(id)
 }

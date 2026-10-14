@@ -655,6 +655,41 @@ fn malformed_manifests_are_rejected_wholesale() {
 }
 
 #[test]
+fn high_frame_rate_timecodes_round_trip_through_the_persisted_manifest() {
+    let temp = TempDirectory::new("high-frame-rate-timecode");
+    let root = temp.path().join("root");
+    let source = Timecode::new(1, 2, 3, 119, 120).expect("valid 120 fps timecode");
+    let master = Timecode::new(4, 5, 6, 100, 120).expect("valid 120 fps timecode");
+    let (session, _) = IsoTapSession::start(
+        &root,
+        Some(master),
+        &[source_tap(1, 101, source), tap(2, 102)],
+    )
+    .expect("start high frame rate taps");
+
+    let persisted = fs::read_to_string(root.join(ISO_MANIFEST_NAME)).expect("read manifest");
+    let entries = parse_iso_manifest(&persisted).expect("session manifest must parse");
+    assert_eq!(entries[0].start_timecode(), Some(source));
+    assert_eq!(entries[1].start_timecode(), Some(master));
+    assert_eq!(render_iso_manifest_entries(&entries), persisted);
+    drop(session);
+
+    for value in ["01:02:03:099", "01:02:03:0119", "01:02:03:1"] {
+        let text = persisted.replacen("01:02:03:119", value, 1);
+        assert!(
+            matches!(
+                parse_iso_manifest(&text),
+                Err(IsoManifestError::MalformedField {
+                    line: 2,
+                    field: "start_timecode"
+                })
+            ),
+            "non-canonical timecode {value} must be rejected"
+        );
+    }
+}
+
+#[test]
 fn shared_and_source_timecodes_resolve_exactly() {
     let temp = TempDirectory::new("timecodes");
     let root = temp.path().join("root");

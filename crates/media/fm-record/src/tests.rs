@@ -1261,3 +1261,61 @@ fn iso_tap_and_timecode_manifest_persist_and_recover_across_restart() {
         .expect_err("corrupt timecode hours must fail manifest decode");
     assert!(error.to_string().contains("invalid start timecode"));
 }
+
+#[test]
+fn non_canonical_recorder_directory_does_not_alias_a_recovered_recorder() {
+    let temp = TempDirectory::new("directory-alias");
+    let recorder = id(1);
+    {
+        let (mut coordinator, _) =
+            RecorderCoordinator::open(temp.path()).expect("open coordinator");
+        coordinator
+            .start(recorder, receipt(1), config(SegmentPolicy::default()))
+            .expect("start recorder");
+        coordinator
+            .append(recorder, video(0, 4))
+            .expect("append frame");
+        coordinator
+            .stop(recorder, receipt(2))
+            .expect("stop recorder");
+    }
+    // Both names parse to the same id, but only the zero-padded one belongs
+    // to the coordinator's layout.
+    fs::create_dir(temp.path().join("recorder-1")).expect("create stray directory");
+    fs::create_dir(temp.path().join("recorder-+1")).expect("create stray directory");
+
+    let (coordinator, report) = RecorderCoordinator::open(temp.path()).expect("reopen");
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!(report.recovered.len(), 1);
+    let snapshot = coordinator.snapshot(recorder).expect("snapshot");
+    assert_eq!(snapshot.state, RecorderState::Stopped);
+    assert_eq!(snapshot.segment_index, Some(0));
+}
+
+#[test]
+fn non_canonical_segment_name_does_not_alias_a_committed_segment() {
+    let temp = TempDirectory::new("segment-alias");
+    let recorder = id(1);
+    {
+        let (mut coordinator, _) =
+            RecorderCoordinator::open(temp.path()).expect("open coordinator");
+        coordinator
+            .start(recorder, receipt(1), config(SegmentPolicy::default()))
+            .expect("start recorder");
+        coordinator
+            .append(recorder, video(0, 4))
+            .expect("append frame");
+        coordinator
+            .stop(recorder, receipt(2))
+            .expect("stop recorder");
+    }
+    let directory = recording_directory(temp.path(), recorder);
+    fs::write(directory.join("segment-0.fms"), b"not a recorder segment")
+        .expect("write stray file");
+
+    let report = repair_recording(&directory).expect("repair ignores foreign names");
+    assert_eq!(report.segments.len(), 1);
+    assert_eq!(report.segments[0].index, 0);
+    assert_eq!(report.segments[0].records, 1);
+    assert!(directory.join("segment-0.fms").exists());
+}
