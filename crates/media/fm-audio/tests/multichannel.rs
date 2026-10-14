@@ -78,12 +78,40 @@ fn catalog_has_exact_orders_labels_and_fm_types_interop() {
     .unwrap();
     let converted = MultichannelLayout::from_channel_layout(&five_one).unwrap();
     assert_eq!(converted.standard(), Some(StandardLayout::FivePointOne));
-    assert_eq!(converted.to_channel_layout().unwrap(), five_one);
+    assert_eq!(converted.to_channel_layout(), five_one);
+    // Every catalogue layout, including 7.1 rear surrounds and 16 discrete
+    // channels, round-trips through fm-types without loss.
+    for standard in StandardLayout::ALL {
+        let layout = standard.layout();
+        let channels = layout.to_channel_layout();
+        assert_eq!(channels.channels().len(), standard.channel_count());
+        assert_eq!(
+            MultichannelLayout::from_channel_layout(&channels).unwrap(),
+            layout
+        );
+    }
     assert_eq!(
-        StandardLayout::SevenPointOne.layout().to_channel_layout(),
-        Err(MultichannelError::LabelNotRepresentable(
-            SpeakerLabel::LeftRearSurround
-        ))
+        &StandardLayout::SevenPointOne
+            .layout()
+            .to_channel_layout()
+            .channels()[6..],
+        &[Channel::LeftRearSurround, Channel::RightRearSurround]
+    );
+    let ch16 = DiscreteChannel::new(16).unwrap();
+    assert_eq!(
+        StandardLayout::Discrete16
+            .layout()
+            .to_channel_layout()
+            .channels()[15],
+        Channel::Discrete(ch16)
+    );
+    assert_eq!(
+        SpeakerLabel::from_channel(Channel::Discrete(ch16)),
+        SpeakerLabel::Discrete(ch16)
+    );
+    assert_eq!(
+        SpeakerLabel::from_channel(Channel::RightRearSurround).to_channel(),
+        Channel::RightRearSurround
     );
 
     // Validation.

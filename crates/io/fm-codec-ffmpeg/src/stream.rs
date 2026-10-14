@@ -2219,6 +2219,11 @@ fn flv_channel_layout(layout: &ChannelLayout) -> Option<&'static str> {
 /// standard mono, stereo, and 5.1 channel configurations are all expressible
 /// exactly. Anything else is refused rather than silently downmixed or guessed
 /// at a layout name the child would reject.
+///
+/// The 5.1 surround pair (`LeftSurround`/`RightSurround`) is labelled with
+/// ffmpeg's plain `5.1` (`BL`/`BR`), the configuration AAC reports for 5.1;
+/// sample order is identical to `5.1(side)`. 7.1 (rear surrounds) and
+/// discrete layouts are refused here.
 fn mpegts_channel_layout(layout: &ChannelLayout) -> Option<&'static str> {
     match layout.channels() {
         [Channel::Mono] => Some("mono"),
@@ -3638,6 +3643,27 @@ mod tests {
             output_channel_layout(DestinationKind::Hls, &surround),
             Some("5.1")
         );
+        let seven_one = ChannelLayout::new(vec![
+            Channel::Left,
+            Channel::Right,
+            Channel::Center,
+            Channel::LowFrequency,
+            Channel::LeftSurround,
+            Channel::RightSurround,
+            Channel::LeftRearSurround,
+            Channel::RightRearSurround,
+        ])
+        .unwrap();
+        let discrete = ChannelLayout::new(
+            (1..=16)
+                .map(|number| Channel::Discrete(fm_types::DiscreteChannel::new(number).unwrap()))
+                .collect(),
+        )
+        .unwrap();
+        for wider in [&seven_one, &discrete] {
+            assert_eq!(flv_channel_layout(wider), None);
+            assert_eq!(mpegts_channel_layout(wider), None);
+        }
         assert_eq!(
             output_channel_layout(DestinationKind::Rtmp, &surround),
             None

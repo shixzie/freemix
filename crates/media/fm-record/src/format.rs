@@ -670,6 +670,9 @@ fn encode_timestamp(output: &mut Vec<u8>, timestamp: OriginalTimestamp) {
     put_u32(output, timestamp.time_base().denominator());
 }
 
+/// One-byte audio channel label code in audio event records: named labels
+/// use `0..=8`; discrete channel `n` (`1..=16`) uses `0x10 + n - 1`
+/// (`16..=31`).
 fn channel_code(channel: Channel) -> u8 {
     match channel {
         Channel::Mono => 0,
@@ -679,8 +682,13 @@ fn channel_code(channel: Channel) -> u8 {
         Channel::LowFrequency => 4,
         Channel::LeftSurround => 5,
         Channel::RightSurround => 6,
+        Channel::LeftRearSurround => 7,
+        Channel::RightRearSurround => 8,
+        Channel::Discrete(channel) => DISCRETE_CHANNEL_CODE_BASE + channel.number() - 1,
     }
 }
+
+const DISCRETE_CHANNEL_CODE_BASE: u8 = 0x10;
 
 fn pixel_format_code(format: PixelFormat) -> u8 {
     match format {
@@ -928,4 +936,33 @@ fn sync_directory_io(path: &Path) -> io::Result<()> {
 #[cfg(not(any(unix, windows)))]
 fn sync_directory_io(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
+}
+
+#[cfg(test)]
+mod tests {
+    use fm_types::{Channel, DiscreteChannel};
+
+    use super::channel_code;
+
+    #[test]
+    fn every_channel_label_has_a_distinct_code() {
+        let mut channels = vec![
+            Channel::Mono,
+            Channel::Left,
+            Channel::Right,
+            Channel::Center,
+            Channel::LowFrequency,
+            Channel::LeftSurround,
+            Channel::RightSurround,
+            Channel::LeftRearSurround,
+            Channel::RightRearSurround,
+        ];
+        channels.extend(
+            (1..=DiscreteChannel::MAX)
+                .map(|number| Channel::Discrete(DiscreteChannel::new(number).unwrap())),
+        );
+        let codes: Vec<u8> = channels.into_iter().map(channel_code).collect();
+        assert_eq!(&codes[..9], &[0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(&codes[9..], (0x10..=0x1f).collect::<Vec<u8>>().as_slice());
+    }
 }

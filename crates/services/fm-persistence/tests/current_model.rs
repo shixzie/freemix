@@ -17,8 +17,9 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, ChromaLocation, ColorMetadata, ColorPrimaries,
-    FrameRate, InputId, MatrixCoefficients, OutputId, PixelFormat, ProjectId, SampleFormat,
-    SampleRate, ScanMode, SceneId, SignalRange, TransferFunction, VideoDimensions, VideoFormat,
+    DiscreteChannel, FrameRate, InputId, MatrixCoefficients, OutputId, PixelFormat, ProjectId,
+    SampleFormat, SampleRate, ScanMode, SceneId, SignalRange, TransferFunction, VideoDimensions,
+    VideoFormat,
 };
 
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -1430,4 +1431,100 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
 
     fs::write(store.manifest_path(), valid).unwrap();
     assert_eq!(store.load().unwrap().project().scenes()[0].layers.len(), 2);
+}
+
+fn discrete(number: u8) -> Channel {
+    Channel::Discrete(DiscreteChannel::new(number).unwrap())
+}
+
+fn stored_with_audio_channels(channels: Vec<Channel>) -> StoredProject {
+    let mut settings = rich_settings();
+    settings.audio.channels = ChannelLayout::new(channels).unwrap();
+    StoredProject::from_project(
+        Project::new(project_id(77), "Multichannel", settings),
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn rear_surround_and_discrete_channel_labels_round_trip_at_the_current_schema() {
+    let seven_one = vec![
+        Channel::Left,
+        Channel::Right,
+        Channel::Center,
+        Channel::LowFrequency,
+        Channel::LeftSurround,
+        Channel::RightSurround,
+        Channel::LeftRearSurround,
+        Channel::RightRearSurround,
+    ];
+    // Discrete labels may mix with named labels; one- and two-digit numbers.
+    let discrete_layout = vec![
+        discrete(1),
+        discrete(2),
+        discrete(9),
+        discrete(10),
+        discrete(16),
+        Channel::Mono,
+    ];
+    for (name, channels, encoded) in [
+        (
+            "seven-one",
+            seven_one,
+            "\"left_surround\", \"right_surround\", \"left_rear_surround\", \"right_rear_surround\"",
+        ),
+        (
+            "discrete",
+            discrete_layout,
+            "\"discrete_1\", \"discrete_2\", \"discrete_9\", \"discrete_10\", \"discrete_16\", \"mono\"",
+        ),
+    ] {
+        let temp = TestDirectory::new(name);
+        let store = temp.store("show");
+        let expected = stored_with_audio_channels(channels);
+        store.save(&expected).unwrap();
+        let manifest = fs::read_to_string(store.manifest_path()).unwrap();
+        let compact: String = manifest.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(compact.contains(encoded), "{compact}");
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded, expected);
+        assert_eq!(
+            loaded.project().settings().audio.channels,
+            expected.project().settings().audio.channels
+        );
+    }
+}
+
+#[test]
+fn malformed_discrete_channel_labels_are_rejected() {
+    let temp = TestDirectory::new("malformed-discrete");
+    let store = temp.store("show");
+    store
+        .save(&stored_with_audio_channels(vec![discrete(16)]))
+        .unwrap();
+    let valid = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(valid.contains("\"discrete_16\""));
+    for malformed in [
+        "discrete_0",
+        "discrete_17",
+        "discrete_016",
+        "discrete_",
+        "discrete_+1",
+        "discrete_x",
+        "Discrete_16",
+        "back_left",
+    ] {
+        fs::write(
+            store.manifest_path(),
+            valid.replacen("\"discrete_16\"", &format!("\"{malformed}\""), 1),
+        )
+        .unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "{malformed}"
+        );
+    }
 }

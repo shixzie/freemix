@@ -10,14 +10,19 @@ use fm_frame::{
     AudioBlock, Channel, ChannelLayout, ClockDomainId, MediaFlags, MediaTiming, NormalizedDuration,
     NormalizedTimestamp, OriginalTimestamp, SequenceNumber,
 };
-use fm_types::{MediaTimestamp, SampleRate, TimeBase};
+use fm_types::{DiscreteChannel, MediaTimestamp, SampleRate, TimeBase};
 
 fn layout(channels: Vec<Channel>) -> ChannelLayout {
     ChannelLayout::new(channels).unwrap()
 }
 
+fn discrete(number: u8) -> Channel {
+    Channel::Discrete(DiscreteChannel::new(number).unwrap())
+}
+
+/// Sixteen distinct labels covering every named label plus discrete slots.
 fn all_channels() -> Vec<Channel> {
-    vec![
+    let mut channels = vec![
         Channel::Mono,
         Channel::Left,
         Channel::Right,
@@ -25,7 +30,11 @@ fn all_channels() -> Vec<Channel> {
         Channel::LowFrequency,
         Channel::LeftSurround,
         Channel::RightSurround,
-    ]
+        Channel::LeftRearSurround,
+        Channel::RightRearSurround,
+    ];
+    channels.extend((1..=7).map(discrete));
+    channels
 }
 
 fn timing() -> MediaTiming {
@@ -185,10 +194,7 @@ fn largest_unique_layout_accepts_the_full_route_matrix() {
     let mapping = ChannelMapping::new(source.clone(), destination, routes).unwrap();
     let input = block(
         source,
-        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
-            .into_iter()
-            .map(|sample| vec![sample])
-            .collect(),
+        (1..=16_u8).map(|sample| vec![f32::from(sample)]).collect(),
     );
 
     let output = mapping.map(&input).unwrap();
@@ -198,7 +204,7 @@ fn largest_unique_layout_accepts_the_full_route_matrix() {
         output
             .planes()
             .iter()
-            .all(|plane| plane.as_slice() == [28.0])
+            .all(|plane| plane.as_slice() == [136.0])
     );
 }
 
@@ -280,7 +286,7 @@ fn invalid_layouts_routes_and_coefficients_are_rejected() {
         coefficient: 0.5,
     };
     assert_eq!(
-        ChannelMapping::new(stereo.clone(), mono.clone(), vec![route, route]),
+        ChannelMapping::new(stereo, mono.clone(), vec![route, route]),
         Err(ChannelMappingError::DuplicateRoute {
             source: Channel::Left,
             destination: Channel::Mono,
@@ -318,17 +324,11 @@ fn invalid_layouts_routes_and_coefficients_are_rejected() {
         })
     );
 
+    // Wider-than-mappable layouts cannot be constructed at all.
     let mut too_wide_channels = all_channels();
-    too_wide_channels.push(Channel::Mono);
-    let too_wide = layout(too_wide_channels);
-    assert_eq!(
-        ChannelMapping::matching(too_wide, stereo),
-        Err(ChannelMappingError::ChannelCountOutOfRange {
-            side: ChannelMappingSide::Source,
-            actual: MAX_CHANNEL_MAPPING_CHANNELS + 1,
-            maximum: MAX_CHANNEL_MAPPING_CHANNELS,
-        })
-    );
+    too_wide_channels.push(discrete(8));
+    assert_eq!(too_wide_channels.len(), MAX_CHANNEL_MAPPING_CHANNELS + 1);
+    assert_eq!(ChannelLayout::new(too_wide_channels), None);
 }
 
 #[test]

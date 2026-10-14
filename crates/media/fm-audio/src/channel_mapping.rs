@@ -7,8 +7,9 @@ use crate::MAX_SAMPLES_PER_BLOCK;
 
 const BYTES_PER_SAMPLE: usize = size_of::<f32>();
 
-/// Number of distinct semantic channel labels currently representable.
-pub const MAX_CHANNEL_MAPPING_CHANNELS: usize = 7;
+/// Largest channel count of either mapping side: the `fm-types` layout limit,
+/// which covers 7.1 and 16-channel discrete layouts.
+pub const MAX_CHANNEL_MAPPING_CHANNELS: usize = ChannelLayout::MAX_CHANNELS;
 /// Maximum number of explicit source-to-destination routes in one mapping.
 pub const MAX_CHANNEL_MAPPING_ROUTES: usize =
     MAX_CHANNEL_MAPPING_CHANNELS * MAX_CHANNEL_MAPPING_CHANNELS;

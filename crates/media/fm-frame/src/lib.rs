@@ -30,7 +30,7 @@ pub use video::{CpuVideoFrame, CpuVideoPayload, CpuVideoPlane, VideoPayloadError
 
 pub use fm_types::{
     AlphaMode, Channel, ChannelLayout, ChromaLocation, ColorMetadata, ColorPrimaries,
-    MatrixCoefficients, MediaDuration, MediaTimestamp, MemoryDomain, PixelFormat, SampleRate,
-    SignalRange, TimeBase, Timecode, TransferFunction, VideoDimensions, VideoFrameMetadata,
-    VideoFrameMetadataError,
+    DiscreteChannel, MatrixCoefficients, MediaDuration, MediaTimestamp, MemoryDomain, PixelFormat,
+    SampleRate, SignalRange, TimeBase, Timecode, TransferFunction, VideoDimensions,
+    VideoFrameMetadata, VideoFrameMetadataError,
 };

@@ -21,12 +21,17 @@
 
 use core::fmt;
 
+pub use fm_types::DiscreteChannel;
 use fm_types::{Channel, ChannelLayout};
 
 use crate::MAX_SAMPLES_PER_BLOCK;
+use crate::channel_mapping::{ChannelMapping, ChannelMappingError, ChannelMappingRoute};
 
 /// Maximum channel count of one [`MultichannelLayout`].
-pub const MAX_MULTICHANNEL_CHANNELS: usize = 16;
+///
+/// Equal to [`ChannelLayout::MAX_CHANNELS`], so every multichannel layout
+/// converts to an `fm-types` layout and back.
+pub const MAX_MULTICHANNEL_CHANNELS: usize = ChannelLayout::MAX_CHANNELS;
 /// Maximum number of non-zero routes in one [`GainMatrix`].
 pub const MAX_GAIN_MATRIX_ROUTES: usize = MAX_MULTICHANNEL_CHANNELS * MAX_MULTICHANNEL_CHANNELS;
 /// Largest accepted absolute route gain (+24.08 dB).
@@ -46,27 +51,6 @@ const DISCRETE_LABELS: [&str; MAX_MULTICHANNEL_CHANNELS] = [
     "Ch1", "Ch2", "Ch3", "Ch4", "Ch5", "Ch6", "Ch7", "Ch8", "Ch9", "Ch10", "Ch11", "Ch12", "Ch13",
     "Ch14", "Ch15", "Ch16",
 ];
-
-/// One-based discrete channel number in `1..=16`.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct DiscreteChannel(u8);
-
-impl DiscreteChannel {
-    /// Returns `None` outside `1..=16`.
-    #[must_use]
-    pub const fn new(number: u8) -> Option<Self> {
-        if number >= 1 && number as usize <= MAX_MULTICHANNEL_CHANNELS {
-            Some(Self(number))
-        } else {
-            None
-        }
-    }
-
-    #[must_use]
-    pub const fn number(self) -> u8 {
-        self.0
-    }
-}
 
 /// Semantic label of one channel within a [`MultichannelLayout`].
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -101,22 +85,24 @@ impl SpeakerLabel {
             Self::RightSurround => "Rs",
             Self::LeftRearSurround => "Lrs",
             Self::RightRearSurround => "Rrs",
-            Self::Discrete(channel) => DISCRETE_LABELS[channel.0 as usize - 1],
+            Self::Discrete(channel) => DISCRETE_LABELS[channel.number() as usize - 1],
         }
     }
 
-    /// Equivalent `fm-types` channel, when one exists.
+    /// Equivalent `fm-types` channel. The mapping is a bijection.
     #[must_use]
-    pub const fn to_channel(self) -> Option<Channel> {
+    pub const fn to_channel(self) -> Channel {
         match self {
-            Self::Mono => Some(Channel::Mono),
-            Self::Left => Some(Channel::Left),
-            Self::Right => Some(Channel::Right),
-            Self::Center => Some(Channel::Center),
-            Self::LowFrequencyEffects => Some(Channel::LowFrequency),
-            Self::LeftSurround => Some(Channel::LeftSurround),
-            Self::RightSurround => Some(Channel::RightSurround),
-            Self::LeftRearSurround | Self::RightRearSurround | Self::Discrete(_) => None,
+            Self::Mono => Channel::Mono,
+            Self::Left => Channel::Left,
+            Self::Right => Channel::Right,
+            Self::Center => Channel::Center,
+            Self::LowFrequencyEffects => Channel::LowFrequency,
+            Self::LeftSurround => Channel::LeftSurround,
+            Self::RightSurround => Channel::RightSurround,
+            Self::LeftRearSurround => Channel::LeftRearSurround,
+            Self::RightRearSurround => Channel::RightRearSurround,
+            Self::Discrete(channel) => Channel::Discrete(channel),
         }
     }
 
@@ -130,6 +116,9 @@ impl SpeakerLabel {
             Channel::LowFrequency => Self::LowFrequencyEffects,
             Channel::LeftSurround => Self::LeftSurround,
             Channel::RightSurround => Self::RightSurround,
+            Channel::LeftRearSurround => Self::LeftRearSurround,
+            Channel::RightRearSurround => Self::RightRearSurround,
+            Channel::Discrete(channel) => Self::Discrete(channel),
         }
     }
 }
@@ -225,7 +214,10 @@ impl StandardLayout {
             Self::Discrete16 => {
                 let mut index = 0;
                 while index < MAX_MULTICHANNEL_CHANNELS {
-                    labels[index] = SpeakerLabel::Discrete(DiscreteChannel(index as u8 + 1));
+                    let Some(channel) = DiscreteChannel::new(index as u8 + 1) else {
+                        unreachable!()
+                    };
+                    labels[index] = SpeakerLabel::Discrete(channel);
                     index += 1;
                 }
             }
@@ -300,23 +292,18 @@ impl MultichannelLayout {
 
     /// Converts to an `fm-types` layout, preserving channel order.
     ///
-    /// # Errors
+    /// # Panics
     ///
-    /// Returns [`MultichannelError::LabelNotRepresentable`] for rear-surround
-    /// and discrete labels, which `fm-types` cannot yet express.
-    pub fn to_channel_layout(&self) -> Result<ChannelLayout, MultichannelError> {
-        let mut channels = Vec::with_capacity(self.channel_count());
-        for label in self.labels() {
-            channels.push(
-                label
-                    .to_channel()
-                    .ok_or(MultichannelError::LabelNotRepresentable(*label))?,
-            );
-        }
-        ChannelLayout::new(channels).ok_or(MultichannelError::ChannelCountOutOfRange {
-            actual: 0,
-            maximum: MAX_MULTICHANNEL_CHANNELS,
-        })
+    /// Never: a layout holds 1..=[`MAX_MULTICHANNEL_CHANNELS`] channels, which
+    /// is exactly the range [`ChannelLayout::new`] accepts.
+    #[must_use]
+    pub fn to_channel_layout(&self) -> ChannelLayout {
+        let channels = self
+            .labels()
+            .iter()
+            .map(|label| label.to_channel())
+            .collect();
+        ChannelLayout::new(channels).expect("multichannel layouts hold 1..=16 channels")
     }
 
     #[must_use]
@@ -366,7 +353,6 @@ pub enum MultichannelError {
         maximum: usize,
     },
     DuplicateLabel(SpeakerLabel),
-    LabelNotRepresentable(SpeakerLabel),
     TooManyRoutes {
         actual: usize,
         maximum: usize,
@@ -431,9 +417,6 @@ impl fmt::Display for MultichannelError {
                 write!(formatter, "channel count {actual} is outside 1..={maximum}")
             }
             Self::DuplicateLabel(label) => write!(formatter, "layout repeats {label}"),
-            Self::LabelNotRepresentable(label) => {
-                write!(formatter, "{label} has no fm-types channel equivalent")
-            }
             Self::TooManyRoutes { actual, maximum } => {
                 write!(
                     formatter,
@@ -862,6 +845,35 @@ impl GainMatrix {
     #[must_use]
     pub fn routes(&self) -> &[MatrixRoute] {
         &self.routes
+    }
+
+    /// Expresses this matrix as a semantic [`ChannelMapping`] between the
+    /// equivalent `fm-types` layouts, so `AudioBlock`s and Master mixer strips
+    /// can use catalogued up/downmixes. Each retained route becomes one
+    /// mapping route with the same gain.
+    ///
+    /// # Errors
+    ///
+    /// Returns any [`ChannelMappingError`] from [`ChannelMapping::new`]. A
+    /// validated matrix always satisfies its layout, route-count, uniqueness,
+    /// and coefficient limits, so no error is expected in practice.
+    pub fn to_channel_mapping(&self) -> Result<ChannelMapping, ChannelMappingError> {
+        let inputs = self.input_layout.labels();
+        let outputs = self.output_layout.labels();
+        let routes = self
+            .routes
+            .iter()
+            .map(|route| ChannelMappingRoute {
+                source: inputs[route.input].to_channel(),
+                destination: outputs[route.output].to_channel(),
+                coefficient: route.gain,
+            })
+            .collect();
+        ChannelMapping::new(
+            self.input_layout.to_channel_layout(),
+            self.output_layout.to_channel_layout(),
+            routes,
+        )
     }
 
     /// Gain from `input` to `output`, or `0.0` when unrouted.

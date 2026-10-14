@@ -58,6 +58,9 @@ pub struct RecordFormat {
     sample_rate: SampleRate,
     channel_layout: ChannelLayout,
     ffmpeg_channel_layout: &'static str,
+    /// For each ffmpeg channel position, the source plane index; `None` when
+    /// the `fm-types` order already equals ffmpeg's.
+    ffmpeg_plane_order: Option<&'static [usize]>,
     first_sequence: SequenceNumber,
     rgba_bytes: usize,
 }
@@ -101,14 +104,17 @@ impl RecordFormat {
             })
             .and_then(|pixels| pixels.checked_mul(4))
             .ok_or(FormatError::ByteCountOverflow)?;
-        let ffmpeg_channel_layout =
-            ffmpeg_layout(&channel_layout).ok_or(FormatError::UnsupportedChannelLayout)?;
+        let FfmpegLayout {
+            name: ffmpeg_channel_layout,
+            plane_order: ffmpeg_plane_order,
+        } = ffmpeg_layout(&channel_layout).ok_or(FormatError::UnsupportedChannelLayout)?;
         Ok(Self {
             dimensions,
             frame_rate,
             sample_rate,
             channel_layout,
             ffmpeg_channel_layout,
+            ffmpeg_plane_order,
             first_sequence,
             rgba_bytes,
         })
@@ -477,7 +483,7 @@ impl PairedFrame {
                 actual: actual_duration,
             });
         }
-        let audio_f32le = interleave_f32le(&audio)?;
+        let audio_f32le = interleave_f32le(&audio, format.ffmpeg_plane_order)?;
         drop(audio);
         // `retained_bytes` charges capacity; spare caller capacity would
         // exceed the `maximum_pair_bytes` budget limits were validated with.
@@ -586,7 +592,12 @@ fn original_timestamp_matches(
     Ok(actual == expected)
 }
 
-fn interleave_f32le(audio: &AudioBlock) -> Result<Vec<u8>, FrameError> {
+/// Interleaves planes as `f32le`, in ffmpeg channel order when `plane_order`
+/// is given (one source plane index per ffmpeg channel position).
+fn interleave_f32le(
+    audio: &AudioBlock,
+    plane_order: Option<&'static [usize]>,
+) -> Result<Vec<u8>, FrameError> {
     let byte_count = audio
         .sample_count()
         .checked_mul(audio.channel_layout().channels().len())
@@ -596,49 +607,100 @@ fn interleave_f32le(audio: &AudioBlock) -> Result<Vec<u8>, FrameError> {
     output
         .try_reserve_exact(byte_count)
         .map_err(|_| FrameError::AllocationFailed)?;
+    let planes = audio.planes();
     for sample in 0..audio.sample_count() {
-        for plane in audio.planes() {
-            output.extend_from_slice(&plane[sample].to_le_bytes());
+        match plane_order {
+            Some(order) => {
+                for index in order {
+                    output.extend_from_slice(&planes[*index][sample].to_le_bytes());
+                }
+            }
+            None => {
+                for plane in planes {
+                    output.extend_from_slice(&plane[sample].to_le_bytes());
+                }
+            }
         }
     }
     Ok(output)
 }
 
-fn ffmpeg_layout(layout: &ChannelLayout) -> Option<&'static str> {
-    match layout.channels() {
-        [Channel::Mono] => Some("mono"),
-        [Channel::Left, Channel::Right] => Some("stereo"),
-        [Channel::Left, Channel::Right, Channel::LowFrequency] => Some("2.1"),
-        [Channel::Left, Channel::Right, Channel::Center] => Some("3.0"),
-        [
-            Channel::Left,
-            Channel::Right,
-            Channel::Center,
-            Channel::LowFrequency,
-        ] => Some("3.1"),
-        [
-            Channel::Left,
-            Channel::Right,
-            Channel::LeftSurround,
-            Channel::RightSurround,
-        ] => Some("quad(side)"),
-        [
-            Channel::Left,
-            Channel::Right,
-            Channel::Center,
-            Channel::LeftSurround,
-            Channel::RightSurround,
-        ] => Some("5.0(side)"),
-        [
-            Channel::Left,
-            Channel::Right,
-            Channel::Center,
-            Channel::LowFrequency,
-            Channel::LeftSurround,
-            Channel::RightSurround,
-        ] => Some("5.1(side)"),
-        _ => None,
+/// An ffmpeg channel layout descriptor for the raw `f32le` audio input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FfmpegLayout {
+    name: &'static str,
+    plane_order: Option<&'static [usize]>,
+}
+
+impl FfmpegLayout {
+    const fn native(name: &'static str) -> Self {
+        Self {
+            name,
+            plane_order: None,
+        }
     }
+}
+
+/// `{n}C`: ffmpeg's unspecified-order layout of `n` channels.
+const UNSPECIFIED_LAYOUTS: [&str; ChannelLayout::MAX_CHANNELS] = [
+    "1C", "2C", "3C", "4C", "5C", "6C", "7C", "8C", "9C", "10C", "11C", "12C", "13C", "14C", "15C",
+    "16C",
+];
+
+/// SMPTE/ITU 7.1 (`L R C LFE Ls Rs Lrs Rrs`) planes in ffmpeg `7.1` order
+/// (`FL FR FC LFE BL BR SL SR`).
+const SMPTE_7_1_TO_FFMPEG: [usize; 8] = [0, 1, 2, 3, 6, 7, 4, 5];
+
+/// Maps a semantic layout to the ffmpeg layout that names exactly the same
+/// speakers.
+///
+/// `LeftSurround`/`RightSurround` are ffmpeg side channels (`SL`/`SR`) and
+/// `LeftRearSurround`/`RightRearSurround` are ffmpeg back channels
+/// (`BL`/`BR`). ffmpeg's plain `quad`, `5.0`, and `5.1` use `BL`/`BR`, so they
+/// carry rear labels, while the `(side)` variants carry `Ls`/`Rs`. ffmpeg's
+/// `7.1` is `FL FR FC LFE BL BR SL SR`: that order is accepted directly, and
+/// the SMPTE/ITU order `L R C LFE Ls Rs Lrs Rrs` (the `fm-audio` 7.1 catalogue
+/// order) is accepted and reordered while interleaving. A layout made only of
+/// discrete channels is passed in its own order as `{n}C`, ffmpeg's
+/// unspecified-order layout, so no speaker positions are invented. Mixed
+/// named/discrete and other layouts are refused.
+fn ffmpeg_layout(layout: &ChannelLayout) -> Option<FfmpegLayout> {
+    use Channel::{
+        Center as C, Left as L, LeftRearSurround as Lrs, LeftSurround as Ls, LowFrequency as Lfe,
+        Right as R, RightRearSurround as Rrs, RightSurround as Rs,
+    };
+    let channels = layout.channels();
+    if channels
+        .iter()
+        .all(|channel| matches!(channel, Channel::Discrete(_)))
+    {
+        return Some(FfmpegLayout::native(
+            UNSPECIFIED_LAYOUTS[channels.len() - 1],
+        ));
+    }
+    let name = match channels {
+        [Channel::Mono] => "mono",
+        [L, R] => "stereo",
+        [L, R, Lfe] => "2.1",
+        [L, R, C] => "3.0",
+        [L, R, C, Lfe] => "3.1",
+        [L, R, Lrs, Rrs] => "quad",
+        [L, R, Ls, Rs] => "quad(side)",
+        [L, R, C, Lrs, Rrs] => "5.0",
+        [L, R, C, Ls, Rs] => "5.0(side)",
+        [L, R, C, Lfe, Lrs, Rrs] => "5.1",
+        [L, R, C, Lfe, Ls, Rs] => "5.1(side)",
+        [L, R, C, Lrs, Rrs, Ls, Rs] => "7.0",
+        [L, R, C, Lfe, Lrs, Rrs, Ls, Rs] => "7.1",
+        [L, R, C, Lfe, Ls, Rs, Lrs, Rrs] => {
+            return Some(FfmpegLayout {
+                name: "7.1",
+                plane_order: Some(&SMPTE_7_1_TO_FFMPEG),
+            });
+        }
+        _ => return None,
+    };
+    Some(FfmpegLayout::native(name))
 }
 
 /// Raw input involved in a typed failure.
@@ -2827,7 +2889,7 @@ mod tests {
         for (channels, expected) in layouts {
             assert_eq!(
                 ffmpeg_layout(&ChannelLayout::new(channels).unwrap()),
-                Some(expected)
+                Some(FfmpegLayout::native(expected))
             );
         }
 
@@ -2852,6 +2914,91 @@ mod tests {
             .flat_map(f32::to_le_bytes)
             .collect::<Vec<_>>();
         assert_eq!(frame.audio_f32le(), expected);
+    }
+
+    #[test]
+    fn rear_surround_and_discrete_layouts_name_exact_ffmpeg_speakers() {
+        use fm_types::DiscreteChannel;
+        let (l, r, c, lfe) = (
+            Channel::Left,
+            Channel::Right,
+            Channel::Center,
+            Channel::LowFrequency,
+        );
+        let (ls, rs, lrs, rrs) = (
+            Channel::LeftSurround,
+            Channel::RightSurround,
+            Channel::LeftRearSurround,
+            Channel::RightRearSurround,
+        );
+        // ffmpeg plain quad/5.0/5.1 are BL/BR, i.e. rear surrounds.
+        for (channels, expected) in [
+            (vec![l, r, lrs, rrs], "quad"),
+            (vec![l, r, c, lrs, rrs], "5.0"),
+            (vec![l, r, c, lfe, lrs, rrs], "5.1"),
+            (vec![l, r, c, lrs, rrs, ls, rs], "7.0"),
+            // ffmpeg-native 7.1 order: FL FR FC LFE BL BR SL SR.
+            (vec![l, r, c, lfe, lrs, rrs, ls, rs], "7.1"),
+        ] {
+            assert_eq!(
+                ffmpeg_layout(&ChannelLayout::new(channels).unwrap()),
+                Some(FfmpegLayout::native(expected))
+            );
+        }
+        // SMPTE/ITU 7.1 is reordered to ffmpeg's 7.1 while interleaving.
+        let smpte = ChannelLayout::new(vec![l, r, c, lfe, ls, rs, lrs, rrs]).unwrap();
+        let mapped = ffmpeg_layout(&smpte).unwrap();
+        assert_eq!(mapped.name, "7.1");
+        let block = AudioBlock::new(
+            MediaTiming::new(
+                OriginalTimestamp::new(MediaTimestamp::new(0), TimeBase::new(1, 48_000).unwrap()),
+                NormalizedTimestamp::from_nanos(0),
+                NormalizedDuration::from_nanos(41_666).unwrap(),
+                ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+                SequenceNumber::new(0),
+            )
+            .unwrap(),
+            SampleRate::new(48_000).unwrap(),
+            smpte,
+            (0..8_u8)
+                .map(|channel| vec![f32::from(channel), f32::from(channel) + 10.0])
+                .collect(),
+        )
+        .unwrap();
+        let interleaved = interleave_f32le(&block, mapped.plane_order).unwrap();
+        let samples = interleaved
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|bytes| f32::from_le_bytes(*bytes))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            samples,
+            [
+                0.0, 1.0, 2.0, 3.0, 6.0, 7.0, 4.0, 5.0, //
+                10.0, 11.0, 12.0, 13.0, 16.0, 17.0, 14.0, 15.0,
+            ]
+        );
+
+        // Discrete-only layouts keep their order as ffmpeg unspecified-order
+        // layouts; mixing discrete and named channels is refused.
+        let discrete = |number| Channel::Discrete(DiscreteChannel::new(number).unwrap());
+        assert_eq!(
+            ffmpeg_layout(&ChannelLayout::new((1..=16).map(discrete).collect()).unwrap()),
+            Some(FfmpegLayout::native("16C"))
+        );
+        assert_eq!(
+            ffmpeg_layout(&ChannelLayout::new(vec![discrete(3), discrete(1)]).unwrap()),
+            Some(FfmpegLayout::native("2C"))
+        );
+        assert_eq!(
+            ffmpeg_layout(&ChannelLayout::new(vec![l, r, discrete(3)]).unwrap()),
+            None
+        );
+        assert_eq!(
+            ffmpeg_layout(&ChannelLayout::new(vec![l, r, lrs]).unwrap()),
+            None
+        );
     }
 
     #[test]

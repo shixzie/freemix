@@ -5,10 +5,10 @@ use std::time::Instant;
 
 use fm_frame::{
     AlphaMode, AudioBlock, Channel, ChannelLayout, ChromaLocation, ClockDomainId, ColorMetadata,
-    ColorPrimaries, CpuVideoFrame, CpuVideoPayload, CpuVideoPlane, MatrixCoefficients,
-    MediaTimestamp, MediaTiming, NormalizedDuration, NormalizedTimestamp, OriginalTimestamp,
-    PixelFormat, SampleRate, SequenceNumber, SignalRange, TimeBase, TransferFunction,
-    VideoDimensions, VideoFrameMetadata,
+    ColorPrimaries, CpuVideoFrame, CpuVideoPayload, CpuVideoPlane, DiscreteChannel,
+    MatrixCoefficients, MediaTimestamp, MediaTiming, NormalizedDuration, NormalizedTimestamp,
+    OriginalTimestamp, PixelFormat, SampleRate, SequenceNumber, SignalRange, TimeBase,
+    TransferFunction, VideoDimensions, VideoFrameMetadata,
 };
 use serde_json::{Map, Value};
 
@@ -1994,53 +1994,57 @@ fn normalized_interval(
     Ok((start, duration))
 }
 
+/// `{n}C`: ffmpeg's unspecified-order layout of `n` channels.
+const UNSPECIFIED_LAYOUTS: [&str; ChannelLayout::MAX_CHANNELS] = [
+    "1C", "2C", "3C", "4C", "5C", "6C", "7C", "8C", "9C", "10C", "11C", "12C", "13C", "14C", "15C",
+    "16C",
+];
+
+/// Maps a probed ffmpeg layout to the semantic layout in ffmpeg's decoded
+/// channel order, plus the layout name requested from the decoder.
+///
+/// ffmpeg `SL`/`SR` are `LeftSurround`/`RightSurround` and `BL`/`BR` are
+/// `LeftRearSurround`/`RightRearSurround`. `7.1` (`FL FR FC LFE BL BR SL SR`)
+/// names both pairs, so it maps unambiguously to
+/// `L R C LFE Lrs Rrs Ls Rs`. Plain `5.1`/`5.0`/`quad` are refused: decoders
+/// such as AAC report the single 5.1 surround pair as `BL`/`BR`, so whether
+/// they are rear or ordinary surrounds is ambiguous. A stream without a
+/// channel layout keeps the mono/stereo defaults for one or two channels and
+/// is otherwise decoded as `{n}C` into discrete channels `1..=n` (`n <= 16`).
 fn map_layout(
     raw_layout: Option<&str>,
     channels: u32,
 ) -> Result<(&'static str, ChannelLayout), Error> {
-    let name = match (raw_layout, channels) {
-        (Some("mono") | None, 1) => "mono",
-        (Some("stereo") | None, 2) => "stereo",
-        (Some("2.1"), 3) => "2.1",
-        (Some("3.0"), 3) => "3.0",
-        (Some("3.1"), 4) => "3.1",
-        (Some("quad(side)"), 4) => "quad(side)",
-        (Some("5.0(side)"), 5) => "5.0(side)",
-        (Some("5.1(side)"), 6) => "5.1(side)",
-        _ => return Err(Error::Unsupported(Unsupported::AudioLayout)),
+    use Channel::{
+        Center as C, Left as L, LeftRearSurround as Lrs, LeftSurround as Ls, LowFrequency as Lfe,
+        Right as R, RightRearSurround as Rrs, RightSurround as Rs,
     };
-    let channels = match name {
-        "mono" => vec![Channel::Mono],
-        "stereo" => vec![Channel::Left, Channel::Right],
-        "2.1" => vec![Channel::Left, Channel::Right, Channel::LowFrequency],
-        "3.0" => vec![Channel::Left, Channel::Right, Channel::Center],
-        "3.1" => vec![
-            Channel::Left,
-            Channel::Right,
-            Channel::Center,
-            Channel::LowFrequency,
-        ],
-        "quad(side)" => vec![
-            Channel::Left,
-            Channel::Right,
-            Channel::LeftSurround,
-            Channel::RightSurround,
-        ],
-        "5.0(side)" => vec![
-            Channel::Left,
-            Channel::Right,
-            Channel::Center,
-            Channel::LeftSurround,
-            Channel::RightSurround,
-        ],
-        "5.1(side)" => vec![
-            Channel::Left,
-            Channel::Right,
-            Channel::Center,
-            Channel::LowFrequency,
-            Channel::LeftSurround,
-            Channel::RightSurround,
-        ],
+    let (name, channels) = match (raw_layout, channels) {
+        (Some("mono") | None, 1) => ("mono", vec![Channel::Mono]),
+        (Some("stereo") | None, 2) => ("stereo", vec![L, R]),
+        (Some("2.1"), 3) => ("2.1", vec![L, R, Lfe]),
+        (Some("3.0"), 3) => ("3.0", vec![L, R, C]),
+        (Some("3.1"), 4) => ("3.1", vec![L, R, C, Lfe]),
+        (Some("quad(side)"), 4) => ("quad(side)", vec![L, R, Ls, Rs]),
+        (Some("5.0(side)"), 5) => ("5.0(side)", vec![L, R, C, Ls, Rs]),
+        (Some("5.1(side)"), 6) => ("5.1(side)", vec![L, R, C, Lfe, Ls, Rs]),
+        (Some("7.1"), 8) => ("7.1", vec![L, R, C, Lfe, Lrs, Rrs, Ls, Rs]),
+        (None, count) => {
+            let count = u8::try_from(count)
+                .ok()
+                .filter(|count| usize::from(*count) <= ChannelLayout::MAX_CHANNELS)
+                .ok_or(Error::Unsupported(Unsupported::AudioLayout))?;
+            let channels = (1..=count)
+                .map(|number| DiscreteChannel::new(number).map(Channel::Discrete))
+                .collect::<Option<Vec<_>>>()
+                .ok_or(Error::Unsupported(Unsupported::AudioLayout))?;
+            let name = channels
+                .len()
+                .checked_sub(1)
+                .map(|index| UNSPECIFIED_LAYOUTS[index])
+                .ok_or(Error::Unsupported(Unsupported::AudioLayout))?;
+            (name, channels)
+        }
         _ => return Err(Error::Unsupported(Unsupported::AudioLayout)),
     };
     Ok((
@@ -2849,6 +2853,51 @@ mod tests {
         );
         assert_eq!(
             map_layout(Some("5.1"), 6),
+            Err(Error::Unsupported(Unsupported::AudioLayout))
+        );
+    }
+
+    #[test]
+    fn seven_one_and_unlabelled_streams_map_to_rear_and_discrete_channels() {
+        let (name, seven_one) = map_layout(Some("7.1"), 8).unwrap();
+        assert_eq!(name, "7.1");
+        // ffmpeg 7.1 decodes as FL FR FC LFE BL BR SL SR.
+        assert_eq!(
+            seven_one.channels(),
+            &[
+                Channel::Left,
+                Channel::Right,
+                Channel::Center,
+                Channel::LowFrequency,
+                Channel::LeftRearSurround,
+                Channel::RightRearSurround,
+                Channel::LeftSurround,
+                Channel::RightSurround,
+            ]
+        );
+        assert_eq!(
+            map_layout(Some("7.1"), 6),
+            Err(Error::Unsupported(Unsupported::AudioLayout))
+        );
+
+        let (name, discrete) = map_layout(None, 16).unwrap();
+        assert_eq!(name, "16C");
+        assert_eq!(discrete.channels().len(), 16);
+        for (index, channel) in discrete.channels().iter().enumerate() {
+            assert_eq!(
+                *channel,
+                Channel::Discrete(DiscreteChannel::new(u8::try_from(index + 1).unwrap()).unwrap())
+            );
+        }
+        assert_eq!(map_layout(None, 3).unwrap().0, "3C");
+        for unsupported in [0, 17, 64] {
+            assert_eq!(
+                map_layout(None, unsupported),
+                Err(Error::Unsupported(Unsupported::AudioLayout))
+            );
+        }
+        assert_eq!(
+            map_layout(Some("hexadecagonal"), 16),
             Err(Error::Unsupported(Unsupported::AudioLayout))
         );
     }

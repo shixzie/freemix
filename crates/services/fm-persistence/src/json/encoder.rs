@@ -4,8 +4,8 @@ use fm_model::{
     InputKind, RestartPolicy, Rotation, SimulatedAudio, SimulatedVideo, SourceRef, StartupPolicy,
 };
 use fm_types::{
-    Channel, ChromaLocation, ColorPrimaries, MatrixCoefficients, PixelFormat, SampleFormat,
-    ScanMode, SignalRange, TransferFunction,
+    Channel, ChromaLocation, ColorPrimaries, DiscreteChannel, MatrixCoefficients, PixelFormat,
+    SampleFormat, ScanMode, SignalRange, TransferFunction,
 };
 
 use crate::{
@@ -760,8 +760,31 @@ const fn channel_name(value: Channel) -> &'static str {
         Channel::LowFrequency => "low_frequency",
         Channel::LeftSurround => "left_surround",
         Channel::RightSurround => "right_surround",
+        Channel::LeftRearSurround => "left_rear_surround",
+        Channel::RightRearSurround => "right_rear_surround",
+        Channel::Discrete(channel) => DISCRETE_CHANNEL_NAMES[channel.number() as usize - 1],
     }
 }
+
+/// `discrete_<n>` names for one-based discrete channels `1..=16`.
+const DISCRETE_CHANNEL_NAMES: [&str; DiscreteChannel::MAX as usize] = [
+    "discrete_1",
+    "discrete_2",
+    "discrete_3",
+    "discrete_4",
+    "discrete_5",
+    "discrete_6",
+    "discrete_7",
+    "discrete_8",
+    "discrete_9",
+    "discrete_10",
+    "discrete_11",
+    "discrete_12",
+    "discrete_13",
+    "discrete_14",
+    "discrete_15",
+    "discrete_16",
+];
 
 const fn startup_policy(value: StartupPolicy) -> &'static str {
     match value {

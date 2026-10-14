@@ -7,7 +7,7 @@ mod memory;
 mod time;
 mod video;
 
-pub use audio::{AudioFormat, Channel, ChannelLayout, SampleFormat, SampleRate};
+pub use audio::{AudioFormat, Channel, ChannelLayout, DiscreteChannel, SampleFormat, SampleRate};
 pub use color::{
     AlphaMode, ChromaLocation, ColorMetadata, ColorPrimaries, MatrixCoefficients, SignalRange,
     TransferFunction,

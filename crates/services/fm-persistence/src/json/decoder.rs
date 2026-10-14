@@ -11,8 +11,9 @@ use fm_model::{
 };
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, ChromaLocation, ColorMetadata, ColorPrimaries,
-    FrameRate, InputId, MatrixCoefficients, OutputId, PixelFormat, ProjectId, SampleFormat,
-    SampleRate, ScanMode, SceneId, SignalRange, TransferFunction, VideoDimensions, VideoFormat,
+    DiscreteChannel, FrameRate, InputId, MatrixCoefficients, OutputId, PixelFormat, ProjectId,
+    SampleFormat, SampleRate, ScanMode, SceneId, SignalRange, TransferFunction, VideoDimensions,
+    VideoFormat,
 };
 
 use crate::{
@@ -349,7 +350,17 @@ fn parse_audio(value: Value) -> Result<AudioFormat, DecodeError> {
             "low_frequency" => Ok(Channel::LowFrequency),
             "left_surround" => Ok(Channel::LeftSurround),
             "right_surround" => Ok(Channel::RightSurround),
-            value => Err(unknown_enum("channel", value)),
+            "left_rear_surround" => Ok(Channel::LeftRearSurround),
+            "right_rear_surround" => Ok(Channel::RightRearSurround),
+            value => value
+                .strip_prefix("discrete_")
+                .filter(|number| {
+                    !number.starts_with('0') && number.bytes().all(|byte| byte.is_ascii_digit())
+                })
+                .and_then(|number| number.parse::<u8>().ok())
+                .and_then(DiscreteChannel::new)
+                .map(Channel::Discrete)
+                .ok_or_else(|| unknown_enum("channel", value)),
         }
     })?;
     object.finish()?;
@@ -357,7 +368,7 @@ fn parse_audio(value: Value) -> Result<AudioFormat, DecodeError> {
         sample_rate,
         sample_format,
         channels: ChannelLayout::new(channels)
-            .ok_or_else(|| syntax("audio channel layout must not be empty"))?,
+            .ok_or_else(|| syntax("audio channel layout must contain 1..=16 channels"))?,
     })
 }
 
