@@ -1899,6 +1899,22 @@ gaps: no daemon, protocol, persistence, or vMix API wiring, no cross-input GO
 bank, no M3U or file-list import, no transitions or variable speed between
 items, and no real-media acceptance. `IN-006` and `OR-015` remain planned.
 
+Current implementation boundary for item 5 playlist automation:
+`fm-automation` provides a caller-clocked playlist engine that sequences whole
+inputs with fixed or media-length durations, typed transitions validated
+against each entry, loop off/all/one, and start now, after a delay, or at a
+wall time with reject, start-now, or join-in-progress late policies. Pause,
+resume, next, previous, jump-to, stop, enable/disable, and take-guarded
+media-ended reports run against a scratch copy, so failed commands change
+nothing. Entry boundaries fire at their exact scheduled times regardless of
+poll rate, with gaps collapsing into bounded skipped/looped events. A versioned
+tab-separated snapshot round-trips, and restore rejects inconsistent state.
+Remaining gaps: no engine, daemon, protocol, vMix API, Studio, or project-bundle
+wiring; no switcher consumes the emitted transitions; no real media length or
+end-of-media detection; millisecond rather than frame timing; no per-entry hard
+starts, calendar recurrence, or on-air list editing; and no idempotency,
+permissions, or as-run log. `OR-015` remains planned.
+
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame
 durations, ordered or seeded-random cycles without repeats, cut or crossfade
