@@ -2026,6 +2026,19 @@ no cross-provider de-duplication, no unbounded-store limits in the
 aggregator, and no authenticated operator identity. `GX-010` remains blocked
 on exact authorized integrations.
 
+Current implementation boundary for virtual sets (`IN-021`): `fm-virtual-set`
+plans exact, deterministic virtual-camera moves between presets with easing
+curves defined by integer control points, and a layer-stack planner orders
+background, keyed-talent, and foreground desk layers at independent parallax
+depths into output-pixel rectangles. Reflections and shadows are emitted as
+derived layer entries (a mirrored rectangle with fade rows, or an offset matte
+with zoom-scaled blur), and a bounded preset store recalls snapshots atomically
+at a scheduled frame. Remaining gaps: no compositor draws the plan, presets
+hold only camera pose and timing, the planner is separate from the existing
+`VirtualSetScene` model, layers are axis-aligned rather than four-corner
+planes, and nothing reaches the engine, commands, persistence, or UI.
+`IN-021` remains planned.
+
 Exit: no unclassified vMix 29 public feature and no incomplete P0/P1/P2 row
 without a documented legal/platform exception.
 
