@@ -10,6 +10,7 @@ mod generate;
 mod geometry;
 mod png;
 mod ppm;
+mod test_signal;
 
 pub use blend::{BlendError, crossfade};
 pub use color::{ColorMatrix, ColorRange, Yuv8, rgb_to_yuv, yuv_to_rgb};
@@ -37,3 +38,9 @@ pub use png::{
     STORED_BLOCK_MAX, adler32, crc32, encode_png_rgba8, encode_png_rgba16,
 };
 pub use ppm::write_ppm;
+pub use test_signal::{
+    BarsColorimetry, BarsPattern, GeneratedContent, GeneratedSourceSpec, NominalRgb,
+    PLUGE_LEVELS_PERCENT, StaticGenerator, TestSignalError, TestSignalSpec, YcbcrBitDepth,
+    YcbcrCode, YcbcrPlanes, quantize_rgb8_full, quantize_ycbcr, render_test_signal_rgba8,
+    render_test_signal_ycbcr444, test_signal_level,
+};

@@ -6,6 +6,7 @@
 
 mod clip;
 mod image_folder;
+mod image_sequence;
 mod list;
 mod playlist;
 mod slideshow;
@@ -19,6 +20,12 @@ pub use clip::{
 pub use image_folder::{
     FolderListingError, IMAGE_EXTENSIONS, ImageFolderListing, MAX_FOLDER_ENTRIES,
     MAX_FOLDER_NAME_BYTES, is_supported_image, natural_cmp,
+};
+pub use image_sequence::{
+    CacheInsert, CacheRejection, GapPolicy, ImageSequence, ImageSequenceError, MAX_SEQUENCE_DIGITS,
+    MAX_SEQUENCE_FRAMES, PrefetchBudget, PrefetchBudgetError, PrefetchCache, PrefetchStats,
+    SequenceClock, SequenceClockError, SequenceEndMode, SequenceFile, SequenceName,
+    SequencePadding, SequencePosition, parse_sequence_name, prefetch_order,
 };
 pub use list::{
     ActivationCause, ListAction, ListControlError, ListError, ListEvent, ListGo, ListGoError,

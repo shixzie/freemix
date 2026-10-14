@@ -1240,7 +1240,10 @@ name = "fm-codec-image"
 version = "0.1.0"
 dependencies = [
  "fm-frame",
+ "fm-playback",
+ "fm-types",
  "image",
+ "tempfile",
 ]
 
 [[package]]

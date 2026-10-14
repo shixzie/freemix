@@ -9,6 +9,13 @@
 use std::fmt;
 use std::io::Cursor;
 
+mod sequence;
+
+pub use sequence::{
+    AlphaCoverage, ImageSequenceConfig, ImageSequenceSource, ImageSequenceSourceError,
+    SequenceSample, alpha_coverage,
+};
+
 use fm_frame::{
     AlphaMode, ChromaLocation, ColorMetadata, ColorPrimaries, CpuVideoFrame, CpuVideoPayload,
     CpuVideoPlane, MatrixCoefficients, MediaTiming, PixelFormat, SignalRange, TransferFunction,
