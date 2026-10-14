@@ -1876,6 +1876,20 @@ dispatches, or persists bindings and macros; macro permissions are not
 enforced; scripts have no loops or arithmetic and cannot recall dispatched
 commands on cancellation. `IN-027` and `RC-010` remain planned.
 
+Current implementation boundary for item 8: `fm-automation` provides a
+bounded MIDI 1.0 stream parser (running status, interleaved real-time bytes,
+bounded SysEx capture, 14-bit controller pairs, pitch bend) and an OSC 1.0
+codec with typed arguments, bounded bundles, and address-pattern matching,
+both pinned by exact byte fixtures. A control map binds device-keyed buttons,
+absolute faders, and relative encoders to typed actions with velocity ranges,
+deadband, inversion, and soft takeover, offers a learn mode with conflict
+policies, and re-associates bindings on reconnect by device key. A feedback
+router turns tally and level state into coalesced MIDI and OSC messages for
+LEDs and motor faders. Remaining gaps: no MIDI port enumeration, hotplug, UDP
+transport, or raw HID parsing; nothing is wired into `freemixd`, Studio, or
+persistence; there is no learn UI; and NRPN/RPN, MIDI 2.0, and GPIO or
+network tally adapters are absent. `RC-005` and `RC-006` remain planned.
+
 Current implementation boundary for item 9: `fm-ptz` encodes and parses VISCA
 commands, inquiries, and replies for pan/tilt, zoom, focus, presets, and
 system control with explicit range errors, translates each PTZ intent into a
