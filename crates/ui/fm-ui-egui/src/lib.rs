@@ -1130,6 +1130,12 @@ impl StudioShell {
         self.titles.receive(updates);
     }
 
+    /// Unblocks every title command still awaiting an answer. Call when the
+    /// worker that would answer them has stopped.
+    pub fn abandon_title_requests(&mut self) {
+        self.titles.abandon_all();
+    }
+
     /// Reconciles console-local drafts and dialogs with the latest state.
     fn reconcile_local_state(&mut self, state: &StudioUiState) {
         self.reconcile_rename_draft(state);

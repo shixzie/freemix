@@ -61,6 +61,9 @@ pub const TITLE_EDIT_PERMISSION: &str = "edit_project";
 pub const TITLE_AIR_PERMISSION: &str = "transition";
 /// Longest text field draft, matching the protocol's text value bound.
 pub const MAX_TITLE_TEXT_CHARS: usize = fm_protocol::MAX_TITLE_TEXT_CHARS;
+/// Largest total of a title's text values plus image asset references, in
+/// UTF-8 bytes, matching the protocol and title domain bound.
+pub const MAX_TITLE_CONTENT_BYTES: usize = fm_protocol::MAX_TITLE_CONTENT_BYTES;
 /// Longest image asset reference a draft may name.
 pub const MAX_IMAGE_ASSET_CHARS: usize = 1_024;
 /// Most title instances one editor tracks.
@@ -407,6 +410,9 @@ pub enum TitleBlocked {
     /// The server moved past the drafts' base; rebase or discard first.
     Stale,
     InvalidDraft,
+    /// The title's text and image content with the drafts applied would
+    /// exceed [`MAX_TITLE_CONTENT_BYTES`].
+    ContentTooLarge,
     NotPreviewed,
     NoChanges,
     OnAir,
@@ -421,6 +427,7 @@ impl fmt::Display for TitleBlocked {
             Self::Pending => "waiting for the server",
             Self::Stale => "title changed on the server; rebase or discard your edits",
             Self::InvalidDraft => "fix invalid fields first",
+            Self::ContentTooLarge => "the title content is too large",
             Self::NotPreviewed => "preview the changes first",
             Self::NoChanges => "no changes",
             Self::OnAir => "title is on air",
@@ -731,10 +738,12 @@ struct Draft {
     value: Result<TitleFieldValue, FieldError>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Pending {
     request: u64,
     operation: TitleOperation,
+    /// The field values the command carried.
+    fields: Vec<(WireTitleFieldId, TitleFieldValue)>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -775,6 +784,22 @@ impl Entry {
         self.drafts.values().any(|draft| draft.value.is_err())
     }
 
+    /// Whether the title's text and image content, with the valid drafts
+    /// applied, exceeds the bound the authority enforces on the whole title.
+    fn content_too_large(&self) -> bool {
+        self.base
+            .fields
+            .iter()
+            .map(|field| match self.drafts.get(&field.id) {
+                Some(Draft {
+                    value: Ok(value), ..
+                }) => value.content_bytes(),
+                _ => field.value.content_bytes(),
+            })
+            .fold(0_usize, usize::saturating_add)
+            > MAX_TITLE_CONTENT_BYTES
+    }
+
     fn previewed(&self) -> bool {
         self.previewed == Some((self.base.revision, self.generation))
     }
@@ -789,6 +814,11 @@ impl Entry {
         if snapshot.revision < self.live.revision {
             return;
         }
+        self.adopt_live(snapshot);
+    }
+
+    /// Records the server state whatever its revision.
+    fn adopt_live(&mut self, snapshot: TitleSnapshot) {
         self.live = snapshot;
         if self.drafts.is_empty() && self.live.revision != self.base.revision {
             self.base = self.live.clone();
@@ -797,6 +827,44 @@ impl Entry {
             // Same field revision: names and air state may still change.
             self.base = self.live.clone();
         }
+    }
+
+    /// Adopts the state after the authority applied `fields` at our base.
+    /// Drafts the command carried are applied, unless edited since. When
+    /// the state also holds another editor's later change and drafts
+    /// remain, the base becomes our own result so the change reads as a
+    /// conflict instead of silently becoming the drafts' base.
+    fn applied(
+        &mut self,
+        fields: Vec<(WireTitleFieldId, TitleFieldValue)>,
+        snapshot: TitleSnapshot,
+    ) {
+        self.drafts.retain(|id, draft| {
+            !fields
+                .iter()
+                .any(|(field, value)| field == id && draft.value.as_ref() == Ok(value))
+        });
+        let mut ours = self.base.clone();
+        for (id, value) in fields {
+            if let Some(field) = ours.fields.iter_mut().find(|field| field.id == id) {
+                field.value = value;
+            }
+        }
+        let concurrent = !ours
+            .fields
+            .iter()
+            .map(|field| (field.id, &field.value))
+            .eq(snapshot.fields.iter().map(|field| (field.id, &field.value)));
+        if concurrent && self.dirty() && ours.revision < snapshot.revision {
+            ours.name.clone_from(&snapshot.name);
+            ours.on_air = snapshot.on_air;
+            self.base = ours;
+        } else {
+            self.base = snapshot.clone();
+        }
+        self.live = snapshot;
+        self.revalidate();
+        self.touch();
     }
 
     fn drafted_fields(&self) -> Vec<(WireTitleFieldId, TitleFieldValue)> {
@@ -844,6 +912,9 @@ impl Entry {
         }
         if self.invalid() {
             return Err(TitleBlocked::InvalidDraft);
+        }
+        if self.content_too_large() {
+            return Err(TitleBlocked::ContentTooLarge);
         }
         if matches!(operation, TitleOperation::Save | TitleOperation::Update) && !self.dirty() {
             return Err(TitleBlocked::NoChanges);
@@ -928,6 +999,10 @@ impl TitleEditor {
     /// titles the state no longer has. Titles still awaiting their
     /// `title_state` keep their last known snapshot.
     ///
+    /// The replicated state is authoritative: a field revision lower than
+    /// the one already known (an authority restarted from an older save) is
+    /// adopted rather than ignored, and leaves any drafts stale.
+    ///
     /// # Errors
     ///
     /// Returns the first refused snapshot; every other title is still
@@ -938,12 +1013,25 @@ impl TitleEditor {
         for status in state.titles() {
             if let Some(snapshot) =
                 TitleSnapshot::from_status(status, state.title_on_air(status.input))
-                && let Err(error) = self.observe(snapshot)
+                && let Err(error) = self.observe_authoritative(snapshot)
             {
                 first_error.get_or_insert(error);
             }
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn observe_authoritative(&mut self, snapshot: TitleSnapshot) -> Result<(), SnapshotError> {
+        snapshot.validate()?;
+        if let Some(entry) = self.titles.get_mut(&snapshot.title) {
+            if snapshot.revision < entry.live.revision {
+                entry.adopt_live(snapshot);
+                return Ok(());
+            }
+            entry.observe(snapshot);
+            return Ok(());
+        }
+        self.observe(snapshot)
     }
 
     /// Forgets a title the server removed, including its drafts.
@@ -1224,7 +1312,17 @@ impl TitleEditor {
             },
             TitleOperation::OffAir => TitleCommandBody::OffAir,
         };
-        entry.pending = Some(Pending { request, operation });
+        let submitted = match &body {
+            TitleCommandBody::Save { fields, .. }
+            | TitleCommandBody::Take { fields, .. }
+            | TitleCommandBody::Update { fields, .. } => fields.clone(),
+            TitleCommandBody::OffAir => Vec::new(),
+        };
+        entry.pending = Some(Pending {
+            request,
+            operation,
+            fields: submitted,
+        });
         entry.notice = None;
         Ok(TitleCommand {
             request,
@@ -1240,12 +1338,23 @@ impl TitleEditor {
         self.titles.values_mut().any(|entry| {
             let matches = entry
                 .pending
+                .as_ref()
                 .is_some_and(|pending| pending.request == request);
             if matches {
                 entry.pending = None;
             }
             matches
         })
+    }
+
+    /// Unblocks every title with a command in flight, as [`Self::abandon`]
+    /// does, when the transport that would answer them is gone. Returns how
+    /// many were pending.
+    pub fn abandon_all(&mut self) -> usize {
+        self.titles
+            .values_mut()
+            .filter_map(|entry| entry.pending.take())
+            .count()
     }
 
     /// Applies the authority's reply to the pending command.
@@ -1266,6 +1375,7 @@ impl TitleEditor {
             .find(|entry| {
                 entry
                     .pending
+                    .as_ref()
                     .is_some_and(|pending| pending.request == request)
             })
             .ok_or(UnexpectedReply { request })?;
@@ -1278,12 +1388,7 @@ impl TitleEditor {
                 if pending.operation == TitleOperation::OffAir {
                     entry.observe(snapshot);
                 } else {
-                    // The authority applied our fields at our base, so the
-                    // result is our base plus our edits: safe to adopt.
-                    entry.live = snapshot.clone();
-                    entry.base = snapshot;
-                    entry.revalidate();
-                    entry.touch();
+                    entry.applied(pending.fields, snapshot);
                 }
                 ReplyOutcome::Applied(pending.operation)
             }
@@ -1337,6 +1442,7 @@ impl TitleEditor {
             if let Some(entry) = self.titles.get_mut(&title)
                 && entry
                     .pending
+                    .as_ref()
                     .is_some_and(|pending| pending.request == request)
             {
                 entry.pending = None;
@@ -1439,5 +1545,192 @@ fn field_presentation(
             }),
             _ => None,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::num::NonZeroU128;
+
+    use super::*;
+
+    const TITLE: u128 = 3;
+
+    fn title() -> InputId {
+        InputId::new(NonZeroU128::new(TITLE).unwrap())
+    }
+
+    fn field(value: u128) -> WireTitleFieldId {
+        WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn text(value: &str) -> TitleFieldValue {
+        TitleFieldValue::Text(value.into())
+    }
+
+    fn snapshot(revision: u64, values: [&str; 2]) -> TitleSnapshot {
+        TitleSnapshot {
+            title: title(),
+            name: "Lower third".into(),
+            revision,
+            on_air: false,
+            fields: values
+                .iter()
+                .zip(1..)
+                .map(|(value, id)| ExposedField {
+                    id: field(id),
+                    name: format!("Field {id}"),
+                    value: text(value),
+                })
+                .collect(),
+        }
+    }
+
+    fn new_editor(revision: u64, values: [&str; 2]) -> TitleEditor {
+        let mut editor = TitleEditor::new(TitleAccess::new(true, true, true));
+        editor.observe(snapshot(revision, values)).unwrap();
+        editor
+    }
+
+    fn field_view(editor: &TitleEditor, id: u128) -> FieldPresentation {
+        editor
+            .presentation(title())
+            .unwrap()
+            .fields
+            .into_iter()
+            .find(|candidate| candidate.id == field(id))
+            .unwrap()
+    }
+
+    #[test]
+    fn an_applied_reply_never_silently_rebases_drafts_onto_a_later_edit() {
+        // Our save applies field 1 at revision 2; before the reply is
+        // released another editor changes field 2 (revision 3), while this
+        // operator keeps typing in field 2.
+        let mut editor = new_editor(1, ["Ana", "x"]);
+        editor.set_input(title(), field(1), "Bea").unwrap();
+        let command = editor.request(title(), TitleOperation::Save).unwrap();
+        editor.set_input(title(), field(2), "y").unwrap();
+        let outcome = editor.apply_reply(TitleReply::Applied {
+            request: command.request,
+            snapshot: snapshot(3, ["Bea", "z"]),
+        });
+        assert_eq!(outcome, Ok(ReplyOutcome::Applied(TitleOperation::Save)));
+        let view = editor.presentation(title()).unwrap();
+        assert!(
+            view.stale,
+            "the other editor's change must read as a conflict"
+        );
+        assert!(!field_view(&editor, 1).dirty);
+        let typed = field_view(&editor, 2);
+        assert!(typed.dirty);
+        assert_eq!(
+            typed.conflict,
+            Some(FieldConflict {
+                base: text("x"),
+                theirs: Some(text("z")),
+            })
+        );
+        assert_eq!(
+            editor.check(title(), TitleOperation::Save),
+            Err(TitleEditorError::Blocked(TitleBlocked::Stale))
+        );
+
+        // A submitted draft that was applied and then overwritten by
+        // another editor is not left behind as an unsent edit.
+        let mut editor = new_editor(1, ["Ana", "x"]);
+        editor.set_input(title(), field(1), "Bea").unwrap();
+        let command = editor.request(title(), TitleOperation::Save).unwrap();
+        editor
+            .apply_reply(TitleReply::Applied {
+                request: command.request,
+                snapshot: snapshot(3, ["Cy", "x"]),
+            })
+            .unwrap();
+        let view = editor.presentation(title()).unwrap();
+        assert!(!view.dirty && !view.stale);
+        assert_eq!(view.base_revision, 3);
+        assert_eq!(field_view(&editor, 1).input, "Cy");
+    }
+
+    #[test]
+    fn drafts_over_the_title_content_bound_cannot_be_sent() {
+        let mut editor = new_editor(1, ["Ana", "x"]);
+        // 3,000 four-byte scalars are within the per-text character bound
+        // but 12,000 bytes; with the other field the title exceeds 12,288.
+        let wide = "\u{1F600}".repeat(3_000);
+        editor.set_input(title(), field(1), &wide).unwrap();
+        assert_eq!(field_view(&editor, 1).error, None);
+        assert_eq!(editor.check(title(), TitleOperation::Save), Ok(()));
+        editor
+            .set_input(title(), field(2), &"a".repeat(289))
+            .unwrap();
+        for operation in [TitleOperation::Save, TitleOperation::Take] {
+            assert_eq!(
+                editor.check(title(), operation),
+                Err(TitleEditorError::Blocked(TitleBlocked::ContentTooLarge)),
+                "{operation:?}"
+            );
+        }
+        assert_eq!(
+            editor.request(title(), TitleOperation::Save),
+            Err(TitleEditorError::Blocked(TitleBlocked::ContentTooLarge))
+        );
+        editor
+            .set_input(title(), field(2), &"a".repeat(288))
+            .unwrap();
+        assert_eq!(editor.check(title(), TitleOperation::Save), Ok(()));
+    }
+
+    #[test]
+    fn an_authoritative_lower_revision_is_adopted() {
+        let mut editor = new_editor(5, ["Ana", "x"]);
+        // A restarted authority reports revision 2: clean titles follow it.
+        editor
+            .observe_authoritative(snapshot(2, ["Old", "x"]))
+            .unwrap();
+        let view = editor.presentation(title()).unwrap();
+        assert_eq!((view.live_revision, view.base_revision), (2, 2));
+        assert_eq!(field_view(&editor, 1).input, "Old");
+        // A plain out-of-order observation is still ignored.
+        editor.observe(snapshot(1, ["Older", "x"])).unwrap();
+        assert_eq!(editor.presentation(title()).unwrap().live_revision, 2);
+
+        // Drafts on the lost revision become stale and can be rebased.
+        let mut editor = new_editor(5, ["Ana", "x"]);
+        editor.set_input(title(), field(1), "Bea").unwrap();
+        editor
+            .observe_authoritative(snapshot(2, ["Old", "x"]))
+            .unwrap();
+        assert!(editor.presentation(title()).unwrap().stale);
+        editor.rebase(title()).unwrap();
+        let command = editor.request(title(), TitleOperation::Save).unwrap();
+        assert_eq!(
+            command.body,
+            TitleCommandBody::Save {
+                base_revision: 2,
+                fields: vec![(field(1), text("Bea"))],
+            }
+        );
+    }
+
+    #[test]
+    fn abandon_all_unblocks_every_pending_title() {
+        let mut editor = new_editor(1, ["Ana", "x"]);
+        editor.set_input(title(), field(1), "Bea").unwrap();
+        let command = editor.request(title(), TitleOperation::Save).unwrap();
+        assert_eq!(editor.abandon_all(), 1);
+        assert_eq!(editor.abandon_all(), 0);
+        assert!(editor.presentation(title()).unwrap().dirty);
+        assert_eq!(editor.check(title(), TitleOperation::Save), Ok(()));
+        assert_eq!(
+            editor.apply_reply(TitleReply::Conflict {
+                request: command.request,
+                current: snapshot(1, ["Ana", "x"]),
+            }),
+            Err(UnexpectedReply {
+                request: command.request
+            })
+        );
     }
 }

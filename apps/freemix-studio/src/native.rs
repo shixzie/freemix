@@ -330,6 +330,8 @@ impl StudioApp {
         }
         let worker = self.worker.take().expect("worker handle was just checked");
         let failed = worker.join().is_err();
+        // Nothing will answer the title commands it was pursuing.
+        self.shell.abandon_title_requests();
         if !self.shutdown_sent {
             reconcile_finished_worker(&mut self.state, &mut self.updates, failed);
         }

@@ -102,6 +102,11 @@ impl TitlesPanel {
         }
     }
 
+    /// Unblocks every title awaiting an answer from a worker that is gone.
+    pub(crate) fn abandon_all(&mut self) {
+        self.editor.abandon_all();
+    }
+
     /// Updates access from the connection and observes the replicated
     /// titles. Without synchronized state the drafts are kept as they are.
     pub(crate) fn sync(&mut self, state: &StudioUiState) {
@@ -635,7 +640,14 @@ pub(crate) fn title_air_badge(
             .desired_overlays
             .iter()
             .any(|overlay| overlay.active && overlay.source == Some(title));
+    let realized_manual = match view.switcher.realized_manual_transition {
+        fm_ui_model::ManualTransitionStatus::Active(transition) => {
+            transition.from == title || transition.to == title
+        }
+        fm_ui_model::ManualTransitionStatus::Inactive => false,
+    };
     let realized_shown = view.switcher.realized.program == title
+        || realized_manual
         || view.realized_overlays.iter().any(|overlay| {
             overlay.source == Some(title) && (overlay.active || overlay.opacity > 0)
         });
@@ -730,6 +742,7 @@ pub(crate) fn blocked_reason(
         TitleBlocked::Pending => Msg::TitleBlockedPending.en(),
         TitleBlocked::Stale => Msg::TitleBlockedStale.en(),
         TitleBlocked::InvalidDraft => Msg::TitleBlockedInvalid.en(),
+        TitleBlocked::ContentTooLarge => Msg::TitleRejTooLarge.en(),
         TitleBlocked::NotPreviewed => Msg::TitleBlockedNotPreviewed.en(),
         TitleBlocked::NoChanges => Msg::TitleBlockedNoChanges.en(),
         TitleBlocked::OnAir => Msg::TitleBlockedOnAir.en(),
@@ -1616,6 +1629,78 @@ mod tests {
             location_text(Locale::ENGLISH, TitleLocation::Program),
             "on Program"
         );
+    }
+
+    #[test]
+    fn a_realized_manual_transition_still_showing_the_title_reads_clearing() {
+        let title = input(TITLE);
+        let mut view = model(overlays(), overlays()).view().unwrap();
+        // The desired T-bar toward the title was cancelled, but the realized
+        // mix still shows it.
+        view.switcher.realized_manual_transition =
+            fm_ui_model::ManualTransitionStatus::Active(fm_ui_model::ActiveManualTransition {
+                kind: fm_protocol::ManualTransitionKind::Fade,
+                from: input(1),
+                to: title,
+                interval_start: fm_protocol::ManualTransitionPosition::START,
+                position: fm_protocol::ManualTransitionPosition::new(5_000).unwrap(),
+            });
+        assert_eq!(
+            title_air_badge(Some(&view), title, false),
+            TitleAirBadge::Clearing
+        );
+        assert_eq!(
+            title_air_badge(Some(&view), input(2), false),
+            TitleAirBadge::Off
+        );
+    }
+
+    #[test]
+    fn sync_follows_an_authority_restarted_at_a_lower_field_revision() {
+        let model = model(overlays(), overlays());
+        let state = ready_state(&model, true, true);
+        let mut panel = synced(&state);
+        // Before the restart this console saw the title at revision 5.
+        let mut newer = TitleSnapshot::from_state(model.state().unwrap(), input(TITLE)).unwrap();
+        newer.revision = 5;
+        newer.fields[0].value = TitleFieldValue::Text("Lost".into());
+        panel.editor_mut().observe(newer).unwrap();
+        // The restarted daemon reports the saved revision 2 again.
+        panel.sync(&state);
+        let presentation = panel.editor().presentation(input(TITLE)).unwrap();
+        assert_eq!(presentation.live_revision, 2);
+        assert_eq!(presentation.base_revision, 2);
+        assert_eq!(presentation.fields[0].input, "Ana");
+        panel
+            .editor_mut()
+            .set_input(input(TITLE), field(1), "Bea")
+            .unwrap();
+        let command = panel
+            .editor_mut()
+            .request(input(TITLE), TitleOperation::Save)
+            .unwrap();
+        assert!(matches!(
+            command.body,
+            TitleCommandBody::Save {
+                base_revision: 2,
+                ..
+            }
+        ));
+        // A stopped worker answers nothing: its pending titles unblock.
+        let mut shell = StudioShell {
+            titles: panel,
+            ..StudioShell::default()
+        };
+        shell.abandon_title_requests();
+        assert_eq!(blocked(&shell.titles, TitleOperation::Save), Ok(()));
+    }
+
+    #[test]
+    fn content_over_the_title_bound_names_the_reason() {
+        let state = StudioUiState::new(StudioConnectionStatus::Ready);
+        let reason = blocked_reason(TitleBlocked::ContentTooLarge, TitleOperation::Save, &state);
+        assert_eq!(reason, Msg::TitleRejTooLarge.en());
+        assert_ne!(ES.tr(reason), reason);
     }
 
     #[test]
