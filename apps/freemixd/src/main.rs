@@ -1897,6 +1897,7 @@ struct RecorderSession {
     name: String,
     status: recording_session::SessionStatus,
     failover: recording_session::FailoverWatch,
+    remaining: recording_session::RemainingTimeWatch,
 }
 
 /// A started recorder and the session it writes into.
@@ -1935,6 +1936,7 @@ fn start_session_recorder(
                 name: status.name().to_owned(),
                 status,
                 failover: recording_session::FailoverWatch::default(),
+                remaining: recording_session::RemainingTimeWatch::default(),
             },
         }),
         Err(error) => {
@@ -2359,15 +2361,24 @@ impl NativeProgramRecorder {
         }
     }
 
-    /// Reports a directory the session just failed over from. The session
-    /// keeps recording on the next usable directory, so this is a notice, not
-    /// a recorder failure.
+    /// Reports a directory the session just failed over from or returned
+    /// to, and remaining-recording-time threshold crossings. The session
+    /// keeps recording on the next usable directory, so these are notices,
+    /// not recorder failures.
     fn report_failover(&mut self) {
         if let Some(session) = &mut self.session
             && let Some(record) =
                 session
                     .failover
                     .observe(self.slot, &session.name, &session.status.get())
+        {
+            eprintln!("{record}");
+        }
+        if let Some(session) = &mut self.session
+            && let Some(record) =
+                session
+                    .remaining
+                    .observe(self.slot, &session.status, Instant::now())
         {
             eprintln!("{record}");
         }

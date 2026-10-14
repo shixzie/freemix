@@ -48,17 +48,18 @@ pub use resilient_wav::{
     recover_wav_session,
 };
 pub use session::{
-    FailureDecision, FailureKind, FailureOp, FileStorage, MAX_SESSION_ERRORS,
-    MAX_SESSION_NAME_BYTES, MAX_SESSION_ROOTS, MAX_SESSION_SEGMENTS, ManifestRead, OpenSegment,
-    RecordingSession, RecoveredSessionSegment, SESSION_MANIFEST_EXTENSION,
-    SESSION_SEGMENT_EXTENSION, SESSION_WAV_SEGMENT_EXTENSION, SegmentEntry, SegmentFormat,
-    SegmentOutcome, SegmentSink, SegmentState, SegmentStorage, SessionConfig, SessionError,
-    SessionErrorRecord, SessionManifest, SessionRecovery, SessionSnapshot, SessionState,
-    SpaceProbe, UnknownSpace, recover_session,
+    DEFAULT_SPACE_RESTORE_INTERVAL, DEFAULT_SPACE_RESTORE_MARGIN_BYTES, FailureDecision,
+    FailureKind, FailureOp, FileStorage, MAX_SESSION_ERRORS, MAX_SESSION_NAME_BYTES,
+    MAX_SESSION_ROOTS, MAX_SESSION_SEGMENTS, ManifestRead, OpenSegment, RecordingSession,
+    RecoveredSessionSegment, SESSION_MANIFEST_EXTENSION, SESSION_SEGMENT_EXTENSION,
+    SESSION_WAV_SEGMENT_EXTENSION, SegmentEntry, SegmentFormat, SegmentOutcome, SegmentSink,
+    SegmentState, SegmentStorage, SessionConfig, SessionError, SessionErrorRecord, SessionManifest,
+    SessionRecovery, SessionSnapshot, SessionState, SpaceProbe, UnknownSpace, recover_session,
 };
 pub use space::{
-    RootPreflight, SpaceEstimate, SpaceLevel, SpaceMonitor, SpacePreflight, SpaceThresholds,
-    SpaceTransition, estimate_recording_space, observed_bitrate, preflight_recording_space,
+    MAX_REMAINING_THRESHOLDS, RemainingTimeAlarm, RemainingTimeTransition, RootPreflight,
+    SpaceEstimate, SpaceLevel, SpaceMonitor, SpacePreflight, SpaceThresholds, SpaceTransition,
+    estimate_recording_space, observed_bitrate, preflight_recording_space,
 };
 pub use track_map::{
     BusInventory, MAX_BUS_CHANNELS, MAX_INVENTORY_BUSES, MAX_RECORDER_CHANNELS,

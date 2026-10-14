@@ -449,6 +449,11 @@ impl<S: SegmentStorage> ResilientWavWriter<S> {
                     if first {
                         self.session.mark_healthy();
                     }
+                    // A preferred root re-enabled after running out of space
+                    // takes the next segment.
+                    if self.session.poll_space_restore() {
+                        self.rotate_requested = true;
+                    }
                     return Ok(());
                 }
                 Err(error) => {
@@ -748,8 +753,9 @@ impl WavSessionRecovery {
 ///
 /// # Errors
 ///
-/// Returns [`SessionError::InvalidConfig`] for a non-WAV session, and an I/O
-/// error when a root directory listing fails for a reason other than the
+/// Returns [`SessionError::InvalidConfig`] for a non-WAV session,
+/// [`SessionError::Locked`] while a live session or another recovery of the
+/// same name holds a root, and an I/O error when a root directory listing fails for a reason other than the
 /// directory being absent.
 pub fn recover_wav_session(config: &SessionConfig) -> Result<WavSessionRecovery, SessionError> {
     if config.segment_format() != SegmentFormat::Wav {
@@ -757,6 +763,8 @@ pub fn recover_wav_session(config: &SessionConfig) -> Result<WavSessionRecovery,
             "recover_wav_session needs a WAV session",
         ));
     }
+    // Held until the rewritten manifest is in place.
+    let _locks = crate::session::lock_session(config)?;
     let scan = scan_session(config, |path, recorded| {
         match stat_segment(path, recorded) {
             Ok(()) => {}

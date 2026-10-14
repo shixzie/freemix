@@ -1885,11 +1885,24 @@ The `--record-wav` sidecar now streams from FFmpeg into the daemon and is
 written by a resilient WAV writer in its own session beside the video: it
 fails over to the fallback root with no lost audio, patches RIFF sizes on
 close, and startup repairs a sidecar a crash left open.
-Remaining gaps: recovery has no
-cross-process lock, the fallback is refused with fullscreen output, runtime
-remaining-time warnings are not wired, roots disabled for space stay disabled; repaired files are not re-finalized; corrupt
-mid-file fragments end recovery; and only fragmented MP4 is handled. `OR-003`
-remains planned.
+A live session and a running recovery hold an advisory lock file per root
+(`.<manifest>.lock`), so a second session or recovery of the same name, in
+this or another process, is refused with a typed `Locked` error, and daemon
+startup recovery reports a session another daemon still records as
+`status=locked` without touching it. A root disabled for lack of space is
+probed while recording and re-enabled only once it reports the minimum plus a
+margin, and the margin more than when it was disabled, and takes a probe
+write; the writers then rotate back to it, `FREEMIXD_RECORDER_RESTORED`
+reports the return, and read-only, missing, or forbidden roots are never
+re-enabled. Native `freemixd` samples the active directory every five seconds
+and emits a hysteretic `FREEMIXD_RECORDER_REMAINING` record when estimated
+remaining time crosses 30, 10, or 2 minutes and when it clears.
+Remaining gaps: the fallback is refused with fullscreen output; the
+remaining-time thresholds are fixed and reach no protocol or UI view; no
+daemon test runs two `freemixd` processes against one directory (the lock is
+proven across processes in `fm-record`); repaired files are not
+re-finalized; corrupt mid-file fragments end recovery; and only fragmented MP4
+is handled. `OR-003` remains planned.
 
 
 Exit: a remote-controlled headless production can stream and record

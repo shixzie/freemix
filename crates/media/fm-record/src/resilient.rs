@@ -16,6 +16,11 @@
 //! session reports [`SessionError::Exhausted`] instead of stopping silently
 //! once none does.
 //!
+//! After a fragment lands, the writer lets the session probe roots it
+//! disabled for lack of space ([`RecordingSession::poll_space_restore`]); when
+//! a preferred root has room again, the next fragment starts a new segment
+//! there.
+//!
 //! The source stream's trailing `mfra` index is dropped: its absolute offsets
 //! describe the original stream, not the re-homed segment files.
 
@@ -396,6 +401,11 @@ impl<S: SegmentStorage> ResilientFmp4Writer<S> {
                     self.session.note_progress(committed);
                     if first_success {
                         self.session.mark_healthy();
+                    }
+                    // A preferred root re-enabled after running out of space
+                    // takes the next segment.
+                    if self.session.poll_space_restore() {
+                        self.rotate_requested = true;
                     }
                     return Ok(());
                 }

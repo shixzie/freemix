@@ -23,10 +23,10 @@ use std::{
 
 use fm_record::{
     FailureDecision, FailureKind, FailureOp, FileStorage, Fmp4Integrity, Fmp4Splitter, Fmp4Unit,
-    ManifestRead, RecordingSession, ResilientFmp4Writer, ResilientWriterConfig, SegmentOutcome,
-    SegmentSink, SegmentState, SegmentStorage, SessionConfig, SessionError, SessionManifest,
-    SessionState, SpaceProbe, SplitError, UnknownSpace, WriterError, recover_session,
-    repair_fmp4_file, scan_fmp4, scan_fmp4_file,
+    ManifestRead, RecordingSession, ResilientFmp4Writer, ResilientWriterConfig, SegmentFormat,
+    SegmentOutcome, SegmentSink, SegmentState, SegmentStorage, SessionConfig, SessionError,
+    SessionManifest, SessionState, SpaceProbe, SplitError, UnknownSpace, WriterError,
+    recover_session, repair_fmp4_file, scan_fmp4, scan_fmp4_file,
 };
 
 const CHILD_ROOT: &str = "FM_RECORD_FMP4_CRASH_CHILD_ROOT";
@@ -542,6 +542,8 @@ struct RootFaults {
     create_error: Option<io::ErrorKind>,
     /// Reported free space; `None` reports unknown.
     available: Option<u64>,
+    /// Fail the write probe that precedes re-enabling a root.
+    probe_error: Option<io::ErrorKind>,
 }
 
 struct FaultyStorage {
@@ -569,6 +571,17 @@ impl FaultyStorage {
                 })
                 .collect(),
         }
+    }
+
+    /// Changes one root's injected faults mid-session.
+    fn set(&self, directory: &Path, change: impl FnOnce(&mut RootFaults)) {
+        change(
+            &mut self
+                .state(directory)
+                .expect("configured root")
+                .faults
+                .borrow_mut(),
+        );
     }
 
     fn state(&self, directory: &Path) -> Option<&Rc<RootState>> {
@@ -633,6 +646,16 @@ impl SegmentSink for FaultySink {
 
 impl SegmentStorage for FaultyStorage {
     type Sink = FaultySink;
+
+    fn probe_writable(&mut self, directory: &Path) -> io::Result<()> {
+        match self
+            .state(directory)
+            .and_then(|state| state.faults.borrow().probe_error)
+        {
+            Some(kind) => Err(io::Error::from(kind)),
+            None => Ok(()),
+        }
+    }
 
     fn create_segment(&mut self, path: &Path) -> io::Result<FaultySink> {
         let root = Rc::clone(
@@ -992,7 +1015,9 @@ fn exhausting_every_root_fails_loudly_and_persists_the_failure() {
     assert_eq!(manifest.errors.len(), 2);
     assert_eq!(manifest.errors[0].kind, FailureKind::StorageFull);
 
-    // What reached disk before the failure is still recoverable.
+    // What reached disk before the failure is still recoverable once the
+    // failed session is gone and its lock released.
+    drop(writer);
     let recovery = recover_session(&config).unwrap();
     assert_eq!(recovery.previous_state(), Some(SessionState::Failed));
     assert_eq!(recovery.recovered_duration_nanos(), SECOND);
@@ -1084,6 +1109,13 @@ fn low_free_space_skips_a_root_at_start_and_existing_sessions_are_refused() {
     assert_eq!((opened.root, opened.index), (1, 1));
     assert!(opened.path.starts_with(&fallback));
 
+    // The live session holds the name; once it is gone its manifest still
+    // refuses a second start.
+    assert!(matches!(
+        RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)),
+        Err(SessionError::Locked { root: 0 })
+    ));
+    drop(session);
     assert!(matches!(
         RecordingSession::start(config, FileStorage::new(UnknownSpace)),
         Err(SessionError::ManifestExists { root: 0 })
@@ -1103,6 +1135,264 @@ fn low_free_space_skips_a_root_at_start_and_existing_sessions_are_refused() {
         RecordingSession::start(config, all_low),
         Err(SessionError::NoUsableRoot)
     ));
+}
+
+#[test]
+fn a_root_disabled_for_space_returns_once_space_clears_the_margin_and_a_probe_lands() {
+    const MIB: u64 = 1 << 20;
+    let temp = TempDirectory::new();
+    let (primary, fallback) = (temp.join("primary"), temp.join("fallback"));
+    let init_len = init_segment(&TRACKS, true).len() as u64;
+    let fragment_len = fragment(1).len() as u64;
+    let storage = FaultyStorage::new(&[
+        (
+            primary.clone(),
+            RootFaults {
+                // Full half-way through the second fragment.
+                capacity: Some(init_len + fragment_len + fragment_len / 2),
+                available: Some(2 * MIB),
+                ..RootFaults::default()
+            },
+        ),
+        (
+            fallback.clone(),
+            RootFaults {
+                available: Some(64 * MIB),
+                ..RootFaults::default()
+            },
+        ),
+    ]);
+    let config = SessionConfig::new("show", &primary)
+        .unwrap()
+        .with_fallback(&fallback)
+        .unwrap()
+        .with_min_free_bytes(MIB)
+        .with_space_restore(4 * MIB, Duration::ZERO);
+    assert_eq!(config.space_restore_bytes(), 5 * MIB);
+    let session = RecordingSession::start(config.clone(), storage).unwrap();
+    let mut writer = ResilientFmp4Writer::new(session, writer_config(None));
+    let (bytes, boundaries) = stream(10);
+    let span = |index: usize| {
+        let start = usize::try_from(boundaries[index]).unwrap();
+        let end = usize::try_from(boundaries[index + 1]).unwrap();
+        &bytes[start..end]
+    };
+    // Init plus fragments 1 and 2: the primary fills and the session moves.
+    writer
+        .push(&bytes[..usize::try_from(boundaries[0]).unwrap()])
+        .unwrap();
+    writer.push(span(0)).unwrap();
+    writer.push(span(1)).unwrap();
+    assert_eq!(writer.session().snapshot().active_root, 1);
+    assert_eq!(writer.session().snapshot().disabled_roots, [0]);
+    // The primary still reports the 2 MiB it had when it filled (a quota or
+    // a free-space figure that does not reflect the failure): that is no
+    // recovery, so it is not probed back in.
+    writer.push(span(2)).unwrap();
+    assert_eq!(writer.session().snapshot().disabled_roots, [0]);
+
+    // Space grew, but stays inside the hysteresis margin over the 2 MiB it
+    // had when it was disabled.
+    writer.session_mut().storage_mut().set(&primary, |faults| {
+        faults.capacity = None;
+        faults.available = Some(6 * MIB - 1);
+    });
+    writer.push(span(3)).unwrap();
+    assert_eq!(writer.session().snapshot().disabled_roots, [0]);
+    // Past the margin, but the probe write still fails: stays disabled.
+    writer.session_mut().storage_mut().set(&primary, |faults| {
+        faults.available = Some(6 * MIB);
+        faults.probe_error = Some(io::ErrorKind::StorageFull);
+    });
+    writer.push(span(4)).unwrap();
+    assert_eq!(writer.session().snapshot().disabled_roots, [0]);
+    // Space and a probe write: re-enabled, and the next fragment rotates
+    // back to the primary.
+    writer
+        .session_mut()
+        .storage_mut()
+        .set(&primary, |faults| faults.probe_error = None);
+    writer.push(span(5)).unwrap();
+    let snapshot = writer.session().snapshot();
+    assert_eq!(snapshot.disabled_roots, Vec::<usize>::new());
+    assert_eq!(snapshot.active_root, 1, "the open segment stays put");
+    writer.push(span(6)).unwrap();
+    assert_eq!(writer.session().snapshot().active_root, 0);
+    writer.push(span(7)).unwrap();
+    writer.push(span(8)).unwrap();
+    writer.push(span(9)).unwrap();
+    let stats = writer.stats();
+    assert_eq!((stats.fragments_written, stats.failovers), (10, 1));
+    let snapshot = writer.finish().unwrap();
+    assert_eq!(snapshot.state, SessionState::Stopped);
+
+    let manifest = read_manifest(&primary.join("show.fmsession"));
+    let placement: Vec<_> = manifest
+        .segments
+        .iter()
+        .map(|segment| (segment.index, segment.root, segment.state))
+        .collect();
+    assert_eq!(
+        placement,
+        [
+            (1, 0, SegmentState::Failed),
+            (2, 1, SegmentState::Closed),
+            (3, 0, SegmentState::Closed),
+        ]
+    );
+    let back = scan_fmp4_file(&config.segment_path(0, 3).unwrap()).unwrap();
+    assert_eq!((back.first_sequence, back.fragments), (Some(7), 4));
+    let recovery = recover_session(&config).unwrap();
+    assert_eq!(recovery.recovered_duration_nanos(), 10 * SECOND);
+    assert_eq!(recovery.segments_with_unknown_loss(), 0);
+}
+
+#[test]
+fn file_storage_proves_a_real_directory_writable_before_re_enabling_it() {
+    let temp = TempDirectory::new();
+    let (primary, fallback) = (temp.join("primary"), temp.join("fallback"));
+    let free = Rc::new(Cell::new(10_u64));
+    let probe = {
+        let free = Rc::clone(&free);
+        move |path: &Path| -> io::Result<u64> {
+            Ok(if path.ends_with("primary") {
+                free.get()
+            } else {
+                1 << 40
+            })
+        }
+    };
+    let config = SessionConfig::new("show", &primary)
+        .unwrap()
+        .with_fallback(&fallback)
+        .unwrap()
+        .with_min_free_bytes(100)
+        .with_space_restore(50, Duration::ZERO);
+    let mut session = RecordingSession::start(config, FileStorage::new(probe)).unwrap();
+    assert_eq!(session.snapshot().active_root, 1);
+    assert!(!session.poll_space_restore());
+    // Disabled at 10 bytes: it needs the 150-byte restore floor.
+    free.set(149);
+    assert!(!session.poll_space_restore());
+    free.set(150);
+    assert!(session.poll_space_restore());
+    let opened = session.open_segment().unwrap();
+    assert_eq!(opened.root, 0);
+    let mut names: Vec<String> = fs::read_dir(&primary)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [".show.fmsession.lock", "show-0001.mp4", "show.fmsession"],
+        "the probe file is gone"
+    );
+}
+
+#[test]
+fn roots_disabled_for_anything_but_space_are_never_re_enabled() {
+    let temp = TempDirectory::new();
+    let (primary, fallback) = (temp.join("primary"), temp.join("fallback"));
+    let storage = FaultyStorage::new(&[
+        (
+            primary.clone(),
+            RootFaults {
+                create_error: Some(io::ErrorKind::ReadOnlyFilesystem),
+                available: Some(1 << 40),
+                ..RootFaults::default()
+            },
+        ),
+        (
+            fallback.clone(),
+            RootFaults {
+                available: Some(1 << 40),
+                ..RootFaults::default()
+            },
+        ),
+    ]);
+    let config = SessionConfig::new("show", &primary)
+        .unwrap()
+        .with_fallback(&fallback)
+        .unwrap()
+        .with_space_restore(0, Duration::ZERO);
+    let mut session = RecordingSession::start(config, storage).unwrap();
+    let opened = session.open_segment().unwrap();
+    assert_eq!(opened.root, 1);
+    // Even with the fault gone and plenty of space, a read-only root is not
+    // probed back in.
+    session
+        .storage_mut()
+        .set(&primary, |faults| faults.create_error = None);
+    assert!(!session.poll_space_restore());
+    session.close_segment(0).unwrap();
+    let next = session.open_segment().unwrap();
+    assert_eq!(next.root, 1);
+    assert_eq!(session.snapshot().disabled_roots, [0]);
+}
+
+#[test]
+fn a_live_session_locks_its_name_against_a_second_session_and_recovery() {
+    let temp = TempDirectory::new();
+    let (primary, fallback) = (temp.join("primary"), temp.join("fallback"));
+    let config = SessionConfig::new("show", &primary)
+        .unwrap()
+        .with_fallback(&fallback)
+        .unwrap();
+    let lock_file = config.lock_file_name();
+    assert_eq!(lock_file, ".show.fmsession.lock");
+    let mut first =
+        RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
+    assert!(primary.join(&lock_file).exists() && fallback.join(&lock_file).exists());
+    let mut opened = first.open_segment().unwrap();
+    Write::write_all(&mut opened.sink, b"not yet an mp4").unwrap();
+
+    // A second session or a recovery of the same name is refused while the
+    // first lives, and neither touches its files.
+    assert!(matches!(
+        RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)),
+        Err(SessionError::Locked { root: 0 })
+    ));
+    assert!(matches!(
+        recover_session(&config),
+        Err(SessionError::Locked { root: 0 })
+    ));
+    assert_eq!(
+        fs::metadata(&opened.path).unwrap().len(),
+        b"not yet an mp4".len() as u64
+    );
+    // Other names, and the WAV sidecar of the same name, are independent.
+    let other = SessionConfig::new("other", &primary)
+        .unwrap()
+        .with_fallback(&fallback)
+        .unwrap();
+    let other = RecordingSession::start(other, FileStorage::new(UnknownSpace)).unwrap();
+    let wav = config.clone().with_segment_format(SegmentFormat::Wav);
+    let wav = RecordingSession::start(wav, FileStorage::new(UnknownSpace)).unwrap();
+    drop((other, wav));
+
+    // The session "crashes": dropping it releases and removes its locks.
+    drop(opened);
+    drop(first);
+    assert!(!primary.join(&lock_file).exists());
+    // A lock held on the fallback alone, by another handle, still refuses.
+    let held = File::create(fallback.join(&lock_file)).unwrap();
+    held.try_lock().unwrap();
+    assert!(matches!(
+        recover_session(&config),
+        Err(SessionError::Locked { root: 1 })
+    ));
+    assert!(matches!(
+        RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)),
+        Err(SessionError::Locked { root: 1 })
+    ));
+    drop(held);
+
+    // Once nothing holds it, the crashed session recovers and its locks are
+    // gone again.
+    let recovery = recover_session(&config).unwrap();
+    assert_eq!(recovery.previous_state(), Some(SessionState::Recording));
+    assert!(!primary.join(&lock_file).exists());
 }
 
 #[test]
@@ -1406,11 +1696,21 @@ fn killed_writer_recovers_every_complete_fragment_and_reports_the_torn_one() {
         );
         thread::sleep(Duration::from_millis(10));
     }
+    // While the child process lives it holds the session's lock: neither a
+    // recovery nor a second session in this process may touch its files.
+    let config = SessionConfig::new("show", temp.join("recordings")).unwrap();
+    assert!(matches!(
+        recover_session(&config),
+        Err(SessionError::Locked { root: 0 })
+    ));
+    assert!(matches!(
+        RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)),
+        Err(SessionError::Locked { root: 0 })
+    ));
     let mut child = guard.0.take().unwrap();
     child.kill().unwrap();
     assert!(!child.wait().unwrap().success());
 
-    let config = SessionConfig::new("show", temp.join("recordings")).unwrap();
     let before = read_manifest(&temp.join("recordings/show.fmsession"));
     assert_eq!(before.state, SessionState::Recording);
     assert_eq!(before.segments[0].state, SegmentState::Open);

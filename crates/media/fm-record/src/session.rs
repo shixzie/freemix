@@ -22,12 +22,24 @@
 //! directory remains the session enters [`SessionState::Failed`] and every
 //! caller-facing operation reports [`SessionError::Exhausted`]; the session
 //! never stops silently. Errors are kept in a bounded, de-duplicated ring.
+//! A directory disabled only for lack of space is probed again while the
+//! session runs and re-enabled once its free space clears the minimum by a
+//! hysteresis margin and a probe file can be written, so a later segment can
+//! return to a preferred directory; read-only, missing, or forbidden
+//! directories stay disabled.
+//!
+//! A live session and a running recovery each hold an advisory, exclusive
+//! lock file, `.<manifest>.lock`, in every existing root. A second session or
+//! recovery of the same name over the same roots, in this or another process,
+//! is refused with [`SessionError::Locked`] instead of writing or truncating
+//! files the first one owns.
 
 use std::{
     fmt,
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -53,6 +65,13 @@ pub const MAX_SESSION_NAME_BYTES: usize = 64;
 const MAX_ATTEMPTS_PER_ROOT: u32 = 16;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MANIFEST_MAGIC: &str = "freemix-recording-session 1";
+/// Default free space, above the minimum, a root disabled for space needs
+/// before it is re-enabled.
+pub const DEFAULT_SPACE_RESTORE_MARGIN_BYTES: u64 = 256 * 1024 * 1024;
+/// Default spacing of free-space probes of roots disabled for space.
+pub const DEFAULT_SPACE_RESTORE_INTERVAL: Duration = Duration::from_secs(5);
+/// Bounded retries when a lock file is replaced between open and lock.
+const LOCK_ATTEMPTS: usize = 4;
 
 /// Container written into a session's segment files. It picks the segment
 /// extension, the manifest name, and the recovery scanner.
@@ -88,6 +107,8 @@ pub struct SessionConfig {
     min_free_bytes: u64,
     bare_first_segment: bool,
     format: SegmentFormat,
+    space_restore_margin_bytes: u64,
+    space_restore_interval: Duration,
 }
 
 impl SessionConfig {
@@ -118,6 +139,8 @@ impl SessionConfig {
             min_free_bytes: 0,
             bare_first_segment: false,
             format: SegmentFormat::Fmp4,
+            space_restore_margin_bytes: DEFAULT_SPACE_RESTORE_MARGIN_BYTES,
+            space_restore_interval: DEFAULT_SPACE_RESTORE_INTERVAL,
         })
     }
 
@@ -182,6 +205,32 @@ impl SessionConfig {
     pub fn with_min_free_bytes(mut self, bytes: u64) -> Self {
         self.min_free_bytes = bytes;
         self
+    }
+
+    /// Hysteresis for re-enabling a root disabled for lack of space: it is
+    /// re-enabled only once it reports at least the minimum free bytes plus
+    /// `margin_bytes`, and `margin_bytes` more than it reported when it was
+    /// disabled. It is probed at most once per `interval`
+    /// ([`Duration::ZERO`] probes on every check).
+    #[must_use]
+    pub fn with_space_restore(mut self, margin_bytes: u64, interval: Duration) -> Self {
+        self.space_restore_margin_bytes = margin_bytes;
+        self.space_restore_interval = interval;
+        self
+    }
+
+    /// Free bytes a root disabled for space must report to be re-enabled.
+    #[must_use]
+    pub fn space_restore_bytes(&self) -> u64 {
+        self.min_free_bytes
+            .saturating_add(self.space_restore_margin_bytes)
+    }
+
+    /// File name of the advisory lock file kept in every root:
+    /// `.<manifest>.lock`.
+    #[must_use]
+    pub fn lock_file_name(&self) -> String {
+        format!(".{}.lock", self.manifest_file_name())
     }
 
     /// Names segment 1 `<name>.mp4` instead of `<name>-0001.mp4`, so a
@@ -693,6 +742,11 @@ pub enum SessionError {
     ManifestExists {
         root: usize,
     },
+    /// Another live session or recovery, in this or another process, holds
+    /// the lock file of this session name in root `root`.
+    Locked {
+        root: usize,
+    },
     /// No configured root is usable at start.
     NoUsableRoot,
     /// Every root failed; the session is in [`SessionState::Failed`].
@@ -720,6 +774,10 @@ impl fmt::Display for SessionError {
                     "a session manifest already exists in root {root}"
                 )
             }
+            Self::Locked { root } => write!(
+                formatter,
+                "the session is locked by another recorder or recovery in root {root}"
+            ),
             Self::NoUsableRoot => formatter.write_str("no recording root is usable"),
             Self::Exhausted { last } => match last {
                 Some(record) => write!(
@@ -839,6 +897,121 @@ pub trait SegmentStorage: SpaceProbe {
     ///
     /// Any I/O error.
     fn create_segment(&mut self, path: &Path) -> io::Result<Self::Sink>;
+
+    /// Proves `directory` takes a small write before a root disabled for
+    /// space is re-enabled. The default creates, syncs, and removes a hidden
+    /// probe file.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O error; the root stays disabled.
+    fn probe_writable(&mut self, directory: &Path) -> io::Result<()> {
+        probe_directory_writable(directory)
+    }
+}
+
+/// Creates, syncs, and removes a hidden probe file in `directory`, named
+/// uniquely so concurrent probes never remove each other's file.
+fn probe_directory_writable(directory: &Path) -> io::Result<()> {
+    static PROBES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let probe = PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = directory.join(format!(
+        ".freemix-space-probe-{}-{probe}.tmp",
+        std::process::id()
+    ));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)?;
+        Write::write_all(&mut file, b"freemix")?;
+        file.sync_all()
+    })();
+    let removed = fs::remove_file(&path);
+    result?;
+    removed
+}
+
+/// One held advisory lock file. Dropping it removes the file (on Unix, where
+/// acquisition verifies the path still names the locked file) and releases
+/// the lock.
+#[derive(Debug)]
+pub(crate) struct RootLock {
+    path: PathBuf,
+    file: File,
+}
+
+impl Drop for RootLock {
+    fn drop(&mut self) {
+        // Unlink while still holding the lock, so a waiter that opened this
+        // file sees it replaced and retries on the new one.
+        #[cfg(unix)]
+        let _ = fs::remove_file(&self.path);
+        let _ = self.file.unlock();
+    }
+}
+
+/// The advisory locks a live session or a running recovery holds, one per
+/// existing root.
+pub(crate) type SessionLocks = Vec<RootLock>;
+
+/// Locks `config`'s session name in every existing root, failing with
+/// [`SessionError::Locked`] when any is held. A root that cannot hold a lock
+/// file (absent, read-only without one, or on a filesystem without locks)
+/// is skipped: nothing can record there either.
+pub(crate) fn lock_session(config: &SessionConfig) -> Result<SessionLocks, SessionError> {
+    let file_name = config.lock_file_name();
+    let mut locks = SessionLocks::new();
+    for (root, directory) in config.roots.iter().enumerate() {
+        if let Some(lock) = lock_root(&directory.join(&file_name), root)? {
+            locks.push(lock);
+        }
+    }
+    Ok(locks)
+}
+
+fn lock_root(path: &Path, root: usize) -> Result<Option<RootLock>, SessionError> {
+    for _ in 0..LOCK_ATTEMPTS {
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .or_else(|_| File::open(path));
+        let Ok(file) = opened else {
+            return Ok(None);
+        };
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(fs::TryLockError::WouldBlock) => return Err(SessionError::Locked { root }),
+            Err(fs::TryLockError::Error(_)) => return Ok(None),
+        }
+        if names_same_file(&file, path) {
+            return Ok(Some(RootLock {
+                path: path.to_path_buf(),
+                file,
+            }));
+        }
+        // The holder removed or replaced the file between our open and lock.
+        let _ = file.unlock();
+    }
+    Err(SessionError::Locked { root })
+}
+
+#[cfg(unix)]
+fn names_same_file(file: &File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    match (file.metadata(), fs::metadata(path)) {
+        (Ok(held), Ok(named)) => held.dev() == named.dev() && held.ino() == named.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn names_same_file(_file: &File, _path: &Path) -> bool {
+    true
 }
 
 /// Filesystem segment storage. Segments are created exclusively and their
@@ -932,21 +1105,44 @@ pub struct RecordingSession<S> {
     active_root: usize,
     root_failures: Vec<u32>,
     root_disabled: Vec<bool>,
+    /// For a root disabled only for lack of space, the free bytes it must
+    /// report before a later probe re-enables it.
+    root_space_restore: Vec<Option<u64>>,
+    /// When roots disabled for space were last probed.
+    space_checked_at: Option<Instant>,
+    /// A root preferred over the active one was re-enabled; the next
+    /// segment re-selects its root.
+    reselect_root: bool,
     open: Option<usize>,
     next_index: u32,
     next_error_sequence: u64,
     manifest_stale: bool,
+    _locks: SessionLocks,
 }
 
 impl<S: SegmentStorage> RecordingSession<S> {
-    /// Starts a session: creates missing root directories, selects the first
+    /// Starts a session: creates missing root directories, locks the session
+    /// name in every root for the session's lifetime, selects the first
     /// usable root, and writes the first manifest generation.
     ///
     /// # Errors
     ///
-    /// Refuses when a manifest of the same name exists in any root, when no
-    /// root is usable, or when the manifest reaches no root.
+    /// Refuses with [`SessionError::Locked`] when another live session or
+    /// recovery holds the name, and refuses when a manifest of the same name
+    /// exists in any root, when no root is usable, or when the manifest
+    /// reaches no root.
     pub fn start(config: SessionConfig, storage: S) -> Result<Self, SessionError> {
+        let directory_errors: Vec<(usize, io::Error)> = config
+            .roots
+            .iter()
+            .enumerate()
+            .filter_map(|(root, directory)| {
+                fs::create_dir_all(directory)
+                    .err()
+                    .map(|error| (root, error))
+            })
+            .collect();
+        let locks = lock_session(&config)?;
         let manifest_name = config.manifest_file_name();
         for (root, directory) in config.roots.iter().enumerate() {
             let path = directory.join(&manifest_name);
@@ -972,16 +1168,18 @@ impl<S: SegmentStorage> RecordingSession<S> {
             active_root: 0,
             root_failures: vec![0; roots],
             root_disabled: vec![false; roots],
+            root_space_restore: vec![None; roots],
+            space_checked_at: None,
+            reselect_root: false,
             open: None,
             next_index: 1,
             next_error_sequence: 1,
             manifest_stale: false,
+            _locks: locks,
         };
-        for root in 0..roots {
-            if let Err(error) = fs::create_dir_all(&session.config.roots[root]) {
-                session.push_error(None, root, FailureOp::CreateDirectory, &error);
-                session.root_disabled[root] = true;
-            }
+        for (root, error) in directory_errors {
+            session.push_error(None, root, FailureOp::CreateDirectory, &error);
+            session.root_disabled[root] = true;
         }
         session.active_root = session
             .first_usable_root()
@@ -1038,6 +1236,12 @@ impl<S: SegmentStorage> RecordingSession<S> {
         self.ensure_recording()?;
         if self.open.is_some() {
             return Err(SessionError::InvalidState("a segment is already open"));
+        }
+        self.poll_space_restore();
+        if std::mem::take(&mut self.reselect_root)
+            && let Some(root) = self.first_usable_root()
+        {
+            self.active_root = root;
         }
         let budget = self.config.roots.len() * (self.config.attempts_per_root as usize + 1) + 1;
         for _ in 0..budget {
@@ -1114,6 +1318,51 @@ impl<S: SegmentStorage> RecordingSession<S> {
             .open
             .map(|position| self.manifest.segments[position].index);
         self.push_error(segment, self.active_root, op, error);
+    }
+
+    /// Probes roots disabled for lack of space, at most once per configured
+    /// interval, and re-enables each one that takes a probe write and reports
+    /// at least [`SessionConfig::space_restore_bytes`] free and at least the
+    /// margin more than it reported when it was disabled. The second bound
+    /// keeps a root whose free-space figure does not reflect the failure (a
+    /// quota, or a probe that lies) from flapping back in. Roots disabled for
+    /// any other reason are never re-enabled. Returns
+    /// `true` when a root preferred over the active one came back: the
+    /// caller should rotate so the next segment returns to it (the next
+    /// [`Self::open_segment`] selects it).
+    pub fn poll_space_restore(&mut self) -> bool {
+        if self.root_space_restore.iter().all(Option::is_none)
+            || self.manifest.state != SessionState::Recording
+        {
+            return false;
+        }
+        let now = Instant::now();
+        if self.space_checked_at.is_some_and(|last| {
+            now.saturating_duration_since(last) < self.config.space_restore_interval
+        }) {
+            return false;
+        }
+        self.space_checked_at = Some(now);
+        let mut preferred = false;
+        for root in 0..self.config.roots.len() {
+            let Some(required) = self.root_space_restore[root] else {
+                continue;
+            };
+            let directory = &self.config.roots[root];
+            let restored = self
+                .storage
+                .available_bytes(directory)
+                .is_ok_and(|available| available >= required)
+                && self.storage.probe_writable(directory).is_ok();
+            if restored {
+                self.root_disabled[root] = false;
+                self.root_space_restore[root] = None;
+                self.root_failures[root] = 0;
+                preferred |= root < self.active_root;
+            }
+        }
+        self.reselect_root |= preferred;
+        preferred
     }
 
     /// Resets the active root's consecutive-failure count after data landed
@@ -1197,6 +1446,13 @@ impl<S: SegmentStorage> RecordingSession<S> {
             return FailureDecision::Retry { root };
         }
         self.root_disabled[root] = true;
+        self.root_space_restore[root] =
+            if matches!(kind, FailureKind::StorageFull | FailureKind::QuotaExceeded) {
+                let available = self.storage.available_bytes(&self.config.roots[root]).ok();
+                Some(self.space_restore_requirement(available))
+            } else {
+                None
+            };
         if let Some(next) = self.first_usable_root() {
             self.active_root = next;
             FailureDecision::Fallback {
@@ -1207,6 +1463,15 @@ impl<S: SegmentStorage> RecordingSession<S> {
             self.manifest.state = SessionState::Failed;
             FailureDecision::Exhausted
         }
+    }
+
+    /// Free bytes a root disabled for space with `available` free must report
+    /// before it is re-enabled.
+    fn space_restore_requirement(&self, available: Option<u64>) -> u64 {
+        let grown = available.map_or(0, |available| {
+            available.saturating_add(self.config.space_restore_margin_bytes)
+        });
+        self.config.space_restore_bytes().max(grown)
     }
 
     fn first_usable_root(&mut self) -> Option<usize> {
@@ -1223,6 +1488,8 @@ impl<S: SegmentStorage> RecordingSession<S> {
                         &io::Error::from(io::ErrorKind::StorageFull),
                     );
                     self.root_disabled[root] = true;
+                    self.root_space_restore[root] =
+                        Some(self.space_restore_requirement(Some(available)));
                 }
                 _ => return Some(root),
             }
@@ -1492,8 +1759,9 @@ impl SessionRecovery {
 ///
 /// # Errors
 ///
-/// Returns an error only when a root directory listing fails for a reason
-/// other than the directory being absent, or
+/// Returns [`SessionError::Locked`] while a live session or another
+/// recovery of the same name holds a root, an error when a root directory
+/// listing fails for a reason other than the directory being absent, or
 /// [`SessionError::InvalidConfig`] for a [`SegmentFormat::Wav`] session,
 /// which [`recover_wav_session`](crate::recover_wav_session) recovers.
 pub fn recover_session(config: &SessionConfig) -> Result<SessionRecovery, SessionError> {
@@ -1502,6 +1770,8 @@ pub fn recover_session(config: &SessionConfig) -> Result<SessionRecovery, Sessio
             "WAV sessions are recovered by recover_wav_session",
         ));
     }
+    // Held until the rewritten manifest is in place.
+    let _locks = lock_session(config)?;
     let scan = scan_session(config, |path, recorded| {
         match stat_segment(path, recorded) {
             Ok(()) => repair_segment(path),

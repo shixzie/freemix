@@ -17,6 +17,14 @@
 //! fallback, and free-space policy as the video session. Its records name the
 //! session `<stem>.wav`.
 //!
+//! While a segment records, [`RemainingTimeWatch`] samples the active
+//! directory's free space every few seconds and reports a
+//! `FREEMIXD_RECORDER_REMAINING` record each time the estimated remaining
+//! recording time crosses 30, 10, or 2 minutes, hysteretically, and again
+//! when it clears. Every live session holds an advisory lock on its name, so
+//! startup recovery reports a session another daemon is still recording as
+//! `status=locked` and leaves its files alone.
+//!
 //! Every record this module renders is path-free apart from the session name,
 //! which is the operator's own file stem.
 
@@ -25,7 +33,7 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use fm_codec_ffmpeg::record::{
@@ -33,12 +41,12 @@ use fm_codec_ffmpeg::record::{
     ResilientWavOutputState, ResilientWavOutputStatus,
 };
 use fm_record::{
-    FileStorage, MAX_SESSION_NAME_BYTES, RecordingSession, ResilientWavConfig,
-    ResilientWriterConfig, SESSION_MANIFEST_EXTENSION, SESSION_WAV_SEGMENT_EXTENSION,
-    SegmentFormat, SegmentOutcome, SessionConfig, SessionErrorRecord, SessionManifest,
-    SessionRecovery, SessionSnapshot, SessionState, SpaceLevel, SpacePreflight, SpaceThresholds,
-    WavSegmentOutcome, WavSessionRecovery, preflight_recording_space, recover_session,
-    recover_wav_session,
+    FileStorage, MAX_SESSION_NAME_BYTES, RecordingSession, RemainingTimeAlarm,
+    RemainingTimeTransition, ResilientWavConfig, ResilientWriterConfig, SESSION_MANIFEST_EXTENSION,
+    SESSION_WAV_SEGMENT_EXTENSION, SegmentFormat, SegmentOutcome, SessionConfig, SessionError,
+    SessionErrorRecord, SessionManifest, SessionRecovery, SessionSnapshot, SessionState,
+    SpaceLevel, SpacePreflight, SpaceThresholds, WavSegmentOutcome, WavSessionRecovery,
+    estimate_recording_space, preflight_recording_space, recover_session, recover_wav_session,
 };
 
 use crate::disk;
@@ -54,6 +62,16 @@ const PREFLIGHT_MINIMUM: Duration = Duration::from_mins(5);
 const DEFAULT_AUDIO_BITS_PER_CHANNEL: u64 = 64_000;
 /// libx264 bits per pixel assumed when the slot keeps the encoder default.
 const DEFAULT_VIDEO_MILLIBITS_PER_PIXEL: u64 = 150;
+/// Remaining recording times whose crossing is reported while recording.
+const REMAINING_THRESHOLDS: [Duration; 3] = [
+    Duration::from_mins(30),
+    Duration::from_mins(10),
+    Duration::from_mins(2),
+];
+/// How far above a crossed threshold remaining time must climb to clear it.
+const REMAINING_CLEAR_MARGIN: Duration = Duration::from_mins(1);
+/// Spacing of the free-space samples behind remaining-time records.
+const REMAINING_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Segment storage used for every native recording session: plain files,
 /// with free space measured through the daemon's own probe.
@@ -363,6 +381,7 @@ pub(crate) fn open(planned: PlannedSession) -> Result<OpenedSession, String> {
         config,
         video: output.status(),
         wav: None,
+        bitrate_bits_per_second,
     };
     let Some(wav_config) = wav else {
         return Ok(OpenedSession {
@@ -407,6 +426,8 @@ pub(crate) struct SessionStatus {
     config: SessionConfig,
     video: ResilientOutputStatus,
     wav: Option<WavStatus>,
+    /// Estimated combined video and WAV bitrate.
+    bitrate_bits_per_second: u64,
 }
 
 /// A consistent copy of each session's latest state.
@@ -539,7 +560,18 @@ fn failover_record(
     seen: &mut usize,
 ) -> Option<String> {
     let disabled = snapshot.disabled_roots.len();
-    if disabled <= *seen {
+    if disabled < *seen {
+        // A directory disabled for space had room again and was re-enabled.
+        *seen = disabled;
+        return Some(format!(
+            "FREEMIXD_RECORDER_RESTORED\tv=1\tslot={slot}\tsession={}\tstate={:?}\tactive_root={}\tdisabled_roots={}",
+            field(name),
+            snapshot.state,
+            snapshot.active_root,
+            root_list(&snapshot.disabled_roots),
+        ));
+    }
+    if disabled == *seen {
         return None;
     }
     *seen = disabled;
@@ -551,6 +583,105 @@ fn failover_record(
         root_list(&snapshot.disabled_roots),
         error_field(snapshot.errors.last()),
     ))
+}
+
+/// Hysteretic remaining-recording-time warnings for one open session.
+#[derive(Debug)]
+pub(crate) struct RemainingTimeWatch {
+    alarm: RemainingTimeAlarm,
+    sampled_at: Option<Instant>,
+}
+
+impl Default for RemainingTimeWatch {
+    fn default() -> Self {
+        Self {
+            alarm: RemainingTimeAlarm::new(&REMAINING_THRESHOLDS, REMAINING_CLEAR_MARGIN),
+            sampled_at: None,
+        }
+    }
+}
+
+impl RemainingTimeWatch {
+    /// Samples the active directory's free space at most every
+    /// [`REMAINING_SAMPLE_INTERVAL`] and returns a
+    /// `FREEMIXD_RECORDER_REMAINING` record when the estimated remaining time
+    /// crosses a threshold. A failed free-space query is skipped.
+    pub(crate) fn observe(
+        &mut self,
+        slot: usize,
+        status: &SessionStatus,
+        now: Instant,
+    ) -> Option<String> {
+        if self
+            .sampled_at
+            .is_some_and(|last| now.saturating_duration_since(last) < REMAINING_SAMPLE_INTERVAL)
+        {
+            return None;
+        }
+        self.sampled_at = Some(now);
+        let active_root = status.video.get().snapshot.active_root;
+        let directory = status.config.roots().get(active_root)?;
+        let available = probe(directory).ok()?;
+        self.observe_sample(
+            slot,
+            status.name(),
+            active_root,
+            available,
+            status.bitrate_bits_per_second,
+        )
+    }
+
+    /// Evaluates one free-space sample of the active root.
+    fn observe_sample(
+        &mut self,
+        slot: usize,
+        name: &str,
+        active_root: usize,
+        available_bytes: u64,
+        bitrate_bits_per_second: u64,
+    ) -> Option<String> {
+        let estimate = estimate_recording_space(
+            available_bytes,
+            bitrate_bits_per_second,
+            &SpaceThresholds::default(),
+        );
+        let transition = self.alarm.observe(estimate.remaining)?;
+        Some(remaining_record(
+            slot,
+            name,
+            active_root,
+            available_bytes,
+            bitrate_bits_per_second,
+            &transition,
+        ))
+    }
+}
+
+fn remaining_record(
+    slot: usize,
+    name: &str,
+    active_root: usize,
+    available_bytes: u64,
+    bitrate: u64,
+    transition: &RemainingTimeTransition,
+) -> String {
+    let seconds = |threshold: Option<Duration>| {
+        threshold.map_or_else(|| "none".to_owned(), |value| value.as_secs().to_string())
+    };
+    format!(
+        "FREEMIXD_RECORDER_REMAINING\tv=1\tslot={slot}\tsession={}\tstate={}\tthreshold_s={}\tprevious_threshold_s={}\tremaining_s={}\tactive_root={active_root}\tfree_bytes={available_bytes}\tbitrate_bps={bitrate}",
+        field(name),
+        if transition.to.is_some() {
+            "low"
+        } else {
+            "normal"
+        },
+        seconds(transition.to),
+        seconds(transition.from),
+        transition
+            .remaining
+            .map_or_else(|| "unbounded".to_owned(), |left| left.as_secs().to_string()),
+    )
 }
 
 /// One `FREEMIXD_RECORDER_SESSION` record for a finished segment's session,
@@ -693,7 +824,8 @@ fn newest_manifest(config: &SessionConfig) -> Option<SessionManifest> {
 /// per recovered session.
 ///
 /// A session whose newest manifest says it stopped, failed, or was already
-/// recovered is left alone. Sessions are found by manifest in the slot's
+/// recovered is left alone, and so is one another live recorder holds
+/// (reported `status=locked`). Sessions are found by manifest in the slot's
 /// output directory and the fallback directory, and only under names the
 /// slot itself derives, so another recorder's files are never touched.
 pub(crate) fn recover_interrupted(
@@ -752,8 +884,9 @@ pub(crate) fn recover_interrupted(
                 SegmentFormat::Wav => recover_wav_session(&config)
                     .map(|recovery| wav_recovery_record(scope.slot, &name, &recovery)),
             };
-            records.push(record.unwrap_or_else(|error| {
-                recovery_failure(scope.slot, &name, format, &error.to_string())
+            records.push(record.unwrap_or_else(|error| match error {
+                SessionError::Locked { .. } => recovery_locked(scope.slot, &name, format),
+                error => recovery_failure(scope.slot, &name, format, &error.to_string()),
             }));
         }
     }
@@ -775,6 +908,19 @@ fn manifest_session(file_name: &str, stem: &str) -> Option<(String, SegmentForma
         return Some((wav.to_owned(), SegmentFormat::Wav));
     }
     derives_from(name, stem).then(|| (name.to_owned(), SegmentFormat::Fmp4))
+}
+
+/// A session another live recorder (or recovery) still holds: its files are
+/// left alone.
+fn recovery_locked(slot: usize, name: &str, format: SegmentFormat) -> String {
+    let (record, name) = match format {
+        SegmentFormat::Fmp4 => ("FREEMIXD_RECORDING_RECOVERY", name.to_owned()),
+        SegmentFormat::Wav => ("FREEMIXD_RECORDING_WAV_RECOVERY", wav_record_name(name)),
+    };
+    format!(
+        "{record}\tv=1\tslot={slot}\tsession={}\tstatus=locked",
+        field(&name)
+    )
 }
 
 fn recovery_failure(slot: usize, name: &str, format: SegmentFormat, error: &str) -> String {
@@ -1310,6 +1456,126 @@ mod tests {
             )
         );
         assert_eq!(watch.observe(2, "program", &state), None, "reported once");
+
+        // The primary had room again: one restore notice, and a second
+        // failover from it is reported again.
+        state.video.snapshot.disabled_roots.clear();
+        state.video.snapshot.active_root = 0;
+        assert_eq!(
+            watch.observe(2, "program", &state).as_deref(),
+            Some(
+                "FREEMIXD_RECORDER_RESTORED\tv=1\tslot=2\tsession=program\tstate=Stopped\tactive_root=0\tdisabled_roots=none"
+            )
+        );
+        assert_eq!(watch.observe(2, "program", &state), None, "reported once");
+        state.video.snapshot.disabled_roots = vec![0];
+        assert!(
+            watch
+                .observe(2, "program", &state)
+                .is_some_and(|record| record.starts_with("FREEMIXD_RECORDER_FAILOVER\t"))
+        );
+    }
+
+    #[test]
+    fn remaining_time_records_fire_once_per_threshold_and_clear_with_margin() {
+        // 8 Mbit/s is one million bytes per second above the reserve.
+        let reserve = SpaceThresholds::default().reserve_bytes;
+        let free = |seconds: u64| reserve + seconds * 1_000_000;
+        let mut watch = RemainingTimeWatch::default();
+        let mut sample =
+            |seconds: u64| watch.observe_sample(1, "program", 1, free(seconds), 8_000_000);
+        assert_eq!(sample(3_600), None, "plenty of time is not reported");
+        assert_eq!(
+            sample(1_800).as_deref(),
+            Some(
+                format!(
+                    "FREEMIXD_RECORDER_REMAINING\tv=1\tslot=1\tsession=program\tstate=low\tthreshold_s=1800\tprevious_threshold_s=none\tremaining_s=1800\tactive_root=1\tfree_bytes={}\tbitrate_bps=8000000",
+                    free(1_800)
+                )
+                .as_str()
+            )
+        );
+        // Wobbling around the threshold, inside the clear margin, is quiet.
+        assert_eq!(sample(1_790), None);
+        assert_eq!(sample(1_850), None);
+        assert_eq!(sample(1_795), None);
+        let ten = sample(590).unwrap();
+        assert!(ten.contains("\tstate=low\tthreshold_s=600\tprevious_threshold_s=1800\t"));
+        let two = sample(100).unwrap();
+        assert!(two.contains("\tthreshold_s=120\tprevious_threshold_s=600\tremaining_s=100\t"));
+        assert_eq!(sample(170), None, "inside 2 minutes plus the margin");
+        let eased = sample(200).unwrap();
+        assert!(eased.contains("\tstate=low\tthreshold_s=600\tprevious_threshold_s=120\t"));
+        let cleared = sample(7_200).unwrap();
+        assert!(cleared.contains("\tstate=normal\tthreshold_s=none\tprevious_threshold_s=600\t"));
+    }
+
+    #[test]
+    fn remaining_time_watch_samples_the_active_directory_at_a_bounded_rate() {
+        let directory = tempfile::tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        fs::create_dir_all(&primary).unwrap();
+        let names = SegmentNames::new(None);
+        // An absurd bitrate leaves under two minutes on any real disk.
+        let planned = plan(
+            &primary.join("program.mp4"),
+            &primary,
+            &names,
+            1,
+            u64::MAX / 2,
+            None,
+        )
+        .unwrap();
+        let opened = open(planned).unwrap();
+        let mut watch = RemainingTimeWatch::default();
+        let now = Instant::now();
+        let record = watch.observe(1, &opened.status, now).unwrap();
+        assert!(
+            record.starts_with(
+                "FREEMIXD_RECORDER_REMAINING\tv=1\tslot=1\tsession=program\tstate=low\tthreshold_s=120\tprevious_threshold_s=none\tremaining_s=0\tactive_root=0\t"
+            ),
+            "{record}"
+        );
+        assert!(!record.contains(&*directory.path().to_string_lossy()));
+        assert_eq!(watch.observe(1, &opened.status, now), None);
+        drop(opened.output);
+    }
+
+    #[test]
+    fn startup_recovery_leaves_a_session_another_recorder_holds_alone() {
+        let directory = tempfile::tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        fs::create_dir_all(&primary).unwrap();
+        let output = primary.join("program.mp4");
+        let names = SegmentNames::new(None);
+        let planned = plan(&output, &primary, &names, 1, 1, None).unwrap();
+        let config = planned.config().clone();
+        // A live session, as another daemon would hold it, with a segment
+        // that is not yet a fragmented MP4.
+        let storage: SessionStorage = FileStorage::new(disk::available_bytes);
+        let mut session = RecordingSession::start(config.clone(), storage).unwrap();
+        let mut opened = session.open_segment().unwrap();
+        io::Write::write_all(&mut opened.sink, b"live bytes").unwrap();
+        let scope = [RecoveryScope {
+            slot: 1,
+            output: &output,
+        }];
+        assert_eq!(
+            recover_interrupted(&scope, None),
+            ["FREEMIXD_RECORDING_RECOVERY\tv=1\tslot=1\tsession=program\tstatus=locked"]
+        );
+        assert_eq!(fs::read(&opened.path).unwrap(), b"live bytes");
+        assert_eq!(
+            newest_manifest(&config).unwrap().state,
+            SessionState::Recording
+        );
+        // Once the holder is gone, the next startup recovers it.
+        drop(opened);
+        drop(session);
+        drop(planned);
+        let records = recover_interrupted(&scope, None);
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert!(records[0].contains("\tstatus=recovered\t"), "{records:?}");
     }
 
     #[test]

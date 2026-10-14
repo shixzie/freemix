@@ -176,6 +176,109 @@ impl SpaceMonitor {
     }
 }
 
+/// Most remaining-time thresholds a [`RemainingTimeAlarm`] tracks.
+pub const MAX_REMAINING_THRESHOLDS: usize = 8;
+
+/// A threshold edge reported by [`RemainingTimeAlarm`]: the tightest crossed
+/// threshold before and after, `None` meaning above every threshold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemainingTimeTransition {
+    pub from: Option<Duration>,
+    pub to: Option<Duration>,
+    /// The remaining time that caused the edge; `None` is unbounded.
+    pub remaining: Option<Duration>,
+}
+
+impl RemainingTimeTransition {
+    /// Whether remaining time got worse (a tighter threshold was crossed).
+    #[must_use]
+    pub fn worsened(&self) -> bool {
+        match (self.from, self.to) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(from), Some(to)) => to < from,
+        }
+    }
+}
+
+/// Hysteretic edge detector over a descending list of remaining-time
+/// thresholds (for example 30, 10, and 2 minutes). Crossing a threshold
+/// downward reports at once; returning above one requires clearing it by
+/// `clear_margin`, so an estimate wobbling around a threshold reports one
+/// edge, not a flap. Unbounded remaining time (nothing consumed) is above
+/// every threshold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemainingTimeAlarm {
+    thresholds: Vec<Duration>,
+    clear_margin: Duration,
+    /// How many thresholds are crossed.
+    crossed: usize,
+}
+
+impl RemainingTimeAlarm {
+    /// `thresholds` are sorted descending and de-duplicated; at most
+    /// [`MAX_REMAINING_THRESHOLDS`] are kept (the largest ones).
+    #[must_use]
+    pub fn new(thresholds: &[Duration], clear_margin: Duration) -> Self {
+        let mut thresholds = thresholds.to_vec();
+        thresholds.sort_unstable_by(|left, right| right.cmp(left));
+        thresholds.dedup();
+        thresholds.truncate(MAX_REMAINING_THRESHOLDS);
+        Self {
+            thresholds,
+            clear_margin,
+            crossed: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn thresholds(&self) -> &[Duration] {
+        &self.thresholds
+    }
+
+    /// The tightest crossed threshold, `None` above every threshold.
+    #[must_use]
+    pub fn crossed(&self) -> Option<Duration> {
+        self.crossed
+            .checked_sub(1)
+            .map(|index| self.thresholds[index])
+    }
+
+    /// Evaluates one remaining-time estimate and returns the edge, if any.
+    pub fn observe(&mut self, remaining: Option<Duration>) -> Option<RemainingTimeTransition> {
+        let worse = remaining.map_or(0, |remaining| {
+            self.thresholds
+                .iter()
+                .take_while(|threshold| remaining <= **threshold)
+                .count()
+        });
+        let next = if worse > self.crossed {
+            worse
+        } else {
+            // Improving: a crossed threshold clears only past its margin.
+            let held = remaining.map_or(0, |remaining| {
+                self.thresholds
+                    .iter()
+                    .take_while(|threshold| {
+                        remaining <= threshold.saturating_add(self.clear_margin)
+                    })
+                    .count()
+            });
+            held.min(self.crossed)
+        };
+        if next == self.crossed {
+            return None;
+        }
+        let from = self.crossed();
+        self.crossed = next;
+        Some(RemainingTimeTransition {
+            from,
+            to: self.crossed(),
+            remaining,
+        })
+    }
+}
+
 /// Preflight result for one root.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RootPreflight {
@@ -328,6 +431,38 @@ mod tests {
         assert_eq!(monitor.observe(104, 8), None);
         assert_eq!(monitor.observe(106, 8).unwrap().to, SpaceLevel::Normal);
         assert_eq!(monitor.observe(0, 8).unwrap().to, SpaceLevel::Exhausted);
+    }
+
+    #[test]
+    fn remaining_time_alarm_reports_each_threshold_once_without_flapping() {
+        let mins = Duration::from_mins;
+        let mut alarm = RemainingTimeAlarm::new(&[mins(2), mins(30), mins(10)], mins(1));
+        assert_eq!(alarm.thresholds(), &[mins(30), mins(10), mins(2)]);
+        // Plenty of time, or nothing consumed: no edge.
+        assert_eq!(alarm.observe(Some(mins(90))), None);
+        assert_eq!(alarm.observe(None), None);
+        let warned = alarm.observe(Some(mins(30))).unwrap();
+        assert_eq!((warned.from, warned.to), (None, Some(mins(30))));
+        assert!(warned.worsened());
+        // Wobbling around 30 minutes inside the margin stays quiet.
+        assert_eq!(
+            alarm.observe(Some(mins(30) + Duration::from_secs(30))),
+            None
+        );
+        assert_eq!(alarm.observe(Some(mins(29))), None);
+        assert_eq!(alarm.observe(Some(mins(31))), None);
+        // Skipping straight past two thresholds reports the tightest one.
+        let jumped = alarm.observe(Some(mins(1))).unwrap();
+        assert_eq!((jumped.from, jumped.to), (Some(mins(30)), Some(mins(2))));
+        assert_eq!(alarm.observe(Some(mins(3))), None);
+        let eased = alarm
+            .observe(Some(mins(3) + Duration::from_secs(1)))
+            .unwrap();
+        assert_eq!((eased.from, eased.to), (Some(mins(2)), Some(mins(10))));
+        assert!(!eased.worsened());
+        let cleared = alarm.observe(None).unwrap();
+        assert_eq!((cleared.from, cleared.to), (Some(mins(10)), None));
+        assert_eq!(alarm.crossed(), None);
     }
 
     #[test]
