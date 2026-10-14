@@ -3,6 +3,7 @@ use core::fmt;
 use fm_video::{CropRect, Rgba8, Transform};
 
 use crate::AlphaMode;
+use crate::keying::{KeyFill, KeyRefinement, KeyRefinementError};
 use crate::scene::{
     Effect, Key, OutputInclusion, OutputTarget, RectMask, SafeAreaGuide, Scene, SourceId,
     SourceLayer, is_premultiplied,
@@ -18,6 +19,8 @@ pub struct PlanLayer {
     alpha_mode: AlphaMode,
     mask: Option<RectMask>,
     key: Option<Key>,
+    key_fill: Option<KeyFill>,
+    key_refinement: Option<KeyRefinement>,
     effects: Vec<Effect>,
     overlay_inclusion: Option<OutputInclusion>,
     inset_border_width: u32,
@@ -63,6 +66,16 @@ impl PlanLayer {
     #[must_use]
     pub const fn key(&self) -> Option<Key> {
         self.key
+    }
+
+    #[must_use]
+    pub const fn key_fill(&self) -> Option<KeyFill> {
+        self.key_fill
+    }
+
+    #[must_use]
+    pub const fn key_refinement(&self) -> Option<KeyRefinement> {
+        self.key_refinement
     }
 
     #[must_use]
@@ -230,6 +243,16 @@ pub enum PlanError {
     SafeAreaColorNotPremultiplied {
         guide: usize,
     },
+    ConflictingKeys {
+        layer: usize,
+    },
+    KeyRefinementWithoutKey {
+        layer: usize,
+    },
+    InvalidKeyRefinement {
+        layer: usize,
+        reason: KeyRefinementError,
+    },
 }
 
 impl fmt::Display for PlanError {
@@ -289,6 +312,20 @@ impl fmt::Display for PlanError {
                 formatter,
                 "safe-area guide {guide} color is not premultiplied"
             ),
+            Self::ConflictingKeys { layer } => write!(
+                formatter,
+                "layer {layer} has both a key and a key/fill source"
+            ),
+            Self::KeyRefinementWithoutKey { layer } => write!(
+                formatter,
+                "layer {layer} has a key refinement without a key or key/fill source"
+            ),
+            Self::InvalidKeyRefinement { layer, reason } => {
+                write!(
+                    formatter,
+                    "layer {layer} key refinement is invalid: {reason}"
+                )
+            }
         }
     }
 }
@@ -353,6 +390,8 @@ pub fn compile_scene(
                 alpha_mode: layer.alpha_mode(),
                 mask: layer.mask(),
                 key: layer.key(),
+                key_fill: layer.key_fill(),
+                key_refinement: layer.key_refinement(),
                 effects: layer.effects().to_vec(),
                 overlay_inclusion: layer.overlay_inclusion(),
                 inset_border_width: layer.inset_border_width(),
@@ -413,6 +452,20 @@ fn validate_layer(index: usize, layer: &SourceLayer) -> Result<(), PlanError> {
             || mask.y.checked_add(mask.height).is_none()
     }) {
         return Err(PlanError::InvalidMask { layer: index });
+    }
+    if layer.key().is_some() && layer.key_fill().is_some() {
+        return Err(PlanError::ConflictingKeys { layer: index });
+    }
+    if let Some(refinement) = layer.key_refinement() {
+        if layer.key().is_none() && layer.key_fill().is_none() {
+            return Err(PlanError::KeyRefinementWithoutKey { layer: index });
+        }
+        refinement
+            .validate()
+            .map_err(|reason| PlanError::InvalidKeyRefinement {
+                layer: index,
+                reason,
+            })?;
     }
     if layer.effects().len() > CompositionPlan::MAX_EFFECTS_PER_LAYER {
         return Err(PlanError::TooManyEffects {

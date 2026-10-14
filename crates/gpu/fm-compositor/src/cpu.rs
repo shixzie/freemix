@@ -9,6 +9,7 @@ use fm_video::{
     compose_layers, crop, draw_inset_rect_border, premultiply_alpha, transform_nearest,
 };
 
+use crate::keying::apply_layer_keying;
 use crate::{
     AlphaMode, CompositionPlan, Effect, Key, RectMask, ReferenceEffect, ReferenceEffectError,
     SourceId, apply_reference_effect,
@@ -50,6 +51,13 @@ pub enum CpuExecutionError {
     Frame(FrameError),
     VideoPayload(VideoPayloadError),
     Color(fm_color::ColorError),
+    KeyFillDimensionMismatch {
+        layer: usize,
+        fill_width: u32,
+        fill_height: u32,
+        key_width: u32,
+        key_height: u32,
+    },
 }
 
 impl fmt::Display for CpuExecutionError {
@@ -89,6 +97,16 @@ impl fmt::Display for CpuExecutionError {
             Self::Frame(error) => error.fmt(formatter),
             Self::VideoPayload(error) => error.fmt(formatter),
             Self::Color(error) => error.fmt(formatter),
+            Self::KeyFillDimensionMismatch {
+                layer,
+                fill_width,
+                fill_height,
+                key_width,
+                key_height,
+            } => write!(
+                formatter,
+                "layer {layer} key source is {key_width}x{key_height} but its fill is {fill_width}x{fill_height}"
+            ),
         }
     }
 }
@@ -167,17 +185,48 @@ pub fn execute_cpu(
     validate_unique_sources(sources)?;
     let mut rendered = Vec::with_capacity(plan.layers().len());
     for (plan_index, layer) in plan.layers().iter().enumerate() {
-        let source = sources
-            .iter()
-            .find(|candidate| candidate.source == layer.source())
-            .ok_or(CpuExecutionError::MissingSource(layer.source()))?
-            .frame;
+        let source = find_source(sources, layer.source())?;
         let mut frame = if let Some(rect) = layer.crop() {
             crop(source, rect)?
         } else {
             source.clone()
         };
-        frame = apply_key_and_mask(&frame, layer.key(), layer.mask(), layer.alpha_mode())?;
+        frame = if layer.key_fill().is_some() || layer.key_refinement().is_some() {
+            let key_frame = match layer.key_fill() {
+                Some(fill) => {
+                    let key_source = find_source(sources, fill.key_source)?;
+                    if key_source.width() != source.width()
+                        || key_source.height() != source.height()
+                    {
+                        return Err(CpuExecutionError::KeyFillDimensionMismatch {
+                            layer: plan_index,
+                            fill_width: source.width(),
+                            fill_height: source.height(),
+                            key_width: key_source.width(),
+                            key_height: key_source.height(),
+                        });
+                    }
+                    Some(if let Some(rect) = layer.crop() {
+                        crop(key_source, rect)?
+                    } else {
+                        key_source.clone()
+                    })
+                }
+                None => None,
+            };
+            apply_layer_keying(
+                &frame,
+                key_frame
+                    .as_ref()
+                    .zip(layer.key_fill().map(|fill| fill.matte)),
+                layer.key(),
+                layer.key_refinement().unwrap_or_default(),
+                layer.mask(),
+                layer.alpha_mode(),
+            )?
+        } else {
+            apply_key_and_mask(&frame, layer.key(), layer.mask(), layer.alpha_mode())?
+        };
         // Color effects are defined on straight color and never touch alpha;
         // run on premultiplied bytes they could lift a channel above its alpha
         // and the layer would be rejected as not premultiplied.
@@ -360,6 +409,17 @@ fn apply_effect(
     }
 }
 
+fn find_source<'a>(
+    sources: &[CpuSourceFrame<'a>],
+    source: SourceId,
+) -> Result<&'a ImageFrame, CpuExecutionError> {
+    sources
+        .iter()
+        .find(|candidate| candidate.source == source)
+        .map(|candidate| candidate.frame)
+        .ok_or(CpuExecutionError::MissingSource(source))
+}
+
 fn apply_key_and_mask(
     source: &ImageFrame,
     key: Option<Key>,
@@ -428,7 +488,7 @@ fn unpremultiply_alpha(source: &ImageFrame) -> Result<ImageFrame, FrameError> {
     )
 }
 
-fn key_factor(pixel: Rgba8, key: Key) -> u8 {
+pub(crate) fn key_factor(pixel: Rgba8, key: Key) -> u8 {
     match key {
         Key::Chroma(parameters) => {
             let distance = pixel
@@ -473,7 +533,7 @@ fn ramp(value: u8, threshold: u8, softness: u8) -> u8 {
     }
 }
 
-fn mask_factor(x: u32, y: u32, mask: RectMask) -> u8 {
+pub(crate) fn mask_factor(x: u32, y: u32, mask: RectMask) -> u8 {
     let inside = x >= mask.x
         && y >= mask.y
         && x < mask.x.saturating_add(mask.width)
@@ -481,7 +541,7 @@ fn mask_factor(x: u32, y: u32, mask: RectMask) -> u8 {
     if inside == mask.invert { 0 } else { u8::MAX }
 }
 
-fn apply_spill(pixel: Rgba8, key: Option<Key>, key_alpha: u8) -> Rgba8 {
+pub(crate) fn apply_spill(pixel: Rgba8, key: Option<Key>, key_alpha: u8) -> Rgba8 {
     let Some(Key::Chroma(parameters)) = key else {
         return pixel;
     };
@@ -509,7 +569,7 @@ fn interpolate(from: u8, to: u8, amount: u8) -> u8 {
     u8::try_from(value / 255).unwrap_or(u8::MAX)
 }
 
-fn multiply_u8(left: u8, right: u8) -> u8 {
+pub(crate) fn multiply_u8(left: u8, right: u8) -> u8 {
     let product = u16::from(left) * u16::from(right) + 127;
     u8::try_from(product / 255).unwrap_or(u8::MAX)
 }

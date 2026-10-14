@@ -559,7 +559,7 @@ fn validate_supported_work(plan: &CompositionPlan) -> Result<(), NativeCompositi
         });
     }
     for (layer_index, layer) in plan.layers().iter().enumerate() {
-        if layer.key().is_some() {
+        if layer.key().is_some() || layer.key_fill().is_some() {
             return Err(NativeCompositionError::UnsupportedKey { layer: layer_index });
         }
         for (effect_index, effect) in layer.effects().iter().enumerate() {

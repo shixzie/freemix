@@ -3,6 +3,7 @@
 mod cpu;
 mod effects;
 mod fade_to_black;
+mod keying;
 mod multiview;
 #[cfg(feature = "native-wgpu")]
 mod native;
@@ -20,6 +21,10 @@ pub use effects::{ReferenceEffect, ReferenceEffectError, apply_reference_effect}
 pub use fade_to_black::{
     FadeToBlackPlan, FadeToBlackPlanError, FadeToBlackPosition, MAX_FADE_TO_BLACK_DENOMINATOR,
     execute_fade_to_black_cpu,
+};
+pub use keying::{
+    AutoKey, AutoKeyError, AutoKeyOptions, AutoKeyRegion, Backing, Despill, KeyFill, KeyRefinement,
+    KeyRefinementError, MAX_AUTO_KEY_SAMPLES, MAX_CHOKE_RADIUS, chroma_cb_cr, sample_auto_key,
 };
 pub use multiview::{
     ConfidenceMode, GridLayout, MAX_MULTIVIEW_CELLS, MAX_MULTIVIEW_COLUMNS,

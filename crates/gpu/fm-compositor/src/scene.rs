@@ -3,6 +3,8 @@ use core::fmt;
 use fm_frame::AlphaMode;
 use fm_video::{CropRect, Rgba8, Transform};
 
+use crate::keying::{KeyFill, KeyRefinement};
+
 /// Stable identifier used to resolve a source frame at execution time.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SourceId(pub u64);
@@ -251,6 +253,8 @@ pub struct SourceLayer {
     alpha_mode: AlphaMode,
     mask: Option<RectMask>,
     key: Option<Key>,
+    key_fill: Option<KeyFill>,
+    key_refinement: Option<KeyRefinement>,
     effects: Vec<Effect>,
     overlay_inclusion: Option<OutputInclusion>,
     inset_border_width: u32,
@@ -269,6 +273,8 @@ impl SourceLayer {
             alpha_mode: AlphaMode::Straight,
             mask: None,
             key: None,
+            key_fill: None,
+            key_refinement: None,
             effects: Vec::new(),
             overlay_inclusion: None,
             inset_border_width: 0,
@@ -308,6 +314,21 @@ impl SourceLayer {
     #[must_use]
     pub const fn with_key(mut self, key: Key) -> Self {
         self.key = Some(key);
+        self
+    }
+
+    /// Uses the luma of another source as this layer's alpha; this layer's
+    /// source is the fill. Mutually exclusive with [`Self::with_key`].
+    #[must_use]
+    pub const fn with_key_fill(mut self, key_fill: KeyFill) -> Self {
+        self.key_fill = Some(key_fill);
+        self
+    }
+
+    /// Refines the key or key/fill matte; requires one of them.
+    #[must_use]
+    pub const fn with_key_refinement(mut self, refinement: KeyRefinement) -> Self {
+        self.key_refinement = Some(refinement);
         self
     }
 
@@ -373,6 +394,16 @@ impl SourceLayer {
     #[must_use]
     pub const fn key(&self) -> Option<Key> {
         self.key
+    }
+
+    #[must_use]
+    pub const fn key_fill(&self) -> Option<KeyFill> {
+        self.key_fill
+    }
+
+    #[must_use]
+    pub const fn key_refinement(&self) -> Option<KeyRefinement> {
+        self.key_refinement
     }
 
     #[must_use]
