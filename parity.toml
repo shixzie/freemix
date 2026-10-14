@@ -183,7 +183,9 @@ paths = ["crates/features/fm-titles/tests/image_render.rs", "crates/features/fm-
 commands = ["cargo test -p fm-titles --test image_render", "cargo test -p fm-titles --test title_scene", "cargo test -p fm-titles --test text_render", "cargo test -p fm-titles --test image_fit"]
 [[tests]]
 id = "accept-gx-002"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-titles/tests/title_designer.rs"]
+commands = ["cargo test -p fm-titles --test title_designer"]
 [[tests]]
 id = "accept-gx-003"
 state = "present"
