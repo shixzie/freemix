@@ -281,7 +281,27 @@ impl ProjectStore {
         // so a batch acknowledged there would be durable but invisible.
         let (base_sequence, base_revision) = match head {
             Some((sequence, revision)) if sequence > checkpoint.sequence => (sequence, revision),
-            _ => (checkpoint.sequence, checkpoint.revision),
+            _ => {
+                // With nothing unapplied, a manifest saved past the checkpoint
+                // is the durable base (exactly as a scan resolves it). Move the
+                // stale row with the batch, inside this transaction, so the
+                // journal continues from the revision a scan reports.
+                let manifest_revision = self.load()?.position().revision;
+                if manifest_revision > checkpoint.revision {
+                    write_checkpoint(
+                        &database,
+                        Checkpoint {
+                            revision: manifest_revision,
+                            ..checkpoint
+                        },
+                        &deadline,
+                    )?;
+                }
+                (
+                    checkpoint.sequence,
+                    checkpoint.revision.max(manifest_revision),
+                )
+            }
         };
         let expected_sequence = base_sequence
             .checked_add(1)
@@ -461,15 +481,34 @@ impl ProjectStore {
         let observations = self.probe_write_ahead_log()?;
         let manifest_revision = self.load()?.position().revision;
         let scan = Self::read_scan(&database, manifest_revision, observations, &deadline)?;
+        let resolved = Checkpoint {
+            sequence: scan.checkpoint_sequence,
+            revision: scan.checkpoint_revision,
+            unapplied_bytes: retained_bytes(&scan.batches),
+        };
+        // The writer validates appends against the resolved checkpoint, so the
+        // stored row must say the same thing: otherwise a batch based on a
+        // manifest that moved past a stale row is acknowledged here and then
+        // refused as a revision gap by every later scan.
+        let stored = read_checkpoint(&database, &deadline)?;
+        if stored != Some(resolved) {
+            let transaction =
+                Transaction::begin(&database, &deadline).map_err(StoreError::Journal)?;
+            write_checkpoint(&database, resolved, &deadline)?;
+            database
+                .execute(
+                    DELETE_APPLIED_SQL,
+                    vec![sql_u64(resolved.sequence)?],
+                    &deadline,
+                )
+                .map_err(StoreError::Journal)?;
+            transaction.commit(&deadline).map_err(StoreError::Journal)?;
+        }
         Ok(JournalWriter {
             store: self,
             database,
             state: RefCell::new(WriterState {
-                checkpoint: Checkpoint {
-                    sequence: scan.checkpoint_sequence,
-                    revision: scan.checkpoint_revision,
-                    unapplied_bytes: retained_bytes(&scan.batches),
-                },
+                checkpoint: resolved,
                 head_sequence: scan
                     .batches
                     .last()
@@ -1911,5 +1950,48 @@ mod tests {
         let checkpoint = read_checkpoint(&database, &deadline).unwrap().unwrap();
         drop(database);
         assert_eq!(checkpoint.unapplied_bytes, 2 * record_size(&payload));
+    }
+
+    /// A manifest saved past an empty journal leaves its checkpoint row stale.
+    /// A scan treats the manifest as the durable base, so the writer opened on
+    /// it must leave a journal that the next scan can still read.
+    #[test]
+    fn a_writer_over_a_stale_checkpoint_leaves_a_readable_journal() {
+        let bundle = TestBundle::new("stale-writer");
+        let store = bundle.store(4);
+        store.recover_journal().unwrap();
+        // An offline edit saves the manifest without touching the journal.
+        store.save(&manifest(6)).unwrap();
+        assert_eq!(store.scan_journal().unwrap().checkpoint_revision(), 6);
+
+        let writer = store.open_journal_writer().unwrap();
+        writer
+            .append_batch(&MutationBatch::new(1, 6, 7, b"next".to_vec()))
+            .unwrap();
+        drop(writer);
+
+        let scan = store.scan_journal().unwrap();
+        assert_eq!(scan.checkpoint_revision(), 6);
+        let revisions: Vec<u64> = scan.batches().iter().map(MutationBatch::revision).collect();
+        assert_eq!(revisions, vec![7]);
+    }
+
+    /// The one-shot append must continue from the same base a scan reports,
+    /// not from a checkpoint row the manifest has already moved past.
+    #[test]
+    fn a_one_shot_append_over_a_stale_checkpoint_continues_from_the_manifest() {
+        let bundle = TestBundle::new("stale-append");
+        let store = bundle.store(4);
+        store.recover_journal().unwrap();
+        store.save(&manifest(6)).unwrap();
+
+        store
+            .append_batch(&MutationBatch::new(1, 6, 7, b"next".to_vec()))
+            .unwrap();
+
+        let scan = store.scan_journal().unwrap();
+        assert_eq!(scan.checkpoint_revision(), 6);
+        let revisions: Vec<u64> = scan.batches().iter().map(MutationBatch::revision).collect();
+        assert_eq!(revisions, vec![7]);
     }
 }
