@@ -131,6 +131,7 @@ fn redact_secrets(value: &str) -> String {
     }
 
     push_bearer_ranges(&lower, bytes, &mut ranges);
+    push_websocket_bearer_ranges(&lower, bytes, &mut ranges);
 
     // URL user-info (`scheme://user:password@host`) is always credential data.
     for (scheme, _) in value.match_indices("://") {
@@ -220,6 +221,32 @@ fn push_bearer_ranges(lower: &str, bytes: &[u8], ranges: &mut Vec<(usize, usize,
         let secret_end = bytes[secret_start..]
             .iter()
             .position(|byte| byte.is_ascii_whitespace() || matches!(byte, b',' | b';' | b'"'))
+            .map_or(bytes.len(), |offset| secret_start + offset);
+        if secret_start < secret_end {
+            ranges.push((secret_start, secret_end, Redactor::SECRET_MARKER));
+        }
+    }
+}
+
+/// Covers the token of the browser WebSocket subprotocol credential
+/// `freemix.bearer.<base64url(token)>`, which may appear on its own or as one
+/// entry of a comma-separated `Sec-WebSocket-Protocol` value. The prefix is
+/// kept so logs still show that a credential was offered; other subprotocols
+/// such as `freemix.control.v1` are untouched.
+fn push_websocket_bearer_ranges(lower: &str, bytes: &[u8], ranges: &mut Vec<(usize, usize, &str)>) {
+    const PREFIX: &str = "freemix.bearer.";
+    for (start, _) in lower.match_indices(PREFIX) {
+        if start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'.') {
+            continue;
+        }
+        let secret_start = start + PREFIX.len();
+        // Stop only at list, header, or quoting delimiters so a malformed
+        // (non-base64url) token is still covered in full.
+        let secret_end = bytes[secret_start..]
+            .iter()
+            .position(|byte| {
+                byte.is_ascii_whitespace() || matches!(byte, b',' | b';' | b'"' | b'\'')
+            })
             .map_or(bytes.len(), |offset| secret_start + offset);
         if secret_start < secret_end {
             ranges.push((secret_start, secret_end, Redactor::SECRET_MARKER));
@@ -452,6 +479,33 @@ mod tests {
             let redacted = Redactor.redact(input);
             assert!(!redacted.contains("pad-leak"), "{redacted}");
             assert!(redacted.ends_with(" next"), "{redacted}");
+        }
+    }
+
+    #[test]
+    fn websocket_subprotocol_bearer_credential_is_redacted() {
+        for (input, expected) in [
+            (
+                "Sec-WebSocket-Protocol: freemix.control.v1, freemix.bearer.c2VjcmV0LWxlYWs next",
+                "Sec-WebSocket-Protocol: freemix.control.v1, freemix.bearer.[REDACTED_SECRET] next",
+            ),
+            (
+                "sec-websocket-protocol: freemix.bearer.c2VjcmV0LWxlYWs,freemix.control.v1",
+                "sec-websocket-protocol: freemix.bearer.[REDACTED_SECRET],freemix.control.v1",
+            ),
+            (
+                "offered=\"FREEMIX.BEARER.c2VjcmV0LWxlYWs_-\" ok",
+                "offered=\"FREEMIX.BEARER.[REDACTED_SECRET]\" ok",
+            ),
+        ] {
+            assert_eq!(Redactor.redact(input), expected);
+        }
+        for untouched in [
+            "Sec-WebSocket-Protocol: freemix.control.v1",
+            "selected freemix.control.v1, x.freemix.bearer.v1 kept",
+            "freemix.bearer. empty",
+        ] {
+            assert_eq!(Redactor.redact(untouched), untouched);
         }
     }
 
