@@ -171,7 +171,9 @@ id = "accept-gx-003"
 state = "planned"
 [[tests]]
 id = "accept-gx-004"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-data/tests/typed_ingest.rs"]
+commands = ["cargo test -p fm-data --test typed_ingest"]
 [[tests]]
 id = "accept-gx-005"
 state = "planned"
