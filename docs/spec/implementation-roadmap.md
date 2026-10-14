@@ -577,11 +577,16 @@ schema, leaves alpha untouched, runs in declared order after key/mask and before
 premultiplication and transform, and documents exact integer rounding; known
 names with bad parameters report a distinct invalid-effect error while unknown
 names still fail as unsupported, and the native backend still rejects every
-non-passthrough effect. Neither slice is surfaced: there is no scope renderer,
-monitoring-point frame tap, overlay, or telemetry, no scope or effect
-persistence in the project schema, no daemon effect mapping, no GPU/WGSL effect
-execution, no deinterlace, and no `fm-color` grading integration. Item 8
-therefore remains incomplete, and `SW-007`/`SW-010` remain planned.
+non-passthrough effect. Effects are now authored and persisted: schema 24
+carries an ordered, bounded stack on every scene layer, the CLI authors it
+next-open only through effect add/set/remove/clear and prints it in scene
+status, and both the offline PPM renderer and the native project planner map
+the persisted stack into compositor descriptors in order. Remaining gaps: no
+live or protocol effect mutation, no Studio/Web effect surface, no GPU/WGSL
+effect execution, no deinterlace, and no `fm-color` grading integration. The
+scope session is still unsurfaced: no scope renderer, monitoring-point frame
+tap, overlay, telemetry, or scope persistence exists. Item 8 therefore remains
+incomplete, and `SW-007`/`SW-010` remain planned.
 
 Current implementation boundary for item 7: `fm-compositor` now carries a
 bounded reference multiview layout. A validated definition selects program,
