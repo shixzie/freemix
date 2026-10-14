@@ -77,7 +77,9 @@ paths = ["crates/features/fm-virtual-set/tests/camera_moves_and_stack.rs"]
 commands = ["cargo test -p fm-virtual-set --test camera_moves_and_stack"]
 [[tests]]
 id = "accept-in-022"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-video/tests/video_delay.rs"]
+commands = ["cargo test -p fm-video --test video_delay"]
 [[tests]]
 id = "accept-in-023"
 state = "present"

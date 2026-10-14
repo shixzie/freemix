@@ -1418,6 +1418,21 @@ are bare ticks rather than `fm-frame` timing types; audio and clock-domain
 conversion are absent; and stills carry no color metadata or compression.
 `SW-016` remains planned.
 
+Current implementation boundary for video delay (`IN-022`): `fm-video`
+provides a `VideoDelayLine` timed purely by media timestamps that presents the
+newest frame at or before `now - delay`, rounding fractional-frame delays up
+and never moving backwards; a one-hour 29.97 run at a five-frame delay selects
+every frame exactly, and 29.97/59.94 conversion works both ways. Startup holds
+black (or nothing) until filled, live delay changes apply immediately or slew
+at a bounded rate, timestamp jumps beyond the skew limit reset and re-anchor,
+and frame-count, byte, and duration bounds evict oldest-first and reject
+oversized frames. The effective delay converts to audio samples, aligning with
+`fm-audio` `SampleDelay` within one sample at 48 kHz. Remaining gaps: no
+engine, input, command, protocol, persistence, or UI wiring; no loop, freeze
+integration, or clip save; `SampleDelay` cannot follow live changes or exceed
+one second; no source/output clock drift compensation; and memory accounting
+relies on caller-reported sizes. `IN-022` remains planned.
+
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
