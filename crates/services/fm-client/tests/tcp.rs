@@ -1473,3 +1473,55 @@ fn diagnostics_wait_assembles_monitor_frames() {
     assert_eq!(image.sequence, 3);
     server_thread.join().unwrap();
 }
+
+#[test]
+fn diagnostics_wait_reconciles_results_answered_before_it() {
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        let WireMessage::Command(command) = peer.receive() else {
+            panic!("expected the command before the diagnostics request");
+        };
+        let WireMessage::DiagnosticsRequest(request) = peer.receive() else {
+            panic!("expected a diagnostics request");
+        };
+        peer.send_all(&[
+            WireMessage::CommandResult(CommandResult::Accepted {
+                id: command.id,
+                revision: 5,
+                scheduled_frame: Some(9),
+            }),
+            WireMessage::DiagnosticsResponse(DiagnosticsResponse {
+                protocol: CURRENT_PROTOCOL_VERSION,
+                request_id: request.request_id,
+                engine: engine(),
+                current_revision: 5,
+                oldest_retained_revision: None,
+                newest_retained_revision: None,
+                subscriber_count: 1,
+                retained_events_limit: 16,
+                subscriber_limit: 4,
+                subscriber_queue_limit: 8,
+            }),
+        ]);
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    let command = session
+        .queue_command(CommandPayload::Cut, "cut-before-diagnostics", Some(4), None)
+        .unwrap();
+    assert_eq!(session.flush().unwrap(), 1);
+
+    let event = session
+        .send_diagnostics_cancellable("diag-1", Duration::from_millis(5), || false)
+        .unwrap();
+    assert!(matches!(event, SessionEvent::DiagnosticsResponse { .. }));
+    assert!(session.is_connected());
+    assert_eq!(session.in_flight_len(), 0);
+    let client = session.into_client();
+    assert!(matches!(
+        client.command(&command.id).unwrap().status,
+        CommandStatus::Completed(CommandResult::Accepted { revision: 5, .. })
+    ));
+    server_thread.join().unwrap();
+}

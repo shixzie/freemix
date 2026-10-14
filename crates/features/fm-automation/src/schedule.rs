@@ -150,11 +150,13 @@ impl<C: Clone> ScheduleSet<C> {
     }
 
     /// Drains due schedules. Repeating schedules remain anchored to their
-    /// original boundaries and emit at most once per poll.
+    /// original boundaries and emit at most once per poll. A repeating
+    /// schedule whose next boundary is not representable fires one last time
+    /// and ends.
     ///
     /// # Errors
     ///
-    /// Returns an error if calculating or scheduling a future boundary fails.
+    /// Returns an error if scheduling a future boundary fails.
     pub fn poll(&mut self, now_ms: u64) -> Result<Vec<ScheduleFire<C>>, ScheduleError> {
         let due = self.queue.drain_due(FrameNumber::new(now_ms));
         let mut fired = Vec::with_capacity(due.len());
@@ -165,17 +167,26 @@ impl<C: Clone> ScheduleSet<C> {
             let mut missed_occurrences = 0;
             if let ScheduleKind::Every { interval_ms } = action.kind {
                 let elapsed = now_ms - occurrence_ms;
-                let intervals = elapsed
-                    .checked_div(interval_ms)
-                    .and_then(|value| value.checked_add(1))
-                    .ok_or(ScheduleError::TimestampOverflow)?;
-                missed_occurrences = intervals - 1;
-                let advance = intervals
-                    .checked_mul(interval_ms)
-                    .ok_or(ScheduleError::TimestampOverflow)?;
-                let next = occurrence_ms
-                    .checked_add(advance)
-                    .ok_or(ScheduleError::TimestampOverflow)?;
+                // `interval_ms` is nonzero: `schedule_at` refuses zero.
+                missed_occurrences = elapsed / interval_ms;
+                // The next boundary is strictly after `now_ms`. When it is not
+                // representable the recurrence can never fire again, so it
+                // ends here. Failing the poll instead would discard this
+                // occurrence and every other one already drained with it.
+                let next = missed_occurrences
+                    .checked_add(1)
+                    .and_then(|intervals| intervals.checked_mul(interval_ms))
+                    .and_then(|advance| occurrence_ms.checked_add(advance));
+                let Some(next) = next else {
+                    fired.push(ScheduleFire {
+                        id: action.id,
+                        occurrence_ms,
+                        observed_at_ms: now_ms,
+                        missed_occurrences,
+                        intent: action.intent,
+                    });
+                    continue;
+                };
                 let action_id = self.queue.schedule(
                     FrameNumber::new(next),
                     ScheduledIntent {

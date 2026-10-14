@@ -973,7 +973,9 @@ impl TcpSession {
     }
 
     /// Sends one diagnostics request and waits for its matching response.
-    /// Valid durable and runtime events may arrive while waiting.
+    /// Valid durable and runtime events, command results, and heartbeat
+    /// acknowledgements may arrive while waiting; they are reconciled into the
+    /// client without being returned.
     ///
     /// # Errors
     ///
@@ -1045,6 +1047,23 @@ impl TcpSession {
                         let intake = self.intake(WireMessage::RuntimeEvent(event.clone()))?;
                         if intake != Intake::RuntimeEventObserved {
                             return Err(TcpSessionError::UnexpectedMessage);
+                        }
+                    }
+                    // The server answers in order, so a command or heartbeat
+                    // sent before this request is answered before it. Both are
+                    // reconciled exactly as `receive` would reconcile them.
+                    WireMessage::CommandResult(result) => {
+                        self.intake(WireMessage::CommandResult(result.clone()))?;
+                        let id = result_id(&result);
+                        self.sent_commands.retain(|sent| sent != id);
+                    }
+                    WireMessage::HeartbeatAcknowledgement(acknowledgement) => {
+                        if let Err(error) = self
+                            .client
+                            .intake(WireMessage::HeartbeatAcknowledgement(acknowledgement))
+                        {
+                            self.transition_disconnect();
+                            return Err(TcpSessionError::Client(error));
                         }
                     }
                     WireMessage::AudioMeters(meters) => {
@@ -1308,12 +1327,13 @@ impl TcpSession {
     }
 
     fn client_error(&mut self, error: ClientError) -> TcpSessionError {
-        if matches!(&error, ClientError::RuntimeSequenceGap { .. })
-            || matches!(
-                self.client.state(),
-                crate::ConnectionState::ResyncRequired { .. }
-            )
-        {
+        if matches!(
+            &error,
+            ClientError::RuntimeSequenceGap { .. } | ClientError::RuntimeGenerationRegressed { .. }
+        ) || matches!(
+            self.client.state(),
+            crate::ConnectionState::ResyncRequired { .. }
+        ) {
             self.transition_disconnect();
             TcpSessionError::ResyncRequired(Box::new(error))
         } else {

@@ -59,7 +59,9 @@ impl WindowCounter {
     }
 
     fn refresh(&mut self, now_ms: u64, window_ms: u64) {
-        if now_ms.saturating_sub(self.started_at_ms) >= window_ms {
+        // A clock that stepped backwards opens a fresh window; otherwise the
+        // spent window would refuse every message until the clock caught up.
+        if now_ms < self.started_at_ms || now_ms - self.started_at_ms >= window_ms {
             self.started_at_ms = now_ms;
             self.count = 0;
         }

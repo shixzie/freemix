@@ -990,6 +990,50 @@ fn runtime_sequences_are_per_generation_and_reset_on_disconnect() {
         .unwrap();
 }
 
+/// The server numbers a generation's runtime events across all connections, so
+/// a client that joins mid-generation first observes a sequence above one.
+#[test]
+fn runtime_sequence_joined_mid_generation_is_a_baseline_not_a_gap() {
+    let mut client = ready_client(2);
+    client
+        .apply_runtime_event(runtime_event(4, 5, 2, RuntimeLifecycleEvent::Accepted))
+        .unwrap();
+    assert_eq!(
+        client.apply_runtime_event(runtime_event(4, 5, 4, RuntimeLifecycleEvent::Preparing)),
+        Err(ClientError::RuntimeSequenceGap {
+            generation: 5,
+            expected_sequence: 3,
+            received_sequence: 4,
+        })
+    );
+    client
+        .apply_runtime_event(runtime_event(4, 5, 3, RuntimeLifecycleEvent::Preparing))
+        .unwrap();
+
+    // A generation that starts on this connection starts at one.
+    assert_eq!(
+        client.apply_runtime_event(runtime_event(4, 6, 2, RuntimeLifecycleEvent::Accepted)),
+        Err(ClientError::RuntimeSequenceGap {
+            generation: 6,
+            expected_sequence: 1,
+            received_sequence: 2,
+        })
+    );
+    client
+        .apply_runtime_event(runtime_event(4, 6, 1, RuntimeLifecycleEvent::Accepted))
+        .unwrap();
+
+    // Generations only advance; an older one is not tracked again.
+    assert_eq!(
+        client.apply_runtime_event(runtime_event(4, 2, 1, RuntimeLifecycleEvent::Accepted)),
+        Err(ClientError::RuntimeGenerationRegressed {
+            current_generation: 6,
+            received_generation: 2,
+        })
+    );
+    assert_eq!(client.state(), &ConnectionState::Ready);
+}
+
 #[test]
 fn heartbeat_reports_only_the_last_applied_cursor() {
     let mut client = ready_client(2);

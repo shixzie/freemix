@@ -1079,6 +1079,38 @@ fn learn_mode_arm_capture_conflict_confirm_cancel() {
 }
 
 #[test]
+fn learn_keeps_its_device_restriction_when_the_captured_device_detaches() {
+    let mut map = midi_map();
+    map.add_profile(profile("akai:apc:02", DeviceTransport::Midi, "APC TWO"))
+        .unwrap();
+    map.attach("APC TWO", &key("akai:apc:02")).unwrap();
+    map.arm_learn(ControlLearnRequest {
+        binding: id("learned-cut"),
+        device: Some(key("akai:apc:01")),
+        action: Act::Cut,
+        response: Response::Button {
+            edge: ButtonEdge::Press,
+            velocity: None,
+        },
+    })
+    .unwrap();
+
+    let other = map.process("APC TWO", &note(10, true, 90), ts(1)).unwrap();
+    assert_eq!(other.learn, LearnEffect::Ignored);
+    let press = map.process("APC MINI", &note(10, true, 90), ts(2)).unwrap();
+    assert_eq!(press.learn, LearnEffect::Captured);
+
+    map.detach("APC MINI").unwrap();
+    let LearnState::Armed(request) = map.learn_state() else {
+        panic!("a detached capture returns learn to armed");
+    };
+    assert_eq!(request.device, Some(key("akai:apc:01")));
+    let other = map.process("APC TWO", &note(10, true, 90), ts(3)).unwrap();
+    assert_eq!(other.learn, LearnEffect::Ignored);
+    assert!(matches!(map.learn_state(), LearnState::Armed(_)));
+}
+
+#[test]
 fn reconnect_reassociates_bindings_by_device_key() {
     let mut map = midi_map();
     let device = key("akai:apc:01");

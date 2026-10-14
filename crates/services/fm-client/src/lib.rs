@@ -198,6 +198,10 @@ pub enum ClientError {
         expected_sequence: u64,
         received_sequence: u64,
     },
+    RuntimeGenerationRegressed {
+        current_generation: u64,
+        received_generation: u64,
+    },
     QueueFull {
         capacity: usize,
     },
@@ -271,6 +275,13 @@ impl fmt::Display for ClientError {
                 formatter,
                 "runtime event sequence gap for generation {generation}: expected {expected_sequence}, got {received_sequence}"
             ),
+            Self::RuntimeGenerationRegressed {
+                current_generation,
+                received_generation,
+            } => write!(
+                formatter,
+                "runtime event generation {received_generation} is older than generation {current_generation}"
+            ),
             Self::QueueFull { capacity } => {
                 write!(formatter, "outbound queue reached capacity {capacity}")
             }
@@ -332,7 +343,10 @@ pub struct Client {
     reconnect_attempt: u32,
     force_snapshot: bool,
     runtime_server: Option<ServerIdentity>,
-    runtime_sequences: BTreeMap<u64, u64>,
+    /// The newest runtime generation observed on this connection and its
+    /// last sequence. Runtime generations only advance, so nothing older is
+    /// retained.
+    runtime_sequence: Option<(u64, u64)>,
 }
 
 impl Client {
@@ -378,7 +392,7 @@ impl Client {
             reconnect_attempt: 0,
             force_snapshot: false,
             runtime_server: None,
-            runtime_sequences: BTreeMap::new(),
+            runtime_sequence: None,
         })
     }
 
@@ -742,7 +756,8 @@ impl Client {
     /// # Errors
     ///
     /// Rejects events outside an active replicated session, for another server,
-    /// ahead of the durable cursor, or with a gap in their generation sequence.
+    /// ahead of the durable cursor, from an older generation than one already
+    /// observed, or with a gap in their generation sequence.
     pub fn apply_runtime_event(&mut self, event: RuntimeEventMessage) -> Result<(), ClientError> {
         if !matches!(
             self.state,
@@ -778,10 +793,23 @@ impl Client {
             });
         }
 
-        let expected_sequence = self
-            .runtime_sequences
-            .get(&event.generation)
-            .map_or(1, |sequence| sequence.saturating_add(1));
+        // The server numbers one generation's events across every connection,
+        // so the first event observed after (re)connecting may continue a
+        // generation whose earlier events were sent before this connection
+        // existed. It becomes the baseline; everything after it is contiguous.
+        let expected_sequence = match self.runtime_sequence {
+            None => event.sequence.max(1),
+            Some((generation, _)) if event.generation < generation => {
+                return Err(ClientError::RuntimeGenerationRegressed {
+                    current_generation: generation,
+                    received_generation: event.generation,
+                });
+            }
+            Some((generation, sequence)) if event.generation == generation => {
+                sequence.saturating_add(1)
+            }
+            Some(_) => 1,
+        };
         if event.sequence != expected_sequence {
             return Err(ClientError::RuntimeSequenceGap {
                 generation: event.generation,
@@ -807,8 +835,7 @@ impl Client {
             })?;
         }
         self.runtime_server = Some(event.server);
-        self.runtime_sequences
-            .insert(event.generation, event.sequence);
+        self.runtime_sequence = Some((event.generation, event.sequence));
         Ok(())
     }
 
@@ -1151,7 +1178,7 @@ impl Client {
 
     fn reset_runtime_sequences(&mut self) {
         self.runtime_server = None;
-        self.runtime_sequences.clear();
+        self.runtime_sequence = None;
     }
 
     fn require_resync<T>(

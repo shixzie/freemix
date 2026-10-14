@@ -521,3 +521,35 @@ fn command(payload: CommandPayload) -> CommandMessage {
         payload,
     }
 }
+
+#[test]
+fn rate_window_reopens_when_the_clock_steps_backwards() {
+    let limits = SessionLimits {
+        inbound_commands: RateLimit::new(1, 1_000),
+        outbound_messages: RateLimit::new(1, 1_000),
+        ..SessionLimits::default()
+    };
+    let server = ready_server(config().with_session_limits(limits));
+    let mut session = server
+        .handshake(
+            &hello(Role::Operator, None),
+            &principal(AuthRole::Operator),
+            600_000,
+        )
+        .unwrap()
+        .session;
+    let command = command(CommandPayload::Cut);
+
+    session.admit_command(&command, 20, 600_000).unwrap();
+    session.command_completed().unwrap();
+    session.queue_outbound(5, 600_000).unwrap();
+    assert_eq!(
+        session.admit_command(&command, 20, 600_000),
+        Err(SessionError::InboundRateLimited)
+    );
+
+    // The wall clock steps back ten minutes: the limiter must not stay shut
+    // until it catches up again.
+    session.admit_command(&command, 20, 0).unwrap();
+    session.queue_outbound(5, 0).unwrap();
+}

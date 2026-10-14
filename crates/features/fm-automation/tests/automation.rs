@@ -546,3 +546,36 @@ fn continuous_intents_coalesce_within_one_scope_and_report_what_they_supersede()
         })
     ));
 }
+
+#[test]
+fn schedule_with_no_representable_next_boundary_fires_once_and_keeps_its_batch() {
+    let mut schedules = ScheduleSet::default();
+    let at = u64::MAX - 5;
+    schedules
+        .schedule_at(
+            "repeat",
+            at,
+            ScheduleKind::Every { interval_ms: 10 },
+            CommandIntent::discrete(TestCommand::Named("repeat")),
+        )
+        .unwrap();
+    schedules
+        .schedule_at(
+            "once",
+            at,
+            ScheduleKind::Once,
+            CommandIntent::discrete(TestCommand::Named("once")),
+        )
+        .unwrap();
+
+    let fired = schedules.poll(at).unwrap();
+    let ids: Vec<_> = fired.iter().map(|fire| fire.id.as_str()).collect();
+    assert_eq!(ids, ["repeat", "once"]);
+    assert!(fired.iter().all(|fire| fire.missed_occurrences == 0));
+    assert!(schedules.is_empty());
+    assert!(!schedules.contains(&ScheduleId::from("once")));
+    assert_eq!(
+        schedules.poll(u64::MAX).unwrap(),
+        [] as [fm_automation::ScheduleFire<TestCommand>; 0]
+    );
+}

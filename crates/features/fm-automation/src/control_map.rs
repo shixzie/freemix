@@ -360,6 +360,9 @@ pub struct LearnCandidate<A> {
     /// Existing bindings on the same device control.
     pub conflicts: Vec<BindingId>,
     pub captured_at: MediaTimestamp,
+    /// The armed request's device restriction, restored if the captured
+    /// device detaches before confirmation.
+    pub restricted_to: Option<DeviceKey>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -849,7 +852,7 @@ impl<A: Clone> ControlMap<A> {
             };
             self.learn = LearnState::Armed(LearnRequest {
                 binding: candidate.binding.id,
-                device: None,
+                device: candidate.restricted_to,
                 action: candidate.binding.action,
                 response: candidate.binding.response,
             });
@@ -1009,6 +1012,7 @@ impl<A: Clone> ControlMap<A> {
             },
             conflicts,
             captured_at: timestamp,
+            restricted_to: request.device,
         });
         LearnEffect::Captured
     }
