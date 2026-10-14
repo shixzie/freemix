@@ -190,8 +190,9 @@ fn export_bundle(
     })
 }
 
-/// Maps each distinct referenced URI to its portable URI. Keys are processed
-/// in sorted order, so the first of a case-folded clash keeps its name.
+/// Maps each distinct referenced URI to its portable URI. Title keys cannot
+/// be rewritten, so they are claimed first; then each group is processed in
+/// sorted order, so the first of a case-folded clash keeps its name.
 fn portable_mapping(
     stored: &StoredProject,
     title_uris: &BTreeSet<String>,
@@ -205,8 +206,11 @@ fn portable_mapping(
             uris.insert(uri.clone(), String::new());
         }
     }
+    let (titles, media): (Vec<_>, Vec<_>) = uris
+        .iter_mut()
+        .partition(|(uri, _)| title_uris.contains(*uri));
     let mut taken = FoldedKeys::default();
-    for (uri, bundled) in &mut uris {
+    for (uri, bundled) in titles.into_iter().chain(media) {
         let key =
             asset_uri_key(uri).map_err(|_| BundleError::NoAvailableKey { key: uri.clone() })?;
         let base = portable_key(key);

@@ -9,6 +9,7 @@
 //! and never parsed.
 
 use std::{
+    fmt::Write as _,
     fs,
     num::NonZeroU128,
     path::{Path, PathBuf},
@@ -754,6 +755,46 @@ fn documents_over_the_size_cap_are_refused() {
     ));
 }
 
+#[test]
+fn a_compact_source_whose_stored_form_exceeds_the_cap_is_refused() {
+    // The stored layout spends more bytes per element than a compact source,
+    // so a source under the cap can encode over it; storing that document
+    // would leave a template that never loads again.
+    let cap = usize::try_from(fm_persistence::MAX_TITLE_TEMPLATE_BYTES).unwrap();
+    let mut source = String::from(
+        r##"{"schema_version":27,"template":{"id":1,"name":"Big","width":16,"height":9,"background":"#00000000","fields":[],"elements":["##,
+    );
+    let mut id = 1_u32;
+    while source.len() < cap - 1024 {
+        if id > 1 {
+            source.push(',');
+        }
+        write!(
+            source,
+            r##"{{"id":{id},"name":"r","bounds":{{"x":0,"y":0,"width":1,"height":1}},"z_index":0,"visible":true,"style":{{"fill":"#ffffffff","background":null,"opacity":255,"font":null,"alignment":{{"horizontal":"start","vertical":"start"}}}},"color_field":null,"kind":{{"type":"rectangle"}},"animations":[]}}"##
+        )
+        .unwrap();
+        id += 1;
+    }
+    source.push_str(r#"]},"fonts":[]}"#);
+    assert!(source.len() <= cap);
+
+    let temp = TestDirectory::new("encoded-cap");
+    let store = temp.store("show.freemix");
+    let path = temp.path("big.fmtitle");
+    write(&path, source.as_bytes());
+    assert!(
+        matches!(
+            store.import_title_template(&path, &[]),
+            Err(TitleImportError::Template(
+                TitleTemplateError::TooLarge { bytes, .. }
+            )) if bytes > fm_persistence::MAX_TITLE_TEMPLATE_BYTES
+        ),
+        "an oversized stored form must be refused"
+    );
+    assert_eq!(assets_listing(&store), Vec::<String>::new());
+}
+
 // ---------------------------------------------------------------------------
 // Import
 // ---------------------------------------------------------------------------
@@ -1197,6 +1238,71 @@ fn portable_export_refuses_a_title_key_that_would_need_rewriting() {
         "got {error:?}"
     );
     assert!(!destination.root().exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn portable_export_renames_media_rather_than_a_title_key_it_folds_onto() {
+    // `images/live*.png` is portable as `images/live_.png` and sorts before
+    // the title image `images/live_.png`; the title key must still win.
+    let temp = TestDirectory::new("export-title-priority");
+    let source = titled_bundle(&temp, "show.freemix", "titles/strap.fmtitle");
+    write(
+        &source.assets_root().join("images/live_.png"),
+        b"title image",
+    );
+    write(&source.assets_root().join("images/live*.png"), b"media");
+    let loaded = source.load().unwrap();
+    let mut project = loaded.project().clone();
+    project
+        .set_title_fields(
+            input_id(1),
+            1,
+            vec![
+                entry(1, TitleFieldValue::Text("Ana".into())),
+                entry(
+                    2,
+                    TitleFieldValue::Image {
+                        asset_uri: "asset://images/live_.png".into(),
+                    },
+                ),
+            ],
+        )
+        .unwrap();
+    project.add_input(Input {
+        id: input_id(2),
+        name: "Clip".into(),
+        kind: InputKind::Media {
+            asset_uri: "asset://images/live*.png".into(),
+        },
+        required_capabilities: Vec::new(),
+    });
+    source.save(&loaded.with_project(project).unwrap()).unwrap();
+
+    let destination = temp.store("copy.freemix");
+    let export = source.export_portable_bundle(&destination).unwrap();
+    assert_eq!(export.rewritten_inputs, [input_id(2)]);
+    let bundled = |uri: &str| {
+        export
+            .assets
+            .iter()
+            .find(|asset| asset.source_uri == uri)
+            .map(|asset| asset.bundled_uri.clone())
+    };
+    assert_eq!(
+        bundled("asset://images/live_.png").as_deref(),
+        Some("asset://images/live_.png")
+    );
+    assert_eq!(
+        bundled("asset://images/live*.png").as_deref(),
+        Some("asset://images/live_-2.png")
+    );
+    let loaded = destination.load().unwrap();
+    assert_eq!(destination.audit_assets(&loaded), Vec::new());
+    assert_eq!(
+        fs::read(destination.assets_root().join("images/live_.png")).unwrap(),
+        b"title image"
+    );
 }
 
 #[test]

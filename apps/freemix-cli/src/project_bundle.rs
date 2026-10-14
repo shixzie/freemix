@@ -222,17 +222,23 @@ pub fn title_input_add(
     fonts: &[(String, PathBuf)],
 ) -> AppResult<()> {
     let store = ProjectStore::new(path)?;
-    // Refuse a non-bundle or a taken id before copying anything.
+    // Refuse a non-bundle, a taken id, or an unusable name before copying
+    // anything: the add is rehearsed with a placeholder template URI.
     let stored = load_stored_project(path)?;
     let input = input_id(input)?;
-    if stored
+    stored
         .project()
-        .inputs()
-        .iter()
-        .any(|existing| existing.id == input)
-    {
-        return Err(AppFailure(format!("input {input} already exists")).into());
-    }
+        .clone()
+        .add_input_checked(fm_model::Input {
+            id: input,
+            name: name.clone(),
+            kind: InputKind::Title(TitleInput {
+                template_uri: "asset://titles/pending.fmtitle".to_owned(),
+                field_revision: 0,
+                fields: Vec::new(),
+            }),
+            required_capabilities: Vec::new(),
+        })?;
     let imported = store
         .import_title_template(template, fonts)
         .map_err(|error| AppFailure(format!("title template import failed: {error}")))?;

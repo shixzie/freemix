@@ -2377,6 +2377,39 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
         ]),
         "input 9 already exists",
     );
+    // A name the add would refuse is caught before the template is copied.
+    let renamed = context.root.join("renamed-bar.fmtitle");
+    fs::write(
+        &renamed,
+        SHAPE_TITLE_SOURCE.replace("\"id\": 7", "\"id\": 8"),
+    )
+    .unwrap();
+    assert_failure_contains(
+        &invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            "11",
+            "--name",
+            "Score bar",
+            "--template",
+            renamed.to_str().unwrap(),
+        ]),
+        "input name is already in use",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            "11",
+            "--name",
+            &"n".repeat(129),
+            "--template",
+            renamed.to_str().unwrap(),
+        ]),
+        "input name must not exceed 128 bytes",
+    );
     assert_failure_contains(
         &invoke(&[
             "title-input-add",

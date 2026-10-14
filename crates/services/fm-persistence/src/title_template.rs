@@ -412,15 +412,21 @@ impl ProjectStore {
         }
         validate_template_body(&parsed)?;
         check_font_table(&parsed, fonts.iter().map(|(family, _)| family.as_str()))?;
+        // The checked bytes are what gets stored, so a source file changing
+        // after it was checked cannot place an unparsable or oversized font.
+        let mut font_bytes = Vec::with_capacity(fonts.len());
         for (family, path) in fonts {
             let bytes = read_font_file(path).map_err(|error| TitleImportError::FontUnreadable {
                 family: family.clone(),
                 error,
             })?;
-            FontFace::from_bytes(bytes).map_err(|error| TitleImportError::UnparsableFont {
-                family: family.clone(),
-                error,
+            FontFace::from_bytes(bytes.clone()).map_err(|error| {
+                TitleImportError::UnparsableFont {
+                    family: family.clone(),
+                    error,
+                }
             })?;
+            font_bytes.push(bytes);
         }
         for field in &parsed.fields {
             if let FieldValue::Image(image) = &field.default
@@ -435,12 +441,12 @@ impl ProjectStore {
 
         let assets_root = self.assets_root();
         let mut imported_fonts = Vec::with_capacity(fonts.len());
-        for (family, path) in fonts {
+        for ((family, path), bytes) in fonts.iter().zip(&font_bytes) {
             let base = format!(
                 "{FONTS_DIRECTORY}/{}",
                 imported_key(path.file_name().unwrap_or_else(|| OsStr::new("font")))
             );
-            let (key, disposition) = place_file(&assets_root, path, &base, |_| false)?;
+            let (key, disposition) = place_bytes(&assets_root, &base, bytes)?;
             imported_fonts.push(ImportedTitleFont {
                 family: family.clone(),
                 asset_uri: asset_uri(&key),
@@ -788,7 +794,8 @@ pub fn decode_title_template(source: &str) -> Result<StoredTitleTemplate, TitleT
 /// # Errors
 ///
 /// Returns a [`TitleTemplateError`] when the template would not decode, for
-/// example because it holds a production clock or its font table is wrong.
+/// example because it holds a production clock, its font table is wrong, or
+/// the encoded document exceeds [`MAX_TITLE_TEMPLATE_BYTES`].
 pub fn encode_title_template(stored: &StoredTitleTemplate) -> Result<String, TitleTemplateError> {
     stored.validate()?;
     let mut fonts = stored.fonts.iter().collect::<Vec<_>>();
@@ -848,6 +855,15 @@ pub fn encode_title_template(stored: &StoredTitleTemplate) -> Result<String, Tit
     } else {
         "\n  ]\n}\n"
     });
+    // The canonical layout can be larger than a compact source document, and
+    // a stored document over the cap would never load again.
+    let bytes = u64::try_from(output.len()).unwrap_or(u64::MAX);
+    if bytes > MAX_TITLE_TEMPLATE_BYTES {
+        return Err(TitleTemplateError::TooLarge {
+            bytes,
+            maximum: MAX_TITLE_TEMPLATE_BYTES,
+        });
+    }
     Ok(output)
 }
 
