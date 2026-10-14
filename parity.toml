@@ -207,7 +207,9 @@ paths = ["crates/features/fm-data/tests/title_binding_preview.rs"]
 commands = ["cargo test -p fm-data --test title_binding_preview"]
 [[tests]]
 id = "accept-gx-006"
-state = "planned"
+state = "present"
+paths = ["apps/freemix-web/tests/title_editor.rs"]
+commands = ["cargo test -p freemix-web --test title_editor"]
 [[tests]]
 id = "accept-gx-007"
 state = "present"

@@ -1898,6 +1898,23 @@ are not anti-aliased, timelines animate only offset and opacity, rendering is
 CPU-only, and there is no designer UI, live field editor, persistence,
 protocol, or engine playback. `GX-002` remains planned.
 
+Current implementation boundary for item 2 browser title control (`GX-006`):
+`freemix-web` provides a transport-free title editor model over a narrow server
+port, reusing `fm-titles` field identities, types, and values. Per-field drafts
+validate text length, numbers, colors, and image references; previews return
+exactly the values a take or update would send; and save, take, update-live,
+and off-air are each gated by connection, role permission (`edit_project` for
+edits, `transition` for take/off-air), preview freshness, and the server's
+on-air state, which the server re-checks atomically. Every value-carrying
+command carries the title's base revision; a conflict keeps the user's drafts,
+marks the title stale, shows base, server, and draft values per field, and
+requires an explicit rebase or discard, so nothing is silently overwritten.
+Remaining gaps: the protocol carries no title commands or snapshots and the
+daemon hosts no titles, templates have no per-field exposure flag, revisions
+are per title rather than per field, previews render no image, and there is no
+browser UI, request timeout, or reconnect resync. `GX-006` remains planned.
+
+
 Current implementation boundary for item 3: `fm-browser-input` provides a
 deterministic network policy that strictly normalizes URLs (including numeric
 IPv4 and IPv6 literal forms and dot segments), rejects credentials and

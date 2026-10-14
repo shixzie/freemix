@@ -63,7 +63,7 @@ Total: 103 features. Status: planned=96, blocked=7. Priority: P0=24, P1=70, P2=9
 | GX-003 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-003 (present) |
 | GX-004 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-004 (present) |
 | GX-005 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-005 (present) |
-| GX-006 | P1 | 5 | planned | studio-web-ux | accept-gx-006 (planned) |
+| GX-006 | P1 | 5 | planned | studio-web-ux | accept-gx-006 (present) |
 | GX-007 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-007 (present) |
 | GX-008 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-008 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
@@ -171,7 +171,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | GX-003 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-003 (present) |
 | GX-004 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-004 (present) |
 | GX-005 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-005 (present) |
-| GX-006 | P1 | 5 | planned | studio-web-ux | accept-gx-006 (planned) |
+| GX-006 | P1 | 5 | planned | studio-web-ux | accept-gx-006 (present) |
 | GX-007 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-007 (present) |
 | GX-008 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-008 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
@@ -279,7 +279,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | GX-003 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-003 (present) |
 | GX-004 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-004 (present) |
 | GX-005 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-005 (present) |
-| GX-006 | P1 | 5 | planned | studio-web-ux | accept-gx-006 (planned) |
+| GX-006 | P1 | 5 | planned | studio-web-ux | accept-gx-006 (present) |
 | GX-007 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-007 (present) |
 | GX-008 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-008 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
@@ -336,7 +336,7 @@ Total: 11 features. Status: planned=10, blocked=1. Priority: P0=1, P1=8, P2=2.
 
 | ID | Pri | Phase | Status | Owner | Acceptance |
 |---|---|---|---|---|---|
-| GX-006 | P1 | 5 | planned | studio-web-ux | accept-gx-006 (planned) |
+| GX-006 | P1 | 5 | planned | studio-web-ux | accept-gx-006 (present) |
 | GX-007 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-007 (present) |
 | GX-010 | P2 | 9 | blocked | graphics-data-automation-plugins | accept-gx-010 (present) |
 | OR-017 | P1 | 4 | planned | studio-web-ux | accept-or-017 (planned) |
