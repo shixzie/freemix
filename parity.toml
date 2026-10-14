@@ -326,7 +326,9 @@ paths = ["crates/media/fm-replay/tests/multiview_controllers.rs"]
 commands = ["cargo test -p fm-replay --test multiview_controllers"]
 [[tests]]
 id = "accept-or-015"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-automation/tests/playlist_automation.rs"]
+commands = ["cargo test -p fm-automation --test playlist_automation"]
 [[tests]]
 id = "accept-or-016"
 state = "planned"
