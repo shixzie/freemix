@@ -1906,6 +1906,22 @@ no per-guest return level, echo or latency measurement, authentication,
 persistence, audit, signaling, encryption, bandwidth adaptation, or NDI
 exposure. `RC-001`, `RC-002`, and `RC-003` remain planned.
 
+Current implementation boundary for items 2 and 6: `fm-io-webrtc` provides a
+deterministic, network-free SDP subset for encrypted browser guests that
+requires `UDP/TLS/RTP/SAVPF`, a SHA-256 DTLS fingerprint, ICE credentials,
+setup role, rtcp-mux, and one BUNDLE group, keeps Opus, H.264, and VP8, renders
+canonically, and builds answers by deterministic codec intersection with video
+capped at 4 Mbps. A signaling session resolves offer glare by polite and
+impolite roles, bounds trickled and early candidates, rejects stale ICE
+generations, and performs bounded ICE restarts with fresh credentials. A
+bandwidth controller walks a ladder capped at 1080p, 60 fps, and 4 Mbps from
+the lower of fresh REMB and TWCC estimates, stepping down immediately and up
+only after a held margin, with loss-driven step-down. Remaining gaps: no real
+WebRTC, DTLS, or ICE stack, no `fm-server` signaling transport or `fm-guest`
+wiring, no candidate gathering or fingerprint verification, simulcast and data
+channels are rejected, header extensions such as transport-wide-cc are
+dropped, and H.264 matching ignores levels. `RC-001` remains planned.
+
 Exit: Remote Show scenario passes; named proprietary rows remain explicitly
 pending until licensed adapters pass.
 
