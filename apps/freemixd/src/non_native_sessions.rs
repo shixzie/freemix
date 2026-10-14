@@ -1987,4 +1987,91 @@ mod tests {
             "the heartbeat timeout still closes a peer that never drains"
         );
     }
+
+    /// A peer whose kernel socket buffers are full (it stopped reading) never
+    /// delays another peer: each pass makes one non-blocking write attempt
+    /// for it, its records stay bounded, and backpressure alone never closes
+    /// it. Its heartbeat timeout closes it instead (see
+    /// `a_stuck_peer_with_a_held_result_still_times_out`).
+    #[test]
+    fn a_peer_with_full_socket_buffers_never_delays_another_peer() {
+        const RESULTS: usize = 3 * OUTBOUND_CAPACITY;
+        // Far below `CLIENT_WRITE_TIMEOUT`, which a blocking write would hit.
+        const WRITE_LIMIT: Duration = Duration::from_millis(50);
+
+        let (mut stalled, _stalled_client) = active_eligible_peer();
+        stalled.session = Some(limited_session(1_000, 1_000, 15_000));
+        let (mut live, mut live_client) = active_eligible_peer();
+        live.id = 1;
+        live.session = Some(limited_session(1_000, 1_000, 15_000));
+
+        // The stalled peer's send buffer and its client's receive buffer are
+        // full: the client never reads.
+        let Transport::Raw(stream) = &mut stalled.transport else {
+            unreachable!("raw peer")
+        };
+        let chunk = vec![b'\n'; 64 * 1024];
+        loop {
+            match stream.write(&chunk) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("{error}"),
+            }
+        }
+
+        let mut peers = vec![stalled, live];
+        let mut decoder = LineDecoder::new();
+        let mut results = Vec::new();
+        let mut slowest_stalled_write = Duration::ZERO;
+        let mut pass = 0_usize;
+        while results.len() < RESULTS {
+            assert!(pass < 4 * RESULTS, "only {} results arrived", results.len());
+            let sequence = u64::try_from(pass).unwrap();
+            publish_monitor_frame(
+                &mut peers,
+                MonitorTap::Program,
+                &monitor_group(MonitorTap::Program, sequence),
+            );
+            if pass < RESULTS {
+                // Live records pile up for the stalled peer until its
+                // bounded queue refuses them.
+                match peers[0].queue(&filler(pass), Accounting::Session) {
+                    Ok(()) | Err(QueueRefusal::Full) => {}
+                    Err(refusal) => panic!("the stalled peer refused a record: {refusal:?}"),
+                }
+                peers[1]
+                    .reply(command_result(&format!("live-{pass}")))
+                    .unwrap();
+            }
+            release_held_results(&mut peers, &mut [false, false], |_| false);
+
+            let started = Instant::now();
+            assert!(matches!(write_peer(&mut peers[0]), WriteOutcome::Pending));
+            slowest_stalled_write = slowest_stalled_write.max(started.elapsed());
+            assert!(matches!(write_peer(&mut peers[1]), WriteOutcome::Pending));
+            assert!(matches!(write_peer(&mut peers[1]), WriteOutcome::Pending));
+
+            results.extend(
+                received(&mut live_client, &mut decoder)
+                    .into_iter()
+                    .filter(|message| matches!(message, WireMessage::CommandResult(_))),
+            );
+            pass += 1;
+        }
+
+        assert!(
+            slowest_stalled_write < WRITE_LIMIT,
+            "a write to the stalled peer took {slowest_stalled_write:?}"
+        );
+        let expected = (0..RESULTS)
+            .map(|index| command_result(&format!("live-{index}")))
+            .collect::<Vec<_>>();
+        assert_eq!(results, expected, "every live result arrives, in order");
+        // Nothing written to the stalled peer, and nothing grows past bounds.
+        assert_eq!(peers[0].outbound.len(), OUTBOUND_CAPACITY);
+        assert!(peers[0].held_result.is_none());
+        assert!(
+            super::super::session_heartbeat_active(peers[0].session.as_mut().unwrap()).unwrap()
+        );
+    }
 }

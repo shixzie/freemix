@@ -3889,8 +3889,9 @@ fn live_input_add_and_remove_round_trip_through_kill_and_recovery() {
             if fields.first().map(|field| field.code.as_str()) == Some("duplicate_input")
     ));
 
-    // A Studio peer watches the monitor taps; it connects only now and is
-    // drained continuously, since unread frames would back up the daemon.
+    // A Studio peer watches the monitor taps. The simulated daemon admits
+    // only two raw peers and leaves a third connection unaccepted, so this
+    // peer is dropped before `snapshot_of` opens another one.
     let mut studio = daemon.connect();
     studio
         .reader
@@ -4246,4 +4247,149 @@ fn edit_locks_survive_kill_recovery_and_checkpoint_restore() {
     let settled = store.load().unwrap();
     assert!(!settled.project().project_locked());
     assert!(settled.project().locked_inputs().is_empty());
+}
+
+/// A raw heartbeat for `server` whose cursor is at `revision`.
+fn heartbeat_at(server: &ServerIdentity, sequence: u64, revision: u64) -> WireMessage {
+    WireMessage::Heartbeat(HeartbeatMessage {
+        server: server.clone(),
+        sequence,
+        sent_at_ms: sequence,
+        last_applied: Some(ResumeCursor {
+            server: server.clone(),
+            revision,
+        }),
+    })
+}
+
+/// A Studio peer that completes its handshake and then never touches its
+/// socket again must not delay or disconnect another peer. Monitor frames and
+/// live events pile up for it. The admin peer keeps getting heartbeat
+/// acknowledgements and command results within a bounded time, for longer
+/// than the 15 s session heartbeat timeout, while only the stalled peer is
+/// closed (by its own heartbeat timeout). A full kernel buffer on the stalled
+/// side is covered by the session loop's unit tests, because loopback
+/// buffers here grow to tens of megabytes.
+///
+/// The simulated daemon admits two raw peers, so this test opens no third
+/// connection while the stalled peer holds its slot.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_non_reading_studio_peer_never_stalls_another_peer() {
+    const ROUND_TRIP_LIMIT: Duration = Duration::from_secs(2);
+    // Past the stalled peer's 15 s heartbeat timeout and its close.
+    const OBSERVATION: Duration = Duration::from_millis(16_500);
+
+    let directory = TestDirectory::new("non-reading-studio-peer");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut studio = daemon.connect();
+    studio
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    studio.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Operator,
+        resume_cursor: None,
+    }));
+    let WireMessage::HandshakeResponse(response) = studio.receive() else {
+        panic!("expected studio handshake response");
+    };
+    assert!(matches!(
+        response.outcome,
+        HandshakeOutcome::Snapshot { .. }
+    ));
+    let server = response.server.clone();
+    assert!(matches!(studio.receive(), WireMessage::Snapshot(_)));
+    // From here on the Studio peer neither reads nor writes.
+
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(ROUND_TRIP_LIMIT))
+        .unwrap();
+    let handshake = admin.handshake_as(Role::Admin, None);
+    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    assert_eq!(handshake.engine.engine_id, server.engine_id);
+
+    let mut sequence = 0_u64;
+    let mut revision = handshake.current_revision;
+    let mut heartbeat = |admin: &mut Client, revision: u64| -> Duration {
+        sequence += 1;
+        let sent = Instant::now();
+        admin.send(&heartbeat_at(&server, sequence, revision));
+        let acknowledged = receive_within(
+            admin,
+            ROUND_TRIP_LIMIT,
+            "admin heartbeat acknowledgement",
+            |message| match message {
+                WireMessage::HeartbeatAcknowledgement(ack) => Some(ack.heartbeat_sequence),
+                _ => None,
+            },
+        );
+        assert_eq!(acknowledged, sequence);
+        sent.elapsed()
+    };
+
+    let started = Instant::now();
+    let mut slowest = Duration::ZERO;
+    let mut cuts = 0_u32;
+    while started.elapsed() < OBSERVATION {
+        slowest = slowest.max(heartbeat(&mut admin, revision));
+        // Each Cut also publishes events (and new monitor frames) for the
+        // stalled peer.
+        cuts += 1;
+        let id = format!("admin-cut-{cuts}");
+        let sent = Instant::now();
+        admin.send(&command(&id, &format!("{id}-key"), CommandPayload::Cut));
+        revision = receive_within(
+            &mut admin,
+            ROUND_TRIP_LIMIT,
+            "admin command result",
+            |message| match message {
+                WireMessage::CommandResult(CommandResult::Accepted {
+                    id: result_id,
+                    revision,
+                    ..
+                }) if result_id == id => Some(revision),
+                WireMessage::CommandResult(other) => {
+                    panic!("admin command was not accepted: {other:?}")
+                }
+                _ => None,
+            },
+        );
+        slowest = slowest.max(sent.elapsed());
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    assert!(
+        slowest < ROUND_TRIP_LIMIT,
+        "the admin peer waited {slowest:?} for an answer"
+    );
+    assert_eq!(revision, handshake.current_revision + u64::from(cuts));
+
+    // The stalled peer was closed on its own: what the daemon had buffered
+    // for it drains and then the stream ends.
+    let mut sink = [0_u8; 8 * 1024];
+    loop {
+        match studio.reader.read(&mut sink) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+            Err(error) => panic!("the stalled studio peer was never closed: {error}"),
+        }
+    }
+
+    // The admin peer is still served after the stalled peer is gone.
+    assert!(heartbeat(&mut admin, revision) < ROUND_TRIP_LIMIT);
+
+    drop(admin);
+    drop(studio);
+    daemon.stop();
 }
