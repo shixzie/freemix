@@ -2940,6 +2940,12 @@ fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
     show.restore_fade_to_black(fade_to_black.desired.target_active);
     realized.restore_settled_fade_to_black(fade_to_black.realized.target_active);
     restore_overlays(&mut show, &mut realized, stored.runtime_overlays())?;
+    // The persisted padlock is engine state, so local engine commands honor
+    // it exactly as the daemon does.
+    show.set_project_locked(project.project_locked());
+    for &input in project.locked_inputs() {
+        show.set_input_locked(input, true)?;
+    }
     let position = stored.position();
     let engine = Engine::restore_persisted(
         show,

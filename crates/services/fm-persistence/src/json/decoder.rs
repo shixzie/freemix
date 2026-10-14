@@ -69,6 +69,12 @@ struct ProjectDto {
     recording_desired: [bool; RECORDER_SLOT_COUNT],
     stingers: Vec<StingerConfig>,
     restart_policy: RestartPolicy,
+    edit_locks: EditLocks,
+}
+
+struct EditLocks {
+    project: bool,
+    inputs: Vec<InputId>,
 }
 
 impl ProjectDto {
@@ -100,6 +106,7 @@ impl ProjectDto {
             recording_desired: parse_recording_desired(object.take("recording_desired")?)?,
             stingers: parse_array(object.take("stingers")?, "stingers", parse_stinger)?,
             restart_policy: parse_restart_policy(object.take("restart_policy")?)?,
+            edit_locks: parse_edit_locks(object.take("edit_locks")?)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -159,6 +166,12 @@ impl ProjectDto {
         }
         for stinger in self.stingers {
             project.add_stinger(stinger);
+        }
+        project.set_project_locked(self.edit_locks.project);
+        for input in self.edit_locks.inputs {
+            // A lock naming an unknown input is reported by project
+            // validation when the manifest is assembled.
+            project.set_input_locked(input, true);
         }
         project
     }
@@ -733,6 +746,23 @@ fn parse_recording_desired(value: Value) -> Result<[bool; RECORDER_SLOT_COUNT], 
             desired.len()
         ))
     })
+}
+
+/// Parses the persisted edit padlock: the project-wide flag and the locked
+/// input identifiers as a strictly ascending (canonical, duplicate-free)
+/// array of nonzero integers. Whether each input exists is checked by
+/// project validation.
+fn parse_edit_locks(value: Value) -> Result<EditLocks, DecodeError> {
+    let mut object = Object::new(value, "edit locks")?;
+    let project = object.boolean("project")?;
+    let inputs = parse_array(object.take("inputs")?, "edit_locks.inputs", |value| {
+        nonzero_u128(&value, "edit_locks.inputs entry").map(InputId::new)
+    })?;
+    object.finish()?;
+    if inputs.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(syntax("edit_locks.inputs must be strictly ascending"));
+    }
+    Ok(EditLocks { project, inputs })
 }
 
 fn parse_restart_policy(value: Value) -> Result<RestartPolicy, DecodeError> {

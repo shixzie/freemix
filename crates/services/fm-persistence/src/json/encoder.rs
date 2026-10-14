@@ -96,6 +96,19 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
         write!(output, "{desired}").expect("writing to a string cannot fail");
     }
     output.push(']');
+    write!(
+        output,
+        ",\n    \"edit_locks\": {{\"project\": {}, \"inputs\": [",
+        project.project_locked()
+    )
+    .expect("writing to a string cannot fail");
+    for (index, input) in project.locked_inputs().iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(output, "{input}").expect("writing to a string cannot fail");
+    }
+    output.push_str("]}");
     output.push_str("\n  },");
 }
 

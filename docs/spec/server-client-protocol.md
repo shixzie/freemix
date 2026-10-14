@@ -141,8 +141,13 @@ Protocol 2.22 adds session undo/redo and the edit padlock:
   nonzero, lies in `1..=revision`, and undo/redo edits differ). Snapshots carry
   the same summary plus `project_locked=0|1` and `locked_inputs` (a strictly
   ascending, possibly empty, comma list of snapshot input IDs). Command IDs are
-  not exposed. The padlock is session state: it is not yet persisted in the
-  project bundle, so a daemon restart or checkpoint recovery clears it.
+  not exposed. The padlock is project state: `project.json` (schema 26)
+  carries `project.edit_locks` as `{"project": bool, "inputs": [...]}` with
+  the locked input IDs strictly ascending, nonzero, and naming existing
+  inputs. The daemon folds every accepted `edit_lock` into the stored project
+  and seeds it into the engine on restore, so journal replay and checkpoint
+  restore reach the same lock state and a restart keeps refusing locked edits.
+  Removing an input offline drops its lock; the engine has no input removal.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

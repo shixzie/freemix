@@ -8562,6 +8562,7 @@ fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
     show.restore_fade_to_black(fade_to_black.desired.target_active);
     realized.restore_settled_fade_to_black(fade_to_black.realized.target_active);
     restore_overlays(&mut show, &mut realized, project.runtime_overlays())?;
+    restore_edit_locks(&mut show, canonical)?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -8582,6 +8583,17 @@ fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
                 .collect::<AppResult<Vec<_>>>()?,
         },
     )?)
+}
+
+/// Seeds the persisted edit padlock into the restored show, so a checkpoint
+/// restore and a journal replay from that checkpoint start from the same lock
+/// state. Validation already guarantees every locked input exists.
+fn restore_edit_locks(show: &mut ShowState, project: &fm_model::Project) -> AppResult<()> {
+    show.set_project_locked(project.project_locked());
+    for &input in project.locked_inputs() {
+        show.set_input_locked(input, true)?;
+    }
+    Ok(())
 }
 
 fn restore_stinger(
@@ -10009,6 +10021,7 @@ fn stored_project_with_receipts(
     sync_project_stingers(&mut project, desired, realized)?;
     sync_project_streams(&mut project, desired)?;
     sync_project_recording(&mut project, desired);
+    sync_project_edit_locks(&mut project, show)?;
     StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {
@@ -10087,6 +10100,30 @@ fn sync_project_recording(project: &mut fm_model::Project, desired: &SwitcherSta
         let active = desired.recording_desired(switcher_recorder_slot(slot));
         project.set_recording_desired(slot, active);
     }
+}
+
+/// Folds the engine's edit padlock into the stored project.
+///
+/// `SetEditLock` is a durable engine command, so the projected show is the
+/// authority for both the project flag and the per-input set; mirroring the
+/// whole state makes an accepted lock change survive restart through journal
+/// replay and checkpoint alike.
+fn sync_project_edit_locks(project: &mut fm_model::Project, show: &ShowState) -> AppResult<()> {
+    project.set_project_locked(show.is_project_locked());
+    let stale = project
+        .locked_inputs()
+        .difference(show.locked_inputs())
+        .copied()
+        .collect::<Vec<_>>();
+    for input in stale {
+        project.set_input_locked(input, false);
+    }
+    for &input in show.locked_inputs() {
+        project
+            .set_input_locked_checked(input, true)
+            .map_err(|error| AppFailure(format!("edit lock could not be persisted: {error}")))?;
+    }
+    Ok(())
 }
 
 fn persisted_overlays(desired: &SwitcherState, realized: &SwitcherState) -> RuntimeOverlays {

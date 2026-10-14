@@ -16,10 +16,10 @@ pub use project::{
     RemoveOutputError, RemoveSceneError, RemoveStreamTargetError, RenameAudioBusError,
     RenameOutputError, RenameProjectError, RenameSceneError, ReplaceInputError, RestartPolicy,
     Rgba8, Rotation, Scene, SceneInputAudioSourceError, SceneLayerError, SchemaVersion,
-    SetOutputRouteError, SetOutputStartupError, SetSceneBackgroundError, SetStingerError,
-    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
-    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
-    UpdateStreamTargetError,
+    SetInputLockError, SetOutputRouteError, SetOutputStartupError, SetSceneBackgroundError,
+    SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
+    StingerSlotNumber, UpdateStreamTargetError,
 };
 pub use resolve::{
     AudioRoute, FrameContext, LayerSource, MixFeedHistory, MixSelection, RenderSource,

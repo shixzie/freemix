@@ -45,6 +45,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_unique_entities(project, &mut errors);
     validate_inputs(project, &mut errors);
     validate_input_audio_strips(project, &mut errors);
+    validate_input_locks(project, &mut errors);
     validate_main_mix(project, &mut errors);
     validate_stingers(project, &mut errors);
     validate_scenes(project, &mut errors);
@@ -105,6 +106,22 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
                 entity: Some(EntityRef::Input(strip.input)),
                 field: "audio_strip.input",
                 kind: ValidationErrorKind::MissingReference(EntityRef::Input(strip.input)),
+            });
+        }
+    }
+}
+
+fn validate_input_locks(project: &Project, errors: &mut Vec<ValidationError>) {
+    for &input in project.locked_inputs() {
+        if !project
+            .inputs()
+            .iter()
+            .any(|candidate| candidate.id == input)
+        {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(input)),
+                field: "locked_inputs",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(input)),
             });
         }
     }

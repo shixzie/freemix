@@ -11,8 +11,8 @@ use fm_model::{
     ProjectSettings, RECORDER_SLOT_COUNT, REDACTED_STREAM_KEY, RecorderSlot, RecorderSlotError,
     RectMask, RemoveAudioBusError, RemoveInputError, RemoveOutputError, RemoveSceneError,
     RenameSceneError, ReplaceInputError, RestartPolicy, Rgba8, Rotation, Scene, SceneLayerError,
-    SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
-    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
+    SetInputLockError, SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
+    SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
     StingerSlotNumber, StreamEndpoint, StreamEndpointError, StreamKey, StreamKeyError,
     StreamLadder, StreamLadderError, StreamLadderRung, StreamProtocol, StreamTarget,
     StreamTargetError, StreamTargetId, StreamVideoBitrateError, ValidationError,
@@ -2747,4 +2747,69 @@ fn long_reference_chains_validate_without_deep_recursion() {
         .join()
         .unwrap();
     assert_eq!(cycles, 3 * usize::try_from(LENGTH).unwrap());
+}
+
+#[test]
+fn edit_locks_are_project_state_validated_against_inputs() {
+    let mut project = valid_project();
+    assert!(!project.project_locked());
+    assert!(project.locked_inputs().is_empty());
+
+    project.set_project_locked(true);
+    project.set_input_locked_checked(input_id(1), true).unwrap();
+    assert!(project.project_locked());
+    assert!(project.is_input_locked(input_id(1)));
+    assert_eq!(
+        project.locked_inputs().iter().copied().collect::<Vec<_>>(),
+        vec![input_id(1)]
+    );
+    assert_eq!(project.validate(), Ok(()));
+
+    let before = project.clone();
+    assert_eq!(
+        project.set_input_locked_checked(input_id(9), true),
+        Err(SetInputLockError::UnknownInput(input_id(9)))
+    );
+    assert_eq!(project, before);
+
+    project.set_input_locked(input_id(9), true);
+    assert_eq!(
+        project.validate(),
+        Err(vec![ValidationError {
+            entity: Some(EntityRef::Input(input_id(9))),
+            field: "locked_inputs",
+            kind: ValidationErrorKind::MissingReference(EntityRef::Input(input_id(9))),
+        }])
+    );
+
+    project.set_input_locked(input_id(9), false);
+    project
+        .set_input_locked_checked(input_id(1), false)
+        .unwrap();
+    project.set_project_locked(false);
+    assert!(!project.project_locked());
+    assert!(project.locked_inputs().is_empty());
+    assert_eq!(project.validate(), Ok(()));
+}
+
+#[test]
+fn removing_a_locked_input_drops_its_lock() {
+    let mut project = valid_project();
+    project.add_input(Input {
+        id: input_id(2),
+        name: "Spare".into(),
+        kind: InputKind::Simulated(SimulatedInput::new(
+            SimulatedVideo::Bars,
+            SimulatedAudio::Silence,
+        )),
+        required_capabilities: Vec::new(),
+    });
+    project.set_input_locked_checked(input_id(1), true).unwrap();
+    project.set_input_locked_checked(input_id(2), true).unwrap();
+
+    project.remove_input(input_id(2)).unwrap();
+
+    assert!(!project.is_input_locked(input_id(2)));
+    assert!(project.is_input_locked(input_id(1)));
+    assert_eq!(project.validate(), Ok(()));
 }

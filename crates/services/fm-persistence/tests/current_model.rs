@@ -594,7 +594,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 25"));
+    assert!(encoded.contains("\"schema_version\": 26"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -664,7 +664,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 25"));
+    assert!(encoded.contains("\"schema_version\": 26"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -820,7 +820,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 25"));
+    assert!(valid.contains("\"schema_version\": 26"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -836,7 +836,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 25", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 26", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1252,7 +1252,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 25"));
+    assert!(encoded.contains("\"schema_version\": 26"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1589,7 +1589,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 25"));
+    assert!(encoded.contains("\"schema_version\": 26"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -1649,4 +1649,115 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
         let error = store.load().unwrap_err();
         assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
     }
+}
+
+#[test]
+fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
+    let temp = TestDirectory::new("edit-locks");
+    let store = temp.store("show");
+    let high = u128::from(u64::MAX) + 101;
+
+    // An unlocked project writes an explicit, empty padlock.
+    store.save(&stored_rich_project()).unwrap();
+    let unlocked = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(unlocked.contains(
+        "\"recording_desired\": [false, false],\n    \"edit_locks\": {\"project\": false, \"inputs\": []}\n  },\n  \"runtime\": {"
+    ));
+
+    // Locks are written in identifier order regardless of the order applied.
+    let mut project = rich_project();
+    project.set_project_locked(true);
+    project
+        .set_input_locked_checked(input_id(high + 2), true)
+        .unwrap();
+    project
+        .set_input_locked_checked(input_id(high), true)
+        .unwrap();
+    let expected = StoredProject::from_project(
+        project,
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(encoded.contains("\"schema_version\": 26"));
+    let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
+    assert!(
+        encoded.contains(&format!(
+            "\"recording_desired\": [false, false],\n    {locks}\n  }},\n  \"runtime\": {{"
+        )),
+        "unexpected edit lock encoding in {encoded}"
+    );
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded, expected);
+    assert!(loaded.project().project_locked());
+    assert_eq!(
+        loaded
+            .project()
+            .locked_inputs()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![input_id(high), input_id(high + 2)]
+    );
+
+    // The field is required, typed, canonical, and duplicate-free.
+    for malformed in [
+        encoded.replacen(&format!(",\n    {locks}"), "", 1),
+        encoded.replacen(locks, "\"edit_locks\": null", 1),
+        encoded.replacen(
+            locks,
+            "\"edit_locks\": {\"project\": 1, \"inputs\": []}",
+            1,
+        ),
+        encoded.replacen(locks, "\"edit_locks\": {\"inputs\": []}", 1),
+        encoded.replacen(locks, "\"edit_locks\": {\"project\": true}", 1),
+        encoded.replacen(
+            locks,
+            "\"edit_locks\": {\"project\": true, \"inputs\": [], \"extra\": 1}",
+            1,
+        ),
+        encoded.replacen(
+            locks,
+            "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551718, 18446744073709551716]}",
+            1,
+        ),
+        encoded.replacen(
+            locks,
+            "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551716]}",
+            1,
+        ),
+        encoded.replacen(
+            locks,
+            "\"edit_locks\": {\"project\": true, \"inputs\": [0]}",
+            1,
+        ),
+        encoded.replacen(
+            locks,
+            "\"edit_locks\": {\"project\": true, \"inputs\": [\"18446744073709551716\"]}",
+            1,
+        ),
+    ] {
+        assert_ne!(malformed, encoded);
+        fs::write(store.manifest_path(), malformed).unwrap();
+        assert!(matches!(
+            store.load(),
+            Err(StoreError::MalformedManifest { .. })
+        ));
+    }
+
+    // A lock on an input the project does not contain is a domain error.
+    fs::write(
+        store.manifest_path(),
+        encoded.replacen(
+            locks,
+            "\"edit_locks\": {\"project\": true, \"inputs\": [99]}",
+            1,
+        ),
+    )
+    .unwrap();
+    let error = store.load().unwrap_err();
+    assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
 }

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use fm_types::{
     AudioFormat, BusId, FrameRate, InputId, InputOrderError, OutputId, ProjectId, RenameInputError,
     SceneId, VideoFormat, validate_input_name, validate_input_order,
@@ -13,6 +15,12 @@ use crate::{
 pub enum RemoveInputError {
     UnknownInput(InputId),
     DomainReference(InputId),
+}
+
+/// Refusal for [`Project::set_input_locked_checked`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetInputLockError {
+    UnknownInput(InputId),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -696,6 +704,16 @@ impl std::fmt::Display for RemoveInputError {
 
 impl std::error::Error for RemoveInputError {}
 
+impl std::fmt::Display for SetInputLockError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
+        }
+    }
+}
+
+impl std::error::Error for SetInputLockError {}
+
 impl std::fmt::Display for RemoveSceneError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -727,7 +745,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(25);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(26);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -760,6 +778,8 @@ pub struct Project {
     recording_desired: [bool; RECORDER_SLOT_COUNT],
     stingers: Vec<StingerConfig>,
     restart_policy: RestartPolicy,
+    locked: bool,
+    locked_inputs: BTreeSet<InputId>,
 }
 
 impl Project {
@@ -780,6 +800,8 @@ impl Project {
             recording_desired: [false; RECORDER_SLOT_COUNT],
             stingers: Vec::new(),
             restart_policy: RestartPolicy::default(),
+            locked: false,
+            locked_inputs: BTreeSet::new(),
         }
     }
 
@@ -891,6 +913,62 @@ impl Project {
         self.restart_policy
     }
 
+    /// Whether the project-wide edit padlock is engaged.
+    ///
+    /// The padlock is persisted operator intent. The model stores it but does
+    /// not enforce it: engines restored from the project refuse locked edits,
+    /// while direct model mutations (for example offline input removal) are
+    /// unaffected.
+    #[must_use]
+    pub const fn project_locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Engages or releases the project-wide edit padlock.
+    pub const fn set_project_locked(&mut self, locked: bool) {
+        self.locked = locked;
+    }
+
+    /// Inputs whose edit padlock is engaged, in identifier order.
+    #[must_use]
+    pub const fn locked_inputs(&self) -> &BTreeSet<InputId> {
+        &self.locked_inputs
+    }
+
+    /// Whether one input's edit padlock is engaged.
+    #[must_use]
+    pub fn is_input_locked(&self, input: InputId) -> bool {
+        self.locked_inputs.contains(&input)
+    }
+
+    /// Engages or releases one input's edit padlock without checking that the
+    /// input exists; [`Project::validate`] reports a dangling lock.
+    pub fn set_input_locked(&mut self, input: InputId, locked: bool) {
+        if locked {
+            self.locked_inputs.insert(input);
+        } else {
+            self.locked_inputs.remove(&input);
+        }
+    }
+
+    /// Engages or releases one input's edit padlock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetInputLockError::UnknownInput`] without mutation when the
+    /// input does not exist.
+    pub fn set_input_locked_checked(
+        &mut self,
+        input: InputId,
+        locked: bool,
+    ) -> Result<(), SetInputLockError> {
+        if !self.inputs.iter().any(|candidate| candidate.id == input) {
+            return Err(SetInputLockError::UnknownInput(input));
+        }
+        self.set_input_locked(input, locked);
+        Ok(())
+    }
+
     pub fn add_input(&mut self, input: Input) {
         self.input_audio_strips.push(InputAudioStrip {
             input: input.id,
@@ -928,7 +1006,10 @@ impl Project {
         Ok(())
     }
 
-    /// Removes an input together with its persisted audio strip.
+    /// Removes an input together with its persisted audio strip and edit
+    /// padlock. The padlock is enforced by the engine, which has no input
+    /// removal, so removing a locked input offline drops its lock rather than
+    /// leaving a dangling reference.
     ///
     /// # Errors
     ///
@@ -974,6 +1055,7 @@ impl Project {
         }
         self.inputs.retain(|candidate| candidate.id != input);
         self.input_audio_strips.retain(|strip| strip.input != input);
+        self.locked_inputs.remove(&input);
         Ok(())
     }
 

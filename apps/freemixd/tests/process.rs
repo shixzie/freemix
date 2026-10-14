@@ -3814,3 +3814,196 @@ fn undo_redo_and_padlock_round_trip_through_the_daemon() {
     assert!(!recovered.edit_locks.project);
     daemon.wait_success();
 }
+
+/// Asserts that `payload` is refused with the stable edit-lock `code` at
+/// `revision` without advancing it.
+fn assert_lock_refusal(
+    client: &mut Client,
+    id: &str,
+    payload: CommandPayload,
+    code: &str,
+    revision: u64,
+) {
+    client.send(&command(id, &format!("{id}-key"), payload));
+    match client.next_result() {
+        CommandResult::Rejected {
+            fields,
+            current_revision,
+            ..
+        } => {
+            assert_eq!(current_revision, revision, "{id} moved the revision");
+            assert_eq!(
+                fields.first().map(|field| field.code.as_str()),
+                Some(code),
+                "{id} was refused for the wrong reason"
+            );
+        }
+        other @ CommandResult::Accepted { .. } => {
+            panic!("expected {id} to be refused as {code}, got {other:?}")
+        }
+    }
+}
+
+/// The edit padlock is project state: a project lock and an input lock
+/// survive a kill before any checkpoint (journal replay), then a clean
+/// checkpoint (manifest restore), and keep refusing edits until released.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn edit_locks_survive_kill_recovery_and_checkpoint_restore() {
+    use fm_protocol::{EditLockScope, EditLockStatus};
+
+    fn rename(name: &str) -> CommandPayload {
+        CommandPayload::RenameInput {
+            input: input(1),
+            name: name.into(),
+        }
+    }
+
+    let directory = TestDirectory::new("edit-locks-durable");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let store = ProjectStore::new(&project_path).unwrap();
+    let both_locked = EditLockStatus {
+        project: true,
+        inputs: vec![input(1)],
+    };
+
+    // Engage both padlocks, then kill the daemon before any checkpoint.
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut admin = daemon.connect();
+    admin.handshake_as(Role::Admin, None);
+    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    for (id, scope) in [
+        ("lock-project", EditLockScope::Project),
+        ("lock-input", EditLockScope::Input(input(1))),
+    ] {
+        admin.send(&command(
+            id,
+            &format!("{id}-key"),
+            CommandPayload::SetEditLock {
+                scope,
+                locked: true,
+            },
+        ));
+        accepted_revision(&mut admin, id);
+    }
+    assert_eq!(snapshot_of(&daemon, Role::Viewer).edit_locks, both_locked);
+    drop(admin);
+    daemon.stop();
+
+    // The locks exist only as journal batches at this instant.
+    let crashed = store.load().unwrap();
+    assert_eq!(crashed.position().revision, 0);
+    assert!(!crashed.project().project_locked());
+    assert!(crashed.project().locked_inputs().is_empty());
+    assert_eq!(store.scan_journal().unwrap().batches().len(), 2);
+
+    // Journal replay restores both locks, and they still refuse edits.
+    let daemon = Daemon::start(&project_path);
+    let mut admin = daemon.connect();
+    assert_eq!(admin.handshake_as(Role::Admin, None).current_revision, 2);
+    let WireMessage::Snapshot(replayed) = admin.receive() else {
+        panic!("expected snapshot");
+    };
+    assert_eq!(replayed.edit_locks, both_locked);
+    assert_lock_refusal(
+        &mut admin,
+        "rename-replayed",
+        rename("Refused"),
+        "project_locked",
+        2,
+    );
+    drop(admin);
+    daemon.wait_success();
+
+    // The clean shutdown checkpointed the locks into project.json.
+    let checkpointed = store.load().unwrap();
+    assert_eq!(checkpointed.position().revision, 2);
+    assert!(checkpointed.project().project_locked());
+    assert_eq!(
+        checkpointed
+            .project()
+            .locked_inputs()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![domain_input(1)]
+    );
+    assert_eq!(store.scan_journal().unwrap().batches(), []);
+    let manifest = std::fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(manifest.contains(&format!(
+        "\"edit_locks\": {{\"project\": true, \"inputs\": [{}]}}",
+        domain_input(1)
+    )));
+
+    // Restoring from that checkpoint alone yields the identical lock state.
+    let daemon = Daemon::start_without_once(&project_path);
+    let restored = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(restored.edit_locks, replayed.edit_locks);
+    let mut admin = daemon.connect();
+    admin.handshake_as(Role::Admin, None);
+    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    assert_lock_refusal(
+        &mut admin,
+        "rename-restored",
+        rename("Refused"),
+        "project_locked",
+        2,
+    );
+
+    // Releasing the project lock leaves the input lock in force.
+    admin.send(&command(
+        "unlock-project",
+        "unlock-project-key",
+        CommandPayload::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: false,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "unlock-project"), 3);
+    assert_lock_refusal(
+        &mut admin,
+        "rename-input-locked",
+        rename("Refused"),
+        "input_locked",
+        3,
+    );
+    admin.send(&command(
+        "unlock-input",
+        "unlock-input-key",
+        CommandPayload::SetEditLock {
+            scope: EditLockScope::Input(input(1)),
+            locked: false,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "unlock-input"), 4);
+    admin.send(&command(
+        "rename-unlocked",
+        "rename-unlocked-key",
+        rename("Camera"),
+    ));
+    assert_eq!(accepted_revision(&mut admin, "rename-unlocked"), 5);
+    drop(admin);
+    daemon.stop();
+
+    // The releases replay too: the recovered show is unlocked and renamed.
+    let daemon = Daemon::start(&project_path);
+    let mut viewer = daemon.connect();
+    assert_eq!(viewer.handshake_as(Role::Viewer, None).current_revision, 5);
+    let WireMessage::Snapshot(released) = viewer.receive() else {
+        panic!("expected snapshot");
+    };
+    assert_eq!(
+        released.edit_locks,
+        EditLockStatus {
+            project: false,
+            inputs: Vec::new(),
+        }
+    );
+    assert_eq!(input_name(&released, 1), "Camera");
+    drop(viewer);
+    daemon.wait_success();
+    let settled = store.load().unwrap();
+    assert!(!settled.project().project_locked());
+    assert!(settled.project().locked_inputs().is_empty());
+}

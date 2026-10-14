@@ -1470,7 +1470,7 @@ one second; no source/output clock drift compensation; and memory accounting
 relies on caller-reported sizes. `IN-022` remains planned.
 
 Current implementation boundary for virtual and mix-feed inputs (`IN-024`,
-`IN-025`): the current project schema (25) adds alias inputs with their own id,
+`IN-025`): project schema 25 added alias inputs with their own id,
 name, position, audio strip, and crop over a target input, and Program/Preview
 feed inputs that show the previous tick's committed bus frame (black before the
 first commit). Validation rejects missing, self, and cyclic alias targets and
@@ -1916,10 +1916,13 @@ ordinary idempotent edits, a new edit clears redo, an `expected_edit` mismatch
 is a `history_conflict`, and a failed inverse leaves history untouched.
 Durable project and per-input padlocks reject edits (including undo/redo) with
 stable reason codes while live switching continues; history resets on restore.
-Remaining undo/lock gaps: no protocol, control, CLI, or UI wiring; locks are
-not persisted in `project.json`; there is no per-author history; and outputs,
-stream targets, and titles are not engine edits yet, so `SW-017` remains
-planned. For `RC-012`, `fm-persistence` adds rotated atomic autosave
+Protocol 2.22 wires undo/redo and the padlock through control, the daemon,
+the CLI, and Studio, and project schema 26 persists the project lock and the
+locked input set in `project.json` (`project.edit_locks`), so locks survive
+restart, journal replay, and checkpoint restore; removing an input offline
+drops its lock. Remaining undo/lock gaps: there is no per-author history, and
+outputs, stream targets, and titles are not engine edits yet, so `SW-017`
+remains planned. For `RC-012`, `fm-persistence` adds rotated atomic autosave
 generations whose recovery returns the newest same-project generation that
 loads cleanly and reports every skipped one; a canonical-path recent-projects
 document with bounded size and missing-entry reporting; deduplicating media
