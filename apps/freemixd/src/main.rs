@@ -9163,6 +9163,21 @@ fn execute_admitted_command(
     let execution = {
         let mut control = control.borrow_mut();
         if let Some(native) = native {
+            if matches!(
+                command.payload,
+                CommandPayload::AddInput { .. } | CommandPayload::RemoveInput { .. }
+            ) {
+                return Ok(CommandDelivery {
+                    result: native_input_catalogue_rejection(
+                        command,
+                        control.diagnostics().current_revision,
+                    ),
+                    #[cfg(test)]
+                    events: Vec::new(),
+                    #[cfg(test)]
+                    runtime_events: Vec::new(),
+                });
+            }
             native.invalidate_projection();
             let execution = if is_stinger_mutation(command) {
                 match execute_native_stinger_mutation(
@@ -9264,6 +9279,28 @@ fn native_stinger_preflight_rejection(
     }
 }
 
+/// Refuses a live input addition or removal on a native daemon.
+///
+/// The native media runtime builds its capture, decode and mixer graph from
+/// the project at startup and cannot add or retire a source graph while it
+/// runs, so the catalogue may only change offline there. Nothing is staged, so
+/// the command leaves no receipt and stays refused on every retry.
+fn native_input_catalogue_rejection(
+    command: &CommandMessage,
+    current_revision: u64,
+) -> CommandResult {
+    CommandResult::Rejected {
+        id: command.id.clone(),
+        code: RejectionCode::Unavailable.as_str().to_owned(),
+        message: "live input add and remove are not realized by the native media runtime; \
+                  stop the daemon and use freemix-cli add-input or remove-input"
+            .to_owned(),
+        fields: Vec::new(),
+        current_revision,
+        retryable: false,
+    }
+}
+
 struct NativeMutationFailure {
     result: CommandResult,
     #[cfg(test)]
@@ -9312,6 +9349,7 @@ fn execute_native_stinger_mutation(
                     durable,
                     &projected,
                     command,
+                    command,
                     &first_prepared.output().result,
                 )
             });
@@ -9352,6 +9390,7 @@ fn execute_native_stinger_mutation(
             stored_project_from_snapshot(
                 durable,
                 &projected,
+                command,
                 command,
                 &first_prepared.output().result,
             )
@@ -9418,6 +9457,7 @@ fn execute_native_stinger_mutation(
                     durable,
                     &projected,
                     command,
+                    command,
                     &second_prepared.output().result,
                 )
             });
@@ -9461,6 +9501,7 @@ fn execute_native_stinger_mutation(
             stored_project_from_snapshot(
                 durable,
                 &projected,
+                command,
                 command,
                 &second_prepared.output().result,
             )
@@ -9792,11 +9833,22 @@ fn execute_durable_command_with_ticks(
     } else {
         0
     };
+    // An accepted undo or redo is journaled as the edit it resolved to:
+    // replay restores an engine whose session history is empty. The project
+    // sync reads the same resolved command, so an undone input removal and a
+    // live input addition both know the input kind they persist.
+    let journaled = prepared.replay_command(command);
     let staged = prepared
         .project(u64::from(ticks))
         .map_err(Into::into)
         .and_then(|projected| {
-            stored_project_from_snapshot(durable, &projected, command, &prepared.output().result)
+            stored_project_from_snapshot(
+                durable,
+                &projected,
+                command,
+                &journaled,
+                &prepared.output().result,
+            )
         });
     let updated = match staged {
         Ok(updated) => updated,
@@ -9810,9 +9862,6 @@ fn execute_durable_command_with_ticks(
     // Durability comes first: the mutation survives a crash before the engine
     // commits it, before its events are published, and before the acceptance is
     // returned to the caller for acknowledgement.
-    // An accepted undo or redo is journaled as the edit it resolved to:
-    // replay restores an engine whose session history is empty.
-    let journaled = prepared.replay_command(command);
     if let Err(error) = store.record(&journaled, now_millis, durable, &updated) {
         // Nothing was made durable, so nothing may be acknowledged. Dropping
         // the preparation abandons it without touching the engine: no revision,
@@ -9897,7 +9946,9 @@ fn command_ticks(
         | CommandPayload::RecordStop { .. }
         | CommandPayload::Undo { .. }
         | CommandPayload::Redo { .. }
-        | CommandPayload::SetEditLock { .. } => 1,
+        | CommandPayload::SetEditLock { .. }
+        | CommandPayload::AddInput { .. }
+        | CommandPayload::RemoveInput { .. } => 1,
     }
 }
 
@@ -9905,6 +9956,7 @@ fn stored_project_from_snapshot(
     durable: &StoredProject,
     snapshot: &EngineSnapshot,
     command: &CommandMessage,
+    journaled: &CommandMessage,
     result: &CommandResult,
 ) -> AppResult<StoredProject> {
     let mut receipts = snapshot
@@ -9930,6 +9982,7 @@ fn stored_project_from_snapshot(
         durable,
         snapshot,
         retained_receipts(receipts, Some(&command.idempotency_key)),
+        Some(journaled),
     )
 }
 
@@ -9948,6 +10001,7 @@ fn stored_project_checkpoint(
                 .collect(),
             None,
         ),
+        None,
     )
 }
 
@@ -9987,12 +10041,14 @@ fn stored_project_with_receipts(
     durable: &StoredProject,
     snapshot: &EngineSnapshot,
     receipts: Vec<IdempotencyReceipt>,
+    command: Option<&CommandMessage>,
 ) -> AppResult<StoredProject> {
     let show = snapshot.show();
     let desired = show.desired_switcher();
     let realized = snapshot.realized_switcher();
     let mut project = durable.project().clone();
     project.set_main_mix(MainMix::new(desired.program(), desired.preview()));
+    sync_project_inputs(&mut project, show, command)?;
     if project
         .inputs()
         .iter()
@@ -10050,6 +10106,86 @@ fn stored_project_with_receipts(
         receipts,
     )
     .map_err(Into::into)
+}
+
+/// Folds a live input addition or removal into the stored project.
+///
+/// The engine's show owns the input catalogue but not the input kinds, so an
+/// addition reads its kind from the command being made durable (always a
+/// journaled `input_add`, also when an undo resolved to it). A removal is
+/// checked against the persisted references the engine does not model, Scene
+/// layers, Scene audio sources and alias targets, and refused with the reason
+/// when one still names the input. Any other divergence means the show and the
+/// project disagree, which is fatal.
+fn sync_project_inputs(
+    project: &mut fm_model::Project,
+    show: &ShowState,
+    command: Option<&CommandMessage>,
+) -> AppResult<()> {
+    let removed = project
+        .inputs()
+        .iter()
+        .map(|input| input.id)
+        .filter(|input| !show.inputs().contains(input))
+        .collect::<Vec<_>>();
+    for input in removed {
+        if let Some(reference) = project.input_reference(input) {
+            return Err(CommandRefusal {
+                code: RejectionCode::Conflict,
+                retryable: false,
+                message: format!("input {input} cannot be removed: it is {reference}"),
+            }
+            .into());
+        }
+        project
+            .remove_input(input)
+            .map_err(|error| AppFailure(format!("input {input} could not be removed: {error}")))?;
+    }
+    let added = show
+        .inputs()
+        .iter()
+        .zip(show.input_names())
+        .filter(|(input, _)| !project.inputs().iter().any(|known| known.id == **input))
+        .map(|(&input, name)| (input, name.clone()))
+        .collect::<Vec<_>>();
+    for (input, name) in added {
+        let source = match command.map(|command| &command.payload) {
+            Some(CommandPayload::AddInput {
+                input: added,
+                source,
+                ..
+            }) if added.to_domain() == input => *source,
+            _ => {
+                return Err(AppFailure(format!(
+                    "projected engine snapshot adds input {input} without an input_add command"
+                ))
+                .into());
+            }
+        };
+        let video = match source {
+            fm_protocol::LiveInputSource::Solid {
+                red,
+                green,
+                blue,
+                alpha,
+            } => {
+                fm_model::SimulatedVideo::Solid(fm_model::SolidColor::new(red, green, blue, alpha))
+            }
+            fm_protocol::LiveInputSource::Bars => fm_model::SimulatedVideo::Bars,
+        };
+        project
+            .add_input_checked(fm_model::Input {
+                id: input,
+                name,
+                kind: fm_model::InputKind::Simulated(fm_model::SimulatedInput::new(
+                    video,
+                    fm_model::SimulatedAudio::Silence,
+                )),
+                required_capabilities: Vec::new(),
+            })
+            .map_err(|error| AppFailure(format!("input {input} could not be added: {error}")))?;
+    }
+    Ok(())
 }
 
 /// Folds the desired stream running flags into the stored project.
@@ -16404,6 +16540,190 @@ mod tests {
 
     fn test_input_id(value: u128) -> InputId {
         InputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    /// Live input add and remove fold into the stored project before they
+    /// are journaled: an added input persists with the kind its command
+    /// carried, and a removal the engine allows is still refused, without
+    /// journaling anything, while a persisted reference the engine does not
+    /// model (here an alias target) names the input.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn live_input_catalogue_changes_sync_the_project_and_refuse_alias_targets() {
+        let baseline = test_project();
+        let mut project = baseline.project().clone();
+        project.add_input(Input {
+            id: test_input_id(3),
+            name: "Camera".into(),
+            kind: InputKind::Simulated(SimulatedInput::new(
+                SimulatedVideo::Bars,
+                SimulatedAudio::Silence,
+            )),
+            required_capabilities: Vec::new(),
+        });
+        project.add_input(Input {
+            id: test_input_id(4),
+            name: "Camera alias".into(),
+            kind: InputKind::Alias {
+                target: test_input_id(3),
+                crop: None,
+            },
+            required_capabilities: Vec::new(),
+        });
+        let mut durable = StoredProject::from_project(
+            project,
+            RuntimeRouting {
+                desired_program_id: Some(test_input_id(1)),
+                realized_program_id: Some(test_input_id(1)),
+                desired_preview_id: Some(test_input_id(2)),
+                realized_preview_id: Some(test_input_id(2)),
+            },
+            ProjectPosition::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut control = test_control(&durable);
+        let server = test_server(&control);
+        let saver = CountingSaver::default();
+        let before = durable.clone();
+
+        let refused = execute_durable_command(
+            &mut control,
+            &saver,
+            &mut durable,
+            &operator(),
+            &server,
+            &test_command(
+                "remove-target",
+                "remove-target-key",
+                CommandPayload::RemoveInput {
+                    input: fm_protocol::WireInputId::from_domain(test_input_id(3)),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+        assert!(matches!(
+            &refused.submission.output.result,
+            CommandResult::Rejected {
+                code,
+                message,
+                retryable: false,
+                current_revision: 0,
+                ..
+            } if code == "conflict"
+                && message.contains("cannot be removed: it is the target of alias input")
+        ));
+        assert_eq!(saver.0.get(), 0, "a refused removal journals nothing");
+        assert_eq!(durable, before);
+
+        let added = execute_durable_command(
+            &mut control,
+            &saver,
+            &mut durable,
+            &operator(),
+            &server,
+            &test_command(
+                "add-guest",
+                "add-guest-key",
+                CommandPayload::AddInput {
+                    input: fm_protocol::WireInputId::from_domain(test_input_id(5)),
+                    name: "Guest".into(),
+                    source: fm_protocol::LiveInputSource::Solid {
+                        red: 1,
+                        green: 2,
+                        blue: 3,
+                        alpha: 255,
+                    },
+                },
+            ),
+            0,
+        )
+        .unwrap();
+        assert!(matches!(
+            added.submission.output.result,
+            CommandResult::Accepted { revision: 1, .. }
+        ));
+        let guest = durable
+            .project()
+            .inputs()
+            .iter()
+            .find(|input| input.id == test_input_id(5))
+            .expect("the added input is persisted");
+        assert_eq!(guest.name, "Guest");
+        assert_eq!(
+            guest.kind,
+            InputKind::Simulated(SimulatedInput::new(
+                SimulatedVideo::Solid(SolidColor::new(1, 2, 3, 255)),
+                SimulatedAudio::Silence,
+            ))
+        );
+        assert!(
+            durable
+                .project()
+                .input_audio_strips()
+                .iter()
+                .any(|strip| strip.input == test_input_id(5))
+        );
+
+        let removed = execute_durable_command(
+            &mut control,
+            &saver,
+            &mut durable,
+            &operator(),
+            &server,
+            &test_command(
+                "remove-alias",
+                "remove-alias-key",
+                CommandPayload::RemoveInput {
+                    input: fm_protocol::WireInputId::from_domain(test_input_id(4)),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+        assert!(matches!(
+            removed.submission.output.result,
+            CommandResult::Accepted { revision: 2, .. }
+        ));
+        assert_eq!(
+            durable
+                .project()
+                .inputs()
+                .iter()
+                .map(|input| input.id)
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 5].map(test_input_id)
+        );
+        assert_eq!(saver.0.get(), 2);
+    }
+
+    #[test]
+    fn native_input_catalogue_changes_are_refused_with_the_offline_path() {
+        let result = native_input_catalogue_rejection(
+            &test_command(
+                "native-add",
+                "native-add-key",
+                CommandPayload::AddInput {
+                    input: fm_protocol::WireInputId::from_domain(test_input_id(9)),
+                    name: "Guest".into(),
+                    source: fm_protocol::LiveInputSource::Bars,
+                },
+            ),
+            4,
+        );
+        assert!(matches!(
+            result,
+            CommandResult::Rejected {
+                ref code,
+                ref message,
+                current_revision: 4,
+                retryable: false,
+                ..
+            } if code == "unavailable"
+                && message.contains("not realized by the native media runtime")
+                && message.contains("freemix-cli add-input")
+        ));
     }
 
     #[cfg(feature = "native-media")]

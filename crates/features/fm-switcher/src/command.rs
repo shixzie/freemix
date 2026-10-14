@@ -196,6 +196,48 @@ pub enum SwitcherError {
         requested: usize,
         maximum: usize,
     },
+    /// An added input already belongs to this mix.
+    DuplicateInput(InputId),
+    /// A removed input is still referenced by switcher state.
+    InputInUse {
+        input: InputId,
+        usage: InputUsage,
+    },
+}
+
+/// The first switcher reference that keeps an input from being removed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputUsage {
+    Program,
+    Preview,
+    /// An endpoint of an automatic transition in flight.
+    Transition,
+    /// An endpoint of an active manual (T-bar) transition.
+    ManualTransition,
+    /// The source of an overlay channel, on air or fading.
+    Overlay(OverlayChannelId),
+    /// A queued source of an overlay channel.
+    OverlayQueue(OverlayChannelId),
+    /// The media input of a configured Stinger slot.
+    Stinger(StingerSlotId),
+}
+
+impl core::fmt::Display for InputUsage {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Program => formatter.write_str("on Program"),
+            Self::Preview => formatter.write_str("on Preview"),
+            Self::Transition => formatter.write_str("in a transition in flight"),
+            Self::ManualTransition => formatter.write_str("in the active manual transition"),
+            Self::Overlay(channel) => {
+                write!(formatter, "the source of overlay {}", channel.number())
+            }
+            Self::OverlayQueue(channel) => {
+                write!(formatter, "queued on overlay {}", channel.number())
+            }
+            Self::Stinger(slot) => write!(formatter, "the media of Stinger {}", slot.number()),
+        }
+    }
 }
 
 impl core::fmt::Display for SwitcherError {
@@ -255,6 +297,12 @@ impl core::fmt::Display for SwitcherError {
             }
             Self::DuplicateStreamTarget(target) => {
                 write!(formatter, "stream target {target} occurs more than once")
+            }
+            Self::DuplicateInput(input) => {
+                write!(formatter, "input {input} is already part of this mix")
+            }
+            Self::InputInUse { input, usage } => {
+                write!(formatter, "input {input} cannot be removed: it is {usage}")
             }
             Self::InvalidStreamName => {
                 formatter.write_str("stream name must be nonblank and within the byte limit")

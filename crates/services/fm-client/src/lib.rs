@@ -892,6 +892,8 @@ impl Client {
             }
             CommandPayload::ReorderInputs { .. }
             | CommandPayload::RenameInput { .. }
+            | CommandPayload::AddInput { .. }
+            | CommandPayload::RemoveInput { .. }
             | CommandPayload::SetInputAudioStrip { .. }
             | CommandPayload::Cut
             | CommandPayload::Fade { .. }

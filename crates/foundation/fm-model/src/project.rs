@@ -17,6 +17,39 @@ pub enum RemoveInputError {
     DomainReference(InputId),
 }
 
+/// The first persisted project reference that keeps an input from being
+/// removed. See [`Project::input_reference`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputReference {
+    /// The desired main-mix Program source.
+    Program,
+    /// The desired main-mix Preview source.
+    Preview,
+    /// The media input of a Stinger slot.
+    Stinger(StingerSlotNumber),
+    /// A layer source of a Scene.
+    SceneLayer(SceneId),
+    /// The audio source of a Scene input.
+    SceneAudioSource(InputId),
+    /// The target of an alias input.
+    AliasTarget(InputId),
+}
+
+impl std::fmt::Display for InputReference {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Program => formatter.write_str("the Program source"),
+            Self::Preview => formatter.write_str("the Preview source"),
+            Self::Stinger(slot) => write!(formatter, "the media of Stinger {}", slot.number()),
+            Self::SceneLayer(scene) => write!(formatter, "a layer source of scene {scene}"),
+            Self::SceneAudioSource(input) => {
+                write!(formatter, "the audio source of Scene input {input}")
+            }
+            Self::AliasTarget(input) => write!(formatter, "the target of alias input {input}"),
+        }
+    }
+}
+
 /// Refusal for [`Project::set_input_locked_checked`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetInputLockError {
@@ -1006,10 +1039,59 @@ impl Project {
         Ok(())
     }
 
+    /// Returns the first persisted reference to `input` that keeps it from
+    /// being removed: the main mix, a Stinger slot, a Scene layer, a Scene
+    /// input's audio source, or an alias input's target.
+    #[must_use]
+    pub fn input_reference(&self, input: InputId) -> Option<InputReference> {
+        if let Some(mix) = self.main_mix {
+            if mix.desired_program == input {
+                return Some(InputReference::Program);
+            }
+            if mix.desired_preview == input {
+                return Some(InputReference::Preview);
+            }
+        }
+        if let Some(stinger) = self
+            .stingers
+            .iter()
+            .find(|stinger| stinger.media_input == input)
+        {
+            return Some(InputReference::Stinger(stinger.slot));
+        }
+        if let Some(scene) = self.scenes.iter().find(|scene| {
+            scene
+                .layers
+                .iter()
+                .any(|layer| layer.source == SourceRef::Input(input))
+        }) {
+            return Some(InputReference::SceneLayer(scene.id));
+        }
+        self.inputs
+            .iter()
+            .find_map(|candidate| match candidate.kind {
+                InputKind::Scene {
+                    audio_source: Some(source),
+                    ..
+                } if source == input => Some(InputReference::SceneAudioSource(candidate.id)),
+                InputKind::Alias { target, .. } if target == input => {
+                    Some(InputReference::AliasTarget(candidate.id))
+                }
+                InputKind::Scene { .. }
+                | InputKind::Alias { .. }
+                | InputKind::Color
+                | InputKind::Media { .. }
+                | InputKind::Device { .. }
+                | InputKind::Network { .. }
+                | InputKind::MixFeed(_)
+                | InputKind::Simulated(_) => None,
+            })
+    }
+
     /// Removes an input together with its persisted audio strip and edit
-    /// padlock. The padlock is enforced by the engine, which has no input
-    /// removal, so removing a locked input offline drops its lock rather than
-    /// leaving a dangling reference.
+    /// padlock. Live removal enforces the padlock in the engine; removing a
+    /// locked input offline drops its lock rather than leaving a dangling
+    /// reference.
     ///
     /// # Errors
     ///
@@ -1021,36 +1103,7 @@ impl Project {
         if !self.inputs.iter().any(|candidate| candidate.id == input) {
             return Err(RemoveInputError::UnknownInput(input));
         }
-        let referenced = self
-            .main_mix
-            .is_some_and(|mix| mix.desired_program == input || mix.desired_preview == input)
-            || self
-                .stingers
-                .iter()
-                .any(|stinger| stinger.media_input == input)
-            || self.scenes.iter().any(|scene| {
-                scene
-                    .layers
-                    .iter()
-                    .any(|layer| layer.source == SourceRef::Input(input))
-            })
-            || self.inputs.iter().any(|candidate| match candidate.kind {
-                InputKind::Scene {
-                    audio_source: Some(source),
-                    ..
-                }
-                | InputKind::Alias { target: source, .. } => source == input,
-                InputKind::Scene {
-                    audio_source: None, ..
-                }
-                | InputKind::Color
-                | InputKind::Media { .. }
-                | InputKind::Device { .. }
-                | InputKind::Network { .. }
-                | InputKind::MixFeed(_)
-                | InputKind::Simulated(_) => false,
-            });
-        if referenced {
+        if self.input_reference(input).is_some() {
             return Err(RemoveInputError::DomainReference(input));
         }
         self.inputs.retain(|candidate| candidate.id != input);

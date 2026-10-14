@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use fm_clock::{Clock, ClockDomainId, ClockTime, ManualClock};
 use fm_command::{
-    ApplyOutcome, CommandEnvelope, CommandReceipt, CommandState, EventSequence, IdempotencyKey,
-    Mutation, Rejection, RejectionCode, Revision, RuntimeGeneration, StateEpoch,
+    ApplyOutcome, CommandEnvelope, CommandReceipt, CommandState, EventSequence, FieldIssue,
+    IdempotencyKey, Mutation, Rejection, RejectionCode, Revision, RuntimeGeneration, StateEpoch,
 };
 use fm_scheduler::{FrameNumber, FrameScheduler, PlanGeneration};
 use fm_switcher::{
@@ -17,8 +17,8 @@ use fm_types::{FrameRate, InputId, InputOrderError, OutputId, RenameInputError};
 
 use crate::history::{EditHistory, HistoryStep, ResolvedCommand, check_edit_locks};
 use crate::{
-    EditHistoryEntry, EditLockScope, EngineError, EngineInputAudioStripState, ShowState,
-    SnapshotError,
+    EditHistoryEntry, EditLockScope, EngineError, EngineInputAudioStripState, EngineInputSource,
+    InputCatalogueError, ShowState, SnapshotError,
 };
 
 type RuntimeScheduler = FrameScheduler<(), (), EngineCommand, ()>;
@@ -96,6 +96,19 @@ pub enum EngineCommand {
     RenameInput {
         input: InputId,
         name: String,
+    },
+    /// Appends a new input with a default Master strip and no padlock.
+    ///
+    /// The source is carried for durability and redo; the engine itself
+    /// renders nothing.
+    AddInput {
+        input: InputId,
+        name: String,
+        source: EngineInputSource,
+    },
+    /// Removes an input that nothing on air or configured references.
+    RemoveInput {
+        input: InputId,
     },
     SetInputAudioStrip {
         input: InputId,
@@ -221,6 +234,14 @@ pub enum EngineEvent {
     },
     InputOrderChanged {
         inputs: Vec<InputId>,
+    },
+    InputAdded {
+        input: InputId,
+        name: String,
+        source: EngineInputSource,
+    },
+    InputRemoved {
+        input: InputId,
     },
     StreamsChanged {
         streams: Vec<EngineStreamStatus>,
@@ -681,13 +702,30 @@ impl Engine {
             _ => None,
         };
         let runtime_busy = self.transition_in_flight;
+        // The realized switcher lags the desired one by up to a frame and
+        // keeps fading overlays on air, so a removal must also be free of
+        // every realized reference or its scheduled action could not apply.
+        let realized_usage = match resolution.as_ref().map(|resolved| &resolved.command) {
+            Ok(EngineCommand::RemoveInput { input }) => self
+                .realized_switcher
+                .input_usage(*input)
+                .map(|usage| (*input, usage)),
+            _ => None,
+        };
         let staged_resolution = resolution.clone();
         let outcome = self.commands.apply(envelope, now_millis, move |_, _| {
             let ResolvedCommand { command, .. } = staged_resolution?;
+            if let Some((input, usage)) = realized_usage {
+                return Err(input_catalogue_rejection(InputCatalogueError::InUse {
+                    input,
+                    usage,
+                }));
+            }
             if let Some(kind) = runtime_busy
                 && !matches!(&command, EngineCommand::FadeToBlack { .. })
                 && !matches!(&command, EngineCommand::RenameInput { .. })
                 && !matches!(&command, EngineCommand::ReorderInputs { .. })
+                && !matches!(&command, EngineCommand::AddInput { .. })
                 && !matches!(&command, EngineCommand::SetEditLock { .. })
                 && !matches!(
                     &command,
@@ -1055,6 +1093,12 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if matches!(
+            &self.command,
+            EngineCommand::AddInput { .. } | EngineCommand::RemoveInput { .. }
+        ) {
+            return apply_input_catalogue_mutation(state, events, self);
+        }
         if let EngineCommand::ReorderInputs { inputs } = &self.command {
             state
                 .reorder_inputs(inputs.clone())
@@ -1149,6 +1193,9 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             }
             EngineCommand::ReorderInputs { .. } => {
                 unreachable!("input reorders return before switcher command mapping")
+            }
+            EngineCommand::AddInput { .. } | EngineCommand::RemoveInput { .. } => {
+                unreachable!("input catalogue mutations return before switcher command mapping")
             }
             EngineCommand::SetInputAudioStrip { .. } => {
                 unreachable!("audio-strip mutations return before switcher command mapping")
@@ -1268,6 +1315,60 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             target_frame: self.target_frame,
         })
     }
+}
+
+fn apply_input_catalogue_mutation(
+    state: &mut ShowState,
+    events: &mut Vec<EngineEvent>,
+    mutation: EngineMutation,
+) -> Result<EngineAcceptance, Rejection> {
+    let EngineMutation {
+        command,
+        target_frame,
+    } = mutation;
+    match command {
+        EngineCommand::AddInput {
+            input,
+            name,
+            source,
+        } => {
+            state
+                .add_input(input, name.clone())
+                .map_err(input_catalogue_rejection)?;
+            events.push(EngineEvent::InputAdded {
+                input,
+                name,
+                source,
+            });
+        }
+        EngineCommand::RemoveInput { input } => {
+            state
+                .remove_input(input)
+                .map_err(input_catalogue_rejection)?;
+            events.push(EngineEvent::InputRemoved { input });
+        }
+        _ => unreachable!("only input catalogue commands are delegated"),
+    }
+    Ok(EngineAcceptance { target_frame })
+}
+
+fn input_catalogue_rejection(error: InputCatalogueError) -> Rejection {
+    let (code, field, issue) = match error {
+        InputCatalogueError::DuplicateInput(_) => {
+            (RejectionCode::Conflict, "input", "duplicate_input")
+        }
+        InputCatalogueError::EmptyName | InputCatalogueError::NameTooLong => {
+            (RejectionCode::InvalidCommand, "name", "invalid_name")
+        }
+        InputCatalogueError::DuplicateName => (RejectionCode::Conflict, "name", "duplicate_name"),
+        InputCatalogueError::TooManyInputs { .. } => {
+            (RejectionCode::Conflict, "input", "too_many_inputs")
+        }
+        InputCatalogueError::UnknownInput(_) => (RejectionCode::NotFound, "input", "unknown_input"),
+        InputCatalogueError::InUse { .. } => (RejectionCode::Conflict, "input", "input_in_use"),
+    };
+    let message = error.to_string();
+    Rejection::new(code, message.clone()).with_field(FieldIssue::new(field, issue, message))
 }
 
 fn apply_edit_lock_mutation(
@@ -1518,6 +1619,17 @@ fn apply_runtime(
             .expect("accepted engine input orders are validated");
         return Ok(Vec::new());
     }
+    match &command {
+        EngineCommand::AddInput { input, .. } => {
+            switcher.add_input(*input)?;
+            return Ok(Vec::new());
+        }
+        EngineCommand::RemoveInput { input } => {
+            switcher.remove_input(*input)?;
+            return Ok(Vec::new());
+        }
+        _ => {}
+    }
     if let EngineCommand::FadeToBlack {
         active,
         duration_frames,
@@ -1536,6 +1648,9 @@ fn apply_runtime(
         }
         EngineCommand::ReorderInputs { .. } => {
             unreachable!("input reorders return before switcher command mapping")
+        }
+        EngineCommand::AddInput { .. } | EngineCommand::RemoveInput { .. } => {
+            unreachable!("input catalogue commands return before switcher command mapping")
         }
         EngineCommand::SetInputAudioStrip { .. } => {
             unreachable!("audio-strip commands return before switcher command mapping")
@@ -1705,6 +1820,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::RemoveStinger { .. }
         | EngineCommand::RenameInput { .. }
         | EngineCommand::ReorderInputs { .. }
+        | EngineCommand::AddInput { .. }
+        | EngineCommand::RemoveInput { .. }
         | EngineCommand::SetInputAudioStrip { .. }
         | EngineCommand::TakeOverlay { .. }
         | EngineCommand::UpdateOverlay { .. }
@@ -1866,7 +1983,9 @@ fn switcher_rejection(error: SwitcherError) -> Rejection {
         SwitcherError::UnknownInput(_)
         | SwitcherError::UnconfiguredStinger(_)
         | SwitcherError::UnknownStreamTarget(_) => RejectionCode::NotFound,
-        SwitcherError::TransitionInProgress => RejectionCode::Conflict,
+        SwitcherError::TransitionInProgress
+        | SwitcherError::DuplicateInput(_)
+        | SwitcherError::InputInUse { .. } => RejectionCode::Conflict,
         SwitcherError::UnsupportedManualTransitionKind
         | SwitcherError::InvalidManualTransitionRoute
         | SwitcherError::PreviewEqualsProgram(_)

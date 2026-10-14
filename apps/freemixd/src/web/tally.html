@@ -74,7 +74,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.22";
+  const PROTOCOL = "2.23";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -306,6 +306,12 @@
         } else if (name === "input_order_changed") {
           const order = required(record, "inputs").split(",");
           show.inputs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+        } else if (name === "input_added") {
+          show.inputs.push({ id: required(record, "input"), label: required(record, "name") });
+        } else if (name === "input_removed") {
+          const id = required(record, "input");
+          show.inputs = show.inputs.filter((candidate) => candidate.id !== id);
+          if (selected === id) { selected = ""; choosing = true; }
         }
         return;
       }

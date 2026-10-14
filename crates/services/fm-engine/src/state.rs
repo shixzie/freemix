@@ -2,14 +2,36 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fm_switcher::{
-    DesiredStream, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherEvent, SwitcherState,
-    TBarState,
+    DesiredStream, InputUsage, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherEvent,
+    SwitcherState, TBarState,
 };
 use fm_types::{
     InputId, InputOrderError, MAX_INPUT_NAME_BYTES, OutputId, RenameInputError, validate_input_name,
 };
 
-use crate::ShowError;
+use crate::{InputCatalogueError, ShowError};
+
+/// Largest number of inputs a show may hold once inputs are added live.
+///
+/// Equals the protocol's list bound, so every snapshot and event list of
+/// inputs or audio strips stays encodable.
+pub const MAX_SHOW_INPUTS: usize = 256;
+
+/// The generator an input is added with while the show is live.
+///
+/// These are exactly the sources the simulated daemon renders: a solid
+/// RGBA color and color bars, both with silent audio. The engine carries the
+/// source opaquely so an undone add can be redone exactly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EngineInputSource {
+    Solid {
+        red: u8,
+        green: u8,
+        blue: u8,
+        alpha: u8,
+    },
+    Bars,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EngineInputAudioStripState {
@@ -252,6 +274,76 @@ impl ShowState {
         self.inputs = inputs;
         self.input_names = names;
         self.desired_switcher = desired_switcher;
+        Ok(())
+    }
+
+    /// Appends a new input with a default Master strip and no padlock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`InputCatalogueError`] when the identifier already
+    /// exists, the name is blank, too long, or already used, or the show
+    /// already holds [`MAX_SHOW_INPUTS`] inputs. The show is unchanged.
+    pub fn add_input(&mut self, input: InputId, name: String) -> Result<(), InputCatalogueError> {
+        if self.inputs.contains(&input) {
+            return Err(InputCatalogueError::DuplicateInput(input));
+        }
+        validate_input_name(&name).map_err(|error| match error {
+            RenameInputError::NameTooLong => InputCatalogueError::NameTooLong,
+            RenameInputError::EmptyName
+            | RenameInputError::UnknownInput(_)
+            | RenameInputError::DuplicateName => InputCatalogueError::EmptyName,
+        })?;
+        if self.input_names.contains(&name) {
+            return Err(InputCatalogueError::DuplicateName);
+        }
+        if self.inputs.len() >= MAX_SHOW_INPUTS {
+            return Err(InputCatalogueError::TooManyInputs {
+                maximum: MAX_SHOW_INPUTS,
+            });
+        }
+        self.desired_switcher
+            .add_input(input)
+            .map_err(|_| InputCatalogueError::DuplicateInput(input))?;
+        self.inputs.push(input);
+        self.input_names.push(name);
+        self.input_audio_strips
+            .insert(input, EngineInputAudioStripState::default());
+        Ok(())
+    }
+
+    /// Returns the first desired switcher reference that keeps `input` from
+    /// being removed.
+    #[must_use]
+    pub fn input_usage(&self, input: InputId) -> Option<InputUsage> {
+        self.desired_switcher.input_usage(input)
+    }
+
+    /// Removes an input together with its Master strip and padlock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InputCatalogueError::UnknownInput`] for an input outside the
+    /// show and [`InputCatalogueError::InUse`] while the desired switcher
+    /// references it. The show is unchanged on error.
+    pub fn remove_input(&mut self, input: InputId) -> Result<(), InputCatalogueError> {
+        let index = self
+            .inputs
+            .iter()
+            .position(|candidate| *candidate == input)
+            .ok_or(InputCatalogueError::UnknownInput(input))?;
+        self.desired_switcher
+            .remove_input(input)
+            .map_err(|error| match error {
+                fm_switcher::SwitcherError::InputInUse { usage, .. } => {
+                    InputCatalogueError::InUse { input, usage }
+                }
+                _ => InputCatalogueError::UnknownInput(input),
+            })?;
+        self.inputs.remove(index);
+        self.input_names.remove(index);
+        self.input_audio_strips.remove(&input);
+        self.locked_inputs.remove(&input);
         Ok(())
     }
 

@@ -1103,3 +1103,162 @@ fn edit_locks_and_history_reduce_from_snapshots_and_events() {
         Err(ModelError::InvalidEditLocks)
     );
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
+    let project = project(1);
+    let mut model = ClientModel::new(project);
+    let mut base = snapshot(project, 4);
+    base.edit_locks.inputs = vec![input(3)];
+    // Channel 2 is off but still retains input 3 as its source.
+    base.desired_overlays[1].source = Some(input(3));
+    base.realized_overlays[1].source = Some(input(3));
+    model.install_snapshot(base.clone()).unwrap();
+    let engine = base.cursor.engine.clone();
+
+    // Strips stay in identifier order even when the new id sorts first.
+    model
+        .apply_event(event(
+            project,
+            engine.clone(),
+            5,
+            DurableChange::InputAdded {
+                input: input(9),
+                name: "Red".into(),
+            },
+        ))
+        .unwrap();
+    let view = model.view().unwrap();
+    assert_eq!(view.inputs, [input(1), input(2), input(3), input(9)]);
+    assert_eq!(view.input_names.last().map(String::as_str), Some("Red"));
+    assert_eq!(
+        view.input_audio_strips
+            .iter()
+            .map(|strip| strip.input)
+            .collect::<Vec<_>>(),
+        [input(1), input(2), input(3), input(9)]
+    );
+    assert!(view.input_audio_strips[3].follow_video && !view.input_audio_strips[3].muted);
+
+    // The new input is switchable: a later event may route it to Program.
+    model
+        .apply_event(event(
+            project,
+            engine.clone(),
+            6,
+            DurableChange::DesiredSwitcher {
+                selection: BusSelection::new(input(9), input(1)),
+                manual_transition: ManualTransitionStatus::Inactive,
+                fade_to_black: base.switcher.desired_fade_to_black,
+                overlays: base.desired_overlays.clone(),
+                input_audio_strips: model.state().unwrap().input_audio_strips().to_vec(),
+            },
+        ))
+        .unwrap();
+    assert_eq!(model.view().unwrap().switcher.desired.program, input(9));
+
+    // Removal of an input on desired Program is refused; tally state stays.
+    let on_program = event(
+        project,
+        engine.clone(),
+        7,
+        DurableChange::InputRemoved { input: input(9) },
+    );
+    assert_eq!(
+        model.apply_event(on_program),
+        Err(ModelError::InputInUse(input(9)))
+    );
+    for (change, error) in [
+        (
+            DurableChange::InputAdded {
+                input: input(2),
+                name: "Twin".into(),
+            },
+            ModelError::DuplicateInput(input(2)),
+        ),
+        (
+            DurableChange::InputAdded {
+                input: input(10),
+                name: "Camera".into(),
+            },
+            ModelError::InvalidInputNames,
+        ),
+        (
+            DurableChange::InputAdded {
+                input: input(10),
+                name: " ".into(),
+            },
+            ModelError::InvalidInputNames,
+        ),
+        (
+            DurableChange::InputRemoved { input: input(42) },
+            ModelError::UnknownInput(input(42)),
+        ),
+    ] {
+        assert_eq!(
+            model.apply_event(event(project, engine.clone(), 7, change)),
+            Err(error)
+        );
+    }
+
+    // Removing the locked, off-overlay input drops its strip, padlock, and
+    // the source the settled-off overlay retained.
+    model
+        .apply_event(event(
+            project,
+            engine.clone(),
+            7,
+            DurableChange::InputRemoved { input: input(3) },
+        ))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.inputs(), [input(1), input(2), input(9)]);
+    assert_eq!(state.input_name(input(3)), None);
+    assert_eq!(state.input_audio_strips().len(), 3);
+    assert_eq!(state.edit_locks().inputs, Vec::new());
+    assert_eq!(state.desired_overlays()[1].source, None);
+    assert_eq!(state.realized_overlays()[1].source, None);
+
+    // The protocol events convert to the same changes.
+    let added = DurableProjectEvent::from_protocol(
+        project,
+        EventMessage {
+            cursor: EventCursor {
+                engine: engine.clone(),
+                revision: 8,
+            },
+            payload: EventPayload::InputAdded {
+                input: fm_protocol::WireInputId::from_domain(input(11)),
+                name: "Bars".into(),
+            },
+            edit_history: EditHistoryStatus::EMPTY,
+        },
+    );
+    assert_eq!(
+        added.change,
+        DurableChange::InputAdded {
+            input: input(11),
+            name: "Bars".into(),
+        }
+    );
+    model.apply_event(added).unwrap();
+    let removed = DurableProjectEvent::from_protocol(
+        project,
+        EventMessage {
+            cursor: EventCursor {
+                engine,
+                revision: 9,
+            },
+            payload: EventPayload::InputRemoved {
+                input: fm_protocol::WireInputId::from_domain(input(11)),
+            },
+            edit_history: EditHistoryStatus::EMPTY,
+        },
+    );
+    model.apply_event(removed).unwrap();
+    assert_eq!(
+        model.state().unwrap().inputs(),
+        [input(1), input(2), input(9)]
+    );
+}

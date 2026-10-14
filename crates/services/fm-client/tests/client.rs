@@ -1350,3 +1350,154 @@ fn edit_lock_events_and_history_summaries_reduce_into_the_client_model() {
         assert_eq!(pending.optimistic, None);
     }
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn input_catalogue_events_reduce_into_inputs_strips_and_tally() {
+    let mut client = ready_client(4);
+    // Add and remove carry no optimistic change: the catalogue moves only
+    // when the durable event arrives.
+    let add = client
+        .queue_command(
+            CommandPayload::AddInput {
+                input: input(3),
+                name: "Red".to_owned(),
+                source: fm_protocol::LiveInputSource::Solid {
+                    red: 255,
+                    green: 0,
+                    blue: 0,
+                    alpha: 255,
+                },
+            },
+            "add-red".to_owned(),
+            Some(4),
+            None,
+        )
+        .unwrap();
+    assert_eq!(client.model().view().unwrap().inputs.len(), 2);
+    client.pop_outbound();
+    client
+        .reconcile_result(CommandResult::Accepted {
+            id: add.id,
+            revision: 5,
+            scheduled_frame: Some(9),
+        })
+        .unwrap();
+
+    let through_wire = |client: &mut Client, message: WireMessage| {
+        let line = fm_protocol::encode_line(&message).unwrap();
+        client
+            .intake(fm_protocol::decode_line(&line).unwrap())
+            .unwrap()
+    };
+    let event = |revision: u64, payload: EventPayload| {
+        WireMessage::Event(EventMessage {
+            cursor: EventCursor {
+                engine: engine(),
+                revision,
+            },
+            payload,
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+        })
+    };
+    assert_eq!(
+        through_wire(
+            &mut client,
+            event(
+                5,
+                EventPayload::InputAdded {
+                    input: input(3),
+                    name: "Red".to_owned(),
+                },
+            ),
+        ),
+        Intake::EventApplied
+    );
+    let view = client.model().view().unwrap();
+    assert_eq!(
+        view.inputs,
+        [input(1), input(2), input(3)].map(WireInputId::to_domain)
+    );
+    assert_eq!(view.input_names[2], "Red");
+    assert_eq!(view.input_audio_strips.len(), 3);
+
+    // Cut the new input to Program and see the tally follow the runtime.
+    let mut strips = input_audio_strips();
+    strips.push(fm_protocol::InputAudioStripStatus {
+        input: input(3),
+        ..strips[0]
+    });
+    let switcher = |revision: u64, program: u128, preview: u128| {
+        event(
+            revision,
+            EventPayload::DesiredSwitcher {
+                program: input(program),
+                preview: input(preview),
+                manual_transition: ManualTransitionStatus::Inactive,
+                fade_to_black: live_fade_to_black(),
+                overlays: fm_protocol::OverlayStatus::empty_channels(),
+                input_audio_strips: strips.clone(),
+            },
+        )
+    };
+    through_wire(&mut client, switcher(6, 3, 1));
+    through_wire(
+        &mut client,
+        WireMessage::RuntimeEvent(runtime_event(
+            6,
+            6,
+            1,
+            RuntimeLifecycleEvent::Realized {
+                domain: "switcher".to_owned(),
+                manual_transition: ManualTransitionStatus::Inactive,
+                fade_to_black: live_fade_to_black(),
+            },
+        )),
+    );
+    let tally = client.model().view().unwrap().switcher;
+    assert_eq!(tally.desired.program, input(3).to_domain());
+    assert_eq!(tally.realized.program, input(3).to_domain());
+
+    // A removal of the input on Program would contradict the server's rule,
+    // so the client refuses to apply it and asks for a fresh snapshot.
+    let refused = client.intake(event(7, EventPayload::InputRemoved { input: input(3) }));
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(client.model().view().unwrap().inputs.len(), 3);
+    assert!(matches!(
+        client.state(),
+        ConnectionState::ResyncRequired { .. }
+    ));
+    client.start_connect().unwrap();
+    assert_eq!(client.transport_connected().unwrap().resume_cursor, None);
+    client.accept_handshake(handshake(7, None)).unwrap();
+
+    // After a resync with the input off air, removal reduces cleanly.
+    let mut resynced = snapshot(7);
+    resynced.inputs.push(fm_protocol::InputStatus {
+        input: input(3),
+        name: "Red".to_owned(),
+    });
+    resynced.input_audio_strips = strips.clone();
+    resynced.desired_program = input(2);
+    resynced.realized_program = input(2);
+    resynced.desired_preview = input(1);
+    resynced.realized_preview = input(1);
+    assert_eq!(
+        through_wire(&mut client, WireMessage::Snapshot(resynced)),
+        Intake::SnapshotApplied
+    );
+    assert_eq!(
+        through_wire(
+            &mut client,
+            event(8, EventPayload::InputRemoved { input: input(3) })
+        ),
+        Intake::EventApplied
+    );
+    let view = client.model().view().unwrap();
+    assert_eq!(
+        view.inputs,
+        [input(1), input(2)].map(WireInputId::to_domain)
+    );
+    assert_eq!(view.input_audio_strips.len(), 2);
+    assert_eq!(view.switcher.realized.program, input(2).to_domain());
+}

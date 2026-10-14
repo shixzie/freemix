@@ -8,19 +8,19 @@ use fm_protocol::{
     EditHistoryStatus, EditLockScope, EditLockStatus, EngineIdentity, ErrorMessage, EventCursor,
     EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, FieldIssue,
     HandshakeOutcome, HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioMeters,
-    InputAudioStripStatus, InputStatus, LineDecoder, MAX_EDIT_HISTORY_DEPTH, MAX_FIELD_VALUE_BYTES,
-    MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH,
-    MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS,
-    MAX_MONITOR_FRAME_WIDTH, ManualTransitionKind, ManualTransitionPosition, ManualTransitionState,
-    ManualTransitionStatus, MonitorFrameAssembler, MonitorFrameMessage, MonitorFrameOrigin,
-    MonitorTap, OutputStatus, OverlayStatus, OverlayTransitionKind, ProtocolVersion,
-    RecordingStatus, ResumeCursor, RuntimeDomainBoundary, RuntimeEventMessage,
-    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
-    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
-    StingerStatus, StreamRealizedState, StreamStatus, StructuredError, WireInputId, WireMessage,
-    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
-    choose_handshake_outcome, decode_line, decode_qoi_rgb, encode_line, encode_qoi_rgb,
-    monitor_frame_parts,
+    InputAudioStripStatus, InputStatus, LineDecoder, LiveInputSource, MAX_EDIT_HISTORY_DEPTH,
+    MAX_FIELD_VALUE_BYTES, MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS,
+    MAX_MESSAGES_PER_PUSH, MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES,
+    MAX_MONITOR_FRAME_PARTS, MAX_MONITOR_FRAME_WIDTH, ManualTransitionKind,
+    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, MonitorFrameAssembler,
+    MonitorFrameMessage, MonitorFrameOrigin, MonitorTap, OutputStatus, OverlayStatus,
+    OverlayTransitionKind, ProtocolVersion, RecordingStatus, ResumeCursor, RuntimeDomainBoundary,
+    RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
+    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
+    StingerReadiness, StingerStatus, StreamRealizedState, StreamStatus, StructuredError,
+    WireInputId, WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId, WireStreamTargetId, choose_handshake_outcome, decode_line, decode_qoi_rgb,
+    encode_line, encode_qoi_rgb, monitor_frame_parts,
 };
 
 fn input(value: u128) -> WireInputId {
@@ -2064,7 +2064,6 @@ fn monitor_frame(data: Vec<u8>) -> MonitorFrameMessage {
 
 #[test]
 fn protocol_2_21_monitor_frame_codec_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 22));
     let qoi = encode_qoi_rgb(2, 1, &[0, 0, 0, 255, 0, 0], 6, 3).unwrap();
     let message = WireMessage::MonitorFrame(monitor_frame(qoi.clone()));
     let encoded = encode_line(&message).unwrap();
@@ -2444,8 +2443,7 @@ fn locked_snapshot(edit_locks: EditLockStatus, edit_history: EditHistoryStatus) 
 }
 
 #[test]
-fn protocol_2_22_edit_history_and_padlock_commands_are_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 22));
+fn edit_history_and_padlock_commands_are_exact() {
     let cases = [
         (
             CommandPayload::Undo {
@@ -2492,7 +2490,7 @@ fn protocol_2_22_edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.22\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.23\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2501,7 +2499,7 @@ fn protocol_2_22_edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.22\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.23\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -2781,4 +2779,225 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
             value: "2:10".to_owned(),
         })
     );
+}
+
+fn catalogue_event(payload: EventPayload) -> WireMessage {
+    WireMessage::Event(EventMessage {
+        cursor: cursor(),
+        payload,
+        edit_history: EditHistoryStatus::EMPTY,
+    })
+}
+
+#[test]
+fn protocol_2_23_input_catalogue_commands_are_exact() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 23));
+    let cases = [
+        (
+            CommandPayload::AddInput {
+                input: input(42),
+                name: "Red Wall".to_owned(),
+                source: LiveInputSource::Solid {
+                    red: 255,
+                    green: 0,
+                    blue: 16,
+                    alpha: 128,
+                },
+            },
+            "\tpayload=input_add\tinput=42\tname=Red%20Wall\tkind=solid\tcolor=ff001080\n",
+        ),
+        (
+            CommandPayload::AddInput {
+                input: input(7),
+                name: "Bars".to_owned(),
+                source: LiveInputSource::Bars,
+            },
+            "\tpayload=input_add\tinput=7\tname=Bars\tkind=bars\n",
+        ),
+        (
+            CommandPayload::RemoveInput { input: input(42) },
+            "\tpayload=input_remove\tinput=42\n",
+        ),
+    ];
+    for (payload, tail) in cases {
+        let message = WireMessage::Command(edit_command(payload));
+        let encoded = encode_line(&message).unwrap();
+        assert_eq!(
+            encoded,
+            format!(
+                "command\tprotocol=2.23\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+            )
+        );
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn input_catalogue_commands_reject_out_of_contract_records() {
+    let prefix = "command\tprotocol=2.23\tid=a\tidempotency_key=k";
+    let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
+        field,
+        value: value.to_owned(),
+    };
+    let long_name = "n".repeat(fm_types::MAX_INPUT_NAME_BYTES + 1);
+    for (tail, expected) in [
+        (
+            "\tpayload=input_add\tinput=4\tname=A".to_owned(),
+            CodecError::MissingField("kind"),
+        ),
+        (
+            "\tpayload=input_add\tinput=4\tkind=bars".to_owned(),
+            CodecError::MissingField("name"),
+        ),
+        (
+            "\tpayload=input_add\tname=A\tkind=bars".to_owned(),
+            CodecError::MissingField("input"),
+        ),
+        (
+            "\tpayload=input_add\tinput=4\tname=A\tkind=media".to_owned(),
+            invalid("kind", "media"),
+        ),
+        (
+            "\tpayload=input_add\tinput=4\tname=A\tkind=solid".to_owned(),
+            CodecError::MissingField("color"),
+        ),
+        (
+            "\tpayload=input_add\tinput=4\tname=A\tkind=bars\tcolor=000000ff".to_owned(),
+            CodecError::UnknownField("color".to_owned()),
+        ),
+        (
+            "\tpayload=input_add\tinput=4\tname=A\tkind=solid\tcolor=FF0000FF".to_owned(),
+            invalid("color", "FF0000FF"),
+        ),
+        (
+            "\tpayload=input_add\tinput=4\tname=A\tkind=solid\tcolor=ff0000".to_owned(),
+            invalid("color", "ff0000"),
+        ),
+        (
+            "\tpayload=input_add\tinput=4\tname=A\tkind=solid\tcolor=ff0000fg".to_owned(),
+            invalid("color", "ff0000fg"),
+        ),
+        (
+            "\tpayload=input_add\tinput=4\tname=A\tkind=solid\tcolor=%2Bf0000ff".to_owned(),
+            invalid("color", "+f0000ff"),
+        ),
+        (
+            "\tpayload=input_add\tinput=0\tname=A\tkind=bars".to_owned(),
+            invalid("input", "0"),
+        ),
+        (
+            "\tpayload=input_add\tinput=04\tname=A\tkind=bars".to_owned(),
+            invalid("input", "04"),
+        ),
+        (
+            "\tpayload=input_add\tinput=4\tname=%20%20\tkind=bars".to_owned(),
+            invalid("name", "  "),
+        ),
+        (
+            format!("\tpayload=input_add\tinput=4\tname={long_name}\tkind=bars"),
+            invalid("name", &long_name),
+        ),
+        (
+            "\tpayload=input_remove".to_owned(),
+            CodecError::MissingField("input"),
+        ),
+        (
+            "\tpayload=input_remove\tinput=%2B4".to_owned(),
+            invalid("input", "+4"),
+        ),
+        (
+            "\tpayload=input_remove\tinput=4\tname=A".to_owned(),
+            CodecError::UnknownField("name".to_owned()),
+        ),
+    ] {
+        assert_eq!(
+            decode_line(&format!("{prefix}{tail}\n")),
+            Err(expected),
+            "{tail}"
+        );
+    }
+    // The encoder refuses what the decoder refuses.
+    for name in ["", " \t", long_name.as_str()] {
+        assert_eq!(
+            encode_line(&WireMessage::Command(edit_command(
+                CommandPayload::AddInput {
+                    input: input(4),
+                    name: name.to_owned(),
+                    source: LiveInputSource::Bars,
+                }
+            ))),
+            Err(invalid("name", name))
+        );
+        assert_eq!(
+            encode_line(&catalogue_event(EventPayload::InputAdded {
+                input: input(4),
+                name: name.to_owned(),
+            })),
+            Err(invalid("name", name))
+        );
+    }
+}
+
+#[test]
+fn input_catalogue_events_are_exact_and_strict() {
+    let prefix = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
+    let history = "\tundo_depth=0\tredo_depth=0\n";
+    let added = catalogue_event(EventPayload::InputAdded {
+        input: input(9),
+        name: "Slate 9".to_owned(),
+    });
+    let encoded = encode_line(&added).unwrap();
+    assert_eq!(
+        encoded,
+        format!("{prefix}\tevent=input_added\tinput=9\tname=Slate%209{history}")
+    );
+    assert_eq!(decode_line(&encoded).unwrap(), added);
+
+    let removed = catalogue_event(EventPayload::InputRemoved { input: input(9) });
+    let encoded = encode_line(&removed).unwrap();
+    assert_eq!(
+        encoded,
+        format!("{prefix}\tevent=input_removed\tinput=9{history}")
+    );
+    assert_eq!(decode_line(&encoded).unwrap(), removed);
+
+    for (body, expected) in [
+        (
+            "\tevent=input_added\tinput=9",
+            CodecError::MissingField("name"),
+        ),
+        (
+            "\tevent=input_added\tinput=9\tname=",
+            CodecError::InvalidField {
+                field: "name",
+                value: String::new(),
+            },
+        ),
+        (
+            "\tevent=input_added\tinput=09\tname=A",
+            CodecError::InvalidField {
+                field: "input",
+                value: "09".to_owned(),
+            },
+        ),
+        (
+            "\tevent=input_removed\tinput=9\tname=A",
+            CodecError::UnknownField("name".to_owned()),
+        ),
+        ("\tevent=input_removed", CodecError::MissingField("input")),
+        (
+            "\tevent=input_removed\tinput=0",
+            CodecError::InvalidField {
+                field: "input",
+                value: "0".to_owned(),
+            },
+        ),
+    ] {
+        assert_eq!(
+            decode_line(&format!("{prefix}{body}{history}")),
+            Err(expected),
+            "{body}"
+        );
+    }
 }

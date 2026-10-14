@@ -3,7 +3,7 @@ use core::fmt;
 use fm_clock::ClockError;
 use fm_command::CounterOverflow;
 use fm_scheduler::{ActionError, TickError};
-use fm_switcher::SwitcherError;
+use fm_switcher::{InputUsage, SwitcherError};
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES, OutputId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,6 +45,44 @@ impl fmt::Display for ShowError {
 }
 
 impl std::error::Error for ShowError {}
+
+/// Refusal of a live input add or remove.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputCatalogueError {
+    DuplicateInput(InputId),
+    EmptyName,
+    NameTooLong,
+    DuplicateName,
+    TooManyInputs { maximum: usize },
+    UnknownInput(InputId),
+    InUse { input: InputId, usage: InputUsage },
+}
+
+impl fmt::Display for InputCatalogueError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateInput(input) => write!(formatter, "input {input} already exists"),
+            Self::EmptyName => formatter.write_str("input name must not be empty"),
+            Self::NameTooLong => write!(
+                formatter,
+                "input name must not exceed {MAX_INPUT_NAME_BYTES} bytes"
+            ),
+            Self::DuplicateName => formatter.write_str("input name is already in use"),
+            Self::TooManyInputs { maximum } => {
+                write!(
+                    formatter,
+                    "the show already holds the maximum of {maximum} inputs"
+                )
+            }
+            Self::UnknownInput(input) => write!(formatter, "show does not contain input {input}"),
+            Self::InUse { input, usage } => {
+                write!(formatter, "input {input} cannot be removed: it is {usage}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for InputCatalogueError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {

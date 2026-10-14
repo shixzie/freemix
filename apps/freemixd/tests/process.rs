@@ -3815,6 +3815,246 @@ fn undo_redo_and_padlock_round_trip_through_the_daemon() {
     daemon.wait_success();
 }
 
+/// Protocol 2.23 live input add and remove, end to end through the daemon:
+/// an added solid input is announced, gets an audio strip, renders in the
+/// Preview monitor tap and can be cut to Program; removing it is refused
+/// while it is on Program and accepted once it is off air, and the
+/// resulting catalogue (including a second, still present bars input)
+/// survives a kill before any checkpoint, journal replay and the clean
+/// checkpoint into project.json with its kind.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn live_input_add_and_remove_round_trip_through_kill_and_recovery() {
+    use fm_protocol::{LiveInputSource, MonitorFrameAssembler, MonitorImage, MonitorTap};
+
+    fn input_ids(snapshot: &fm_protocol::SnapshotMessage) -> Vec<WireInputId> {
+        snapshot.inputs.iter().map(|status| status.input).collect()
+    }
+    fn strip_ids(snapshot: &fm_protocol::SnapshotMessage) -> Vec<WireInputId> {
+        snapshot
+            .input_audio_strips
+            .iter()
+            .map(|strip| strip.input)
+            .collect()
+    }
+
+    let directory = TestDirectory::new("live-input-catalogue");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let store = ProjectStore::new(&project_path).unwrap();
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut admin = daemon.connect();
+    admin.handshake_as(Role::Admin, None);
+    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+
+    admin.send(&command(
+        "add-guest",
+        "add-guest-key",
+        CommandPayload::AddInput {
+            input: input(3),
+            name: "Guest".into(),
+            source: LiveInputSource::Solid {
+                red: 12,
+                green: 34,
+                blue: 56,
+                alpha: 255,
+            },
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "add-guest"), 1);
+    let added = durable_event_at(&mut admin, 1);
+    assert!(matches!(
+        added.payload,
+        EventPayload::InputAdded { input: id, ref name } if id == input(3) && name == "Guest"
+    ));
+    let with_guest = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(input_ids(&with_guest), vec![input(1), input(2), input(3)]);
+    assert_eq!(input_name(&with_guest, 3), "Guest");
+    assert_eq!(strip_ids(&with_guest), vec![input(1), input(2), input(3)]);
+
+    // A duplicate id is refused without advancing the revision.
+    admin.send(&command(
+        "add-duplicate",
+        "add-duplicate-key",
+        CommandPayload::AddInput {
+            input: input(3),
+            name: "Other".into(),
+            source: LiveInputSource::Bars,
+        },
+    ));
+    assert!(matches!(
+        admin.next_result(),
+        CommandResult::Rejected { fields, current_revision: 1, .. }
+            if fields.first().map(|field| field.code.as_str()) == Some("duplicate_input")
+    ));
+
+    // A Studio peer watches the monitor taps; it connects only now and is
+    // drained continuously, since unread frames would back up the daemon.
+    let mut studio = daemon.connect();
+    studio
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    studio.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Viewer,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        studio.receive(),
+        WireMessage::HandshakeResponse(_)
+    ));
+    assert!(matches!(studio.receive(), WireMessage::Snapshot(_)));
+
+    // The new input renders in the Preview tap once it is selected.
+    admin.send(&command(
+        "preview-guest",
+        "preview-guest-key",
+        CommandPayload::SelectPreview { input: input(3) },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "preview-guest"), 2);
+    let mut assemblers = [MonitorFrameAssembler::new(), MonitorFrameAssembler::new()];
+    let mut assemble = |message: WireMessage| -> Option<MonitorImage> {
+        let WireMessage::MonitorFrame(part) = message else {
+            return None;
+        };
+        assemblers[part.tap.index()].push(&part).unwrap()
+    };
+    let guest_preview = receive_within(
+        &mut studio,
+        Duration::from_secs(5),
+        "Preview frame of the added input",
+        |message| {
+            assemble(message)
+                .filter(|image| image.tap == MonitorTap::Preview && image.input == input(3))
+        },
+    );
+    assert!(
+        guest_preview
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [12, 34, 56, 255])
+    );
+
+    admin.send(&command("cut-guest", "cut-guest-key", CommandPayload::Cut));
+    assert_eq!(accepted_revision(&mut admin, "cut-guest"), 3);
+    let guest_program = receive_within(
+        &mut studio,
+        Duration::from_secs(5),
+        "Program frame of the added input",
+        |message| {
+            assemble(message)
+                .filter(|image| image.tap == MonitorTap::Program && image.input == input(3))
+        },
+    );
+    assert_eq!(&guest_program.rgba[..4], &[12, 34, 56, 255]);
+    drop(studio);
+
+    // On Program, removal is refused with the stable reason.
+    admin.send(&command(
+        "remove-on-air",
+        "remove-on-air-key",
+        CommandPayload::RemoveInput { input: input(3) },
+    ));
+    match admin.next_result() {
+        CommandResult::Rejected {
+            fields,
+            current_revision,
+            message,
+            ..
+        } => {
+            assert_eq!(current_revision, 3);
+            assert_eq!(
+                fields.first().map(|field| field.code.as_str()),
+                Some("input_in_use")
+            );
+            assert!(message.contains("on Program"), "{message}");
+        }
+        other @ CommandResult::Accepted { .. } => {
+            panic!("expected the on-air removal to be refused, got {other:?}")
+        }
+    }
+
+    // Cut away (Guest moves to Preview), move Preview off it, then remove.
+    admin.send(&command("cut-away", "cut-away-key", CommandPayload::Cut));
+    assert_eq!(accepted_revision(&mut admin, "cut-away"), 4);
+    admin.send(&command(
+        "preview-away",
+        "preview-away-key",
+        CommandPayload::SelectPreview { input: input(2) },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "preview-away"), 5);
+    admin.send(&command(
+        "remove-guest",
+        "remove-guest-key",
+        CommandPayload::RemoveInput { input: input(3) },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "remove-guest"), 6);
+    let removed = durable_event_at(&mut admin, 6);
+    assert!(matches!(
+        removed.payload,
+        EventPayload::InputRemoved { input: id } if id == input(3)
+    ));
+
+    // A second, bars input stays in the catalogue across the kill.
+    admin.send(&command(
+        "add-bars",
+        "add-bars-key",
+        CommandPayload::AddInput {
+            input: input(4),
+            name: "Bars".into(),
+            source: LiveInputSource::Bars,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "add-bars"), 7);
+    durable_event_at(&mut admin, 7);
+    let settled = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(input_ids(&settled), vec![input(1), input(2), input(4)]);
+    assert_eq!(strip_ids(&settled), vec![input(1), input(2), input(4)]);
+    drop(admin);
+    daemon.stop();
+
+    // The catalogue changes exist only as journal batches at this instant.
+    let crashed = store.load().unwrap();
+    assert_eq!(crashed.position().revision, 0);
+    assert_eq!(crashed.project().inputs().len(), 2);
+    assert_eq!(store.scan_journal().unwrap().batches().len(), 7);
+
+    // Journal replay restores the catalogue, strips and routing.
+    let daemon = Daemon::start(&project_path);
+    let recovered = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(recovered.revision, 7);
+    assert_eq!(input_ids(&recovered), vec![input(1), input(2), input(4)]);
+    assert_eq!(input_name(&recovered, 4), "Bars");
+    assert_eq!(strip_ids(&recovered), vec![input(1), input(2), input(4)]);
+    assert_eq!(recovered.desired_program, input(1));
+    assert_eq!(recovered.desired_preview, input(2));
+    daemon.wait_success();
+
+    // The clean shutdown checkpointed the catalogue with the added kind.
+    let checkpointed = store.load().unwrap();
+    assert_eq!(checkpointed.position().revision, 7);
+    assert_eq!(store.scan_journal().unwrap().batches(), []);
+    let inputs = checkpointed.project().inputs();
+    assert_eq!(
+        inputs.iter().map(|input| input.id).collect::<Vec<_>>(),
+        vec![domain_input(1), domain_input(2), domain_input(4)]
+    );
+    assert_eq!(
+        inputs[2].kind,
+        InputKind::Simulated(SimulatedInput::new(
+            SimulatedVideo::Bars,
+            SimulatedAudio::Silence,
+        ))
+    );
+}
+
 /// Asserts that `payload` is refused with the stable edit-lock `code` at
 /// `revision` without advancing it.
 fn assert_lock_refusal(

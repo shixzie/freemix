@@ -445,6 +445,9 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
         page.contains(&format!("const PROTOCOL = \"{CURRENT_PROTOCOL_VERSION}\";")),
         "tally.html must be updated with the protocol identifier"
     );
+    // Live input add and remove keep the input board in step.
+    assert!(page.contains("name === \"input_added\""));
+    assert!(page.contains("name === \"input_removed\""));
     assert!(page.contains("\"freemix.control.v1\""));
     assert!(page.contains("\"freemix.bearer.\""));
     assert!(!page.contains(TOKEN), "the page never embeds the token");

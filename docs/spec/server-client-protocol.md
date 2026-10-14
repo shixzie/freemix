@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.22 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.23 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -56,8 +56,10 @@ and `HEAD`; roles and permissions still come from the protocol handshake.
 Snapshots carry bounded project-order input and output catalogs as exact ID/name pairs.
 The canonical persisted name labels input tiles and mixer strips; clients do not
 invent ordinal display names. The `input_renamed` and `input_order_changed`
-events carry durable exact-current name and order edits. Add/remove catalog edits
-still require a fresh snapshot. Protocol 2.16 additionally replicates one
+events carry durable exact-current name and order edits; since Protocol 2.23
+the `input_added` and `input_removed` events carry live catalog additions and
+removals (section 3), so clients no longer need a fresh snapshot for them.
+Protocol 2.16 additionally replicates one
 validated streaming-destination roster: every configured stream target with its
 canonical name, desired running flag, and last reported realized state.
 `stream_start` and `stream_stop` mutate exactly one target per command, are
@@ -147,7 +149,55 @@ Protocol 2.22 adds session undo/redo and the edit padlock:
   inputs. The daemon folds every accepted `edit_lock` into the stored project
   and seeds it into the engine on restore, so journal replay and checkpoint
   restore reach the same lock state and a restart keeps refusing locked edits.
-  Removing an input offline drops its lock; the engine has no input removal.
+  Removing an input, offline or live (Protocol 2.23), drops its lock.
+
+Protocol 2.23 adds live input add and remove:
+
+- `payload=input_add` carries `input=<id> name=<name> kind=solid
+  color=<rrggbbaa>` or `input=<id> name=<name> kind=bars`, in that field
+  order. The client chooses the canonical nonzero input ID; the name must be
+  non-blank and at most 128 bytes; `color` is exactly eight lowercase hex
+  digits and is present exactly with `kind=solid`. Only simulated solid and
+  bars sources, with silent audio, can be added live, because those are what
+  the simulated daemon realizes today; every other `kind` (media, device,
+  network, scene, alias, sine audio, ...) is rejected by the codec and must
+  be added offline (`freemix-cli input-add`, `media-input-add`, ...). The
+  input is appended to the end of the input order with a default Master
+  strip. The durable `event=input_added` carries `input` and `name` (not the
+  kind) and realizes in `project`; the new input then renders in the
+  simulated monitor taps once it is routed and its strip is present in the
+  next snapshot.
+- `payload=input_remove` carries `input=<id>` and publishes
+  `event=input_removed` with the same field, realizing in `project`. The
+  input's strip and input lock are dropped and a settled-off overlay that
+  still names it as its source is released.
+- Both are authorized as project edits (`EditProject`: Graphics, Admin) and
+  obey the padlock: a locked project refuses both, and a locked input refuses
+  its own removal.
+- Refusals use the stable first field issue codes `duplicate_input`,
+  `too_many_inputs` (at most 256 inputs), `unknown_input`, `input_in_use`
+  (field `input`), and `invalid_name`, `duplicate_name` (field `name`).
+  `input_in_use` (top-level `conflict`) refuses removing an input that is on
+  desired or realized Program or Preview, is the target of an in-flight or
+  manual transition, is the source of an on-air or transitioning overlay or
+  queued on one, or is a Stinger slot's media. The daemon additionally
+  refuses, as `conflict` with the reason in the message, removing an input
+  the persisted project still references as a Scene layer source, a Scene
+  input's audio source, or an alias input's target.
+- History: an accepted `input_add` is undoable (its inverse is the removal of
+  the same input; undo is refused with `history_drift` once the input is no
+  longer the last in the order or was renamed, and with `input_in_use` while
+  it is on air). `input_remove` is not undoable: its inverse would have to
+  restore the input's full persisted kind and capabilities, which the engine
+  does not hold. An accepted removal therefore clears the redo stack and
+  forgets every undo entry naming the removed input.
+- Durability: the daemon folds both into the stored project before journaling
+  them; an addition persists as a simulated solid or bars input with silent
+  audio and no required capabilities, exactly as the offline CLI commands do.
+  Journal replay and checkpoint restore reach the same catalogue.
+- A native-media daemon refuses both with `unavailable` (not retryable): the
+  native runtime builds its source graph at startup and cannot add or retire
+  one while running, so the catalogue may only change offline there.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
@@ -287,7 +337,8 @@ Suggested roles:
 - `operator`: switcher and show controls;
 - `admin`: projects, devices, users, secrets, plugins, updates.
 
-Undo, redo, and the edit padlock require `edit_project`. Undo and redo
+Undo, redo, the edit padlock, and live input add/remove require
+`edit_project`. Undo and redo
 additionally require the class of the edit they target (for example
 `transition` for a stinger slot edit), so history never escalates a role. The
 padlock is an operator guard against accidental edits, not access control:

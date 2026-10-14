@@ -4,10 +4,11 @@
 //!
 //! Every [`EngineCommand`] belongs to exactly one [`EngineCommandKind`]:
 //!
-//! - **Project edits** change durable show configuration: input names and
-//!   order, Stinger slots, and overlay transition, appearance, and output
-//!   inclusion. They are recorded in the undo history and are rejected while
-//!   the edit padlock covers them.
+//! - **Project edits** change durable show configuration: the input
+//!   catalogue (adding and removing inputs), input names and order, Stinger
+//!   slots, and overlay transition, appearance, and output inclusion. They
+//!   are rejected while the edit padlock covers them, and all but input
+//!   removal are recorded in the undo history.
 //! - **Live operations** act on what is on air or being delivered: Preview
 //!   selection, cuts and transitions (including Stinger playback and the
 //!   T-bar), overlay take/update/off/queue, Fade to Black, audio strip moves,
@@ -31,6 +32,28 @@
 //! inverse as an ordinary runtime action, so realized state follows the same
 //! path as any edit and the one-event-per-accepted-command counter invariant
 //! is preserved.
+//!
+//! # Adding and removing inputs
+//!
+//! Adding an input is undoable: its inverse removes the input again, and redo
+//! re-appends it with the same identifier, name, and source. Undo is refused
+//! as drift unless the added input still exists under its recorded name at the
+//! end of the input order (where the add put it), so redo restores the same
+//! position. Undo discards the input's Master strip moves, which are live
+//! operations; redo restores the default strip, exactly as the add created it.
+//! Undo is refused like any removal while the input is on air or configured
+//! (Program, Preview, a transition, an overlay, or a Stinger slot), and while
+//! its padlock is engaged.
+//!
+//! Removing an input is a project edit that is **not** undoable. Its inverse
+//! would have to recreate the complete input: the engine knows only the
+//! identifier, name, position, and strip, while the input's kind (a media
+//! file, a capture device, a Scene, an alias, ...) and required capabilities
+//! live in the persisted project, and most kinds cannot be added live at all.
+//! An exact inverse is therefore not well-defined here. An accepted removal
+//! instead clears the redo stack, like any new edit, and forgets every
+//! retained undo entry that names the removed input (renames, reorders, adds,
+//! and Stinger configurations), since none of them could apply again.
 //!
 //! # Interaction rules
 //!
@@ -66,7 +89,7 @@ pub const MAX_EDIT_HISTORY: usize = 100;
 pub enum EditLockScope {
     /// Locks every project edit, including undo and redo.
     Project,
-    /// Locks edits that change one input's name or position.
+    /// Locks edits that change one input's name or position, or remove it.
     Input(InputId),
 }
 
@@ -86,6 +109,8 @@ impl EngineCommand {
         match self {
             Self::RenameInput { .. }
             | Self::ReorderInputs { .. }
+            | Self::AddInput { .. }
+            | Self::RemoveInput { .. }
             | Self::ConfigureStinger { .. }
             | Self::RemoveStinger { .. }
             | Self::ConfigureOverlayTransition { .. }
@@ -292,7 +317,14 @@ pub(crate) struct EditHistory {
 #[derive(Clone, Debug)]
 pub(crate) enum HistoryStep {
     None,
-    Record { inverse: EngineCommand },
+    Record {
+        inverse: EngineCommand,
+    },
+    /// A project edit without an inverse: input removal. Clears the redo
+    /// stack and forgets undo entries that name the removed input.
+    Forget {
+        input: InputId,
+    },
     Undo,
     Redo,
 }
@@ -329,6 +361,10 @@ impl EditHistory {
                 let entry = self.redo.last();
                 Self::resolve_step(state, entry, *expected_edit, false)
             }
+            EngineCommand::RemoveInput { input } => Ok(ResolvedCommand {
+                command: command.clone(),
+                step: HistoryStep::Forget { input: *input },
+            }),
             command => Ok(ResolvedCommand {
                 command: command.clone(),
                 step: inverse_for(state, command)
@@ -371,7 +407,7 @@ impl EditHistory {
         // Applying `apply` must exactly reverse the state `recorded` would
         // produce, which holds only while the edited configuration is
         // unchanged since the entry was last applied.
-        if inverse_for(state, apply).as_ref() != Some(recorded) {
+        if !reverses(state, apply, recorded) {
             return Err(EditRejection::HistoryDrift { edit: entry.edit }.into_rejection());
         }
         Ok(ResolvedCommand {
@@ -406,6 +442,12 @@ impl EditHistory {
                     self.undo.pop_front();
                 }
             }
+            HistoryStep::Forget { input } => {
+                self.redo.clear();
+                self.undo.retain(|entry| {
+                    !names_input(&entry.forward, input) && !names_input(&entry.inverse, input)
+                });
+            }
             HistoryStep::Undo => {
                 if let Some(entry) = self.undo.pop_back() {
                     self.redo.push(entry);
@@ -417,6 +459,39 @@ impl EditHistory {
                 }
             }
         }
+    }
+}
+
+/// Returns whether applying `apply` to `state` exactly reverses the state
+/// that `recorded` produces.
+fn reverses(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) -> bool {
+    match (apply, recorded) {
+        // Undoing an add removes the input it added. The input must still
+        // carry the recorded name and sit at the end of the order, where the
+        // add appended it, so that redo re-appends it to the same position.
+        (
+            EngineCommand::RemoveInput { input },
+            EngineCommand::AddInput {
+                input: added, name, ..
+            },
+        ) => {
+            input == added
+                && state.inputs().last() == Some(input)
+                && state.input_name(*input) == Some(name.as_str())
+        }
+        _ => inverse_for(state, apply).as_ref() == Some(recorded),
+    }
+}
+
+/// Returns whether `command` refers to `input`.
+fn names_input(command: &EngineCommand, input: InputId) -> bool {
+    match command {
+        EngineCommand::RenameInput { input: named, .. }
+        | EngineCommand::AddInput { input: named, .. }
+        | EngineCommand::RemoveInput { input: named } => *named == input,
+        EngineCommand::ReorderInputs { inputs } => inputs.contains(&input),
+        EngineCommand::ConfigureStinger { descriptor, .. } => descriptor.media_input == input,
+        _ => false,
     }
 }
 
@@ -432,6 +507,10 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::ReorderInputs { .. } => Some(EngineCommand::ReorderInputs {
             inputs: state.inputs().to_vec(),
         }),
+        // An add that targets a new identifier is reverted by removing it.
+        // Removal has no inverse here; see the module documentation.
+        EngineCommand::AddInput { input, .. } => (!state.inputs().contains(input))
+            .then_some(EngineCommand::RemoveInput { input: *input }),
         EngineCommand::ConfigureStinger { slot, .. } | EngineCommand::RemoveStinger { slot } => {
             Some(match switcher.stinger(*slot).descriptor() {
                 Some(descriptor) => EngineCommand::ConfigureStinger {
@@ -480,7 +559,9 @@ pub(crate) fn check_edit_locks(
         return Err(EditRejection::ProjectLocked);
     }
     match command {
-        EngineCommand::RenameInput { input, .. } if state.is_input_locked(*input) => {
+        EngineCommand::RenameInput { input, .. } | EngineCommand::RemoveInput { input }
+            if state.is_input_locked(*input) =>
+        {
             Err(EditRejection::InputLocked(*input))
         }
         EngineCommand::ReorderInputs { inputs } => {

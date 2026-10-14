@@ -11,7 +11,7 @@ mod stinger;
 mod stream;
 mod transition;
 
-pub use command::{SwitcherCommand, SwitcherError, SwitcherEvent};
+pub use command::{InputUsage, SwitcherCommand, SwitcherError, SwitcherEvent};
 pub use fade_to_black::{
     FADE_TO_BLACK_POSITION_DENOMINATOR, FadeToBlackAdvance, FadeToBlackController,
     FadeToBlackError, FadeToBlackFrame, FadeToBlackPosition, FadeToBlackRequest,

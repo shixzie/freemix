@@ -905,6 +905,42 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::RemoteInputAdd {
+            address,
+            input,
+            name,
+            source,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AddInput {
+                input: fm_protocol::WireInputId::new(
+                    NonZeroU128::new(input)
+                        .ok_or_else(|| AppFailure("input ID must be nonzero".into()))?,
+                ),
+                name,
+                source,
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteInputRemove {
+            address,
+            input,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::RemoveInput {
+                input: fm_protocol::WireInputId::new(
+                    NonZeroU128::new(input)
+                        .ok_or_else(|| AppFailure("input ID must be nonzero".into()))?,
+                ),
+            },
+            key,
+            expected_revision,
+        )?,
         Command::RemoteReorder {
             address,
             inputs,
@@ -3987,6 +4023,9 @@ Usage:
   freemix-cli remote-diagnostics <127.0.0.1:port>
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--key <key>] [--expect <revision>]
   freemix-cli remote-rename <127.0.0.1:port> <input> <name> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-add <127.0.0.1:port> solid <input> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-add <127.0.0.1:port> bars <input> <name> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-remove <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-reorder <127.0.0.1:port> <input> [<input>...] [--key <key>] [--expect <revision>]
   freemix-cli remote-preview <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-cut <127.0.0.1:port> [--key <key>] [--expect <revision>]

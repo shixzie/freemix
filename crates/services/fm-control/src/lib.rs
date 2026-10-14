@@ -29,18 +29,19 @@ use fm_command::{CommandReceipt, DurableEvent, IdempotencyKey, RejectionCode, Re
 use fm_engine::{
     EditLockScope as EngineEditLockScope, Engine, EngineAcceptance, EngineCommand,
     EngineCommandOutcome, EngineError, EngineEvent, EngineFadeToBlackState,
-    EngineInputAudioStripState, EngineManualTransitionKind, EngineManualTransitionPosition,
-    EngineManualTransitionState, EnginePrepareOutcome, EngineSnapshot, FrameResult,
-    PreparedEngineExecution, SnapshotError,
+    EngineInputAudioStripState, EngineInputSource, EngineManualTransitionKind,
+    EngineManualTransitionPosition, EngineManualTransitionState, EnginePrepareOutcome,
+    EngineSnapshot, FrameResult, PreparedEngineExecution, SnapshotError,
 };
 use fm_protocol::{
     CommandMessage, CommandPayload, CommandResult, EditHistoryStatus, EditLockScope,
     EditLockStatus, EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackPosition,
-    FadeToBlackState, FieldIssue, InputAudioStripStatus, InputStatus, ManualTransitionKind,
-    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, OutputStatus,
-    OverlayBorderPreset as ProtocolOverlayBorder, OverlayPositionPreset as ProtocolOverlayPosition,
-    OverlayStatus, OverlayTransitionKind as ProtocolOverlayTransition, RecordingStatus,
-    RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    FadeToBlackState, FieldIssue, InputAudioStripStatus, InputStatus, LiveInputSource,
+    ManualTransitionKind, ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus,
+    OutputStatus, OverlayBorderPreset as ProtocolOverlayBorder,
+    OverlayPositionPreset as ProtocolOverlayPosition, OverlayStatus,
+    OverlayTransitionKind as ProtocolOverlayTransition, RecordingStatus, RuntimeEventMessage,
+    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
     StingerAudioPolicy as ProtocolStingerAudioPolicy,
     StingerMissingMediaFallback as ProtocolStingerFallback, StingerReadiness, StingerStatus,
     StreamRealizedState, StreamStatus, WireInputId, WireMessage, WireOutputId,
@@ -1146,6 +1147,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
     match command {
         EngineCommand::ReorderInputs { .. }
         | EngineCommand::RenameInput { .. }
+        | EngineCommand::AddInput { .. }
+        | EngineCommand::RemoveInput { .. }
         | EngineCommand::SetEditLock { .. } => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         _ => "switcher",
@@ -1154,7 +1157,9 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
 
 /// Returns the target-free authorization class of one wire command.
 ///
-/// Undo and redo are project edits. The edit padlock is also `EditProject`:
+/// Adding and removing inputs change the durable catalogue, so they are
+/// project edits. Undo and redo are project edits. The edit padlock is also
+/// `EditProject`:
 /// it is an operator guard against accidental edits, not an access-control
 /// boundary, so anyone who may edit may also guard (or release) their edits.
 /// Roles remain the access-control mechanism; a Viewer or an Operator without
@@ -1163,6 +1168,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
         CommandPayload::ReorderInputs { .. }
         | CommandPayload::RenameInput { .. }
+        | CommandPayload::AddInput { .. }
+        | CommandPayload::RemoveInput { .. }
         | CommandPayload::Undo { .. }
         | CommandPayload::Redo { .. }
         | CommandPayload::SetEditLock { .. } => CommandClass::EditProject,
@@ -1199,13 +1206,10 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
 
 fn engine_command(payload: &CommandPayload) -> EngineCommand {
     match payload {
-        CommandPayload::ReorderInputs { inputs } => EngineCommand::ReorderInputs {
-            inputs: inputs.iter().copied().map(WireInputId::to_domain).collect(),
-        },
-        CommandPayload::RenameInput { input, name } => EngineCommand::RenameInput {
-            input: input.to_domain(),
-            name: name.clone(),
-        },
+        payload @ (CommandPayload::ReorderInputs { .. }
+        | CommandPayload::RenameInput { .. }
+        | CommandPayload::AddInput { .. }
+        | CommandPayload::RemoveInput { .. }) => input_catalogue_engine_command(payload),
         CommandPayload::SetInputAudioStrip {
             input,
             gain_millidb,
@@ -1293,6 +1297,66 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
     }
 }
 
+/// Maps the input catalogue commands: reorder, rename, add, and remove.
+fn input_catalogue_engine_command(payload: &CommandPayload) -> EngineCommand {
+    match payload {
+        CommandPayload::ReorderInputs { inputs } => EngineCommand::ReorderInputs {
+            inputs: inputs.iter().copied().map(WireInputId::to_domain).collect(),
+        },
+        CommandPayload::RenameInput { input, name } => EngineCommand::RenameInput {
+            input: input.to_domain(),
+            name: name.clone(),
+        },
+        CommandPayload::AddInput {
+            input,
+            name,
+            source,
+        } => EngineCommand::AddInput {
+            input: input.to_domain(),
+            name: name.clone(),
+            source: engine_input_source(*source),
+        },
+        CommandPayload::RemoveInput { input } => EngineCommand::RemoveInput {
+            input: input.to_domain(),
+        },
+        _ => unreachable!("only input catalogue commands are routed here"),
+    }
+}
+
+const fn engine_input_source(source: LiveInputSource) -> EngineInputSource {
+    match source {
+        LiveInputSource::Solid {
+            red,
+            green,
+            blue,
+            alpha,
+        } => EngineInputSource::Solid {
+            red,
+            green,
+            blue,
+            alpha,
+        },
+        LiveInputSource::Bars => EngineInputSource::Bars,
+    }
+}
+
+const fn wire_input_source(source: EngineInputSource) -> LiveInputSource {
+    match source {
+        EngineInputSource::Solid {
+            red,
+            green,
+            blue,
+            alpha,
+        } => LiveInputSource::Solid {
+            red,
+            green,
+            blue,
+            alpha,
+        },
+        EngineInputSource::Bars => LiveInputSource::Bars,
+    }
+}
+
 fn edit_engine_command(payload: &CommandPayload) -> EngineCommand {
     match payload {
         CommandPayload::Undo { expected_edit } => EngineCommand::Undo {
@@ -1347,6 +1411,18 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
                 .copied()
                 .map(WireInputId::from_domain)
                 .collect(),
+        },
+        EngineCommand::AddInput {
+            input,
+            name,
+            source,
+        } => CommandPayload::AddInput {
+            input: WireInputId::from_domain(*input),
+            name: name.clone(),
+            source: wire_input_source(*source),
+        },
+        EngineCommand::RemoveInput { input } => CommandPayload::RemoveInput {
+            input: WireInputId::from_domain(*input),
         },
         EngineCommand::ConfigureStinger { slot, descriptor } => CommandPayload::ConfigureStinger {
             slot: WireStingerSlotId::new(slot.number()).expect("domain Stinger slots are bounded"),
@@ -1697,6 +1773,22 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
             input: WireInputId::from_domain(input),
             name: name.clone(),
         };
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EngineEvent::InputAdded { input, name, .. } => Some(EventPayload::InputAdded {
+                input: WireInputId::from_domain(*input),
+                name: name.clone(),
+            }),
+            EngineEvent::InputRemoved { input } => Some(EventPayload::InputRemoved {
+                input: WireInputId::from_domain(*input),
+            }),
+            _ => None,
+        })
+    {
+        return payload;
     }
     let input_order_changed = outcome.events.iter().find_map(|event| {
         let EngineEvent::InputOrderChanged { inputs } = &event.payload else {

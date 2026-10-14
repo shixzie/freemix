@@ -18,7 +18,7 @@ pub use dto::{
     EditHistoryStatus, EditLockScope, EditLockStatus, EngineIdentity, ErrorMessage, EventCursor,
     EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, FieldIssue,
     HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
-    HeartbeatMessage, InputAudioMeters, InputAudioStripStatus, InputStatus,
+    HeartbeatMessage, InputAudioMeters, InputAudioStripStatus, InputStatus, LiveInputSource,
     MAX_AUDIO_METER_CHANNELS, MAX_EDIT_HISTORY_DEPTH, MAX_MONITOR_FRAME_HEIGHT,
     MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS, MAX_MONITOR_FRAME_WIDTH,
     ManualTransitionKind, ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus,

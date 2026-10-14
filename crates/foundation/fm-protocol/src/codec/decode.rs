@@ -8,7 +8,7 @@ use crate::{
     EditLockStatus, EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload,
     FadeToBlackPosition, FadeToBlackState, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
     HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioMeters, InputAudioStripStatus,
-    MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionPosition,
+    LiveInputSource, MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin,
     MonitorTap, OverlayStatus, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
     RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
@@ -26,8 +26,9 @@ use super::value::{
 use super::{
     MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES, MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES,
     MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH, MAX_STREAM_LOCAL_SEGMENTS,
-    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_edit_history,
-    validate_locked_inputs, validate_overlay_duration, validate_request_id,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, decode_rgba, validate_edit_history,
+    validate_locked_inputs, validate_new_input_name, validate_overlay_duration,
+    validate_request_id,
 };
 
 /// Decodes exactly one newline-terminated wire record.
@@ -234,6 +235,12 @@ impl Fields {
         parse_input(&value).ok_or(CodecError::InvalidField { field: name, value })
     }
 
+    /// Parses a required canonical nonzero input identifier.
+    fn canonical_input(&mut self, name: &'static str) -> Result<WireInputId, CodecError> {
+        let value = self.required(name)?;
+        parse_canonical_input(&value).ok_or(CodecError::InvalidField { field: name, value })
+    }
+
     fn finish(self) -> Result<(), CodecError> {
         self.0
             .into_keys()
@@ -279,11 +286,12 @@ fn decode_command(fields: &mut Fields) -> Result<CommandMessage, CodecError> {
     })
 }
 
-fn decode_command_payload(
+/// Decodes the input catalogue commands: reorder, rename, add, and remove.
+fn decode_input_catalogue_command(
     fields: &mut Fields,
-    payload_name: String,
+    payload_name: &str,
 ) -> Result<CommandPayload, CodecError> {
-    Ok(match payload_name.as_str() {
+    Ok(match payload_name {
         "input_reorder" => CommandPayload::ReorderInputs {
             inputs: parse_input_ids(&fields.required("inputs")?)?,
         },
@@ -291,6 +299,25 @@ fn decode_command_payload(
             input: fields.input("input")?,
             name: fields.required("name")?,
         },
+        "input_add" => CommandPayload::AddInput {
+            input: fields.canonical_input("input")?,
+            name: decode_new_input_name(fields)?,
+            source: decode_live_input_source(fields)?,
+        },
+        _ => CommandPayload::RemoveInput {
+            input: fields.canonical_input("input")?,
+        },
+    })
+}
+
+fn decode_command_payload(
+    fields: &mut Fields,
+    payload_name: String,
+) -> Result<CommandPayload, CodecError> {
+    Ok(match payload_name.as_str() {
+        catalogue @ ("input_reorder" | "input_rename" | "input_add" | "input_remove") => {
+            decode_input_catalogue_command(fields, catalogue)?
+        }
         "input_audio_strip" => CommandPayload::SetInputAudioStrip {
             input: fields.input("input")?,
             gain_millidb: fields.parse_required("gain_millidb")?,
@@ -383,6 +410,37 @@ fn decode_command_payload(
             });
         }
     })
+}
+
+fn decode_new_input_name(fields: &mut Fields) -> Result<String, CodecError> {
+    let name = fields.required("name")?;
+    validate_new_input_name(&name)?;
+    Ok(name)
+}
+
+fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, CodecError> {
+    let kind = fields.required("kind")?;
+    match kind.as_str() {
+        "solid" => {
+            let value = fields.required("color")?;
+            let [red, green, blue, alpha] =
+                decode_rgba(&value).ok_or(CodecError::InvalidField {
+                    field: "color",
+                    value,
+                })?;
+            Ok(LiveInputSource::Solid {
+                red,
+                green,
+                blue,
+                alpha,
+            })
+        }
+        "bars" => Ok(LiveInputSource::Bars),
+        _ => Err(CodecError::InvalidField {
+            field: "kind",
+            value: kind,
+        }),
+    }
 }
 
 fn decode_edit_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
@@ -1021,6 +1079,13 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "input_renamed" => EventPayload::InputRenamed {
             input: fields.input("input")?,
             name: fields.required("name")?,
+        },
+        "input_added" => EventPayload::InputAdded {
+            input: fields.canonical_input("input")?,
+            name: decode_new_input_name(fields)?,
+        },
+        "input_removed" => EventPayload::InputRemoved {
+            input: fields.canonical_input("input")?,
         },
         "desired_switcher" => EventPayload::DesiredSwitcher {
             program: fields.input("program")?,

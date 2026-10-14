@@ -592,6 +592,24 @@ impl EditHistoryStatus {
     }
 }
 
+/// The source an input may be added with while the show is live.
+///
+/// These are exactly the generators the simulated daemon renders; every other
+/// input kind (media files, capture devices, network sources, Scenes,
+/// aliases, mix feeds) is added offline. Wire encoding: `kind=solid` plus
+/// `color=<rrggbbaa>` (eight lowercase hex digits), or `kind=bars`. Audio is
+/// always silent.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LiveInputSource {
+    Solid {
+        red: u8,
+        green: u8,
+        blue: u8,
+        alpha: u8,
+    },
+    Bars,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommandPayload {
     ReorderInputs {
@@ -600,6 +618,17 @@ pub enum CommandPayload {
     RenameInput {
         input: WireInputId,
         name: String,
+    },
+    /// Appends a new input at the end of the input order with a default
+    /// Master strip. The client chooses the new, unused identifier.
+    AddInput {
+        input: WireInputId,
+        name: String,
+        source: LiveInputSource,
+    },
+    /// Removes an input nothing on air or configured references.
+    RemoveInput {
+        input: WireInputId,
     },
     SetInputAudioStrip {
         input: WireInputId,
@@ -844,6 +873,18 @@ pub enum EventPayload {
     InputRenamed {
         input: WireInputId,
         name: String,
+    },
+    /// An input was appended to the end of the input order, with a default
+    /// Master strip and no padlock.
+    InputAdded {
+        input: WireInputId,
+        name: String,
+    },
+    /// An input left the show together with its Master strip and padlock.
+    /// It was neither Program nor Preview nor otherwise on air; a settled-off
+    /// overlay that retained it as its source no longer does.
+    InputRemoved {
+        input: WireInputId,
     },
     DesiredSwitcher {
         program: WireInputId,

@@ -4,7 +4,7 @@ use fm_auth::{Policy, Principal, Role, SessionId, UserId};
 use fm_clock::ClockDomainId;
 use fm_engine::{Engine, EngineInputAudioStripState, EngineManualTransitionKind, ShowState};
 use fm_protocol::{
-    CommandMessage, CommandPayload, CommandResult, EngineIdentity, EventCursor,
+    CommandMessage, CommandPayload, CommandResult, EngineIdentity, EventCursor, LiveInputSource,
     ManualTransitionKind, ManualTransitionPosition, ManualTransitionStatus, RuntimeLifecycleEvent,
     ServerIdentity, StingerAudioPolicy as ProtocolStingerAudioPolicy,
     StingerMissingMediaFallback as ProtocolStingerFallback, StingerReadiness, StingerStatus,
@@ -2634,6 +2634,24 @@ fn wire_edit_payload_round_trips_every_undoable_engine_edit() {
             output: output(5),
             included: true,
         },
+        EngineCommand::AddInput {
+            input: input(7),
+            name: "Seven".to_owned(),
+            source: fm_engine::EngineInputSource::Solid {
+                red: 1,
+                green: 2,
+                blue: 3,
+                alpha: 4,
+            },
+        },
+        EngineCommand::AddInput {
+            input: input(8),
+            name: "Eight".to_owned(),
+            source: fm_engine::EngineInputSource::Bars,
+        },
+        // Removal is a project edit; it is never recorded, but undo of an
+        // add resolves to it and the journal must carry it.
+        EngineCommand::RemoveInput { input: input(7) },
     ];
     for edit in edits {
         assert_eq!(edit.kind(), fm_engine::EngineCommandKind::ProjectEdit);
@@ -2645,4 +2663,224 @@ fn wire_edit_payload_round_trips_every_undoable_engine_edit() {
         usize::from(fm_protocol::MAX_EDIT_HISTORY_DEPTH),
         fm_engine::MAX_EDIT_HISTORY
     );
+}
+
+fn add_input(id: &str, input_value: u128, name: &str) -> CommandMessage {
+    command(
+        id,
+        &format!("{id}-key"),
+        CommandPayload::AddInput {
+            input: WireInputId::from_domain(input(input_value)),
+            name: name.to_owned(),
+            source: LiveInputSource::Solid {
+                red: 0,
+                green: 128,
+                blue: 255,
+                alpha: 255,
+            },
+        },
+    )
+}
+
+fn remove_input(id: &str, input_value: u128) -> CommandMessage {
+    command(
+        id,
+        &format!("{id}-key"),
+        CommandPayload::RemoveInput {
+            input: WireInputId::from_domain(input(input_value)),
+        },
+    )
+}
+
+#[test]
+fn input_add_and_remove_follow_the_edit_project_authorization_matrix() {
+    let roles = [
+        (Role::Viewer, false),
+        (Role::Graphics, true),
+        (Role::Audio, false),
+        (Role::Operator, false),
+        (Role::Admin, true),
+    ];
+    for (role, permitted) in roles {
+        for probe in [add_input("probe", 4, "Four"), remove_input("probe", 3)] {
+            let mut control = service(8, 8);
+            let submission = control.submit(&principal(role), probe.clone(), 0).unwrap();
+            let denied = rejection_code(&submission) == Some("permission_denied");
+            assert_eq!(
+                denied, !permitted,
+                "{role:?} {:?}: {:?}",
+                probe.payload, submission.output.result
+            );
+            assert_eq!(submission.is_accepted(), permitted, "{role:?}");
+            let snapshot = &control.snapshot().snapshot;
+            let expected_inputs = match (&probe.payload, permitted) {
+                (CommandPayload::AddInput { .. }, true) => 4,
+                (CommandPayload::RemoveInput { .. }, true) => 2,
+                _ => 3,
+            };
+            assert_eq!(snapshot.inputs.len(), expected_inputs, "{role:?}");
+            assert_eq!(snapshot.input_audio_strips.len(), expected_inputs);
+        }
+    }
+}
+
+#[test]
+fn input_add_and_remove_project_events_snapshots_history_and_journal() {
+    let mut control = service(8, 8);
+    let graphics = principal(Role::Graphics);
+    let added = control
+        .submit(&graphics, add_input("add", 4, "Slate"), 0)
+        .unwrap();
+    assert!(matches!(
+        added.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputAdded { input: added, name },
+            edit_history: EditHistoryStatus {
+                undo_depth: 1,
+                next_undo: Some(1),
+                redo_depth: 0,
+                next_redo: None,
+            },
+            ..
+        }] if added.to_domain() == input(4) && name == "Slate"
+    ));
+    assert_wire_exact(&control, &added);
+    let tick = control.tick(&server_identity()).unwrap();
+    assert!(matches!(
+        tick.runtime_events.as_slice(),
+        [RuntimeEventMessage {
+            event: RuntimeLifecycleEvent::Realized { domain, .. },
+            ..
+        }] if domain == "project"
+    ));
+    let snapshot = &control.snapshot().snapshot;
+    assert_eq!(
+        snapshot.inputs.last(),
+        Some(&InputStatus {
+            input: WireInputId::from_domain(input(4)),
+            name: "Slate".to_owned(),
+        })
+    );
+    assert!(
+        snapshot
+            .input_audio_strips
+            .iter()
+            .any(|strip| strip.input.to_domain() == input(4) && strip.follow_video)
+    );
+
+    // Undo of the add is journaled as the removal it resolved to.
+    let message = undo("undo", Some(1));
+    let staged = prepared(
+        control
+            .prepare_submit(&graphics, message.clone(), 0)
+            .unwrap(),
+    );
+    assert_eq!(
+        staged.replay_command(&message).payload,
+        CommandPayload::RemoveInput {
+            input: WireInputId::from_domain(input(4)),
+        }
+    );
+    let undone = staged.commit().unwrap();
+    assert!(matches!(
+        undone.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputRemoved { input: removed },
+            edit_history: EditHistoryStatus { undo_depth: 0, redo_depth: 1, .. },
+            ..
+        }] if removed.to_domain() == input(4)
+    ));
+    assert_wire_exact(&control, &undone);
+    control.tick(&server_identity()).unwrap();
+
+    // Redo is journaled as the exact add, source included.
+    let message = redo("redo", Some(1));
+    let staged = prepared(
+        control
+            .prepare_submit(&graphics, message.clone(), 0)
+            .unwrap(),
+    );
+    assert_eq!(
+        staged.replay_command(&message).payload,
+        add_input("unused", 4, "Slate").payload
+    );
+    assert!(staged.commit().unwrap().is_accepted());
+    control.tick(&server_identity()).unwrap();
+    assert_eq!(control.snapshot().snapshot.inputs.len(), 4);
+
+    // Removal is not undoable: the history keeps only the add, which it
+    // forgets because the add names the removed input.
+    let removed = control
+        .submit(&graphics, remove_input("remove", 4), 0)
+        .unwrap();
+    assert!(matches!(
+        removed.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputRemoved { .. },
+            edit_history: EditHistoryStatus::EMPTY,
+            ..
+        }]
+    ));
+    assert_wire_exact(&control, &removed);
+    control.tick(&server_identity()).unwrap();
+    assert_eq!(control.snapshot().snapshot.inputs.len(), 3);
+}
+
+#[test]
+fn input_add_and_remove_respect_the_padlock_and_live_references() {
+    let mut control = service(8, 8);
+    let graphics = principal(Role::Graphics);
+    let on_program = control
+        .submit(&graphics, remove_input("program", 1), 0)
+        .unwrap();
+    assert_eq!(rejection_code(&on_program), Some("conflict"));
+    assert_eq!(rejection_field_code(&on_program), Some("input_in_use"));
+
+    assert!(
+        control
+            .submit(
+                &graphics,
+                lock(
+                    "lock-three",
+                    fm_protocol::EditLockScope::Input(WireInputId::from_domain(input(3))),
+                    true,
+                ),
+                0,
+            )
+            .unwrap()
+            .is_accepted()
+    );
+    control.tick(&server_identity()).unwrap();
+    let locked = control
+        .submit(&graphics, remove_input("locked", 3), 0)
+        .unwrap();
+    assert_eq!(rejection_field_code(&locked), Some("input_locked"));
+    // An input padlock never blocks adding another input.
+    assert!(
+        control
+            .submit(&graphics, add_input("add", 4, "Four"), 0)
+            .unwrap()
+            .is_accepted()
+    );
+    control.tick(&server_identity()).unwrap();
+
+    assert!(
+        control
+            .submit(
+                &graphics,
+                lock("lock", fm_protocol::EditLockScope::Project, true),
+                0,
+            )
+            .unwrap()
+            .is_accepted()
+    );
+    control.tick(&server_identity()).unwrap();
+    for refused in [
+        add_input("add-locked", 5, "Five"),
+        remove_input("remove-locked", 4),
+    ] {
+        let submission = control.submit(&graphics, refused, 0).unwrap();
+        assert_eq!(rejection_field_code(&submission), Some("project_locked"));
+    }
+    assert_eq!(control.snapshot().snapshot.inputs.len(), 4);
 }

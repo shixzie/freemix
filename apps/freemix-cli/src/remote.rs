@@ -133,9 +133,10 @@ enum CommandCompletion {
 impl CommandCompletion {
     fn for_payload(payload: &CommandPayload) -> Self {
         match payload {
-            CommandPayload::RenameInput { .. } | CommandPayload::ReorderInputs { .. } => {
-                Self::Project
-            }
+            CommandPayload::RenameInput { .. }
+            | CommandPayload::ReorderInputs { .. }
+            | CommandPayload::AddInput { .. }
+            | CommandPayload::RemoveInput { .. } => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::Undo { .. } | CommandPayload::Redo { .. } => Self::History,
             CommandPayload::SetEditLock { .. } => Self::Padlock,
@@ -335,7 +336,9 @@ impl Remote {
                     let matches_revision = event.cursor.revision == revision;
                     let expected_event = match &event.payload {
                         EventPayload::InputRenamed { .. }
-                        | EventPayload::InputOrderChanged { .. } => matches!(
+                        | EventPayload::InputOrderChanged { .. }
+                        | EventPayload::InputAdded { .. }
+                        | EventPayload::InputRemoved { .. } => matches!(
                             completion,
                             CommandCompletion::Project | CommandCompletion::History
                         ),

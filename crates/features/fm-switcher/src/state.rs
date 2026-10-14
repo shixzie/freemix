@@ -5,7 +5,7 @@ use fm_types::{InputId, InputOrderError, OutputId, validate_input_order};
 use crate::stream::{DesiredStream, StreamTargetId, collect_desired_streams};
 use crate::{
     FadeToBlackAdvance, FadeToBlackController, FadeToBlackError, FadeToBlackFrame,
-    FadeToBlackPosition, FadeToBlackRequest, FadeToBlackTarget,
+    FadeToBlackPosition, FadeToBlackRequest, FadeToBlackTarget, InputUsage,
     MAX_OVERLAY_TRANSITION_DURATION_FRAMES, MissingMediaFallback, OVERLAY_CHANNEL_COUNT,
     OverlayBorderPreset, OverlayChannelId, OverlayChannelState, OverlayPositionPreset,
     OverlayTransitionKind, RECORDER_SLOT_COUNT, RecorderSlot, STINGER_SLOT_COUNT,
@@ -107,6 +107,85 @@ impl SwitcherState {
     pub fn reorder_inputs(&mut self, inputs: Vec<InputId>) -> Result<(), InputOrderError> {
         validate_input_order(&self.inputs, &inputs)?;
         self.inputs = inputs;
+        Ok(())
+    }
+
+    /// Appends a new input to the end of the mix's input order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SwitcherError::DuplicateInput`] when the input already
+    /// belongs to this mix; the order is unchanged.
+    pub fn add_input(&mut self, input: InputId) -> Result<(), SwitcherError> {
+        if self.inputs.contains(&input) {
+            return Err(SwitcherError::DuplicateInput(input));
+        }
+        self.inputs.push(input);
+        Ok(())
+    }
+
+    /// Returns the first switcher reference to `input`, if any: Program,
+    /// Preview, a transition endpoint, the source of an overlay that is on
+    /// air or fading, an overlay queue entry, or a Stinger slot's media.
+    ///
+    /// The source a settled-off overlay retains is not a use.
+    #[must_use]
+    pub fn input_usage(&self, input: InputId) -> Option<InputUsage> {
+        if self.program == input {
+            return Some(InputUsage::Program);
+        }
+        if self.preview == input {
+            return Some(InputUsage::Preview);
+        }
+        if self
+            .transition
+            .is_some_and(|transition| transition.from() == input || transition.to() == input)
+        {
+            return Some(InputUsage::Transition);
+        }
+        if self
+            .t_bar
+            .is_some_and(|t_bar| t_bar.from() == input || t_bar.to() == input)
+        {
+            return Some(InputUsage::ManualTransition);
+        }
+        for (channel, overlay) in OverlayChannelId::ALL.into_iter().zip(&self.overlays) {
+            if overlay.shows(input) {
+                return Some(InputUsage::Overlay(channel));
+            }
+            if overlay.queued_sources().contains(&input) {
+                return Some(InputUsage::OverlayQueue(channel));
+            }
+        }
+        self.stingers
+            .iter()
+            .enumerate()
+            .find(|(_, stinger)| {
+                stinger
+                    .descriptor()
+                    .is_some_and(|descriptor| descriptor.media_input == input)
+            })
+            .and_then(|(index, _)| StingerSlotId::from_index(index))
+            .map(InputUsage::Stinger)
+    }
+
+    /// Removes an input that no switcher state references, releasing it as
+    /// the retained source of any settled-off overlay channel.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SwitcherError::UnknownInput`] for an input outside this mix
+    /// and [`SwitcherError::InputInUse`] while [`Self::input_usage`] reports a
+    /// reference; the order is unchanged.
+    pub fn remove_input(&mut self, input: InputId) -> Result<(), SwitcherError> {
+        self.require_input(input)?;
+        if let Some(usage) = self.input_usage(input) {
+            return Err(SwitcherError::InputInUse { input, usage });
+        }
+        self.inputs.retain(|candidate| *candidate != input);
+        for overlay in &mut self.overlays {
+            overlay.release(input);
+        }
         Ok(())
     }
 

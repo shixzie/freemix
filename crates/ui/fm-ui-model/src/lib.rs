@@ -356,6 +356,16 @@ pub enum DurableChange {
         input: InputId,
         name: String,
     },
+    /// An input appended to the end of the order with a default Master
+    /// strip and no padlock.
+    InputAdded {
+        input: InputId,
+        name: String,
+    },
+    /// An input removed with its strip and padlock.
+    InputRemoved {
+        input: InputId,
+    },
     DesiredSwitcher {
         selection: BusSelection,
         manual_transition: ManualTransitionStatus,
@@ -408,6 +418,13 @@ impl DurableProjectEvent {
             EventPayload::InputRenamed { input, name } => DurableChange::InputRenamed {
                 input: input.to_domain(),
                 name,
+            },
+            EventPayload::InputAdded { input, name } => DurableChange::InputAdded {
+                input: input.to_domain(),
+                name,
+            },
+            EventPayload::InputRemoved { input } => DurableChange::InputRemoved {
+                input: input.to_domain(),
             },
             EventPayload::DesiredSwitcher {
                 program,
@@ -835,6 +852,8 @@ pub enum ModelError {
     UnknownCommand(CommandId),
     StateUnavailable,
     InvalidEditLocks,
+    /// A removed input is still on air or configured in the desired state.
+    InputInUse(InputId),
 }
 
 impl fmt::Display for ModelError {
@@ -935,6 +954,7 @@ impl fmt::Display for ModelError {
             Self::InvalidEditLocks => formatter.write_str(
                 "locked inputs must be unique show inputs in ascending identifier order",
             ),
+            Self::InputInUse(input) => write!(formatter, "removed input {input} is still in use"),
         }
     }
 }
@@ -1844,6 +1864,9 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             }
             return Ok(());
         }
+        DurableChange::InputAdded { .. } | DurableChange::InputRemoved { .. } => {
+            return validate_input_catalogue_change(change, state);
+        }
         DurableChange::DesiredSwitcher {
             selection,
             manual_transition,
@@ -1908,6 +1931,30 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
     Ok(())
 }
 
+/// Mirrors the server's removal rule over the replicated desired state:
+/// Program, Preview, a manual transition endpoint, a Stinger slot's media,
+/// an overlay queue entry, or the source of an overlay that is on air.
+fn desired_input_in_use(state: &ProjectState, input: InputId) -> bool {
+    let switcher = &state.switcher;
+    let manual = match switcher.desired_manual_transition {
+        ManualTransitionStatus::Active(transition) => {
+            transition.from == input || transition.to == input
+        }
+        ManualTransitionStatus::Inactive => false,
+    };
+    switcher.desired.program == input
+        || switcher.desired.preview == input
+        || manual
+        || state
+            .stingers
+            .iter()
+            .any(|stinger| stinger.media_input == input)
+        || state.desired_overlays.iter().any(|overlay| {
+            overlay.queued_sources.contains(&input)
+                || (overlay.source == Some(input) && (overlay.active || overlay.opacity > 0))
+        })
+}
+
 fn validate_optimistic(change: OptimisticChange, inputs: &[InputId]) -> Result<(), ModelError> {
     for input in change.inputs().into_iter().flatten() {
         if !inputs.contains(&input) {
@@ -1915,6 +1962,81 @@ fn validate_optimistic(change: OptimisticChange, inputs: &[InputId]) -> Result<(
         }
     }
     Ok(())
+}
+
+/// Validates a live input addition or removal against the current catalogue.
+fn validate_input_catalogue_change(
+    change: &DurableChange,
+    state: &ProjectState,
+) -> Result<(), ModelError> {
+    match change {
+        DurableChange::InputAdded { input, name } => {
+            if state.inputs.contains(input) {
+                return Err(ModelError::DuplicateInput(*input));
+            }
+            if !valid_input_name(name) || state.input_names.contains(name) {
+                return Err(ModelError::InvalidInputNames);
+            }
+        }
+        DurableChange::InputRemoved { input } => {
+            if !state.inputs.contains(input) {
+                return Err(ModelError::UnknownInput(*input));
+            }
+            if desired_input_in_use(state, *input) {
+                return Err(ModelError::InputInUse(*input));
+            }
+        }
+        _ => unreachable!("only input catalogue changes are validated here"),
+    }
+    Ok(())
+}
+
+/// Appends an added input with a default strip.
+fn apply_input_added(state: &mut ProjectState, input: InputId, name: String) {
+    state.inputs.push(input);
+    state.input_names.push(name);
+    // Strips are kept in identifier order, exactly as snapshots and switcher
+    // events carry them.
+    let index = state
+        .input_audio_strips
+        .partition_point(|strip| strip.input < input);
+    state.input_audio_strips.insert(
+        index,
+        InputAudioStripStatus {
+            input,
+            gain_millidb: 0,
+            balance_basis_points: 0,
+            muted: false,
+            soloed: false,
+            follow_video: true,
+            delay_samples: 0,
+        },
+    );
+}
+
+/// Drops a removed input with its name, strip, and lock.
+fn apply_input_removed(state: &mut ProjectState, input: InputId) {
+    let index = state
+        .inputs
+        .iter()
+        .position(|candidate| *candidate == input)
+        .expect("validated removed input must exist");
+    state.inputs.remove(index);
+    state.input_names.remove(index);
+    state
+        .input_audio_strips
+        .retain(|strip| strip.input != input);
+    state.edit_locks.set(EditLockTarget::Input(input), false);
+    // A settled-off overlay forgets a removed input it retained.
+    for overlay in state
+        .desired_overlays
+        .iter_mut()
+        .chain(state.realized_overlays.iter_mut())
+    {
+        if overlay.source == Some(input) {
+            overlay.source = None;
+        }
+    }
 }
 
 fn apply_change(state: &mut ProjectState, change: DurableChange) {
@@ -1942,6 +2064,8 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 .expect("validated rename input must exist");
             state.input_names[index] = name;
         }
+        DurableChange::InputAdded { input, name } => apply_input_added(state, input, name),
+        DurableChange::InputRemoved { input } => apply_input_removed(state, input),
         DurableChange::DesiredSwitcher {
             selection,
             manual_transition,

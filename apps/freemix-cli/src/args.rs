@@ -634,6 +634,20 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    RemoteInputAdd {
+        address: SocketAddr,
+        input: u128,
+        name: String,
+        source: fm_protocol::LiveInputSource,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteInputRemove {
+        address: SocketAddr,
+        input: u128,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     RemoteReorder {
         address: SocketAddr,
         inputs: Vec<u128>,
@@ -908,6 +922,8 @@ pub enum ArgsError {
     UnexpectedArgument(String),
     UnknownOption(String),
     UnknownCommand(String),
+    /// The input kind cannot be added to a running daemon.
+    NotLiveInputKind(String),
     /// An option is only meaningful together with another one.
     RequiresOption {
         option: &'static str,
@@ -949,6 +965,12 @@ impl core::fmt::Display for ArgsError {
             }
             Self::UnknownOption(option) => write!(formatter, "unknown option `{option}`"),
             Self::UnknownCommand(command) => write!(formatter, "unknown command `{command}`"),
+            Self::NotLiveInputKind(kind) => write!(
+                formatter,
+                "input kind `{kind}` cannot be added to a running daemon: only solid and bars \
+                 inputs are realized live; add other kinds offline with input-add, \
+                 media-input-add or the other offline add commands"
+            ),
             Self::RequiresOption { option, requires } => {
                 write!(formatter, "{option} requires {requires}")
             }
@@ -1106,6 +1128,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-audio-strip" => parse_remote_audio_strip(arguments),
         "remote-rename" => parse_remote_rename(arguments),
         "remote-input-reorder" => parse_reorder(arguments, true),
+        "remote-input-add" => parse_remote_input_add(arguments),
+        "remote-input-remove" => parse_remote_input_remove(arguments),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
         "remote-undo" => parse_remote_history(false, arguments),
@@ -2859,6 +2883,63 @@ fn parse_remote_rename(mut arguments: impl Iterator<Item = String>) -> Result<Co
     })
 }
 
+/// Parses `remote-input-add <address> <solid|bars> <input> <name>
+/// [<red> <green> <blue> <alpha>] [--key <key>] [--expect <revision>]`.
+///
+/// `solid` takes the four colour components, `bars` none. Every other kind is
+/// refused here with the reason, before connecting: the daemon only realizes
+/// simulated solid and bars inputs live.
+fn parse_remote_input_add(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let kind = required(&mut arguments, "input kind")?;
+    if !matches!(kind.as_str(), "solid" | "bars") {
+        return Err(ArgsError::NotLiveInputKind(kind));
+    }
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let name = nonblank(&mut arguments, "input name")?;
+    let source = if kind == "solid" {
+        let red = bounded_u8(&required(&mut arguments, "red")?, "red", u8::MAX)?;
+        let green = bounded_u8(&required(&mut arguments, "green")?, "green", u8::MAX)?;
+        let blue = bounded_u8(&required(&mut arguments, "blue")?, "blue", u8::MAX)?;
+        let alpha = bounded_u8(&required(&mut arguments, "alpha")?, "alpha", u8::MAX)?;
+        fm_protocol::LiveInputSource::Solid {
+            red,
+            green,
+            blue,
+            alpha,
+        }
+    } else {
+        fm_protocol::LiveInputSource::Bars
+    };
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(Command::RemoteInputAdd {
+        address,
+        input,
+        name,
+        source,
+        key,
+        expected_revision,
+    })
+}
+
+/// Parses `remote-input-remove <address> <input> [--key <key>]
+/// [--expect <revision>]`.
+fn parse_remote_input_remove(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(Command::RemoteInputRemove {
+        address,
+        input,
+        key,
+        expected_revision,
+    })
+}
+
 fn parse_remote_preview(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let address = socket_address(&required(&mut arguments, "address")?)?;
     let input = number(&required(&mut arguments, "input")?, "input")?;
@@ -4132,5 +4213,116 @@ mod tests {
         );
         assert!(parse(strings(&["remote-lock", "127.0.0.1:9123", "maybe"])).is_err());
         assert!(parse(strings(&["remote-lock", "127.0.0.1:9123"])).is_err());
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn parses_remote_input_add_and_remove() {
+        let address = "127.0.0.1:9123".parse().unwrap();
+        assert_eq!(
+            parse(strings(&[
+                "remote-input-add",
+                "127.0.0.1:9123",
+                "solid",
+                "7",
+                "Guest",
+                "0",
+                "128",
+                "255",
+                "255",
+                "--key",
+                "add-7",
+            ])),
+            Ok(Command::RemoteInputAdd {
+                address,
+                input: 7,
+                name: "Guest".into(),
+                source: fm_protocol::LiveInputSource::Solid {
+                    red: 0,
+                    green: 128,
+                    blue: 255,
+                    alpha: 255,
+                },
+                key: Some("add-7".into()),
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-input-add",
+                "127.0.0.1:9123",
+                "bars",
+                "8",
+                "Bars",
+                "--expect",
+                "4",
+            ])),
+            Ok(Command::RemoteInputAdd {
+                address,
+                input: 8,
+                name: "Bars".into(),
+                source: fm_protocol::LiveInputSource::Bars,
+                key: None,
+                expected_revision: Some(4),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["remote-input-remove", "127.0.0.1:9123", "7"])),
+            Ok(Command::RemoteInputRemove {
+                address,
+                input: 7,
+                key: None,
+                expected_revision: None,
+            })
+        );
+        let refused = parse(strings(&[
+            "remote-input-add",
+            "127.0.0.1:9123",
+            "media",
+            "9",
+            "Clip",
+        ]));
+        assert_eq!(refused, Err(ArgsError::NotLiveInputKind("media".into())));
+        assert!(
+            refused
+                .unwrap_err()
+                .to_string()
+                .contains("only solid and bars inputs are realized live")
+        );
+        // A solid input needs all four components; bars takes none.
+        assert!(
+            parse(strings(&[
+                "remote-input-add",
+                "127.0.0.1:9123",
+                "solid",
+                "7",
+                "Guest",
+                "0",
+                "128",
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse(strings(&[
+                "remote-input-add",
+                "127.0.0.1:9123",
+                "bars",
+                "8",
+                "Bars",
+                "1",
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse(strings(&[
+                "remote-input-add",
+                "127.0.0.1:9123",
+                "solid",
+                "7",
+                " "
+            ]))
+            .is_err()
+        );
+        assert!(parse(strings(&["remote-input-remove", "127.0.0.1:9123"])).is_err());
     }
 }

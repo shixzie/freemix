@@ -99,6 +99,34 @@ fn validate_locked_inputs(
     }
 }
 
+/// Enforces the input-name rule shared by the encoder and decoder for the
+/// records that introduce an input: nonblank and at most
+/// [`fm_types::MAX_INPUT_NAME_BYTES`] bytes.
+fn validate_new_input_name(name: &str) -> Result<(), CodecError> {
+    fm_types::validate_input_name(name).map_err(|_| CodecError::InvalidField {
+        field: "name",
+        value: name.to_owned(),
+    })
+}
+
+/// Encodes a solid color as eight lowercase hex digits, `rrggbbaa`.
+fn encode_rgba(red: u8, green: u8, blue: u8, alpha: u8) -> String {
+    format!("{red:02x}{green:02x}{blue:02x}{alpha:02x}")
+}
+
+/// Decodes exactly eight lowercase hex digits, `rrggbbaa`.
+fn decode_rgba(value: &str) -> Option<[u8; 4]> {
+    if value.len() != 8
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return None;
+    }
+    let channel = |index: usize| u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok();
+    Some([channel(0)?, channel(1)?, channel(2)?, channel(3)?])
+}
+
 /// Enforces the `monitor_frame` bounds shared by the encoder and decoder.
 fn validate_monitor_frame(
     width: u16,

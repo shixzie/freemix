@@ -175,6 +175,8 @@ impl Session {
             // additionally authorizes the class of the edit undo/redo targets.
             CommandPayload::RenameInput { .. }
             | CommandPayload::ReorderInputs { .. }
+            | CommandPayload::AddInput { .. }
+            | CommandPayload::RemoveInput { .. }
             | CommandPayload::Undo { .. }
             | CommandPayload::Redo { .. }
             | CommandPayload::SetEditLock { .. } => CommandClass::EditProject,

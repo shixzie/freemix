@@ -6,11 +6,11 @@ use crate::{
     DurableEventBatch, DurableGap, EditHistoryStatus, EditLockScope, EditLockStatus,
     EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload, FadeToBlackState,
     HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
-    HeartbeatMessage, InputAudioStripStatus, MAX_AUDIO_METER_CHANNELS, ManualTransitionKind,
-    ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, ResumeCursor, RuntimeEventMessage,
-    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
-    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
-    StingerStatus, StreamStatusMessage, StructuredError, WireMessage,
+    HeartbeatMessage, InputAudioStripStatus, LiveInputSource, MAX_AUDIO_METER_CHANNELS,
+    ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, ResumeCursor,
+    RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
+    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
+    StingerReadiness, StingerStatus, StreamStatusMessage, StructuredError, WireMessage,
 };
 
 use super::value::{
@@ -20,8 +20,9 @@ use super::value::{
 };
 use super::{
     CodecError, MAX_FIELD_VALUE_BYTES, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_STREAM_LOCAL_SEGMENTS,
-    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_edit_history,
-    validate_locked_inputs, validate_overlay_duration, validate_request_id,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, encode_rgba, validate_edit_history,
+    validate_locked_inputs, validate_new_input_name, validate_overlay_duration,
+    validate_request_id,
 };
 
 /// Encodes one message as a single newline-terminated record.
@@ -175,6 +176,9 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("input", input)?;
             record.field_str("name", name)?;
         }
+        payload @ (CommandPayload::AddInput { .. } | CommandPayload::RemoveInput { .. }) => {
+            encode_input_catalogue_command(record, payload)?;
+        }
         payload @ CommandPayload::SetInputAudioStrip { .. } => {
             encode_input_audio_strip_command(record, payload)?;
         }
@@ -246,6 +250,41 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         | CommandPayload::SetEditLock { .. }) => encode_edit_command(record, payload)?,
     }
     Ok(())
+}
+
+fn encode_input_catalogue_command(
+    record: &mut Record,
+    payload: &CommandPayload,
+) -> Result<(), CodecError> {
+    match payload {
+        CommandPayload::AddInput {
+            input,
+            name,
+            source,
+        } => {
+            validate_new_input_name(name)?;
+            record.field("payload", "input_add")?;
+            record.field("input", input)?;
+            record.field_str("name", name)?;
+            match *source {
+                LiveInputSource::Solid {
+                    red,
+                    green,
+                    blue,
+                    alpha,
+                } => {
+                    record.field("kind", "solid")?;
+                    record.field_string("color", encode_rgba(red, green, blue, alpha))
+                }
+                LiveInputSource::Bars => record.field("kind", "bars"),
+            }
+        }
+        CommandPayload::RemoveInput { input } => {
+            record.field("payload", "input_remove")?;
+            record.field("input", input)
+        }
+        _ => unreachable!("only input catalogue commands are delegated"),
+    }
 }
 
 fn encode_manual_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
@@ -775,6 +814,16 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("event", "input_renamed")?;
             record.field("input", input)?;
             record.field_str("name", name)?;
+        }
+        EventPayload::InputAdded { input, name } => {
+            validate_new_input_name(name)?;
+            record.field("event", "input_added")?;
+            record.field("input", input)?;
+            record.field_str("name", name)?;
+        }
+        EventPayload::InputRemoved { input } => {
+            record.field("event", "input_removed")?;
+            record.field("input", input)?;
         }
         EventPayload::DesiredSwitcher {
             program,

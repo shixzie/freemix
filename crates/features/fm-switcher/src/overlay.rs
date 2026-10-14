@@ -199,6 +199,19 @@ impl OverlayChannelState {
         self.automatic = None;
     }
 
+    /// Returns whether `input` is this channel's source while it is on air
+    /// or in a transition, as opposed to retained by a settled-off channel.
+    pub(crate) fn shows(&self, input: InputId) -> bool {
+        self.source == Some(input) && (self.active || self.automatic.is_some())
+    }
+
+    /// Forgets `input` as the retained source of a settled-off channel.
+    pub(crate) fn release(&mut self, input: InputId) {
+        if self.source == Some(input) && !self.shows(input) {
+            self.source = None;
+        }
+    }
+
     pub(crate) fn update(&mut self, source: InputId) {
         self.source = Some(source);
     }
