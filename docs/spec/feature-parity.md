@@ -65,6 +65,7 @@ behavior.
 | SW-016 | P1 | Snapshot and freeze/live-pause | Capture lossless still, freeze at frame boundary, resume without timestamp regression |
 | SW-017 | P1 | Undo/redo and padlock | Editing commands are undoable; live transport actions follow explicit safety rules; locked inputs reject accidental edits |
 | SW-018 | P1 | Flatten layers | Precompose a layered input at a deliberate graph boundary while preserving output timing and showing memory/quality cost |
+| SW-019 | P1 | Color grading suite | Per-input, per-scene-layer, and program grading with lift/gamma/gain color wheels, RGB and hue/saturation curves, white balance, LUT (.cube) import, saveable presets, and a live before/after split preview with scopes beside it |
 
 ## 3. Titles, graphics, data, and telestration
 
@@ -80,6 +81,7 @@ behavior.
 | GX-008 | P2 | Import pipeline | Layered PSD and documented graphic formats map to editable layers where legal/technically possible |
 | GX-009 | P1 | Key/fill graphics output | Synchronized key and fill through supported hardware/network outputs |
 | GX-010 | P2 | Social moderation companion | Authorized Facebook page comments, Twitch, YouTube Live chat, Bluesky, IRC, and Zoom chat adapters aggregate into a browser approval queue with title mapping, profile media/photos, rotation, and auto-update |
+| GX-011 | P1 | Keyframe animation editor | Visual timeline for any title element or scene layer: keyframe position, scale, rotation, opacity, crop, and color; easing presets plus a curve editor; interpolated in-betweens; retiming a clip or whole animation scales its keyframes proportionally; scrubbed live preview; reusable In/Out animation presets |
 
 ## 4. Audio
 
@@ -140,6 +142,7 @@ behavior.
 | RC-015 | P1 | Statistics and alerts | FPS, drops, sync, queues, GPU/CPU/disk/network, input/output health, hardware encoder session inventory/capacity, thresholds, notifications, and support bundle |
 | RC-016 | P2 | Localized UI | Extracted catalogs, runtime language switch where practical, locale-safe numbers/dates, and RTL-readiness |
 | RC-017 | P1 | Per-input programmable GO | An input button runs a previewable ordered action list such as preview/take, play, overlay, data update, delay, and follow-up |
+| RC-018 | P1 | Discoverable operator UI | Simple defaults with progressive disclosure for advanced controls; every control explains itself on hover (what it does, its shortcut, and why it is disabled) in every shipped language |
 
 ## 7. Universal acceptance scenarios
 

@@ -6,7 +6,7 @@ local acceptance-test evidence only.
 
 ## windows-tier1
 
-Total: 103 features. Status: planned=96, blocked=7. Priority: P0=24, P1=70, P2=9.
+Total: 106 features. Status: planned=99, blocked=7. Priority: P0=24, P1=73, P2=9.
 
 | ID | Pri | Phase | Status | Owner | Acceptance |
 |---|---|---|---|---|---|
@@ -58,6 +58,7 @@ Total: 103 features. Status: planned=96, blocked=7. Priority: P0=24, P1=70, P2=9
 | SW-016 | P1 | 3 | planned | media-core-clocks | accept-sw-016 (present) |
 | SW-017 | P1 | 5 | planned | engine-control-persistence-security | accept-sw-017 (present) |
 | SW-018 | P1 | 5 | planned | gpu-compositor-color | accept-sw-018 (present) |
+| SW-019 | P1 | 5 | planned | gpu-compositor-color | accept-sw-019 (planned) |
 | GX-001 | P0 | 5 | planned | graphics-data-automation-plugins | accept-gx-001 (present) |
 | GX-002 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-002 (present) |
 | GX-003 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-003 (present) |
@@ -68,6 +69,7 @@ Total: 103 features. Status: planned=96, blocked=7. Priority: P0=24, P1=70, P2=9
 | GX-008 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-008 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
 | GX-010 | P2 | 9 | blocked | graphics-data-automation-plugins | accept-gx-010 (present) |
+| GX-011 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-011 (planned) |
 | AU-001 | P0 | 3 | planned | audio-dsp | accept-au-001 (planned) |
 | AU-002 | P0 | 3 | planned | audio-dsp | accept-au-002 (present) |
 | AU-003 | P0 | 3 | planned | audio-dsp | accept-au-003 (present) |
@@ -113,10 +115,11 @@ Total: 103 features. Status: planned=96, blocked=7. Priority: P0=24, P1=70, P2=9
 | RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (present) |
 | RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (present) |
 | RC-017 | P1 | 5 | planned | graphics-data-automation-plugins | accept-rc-017 (planned) |
+| RC-018 | P1 | 5 | planned | studio-web-ux | accept-rc-018 (planned) |
 
 ## macos-tier1
 
-Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7.
+Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7.
 
 | ID | Pri | Phase | Status | Owner | Acceptance |
 |---|---|---|---|---|---|
@@ -166,6 +169,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | SW-016 | P1 | 3 | planned | media-core-clocks | accept-sw-016 (present) |
 | SW-017 | P1 | 5 | planned | engine-control-persistence-security | accept-sw-017 (present) |
 | SW-018 | P1 | 5 | planned | gpu-compositor-color | accept-sw-018 (present) |
+| SW-019 | P1 | 5 | planned | gpu-compositor-color | accept-sw-019 (planned) |
 | GX-001 | P0 | 5 | planned | graphics-data-automation-plugins | accept-gx-001 (present) |
 | GX-002 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-002 (present) |
 | GX-003 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-003 (present) |
@@ -176,6 +180,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | GX-008 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-008 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
 | GX-010 | P2 | 9 | blocked | graphics-data-automation-plugins | accept-gx-010 (present) |
+| GX-011 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-011 (planned) |
 | AU-001 | P0 | 3 | planned | audio-dsp | accept-au-001 (planned) |
 | AU-002 | P0 | 3 | planned | audio-dsp | accept-au-002 (present) |
 | AU-003 | P0 | 3 | planned | audio-dsp | accept-au-003 (present) |
@@ -221,10 +226,11 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (present) |
 | RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (present) |
 | RC-017 | P1 | 5 | planned | graphics-data-automation-plugins | accept-rc-017 (planned) |
+| RC-018 | P1 | 5 | planned | studio-web-ux | accept-rc-018 (planned) |
 
 ## linux-tier1
 
-Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7.
+Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7.
 
 | ID | Pri | Phase | Status | Owner | Acceptance |
 |---|---|---|---|---|---|
@@ -274,6 +280,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | SW-016 | P1 | 3 | planned | media-core-clocks | accept-sw-016 (present) |
 | SW-017 | P1 | 5 | planned | engine-control-persistence-security | accept-sw-017 (present) |
 | SW-018 | P1 | 5 | planned | gpu-compositor-color | accept-sw-018 (present) |
+| SW-019 | P1 | 5 | planned | gpu-compositor-color | accept-sw-019 (planned) |
 | GX-001 | P0 | 5 | planned | graphics-data-automation-plugins | accept-gx-001 (present) |
 | GX-002 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-002 (present) |
 | GX-003 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-003 (present) |
@@ -284,6 +291,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | GX-008 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-008 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
 | GX-010 | P2 | 9 | blocked | graphics-data-automation-plugins | accept-gx-010 (present) |
+| GX-011 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-011 (planned) |
 | AU-001 | P0 | 3 | planned | audio-dsp | accept-au-001 (planned) |
 | AU-002 | P0 | 3 | planned | audio-dsp | accept-au-002 (present) |
 | AU-003 | P0 | 3 | planned | audio-dsp | accept-au-003 (present) |
@@ -329,6 +337,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (present) |
 | RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (present) |
 | RC-017 | P1 | 5 | planned | graphics-data-automation-plugins | accept-rc-017 (planned) |
+| RC-018 | P1 | 5 | planned | studio-web-ux | accept-rc-018 (planned) |
 
 ## browser-control
 

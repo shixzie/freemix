@@ -196,6 +196,9 @@ state = "present"
 paths = ["crates/gpu/fm-compositor/tests/flatten.rs"]
 commands = ["cargo test -p fm-compositor --test flatten"]
 [[tests]]
+id = "accept-sw-019"
+state = "planned"
+[[tests]]
 id = "accept-gx-001"
 state = "present"
 paths = ["crates/features/fm-titles/tests/image_render.rs", "crates/features/fm-titles/tests/title_scene.rs", "crates/features/fm-titles/tests/text_render.rs", "crates/features/fm-titles/tests/image_fit.rs", "crates/features/fm-titles/tests/field_set.rs", "crates/services/fm-persistence/tests/title_templates.rs", "crates/services/fm-engine/tests/titles.rs"]
@@ -241,6 +244,9 @@ id = "accept-gx-010"
 state = "present"
 paths = ["crates/features/fm-social/tests/moderation_desk.rs"]
 commands = ["cargo test -p fm-social --test moderation_desk"]
+[[tests]]
+id = "accept-gx-011"
+state = "planned"
 [[tests]]
 id = "accept-au-001"
 state = "planned"
@@ -443,6 +449,9 @@ commands = ["cargo test -p freemix-studio --test studio"]
 id = "accept-rc-017"
 state = "planned"
 
+[[tests]]
+id = "accept-rc-018"
+state = "planned"
 [[features]]
 id = "IN-001"
 priority = "P0"
@@ -972,6 +981,17 @@ status = "planned"
 substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
+id = "SW-019"
+priority = "P1"
+phase = 5
+owner = "gpu-compositor-color"
+dependencies = ["SW-007", "SW-010"]
+capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1"]
+tests = ["accept-sw-019"]
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
+
+[[features]]
 id = "GX-001"
 priority = "P0"
 phase = 5
@@ -1080,6 +1100,17 @@ capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1", "browser-c
 tests = ["accept-gx-010"]
 status = "blocked"
 substitution_policy = "exact-authorized-integration-required"
+
+[[features]]
+id = "GX-011"
+priority = "P1"
+phase = 5
+owner = "graphics-data-automation-plugins"
+dependencies = ["GX-002", "SW-006"]
+capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1"]
+tests = ["accept-gx-011"]
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-001"
@@ -1573,5 +1604,16 @@ owner = "graphics-data-automation-plugins"
 dependencies = ["RC-010"]
 capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1"]
 tests = ["accept-rc-017"]
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
+
+[[features]]
+id = "RC-018"
+priority = "P1"
+phase = 5
+owner = "studio-web-ux"
+dependencies = []
+capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1"]
+tests = ["accept-rc-018"]
 status = "planned"
 substitution_policy = "equivalent-behavior-allowed"

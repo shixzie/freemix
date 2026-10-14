@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const EXPECTED_FEATURES: usize = 103;
-const EXPECTED_PRIORITIES: [(&str, usize); 3] = [("P0", 24), ("P1", 70), ("P2", 9)];
+const EXPECTED_FEATURES: usize = 106;
+const EXPECTED_PRIORITIES: [(&str, usize); 3] = [("P0", 24), ("P1", 73), ("P2", 9)];
 const NAMED_INTEGRATIONS: &[&str] = &[
     "IN-002", "IN-017", "IN-018", "IN-019", "IN-029", "IN-030", "GX-004", "GX-010", "AU-006",
     "AU-011", "OR-008", "OR-009", "OR-010", "OR-016", "RC-009",
@@ -149,7 +149,7 @@ fn check_parity(root: &Path, phase: Option<u8>) -> Result<String, String> {
     validate_ledger(&ledger, &markdown, root, phase)?;
     let phase_claim = phase.map_or_else(String::new, |phase| format!(", phase {phase} verified"));
     Ok(format!(
-        "parity check passed: {} features (P0=24, P1=70, P2=9){phase_claim}",
+        "parity check passed: {} features (P0=24, P1=73, P2=9){phase_claim}",
         ledger.features.len()
     ))
 }

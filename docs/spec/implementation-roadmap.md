@@ -1923,6 +1923,15 @@ independently with tested recovery.
 9. Add PTZ protocols, presets as virtual inputs, mouse/joystick control.
 10. Add telestrator and web monitor.
 11. Add project append, bundle, relink, import/export, templates, undo/lock.
+12. Build the color grading suite (`SW-019`): color wheels, curves, white
+    balance, LUT import, presets, and a live before/after split preview with
+    scopes, per input, scene layer, and program.
+13. Build the keyframe animation editor (`GX-011`): one visual timeline for
+    title elements and scene layers with easing presets, a curve editor,
+    proportional retiming, scrubbed preview, and In/Out presets.
+14. Make every operator control discoverable (`RC-018`): simple defaults with
+    progressive disclosure and localized hover help naming the action, its
+    shortcut, and why it is disabled.
 The current persistence slice audits stored media asset references and
 provides a secret-free settings export with an import planner (`RC-013`):
 outputs, buses, stream targets, and video/audio settings export as one exact
