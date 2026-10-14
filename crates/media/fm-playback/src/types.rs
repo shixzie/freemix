@@ -34,6 +34,7 @@ macro_rules! stable_id {
 stable_id!(ClipId);
 stable_id!(PlaylistEntryId);
 stable_id!(GoId);
+stable_id!(ListItemId);
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FrameIndex(u64);

@@ -186,11 +186,9 @@ fn programmed_go_is_ordered_cancellable_and_idempotent() {
         player.cancel_go(cancelled.id).unwrap(),
         CancelGoOutcome::AlreadyCancelled
     );
-    assert!(
-        player
-            .apply_scheduled(ScheduleCoordinate::new(9))
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        player.apply_scheduled(ScheduleCoordinate::new(9)).unwrap(),
+        Vec::<GoId>::new()
     );
     assert_eq!(
         player.apply_scheduled(ScheduleCoordinate::new(10)).unwrap(),

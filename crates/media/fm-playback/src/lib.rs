@@ -5,6 +5,7 @@
 //! encoded-media adapter.
 
 mod clip;
+mod list;
 mod playlist;
 mod transport;
 mod types;
@@ -12,6 +13,11 @@ mod types;
 pub use clip::{
     ClipError, ClipLibrary, CodecError, EncodedClip, FixtureClip, FrameCodec, LibraryError,
     PlaybackClip,
+};
+pub use list::{
+    ActivationCause, ListAction, ListControlError, ListError, ListEvent, ListGo, ListGoError,
+    ListItem, ListOptions, ListPlayer, ListTick, ListTickError, MAX_LIST_GO_RECORDS,
+    MAX_LIST_ITEMS, MAX_PENDING_LIST_GO, MediaList,
 };
 pub use playlist::{
     CancelGoOutcome, EndAction, GoError, GoScheduleOutcome, GoStatus, PlayerError, Playlist,
@@ -21,7 +27,8 @@ pub use transport::{
     EndBehavior, MarkError, Marks, PlaybackError, PlaybackFrame, Transport, TransportState,
 };
 pub use types::{
-    ClipId, FrameIndex, GoId, PlaylistEntryId, ScheduleCoordinate, Speed, SpeedDirection,
+    ClipId, FrameIndex, GoId, ListItemId, PlaylistEntryId, ScheduleCoordinate, Speed,
+    SpeedDirection,
 };
 
 #[cfg(test)]
