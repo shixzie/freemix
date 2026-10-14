@@ -1089,14 +1089,16 @@ fn monitor_frame_records(tap: MonitorTap, sequence: u64) -> Vec<WireMessage> {
 #[test]
 fn diagnose_swallows_monitor_frames_during_heartbeat_and_diagnostics_waits() {
     let (address, server_thread) = spawn_server(|listener| {
+        // Encode before accepting so the bounded client waits never include
+        // the peer's noise and QOI generation time.
+        let heartbeat_wait_records = MonitorTap::ALL.map(|tap| monitor_frame_records(tap, 1));
+        let diagnostics_wait_records = monitor_frame_records(MonitorTap::Program, 2);
         let deadline = Instant::now() + CONNECT_TIMEOUT;
         let mut peer = Peer::accept_until(&listener, deadline);
         let heartbeat = receive_diagnose_heartbeat(&mut peer, deadline);
         // Both taps arrive while the heartbeat acknowledgement is pending.
-        for tap in MonitorTap::ALL {
-            for record in monitor_frame_records(tap, 1) {
-                peer.send_until(&record, deadline);
-            }
+        for record in heartbeat_wait_records.iter().flatten() {
+            peer.send_until(record, deadline);
         }
         peer.send_until(
             &WireMessage::HeartbeatAcknowledgement(HeartbeatAcknowledgementMessage {
@@ -1110,8 +1112,8 @@ fn diagnose_swallows_monitor_frames_during_heartbeat_and_diagnostics_waits() {
             panic!("expected diagnostics request");
         };
         // And again while the diagnostics response is pending.
-        for record in monitor_frame_records(MonitorTap::Program, 2) {
-            peer.send_until(&record, deadline);
+        for record in &diagnostics_wait_records {
+            peer.send_until(record, deadline);
         }
         peer.send_until(
             &WireMessage::DiagnosticsResponse(DiagnosticsResponse {

@@ -36,8 +36,11 @@ use crate::{LifecycleState, StudioConfig, StudioRuntime};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(not(test))]
 const PEER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+// Short enough to keep timeout paths quick, yet wide enough that a debug
+// build decoding several multi-part monitor frames under parallel-test CPU
+// load finishes a command or heartbeat wait well inside it.
 #[cfg(test)]
-const PEER_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
+const PEER_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
 const IO_POLL_INTERVAL: Duration = Duration::from_millis(25);
 #[cfg(not(test))]
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -2126,7 +2129,10 @@ mod tests {
 
     use super::*;
 
-    const HEARTBEAT_TEST_TIMEOUT: Duration = Duration::from_secs(3);
+    /// Failure bound for test-side waits; it must comfortably exceed
+    /// `PEER_WAIT_TIMEOUT` so a slow but successful worker wait is not
+    /// misreported by the test's own deadline.
+    const HEARTBEAT_TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
     struct HeartbeatPeer {
         reader: BufReader<TcpStream>,
@@ -2164,16 +2170,42 @@ mod tests {
                 .unwrap();
         }
 
+        /// Reads the next line, or `None` once the worker closed the session.
+        /// A worker that shuts down with an unread heartbeat answer in its
+        /// receive buffer resets the connection instead of a clean EOF, so
+        /// a reset ends the scripted peer just like EOF.
+        fn next_line(&mut self) -> Option<String> {
+            let mut line = String::new();
+            match self.reader.read_line(&mut line) {
+                Ok(0) => None,
+                Ok(_) => Some(line),
+                Err(error) if peer_closed(&error) => None,
+                Err(error) => panic!("peer read failed: {error}"),
+            }
+        }
+
+        /// Sends a record that may race the worker's shutdown; returns
+        /// `false` once the worker closed the session.
+        fn send_unless_closed(&mut self, message: &WireMessage) -> bool {
+            match self
+                .writer
+                .write_all(encode_line(message).unwrap().as_bytes())
+            {
+                Ok(()) => true,
+                Err(error) if peer_closed(&error) => false,
+                Err(error) => panic!("peer write failed: {error}"),
+            }
+        }
+
         fn acknowledge_heartbeats_until_eof(&mut self) {
             loop {
-                let mut line = String::new();
-                if self.reader.read_line(&mut line).unwrap() == 0 {
+                let Some(line) = self.next_line() else {
                     return;
-                }
+                };
                 let WireMessage::Heartbeat(heartbeat) = decode_line(&line).unwrap() else {
                     panic!("expected heartbeat");
                 };
-                self.send(&WireMessage::AudioMeters(AudioMetersMessage {
+                if !self.send_unless_closed(&WireMessage::AudioMeters(AudioMetersMessage {
                     server: heartbeat.server.clone(),
                     sequence: heartbeat.sequence,
                     frame: 1,
@@ -2184,14 +2216,18 @@ mod tests {
                         rms_millionths: 250_000,
                     }],
                     inputs: Vec::new(),
-                }));
-                self.send(&WireMessage::HeartbeatAcknowledgement(
+                })) {
+                    return;
+                }
+                if !self.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
                     HeartbeatAcknowledgementMessage {
                         server: heartbeat.server,
                         heartbeat_sequence: heartbeat.sequence,
                         received_at_ms: heartbeat.sent_at_ms,
                     },
-                ));
+                )) {
+                    return;
+                }
             }
         }
 
@@ -2201,22 +2237,27 @@ mod tests {
         fn acknowledge_heartbeats_with_stream_status_until_eof(&mut self) {
             let mut sequence = 0;
             loop {
-                let mut line = String::new();
-                if self.reader.read_line(&mut line).unwrap() == 0 {
+                let Some(line) = self.next_line() else {
                     return;
-                }
+                };
                 let WireMessage::Heartbeat(heartbeat) = decode_line(&line).unwrap() else {
                     panic!("expected heartbeat");
                 };
                 sequence += 1;
-                self.send(&WireMessage::StreamStatus(stream_status_message(sequence)));
-                self.send(&WireMessage::HeartbeatAcknowledgement(
+                if !self
+                    .send_unless_closed(&WireMessage::StreamStatus(stream_status_message(sequence)))
+                {
+                    return;
+                }
+                if !self.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
                     HeartbeatAcknowledgementMessage {
                         server: heartbeat.server,
                         heartbeat_sequence: heartbeat.sequence,
                         received_at_ms: heartbeat.sent_at_ms,
                     },
-                ));
+                )) {
+                    return;
+                }
             }
         }
 
@@ -2225,26 +2266,38 @@ mod tests {
         fn acknowledge_heartbeats_with_monitor_frames_until_eof(&mut self) {
             let mut sequence = 0;
             loop {
-                let mut line = String::new();
-                if self.reader.read_line(&mut line).unwrap() == 0 {
+                let Some(line) = self.next_line() else {
                     return;
-                }
+                };
                 let WireMessage::Heartbeat(heartbeat) = decode_line(&line).unwrap() else {
                     panic!("expected heartbeat");
                 };
                 sequence += 1;
                 for record in monitor_frame_records(MonitorTap::Program, sequence) {
-                    self.send(&record);
+                    if !self.send_unless_closed(&record) {
+                        return;
+                    }
                 }
-                self.send(&WireMessage::HeartbeatAcknowledgement(
+                if !self.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
                     HeartbeatAcknowledgementMessage {
                         server: heartbeat.server,
                         heartbeat_sequence: heartbeat.sequence,
                         received_at_ms: heartbeat.sent_at_ms,
                     },
-                ));
+                )) {
+                    return;
+                }
             }
         }
+    }
+
+    fn peer_closed(error: &std::io::Error) -> bool {
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+        )
     }
 
     fn heartbeat_handshake(outcome: HandshakeOutcome) -> HandshakeResponse {
@@ -2513,57 +2566,20 @@ mod tests {
     }
 
     fn receive_connection_state(updates: &StateUpdates, expected: StudioConnectionStatus) {
-        loop {
-            updates
-                .receiver
-                .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
-                .unwrap();
-            let state = updates
-                .latest
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-                .expect("notification has a current state");
-            if state.connection_status == expected {
-                return;
-            }
-        }
+        receive_state_where(updates, |state| state.connection_status == expected);
     }
 
     #[cfg(unix)]
     fn receive_meter_state(updates: &StateUpdates) {
-        loop {
-            updates
-                .receiver
-                .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
-                .unwrap();
-            let state = updates
-                .latest
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-                .unwrap();
-            if state.audio_meters.is_some() {
-                assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
-                return;
-            }
-        }
+        let state = receive_state_where(updates, |state| state.audio_meters.is_some());
+        assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
     }
 
     /// Mirrors [`receive_meter_state`] for the lossy stream-status roster:
     /// returns the first publication that hydrated a latest status sample.
     fn receive_stream_status_state(updates: &StateUpdates) -> StudioUiState {
         loop {
-            updates
-                .receiver
-                .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
-                .unwrap();
-            let state = updates
-                .latest
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-                .unwrap();
+            let state = receive_next_state(updates);
             if state.stream_status.is_some() {
                 assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
                 assert!(
@@ -2997,19 +3013,20 @@ mod tests {
             peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
             let mut command_seen = false;
             loop {
-                let mut line = String::new();
-                if peer.reader.read_line(&mut line).unwrap() == 0 {
+                let Some(line) = peer.next_line() else {
                     return;
-                }
+                };
                 match decode_line(&line).unwrap() {
                     WireMessage::Heartbeat(heartbeat) => {
-                        peer.send(&WireMessage::HeartbeatAcknowledgement(
+                        if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
                             HeartbeatAcknowledgementMessage {
                                 server: heartbeat.server,
                                 heartbeat_sequence: heartbeat.sequence,
                                 received_at_ms: heartbeat.sent_at_ms,
                             },
-                        ));
+                        )) {
+                            return;
+                        }
                     }
                     WireMessage::Command(command) => {
                         assert!(!command_seen, "worker retried the command unexpectedly");
@@ -3045,16 +3062,7 @@ mod tests {
                 Instant::now() < deadline,
                 "command sequence did not complete"
             );
-            updates
-                .receiver
-                .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
-                .unwrap();
-            let state = updates
-                .latest
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-                .unwrap();
+            let state = receive_next_state(&updates);
             assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
             assert!(
                 state.error.is_none(),
@@ -3222,6 +3230,15 @@ mod tests {
         const FRAMES_PER_TAP: u64 = 3;
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        // Encode every frame before the worker connects: the command wait is
+        // bounded by `PEER_WAIT_TIMEOUT`, so the peer must not spend that
+        // window generating noise and QOI streams.
+        let mid_wait_records = (1..=FRAMES_PER_TAP)
+            .flat_map(|sequence| MonitorTap::ALL.map(|tap| monitor_frame_records(tap, sequence)))
+            .flatten()
+            .collect::<Vec<_>>();
+        assert!(mid_wait_records.len() > MAX_COMMAND_RECORDS);
+        let post_result_records = monitor_frame_records(MonitorTap::Program, FRAMES_PER_TAP + 1);
         let server = thread::spawn(move || {
             let mut peer = HeartbeatPeer::accept(&listener);
             peer.handshake_request();
@@ -3233,32 +3250,26 @@ mod tests {
             peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
             let mut command_seen = false;
             loop {
-                let mut line = String::new();
-                if peer.reader.read_line(&mut line).unwrap() == 0 {
+                let Some(line) = peer.next_line() else {
                     return;
-                }
+                };
                 match decode_line(&line).unwrap() {
                     WireMessage::Heartbeat(heartbeat) => {
-                        peer.send(&WireMessage::HeartbeatAcknowledgement(
+                        if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
                             HeartbeatAcknowledgementMessage {
                                 server: heartbeat.server,
                                 heartbeat_sequence: heartbeat.sequence,
                                 received_at_ms: heartbeat.sent_at_ms,
                             },
-                        ));
+                        )) {
+                            return;
+                        }
                     }
                     WireMessage::Command(command) => {
                         assert!(!command_seen, "worker retried the command unexpectedly");
                         command_seen = true;
                         let accepted_revision = heartbeat_snapshot().revision + 1;
-                        let records = (1..=FRAMES_PER_TAP)
-                            .flat_map(|sequence| {
-                                MonitorTap::ALL.map(|tap| monitor_frame_records(tap, sequence))
-                            })
-                            .flatten()
-                            .collect::<Vec<_>>();
-                        assert!(records.len() > MAX_COMMAND_RECORDS);
-                        for record in &records {
+                        for record in &mid_wait_records {
                             peer.send(record);
                         }
                         peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
@@ -3266,9 +3277,8 @@ mod tests {
                             revision: accepted_revision,
                             scheduled_frame: None,
                         }));
-                        for record in monitor_frame_records(MonitorTap::Program, FRAMES_PER_TAP + 1)
-                        {
-                            peer.send(&record);
+                        for record in &post_result_records {
+                            peer.send(record);
                         }
                         peer.send(&WireMessage::Event(command_event(accepted_revision)));
                         peer.send(&WireMessage::RuntimeEvent(command_runtime_event(
@@ -3292,17 +3302,13 @@ mod tests {
                 Instant::now() < deadline,
                 "command sequence did not complete"
             );
-            updates
-                .receiver
-                .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
-                .unwrap();
-            let state = updates
-                .latest
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .take()
-                .unwrap();
-            assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+            let state = receive_next_state(&updates);
+            assert_eq!(
+                state.connection_status,
+                StudioConnectionStatus::Ready,
+                "{:?}",
+                state.error
+            );
             assert!(
                 state.error.is_none(),
                 "command publication carried an error: {:?}",
@@ -3331,17 +3337,27 @@ mod tests {
         predicate: impl Fn(&StudioUiState) -> bool,
     ) -> StudioUiState {
         loop {
+            let state = receive_next_state(updates);
+            if predicate(&state) {
+                return state;
+            }
+        }
+    }
+
+    /// Receives the next unseen publication. A notification can arrive after
+    /// the caller already took the state it announced (the mailbox coalesces
+    /// to the latest state), so an empty mailbox waits for the next one.
+    fn receive_next_state(updates: &StateUpdates) -> StudioUiState {
+        loop {
             updates
                 .receiver
                 .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
                 .unwrap();
-            let state = updates
+            if let Some(state) = updates
                 .latest
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .take();
-            if let Some(state) = state
-                && predicate(&state)
+                .take()
             {
                 return state;
             }
@@ -3369,19 +3385,20 @@ mod tests {
             [(1, 1_u8, true), (2, 1, false), (3, 2, true), (4, 2, false)]
         {
             loop {
-                let mut line = String::new();
-                if peer.reader.read_line(&mut line).unwrap() == 0 {
+                let Some(line) = peer.next_line() else {
                     return;
-                }
+                };
                 match decode_line(&line).unwrap() {
                     WireMessage::Heartbeat(heartbeat) => {
-                        peer.send(&WireMessage::HeartbeatAcknowledgement(
+                        if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
                             HeartbeatAcknowledgementMessage {
                                 server: heartbeat.server,
                                 heartbeat_sequence: heartbeat.sequence,
                                 received_at_ms: heartbeat.sent_at_ms,
                             },
-                        ));
+                        )) {
+                            return;
+                        }
                     }
                     WireMessage::Command(command) => {
                         let expected = if active {
@@ -3419,28 +3436,19 @@ mod tests {
         // a closed pipe while answering the final heartbeats simply ends this
         // scripted peer instead of failing the join.
         loop {
-            let mut line = String::new();
-            if peer.reader.read_line(&mut line).unwrap() == 0 {
+            let Some(line) = peer.next_line() else {
                 return;
-            }
+            };
             let WireMessage::Heartbeat(heartbeat) = decode_line(&line).unwrap() else {
                 panic!("expected heartbeat");
             };
-            if peer
-                .writer
-                .write_all(
-                    encode_line(&WireMessage::HeartbeatAcknowledgement(
-                        HeartbeatAcknowledgementMessage {
-                            server: heartbeat.server,
-                            heartbeat_sequence: heartbeat.sequence,
-                            received_at_ms: heartbeat.sent_at_ms,
-                        },
-                    ))
-                    .unwrap()
-                    .as_bytes(),
-                )
-                .is_err()
-            {
+            if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
+                HeartbeatAcknowledgementMessage {
+                    server: heartbeat.server,
+                    heartbeat_sequence: heartbeat.sequence,
+                    received_at_ms: heartbeat.sent_at_ms,
+                },
+            )) {
                 return;
             }
         }
@@ -3556,22 +3564,19 @@ mod tests {
         let mut script = [false, true].into_iter();
         let mut next = script.next();
         loop {
-            let mut line = String::new();
-            if peer.reader.read_line(&mut line).unwrap() == 0 {
+            let Some(line) = peer.next_line() else {
                 return;
-            }
+            };
             match decode_line(&line).unwrap() {
                 WireMessage::Heartbeat(heartbeat) => {
-                    let acknowledgement = encode_line(&WireMessage::HeartbeatAcknowledgement(
+                    // The test may shut down while heartbeats are in flight.
+                    if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
                         HeartbeatAcknowledgementMessage {
                             server: heartbeat.server,
                             heartbeat_sequence: heartbeat.sequence,
                             received_at_ms: heartbeat.sent_at_ms,
                         },
-                    ))
-                    .unwrap();
-                    // The test may shut down while heartbeats are in flight.
-                    if peer.writer.write_all(acknowledgement.as_bytes()).is_err() {
+                    )) {
                         return;
                     }
                 }
