@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<link rel="icon" href="data:,">
+<title>FreeMix Tally</title>
+<style>
+  :root { --program: #d0021b; --preview: #12872f; --idle: #3a3a3a; --offline: #000; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff;
+    font: 16px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh; }
+  button, input, select { font: inherit; }
+  button { min-height: 44px; padding: 0 1rem; border-radius: 8px; border: 1px solid #fff6;
+    background: #0008; color: #fff; }
+  button:disabled { opacity: .4; }
+  header { display: flex; gap: .5rem; padding: .5rem; flex-wrap: wrap; align-items: center;
+    padding-top: max(.5rem, env(safe-area-inset-top)); }
+  header .spacer { flex: 1; }
+  #tally { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 1rem; background: var(--offline); transition: background-color .1s; }
+  #tally[data-light="program"] { background: var(--program); }
+  #tally[data-light="preview"] { background: var(--preview); }
+  #tally[data-light="idle"] { background: var(--idle); }
+  #tally[data-light="offline"] #state { color: #ffb000; }
+  #label { font-size: clamp(2rem, 12vw, 9rem); font-weight: 700; word-break: break-word; }
+  #state { font-size: clamp(1.5rem, 8vw, 5rem); font-weight: 800; letter-spacing: .08em; }
+  #status { padding: .5rem; padding-bottom: max(.5rem, env(safe-area-inset-bottom));
+    text-align: center; font-size: .9rem; color: #ddd; background: #000a; }
+  #board { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+    width: min(100%, 48rem); margin-top: 1rem; }
+  #board button { min-height: 4rem; font-weight: 600; }
+  #board button[data-light="program"] { background: var(--program); }
+  #board button[data-light="preview"] { background: var(--preview); }
+  #board button[data-light="idle"] { background: var(--idle); }
+  form { display: grid; gap: .75rem; width: min(100%, 26rem); text-align: left; }
+  label { display: grid; gap: .25rem; }
+  input, select { min-height: 44px; padding: 0 .5rem; border-radius: 8px; border: 1px solid #fff6;
+    background: #111; color: #fff; }
+  .full header, .full #status { display: none; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header id="toolbar">
+  <button type="button" id="inputs" aria-label="Choose input">Inputs</button>
+  <span class="spacer"></span>
+  <button type="button" id="preview" hidden aria-label="Put this input on Preview (P)">Preview</button>
+  <button type="button" id="cut" hidden aria-label="Cut Preview to Program (C)">Cut</button>
+  <button type="button" id="fullscreen" aria-label="Toggle full-screen tally (F)">Full screen</button>
+</header>
+<main id="tally" data-light="offline">
+  <div id="label" aria-live="polite">FreeMix Tally</div>
+  <div id="state" role="status" aria-live="polite">OFFLINE</div>
+  <div id="board" role="list" aria-label="Inputs" hidden></div>
+  <form id="setup" hidden autocomplete="off">
+    <label>Access token
+      <input id="token" type="password" required minlength="32" maxlength="256" autocomplete="off">
+    </label>
+    <label>Role
+      <select id="role">
+        <option value="viewer">Viewer (tally only)</option>
+        <option value="operator">Operator (tally and shortcuts)</option>
+      </select>
+    </label>
+    <button type="submit">Connect</button>
+  </form>
+</main>
+<div id="status" role="log" aria-live="polite">Not connected</div>
+<script>
+"use strict";
+(() => {
+  // Exact current protocol identifier; a daemon on any other one rejects us.
+  const PROTOCOL = "2.21";
+  const CONTROL_SUBPROTOCOL = "freemix.control.v1";
+  const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
+  const HEARTBEAT_INTERVAL_MS = 5000;
+  const HEARTBEAT_ACK_TIMEOUT_MS = 5000;
+  const SYNC_TIMEOUT_MS = 5000;
+  const INITIAL_BACKOFF_MS = 500;
+  const MAX_BACKOFF_MS = 10000;
+  const MAX_TRACKED_REVISIONS = 64;
+
+  const $ = (id) => document.getElementById(id);
+  const ui = {
+    tally: $("tally"), label: $("label"), state: $("state"), status: $("status"),
+    board: $("board"), setup: $("setup"), token: $("token"), role: $("role"),
+    inputs: $("inputs"), preview: $("preview"), cut: $("cut"), fullscreen: $("fullscreen"),
+  };
+
+  const store = window.sessionStorage;
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (params.has("token")) {
+    store.setItem("freemix.tally.token", params.get("token"));
+    params.delete("token");
+  }
+  if (params.has("role")) store.setItem("freemix.tally.role", params.get("role"));
+  if (params.has("input")) store.setItem("freemix.tally.input", params.get("input"));
+  // Never leave the token in the address bar or history.
+  history.replaceState(null, "", location.pathname + location.search);
+
+  const link = {
+    phase: "idle", // idle | connecting | open | live | waiting | stopped
+    socket: null, attempt: 0, everLive: false, retryAt: 0, stopReason: "",
+    syncDeadline: 0, nextHeartbeat: 0, heartbeatDeadline: 0, heartbeatSequence: 1,
+    pendingHeartbeat: 0, server: null, permissions: [], revision: 0,
+  };
+  const show = {
+    name: "", inputs: [], desired: { program: "", preview: "" },
+    realized: { program: "", preview: "", manualFrom: "", manualTo: "" },
+    desiredByRevision: new Map(),
+  };
+  let selected = store.getItem("freemix.tally.input") || "";
+  let choosing = !selected;
+  let commandCounter = 0;
+  let wakeLock = null;
+  const sessionNonce = Array.from(crypto.getRandomValues(new Uint8Array(8)),
+    (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+  // ---- Wire codec: one newline-terminated, tab-separated record. ----
+  const SAFE = /^[A-Za-z0-9._-]$/;
+  function escapeValue(value) {
+    let out = "";
+    for (const byte of new TextEncoder().encode(String(value))) {
+      const ch = String.fromCharCode(byte);
+      out += SAFE.test(ch) ? ch : "%" + byte.toString(16).toUpperCase().padStart(2, "0");
+    }
+    return out;
+  }
+  function encodeRecord(kind, fields) {
+    return kind + fields.map(([name, value]) => "\t" + name + "=" + escapeValue(value)).join("") + "\n";
+  }
+  function decodeRecord(line) {
+    const parts = line.split("\t");
+    const fields = new Map();
+    for (const part of parts.slice(1)) {
+      const at = part.indexOf("=");
+      if (at < 1) throw new Error("malformed field");
+      const name = part.slice(0, at);
+      if (fields.has(name)) throw new Error("duplicate field " + name);
+      fields.set(name, decodeURIComponent(part.slice(at + 1)));
+    }
+    return { kind: parts[0], fields };
+  }
+  function required(record, name) {
+    const value = record.fields.get(name);
+    if (value === undefined) throw new Error(record.kind + " lacks " + name);
+    return value;
+  }
+  function base64Url(text) {
+    return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  // ---- Connection driver: mirrors freemix-web's TallyLink. ----
+  function token() { return store.getItem("freemix.tally.token") || ""; }
+  function role() { return store.getItem("freemix.tally.role") === "operator" ? "operator" : "viewer"; }
+
+  function connect() {
+    if (!token()) { link.phase = "idle"; render(); return; }
+    link.phase = "connecting";
+    const scheme = location.protocol === "https:" ? "wss://" : "ws://";
+    let socket;
+    try {
+      socket = new WebSocket(scheme + location.host + "/v1/control",
+        [CONTROL_SUBPROTOCOL, BEARER_SUBPROTOCOL_PREFIX + base64Url(token())]);
+    } catch (error) {
+      transportClosed();
+      return;
+    }
+    link.socket = socket;
+    socket.onopen = () => {
+      if (socket !== link.socket) return;
+      if (socket.protocol !== CONTROL_SUBPROTOCOL) { closeSocket(); return; }
+      link.phase = "open";
+      link.syncDeadline = Date.now() + SYNC_TIMEOUT_MS;
+      send(encodeRecord("handshake_request", [
+        ["protocol", PROTOCOL], ["build", "freemix-tally-web"], ["client_type", "web"],
+        ["desired_role", role()], ["resume", "0"],
+      ]));
+    };
+    socket.onmessage = (event) => {
+      if (socket !== link.socket || typeof event.data !== "string") return;
+      try {
+        for (const line of event.data.split("\n")) if (line) receive(decodeRecord(line));
+      } catch (error) {
+        closeSocket();
+      }
+      render();
+    };
+    socket.onclose = () => { if (socket === link.socket) transportClosed(); };
+    render();
+  }
+
+  function send(line) {
+    if (link.socket && link.socket.readyState === WebSocket.OPEN) link.socket.send(line);
+  }
+
+  function closeSocket() {
+    const socket = link.socket;
+    if (socket) { link.socket = null; try { socket.close(); } catch (error) { /* closed */ } }
+    transportClosed();
+  }
+
+  function transportClosed() {
+    link.socket = null;
+    link.syncDeadline = link.nextHeartbeat = link.heartbeatDeadline = 0;
+    link.pendingHeartbeat = 0;
+    link.server = null;
+    link.permissions = [];
+    if (link.phase === "stopped" || link.phase === "idle") { render(); return; }
+    link.attempt += 1;
+    const delay = Math.min(INITIAL_BACKOFF_MS * 2 ** Math.min(link.attempt - 1, 20), MAX_BACKOFF_MS);
+    link.retryAt = Date.now() + delay;
+    link.phase = "waiting";
+    render();
+  }
+
+  function stop(reason) {
+    link.phase = "stopped";
+    link.stopReason = reason;
+    const socket = link.socket;
+    link.socket = null;
+    if (socket) try { socket.close(); } catch (error) { /* closed */ }
+    render();
+  }
+
+  function sameServer(record) {
+    return link.server && required(record, "engine_id") === link.server.engine_id
+      && required(record, "state_epoch") === link.server.state_epoch
+      && required(record, "log_id") === link.server.log_id;
+  }
+
+  function trackDesired(revision, program, preview) {
+    show.desiredByRevision.set(revision, { program, preview });
+    while (show.desiredByRevision.size > MAX_TRACKED_REVISIONS) {
+      show.desiredByRevision.delete(show.desiredByRevision.keys().next().value);
+    }
+  }
+
+  function receive(record) {
+    switch (record.kind) {
+      case "handshake_response": {
+        if (link.phase !== "open") throw new Error("unexpected handshake");
+        const outcome = required(record, "outcome");
+        if (outcome === "rejected") {
+          const code = required(record, "code");
+          if (required(record, "retryable") === "1") closeSocket();
+          else stop("Rejected by server: " + code);
+          return;
+        }
+        if (required(record, "protocol") !== PROTOCOL) { stop("Server protocol is incompatible"); return; }
+        if (outcome !== "snapshot") throw new Error("unexpected resume");
+        link.server = {
+          engine_id: required(record, "engine_id"), project_id: required(record, "project_id"),
+          state_epoch: required(record, "state_epoch"), log_id: required(record, "log_id"),
+        };
+        const permissions = required(record, "permissions");
+        link.permissions = permissions ? permissions.split(",") : [];
+        return;
+      }
+      case "snapshot": {
+        if (!sameServer(record)) throw new Error("foreign snapshot");
+        show.name = required(record, "show_name");
+        show.inputs = required(record, "inputs").split(",").map((item) => {
+          const at = item.indexOf("~");
+          if (at < 1) throw new Error("malformed input");
+          return { id: item.slice(0, at), label: decodeURIComponent(item.slice(at + 1)) };
+        });
+        link.revision = Number(required(record, "revision"));
+        show.desired = { program: required(record, "desired_program"), preview: required(record, "desired_preview") };
+        show.realized = {
+          program: required(record, "realized_program"), preview: required(record, "realized_preview"),
+          manualFrom: "", manualTo: "",
+        };
+        if (record.fields.get("realized_manual_active") === "1") {
+          show.realized.manualFrom = required(record, "realized_manual_from");
+          show.realized.manualTo = required(record, "realized_manual_to");
+        }
+        show.desiredByRevision.clear();
+        trackDesired(link.revision, show.desired.program, show.desired.preview);
+        if (!show.inputs.some((input) => input.id === selected)) { selected = ""; choosing = true; }
+        link.phase = "live";
+        link.everLive = true;
+        link.attempt = 0;
+        link.syncDeadline = 0;
+        link.nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;
+        requestWakeLock();
+        return;
+      }
+      case "event": {
+        if (link.phase !== "live" || !sameServer(record)) throw new Error("unexpected event");
+        const revision = Number(required(record, "revision"));
+        if (revision !== link.revision + 1) { closeSocket(); return; } // gap: resynchronize
+        link.revision = revision;
+        const name = required(record, "event");
+        if (name === "desired_switcher" || name === "stinger_slots_changed") {
+          show.desired = { program: required(record, "program"), preview: required(record, "preview") };
+          trackDesired(revision, show.desired.program, show.desired.preview);
+        } else if (name === "input_renamed") {
+          const id = required(record, "input");
+          const input = show.inputs.find((candidate) => candidate.id === id);
+          if (input) input.label = required(record, "name");
+        } else if (name === "input_order_changed") {
+          const order = required(record, "inputs").split(",");
+          show.inputs.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+        }
+        return;
+      }
+      case "runtime_event": {
+        if (!sameServer(record) || required(record, "event") !== "realized") return;
+        const desired = show.desiredByRevision.get(Number(required(record, "revision")));
+        if (!desired) return;
+        show.realized = { program: desired.program, preview: desired.preview, manualFrom: "", manualTo: "" };
+        if (record.fields.get("manual_active") === "1") {
+          show.realized.manualFrom = required(record, "manual_from");
+          show.realized.manualTo = required(record, "manual_to");
+        }
+        return;
+      }
+      case "heartbeat_acknowledgement":
+        if (Number(required(record, "heartbeat_sequence")) === link.pendingHeartbeat) {
+          link.pendingHeartbeat = 0;
+          link.heartbeatDeadline = 0;
+          link.nextHeartbeat = Date.now() + HEARTBEAT_INTERVAL_MS;
+        }
+        return;
+      case "command_result":
+        if (record.fields.get("status") === "rejected") {
+          ui.status.textContent = "Shortcut rejected: " + required(record, "code");
+        }
+        return;
+      case "error":
+        // Includes server_shutting_down: reconnect after backoff.
+        closeSocket();
+        return;
+      default:
+        return; // Lossy telemetry is not sent to Web peers; ignore anything else.
+    }
+  }
+
+  function tick() {
+    const now = Date.now();
+    if (link.phase === "waiting" && now >= link.retryAt) connect();
+    else if (link.phase === "open" && link.syncDeadline && now >= link.syncDeadline) closeSocket();
+    else if (link.phase === "live") {
+      if (link.heartbeatDeadline && now >= link.heartbeatDeadline) { closeSocket(); return; }
+      if (!link.pendingHeartbeat && now >= link.nextHeartbeat) {
+        link.pendingHeartbeat = link.heartbeatSequence++;
+        link.heartbeatDeadline = now + HEARTBEAT_ACK_TIMEOUT_MS;
+        send(encodeRecord("heartbeat", [
+          ["engine_id", link.server.engine_id], ["project_id", link.server.project_id],
+          ["state_epoch", link.server.state_epoch], ["log_id", link.server.log_id],
+          ["sequence", link.pendingHeartbeat], ["sent_at_ms", now], ["applied", "0"],
+        ]));
+      }
+    }
+    if (link.phase === "waiting") render();
+  }
+
+  // ---- Presentation: mirrors freemix-web's TallyPresentation. ----
+  function lightOf(id) {
+    if (link.phase !== "live") return "offline";
+    const realized = show.realized;
+    if (realized.program === id || realized.manualFrom === id || realized.manualTo === id) return "program";
+    if (realized.preview === id) return "preview";
+    return "idle";
+  }
+  const STATE_TEXT = { program: "ON AIR", preview: "PREVIEW", idle: "IDLE", offline: "OFFLINE" };
+
+  function shortcutState(permission, extra) {
+    if (!link.permissions.includes(permission)) return "hidden";
+    return link.phase === "live" && extra ? "enabled" : "disabled";
+  }
+
+  function statusText() {
+    switch (link.phase) {
+      case "idle": return "Enter the daemon's web access token to connect";
+      case "connecting": case "open":
+        return link.attempt ? "Reconnecting (attempt " + link.attempt + ")" : "Connecting";
+      case "live": return "Live" + (show.name ? " — " + show.name : "") + " as " + role();
+      case "waiting": {
+        const seconds = Math.max(0, link.retryAt - Date.now()) / 1000;
+        const hint = link.everLive ? "" : " (check the token, or another web client may be connected)";
+        return "Connection lost; retry " + link.attempt + " in " + seconds.toFixed(1) + " s" + hint;
+      }
+      case "stopped": return link.stopReason || "Stopped";
+      default: return "";
+    }
+  }
+
+  function render() {
+    const input = show.inputs.find((candidate) => candidate.id === selected);
+    const light = input ? lightOf(input.id) : "offline";
+    ui.tally.dataset.light = choosing ? "offline" : light;
+    ui.label.textContent = choosing || !input ? "FreeMix Tally" : input.label;
+    ui.state.textContent = choosing ? (link.phase === "live" ? "Choose an input" : STATE_TEXT.offline)
+      : STATE_TEXT[light];
+    ui.state.setAttribute("aria-label", choosing ? ui.state.textContent : "Tally: " + STATE_TEXT[light]);
+    ui.status.textContent = statusText();
+    ui.setup.hidden = link.phase !== "idle" && link.phase !== "stopped";
+    ui.board.hidden = !choosing || link.phase !== "live";
+    if (!ui.board.hidden) renderBoard();
+    for (const [button, state] of [
+      [ui.preview, shortcutState("select_preview", input && show.desired.preview !== input.id)],
+      [ui.cut, shortcutState("transition", true)],
+    ]) {
+      button.hidden = state === "hidden";
+      button.disabled = state !== "enabled";
+    }
+  }
+
+  function renderBoard() {
+    const buttons = show.inputs.map((input) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.setAttribute("role", "listitem");
+      button.dataset.light = lightOf(input.id);
+      button.textContent = input.label;
+      button.addEventListener("click", () => {
+        selected = input.id;
+        choosing = false;
+        store.setItem("freemix.tally.input", selected);
+        render();
+      });
+      return button;
+    });
+    ui.board.replaceChildren(...buttons);
+  }
+
+  // ---- Shortcuts. The server authorizes every command again. ----
+  function sendCommand(payload) {
+    commandCounter += 1;
+    const id = "tally-" + sessionNonce + "-" + commandCounter;
+    send(encodeRecord("command", [
+      ["protocol", PROTOCOL], ["id", id], ["idempotency_key", id], ...payload,
+    ]));
+  }
+  function previewSelected() {
+    if (ui.preview.hidden || ui.preview.disabled || !selected) return;
+    sendCommand([["payload", "select_preview"], ["input", selected]]);
+  }
+  function cut() {
+    if (ui.cut.hidden || ui.cut.disabled) return;
+    sendCommand([["payload", "cut"]]);
+  }
+  function toggleFullScreen() {
+    const full = !document.body.classList.contains("full");
+    document.body.classList.toggle("full", full);
+    try {
+      if (full && document.documentElement.requestFullscreen && !document.fullscreenElement) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      } else if (!full && document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    } catch (error) { /* CSS full-screen layout still applies */ }
+  }
+  async function requestWakeLock() {
+    try {
+      if (!wakeLock && navigator.wakeLock && document.visibilityState === "visible") {
+        wakeLock = await navigator.wakeLock.request("screen");
+        wakeLock.addEventListener("release", () => { wakeLock = null; });
+      }
+    } catch (error) { wakeLock = null; }
+  }
+
+  ui.preview.addEventListener("click", previewSelected);
+  ui.cut.addEventListener("click", cut);
+  ui.fullscreen.addEventListener("click", toggleFullScreen);
+  ui.tally.addEventListener("dblclick", (event) => {
+    if (event.target === ui.tally || event.target === ui.label || event.target === ui.state) toggleFullScreen();
+  });
+  ui.inputs.addEventListener("click", () => { choosing = true; render(); });
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) document.body.classList.remove("full");
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+    const key = event.key.toLowerCase();
+    if (key === "f") toggleFullScreen();
+    else if (key === "p") previewSelected();
+    else if (key === "c") cut();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (link.phase === "waiting") link.retryAt = Date.now();
+    if (link.phase === "live") requestWakeLock();
+  });
+  window.addEventListener("online", () => { if (link.phase === "waiting") link.retryAt = Date.now(); });
+  ui.setup.addEventListener("submit", (event) => {
+    event.preventDefault();
+    store.setItem("freemix.tally.token", ui.token.value);
+    store.setItem("freemix.tally.role", ui.role.value);
+    ui.token.value = "";
+    link.attempt = 0;
+    link.everLive = false;
+    connect();
+  });
+
+  ui.role.value = role();
+  setInterval(tick, 250);
+  connect();
+})();
+</script>
+</body>
+</html>

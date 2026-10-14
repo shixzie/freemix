@@ -12,6 +12,7 @@ mod fade_to_black;
 mod manual_transition;
 mod overlay;
 mod stinger;
+mod tally;
 mod transition;
 
 pub use audio_strip::AudioStripControls;
@@ -24,6 +25,12 @@ pub use manual_transition::{
 };
 pub use overlay::{OverlayControl, OverlayControls};
 pub use stinger::{StingerControl, StingerControls};
+pub use tally::{
+    SelectedTally, TALLY_HEARTBEAT_ACK_TIMEOUT_MS, TALLY_HEARTBEAT_INTERVAL_MS,
+    TALLY_INITIAL_BACKOFF_MS, TALLY_MAX_BACKOFF_MS, TALLY_SYNC_TIMEOUT_MS, TallyAction, TallyBoard,
+    TallyConnection, TallyEntry, TallyIndicator, TallyLight, TallyLink, TallyPresentation,
+    TallyScreen, TallyShortcut, TallyStop,
+};
 pub use transition::{TransitionControl, TransitionControlState, TransitionControls};
 
 /// A semantic panel that can appear in a role-scoped route.

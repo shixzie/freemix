@@ -48,26 +48,46 @@ pub(super) struct WebConnection {
     pub(super) cancel: Arc<AtomicBool>,
 }
 
+/// Subprotocol a browser offers, and the gateway selects, for control.
+const CONTROL_SUBPROTOCOL: &str = "freemix.control.v1";
+/// Browsers cannot set `Authorization` on a WebSocket, so the page presents
+/// the same token as `freemix.bearer.<unpadded base64url(token)>` in its
+/// offered subprotocol list. The gateway never selects or echoes it.
+const BEARER_SUBPROTOCOL_PREFIX: &str = "freemix.bearer.";
+const BEARER_SUBPROTOCOL_MAX_BYTES: usize =
+    BEARER_SUBPROTOCOL_PREFIX.len() + (TOKEN_MAX_BYTES * 4).div_ceil(3);
+
 struct WebToken {
     bytes: [u8; TOKEN_MAX_BYTES],
     length: usize,
+    subprotocol: [u8; BEARER_SUBPROTOCOL_MAX_BYTES],
+    subprotocol_length: usize,
 }
 
 impl WebToken {
     fn from_environment() -> AppResult<Self> {
         let value = env::var("FREEMIXD_WEB_TOKEN")
             .map_err(|_| "FREEMIXD_WEB_TOKEN is required when --web-listen is enabled")?;
-        let bytes = value.as_bytes();
+        Self::from_bytes(value.as_bytes())
+            .ok_or_else(|| "FREEMIXD_WEB_TOKEN must be 32..=256 ASCII graphic bytes".into())
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
         if !(TOKEN_MIN_BYTES..=TOKEN_MAX_BYTES).contains(&bytes.len())
             || !bytes.iter().all(u8::is_ascii_graphic)
         {
-            return Err("FREEMIXD_WEB_TOKEN must be 32..=256 ASCII graphic bytes".into());
+            return None;
         }
         let mut token = [0; TOKEN_MAX_BYTES];
         token[..bytes.len()].copy_from_slice(bytes);
-        Ok(Self {
+        let encoded = format!("{BEARER_SUBPROTOCOL_PREFIX}{}", base64url(bytes));
+        let mut subprotocol = [0; BEARER_SUBPROTOCOL_MAX_BYTES];
+        subprotocol[..encoded.len()].copy_from_slice(encoded.as_bytes());
+        Some(Self {
             bytes: token,
             length: bytes.len(),
+            subprotocol,
+            subprotocol_length: encoded.len(),
         })
     }
 
@@ -76,15 +96,47 @@ impl WebToken {
             .map(HeaderValue::as_bytes)
             .and_then(|value| value.strip_prefix(b"Bearer "))
             .unwrap_or_default();
-        let mut candidate = [0; TOKEN_MAX_BYTES];
-        let copied = presented.len().min(TOKEN_MAX_BYTES);
-        candidate[..copied].copy_from_slice(&presented[..copied]);
-        let mut difference = self.length ^ presented.len();
-        for (expected, actual) in self.bytes.iter().zip(candidate) {
-            difference |= usize::from(*expected ^ actual);
-        }
-        difference == 0
+        constant_time_eq(&self.bytes, self.length, presented)
     }
+
+    /// Compares one offered `freemix.bearer.*` subprotocol in constant time.
+    fn matches_subprotocol(&self, presented: &str) -> bool {
+        constant_time_eq(
+            &self.subprotocol,
+            self.subprotocol_length,
+            presented.as_bytes(),
+        )
+    }
+}
+
+fn constant_time_eq<const N: usize>(expected: &[u8; N], length: usize, presented: &[u8]) -> bool {
+    let mut candidate = [0; N];
+    let copied = presented.len().min(N);
+    candidate[..copied].copy_from_slice(&presented[..copied]);
+    let mut difference = length ^ presented.len();
+    for (expected, actual) in expected.iter().zip(candidate) {
+        difference |= usize::from(*expected ^ actual);
+    }
+    difference == 0
+}
+
+/// Unpadded RFC 4648 base64url.
+fn base64url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut encoded = String::with_capacity((bytes.len() * 4).div_ceil(3));
+    for chunk in bytes.chunks(3) {
+        let value = chunk
+            .iter()
+            .enumerate()
+            .fold(0_u32, |value, (index, byte)| {
+                value | (u32::from(*byte) << (16 - 8 * index))
+            });
+        for index in 0..=chunk.len() {
+            let sextet = (value >> (18 - 6 * index)) & 0x3f;
+            encoded.push(char::from(ALPHABET[sextet as usize]));
+        }
+    }
+    encoded
 }
 
 impl WebGateway {
@@ -175,5 +227,49 @@ impl Drop for WebGateway {
     }
 }
 
+mod page;
 mod worker;
 use worker::{listener_loop, worker_loop};
+
+#[cfg(test)]
+mod tests {
+    use super::{WebToken, base64url};
+
+    #[test]
+    fn base64url_is_unpadded_rfc4648() {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg"),
+            ("fo", "Zm8"),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg"),
+            ("fooba", "Zm9vYmE"),
+            ("foobar", "Zm9vYmFy"),
+            ("\u{3f}\u{3f}>", "Pz8-"),
+            ("??/", "Pz8v"),
+            ("\u{7e}\u{7e}\u{7f}", "fn5_"),
+        ] {
+            assert_eq!(base64url(plain.as_bytes()), encoded, "{plain:?}");
+        }
+    }
+
+    #[test]
+    fn subprotocol_credentials_match_only_the_exact_encoded_token() {
+        let token = WebToken::from_bytes(b"subprotocol-token/+=0123456789abcdef").unwrap();
+        let encoded = format!(
+            "freemix.bearer.{}",
+            base64url(b"subprotocol-token/+=0123456789abcdef")
+        );
+        assert!(token.matches_subprotocol(&encoded));
+        assert!(!token.matches_subprotocol(&encoded[..encoded.len() - 1]));
+        assert!(!token.matches_subprotocol(&format!("{encoded}A")));
+        assert!(!token.matches_subprotocol("freemix.bearer."));
+        assert!(!token.matches_subprotocol(&"x".repeat(4096)));
+        assert!(WebToken::from_bytes(b"short").is_none());
+        assert!(WebToken::from_bytes(&[b' '; 40]).is_none());
+        let longest = WebToken::from_bytes(&[b'~'; 256]).unwrap();
+        assert!(
+            longest.matches_subprotocol(&format!("freemix.bearer.{}", base64url(&[b'~'; 256])))
+        );
+    }
+}
