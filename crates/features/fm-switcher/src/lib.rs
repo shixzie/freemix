@@ -2,6 +2,7 @@
 
 mod command;
 mod fade_to_black;
+mod logical_output;
 mod mix_bank;
 mod overlay;
 mod recorder;
@@ -15,6 +16,12 @@ pub use fade_to_black::{
     FADE_TO_BLACK_POSITION_DENOMINATOR, FadeToBlackAdvance, FadeToBlackController,
     FadeToBlackError, FadeToBlackFrame, FadeToBlackPosition, FadeToBlackRequest,
     FadeToBlackStarted, FadeToBlackTarget, MAX_FADE_TO_BLACK_DURATION_FRAMES,
+};
+pub use logical_output::{
+    AudioMap, AudioSource, BackgroundPlan, CellFeed, FeedLayer, LOGICAL_OUTPUT_COUNT,
+    LogicalOutputConfig, LogicalOutputSlot, LogicalOutputs, MAX_OUTPUT_MULTIVIEW_CELLS,
+    MultiViewCell, MultiViewCellPlan, OutputRenderPlan, OutputRoutingError, OutputRoutingFrame,
+    OutputSource, OutputVideo, OverlayLayer, OverlayPolicy, OverlaySet, RoutingContext,
 };
 pub use mix_bank::{
     MAX_MIX_BANK_INPUTS, MAX_MIX_TRANSITION_DURATION_FRAMES, MAX_PENDING_MIX_EFFECTS,
