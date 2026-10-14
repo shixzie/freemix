@@ -1,5 +1,5 @@
 use core::fmt;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fm_switcher::{
     DesiredStream, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherEvent, SwitcherState,
@@ -42,6 +42,8 @@ pub struct ShowState {
     outputs: Vec<(OutputId, String)>,
     input_audio_strips: BTreeMap<InputId, EngineInputAudioStripState>,
     desired_switcher: SwitcherState,
+    project_locked: bool,
+    locked_inputs: BTreeSet<InputId>,
 }
 
 impl ShowState {
@@ -95,6 +97,8 @@ impl ShowState {
             input_names: inputs.into_iter().map(|(_, name)| name).collect(),
             outputs: Vec::new(),
             desired_switcher,
+            project_locked: false,
+            locked_inputs: BTreeSet::new(),
         })
     }
 
@@ -335,6 +339,46 @@ impl ShowState {
         self.desired_switcher
             .preload_stinger(slot, media_available)
             .map_err(ShowError::Switcher)
+    }
+
+    /// Returns whether the project-wide edit padlock is engaged.
+    #[must_use]
+    pub const fn is_project_locked(&self) -> bool {
+        self.project_locked
+    }
+
+    /// Returns whether one input's edit padlock is engaged.
+    #[must_use]
+    pub fn is_input_locked(&self, input: InputId) -> bool {
+        self.locked_inputs.contains(&input)
+    }
+
+    /// Returns the inputs whose edit padlock is engaged, in identifier order.
+    #[must_use]
+    pub const fn locked_inputs(&self) -> &BTreeSet<InputId> {
+        &self.locked_inputs
+    }
+
+    /// Engages or releases the project-wide edit padlock.
+    pub const fn set_project_locked(&mut self, locked: bool) {
+        self.project_locked = locked;
+    }
+
+    /// Engages or releases one input's edit padlock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] when the input is outside this show.
+    pub fn set_input_locked(&mut self, input: InputId, locked: bool) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        if locked {
+            self.locked_inputs.insert(input);
+        } else {
+            self.locked_inputs.remove(&input);
+        }
+        Ok(())
     }
 
     pub const fn desired_switcher_mut(&mut self) -> &mut SwitcherState {

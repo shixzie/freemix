@@ -2,6 +2,7 @@
 
 mod engine;
 mod error;
+mod history;
 mod state;
 
 pub use engine::{
@@ -13,4 +14,8 @@ pub use engine::{
     MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS, MIN_INPUT_AUDIO_GAIN_MILLIDB, PreparedEngineExecution,
 };
 pub use error::{EngineError, ShowError, SnapshotError};
+pub use history::{
+    EditHistoryEntry, EditLockScope, EditRejection, EditRejectionKind, EngineCommandKind,
+    MAX_EDIT_HISTORY,
+};
 pub use state::{EngineInputAudioStripState, ShowState};

@@ -15,7 +15,11 @@ use fm_switcher::{
 };
 use fm_types::{FrameRate, InputId, InputOrderError, OutputId, RenameInputError};
 
-use crate::{EngineError, EngineInputAudioStripState, ShowState, SnapshotError};
+use crate::history::{EditHistory, HistoryStep, ResolvedCommand, check_edit_locks};
+use crate::{
+    EditHistoryEntry, EditLockScope, EngineError, EngineInputAudioStripState, ShowState,
+    SnapshotError,
+};
 
 type RuntimeScheduler = FrameScheduler<(), (), EngineCommand, ()>;
 const MAX_TRANSITION_DURATION_FRAMES: u32 = 3_600;
@@ -182,6 +186,25 @@ pub enum EngineCommand {
     RecordStop {
         recorder: RecorderSlot,
     },
+    /// Reverts the most recent project edit in the shared history.
+    ///
+    /// `expected_edit` names the [`EditHistoryEntry::edit`] the caller means
+    /// to revert; a different top entry is rejected as a history conflict.
+    Undo {
+        expected_edit: Option<Revision>,
+    },
+    /// Reapplies the most recently undone project edit.
+    ///
+    /// `expected_edit` names the [`EditHistoryEntry::edit`] the caller means
+    /// to reapply; a different top entry is rejected as a history conflict.
+    Redo {
+        expected_edit: Option<Revision>,
+    },
+    /// Engages or releases an edit padlock. Live operations are never locked.
+    SetEditLock {
+        scope: EditLockScope,
+        locked: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -205,6 +228,10 @@ pub enum EngineEvent {
     RecordingChanged {
         recorder: RecorderSlot,
         active: bool,
+    },
+    EditLockChanged {
+        scope: EditLockScope,
+        locked: bool,
     },
 }
 
@@ -431,6 +458,8 @@ pub struct Engine {
     runtime_generation: RuntimeGeneration,
     pending_actions: usize,
     transition_in_flight: Option<TransitionKind>,
+    /// Session-scoped undo/redo history; never snapshotted or restored.
+    history: EditHistory,
 }
 
 impl Engine {
@@ -447,6 +476,7 @@ impl Engine {
             runtime_generation: RuntimeGeneration::default(),
             pending_actions: 0,
             transition_in_flight: None,
+            history: EditHistory::default(),
         }
     }
 
@@ -532,6 +562,18 @@ impl Engine {
     #[must_use]
     pub fn receipt(&self, key: &IdempotencyKey) -> Option<&CommandReceipt<EngineAcceptance>> {
         self.commands.receipt(key)
+    }
+
+    /// Returns undoable project edits, oldest first; the last is undone next.
+    ///
+    /// At most [`crate::MAX_EDIT_HISTORY`] entries are retained.
+    pub fn undo_entries(&self) -> impl ExactSizeIterator<Item = &EditHistoryEntry> {
+        self.history.undo_entries()
+    }
+
+    /// Returns undone project edits, oldest first; the last is redone next.
+    pub fn redo_entries(&self) -> impl ExactSizeIterator<Item = &EditHistoryEntry> {
+        self.history.redo_entries()
     }
 
     /// Returns how many idempotency receipts are retained, at most
@@ -622,96 +664,76 @@ impl Engine {
         now_millis: u64,
     ) -> Result<EngineCommandOutcome, EngineError> {
         let key = envelope.idempotency_key.clone();
-        let command = envelope.command.clone();
+        let command_id = envelope.id.clone();
         let target_frame = self.scheduler.pacer().next_frame();
         let already_seen = self.commands.receipt(&key).is_some();
-        let scheduled = if already_seen {
-            None
-        } else {
-            Some(
+        // Undo and redo resolve to the stored project edit before scheduling,
+        // so the runtime only ever realizes ordinary edit commands.
+        let resolution = self
+            .history
+            .resolve(self.commands.state(), &envelope.command);
+        let scheduled = match (&resolution, already_seen) {
+            (Ok(resolved), false) => Some(
                 self.scheduler
-                    .schedule_action(target_frame, command.clone())
+                    .schedule_action(target_frame, resolved.command.clone())
                     .map_err(EngineError::Schedule)?,
-            )
+            ),
+            _ => None,
         };
         let runtime_busy = self.transition_in_flight;
-        let outcome = self
-            .commands
-            .apply(envelope, now_millis, move |_, command| {
-                if let Some(kind) = runtime_busy
-                    && !matches!(&command, EngineCommand::FadeToBlack { .. })
-                    && !matches!(&command, EngineCommand::RenameInput { .. })
-                    && !matches!(&command, EngineCommand::ReorderInputs { .. })
-                    && !matches!(
-                        &command,
-                        EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
-                    )
-                    && !matches!(
-                        &command,
-                        EngineCommand::RecordStart { .. } | EngineCommand::RecordStop { .. }
-                    )
-                    && !is_overlay_command(&command)
-                {
-                    let name = match kind {
-                        TransitionKind::Fade => "fade",
-                        TransitionKind::AlphaFade => "alpha fade",
-                        TransitionKind::Slide => "slide",
-                        TransitionKind::Zoom => "zoom",
-                        TransitionKind::Wipe => "wipe",
-                        TransitionKind::Stinger(_) => "stinger",
-                    };
-                    return Err(Rejection::new(
-                        RejectionCode::Conflict,
-                        format!("a {name} transition is already in flight"),
-                    ));
-                }
-                Ok(EngineMutation {
-                    command,
-                    target_frame,
-                })
-            });
+        let staged_resolution = resolution.clone();
+        let outcome = self.commands.apply(envelope, now_millis, move |_, _| {
+            let ResolvedCommand { command, .. } = staged_resolution?;
+            if let Some(kind) = runtime_busy
+                && !matches!(&command, EngineCommand::FadeToBlack { .. })
+                && !matches!(&command, EngineCommand::RenameInput { .. })
+                && !matches!(&command, EngineCommand::ReorderInputs { .. })
+                && !matches!(&command, EngineCommand::SetEditLock { .. })
+                && !matches!(
+                    &command,
+                    EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
+                )
+                && !matches!(
+                    &command,
+                    EngineCommand::RecordStart { .. } | EngineCommand::RecordStop { .. }
+                )
+                && !is_overlay_command(&command)
+            {
+                let name = match kind {
+                    TransitionKind::Fade => "fade",
+                    TransitionKind::AlphaFade => "alpha fade",
+                    TransitionKind::Slide => "slide",
+                    TransitionKind::Zoom => "zoom",
+                    TransitionKind::Wipe => "wipe",
+                    TransitionKind::Stinger(_) => "stinger",
+                };
+                return Err(Rejection::new(
+                    RejectionCode::Conflict,
+                    format!("a {name} transition is already in flight"),
+                ));
+            }
+            Ok(EngineMutation {
+                command,
+                target_frame,
+            })
+        });
 
         if !outcome.replayed {
             self.receipts_recorded = self.receipts_recorded.wrapping_add(1);
         }
-        if outcome.receipt.accepted().is_some() && !outcome.replayed {
+        let accepted_revision = outcome
+            .receipt
+            .accepted()
+            .filter(|_| !outcome.replayed)
+            .map(|accepted| accepted.revision);
+        if let (Some(revision), Ok(resolved)) = (accepted_revision, resolution) {
+            let ResolvedCommand { command, step } = resolved;
             self.pending_actions += 1;
-            if let Some(kind) = match &command {
-                EngineCommand::Fade { .. } => Some(TransitionKind::Fade),
-                EngineCommand::AlphaFade { .. } => Some(TransitionKind::AlphaFade),
-                EngineCommand::Slide { .. } => Some(TransitionKind::Slide),
-                EngineCommand::Zoom { .. } => Some(TransitionKind::Zoom),
-                EngineCommand::Stinger { slot, .. } => {
-                    stinger_runtime_transition(self.commands.state(), *slot)
-                }
-                EngineCommand::ConfigureStinger { .. } | EngineCommand::RemoveStinger { .. } => {
-                    None
-                }
-                EngineCommand::RenameInput { .. }
-                | EngineCommand::ReorderInputs { .. }
-                | EngineCommand::SetInputAudioStrip { .. }
-                | EngineCommand::TakeOverlay { .. }
-                | EngineCommand::UpdateOverlay { .. }
-                | EngineCommand::OverlayOff { .. }
-                | EngineCommand::ConfigureOverlayTransition { .. }
-                | EngineCommand::ConfigureOverlayAppearance { .. }
-                | EngineCommand::QueueOverlay { .. }
-                | EngineCommand::TakeNextOverlay { .. }
-                | EngineCommand::SetOverlayOutputInclusion { .. }
-                | EngineCommand::SelectPreview(_)
-                | EngineCommand::Cut
-                | EngineCommand::FadeToBlack { .. }
-                | EngineCommand::StartManualTransition { .. }
-                | EngineCommand::SetManualTransitionPosition { .. }
-                | EngineCommand::CommitManualTransition
-                | EngineCommand::CancelManualTransition
-                | EngineCommand::StreamStart { .. }
-                | EngineCommand::StreamStop { .. }
-                | EngineCommand::RecordStart { .. }
-                | EngineCommand::RecordStop { .. } => None,
-                EngineCommand::Wipe { .. } => Some(TransitionKind::Wipe),
-            } {
+            if let Some(kind) = runtime_transition_kind(self.commands.state(), &command) {
                 self.transition_in_flight = Some(kind);
+            }
+            if !matches!(step, HistoryStep::None) {
+                self.history.commit(step, command, command_id, revision);
             }
         } else if let Some(action) = scheduled {
             self.scheduler.cancel_action(action);
@@ -886,6 +908,7 @@ impl Engine {
             runtime_generation: restore_state.runtime_generation,
             pending_actions: 0,
             transition_in_flight: None,
+            history: EditHistory::default(),
         })
     }
 }
@@ -1001,6 +1024,19 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
         state: &mut ShowState,
         events: &mut Vec<EngineEvent>,
     ) -> Result<EngineAcceptance, Rejection> {
+        if matches!(
+            &self.command,
+            EngineCommand::Undo { .. } | EngineCommand::Redo { .. }
+        ) {
+            return Err(Rejection::new(
+                RejectionCode::Internal,
+                "undo and redo must be resolved before mutation",
+            ));
+        }
+        if let EngineCommand::SetEditLock { scope, locked } = self.command {
+            return apply_edit_lock_mutation(state, events, scope, locked, self.target_frame);
+        }
+        check_edit_locks(state, &self.command).map_err(crate::EditRejection::into_rejection)?;
         if matches!(
             &self.command,
             EngineCommand::ConfigureStinger { .. } | EngineCommand::RemoveStinger { .. }
@@ -1217,6 +1253,11 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             EngineCommand::RecordStart { .. } | EngineCommand::RecordStop { .. } => {
                 unreachable!("recording mutations return before switcher command mapping")
             }
+            EngineCommand::Undo { .. }
+            | EngineCommand::Redo { .. }
+            | EngineCommand::SetEditLock { .. } => {
+                unreachable!("history and lock mutations return before switcher command mapping")
+            }
         };
         state
             .desired_switcher_mut()
@@ -1227,6 +1268,28 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             target_frame: self.target_frame,
         })
     }
+}
+
+fn apply_edit_lock_mutation(
+    state: &mut ShowState,
+    events: &mut Vec<EngineEvent>,
+    scope: EditLockScope,
+    locked: bool,
+    target_frame: FrameNumber,
+) -> Result<EngineAcceptance, Rejection> {
+    match scope {
+        EditLockScope::Project => state.set_project_locked(locked),
+        EditLockScope::Input(input) => state.set_input_locked(input, locked).map_err(|_| {
+            Rejection::new(
+                RejectionCode::NotFound,
+                format!("show does not contain input {input}"),
+            )
+        })?,
+    }
+    // Exactly one durable event per acceptance keeps revision, event
+    // sequence, and runtime generation in lockstep for restore validation.
+    events.push(EngineEvent::EditLockChanged { scope, locked });
+    Ok(EngineAcceptance { target_frame })
 }
 
 fn apply_stream_mutation(
@@ -1437,7 +1500,9 @@ fn apply_runtime(
 ) -> Result<Vec<SwitcherEvent>, SwitcherError> {
     if matches!(
         &command,
-        EngineCommand::RenameInput { .. } | EngineCommand::SetInputAudioStrip { .. }
+        EngineCommand::RenameInput { .. }
+            | EngineCommand::SetInputAudioStrip { .. }
+            | EngineCommand::SetEditLock { .. }
     ) {
         return Ok(Vec::new());
     }
@@ -1540,6 +1605,12 @@ fn apply_runtime(
         EngineCommand::RecordStart { .. } | EngineCommand::RecordStop { .. } => {
             unreachable!("recording commands return before switcher command mapping")
         }
+        EngineCommand::Undo { .. } | EngineCommand::Redo { .. } => {
+            unreachable!("undo and redo are resolved to edits before scheduling")
+        }
+        EngineCommand::SetEditLock { .. } => {
+            unreachable!("edit-lock commands return before switcher command mapping")
+        }
     })
 }
 
@@ -1619,6 +1690,44 @@ fn apply_runtime_overlay(
             included: *included,
         }),
         _ => unreachable!("only overlay commands are delegated"),
+    }
+}
+
+fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<TransitionKind> {
+    match command {
+        EngineCommand::Fade { .. } => Some(TransitionKind::Fade),
+        EngineCommand::AlphaFade { .. } => Some(TransitionKind::AlphaFade),
+        EngineCommand::Slide { .. } => Some(TransitionKind::Slide),
+        EngineCommand::Zoom { .. } => Some(TransitionKind::Zoom),
+        EngineCommand::Wipe { .. } => Some(TransitionKind::Wipe),
+        EngineCommand::Stinger { slot, .. } => stinger_runtime_transition(show, *slot),
+        EngineCommand::ConfigureStinger { .. }
+        | EngineCommand::RemoveStinger { .. }
+        | EngineCommand::RenameInput { .. }
+        | EngineCommand::ReorderInputs { .. }
+        | EngineCommand::SetInputAudioStrip { .. }
+        | EngineCommand::TakeOverlay { .. }
+        | EngineCommand::UpdateOverlay { .. }
+        | EngineCommand::OverlayOff { .. }
+        | EngineCommand::ConfigureOverlayTransition { .. }
+        | EngineCommand::ConfigureOverlayAppearance { .. }
+        | EngineCommand::QueueOverlay { .. }
+        | EngineCommand::TakeNextOverlay { .. }
+        | EngineCommand::SetOverlayOutputInclusion { .. }
+        | EngineCommand::SelectPreview(_)
+        | EngineCommand::Cut
+        | EngineCommand::FadeToBlack { .. }
+        | EngineCommand::StartManualTransition { .. }
+        | EngineCommand::SetManualTransitionPosition { .. }
+        | EngineCommand::CommitManualTransition
+        | EngineCommand::CancelManualTransition
+        | EngineCommand::StreamStart { .. }
+        | EngineCommand::StreamStop { .. }
+        | EngineCommand::RecordStart { .. }
+        | EngineCommand::RecordStop { .. }
+        | EngineCommand::Undo { .. }
+        | EngineCommand::Redo { .. }
+        | EngineCommand::SetEditLock { .. } => None,
     }
 }
 
