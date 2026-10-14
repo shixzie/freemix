@@ -200,20 +200,17 @@ impl FakeViscaAdapter {
                 kind: MovementKind::Continuous,
             },
             PtzIntent::Home => {
+                let capabilities = &camera.descriptor.capabilities;
+                // Home is pan/tilt zero, but a camera whose limits exclude zero
+                // must still report a reachable position: every later relative
+                // move is clamped against the limits from this position.
                 camera.telemetry.position = CameraPosition {
                     pan: 0,
                     tilt: 0,
-                    zoom: camera
-                        .descriptor
-                        .capabilities
-                        .zoom
-                        .map(|axis| axis.position.min),
-                    focus: camera
-                        .descriptor
-                        .capabilities
-                        .focus
-                        .map(|axis| axis.position.min),
-                };
+                    zoom: capabilities.zoom.map(|axis| axis.position.min),
+                    focus: capabilities.focus.map(|axis| axis.position.min),
+                }
+                .clamped(capabilities);
                 MovementState::Completed {
                     id: movement_id,
                     kind: MovementKind::Home,

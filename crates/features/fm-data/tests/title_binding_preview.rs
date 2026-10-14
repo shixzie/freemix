@@ -270,6 +270,23 @@ fn date_input_modes_ranges_and_pattern_validation() {
     assert!(UtcOffset::from_hours_minutes(1, 60).is_err());
 }
 
+#[test]
+fn extreme_utc_offsets_are_rejected_without_overflow() {
+    assert!(UtcOffset::from_minutes(i32::MIN).is_err());
+    assert!(UtcOffset::from_minutes(i32::MAX).is_err());
+    assert!(UtcOffset::from_hours_minutes(i32::MIN, 0).is_err());
+    assert!(UtcOffset::from_hours_minutes(i32::MAX, 59).is_err());
+    assert!(UtcOffset::from_hours_minutes(40_000_000, 0).is_err());
+    assert_eq!(
+        UtcOffset::from_hours_minutes(-18, 0).map(UtcOffset::minutes),
+        Ok(-18 * 60)
+    );
+    assert_eq!(
+        UtcOffset::from_minutes(-18 * 60).map(UtcOffset::minutes),
+        Ok(-18 * 60)
+    );
+}
+
 // ---------------------------------------------------------------- visibility
 
 #[test]

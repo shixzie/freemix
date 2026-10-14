@@ -697,7 +697,11 @@ impl TitleDesign {
         while let Some((id, mut placement)) = stack.pop() {
             let dx = animated(id, NodeProperty::OffsetX, 0);
             let dy = animated(id, NodeProperty::OffsetY, 0);
-            let opacity = u8::try_from(animated(id, NodeProperty::Opacity, 255)).unwrap_or(0);
+            // Keyframes are 0..=255, but an overshooting bezier easing can
+            // carry the interpolated value past either end; clamp it instead
+            // of mapping an overshoot above 255 to fully transparent.
+            let opacity = u8::try_from(animated(id, NodeProperty::Opacity, 255).clamp(0, 255))
+                .unwrap_or(u8::MAX);
             match self.nodes.get(&id) {
                 Some(DesignNode::Element(_)) => {
                     placement.offset_x += dx;

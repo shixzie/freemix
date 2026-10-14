@@ -508,6 +508,9 @@ pub enum ViscaReply {
     NetworkChange { address: u8 },
     /// Broadcast `88 30 0w FF`; `next_address` is one past the last camera.
     AddressSet { next_address: u8 },
+    /// Broadcast `88 01 00 01 FF`: the daisy chain returns the `IF_Clear`
+    /// broadcast once every camera has cleared its buffers.
+    IfClear,
 }
 
 /// Why bytes could not be decoded as a VISCA reply.
@@ -580,6 +583,14 @@ impl ViscaReply {
                     Ok(Self::AddressSet {
                         next_address: body[2],
                     })
+                }
+                0x01 => {
+                    expect_len(bytes, 5)?;
+                    if body[2..] == [0x00, 0x01] {
+                        Ok(Self::IfClear)
+                    } else {
+                        Err(ViscaParseError::UnknownMessage(0x01))
+                    }
                 }
                 other => Err(ViscaParseError::UnknownMessage(other)),
             };

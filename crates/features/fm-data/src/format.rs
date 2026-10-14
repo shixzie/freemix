@@ -352,7 +352,7 @@ impl UtcOffset {
     ///
     /// Returns [`FormatError::OffsetOutOfRange`] beyond +/-18:00.
     pub const fn from_minutes(minutes: i32) -> Result<Self, FormatError> {
-        if minutes.abs() > Self::MAX_MINUTES {
+        if minutes.unsigned_abs() > Self::MAX_MINUTES.unsigned_abs() {
             return Err(FormatError::OffsetOutOfRange { minutes });
         }
         Ok(Self { minutes })
@@ -367,8 +367,14 @@ impl UtcOffset {
             .ok()
             .filter(|minutes| *minutes < 60)
             .ok_or(FormatError::OffsetOutOfRange { minutes: i32::MAX })?;
-        let total = hours.abs() * 60 + minutes;
-        Self::from_minutes(if hours < 0 { -total } else { total })
+        // Widen before scaling: `hours.abs() * 60` overflows `i32` (and
+        // `i32::MIN.abs()` panics) long before the range check could reject it.
+        let total = i64::from(hours.unsigned_abs()) * 60 + i64::from(minutes);
+        let total = if hours < 0 { -total } else { total };
+        let total = i32::try_from(total).map_err(|_| FormatError::OffsetOutOfRange {
+            minutes: if hours < 0 { i32::MIN } else { i32::MAX },
+        })?;
+        Self::from_minutes(total)
     }
 
     #[must_use]

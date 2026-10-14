@@ -717,3 +717,23 @@ fn joystick_and_mouse_vectors_map_to_encodable_continuous_moves() {
         }
     );
 }
+
+#[test]
+fn if_clear_broadcast_reply_is_decoded() {
+    // The chain echoes the exact broadcast this crate encodes.
+    let sent = ViscaCommand::IfClearBroadcast.encode(cam1()).unwrap();
+    assert_eq!(ViscaReply::parse(&sent), Ok(ViscaReply::IfClear));
+    let mut decoder = ViscaReplyDecoder::new();
+    assert_eq!(decoder.push(&sent), vec![Ok(ViscaReply::IfClear)]);
+    assert_eq!(
+        ViscaReply::parse(&[0x88, 0x01, 0x00, 0x02, 0xFF]),
+        Err(ViscaParseError::UnknownMessage(0x01))
+    );
+    assert_eq!(
+        ViscaReply::parse(&[0x88, 0x01, 0x00, 0xFF]),
+        Err(ViscaParseError::InvalidLength {
+            expected: 5,
+            actual: 4
+        })
+    );
+}

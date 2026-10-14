@@ -228,3 +228,31 @@ fn fake_adapter_conforms_to_discovery_and_error_contracts() {
         Err(AdapterError::PresetOutOfRange(PresetId::new(255)))
     );
 }
+
+#[test]
+fn home_stays_inside_limits_that_exclude_zero() {
+    let id = camera_id();
+    let mut camera = FakeViscaCamera::new(id.clone(), "Ceiling camera");
+    camera.capabilities.pan.position = AxisLimits::new(100, 2_000).unwrap();
+    camera.capabilities.tilt.position = AxisLimits::new(-900, -50).unwrap();
+    let mut adapter = FakeViscaAdapter::new([camera]);
+
+    let home = adapter.execute(&id, PtzIntent::Home).unwrap();
+    assert_eq!(home.telemetry.position.pan, 100);
+    assert_eq!(home.telemetry.position.tilt, -50);
+
+    // A relative move from home must land exactly where its clamped delta says.
+    let outcome = adapter
+        .execute(
+            &id,
+            PtzIntent::MoveRelative(RelativeMove {
+                pan: 5_000,
+                tilt: -5_000,
+                zoom: None,
+                focus: None,
+            }),
+        )
+        .unwrap();
+    assert_eq!(outcome.telemetry.position.pan, 2_000);
+    assert_eq!(outcome.telemetry.position.tilt, -900);
+}

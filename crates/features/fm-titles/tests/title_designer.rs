@@ -1040,3 +1040,51 @@ fn undo_redo_restores_exact_documents_with_bounded_depth() {
     );
     assert_eq!(none.undo(), Err(DesignError::NothingToUndo));
 }
+
+#[test]
+fn overshooting_opacity_easing_clamps_to_opaque_instead_of_vanishing() {
+    let mut design = editor(8, 8);
+    add_rect(
+        &mut design,
+        NodeSlot::root(0),
+        rect(1, bounds(0, 0, 2, 2), RED),
+    );
+    design
+        .apply(DesignEdit::SetTimelineDuration {
+            transition: TransitionKind::In,
+            frames: 10,
+        })
+        .unwrap();
+    // easeOutBack-style control points overshoot past the end value.
+    let back = Easing::CubicBezier(CubicBezier::new(22_282, 102_236, 41_943, 65_536).unwrap());
+    for frame in [keyframe(0, 0, back), keyframe(10, 255, Easing::Linear)] {
+        design
+            .apply(DesignEdit::AddKeyframe {
+                transition: TransitionKind::In,
+                node: id(1),
+                property: NodeProperty::Opacity,
+                keyframe: frame,
+            })
+            .unwrap();
+    }
+    let document = design.document();
+    let track = document
+        .timeline(TransitionKind::In)
+        .track(id(1), NodeProperty::Opacity)
+        .unwrap();
+    let mut overshot = false;
+    for frame in 0..=10 {
+        let value = track.value_at(frame).unwrap();
+        overshot |= value > 255;
+        let opacity = document
+            .compose(TimelineSample::At {
+                transition: TransitionKind::In,
+                frame,
+            })
+            .placement(id(1))
+            .unwrap()
+            .compose_opacity(255);
+        assert_eq!(i64::from(opacity), value.clamp(0, 255), "frame {frame}");
+    }
+    assert!(overshot, "the easing must overshoot for this test to bite");
+}
