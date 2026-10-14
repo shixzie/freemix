@@ -186,8 +186,9 @@ is byte-bounded; this does not add service/media readiness or RC-008 completion.
 Studio UI state is latest-state and
 cannot block control I/O; this adds no preview delivery, service readiness, or
 transport support, and RC-008 remains planned. Studio Program/Preview wells display
-replicated desired and realized routing input names; this control state is not
-output-video proof, and preview delivery remains pending.
+replicated desired and realized routing input names and, when available, the
+latest encoded monitor frame described under item 6; control state alone is not
+output-video proof.
 An owned supervised daemon exit detected while Studio is idle enters the existing
 bounded reconnect/restart path; protocol mismatch, restart-limit, and fatal supervisor
 errors stay terminal, and this does not complete item 5 or RC-008 or prove service, media, or cross-platform readiness.
@@ -214,6 +215,18 @@ IPC exists, and the engine produces no separate Preview image tap. A platform
 bridge plus output color transform, bounded shared ring, sidecar IPC, and
 encoded fallback are required before item 6 can claim presentation without CPU
 readback.
+Protocol 2.21 adds the encoded fallback only: a `monitor_frame` record carries
+a per-tap, strictly sequenced Preview or Program image of at most 640x360 as a
+std-only QOI stream split into at most 32 canonical base64url parts written as
+one atomic group, published latest-only to active raw-TCP Studio peers with
+`view_status`. The simulated daemon renders both realized taps from simulated
+sources at 5 fps or immediately on a routing change, without overlay, scene,
+or Fade-to-Black compositing; the native daemon reads back Program on the CPU
+at up to 10 fps and still has no Preview tap. Studio letterboxes the latest
+frame, labels simulated and native frames, and dims stale or mismatched ones.
+There is no subscription or cadence negotiation, Web peers receive no frames,
+and shared-image presentation without CPU readback remains absent, so item 6
+and `RC-008` remain planned.
 
 Current implementation boundary for item 7: `fm-codec-ffmpeg` provides a
 transactional sequential local-audio cursor with global block sequence,
