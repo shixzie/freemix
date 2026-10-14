@@ -206,8 +206,8 @@ the counts and lock chips.
 | `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click: both wells show `SIMULATED` encoded frames (Camera 1 Wide on Preview, Camera 2 Close on Program), and the two tiles borrow those frames. |
 | `studio-console-monitors-scene.png` | 1920x1080 with the Main Scene input on Program: Preview shows a simulated frame of Camera 2 Close and Program the simulated composite of the scene's layers. Both recorders `STOPPED`, the HLS ladder amber `NOT LIVE` (desired on, no transport sample), RTMP Backup `OFF`. |
 | `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder `NOT LIVE` with its `STOP` key, the stopped RTMP target with `START`. |
-| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: header `T-BAR 39%`, the amber status card `FADE · Main Scene ▶ Camera 2 Close · 39%`, and the active `COMMIT`/`CANCEL` keys while automatic transitions are blocked. |
-| `studio-console-fade-to-black.png` | 1920x1080 after `FTB`: the lit `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program canvas. |
+| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: the monospace `T-BAR` percentage header, the amber status card naming the transition, sources, and position, equal-width manual start keys, and the active `COMMIT`/`CANCEL` keys sharing the row while automatic transitions are blocked. |
+| `studio-console-fade-to-black.png` | 1920x1080 after `FTB`: the lit `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program canvas; the `+` tile is now in the bank. |
 | `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with `STOP` keys and amber `NOT LIVE` chips, and the Output menu with `NOT LIVE` beside both Stop items and `STOPPED` beside the recorder items. |
 | `studio-console-stingers.png` | 1920x1080, Stingers tab after choosing Playback Clip in the Configure media picker and clicking `ASSIGN` for S1: the S1 card lit green `READY` with its media name, the Configure card's green `READY` chip, enabled `CLEAR`, and the replicated cut point (15 fr), preload, audio, and fallback. |
 | `studio-console-top.png` | The default 1600x940 window, idle: the top-bar padlock (`UNLOCKED`) with disabled Undo/Redo keys (the operator session lacks `edit_project`), both recorder rows `STOPPED`, overlays collapsed to one row per channel. |
@@ -225,15 +225,36 @@ the counts and lock chips.
 | `studio-console-add-input.png` | 1920x1080 admin session after clicking the `+` tile: the Add input dialog with `SOLID COLOUR` selected, the suggested name "Solid Colour 1", the amber preset chosen (`#f0a828`), and the preview swatch tagged `INPUT 8` / `SILENT`. |
 | `studio-console-add-input-bars.png` | The same dialog for a second add with `COLOUR BARS`: the suggestion "Colour Bars 1", the bars preview tagged `INPUT 9`, no colour row. |
 | `studio-console-input-added.png` | After both adds and selecting Solid Colour 1 on Preview: tiles 8 (Solid Colour 1, `PVW`) and 9 (Colour Bars 1), the `+` tile with `9 / 256`, `9 SOURCES`, and a mixer strip for the new solid input. |
-| `studio-console-remove-input.png` | Remove input confirmation for Colour Bars 1 (input 9): the question, the warning that removal clears redo history and cannot be undone, and the red `REMOVE` key. |
+| `studio-console-remove-input.png` | Admin session after adding Solid Colour 1: the Remove input confirmation for Solid Colour 1 (input 8), the question, the warning that removal clears redo history and cannot be undone, and the red `REMOVE` key (tooltip hint `[Enter]`, Cancel `[Esc]`). |
 | `studio-console-input-refused.png` | After removing Colour Bars 1 and then asking to remove Camera 1 Wide: the single refusal toast `Remove refused (conflict): "Camera 1 Wide" is a layer source of scene 100. Remove that reference offline first.` and the bank back at `8 / 256`. |
 | `studio-console-inputs-menu.png` | Inputs menu with the Catalogue group: `Add input…` and the `Remove input` submenu, where Main Scene (`PGM`) and Solid Colour 1 (`PVW`) are disabled with their tally marks. |
 | `studio-console-add-input-disabled.png` | Operator session hovering the dimmed `+` tile: the tooltip "Add input… A solid colour or colour bars, appended to the end of the bank. Unavailable: this session lacks the edit_project permission". |
 | `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with attempt count, retry delay, the last error, and the disabled-controls footer over the dimmed monitors; `NO STATE` chips, `— TARGETS`, `— SOURCES`, centered empty states for the input bank and mixer, and "No synchronized show" in the top bar (no edit group without synchronized state). |
-| `studio-console-spanish.png` | 1920x1080 demo show with Studio started with `--lang es`: the menu bar (`Archivo` … `Ayuda`), top bar (`CONTROL LISTO`, `DESBLOQUEADO` padlock sized to the Spanish word, `VIVO`/`REC` badges), the `BANCO DE ENTRADAS` card (`7 FUENTES`, `sin miniatura`, `CORTE` keys, `Añadir entrada`), the recorder and stream chips and details (`DETENIDO`, `GRABANDO`, `NO EN VIVO`, `APAGADO`), Spanish decimals in the mixer gain entries (`+0,0 dB`), and the status bar (`0 pendientes`, `Listo`, the Spanish key hints). Transition column, overlays, Stingers, and mixer labels are not yet in the catalog and stay English. |
+| `studio-console-spanish.png` | 1920x1080 demo show with Studio started with `--lang es`: the menu bar (`Archivo` … `Ayuda`), top bar (`CONTROL LISTO`, `DESBLOQUEADO` padlock sized to the Spanish word, `VIVO`/`REC` badges), the `BANCO DE ENTRADAS` card (`7 FUENTES`, `sin miniatura`, `CORTE` keys, `Añadir entrada`), the recorder and stream chips and details (`DETENIDO`, `GRABANDO`, `NO EN VIVO`, `APAGADO`), Spanish decimals in the mixer gain entries (`+0,0 dB`), and the status bar (`0 pendientes`, `Listo`, the Spanish key hints). Since UI round 6 the transition column (`FUNDIDO`, `CORTINA`, `ALFA`, `DESLIZ`, `ZOOM`, `MANUAL`), Fade to Black, monitor captions, overlays (`TOMAR`, `AL AIRE`), Stinger cards, and mixer labels (`MÁSTER`, `MEZCLA PGM`, `RET`) are Spanish too. |
 | `studio-console-spanish-menu.png` | The same session with `Salida` open: every transition, Fade to black, T-bar, recorder (`Iniciar grabador 1` / `DETENIDO`), stream, and Stinger item worded in Spanish. |
+| `studio-console-spanish-transition.png` | 1920x1080 `--lang es` after manual `FUNDIDO` and a T-bar drag: the Spanish status card, `COMPLETAR`/`CANCELAR`, and the hover tooltip with requested/realized position. |
+| `studio-console-spanish-stingers.png` | 1920x1080 `--lang es` with Fade to Black on (`PROGRAMA EN NEGRO`) and the Stingers tab: the slot cards, the Configure card (`ASIGNAR`/`VACIAR`, cut point in `fr`, preload, audio, fallback), and the S4 card tooltip. |
+| `studio-console-spanish-compact.png` | 1280x800 `--lang es` with the Stingers tab: long Spanish labels and details ellipsize inside fixed-width keys and chips instead of overflowing; tooltips carry the full text. |
+| `studio-console-spanish-add-input.png` | 1920x1080 `--lang es --role admin`: the Añadir entrada dialog with `COLOR SÓLIDO`, the suggested name "Color sólido 1", the amber preset, and the preview tagged `ENTRADA 8` / `SIN AUDIO`. |
+| `studio-console-spanish-remove-input.png` | The Quitar entrada confirmation for "Color sólido 1" (entrada 8, posición 8) with the Spanish warning and the red `QUITAR` key. |
+| `studio-console-spanish-reconnecting.png` | 1600x940 `--lang es --connect` with no daemon: the Spanish Reconectando card (attempt, retry delay, last error, disabled-controls footer). |
 
-In this round the `-add-input`, `-add-input-bars`, `-input-added`,
+UI round 6 moved the transition column, Fade to Black, monitor captions,
+mixer labels, overlays, Stinger configuration, the connection card, the
+Add/Remove input dialogs, and the output-row tooltips into the typed message
+catalogs with Spanish translations, and polished those panels: numeric
+readouts (T-bar position, durations, dB, peaks) are monospace, fixed-width
+keys and chips are sized for the longer Spanish words or truncate with the
+full text in the tooltip, and tooltips name the keyboard shortcut in brackets
+(`[C]`, `[F]`, `[B]`, `[Esc]`, `[Enter]`, `[↑/↓ ±0.5 dB]`). This round
+regenerated `-overview`, `-manual-transition`, `-fade-to-black`, `-stingers`,
+`-top`, `-recording`, `-reconnecting`, `-add-input`, `-remove-input`,
+`-spanish`, and `-spanish-menu`, and added `-spanish-transition`,
+`-spanish-stingers`, `-spanish-compact`, `-spanish-add-input`,
+`-spanish-remove-input`, and `-spanish-reconnecting`. The other captures are
+from earlier rounds.
+
+In the previous round the `-add-input`, `-add-input-bars`, `-input-added`,
 `-remove-input`, `-input-refused`, `-inputs-menu`, and `-add-input-disabled`
 captures are new, and `-monitors`, `-monitors-scene`, `-manual-transition`,
 `-top`, `-stopped`, `-compact-720`, `-menu`, `-edit-menu`, `-locked`,
@@ -301,6 +322,13 @@ DISPLAY=:99 import -window root shot.png
 The Spanish captures add `--lang es` to the Studio command above (the
 language can also be switched at runtime from View › Language, and `--clock
 12h` selects the 12-hour clock); `-spanish-menu.png` then clicks `Salida`.
+Studio remembers the language and clock chosen in the View menu in
+`studio.conf` in the platform config directory (`$XDG_CONFIG_HOME/freemix/`
+or `~/.config/freemix/` on Linux); `--lang` and `--clock` override the saved
+choice for one session without rewriting it. Point `FREEMIX_STUDIO_PREFS` at
+a scratch file when capturing so the captures do not depend on, or change,
+your own preferences. The Spanish transition, Stingers, compact, add/remove,
+and reconnecting captures repeat the English steps with `--lang es`.
 
 The edit-menu, locked, and mixer captures run Studio with `--role admin`
 (the default operator role lacks `edit_project`), then drive the daemon with

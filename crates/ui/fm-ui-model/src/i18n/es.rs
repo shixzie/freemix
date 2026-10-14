@@ -452,7 +452,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::TransitionHeading, t("Transición · {frames} fr")),
     (Msg::TransitionCut, t("Corte")),
     (Msg::TransitionFade, t("Fundido")),
-    (Msg::TransitionWipe, t("Cortinilla")),
+    (Msg::TransitionWipe, t("Cortina")),
     (Msg::TransitionAlphaFade, t("Fundido alfa")),
     (Msg::TransitionSlide, t("Deslizar")),
     (Msg::TransitionZoom, t("Zoom")),
@@ -690,4 +690,613 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::MonthOct, t("oct")),
     (Msg::MonthNov, t("nov")),
     (Msg::MonthDec, t("dic")),
+    // Shared console words.
+    (Msg::Duration, t("Duración")),
+    (Msg::FramesSuffix, t("{frames} fr")),
+    (Msg::KeyHint, t("{action}  [{key}]")),
+    (Msg::KeyEnter, t("Intro")),
+    (Msg::KeyArrows, t("↑/↓")),
+    (Msg::WordOn, t("activo")),
+    (Msg::WordOff, t("apagado")),
+    (Msg::WordYes, t("sí")),
+    (Msg::WordNo, t("no")),
+    (Msg::WithDefault, t("{value} (predeterminado)")),
+    // Transition column.
+    (Msg::TransitionSection, t("Transición")),
+    (Msg::TBar, t("T-BAR")),
+    (Msg::TBarPercent, t("T-BAR {percent}")),
+    (Msg::FadeKey, t("FUNDIDO")),
+    (Msg::WipeKey, t("CORTINA")),
+    (Msg::AlphaKey, t("ALFA")),
+    (Msg::SlideKey, t("DESLIZ")),
+    (Msg::ZoomKey, t("ZOOM")),
+    (Msg::AlphaFadeKind, t("FUNDIDO ALFA")),
+    (
+        Msg::AutoFadeHover,
+        t("Fundir Previo a Programa con la duración compartida"),
+    ),
+    (
+        Msg::AutoWipeHover,
+        t("Pasar Previo a Programa con una cortina de la duración compartida"),
+    ),
+    (
+        Msg::AutoAlphaHover,
+        t("Fundido alfa de Previo a Programa con la duración compartida"),
+    ),
+    (
+        Msg::AutoSlideHover,
+        t("Deslizar Previo a Programa con la duración compartida"),
+    ),
+    (
+        Msg::AutoZoomHover,
+        t("Zoom de Previo a Programa con la duración compartida"),
+    ),
+    (
+        Msg::DurationHover,
+        t("Duración compartida de las transiciones automáticas en fotogramas (arrastre o escriba)"),
+    ),
+    (Msg::ManualLabel, t("MANUAL")),
+    (
+        Msg::ManualStartHover,
+        t("Iniciar una transición manual reversible: {kind}"),
+    ),
+    (
+        Msg::ReasonManualStartFirst,
+        t("no hay ninguna transición manual activa; inicie una con una tecla MANUAL"),
+    ),
+    (Msg::PositionShort, t("POS")),
+    (
+        Msg::PositionHover,
+        t("Posición exacta de la T-bar de 0 a 10000 puntos básicos; los valores menores revierten"),
+    ),
+    (Msg::CommitKey, t("COMPLETAR")),
+    (
+        Msg::CommitHover,
+        t("Completar la transición manual activa en su dirección actual"),
+    ),
+    (Msg::NoManualTransition, t("SIN TRANSICIÓN MANUAL")),
+    (Msg::Syncing, t("SINCRONIZANDO")),
+    (Msg::ManualStartHint, t("Con {keys}")),
+    (Msg::ManualInactive, t("INACTIVA")),
+    (
+        Msg::ManualStateActive,
+        t("{kind} {from}->{to} @ {position} PB"),
+    ),
+    (
+        Msg::ManualStatusHover,
+        t("Pedido: {desired}\nRealizado: {realized}"),
+    ),
+    (
+        Msg::ManualUnconfirmed,
+        t("El daemon aún no ha confirmado la transición manual pedida."),
+    ),
+    (
+        Msg::TBarHoverActive,
+        t(
+            "T-bar manual: arrastre la palanca (abajo = inicio, arriba = fin) y luego {commit} o {cancel}  [Esc]",
+        ),
+    ),
+    (
+        Msg::TBarHoverIdle,
+        t("T-bar manual: inicie una transición manual ({keys}) para habilitar la palanca"),
+    ),
+    // Fade to black.
+    (
+        Msg::FtbHover,
+        t("Fundir a negro el vídeo y el audio realizados de Programa"),
+    ),
+    (
+        Msg::FtbReverseHover,
+        t("Revertir el fundido a negro y restaurar Programa en vivo"),
+    ),
+    (
+        Msg::FtbDurationHover,
+        t("Duración del fundido a negro en fotogramas (arrastre o escriba)"),
+    ),
+    (Msg::FtbStateUnavailable, t("ESTADO FTB NO DISPONIBLE")),
+    (Msg::FtbProgramLive, t("PROGRAMA EN VIVO")),
+    (Msg::FtbProgramBlack, t("PROGRAMA EN NEGRO")),
+    (Msg::FtbFading, t("FUNDIENDO A NEGRO {percent}")),
+    (Msg::FtbRestoring, t("RESTAURANDO · {percent} NEGRO")),
+    (Msg::FtbBlackRequested, t("{state} · NEGRO PEDIDO")),
+    (Msg::FtbLiveRequested, t("{state} · VIVO PEDIDO")),
+    (Msg::FtbWordBlack, t("NEGRO")),
+    (Msg::FtbTarget, t("OBJETIVO {target} @ {position}")),
+    (
+        Msg::FtbStateHover,
+        t(
+            "Estado del fundido a negro al aire informado por el daemon (realizado).\nPEDIDO {desired}\nREALIZADO {realized}",
+        ),
+    ),
+    // Monitors.
+    (
+        Msg::MonitorNoPreviewTap,
+        t("SIN TOMA DE PREVIO · imagen nativa de Previo no generada"),
+    ),
+    (
+        Msg::MonitorNoPreviewTapNote,
+        t(
+            "El motor nativo solo renderiza Programa; este monitor muestra el estado de enrutamiento.",
+        ),
+    ),
+    (
+        Msg::MonitorNoFeed,
+        t("SIN SEÑAL DE VÍDEO · esperando la vista codificada"),
+    ),
+    (
+        Msg::MonitorNoFeedNote,
+        t("Solo estado de enrutamiento; no ha llegado ningún fotograma codificado de {bus}."),
+    ),
+    (
+        Msg::MonitorSimulated,
+        t("RENDER SIMULADO · vista codificada {width}×{height}"),
+    ),
+    (
+        Msg::MonitorSimulatedNote,
+        t(
+            "Render simulado solo de la fuente realizada; los overlays, las escenas y el fundido a negro no se componen en esta imagen.",
+        ),
+    ),
+    (
+        Msg::MonitorEncoded,
+        t("VISTA CODIFICADA {width}×{height} · lectura en CPU"),
+    ),
+    (
+        Msg::MonitorEncodedNote,
+        t(
+            "Salida nativa reducida y leída en la CPU a {width}×{height}; un monitor de baja cadencia, no el vídeo de salida a cadencia completa.",
+        ),
+    ),
+    (
+        Msg::MonitorStaleAge,
+        t("OBSOLETO · último fotograma codificado de hace {age}"),
+    ),
+    (
+        Msg::MonitorStaleMismatch,
+        t("OBSOLETO · el fotograma codificado no coincide con la fuente realizada"),
+    ),
+    (
+        Msg::MonitorStaleNote,
+        t(
+            "El último fotograma codificado está obsoleto o es anterior al enrutamiento realizado; se atenúa y no prueba la salida actual.",
+        ),
+    ),
+    (Msg::BadgeSimulated, t("SIMULADO")),
+    (Msg::BadgeStale, t("OBSOLETO")),
+    (Msg::RoutingUnavailable, t("SIN ESTADO DE ENRUTAMIENTO")),
+    (Msg::MonitorDesired, t("PEDIDO: {name}")),
+    (
+        Msg::MonitorRoutingFootnote,
+        t("estado de enrutamiento, no prueba del vídeo de salida"),
+    ),
+    (
+        Msg::MonitorRoutingHover,
+        t("{bus} pedido: {desired}\n{bus} realizado: {realized}\n{note}"),
+    ),
+    (Msg::BusPreviewLower, t("previo")),
+    (Msg::BusProgramLower, t("programa")),
+    // Audio mixer.
+    (Msg::MetersUnavailable, t("MEDIDORES NO DISPONIBLES")),
+    (
+        Msg::MetersUnavailableHover,
+        t("No se ha recibido ninguna muestra de medición de audio del daemon"),
+    ),
+    (
+        Msg::ResetClips,
+        plural("BORRAR CLIP", "BORRAR {count} CLIPS"),
+    ),
+    (
+        Msg::ResetClipsHover,
+        t("Apagar todas las lámparas de clip retenidas"),
+    ),
+    (Msg::MetersStale, t("MEDIDORES OBSOLETOS · {age}")),
+    (
+        Msg::MetersStaleHover,
+        t(
+            "No ha llegado ningún mensaje de medición de audio en más de un segundo; los medidores muestran los últimos niveles atenuados",
+        ),
+    ),
+    (Msg::MeterLegend, t("RMS · RETENCIÓN · CLIP")),
+    (
+        Msg::MeterLegendHover,
+        t(
+            "Los segmentos encendidos muestran el RMS; la línea fina es el último pico; la marca brillante retiene el pico 1,5 s y luego cae 20 dB/s; la lámpara superior se enclava a 0 dBFS hasta que se pulsa",
+        ),
+    ),
+    (Msg::NoAudioState, t("Sin estado de audio")),
+    (
+        Msg::NoAudioStateDetail,
+        t("Los canales aparecen cuando el estado del proyecto se sincroniza."),
+    ),
+    (
+        Msg::PeakClippedHover,
+        t("Saturado a 0 dBFS; haga clic para apagar la lámpara de clip"),
+    ),
+    (
+        Msg::PeakStaleHover,
+        t(
+            "Obsoleto: ningún mensaje de medición nuevo en más de un segundo; última retención de pico {level}",
+        ),
+    ),
+    (
+        Msg::PeakHoldHover,
+        t("Retención de pico: el pico reciente más alto (dBFS)"),
+    ),
+    (
+        Msg::FaderHover,
+        t("Fader de ganancia de la entrada: arrastre; doble clic para 0 dB"),
+    ),
+    (
+        Msg::GainEntryHover,
+        t("Ganancia de la entrada en dB (arrastre o escriba)"),
+    ),
+    (
+        Msg::BalanceHover,
+        t("Balance estéreo: L100 todo a la izquierda, C centro, R100 todo a la derecha"),
+    ),
+    (Msg::DelayPrefix, t("RET")),
+    (
+        Msg::DelayHover,
+        t("Retardo de la entrada en muestras a la frecuencia de 48 kHz del Máster"),
+    ),
+    (
+        Msg::MuteOnHover,
+        t("Silenciada: haga clic para reactivar esta entrada"),
+    ),
+    (Msg::MuteOffHover, t("Silenciar esta entrada")),
+    (
+        Msg::SoloOnHover,
+        t("En solo: haga clic para liberar el solo"),
+    ),
+    (Msg::SoloOffHover, t("Poner esta entrada en solo")),
+    (
+        Msg::AfvHover,
+        t("El audio sigue al vídeo: abierto solo mientras la entrada está en Programa"),
+    ),
+    (Msg::MasterStrip, t("MÁSTER")),
+    (Msg::ProgramMix, t("MEZCLA PGM")),
+    (Msg::MasterTap, t("PRE-STINGER/ FTB")),
+    (
+        Msg::MasterTapHover,
+        t("Los medidores del Máster se toman antes del Stinger y del fundido a negro"),
+    ),
+    (
+        Msg::MeterChannelHover,
+        t("Can. {channel}  pico {peak}  RMS {rms}  retención {hold}"),
+    ),
+    (Msg::MeterClipMark, t("CLIP")),
+    (
+        Msg::MeterClickToClear,
+        t("Haga clic para apagar la lámpara de clip"),
+    ),
+    (Msg::NoMeterSample, t("Sin muestra de medición")),
+    // Overlays.
+    (
+        Msg::OverlaysIntro,
+        t("TOMAR usa la fuente actual de Previo. D = pedido, C = última confirmación del daemon."),
+    ),
+    (
+        Msg::OverlaysIntroHover,
+        t("La confirmación es estado de control, no prueba del vídeo de salida."),
+    ),
+    (Msg::OverlayOnAir, t("AL AIRE")),
+    (Msg::OverlayTaking, t("ENTRANDO")),
+    (Msg::OverlayClearing, t("SALIENDO")),
+    (Msg::TakeKey, t("TOMAR")),
+    (Msg::UpdateKey, t("ACTUALIZAR")),
+    (Msg::NextKey, t("SIGUIENTE")),
+    (
+        Msg::OverlayOffHover,
+        t("Quitar este canal de overlay de Programa"),
+    ),
+    (
+        Msg::ReasonOverlayAlreadyOff,
+        t("este canal de overlay ya está apagado"),
+    ),
+    (
+        Msg::OverlayTakeHover,
+        t("Tomar la fuente actual de Previo en este canal de overlay"),
+    ),
+    (
+        Msg::ReasonNoPreviewSource,
+        t("no hay ninguna fuente seleccionada en Previo"),
+    ),
+    (Msg::OverlayNoSource, t("sin fuente")),
+    (
+        Msg::OverlayUpdateHover,
+        t("Actualizar este canal de overlay activo con la fuente actual de Previo"),
+    ),
+    (
+        Msg::ReasonOverlayUpdate,
+        t("el canal está apagado o ya muestra la fuente de Previo"),
+    ),
+    (
+        Msg::OverlayQueueHover,
+        t("Añadir la fuente actual de Previo a la cola de este overlay"),
+    ),
+    (
+        Msg::OverlayNextHover,
+        t("Tomar y quitar la primera entrada de la cola de este overlay"),
+    ),
+    (
+        Msg::ReasonOverlayQueueEmpty,
+        t("la cola de este overlay está vacía"),
+    ),
+    (
+        Msg::OverlayTransitionHover,
+        t("Alternar este canal de overlay entre corte y fundido"),
+    ),
+    (
+        Msg::OverlayPositionHover,
+        t("Cambiar la posición predefinida de este canal de overlay"),
+    ),
+    (
+        Msg::OverlayBorderHover,
+        t("Cambiar el borde blanco predefinido de este canal de overlay"),
+    ),
+    (Msg::OverlayOutputs, t("SALIDAS")),
+    (
+        Msg::OverlayOutputHover,
+        t("Incluir este canal de overlay en esta salida"),
+    ),
+    (
+        Msg::ReasonOverlayNotTaken,
+        t("el canal de overlay aún no se ha tomado"),
+    ),
+    (
+        Msg::OverlayOutputsNone,
+        t("SALIDAS no disponibles: no hay salidas configuradas"),
+    ),
+    (
+        Msg::OverlayOutputsUnsynced,
+        t("SALIDAS no disponibles: el estado del proyecto no está sincronizado"),
+    ),
+    (Msg::PositionFull, t("COMPLETO")),
+    (Msg::PositionTopLeft, t("SI")),
+    (Msg::PositionTopRight, t("SD")),
+    (Msg::PositionBottomLeft, t("II")),
+    (Msg::PositionBottomRight, t("ID")),
+    (Msg::BorderNone, t("SIN BORDE")),
+    (Msg::BorderThin, t("FINO")),
+    (Msg::BorderThick, t("GRUESO")),
+    // Stingers tab and Configure card.
+    (
+        Msg::StingersIntro,
+        t(
+            "Haga clic en una ranura LISTA para lanzarla de Previo a Programa. Haga clic en cualquier otra para configurarla abajo.",
+        ),
+    ),
+    (
+        Msg::StingerDurationShared,
+        t("compartida con las transiciones automáticas"),
+    ),
+    (Msg::StingerStateNotSynced, t("Estado sin sincronizar")),
+    (Msg::StingerEmptySlot, t("Ranura vacía")),
+    (Msg::StingerCardTitle, t("Stinger S{slot} · {state}")),
+    (Msg::StingerCardMedia, t("Medio: {name}")),
+    (Msg::StingerCardFire, t("Clic: lanzar de Previo a Programa")),
+    (
+        Msg::StingerCardCannotFire,
+        t("No se puede lanzar: {reason}"),
+    ),
+    (
+        Msg::StingerCardConfigure,
+        t("Clic: configurar esta ranura abajo"),
+    ),
+    (Msg::StingerCardNotReady, t("No está lista para lanzarse")),
+    (Msg::StingerSlotPick, t("S{slot} · {state}")),
+    (
+        Msg::StingerSlotPickHover,
+        t("Ranura de Stinger a configurar"),
+    ),
+    (Msg::StingerNoInput, t("sin entrada")),
+    (
+        Msg::StingerMediaPickHover,
+        t("Entrada que reproduce la ranura (por defecto, el medio de la ranura o, si no, Previo)"),
+    ),
+    (Msg::StingerConfigure, t("Configurar S{slot}")),
+    (
+        Msg::StingerReadinessHover,
+        t("Disponibilidad replicada de la ranura seleccionada"),
+    ),
+    (
+        Msg::StingerLockedHover,
+        t(
+            "La configuración de ranuras está bloqueada con el proyecto; lanzar Stingers sigue funcionando",
+        ),
+    ),
+    (
+        Msg::StingerConfigNotSynced,
+        t("Estado de Stingers sin sincronizar"),
+    ),
+    (Msg::AssignKey, t("ASIGNAR")),
+    (Msg::ClearKey, t("VACIAR")),
+    (
+        Msg::StingerAssignHover,
+        t("Asignar un medio a la ranura de Stinger {slot}"),
+    ),
+    (
+        Msg::StingerAssignNamedHover,
+        t(
+            "Asignar «{name}» como medio de la ranura de Stinger {slot} (se conservan los demás ajustes)",
+        ),
+    ),
+    (Msg::ReasonChooseMedia, t("elija una entrada como medio")),
+    (Msg::StingerNotConfigured, t("S{slot} no está configurada")),
+    (
+        Msg::StingerSummary,
+        t(
+            "S{slot}: {media} · punto de corte {cut} · precarga {preload} · audio {audio} · alternativa {fallback}",
+        ),
+    ),
+    (Msg::StingerCutPoint, t("Punto de corte")),
+    (Msg::StingerPreload, t("Precarga")),
+    (Msg::StingerAudio, t("Audio")),
+    (Msg::StingerFallback, t("Alternativa")),
+    (Msg::StingerAudioMuted, t("silenciado")),
+    (Msg::StingerAudioOnly, t("solo stinger")),
+    (Msg::StingerAudioMixed, t("mezclado con Programa")),
+    (Msg::StingerFallbackCut, t("corte")),
+    (Msg::StingerFallbackFade, t("fundido")),
+    (Msg::StingerFallbackKeep, t("mantener Programa")),
+    // Connection card.
+    (Msg::CardSynchronizing, t("Sincronizando")),
+    (
+        Msg::CardSynchronizingDetail,
+        t("Recibiendo el estado actual del proyecto desde freemixd…"),
+    ),
+    (Msg::CardStarting, t("Iniciando")),
+    (
+        Msg::CardStartingDetail,
+        t("Iniciando el cliente de control de Studio…"),
+    ),
+    (Msg::CardConnecting, t("Conectando")),
+    (
+        Msg::CardConnectingDetail,
+        t("Abriendo la conexión de control con freemixd…"),
+    ),
+    (Msg::CardReconnecting, t("Reconectando")),
+    (
+        Msg::CardReconnectWaiting,
+        t("Esperando antes del siguiente intento de conexión…"),
+    ),
+    (
+        Msg::CardReconnectAttempt,
+        t("Conexión perdida · intento {attempt} · reintento en {delay}"),
+    ),
+    (Msg::CardDisconnected, t("Desconectado")),
+    (
+        Msg::CardDisconnectedDetail,
+        t(
+            "No hay conexión de control con freemixd. Los controles siguen deshabilitados hasta que se reconecte.",
+        ),
+    ),
+    (
+        Msg::CardFailedDetail,
+        t("La conexión de control falló. Compruebe que freemixd está en ejecución."),
+    ),
+    (Msg::CardProtocol, t("Protocolo incompatible")),
+    (
+        Msg::CardProtocolDetail,
+        t(
+            "freemixd no seleccionó la versión de protocolo de este Studio. Ejecute compilaciones coincidentes de freemixd y freemix-studio.",
+        ),
+    ),
+    (Msg::CardLastError, t("Último error: {error}")),
+    (
+        Msg::CardControlsDisabled,
+        t(
+            "Los controles de conmutación, audio y salidas están deshabilitados hasta que la consola esté lista.",
+        ),
+    ),
+    // Add and Remove input dialogs.
+    (
+        Msg::AddInputIntro,
+        t(
+            "Añade al final del banco una entrada generada en vivo, con audio en silencio y un canal de mezclador predeterminado. Las entradas de medios, captura y red se añaden sin conexión.",
+        ),
+    ),
+    (Msg::AddInputKind, t("Tipo")),
+    (Msg::NameSolidColour, t("Color sólido")),
+    (Msg::NameColourBars, t("Barras de color")),
+    (Msg::KindSolidKey, t("COLOR SÓLIDO")),
+    (Msg::KindBarsKey, t("BARRAS DE COLOR")),
+    (
+        Msg::KindSolidHover,
+        t("Un color sólido a pantalla completa"),
+    ),
+    (Msg::KindBarsHover, t("Señal de prueba de barras de color")),
+    (Msg::AddInputName, t("Nombre")),
+    (Msg::NameSuggested, t("Nombre único sugerido")),
+    (Msg::NameFree, t("El nombre está libre")),
+    (Msg::AddInputPreview, t("Muestra")),
+    (
+        Msg::AddInputIdPosition,
+        t("entrada {input} · posición {position}"),
+    ),
+    (
+        Msg::AddInputNoIdPosition,
+        t("sin id libre · posición {position}"),
+    ),
+    (Msg::AddInputColour, t("Color")),
+    (Msg::ColourPickHover, t("Elegir cualquier color")),
+    (Msg::ColourBlack, t("Negro")),
+    (Msg::ColourWhite, t("Blanco")),
+    (Msg::ColourGrey, t("Gris")),
+    (Msg::ColourRed, t("Rojo")),
+    (Msg::ColourGreen, t("Verde")),
+    (Msg::ColourBlue, t("Azul")),
+    (Msg::ColourAmber, t("Ámbar")),
+    (Msg::ColourMagenta, t("Magenta")),
+    (
+        Msg::AddInputUndoNote,
+        t("Deshacer quita de nuevo una entrada añadida"),
+    ),
+    (Msg::AddInputKey, t("AÑADIR")),
+    (Msg::AddInputKeyHover, t("Añadir esta entrada")),
+    (Msg::AddInputCancelHover, t("Cerrar sin añadir")),
+    (
+        Msg::ReasonNoFreeId,
+        t("no queda ningún identificador de entrada libre"),
+    ),
+    (Msg::PreviewInputTag, t("ENTRADA {input}")),
+    (Msg::PreviewSilent, t("SIN AUDIO")),
+    (
+        Msg::RemoveInputQuestion,
+        t("¿Quitar «{name}» (entrada {input}, posición {position})?"),
+    ),
+    (
+        Msg::RemoveInputQuestionShort,
+        t("¿Quitar «{name}» (entrada {input})?"),
+    ),
+    (
+        Msg::RemoveInputWarning,
+        t(
+            "Su canal de mezclador y su candado se van con ella. La eliminación no se puede deshacer: borra el historial de rehacer y olvida los pasos de deshacer que nombran esta entrada.",
+        ),
+    ),
+    (Msg::RemoveKey, t("QUITAR")),
+    (Msg::RemoveKeyHover, t("Quitar esta entrada del show")),
+    (Msg::RemoveCancelHover, t("Conservar esta entrada")),
+    // Side-panel output rows.
+    (Msg::SlotsCount, plural("{count} RANURA", "{count} RANURAS")),
+    (Msg::RecordingOfTotal, t("{on_air} / {total} GRABANDO")),
+    (
+        Msg::TargetsCount,
+        plural("{count} DESTINO", "{count} DESTINOS"),
+    ),
+    (Msg::TargetsUnknown, t("— DESTINOS")),
+    (Msg::LiveOfTotal, t("{on_air} / {total} EN VIVO")),
+    (
+        Msg::RecorderRowHover,
+        t(
+            "Ranura de grabación {slot}: {status}\nMuestra el estado de grabación pedido al daemon; el protocolo no informa de archivo ni duración realizados.",
+        ),
+    ),
+    (
+        Msg::StreamsNoneConfigured,
+        t("No hay destinos de stream configurados"),
+    ),
+    (
+        Msg::StreamsNotSynced,
+        t("Estado de streams sin sincronizar"),
+    ),
+    (
+        Msg::StreamRowHover,
+        t("{name}\nPedido {desired} · realizado {realized}"),
+    ),
+    (Msg::StartKey, t("INICIAR")),
+    (Msg::StopKey, t("DETENER")),
+    (
+        Msg::StartStreamTarget,
+        t("Iniciar el destino de stream «{name}»"),
+    ),
+    (
+        Msg::StopStreamTarget,
+        t("Detener el destino de stream «{name}»"),
+    ),
+    (
+        Msg::ReasonStreamPending,
+        t("un comando anterior para este destino de stream sigue pendiente"),
+    ),
 ];

@@ -2,6 +2,7 @@ use egui::{Button, CornerRadius, DragValue, Rect, RichText, Sense, Stroke, Ui, V
 use fm_protocol::{FadeToBlackPosition, FadeToBlackState};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::l10n::{self, Arg, Locale, Msg, with_key};
 use crate::theme::{AMBER, BORDER, PROGRAM, PROGRAM_FILL, TEXT, TEXT_DIM, section_label};
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
@@ -53,6 +54,7 @@ pub const fn fade_to_black_availability(
     }
 }
 
+#[allow(clippy::too_many_lines)] // one immediate-mode region
 pub(super) fn draw_fade_to_black(
     ui: &mut Ui,
     duration_frames: &mut u32,
@@ -70,6 +72,7 @@ pub(super) fn draw_fade_to_black(
     let availability = fade_to_black_availability(FadeToBlackGate::from_state(state), desired);
     let black = desired.is_some_and(|desired| desired.target_active);
     let reason = unavailable_reason(state, Capability::Transition);
+    let l = l10n::locale(ui.ctx());
 
     ui.horizontal(|ui| {
         // One console key: it offers exactly the reversal the replicated
@@ -79,14 +82,14 @@ pub(super) fn draw_fade_to_black(
                 "FTB  ON",
                 false,
                 availability.to_live,
-                "Reverse Fade-to-Black and restore live Program  [B]",
+                with_key(l, l.text(Msg::FtbReverseHover), "B"),
             )
         } else {
             (
                 "FTB",
                 true,
                 availability.to_black,
-                "Fade the realized Program video and audio to black  [B]",
+                with_key(l, l.text(Msg::FtbHover), "B"),
             )
         };
         let (fill, stroke) = if black {
@@ -102,7 +105,7 @@ pub(super) fn draw_fade_to_black(
                     .stroke(Stroke::new(1.0, stroke))
                     .min_size(Vec2::new(100.0, 40.0)),
             )
-            .hint(hover, reason)
+            .hint(&hover, reason)
             .clicked()
         {
             intents.push(StudioIntent::FadeToBlack {
@@ -112,7 +115,7 @@ pub(super) fn draw_fade_to_black(
         }
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(section_label("Fade to black"));
+            ui.label(section_label(l.text(Msg::FadeToBlack)));
             ui.add_enabled(
                 availability.duration,
                 DragValue::new(duration_frames)
@@ -120,10 +123,10 @@ pub(super) fn draw_fade_to_black(
                     .suffix(" fr")
                     .speed(1.0),
             )
-            .hint("Fade-to-Black duration in frames (drag or type)", reason);
+            .hint(l.text(Msg::FtbDurationHover), reason);
         });
     });
-    let phase = fade_to_black_phase(desired, realized);
+    let phase = fade_to_black_phase(l, desired, realized);
     let color = match phase.tone {
         PhaseTone::Quiet => TEXT_DIM,
         PhaseTone::Black => PROGRAM,
@@ -133,20 +136,29 @@ pub(super) fn draw_fade_to_black(
         ui.spacing_mut().item_spacing.x = 6.0;
         let (lamp, _) = ui.allocate_exact_size(Vec2::new(8.0, 8.0), Sense::hover());
         ui.painter().circle_filled(lamp.center(), 3.5, color);
-        ui.label(
-            RichText::new(&phase.text)
-                .size(10.5)
-                .strong()
-                .extra_letter_spacing(0.6)
-                .color(color),
+        // Long Spanish states end in an ellipsis; the tooltip repeats them.
+        ui.add(
+            egui::Label::new(
+                RichText::new(&phase.text)
+                    .size(10.5)
+                    .strong()
+                    .extra_letter_spacing(0.6)
+                    .color(color),
+            )
+            .truncate(),
         );
     })
     .response
     .on_hover_text(format!(
-        "On-air Fade-to-Black state reported by the daemon (realized).\n\
-         DESIRED {}\nREALIZED {}",
-        fade_to_black_label(desired),
-        fade_to_black_label(realized)
+        "{}\n{}",
+        phase.text,
+        l.format(
+            Msg::FtbStateHover,
+            &[
+                ("desired", Arg::Str(&fade_to_black_label(l, desired))),
+                ("realized", Arg::Str(&fade_to_black_label(l, realized))),
+            ],
+        )
     ));
     // The track's space is always reserved so toggling Fade-to-Black never
     // shifts the layout; it is painted only while Program is not fully live.
@@ -188,12 +200,13 @@ pub(crate) struct FadeToBlackPhase {
 /// Summarizes the realized (on-air) Fade-to-Black state, flagging a desired
 /// target the daemon has not yet adopted.
 pub(crate) fn fade_to_black_phase(
+    l: Locale,
     desired: Option<FadeToBlackState>,
     realized: Option<FadeToBlackState>,
 ) -> FadeToBlackPhase {
     let Some(realized) = realized else {
         return FadeToBlackPhase {
-            text: "FTB STATE UNAVAILABLE".to_owned(),
+            text: l.text(Msg::FtbStateUnavailable).to_owned(),
             tone: PhaseTone::Quiet,
             black_percent: None,
         };
@@ -202,22 +215,24 @@ pub(crate) fn fade_to_black_phase(
     #[allow(clippy::cast_possible_truncation)] // at most 100
     let percent = (numerator * 100 / FadeToBlackPosition::DENOMINATOR) as u8;
     let pending = desired.is_some_and(|desired| desired.target_active != realized.target_active);
+    let percent_text = l.percent(i64::from(percent));
+    let percent_arg = [("percent", Arg::Str(&percent_text))];
     let (text, tone) = match (realized.target_active, numerator) {
-        (false, 0) => ("PROGRAM LIVE".to_owned(), PhaseTone::Quiet),
+        (false, 0) => (l.text(Msg::FtbProgramLive).to_owned(), PhaseTone::Quiet),
         (true, n) if n == FadeToBlackPosition::DENOMINATOR => {
-            ("PROGRAM BLACK".to_owned(), PhaseTone::Black)
+            (l.text(Msg::FtbProgramBlack).to_owned(), PhaseTone::Black)
         }
-        (true, _) => (format!("FADING TO BLACK {percent}%"), PhaseTone::Black),
-        (false, _) => (format!("RESTORING · {percent}% BLACK"), PhaseTone::Black),
+        (true, _) => (l.format(Msg::FtbFading, &percent_arg), PhaseTone::Black),
+        (false, _) => (l.format(Msg::FtbRestoring, &percent_arg), PhaseTone::Black),
     };
     if pending {
-        let target = if desired.is_some_and(|desired| desired.target_active) {
-            "BLACK"
+        let requested = if desired.is_some_and(|desired| desired.target_active) {
+            Msg::FtbBlackRequested
         } else {
-            "LIVE"
+            Msg::FtbLiveRequested
         };
         return FadeToBlackPhase {
-            text: format!("{text} · {target} REQUESTED"),
+            text: l.format(requested, &[("state", Arg::Str(&text))]),
             tone: PhaseTone::Pending,
             black_percent: (numerator > 0).then_some(percent),
         };
@@ -229,15 +244,30 @@ pub(crate) fn fade_to_black_phase(
     }
 }
 
-fn fade_to_black_label(state: Option<FadeToBlackState>) -> String {
+fn fade_to_black_label(l: Locale, state: Option<FadeToBlackState>) -> String {
     state.map_or_else(
-        || "UNAVAILABLE".to_owned(),
+        || l.text(Msg::StreamUnavailable).to_owned(),
         |state| {
-            format!(
-                "TARGET {} @ {}/{}",
-                if state.target_active { "BLACK" } else { "LIVE" },
-                state.position.numerator(),
-                FadeToBlackPosition::DENOMINATOR,
+            l.format(
+                Msg::FtbTarget,
+                &[
+                    (
+                        "target",
+                        Arg::Str(l.text(if state.target_active {
+                            Msg::FtbWordBlack
+                        } else {
+                            Msg::Live
+                        })),
+                    ),
+                    (
+                        "position",
+                        Arg::Str(&format!(
+                            "{}/{}",
+                            state.position.numerator(),
+                            FadeToBlackPosition::DENOMINATOR
+                        )),
+                    ),
+                ],
             )
         },
     )
@@ -318,14 +348,14 @@ mod tests {
     #[test]
     fn exact_desired_and_realized_labels_are_stable() {
         assert_eq!(
-            fade_to_black_label(Some(state(true, 40_000))),
+            fade_to_black_label(Locale::ENGLISH, Some(state(true, 40_000))),
             "TARGET BLACK @ 40000/65535"
         );
         assert_eq!(
-            fade_to_black_label(Some(state(false, 20_000))),
+            fade_to_black_label(Locale::ENGLISH, Some(state(false, 20_000))),
             "TARGET LIVE @ 20000/65535"
         );
-        assert_eq!(fade_to_black_label(None), "UNAVAILABLE");
+        assert_eq!(fade_to_black_label(Locale::ENGLISH, None), "UNAVAILABLE");
     }
 
     #[test]
@@ -333,7 +363,7 @@ mod tests {
         let live = state(false, 0);
         let black = state(true, 65_535);
         assert_eq!(
-            fade_to_black_phase(Some(live), Some(live)),
+            fade_to_black_phase(Locale::ENGLISH, Some(live), Some(live)),
             FadeToBlackPhase {
                 text: "PROGRAM LIVE".to_owned(),
                 tone: PhaseTone::Quiet,
@@ -341,26 +371,36 @@ mod tests {
             }
         );
         assert_eq!(
-            fade_to_black_phase(Some(black), Some(black)),
+            fade_to_black_phase(Locale::ENGLISH, Some(black), Some(black)),
             FadeToBlackPhase {
                 text: "PROGRAM BLACK".to_owned(),
                 tone: PhaseTone::Black,
                 black_percent: Some(100),
             }
         );
-        let fading = fade_to_black_phase(Some(black), Some(state(true, 32_768)));
+        let fading = fade_to_black_phase(Locale::ENGLISH, Some(black), Some(state(true, 32_768)));
         assert_eq!(fading.text, "FADING TO BLACK 50%");
         assert_eq!(fading.black_percent, Some(50));
-        let restoring = fade_to_black_phase(Some(live), Some(state(false, 16_384)));
+        let restoring =
+            fade_to_black_phase(Locale::ENGLISH, Some(live), Some(state(false, 16_384)));
         assert_eq!(restoring.text, "RESTORING · 25% BLACK");
         assert_eq!(restoring.tone, PhaseTone::Black);
-        let requested = fade_to_black_phase(Some(black), Some(live));
+        let requested = fade_to_black_phase(Locale::ENGLISH, Some(black), Some(live));
         assert_eq!(requested.text, "PROGRAM LIVE · BLACK REQUESTED");
         assert_eq!(requested.tone, PhaseTone::Pending);
         assert_eq!(requested.black_percent, None);
         assert_eq!(
-            fade_to_black_phase(Some(live), None).text,
+            fade_to_black_phase(Locale::ENGLISH, Some(live), None).text,
             "FTB STATE UNAVAILABLE"
+        );
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            fade_to_black_phase(spanish, Some(live), Some(state(false, 16_384))).text,
+            "RESTAURANDO · 25\u{a0}% NEGRO"
+        );
+        assert_eq!(
+            fade_to_black_phase(spanish, Some(black), Some(live)).text,
+            "PROGRAMA EN VIVO · NEGRO PEDIDO"
         );
     }
 }

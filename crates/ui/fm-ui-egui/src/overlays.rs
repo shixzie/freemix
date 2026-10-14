@@ -7,10 +7,11 @@ use fm_protocol::{
 use fm_types::InputId;
 
 use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::l10n::{self, Msg};
 use crate::monitors::label_for_input;
 use crate::theme::{
-    ACCENT, AMBER, BORDER, GRAPHITE_RAISED, MUTED, PROGRAM, TEXT, TEXT_DIM, mono, pill,
-    small_button,
+    ACCENT, AMBER, BORDER, GRAPHITE_RAISED, MUTED, PROGRAM, TEXT, TEXT_DIM, caption, field_label,
+    mono, pill, small_button,
 };
 use crate::{StudioIntent, StudioUiState, overlay_status};
 
@@ -25,29 +26,25 @@ pub(crate) fn draw_overlays(
     duration_frames: u32,
     intents: &mut Vec<StudioIntent>,
 ) {
+    let l = l10n::locale(ui.ctx());
     let enabled =
         state.connection_status.controls_enabled() && state.can_transition && state.view.is_some();
-    ui.label(
-        RichText::new(
-            "TAKE uses the current Preview source. D = desired, C = last daemon confirmation.",
-        )
-        .size(10.5)
-        .color(MUTED),
-    )
-    .on_hover_text("Confirmation is control state, not output-video proof.");
+    ui.add(egui::Label::new(caption(l.text(Msg::OverlaysIntro))).wrap())
+        .on_hover_text(l.text(Msg::OverlaysIntroHover));
     ui.add_space(2.0);
     for channel_number in 1_u8..=8 {
         draw_overlay_channel(ui, state, channel_number, duration_frames, enabled, intents);
     }
 }
 
-/// Operator state of one overlay channel derived from desired and confirmed flags.
+/// Operator state of one overlay channel derived from desired and confirmed
+/// flags, as catalog English (worded in the console language when drawn).
 const fn overlay_state_label(desired_active: bool, confirmed_active: bool) -> (&'static str, bool) {
     match (desired_active, confirmed_active) {
-        (true, true) => ("ON AIR", true),
-        (true, false) => ("TAKING", false),
-        (false, true) => ("CLEARING", false),
-        (false, false) => ("OFF", false),
+        (true, true) => (Msg::OverlayOnAir.en(), true),
+        (true, false) => (Msg::OverlayTaking.en(), false),
+        (false, true) => (Msg::OverlayClearing.en(), false),
+        (false, false) => (Msg::StreamOff.en(), false),
     }
 }
 
@@ -60,6 +57,7 @@ fn draw_overlay_channel(
     enabled: bool,
     intents: &mut Vec<StudioIntent>,
 ) {
+    let l = l10n::locale(ui.ctx());
     let channel = WireOverlayChannelId::new(channel_number)
         .expect("Studio renders only overlay channels 1 through 8");
     let (desired, realized) = state.view.as_ref().map_or((None, None), |view| {
@@ -83,7 +81,7 @@ fn draw_overlay_channel(
     let (state_label, on_air) = if synchronized {
         overlay_state_label(desired_active, confirmed_active)
     } else {
-        ("NO STATE", false)
+        (Msg::StatusNoState.en(), false)
     };
     let state_color = if on_air {
         PROGRAM
@@ -126,7 +124,7 @@ fn draw_overlay_channel(
                         .strong()
                         .color(TEXT),
                 );
-                pill(ui, state_label, state_color, on_air);
+                pill(ui, l.tr(state_label), state_color, on_air);
                 let source_name = desired
                     .and_then(|overlay| overlay.source)
                     .zip(state.view.as_ref())
@@ -135,12 +133,12 @@ fn draw_overlay_channel(
                     if ui
                         .add_enabled(
                             enabled && desired_active,
-                            Button::new(RichText::new("OFF").size(11.0).strong())
+                            Button::new(RichText::new(l.text(Msg::StreamOff)).size(11.0).strong())
                                 .min_size(Vec2::new(0.0, 20.0)),
                         )
                         .hint(
-                            "Remove this overlay channel from Program",
-                            why(enabled, reason, "this overlay channel is already off"),
+                            l.text(Msg::OverlayOffHover),
+                            why(enabled, reason, Msg::ReasonOverlayAlreadyOff.en()),
                         )
                         .clicked()
                     {
@@ -149,13 +147,13 @@ fn draw_overlay_channel(
                     if ui
                         .add_enabled(
                             enabled && source.is_some(),
-                            small_button("TAKE")
+                            small_button(l.text(Msg::TakeKey))
                                 .fill(crate::theme::ACCENT_FILL)
                                 .stroke(Stroke::new(1.0, ACCENT.gamma_multiply(0.6))),
                         )
                         .hint(
-                            "Take the current Preview source on this overlay channel",
-                            why(enabled, reason, "no Preview source is selected"),
+                            l.text(Msg::OverlayTakeHover),
+                            why(enabled, reason, Msg::ReasonNoPreviewSource.en()),
                         )
                         .clicked()
                         && let Some(source) = source
@@ -165,11 +163,12 @@ fn draw_overlay_channel(
                     ui.add(
                         egui::Label::new(
                             RichText::new(source_name.unwrap_or_else(|| {
-                                if synchronized {
-                                    "no source".to_owned()
+                                l.text(if synchronized {
+                                    Msg::OverlayNoSource
                                 } else {
-                                    "not synchronized".to_owned()
-                                }
+                                    Msg::RowNotSynchronized
+                                })
+                                .to_owned()
                             }))
                             .size(11.5)
                             .color(TEXT_DIM),
@@ -225,17 +224,14 @@ fn draw_overlay_details(
         enabled,
     } = context;
     let reason = unavailable_reason(state, Capability::Transition);
+    let l = l10n::locale(ui.ctx());
     ui.horizontal_wrapped(|ui| {
         let update = overlay_update_intent(enabled, channel, desired, source);
         if ui
-            .add_enabled(update.is_some(), small_button("UPDATE"))
+            .add_enabled(update.is_some(), small_button(l.text(Msg::UpdateKey)))
             .hint(
-                "Update this active overlay channel from the current Preview source",
-                why(
-                    enabled,
-                    reason,
-                    "the channel is off or already shows the Preview source",
-                ),
+                l.text(Msg::OverlayUpdateHover),
+                why(enabled, reason, Msg::ReasonOverlayUpdate.en()),
             )
             .clicked()
             && let Some(update) = update
@@ -251,8 +247,8 @@ fn draw_overlay_details(
                 )),
             )
             .hint(
-                "Append the current Preview source to this overlay queue",
-                why(enabled, reason, "no Preview source is selected"),
+                l.text(Msg::OverlayQueueHover),
+                why(enabled, reason, Msg::ReasonNoPreviewSource.en()),
             )
             .clicked()
             && let Some(source) = source
@@ -262,11 +258,11 @@ fn draw_overlay_details(
         if ui
             .add_enabled(
                 enabled && desired.is_some_and(|value| !value.queued_sources.is_empty()),
-                small_button("NEXT"),
+                small_button(l.text(Msg::NextKey)),
             )
             .hint(
-                "Take and remove the head of this overlay queue",
-                why(enabled, reason, "this overlay queue is empty"),
+                l.text(Msg::OverlayNextHover),
+                why(enabled, reason, Msg::ReasonOverlayQueueEmpty.en()),
             )
             .clicked()
         {
@@ -276,12 +272,12 @@ fn draw_overlay_details(
         if ui
             .add_enabled(
                 enabled,
-                small_button(match transition {
-                    OverlayTransitionKind::Cut => "CUT",
-                    OverlayTransitionKind::Fade => "FADE",
-                }),
+                small_button(l.text(match transition {
+                    OverlayTransitionKind::Cut => Msg::CutKey,
+                    OverlayTransitionKind::Fade => Msg::FadeKey,
+                })),
             )
-            .hint("Toggle this overlay channel between Cut and Fade", reason)
+            .hint(l.text(Msg::OverlayTransitionHover), reason)
             .clicked()
         {
             intents.push(StudioIntent::ToggleOverlayTransition {
@@ -294,16 +290,19 @@ fn draw_overlay_details(
         if ui
             .add_enabled(
                 enabled,
-                small_button(overlay_status::position_label(position)),
+                small_button(l.text(overlay_status::position_label(position))),
             )
-            .hint("Cycle this overlay channel's position preset", reason)
+            .hint(l.text(Msg::OverlayPositionHover), reason)
             .clicked()
         {
             intents.push(StudioIntent::CycleOverlayPosition { channel });
         }
         if ui
-            .add_enabled(enabled, small_button(overlay_status::border_label(border)))
-            .hint("Cycle this overlay channel's white border preset", reason)
+            .add_enabled(
+                enabled,
+                small_button(l.text(overlay_status::border_label(border))),
+            )
+            .hint(l.text(Msg::OverlayBorderHover), reason)
             .clicked()
         {
             intents.push(StudioIntent::CycleOverlayBorder { channel });
@@ -313,7 +312,7 @@ fn draw_overlay_details(
     match outputs {
         Some(outputs) if !outputs.is_empty() => {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("OUTPUTS").size(10.0).color(MUTED));
+                ui.label(field_label(l.text(Msg::OverlayOutputs)));
                 for output in outputs {
                     let mut included = desired
                         .is_some_and(|overlay| overlay.included_outputs.contains(&output.output));
@@ -326,12 +325,8 @@ fn draw_overlay_details(
                             ),
                         )
                         .hint(
-                            "Include this overlay channel on this output",
-                            why(
-                                enabled,
-                                reason,
-                                "the overlay channel has not been taken yet",
-                            ),
+                            l.text(Msg::OverlayOutputHover),
+                            why(enabled, reason, Msg::ReasonOverlayNotTaken.en()),
                         )
                         .changed()
                     {
@@ -345,14 +340,14 @@ fn draw_overlay_details(
         }
         Some(_) => {
             ui.label(
-                RichText::new("OUTPUTS unavailable: no configured outputs")
+                RichText::new(l.text(Msg::OverlayOutputsNone))
                     .size(10.0)
                     .color(MUTED),
             );
         }
         None => {
             ui.label(
-                RichText::new("OUTPUTS unavailable: project state not synchronized")
+                RichText::new(l.text(Msg::OverlayOutputsUnsynced))
                     .size(10.0)
                     .color(MUTED),
             );

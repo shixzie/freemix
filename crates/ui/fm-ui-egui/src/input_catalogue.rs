@@ -20,7 +20,7 @@ use fm_ui_model::{ClientView, ManualTransitionStatus};
 use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
 use crate::gating::{Capability, unavailable_reason};
 use crate::input_bank::project_editing_available;
-use crate::l10n::{Arg, Locale, Msg};
+use crate::l10n::{self, Arg, Locale, Msg, with_key};
 use crate::theme::{
     ACCENT, ACCENT_FILL, AMBER, BORDER_STRONG, ERROR, MONITOR_BLACK, MUTED, PROGRAM, PROGRAM_FILL,
     TEXT, TEXT_DIM, Tone, WIDGET, mono, paint_lamp, section_label,
@@ -94,16 +94,27 @@ impl NewInputKind {
     /// Base of the suggested name (`Solid Colour 1`, `Colour Bars 1`).
     #[must_use]
     pub const fn base_name(self) -> &'static str {
+        self.base_name_key().en()
+    }
+
+    const fn base_name_key(self) -> Msg {
         match self {
-            Self::Solid => "Solid Colour",
-            Self::Bars => "Colour Bars",
+            Self::Solid => Msg::NameSolidColour,
+            Self::Bars => Msg::NameColourBars,
         }
     }
 
-    const fn key_label(self) -> &'static str {
+    const fn key_label(self) -> Msg {
         match self {
-            Self::Solid => "SOLID COLOUR",
-            Self::Bars => "COLOUR BARS",
+            Self::Solid => Msg::KindSolidKey,
+            Self::Bars => Msg::KindBarsKey,
+        }
+    }
+
+    const fn description(self) -> Msg {
+        match self {
+            Self::Solid => Msg::KindSolidHover,
+            Self::Bars => Msg::KindBarsHover,
         }
     }
 }
@@ -134,11 +145,19 @@ pub fn next_free_input_id(taken: &[InputId]) -> Option<InputId> {
 /// already used by an input or an add in flight.
 #[must_use]
 pub fn suggested_input_name(kind: NewInputKind, taken: &[&str]) -> String {
+    localized_input_name(Locale::ENGLISH, kind, taken)
+}
+
+/// [`suggested_input_name`] with the base name in the console language
+/// (`Color sólido 1` in Spanish). The name is project data, so it is only a
+/// suggestion the operator may edit.
+pub(crate) fn localized_input_name(l: Locale, kind: NewInputKind, taken: &[&str]) -> String {
+    let base = l.text(kind.base_name_key());
     // One of the first `taken.len() + 1` numbers is always free.
     (1..=taken.len() + 1)
-        .map(|number| format!("{} {number}", kind.base_name()))
+        .map(|number| format!("{base} {number}"))
         .find(|name| !taken.contains(&name.as_str()))
-        .unwrap_or_else(|| kind.base_name().to_owned())
+        .unwrap_or_else(|| base.to_owned())
 }
 
 /// Why a new input's name would be refused, if it would be.
@@ -372,7 +391,7 @@ pub(crate) fn add_input_intent(
         return Err(problem);
     }
     let input =
-        next_free_input_id(&tracker.taken_ids(view, state)).ok_or("no input identifier is free")?;
+        next_free_input_id(&tracker.taken_ids(view, state)).ok_or(Msg::ReasonNoFreeId.en())?;
     Ok(StudioIntent::AddInput {
         input,
         name: draft.name.trim().to_owned(),
@@ -390,18 +409,20 @@ pub(crate) struct AddInputDraft {
     pub(crate) color: Color32,
     /// The name field takes keyboard focus once, when the dialog opens.
     focus_pending: bool,
+    /// Language of the suggested name.
+    locale: Locale,
 }
 
 /// Colour presets offered beside the picker.
-const COLOUR_PRESETS: [(&str, Color32); 8] = [
-    ("Black", Color32::from_rgb(0, 0, 0)),
-    ("White", Color32::from_rgb(235, 235, 235)),
-    ("Grey", Color32::from_rgb(64, 68, 74)),
-    ("Red", Color32::from_rgb(200, 32, 40)),
-    ("Green", Color32::from_rgb(30, 150, 70)),
-    ("Blue", Color32::from_rgb(20, 60, 140)),
-    ("Amber", Color32::from_rgb(240, 168, 40)),
-    ("Magenta", Color32::from_rgb(170, 40, 150)),
+const COLOUR_PRESETS: [(Msg, Color32); 8] = [
+    (Msg::ColourBlack, Color32::from_rgb(0, 0, 0)),
+    (Msg::ColourWhite, Color32::from_rgb(235, 235, 235)),
+    (Msg::ColourGrey, Color32::from_rgb(64, 68, 74)),
+    (Msg::ColourRed, Color32::from_rgb(200, 32, 40)),
+    (Msg::ColourGreen, Color32::from_rgb(30, 150, 70)),
+    (Msg::ColourBlue, Color32::from_rgb(20, 60, 140)),
+    (Msg::ColourAmber, Color32::from_rgb(240, 168, 40)),
+    (Msg::ColourMagenta, Color32::from_rgb(170, 40, 150)),
 ];
 
 impl AddInputDraft {
@@ -409,10 +430,11 @@ impl AddInputDraft {
         let kind = NewInputKind::Solid;
         Self {
             kind,
-            name: suggested_input_name(kind, &tracker.taken_names(state)),
+            name: localized_input_name(tracker.locale, kind, &tracker.taken_names(state)),
             name_edited: false,
             color: COLOUR_PRESETS[5].1,
             focus_pending: true,
+            locale: tracker.locale,
         }
     }
 
@@ -420,7 +442,7 @@ impl AddInputDraft {
     pub(crate) fn set_kind(&mut self, kind: NewInputKind, taken: &[&str]) {
         self.kind = kind;
         if !self.name_edited {
-            self.name = suggested_input_name(kind, taken);
+            self.name = localized_input_name(self.locale, kind, taken);
         }
     }
 
@@ -843,33 +865,27 @@ impl StudioShell {
             .collect();
         let mut submit = false;
         let mut cancel = false;
+        let l = self.locale;
         let closed = crate::menu::help_modal(
             context,
             "studio-add-input-window",
-            "Add input",
+            l.text(Msg::AddInput),
             460.0,
             |ui| {
                 ui.label(
-                    RichText::new(
-                        "Appends a live generator input to the end of the bank with silent audio \
-                         and a default mixer strip. Media, capture, and network inputs are added \
-                         offline.",
-                    )
-                    .size(11.0)
-                    .color(TEXT_DIM),
+                    RichText::new(l.text(Msg::AddInputIntro))
+                        .size(11.0)
+                        .color(TEXT_DIM),
                 );
                 ui.add_space(8.0);
-                ui.label(section_label("Kind"));
+                ui.label(section_label(l.text(Msg::AddInputKind)));
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     for kind in [NewInputKind::Solid, NewInputKind::Bars] {
                         let selected = draft.kind == kind;
-                        let response = ui.add(kind_key(kind.key_label(), selected)).on_hover_text(
-                            match kind {
-                                NewInputKind::Solid => "A full-frame solid colour",
-                                NewInputKind::Bars => "Colour bars test signal",
-                            },
-                        );
+                        let response = ui
+                            .add(kind_key(l.text(kind.key_label()), selected))
+                            .on_hover_text(l.text(kind.description()));
                         if response.clicked() && !selected {
                             let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
                             draft.set_kind(kind, &taken);
@@ -877,7 +893,7 @@ impl StudioShell {
                     }
                 });
                 ui.add_space(6.0);
-                ui.label(section_label("Name"));
+                ui.label(section_label(l.text(Msg::AddInputName)));
                 let edit = ui.add(
                     egui::TextEdit::singleline(&mut draft.name)
                         .id(egui::Id::new("studio-add-input-name"))
@@ -897,32 +913,39 @@ impl StudioShell {
                 let taken_refs: Vec<&str> = taken.iter().map(String::as_str).collect();
                 match input_name_problem(&draft.name, &taken_refs) {
                     Some(problem) => {
-                        ui.label(RichText::new(capitalized(problem)).size(10.5).color(ERROR));
+                        ui.label(
+                            RichText::new(capitalized(l.tr(problem)))
+                                .size(10.5)
+                                .color(ERROR),
+                        );
                     }
                     None if !draft.name_edited => {
                         ui.label(
-                            RichText::new("Suggested unique name")
+                            RichText::new(l.text(Msg::NameSuggested))
                                 .size(10.5)
                                 .color(MUTED),
                         );
                     }
                     None => {
-                        ui.label(RichText::new("Name is free").size(10.5).color(MUTED));
+                        ui.label(RichText::new(l.text(Msg::NameFree)).size(10.5).color(MUTED));
                     }
                 }
                 ui.add_space(6.0);
                 ui.horizontal_top(|ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
                     ui.vertical(|ui| {
-                        ui.label(section_label("Preview"));
+                        ui.label(section_label(l.text(Msg::AddInputPreview)));
                         paint_source_preview(ui, &draft, next_id);
+                        let position = ("position", Arg::from(position));
                         ui.label(
-                            mono(format!(
-                                "{} · position {position}",
-                                next_id.map_or_else(
-                                    || "no free id".to_owned(),
-                                    |input| format!("input {input}")
-                                )
+                            mono(next_id.map_or_else(
+                                || l.format(Msg::AddInputNoIdPosition, &[position]),
+                                |input| {
+                                    l.format(
+                                        Msg::AddInputIdPosition,
+                                        &[position, ("input", Arg::Str(&input.to_string()))],
+                                    )
+                                },
                             ))
                             .size(10.5)
                             .color(TEXT_DIM),
@@ -930,13 +953,17 @@ impl StudioShell {
                     });
                     if draft.kind == NewInputKind::Solid {
                         ui.vertical(|ui| {
-                            ui.label(section_label("Colour"));
+                            ui.label(section_label(l.text(Msg::AddInputColour)));
                             ui.horizontal_wrapped(|ui| {
                                 ui.set_max_width(220.0);
                                 ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
                                 for (label, color) in COLOUR_PRESETS {
                                     if colour_swatch(ui, color, draft.color == color)
-                                        .on_hover_text(format!("{label}  {}", hex_colour(color)))
+                                        .on_hover_text(format!(
+                                            "{}  {}",
+                                            l.text(label),
+                                            hex_colour(color)
+                                        ))
                                         .clicked()
                                     {
                                         draft.color = color;
@@ -949,7 +976,7 @@ impl StudioShell {
                                     &mut draft.color,
                                     egui::color_picker::Alpha::Opaque,
                                 )
-                                .on_hover_text("Pick any colour");
+                                .on_hover_text(l.text(Msg::ColourPickHover));
                                 ui.label(mono(hex_colour(draft.color)).size(11.5).color(TEXT));
                             });
                         });
@@ -961,14 +988,18 @@ impl StudioShell {
                     if let Err(reason) = submission {
                         let (lamp, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
                         paint_lamp(ui.painter(), lamp.center(), 4.0, Tone::Pending);
-                        ui.label(
-                            RichText::new(format!("Unavailable: {reason}"))
-                                .size(10.5)
-                                .color(AMBER),
-                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(l10n::unavailable(l, reason))
+                                    .size(10.5)
+                                    .color(AMBER),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(l10n::unavailable(l, reason));
                     } else {
                         ui.label(
-                            RichText::new("Undo removes an added input again")
+                            RichText::new(l.text(Msg::AddInputUndoNote))
                                 .size(10.5)
                                 .color(MUTED),
                         );
@@ -978,26 +1009,37 @@ impl StudioShell {
                             .add_enabled(
                                 submission.is_ok(),
                                 Button::new(
-                                    RichText::new("ADD INPUT").size(12.0).strong().color(TEXT),
+                                    RichText::new(l.text(Msg::AddInputKey))
+                                        .size(12.0)
+                                        .strong()
+                                        .color(TEXT),
                                 )
                                 .fill(ACCENT_FILL)
                                 .stroke(Stroke::new(1.0, ACCENT))
                                 .min_size(Vec2::new(104.0, 26.0)),
                             )
-                            .on_hover_text("Add this input  [Enter]")
-                            .on_disabled_hover_text(format!(
-                                "Unavailable: {}",
-                                submission.as_ref().err().copied().unwrap_or("")
+                            .on_hover_text(with_key(
+                                l,
+                                l.text(Msg::AddInputKeyHover),
+                                l.text(Msg::KeyEnter),
+                            ))
+                            .on_disabled_hover_text(l10n::unavailable(
+                                l,
+                                submission.as_ref().err().copied().unwrap_or(""),
                             ));
                         if add.clicked() {
                             submit = true;
                         }
                         if ui
                             .add(
-                                Button::new(RichText::new("CANCEL").size(12.0).color(TEXT_DIM))
-                                    .min_size(Vec2::new(84.0, 26.0)),
+                                Button::new(
+                                    RichText::new(l.text(Msg::CancelKey))
+                                        .size(12.0)
+                                        .color(TEXT_DIM),
+                                )
+                                .min_size(Vec2::new(84.0, 26.0)),
                             )
-                            .on_hover_text("Close without adding  [Esc]")
+                            .on_hover_text(with_key(l, l.text(Msg::AddInputCancelHover), "Esc"))
                             .clicked()
                         {
                             cancel = true;
@@ -1017,6 +1059,7 @@ impl StudioShell {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one modal dialog
     fn draw_remove_input_dialog(
         &mut self,
         context: &egui::Context,
@@ -1035,31 +1078,37 @@ impl StudioShell {
         });
         let mut remove = false;
         let mut cancel = false;
+        let l = self.locale;
+        let input_text = confirm.input.to_string();
+        let question = match position {
+            Some(position) => l.format(
+                Msg::RemoveInputQuestion,
+                &[
+                    ("name", Arg::Str(&confirm.name)),
+                    ("input", Arg::Str(&input_text)),
+                    ("position", Arg::from(position)),
+                ],
+            ),
+            None => l.format(
+                Msg::RemoveInputQuestionShort,
+                &[
+                    ("name", Arg::Str(&confirm.name)),
+                    ("input", Arg::Str(&input_text)),
+                ],
+            ),
+        };
         let closed = crate::menu::help_modal(
             context,
             "studio-remove-input-window",
-            "Remove input",
+            l.text(Msg::RemoveInput),
             420.0,
             |ui| {
-                ui.label(
-                    RichText::new(format!(
-                        "Remove \"{}\" (input {}{})?",
-                        confirm.name,
-                        confirm.input,
-                        position
-                            .map_or_else(String::new, |position| format!(", position {position}"))
-                    ))
-                    .size(13.0)
-                    .color(TEXT),
-                );
+                ui.add(egui::Label::new(RichText::new(question).size(13.0).color(TEXT)).wrap());
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(
-                        "Its mixer strip and padlock go with it. Removal cannot be undone: it \
-                         clears the redo history and forgets undo steps that name this input.",
-                    )
-                    .size(11.0)
-                    .color(TEXT_DIM),
+                    RichText::new(l.text(Msg::RemoveInputWarning))
+                        .size(11.0)
+                        .color(TEXT_DIM),
                 );
                 ui.add_space(8.0);
                 ui.separator();
@@ -1067,35 +1116,46 @@ impl StudioShell {
                     if !availability.enabled {
                         let (lamp, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
                         paint_lamp(ui.painter(), lamp.center(), 4.0, Tone::Pending);
-                        ui.label(
-                            RichText::new(format!("Unavailable: {}", availability.reason))
-                                .size(10.5)
-                                .color(AMBER),
-                        );
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(l10n::unavailable(l, availability.reason))
+                                    .size(10.5)
+                                    .color(AMBER),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(l10n::unavailable(l, availability.reason));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add_enabled(
                                 availability.enabled,
                                 Button::new(
-                                    RichText::new("REMOVE").size(12.0).strong().color(TEXT),
+                                    RichText::new(l.text(Msg::RemoveKey))
+                                        .size(12.0)
+                                        .strong()
+                                        .color(TEXT),
                                 )
                                 .fill(PROGRAM_FILL)
                                 .stroke(Stroke::new(1.0, PROGRAM))
                                 .min_size(Vec2::new(96.0, 26.0)),
                             )
-                            .on_hover_text("Remove this input from the show")
-                            .on_disabled_hover_text(format!("Unavailable: {}", availability.reason))
+                            .on_hover_text(l.text(Msg::RemoveKeyHover))
+                            .on_disabled_hover_text(l10n::unavailable(l, availability.reason))
                             .clicked()
                         {
                             remove = true;
                         }
                         if ui
                             .add(
-                                Button::new(RichText::new("CANCEL").size(12.0).color(TEXT_DIM))
-                                    .min_size(Vec2::new(84.0, 26.0)),
+                                Button::new(
+                                    RichText::new(l.text(Msg::CancelKey))
+                                        .size(12.0)
+                                        .color(TEXT_DIM),
+                                )
+                                .min_size(Vec2::new(84.0, 26.0)),
                             )
-                            .on_hover_text("Keep this input  [Esc]")
+                            .on_hover_text(with_key(l, l.text(Msg::RemoveCancelHover), "Esc"))
                             .clicked()
                         {
                             cancel = true;
@@ -1176,6 +1236,7 @@ const BARS: [Color32; 7] = [
 
 /// A 16:9 picture of the new source, tagged with its identifier.
 fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<InputId>) {
+    let l = l10n::locale(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(Vec2::new(176.0, 99.0), Sense::hover());
     if !ui.is_rect_visible(rect) {
         return;
@@ -1202,7 +1263,10 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
     }
     if let Some(input) = next_id {
         let tag = painter.layout_no_wrap(
-            format!("INPUT {input}"),
+            l.format(
+                Msg::PreviewInputTag,
+                &[("input", Arg::Str(&input.to_string()))],
+            ),
             FontId::new(9.5, FontFamily::Monospace),
             TEXT,
         );
@@ -1220,7 +1284,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
     painter.text(
         pos2(rect.max.x - 6.0, rect.max.y - 6.0),
         Align2::RIGHT_BOTTOM,
-        "SILENT",
+        l.text(Msg::PreviewSilent),
         FontId::new(9.0, FontFamily::Proportional),
         Color32::from_white_alpha(170),
     );
@@ -1366,6 +1430,15 @@ mod tests {
         assert_eq!(
             suggested_input_name(NewInputKind::Bars, &["Solid Colour 1"]),
             "Colour Bars 1"
+        );
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            localized_input_name(spanish, NewInputKind::Solid, &["Color sólido 1"]),
+            "Color sólido 2"
+        );
+        assert_eq!(
+            localized_input_name(spanish, NewInputKind::Bars, &[]),
+            "Barras de color 1"
         );
     }
 

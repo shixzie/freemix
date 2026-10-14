@@ -4,7 +4,7 @@ use fm_protocol::Role;
 use fm_types::ProjectId;
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
-use crate::{DEFAULT_DAEMON, RestartPolicy};
+use crate::{DEFAULT_DAEMON, RestartPolicy, SavedPreferences};
 
 pub const HELP: &str = "\
 FreeMix Studio native control application
@@ -34,8 +34,14 @@ Client options:
 
 Interface options:
   --lang <LANG>          Console language: en or es
-                         [default: from LC_ALL, LC_MESSAGES, or LANG; else en]
-  --clock <CYCLE>        Top-bar clock: 24h or 12h [default: 24h]
+                         [default: the saved choice, else LC_ALL, LC_MESSAGES,
+                         or LANG; else en]
+  --clock <CYCLE>        Top-bar clock: 24h or 12h [default: the saved choice,
+                         else 24h]
+
+  View › Language and View › 12-hour clock are saved to studio.conf in the
+  user configuration directory (or the FREEMIX_STUDIO_PREFS path); --lang and
+  --clock override them for one session without changing the saved choice.
   -h, --help             Print help
   -V, --version          Print version";
 
@@ -76,19 +82,32 @@ pub struct UiPreferences {
 }
 
 impl UiPreferences {
-    /// The console locale: `--lang`, else the first of `LC_ALL`,
-    /// `LC_MESSAGES`, and `LANG` that is set (POSIX precedence) when it
-    /// names a language with a catalog, else English.
+    /// The console locale without saved preferences; see
+    /// [`Self::locale_with`].
     #[must_use]
     pub fn locale(self, env: impl Fn(&str) -> Option<String>) -> Locale {
-        let language = self.language.unwrap_or_else(|| {
+        self.locale_with(SavedPreferences::default(), env)
+    }
+
+    /// The console locale: `--lang`, else the saved language, else the
+    /// first of `LC_ALL`, `LC_MESSAGES`, and `LANG` that is set (POSIX
+    /// precedence) when it names a language with a catalog, else English;
+    /// and `--clock`, else the saved clock, else 24 hours.
+    #[must_use]
+    pub fn locale_with(
+        self,
+        saved: SavedPreferences,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Locale {
+        let language = self.language.or(saved.language).unwrap_or_else(|| {
             ["LC_ALL", "LC_MESSAGES", "LANG"]
                 .into_iter()
                 .find_map(|name| env(name).filter(|value| !value.is_empty()))
                 .and_then(|value| Language::from_tag(&value))
                 .unwrap_or_default()
         });
-        Locale::new(language).with_hour_cycle(self.hour_cycle.unwrap_or_default())
+        Locale::new(language)
+            .with_hour_cycle(self.hour_cycle.or(saved.hour_cycle).unwrap_or_default())
     }
 }
 

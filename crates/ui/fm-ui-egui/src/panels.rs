@@ -15,11 +15,11 @@ use fm_protocol::{
 use fm_ui_model::{StingerStatus, StreamStatus};
 
 use crate::gating::{Capability, unavailable_reason};
-use crate::l10n::Msg;
+use crate::l10n::{self, Arg, Msg, frames};
 use crate::stinger_config::{self, StingerEditor};
 use crate::theme::{
     ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PREVIEW, TEXT,
-    TEXT_DIM, Tone, WIDGET_HOVER, card, elided, mono, paint_lamp, section_label,
+    TEXT_DIM, Tone, WIDGET_HOVER, caption, card, elided, mono, paint_lamp, section_label,
 };
 use crate::{
     RecordingAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
@@ -34,7 +34,7 @@ pub(crate) enum SideTab {
     Stingers,
 }
 
-pub(crate) const STREAMS_NONE_CONFIGURED: &str = "No stream targets configured";
+pub(crate) const STREAMS_NONE_CONFIGURED: &str = Msg::StreamsNoneConfigured.en();
 
 impl StudioShell {
     pub(crate) fn draw_side_panel(
@@ -53,13 +53,14 @@ impl StudioShell {
             outputs::draw_streams(ui, state, intents);
         });
         ui.add_space(8.0);
+        let l = self.locale;
         ui.horizontal(|ui| {
             for (tab, label) in [
-                (SideTab::Overlays, "OVERLAYS"),
-                (SideTab::Stingers, "STINGERS"),
+                (SideTab::Overlays, Msg::TabOverlays),
+                (SideTab::Stingers, Msg::TabStingers),
             ] {
                 let selected = self.side_tab == tab;
-                let text = RichText::new(label)
+                let text = RichText::new(l.text(label).to_uppercase())
                     .size(11.0)
                     .strong()
                     .extra_letter_spacing(1.0)
@@ -308,11 +309,8 @@ fn draw_stingers(
 ) {
     let can_fire = transition_availability(TransitionGate::from_state(state)).stinger();
     let reason = unavailable_reason(state, Capability::Transition);
-    ui.label(
-        RichText::new("Click a READY slot to fire it from Preview to Program. Click any other slot to configure it below.")
-            .size(10.5)
-            .color(MUTED),
-    );
+    let l = l10n::locale(ui.ctx());
+    ui.add(egui::Label::new(caption(l.text(Msg::StingersIntro))).wrap());
     ui.add_space(2.0);
     let stingers = state.view.as_ref().map(|view| view.stingers.as_slice());
     let gap = 6.0;
@@ -352,13 +350,9 @@ fn draw_stingers(
     }
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        ui.label(section_label("Duration"));
-        ui.label(mono(format!("{duration_frames} fr")).size(11.5).color(TEXT));
-        ui.label(
-            RichText::new("shared with automatic transitions")
-                .size(10.5)
-                .color(MUTED),
-        );
+        ui.label(section_label(l.text(Msg::Duration)));
+        ui.label(mono(frames(l, duration_frames)).size(11.5).color(TEXT));
+        ui.add(egui::Label::new(caption(l.text(Msg::StingerDurationShared))).truncate());
     });
 }
 
@@ -374,6 +368,7 @@ struct StingerCard<'a> {
 
 /// One fixed-size Stinger slot card; returns the click meaning, if clicked.
 fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardClick> {
+    let l = l10n::locale(ui.ctx());
     let presentation = stinger_slot_presentation(card.state);
     let tone = stinger_slot_tone(card.state);
     let click = stinger_card_click(presentation.ready, card.can_fire);
@@ -416,7 +411,7 @@ fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardC
         );
         let label = elided(
             painter,
-            crate::l10n::locale(painter.ctx()).tr(presentation.label),
+            l.tr(presentation.label),
             FontId::new(9.5, FontFamily::Proportional),
             tone.color(),
             rect.width() - 60.0,
@@ -434,8 +429,8 @@ fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardC
         painter.galley(label_pos, label, tone.color());
         let (media, color) = match (card.media, card.state) {
             (Some(media), _) => (media, TEXT_DIM),
-            (None, StingerSlotState::Unavailable) => ("State not synchronized", MUTED),
-            (None, _) => ("Empty slot", MUTED),
+            (None, StingerSlotState::Unavailable) => (l.text(Msg::StingerStateNotSynced), MUTED),
+            (None, _) => (l.text(Msg::StingerEmptySlot), MUTED),
         };
         let media = elided(
             painter,
@@ -446,22 +441,56 @@ fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardC
         );
         painter.galley(pos2(rect.min.x + 9.0, rect.max.y - 20.0), media, color);
     }
-    let mut tooltip = format!("Stinger S{} · {}", card.slot, presentation.label);
+    response
+        .on_hover_text(stinger_card_tooltip(card, presentation, click, l))
+        .clicked()
+        .then_some(click)
+}
+
+/// The card's tooltip: slot and readiness, media, and what a click does.
+fn stinger_card_tooltip(
+    card: &StingerCard<'_>,
+    presentation: StingerSlotPresentation,
+    click: StingerCardClick,
+    l: crate::l10n::Locale,
+) -> String {
+    let mut tooltip = l.format(
+        Msg::StingerCardTitle,
+        &[
+            ("slot", Arg::Plain(u64::from(card.slot))),
+            ("state", Arg::Str(l.tr(presentation.label))),
+        ],
+    );
     if let Some(media) = card.media {
-        let _ = write!(tooltip, "\nMedia: {media}");
+        let _ = write!(
+            tooltip,
+            "\n{}",
+            l.format(Msg::StingerCardMedia, &[("name", Arg::Str(media))])
+        );
     }
     match click {
-        StingerCardClick::Fire => tooltip.push_str("\nClick: fire from Preview to Program"),
+        StingerCardClick::Fire => {
+            let _ = write!(tooltip, "\n{}", l.text(Msg::StingerCardFire));
+        }
         StingerCardClick::Configure if presentation.ready => {
             let _ = write!(
                 tooltip,
-                "\nCannot fire: {}\nClick: configure this slot below",
-                card.reason
+                "\n{}\n{}",
+                l.format(
+                    Msg::StingerCardCannotFire,
+                    &[("reason", Arg::Str(l.tr(card.reason)))]
+                ),
+                l.text(Msg::StingerCardConfigure)
             );
         }
         StingerCardClick::Configure => {
-            tooltip.push_str("\nNot ready to fire · Click: configure this slot below");
+            let _ = write!(
+                tooltip,
+                "\n{} · {}",
+                l.text(Msg::StingerCardNotReady),
+                l.text(Msg::StingerCardConfigure)
+            );
         }
     }
-    response.on_hover_text(tooltip).clicked().then_some(click)
+    tooltip
 }

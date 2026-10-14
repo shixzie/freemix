@@ -1,6 +1,8 @@
 use fm_protocol::{OverlayBorderPreset, OverlayPositionPreset};
 use fm_ui_model::OverlayStatus;
 
+use crate::l10n::Msg;
+
 pub(super) fn format(
     channel: u8,
     desired: Option<&OverlayStatus>,
@@ -10,21 +12,23 @@ pub(super) fn format(
     format!("O{channel} · D: {desired} · C: {}", state(confirmed))
 }
 
-pub(super) const fn position_label(position: OverlayPositionPreset) -> &'static str {
+/// The position preset key label.
+pub(super) const fn position_label(position: OverlayPositionPreset) -> Msg {
     match position {
-        OverlayPositionPreset::FullFrame => "FULL",
-        OverlayPositionPreset::TopLeft => "TL",
-        OverlayPositionPreset::TopRight => "TR",
-        OverlayPositionPreset::BottomLeft => "BL",
-        OverlayPositionPreset::BottomRight => "BR",
+        OverlayPositionPreset::FullFrame => Msg::PositionFull,
+        OverlayPositionPreset::TopLeft => Msg::PositionTopLeft,
+        OverlayPositionPreset::TopRight => Msg::PositionTopRight,
+        OverlayPositionPreset::BottomLeft => Msg::PositionBottomLeft,
+        OverlayPositionPreset::BottomRight => Msg::PositionBottomRight,
     }
 }
 
-pub(super) const fn border_label(border: OverlayBorderPreset) -> &'static str {
+/// The border preset key label.
+pub(super) const fn border_label(border: OverlayBorderPreset) -> Msg {
     match border {
-        OverlayBorderPreset::None => "NO BORDER",
-        OverlayBorderPreset::ThinWhite => "THIN",
-        OverlayBorderPreset::ThickWhite => "THICK",
+        OverlayBorderPreset::None => Msg::BorderNone,
+        OverlayBorderPreset::ThinWhite => Msg::BorderThin,
+        OverlayBorderPreset::ThickWhite => Msg::BorderThick,
     }
 }
 
@@ -32,7 +36,8 @@ fn state(status: Option<&OverlayStatus>) -> String {
     let Some(status) = status else {
         return "unavailable".to_owned();
     };
-    let position = position_label(status.position);
+    // The diagnostic line keeps the protocol's own English vocabulary.
+    let position = position_label(status.position).en();
     let position = if position == "FULL" { "full" } else { position };
     format!(
         "src {}, {}, op {}, q {}, {}, {}",

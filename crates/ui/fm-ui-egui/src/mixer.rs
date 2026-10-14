@@ -16,7 +16,7 @@ use fm_protocol::AudioMeterChannel;
 use fm_ui_model::{ClientView, InputAudioStripStatus};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
-use crate::l10n::{self, Locale};
+use crate::l10n::{self, Arg, Locale, Msg, with_key};
 use crate::meter_ballistics::{
     ChannelBallistics, MeterBallistics, MeterKey, held_peak_mdb, peak_readout,
 };
@@ -215,11 +215,10 @@ const fn meters_unavailable(state: &StudioUiState) -> bool {
 }
 
 /// Header badge text for stale meters: `METERS STALE · 2.4 s`.
-pub(crate) fn stale_meter_label(age_ms: u32) -> String {
-    format!(
-        "METERS STALE · {}.{} s",
-        age_ms / 1_000,
-        (age_ms % 1_000) / 100
+pub(crate) fn stale_meter_label(l: Locale, age_ms: u32) -> String {
+    l.format(
+        Msg::MetersStale,
+        &[("age", Arg::Str(&l.seconds_tenths(u64::from(age_ms))))],
     )
 }
 
@@ -237,12 +236,8 @@ fn stale_dim(color: Color32, stale: bool) -> Color32 {
 const METER_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Header text for the latched clip lamps, when any are lit.
-pub(crate) fn clip_reset_label(clipped: usize) -> Option<String> {
-    match clipped {
-        0 => None,
-        1 => Some("RESET CLIP".to_owned()),
-        count => Some(format!("RESET {count} CLIPS")),
-    }
+pub(crate) fn clip_reset_label(l: Locale, clipped: usize) -> Option<String> {
+    (clipped > 0).then(|| l.format(Msg::ResetClips, &[("count", Arg::from(clipped))]))
 }
 
 #[allow(clippy::too_many_lines)] // one immediate-mode region
@@ -264,15 +259,20 @@ pub(crate) fn draw_mixer(
         dt_ms,
     );
     let meters_stale = ballistics.stale();
+    let l = l10n::locale(ui.ctx());
     if state.audio_meters.is_some() {
         ui.ctx().request_repaint_after(METER_REPAINT_INTERVAL);
     }
-    section_header(ui, "Audio mixer", |ui| {
+    section_header(ui, l.text(Msg::ViewAudioMixer), |ui| {
         if meters_unavailable(state) {
-            ui.label(RichText::new("METERS UNAVAILABLE").size(10.0).color(AMBER))
-                .on_hover_text("No audio meter sample has been received from the daemon");
+            ui.label(
+                RichText::new(l.text(Msg::MetersUnavailable))
+                    .size(10.0)
+                    .color(AMBER),
+            )
+            .on_hover_text(l.text(Msg::MetersUnavailableHover));
         } else if state.audio_meters.is_some() {
-            if let Some(label) = clip_reset_label(ballistics.clipped_meters()) {
+            if let Some(label) = clip_reset_label(l, ballistics.clipped_meters()) {
                 reset_all = ui
                     .add(
                         egui::Button::new(
@@ -285,22 +285,18 @@ pub(crate) fn draw_mixer(
                         .stroke(Stroke::new(1.0, PROGRAM))
                         .min_size(Vec2::new(0.0, 18.0)),
                     )
-                    .on_hover_text("Clear every latched clip lamp")
+                    .on_hover_text(l.text(Msg::ResetClipsHover))
                     .clicked();
             }
             if meters_stale {
-                stale_badge(ui, &stale_meter_label(ballistics.message_age_ms()));
+                stale_badge(ui, &stale_meter_label(l, ballistics.message_age_ms()));
             }
             ui.label(
-                RichText::new("RMS · PEAK HOLD · CLIP")
+                RichText::new(l.text(Msg::MeterLegend))
                     .size(10.0)
                     .color(MUTED),
             )
-            .on_hover_text(
-                "Lit segments show RMS; the thin line is the latest peak; the bright \
-                     marker holds the peak 1.5 s, then falls 20 dB/s; the top lamp latches at \
-                     0 dBFS until clicked",
-            );
+            .on_hover_text(l.text(Msg::MeterLegendHover));
         }
     });
     if reset_all {
@@ -310,8 +306,8 @@ pub(crate) fn draw_mixer(
         ballistics.retain(|_| false);
         crate::theme::empty_state(
             ui,
-            "No audio state",
-            "Channel strips appear once project state is synchronized.",
+            l.text(Msg::NoAudioState),
+            l.text(Msg::NoAudioStateDetail),
         );
         return;
     };
@@ -420,10 +416,7 @@ fn stale_badge(ui: &mut Ui, text: &str) {
     ui.painter().rect_filled(rect, CornerRadius::same(3), MUTED);
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0, galley, Color32::BLACK);
-    response.on_hover_text(
-        "No audio meter message has arrived for over a second; the meters show the last \
-         levels dimmed",
-    );
+    response.on_hover_text(l10n::locale(ui.ctx()).text(Msg::MetersStaleHover));
 }
 
 /// Whether strip controls are enabled, and why not.
@@ -517,6 +510,7 @@ fn name_plate(ui: &mut Ui, ordinal: Option<usize>, name: &str, tally: TallyState
 /// The peak-hold readout: the held level, or a red `CLIP` while latched.
 /// Returns `true` when clicked while latched (clear request).
 fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: bool) -> bool {
+    let l = l10n::locale(ui.ctx());
     let clipped = holds.iter().any(|hold| hold.clipping());
     let sense = if clipped {
         Sense::click()
@@ -554,7 +548,7 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: b
             StrokeKind::Inside,
         );
         let text = if stale_readout {
-            "STALE".to_owned()
+            l.text(Msg::BadgeStale).to_owned()
         } else if has_sample {
             peak_readout(holds)
         } else {
@@ -575,23 +569,24 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: b
                 }
             })
         };
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            text,
+        let galley = crate::theme::elided(
+            painter,
+            &text,
             FontId::new(10.0, FontFamily::Monospace),
             color,
+            rect.width() - 4.0,
         );
+        painter.galley(rect.center() - galley.size() / 2.0, galley, color);
     }
     let response = if clipped {
-        response.on_hover_text("Clipped at 0 dBFS; click to clear the clip lamp")
+        response.on_hover_text(l.text(Msg::PeakClippedHover))
     } else if stale && has_sample {
-        response.on_hover_text(format!(
-            "Stale: no new meter message for over a second; last peak hold {}",
-            peak_readout(holds)
+        response.on_hover_text(l.format(
+            Msg::PeakStaleHover,
+            &[("level", Arg::Str(&peak_readout(holds)))],
         ))
     } else {
-        response.on_hover_text("Peak hold: highest recent peak (dBFS)")
+        response.on_hover_text(l.text(Msg::PeakHoldHover))
     };
     clipped && response.clicked()
 }
@@ -650,7 +645,11 @@ fn draw_input_strip(
                 fader_height,
             )
             .hint(
-                "Input gain fader: drag; double-click for 0 dB; arrow keys nudge 0.5 dB",
+                &with_key(
+                    l,
+                    l.text(Msg::FaderHover),
+                    &format!("{} ±{} dB", l.text(Msg::KeyArrows), l.decimal(0.5, 1)),
+                ),
                 reason,
             )
             .changed();
@@ -668,10 +667,7 @@ fn draw_input_strip(
                         })
                         .custom_parser(|text| parse_gain(l, text)),
                 )
-                .hint(
-                    "Input gain in decibels (stored in one-thousandths of a dB)",
-                    reason,
-                )
+                .hint(l.text(Msg::GainEntryHover), reason)
                 .changed();
             gain_changed |= entry_changed;
             balance_changed = ui
@@ -684,10 +680,7 @@ fn draw_input_strip(
                         .custom_formatter(|value, _| format_balance(value))
                         .custom_parser(parse_balance),
                 )
-                .hint(
-                    "Stereo balance: L100 full left, C center, R100 full right",
-                    reason,
-                )
+                .hint(l.text(Msg::BalanceHover), reason)
                 .changed();
             delay_changed = ui
                 .add_enabled(
@@ -695,13 +688,10 @@ fn draw_input_strip(
                     DragValue::new(&mut delay_samples)
                         .range(0..=48_000)
                         .speed(48.0)
-                        .prefix("DLY ")
+                        .prefix(format!("{} ", l.text(Msg::DelayPrefix)))
                         .suffix(" smp"),
                 )
-                .hint(
-                    "Input delay in samples at the 48 kHz Master sample rate",
-                    reason,
-                )
+                .hint(l.text(Msg::DelayHover), reason)
                 .changed();
         });
         ui.horizontal(|ui| {
@@ -709,21 +699,21 @@ fn draw_input_strip(
             let half = (STRIP_INNER_WIDTH - 3.0) / 2.0;
             mute_changed = led_key(ui, enabled, &mut muted, "M", PROGRAM, half)
                 .hint(
-                    if muted {
-                        "Muted: click to unmute this input"
+                    l.text(if muted {
+                        Msg::MuteOnHover
                     } else {
-                        "Mute this input"
-                    },
+                        Msg::MuteOffHover
+                    }),
                     reason,
                 )
                 .changed();
             solo_changed = led_key(ui, enabled, &mut soloed, "S", AMBER, half)
                 .hint(
-                    if soloed {
-                        "Soloed: click to release solo"
+                    l.text(if soloed {
+                        Msg::SoloOnHover
                     } else {
-                        "Solo this input"
-                    },
+                        Msg::SoloOffHover
+                    }),
                     reason,
                 )
                 .changed();
@@ -736,10 +726,7 @@ fn draw_input_strip(
             ACCENT,
             STRIP_INNER_WIDTH,
         )
-        .hint(
-            "Audio follows video: open only while the input is on Program",
-            reason,
-        )
+        .hint(l.text(Msg::AfvHover), reason)
         .changed();
     });
     let update = InputAudioStripUpdate {
@@ -1030,6 +1017,7 @@ fn fader(
 
 /// Draws the Master strip; returns `true` when the operator cleared its clip.
 fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> bool {
+    let l = l10n::locale(ui.ctx());
     let mut clear_clip = false;
     strip_frame(ui, ACCENT, |ui| {
         let (rect, _) = ui.allocate_exact_size(
@@ -1039,14 +1027,14 @@ fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> boo
         ui.painter().text(
             rect.left_top(),
             Align2::LEFT_TOP,
-            "MASTER",
+            l.text(Msg::MasterStrip),
             FontId::new(11.0, FontFamily::Proportional),
             TEXT,
         );
         ui.painter().text(
             rect.left_top() + Vec2::new(0.0, 15.0),
             Align2::LEFT_TOP,
-            "PROGRAM MIX",
+            l.text(Msg::ProgramMix),
             FontId::new(8.5, FontFamily::Proportional),
             MUTED,
         );
@@ -1058,9 +1046,10 @@ fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> boo
         });
         ui.vertical_centered(|ui| {
             ui.add(
-                egui::Label::new(RichText::new("PRE-STINGER/ FTB").size(8.5).color(MUTED)).wrap(),
+                egui::Label::new(RichText::new(l.text(Msg::MasterTap)).size(8.5).color(MUTED))
+                    .wrap(),
             )
-            .on_hover_text("Master meters are taken before Stinger and Fade-to-Black");
+            .on_hover_text(l.text(Msg::MasterTapHover));
         });
     });
     clear_clip
@@ -1226,32 +1215,43 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
             .enumerate()
             .map(|(index, channel)| {
                 let hold = holds.get(index).copied();
-                format!(
-                    "Ch {}  peak {}  RMS {}  hold {}{}",
-                    index + 1,
-                    format_db(l, meter_db(channel.peak_millionths)),
-                    format_db(l, meter_db(channel.rms_millionths)),
-                    hold.map_or_else(
-                        || "--".to_owned(),
-                        #[allow(clippy::cast_precision_loss)]
-                        |hold| format_db(l, hold.held_mdb as f32 / 1_000.0)
-                    ),
-                    if hold.is_some_and(ChannelBallistics::clipping) {
-                        "  CLIP"
-                    } else {
-                        ""
-                    }
-                )
+                let mut line = l.format(
+                    Msg::MeterChannelHover,
+                    &[
+                        ("channel", Arg::Plain(index as u64 + 1)),
+                        (
+                            "peak",
+                            Arg::Str(&format_db(l, meter_db(channel.peak_millionths))),
+                        ),
+                        (
+                            "rms",
+                            Arg::Str(&format_db(l, meter_db(channel.rms_millionths))),
+                        ),
+                        (
+                            "hold",
+                            Arg::Str(&hold.map_or_else(
+                                || "--".to_owned(),
+                                #[allow(clippy::cast_precision_loss)]
+                                |hold| format_db(l, hold.held_mdb as f32 / 1_000.0),
+                            )),
+                        ),
+                    ],
+                );
+                if hold.is_some_and(ChannelBallistics::clipping) {
+                    line.push_str("  ");
+                    line.push_str(l.text(Msg::MeterClipMark));
+                }
+                line
             })
             .collect::<Vec<_>>()
             .join("\n");
         response.on_hover_text(if clipped {
-            format!("{text}\nClick to clear the clip lamp")
+            format!("{text}\n{}", l.text(Msg::MeterClickToClear))
         } else {
             text
         })
     } else {
-        response.on_hover_text("No meter sample")
+        response.on_hover_text(l.text(Msg::NoMeterSample))
     };
     clipped && response.clicked()
 }
@@ -1346,9 +1346,15 @@ mod tests {
         assert_eq!(format_gain(Locale::ENGLISH, -6_500), "-6.5 dB");
         assert_eq!(format_gain(Locale::ENGLISH, 12_000), "+12.0 dB");
         assert_eq!(format_gain(Locale::ENGLISH, -96_000), "-inf dB");
-        assert_eq!(clip_reset_label(0), None);
-        assert_eq!(clip_reset_label(1).as_deref(), Some("RESET CLIP"));
-        assert_eq!(clip_reset_label(3).as_deref(), Some("RESET 3 CLIPS"));
+        let en = Locale::ENGLISH;
+        assert_eq!(clip_reset_label(en, 0), None);
+        assert_eq!(clip_reset_label(en, 1).as_deref(), Some("RESET CLIP"));
+        assert_eq!(clip_reset_label(en, 3).as_deref(), Some("RESET 3 CLIPS"));
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            clip_reset_label(spanish, 2).as_deref(),
+            Some("BORRAR 2 CLIPS")
+        );
     }
 
     #[test]
@@ -1395,8 +1401,18 @@ mod tests {
 
     #[test]
     fn stale_meters_are_labelled_with_their_age_and_dimmed() {
-        assert_eq!(stale_meter_label(1_049), "METERS STALE · 1.0 s");
-        assert_eq!(stale_meter_label(12_380), "METERS STALE · 12.3 s");
+        assert_eq!(
+            stale_meter_label(Locale::ENGLISH, 1_049),
+            "METERS STALE · 1.0 s"
+        );
+        assert_eq!(
+            stale_meter_label(Locale::ENGLISH, 12_380),
+            "METERS STALE · 12.3 s"
+        );
+        assert_eq!(
+            stale_meter_label(Locale::new(fm_ui_model::i18n::Language::Spanish), 2_400),
+            "MEDIDORES OBSOLETOS · 2,4 s"
+        );
         assert_eq!(stale_dim(PREVIEW, false), PREVIEW);
         assert_eq!(stale_dim(PREVIEW, true), PREVIEW.gamma_multiply(0.35));
     }

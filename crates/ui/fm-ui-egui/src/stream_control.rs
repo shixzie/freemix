@@ -11,6 +11,7 @@ use fm_ui_model::StreamStatus;
 
 use crate::StudioUiState;
 use crate::gating::{Capability, unavailable_reason};
+use crate::l10n::{Arg, Locale, Msg};
 
 /// Stream operator actions emitted by the Streams rows and the Output menu.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,17 +84,20 @@ pub(crate) fn stream_unavailable_reason(
     let session_ok =
         state.connection_status.controls_enabled() && state.view.is_some() && state.can_transition;
     if session_ok && stream_command_pending(state, WireStreamTargetId::new(stream.target)) {
-        "an earlier command for this stream target is still pending"
+        Msg::ReasonStreamPending.en()
     } else {
         unavailable_reason(state, Capability::Transition)
     }
 }
 
 /// Operator-facing description of one stream action.
-pub(crate) fn stream_action_text(action: StreamAction, name: &str) -> String {
-    if action.starts() {
-        format!("Start stream target \"{name}\"")
-    } else {
-        format!("Stop stream target \"{name}\"")
-    }
+pub(crate) fn stream_action_text(l: Locale, action: StreamAction, name: &str) -> String {
+    l.format(
+        if action.starts() {
+            Msg::StartStreamTarget
+        } else {
+            Msg::StopStreamTarget
+        },
+        &[("name", Arg::Str(name))],
+    )
 }

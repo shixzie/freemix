@@ -13,6 +13,7 @@ use fm_types::InputId;
 use fm_ui_model::{ClientView, StingerStatus};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::l10n::{self, Arg, Locale, Msg, frames};
 use crate::panels::{stinger_slot_presentation, stinger_slot_state, stinger_slot_tone};
 use crate::theme::{
     ACCENT, ACCENT_FILL, BORDER_STRONG, MUTED, TEXT, TEXT_DIM, WIDGET, card, lock_badge, mono,
@@ -130,30 +131,50 @@ fn input_name(view: &ClientView, input: InputId) -> String {
         .unwrap_or_else(|| format!("Input {input}"))
 }
 
+/// The audio policy in words.
+const fn audio_policy_text(policy: StingerAudioPolicy) -> Msg {
+    match policy {
+        StingerAudioPolicy::Muted => Msg::StingerAudioMuted,
+        StingerAudioPolicy::StingerOnly => Msg::StingerAudioOnly,
+        StingerAudioPolicy::MixWithProgram => Msg::StingerAudioMixed,
+    }
+}
+
+/// The missing-media fallback in words.
+const fn fallback_text(fallback: StingerMissingMediaFallback) -> Msg {
+    match fallback {
+        StingerMissingMediaFallback::Cut => Msg::StingerFallbackCut,
+        StingerMissingMediaFallback::Fade => Msg::StingerFallbackFade,
+        StingerMissingMediaFallback::KeepProgram => Msg::StingerFallbackKeep,
+    }
+}
+
+const fn yes_no(value: bool) -> Msg {
+    if value { Msg::WordYes } else { Msg::WordNo }
+}
+
 /// One-line summary of a slot's replicated configuration.
-pub(crate) fn stinger_summary(view: &ClientView, slot: u8) -> String {
+pub(crate) fn stinger_summary(l: Locale, view: &ClientView, slot: u8) -> String {
+    let slot_arg = ("slot", Arg::Plain(u64::from(slot)));
     let Some(status) = configured_stinger(view, slot) else {
-        return format!("S{slot} is not configured");
+        return l.format(Msg::StingerNotConfigured, &[slot_arg]);
     };
-    format!(
-        "S{slot}: {} · cut {} fr · {} · {} audio · fallback {}",
-        input_name(view, status.media_input),
-        status.cut_point_frames,
-        if status.preload {
-            "preload"
-        } else {
-            "no preload"
-        },
-        match status.audio_policy {
-            StingerAudioPolicy::Muted => "muted",
-            StingerAudioPolicy::StingerOnly => "stinger-only",
-            StingerAudioPolicy::MixWithProgram => "mixed",
-        },
-        match status.missing_media_fallback {
-            StingerMissingMediaFallback::Cut => "cut",
-            StingerMissingMediaFallback::Fade => "fade",
-            StingerMissingMediaFallback::KeepProgram => "keep program",
-        },
+    l.format(
+        Msg::StingerSummary,
+        &[
+            slot_arg,
+            ("media", Arg::Str(&input_name(view, status.media_input))),
+            ("cut", Arg::Str(&frames(l, status.cut_point_frames))),
+            ("preload", Arg::Str(l.text(yes_no(status.preload)))),
+            (
+                "audio",
+                Arg::Str(l.text(audio_policy_text(status.audio_policy))),
+            ),
+            (
+                "fallback",
+                Arg::Str(l.text(fallback_text(status.missing_media_fallback))),
+            ),
+        ],
     )
 }
 
@@ -164,24 +185,35 @@ fn draw_stinger_pickers(
     editor: &mut StingerEditor,
     media: Option<InputId>,
 ) {
+    let l = l10n::locale(ui.ctx());
     let stingers = Some(view.stingers.as_slice());
+    let slot_text = |slot: u8| {
+        l.format(
+            Msg::StingerSlotPick,
+            &[
+                ("slot", Arg::Plain(u64::from(slot))),
+                (
+                    "state",
+                    Arg::Str(
+                        l.tr(stinger_slot_presentation(stinger_slot_state(stingers, slot)).label),
+                    ),
+                ),
+            ],
+        )
+    };
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
+        // Half the row each, so long translated states and names truncate
+        // inside their pickers rather than pushing the media picker out.
+        let half = ((ui.available_width() - 6.0) / 2.0).floor().max(100.0);
         ComboBox::from_id_salt("studio-stinger-config-slot")
-            .width(118.0)
-            .selected_text(
-                mono(format!(
-                    "S{} · {}",
-                    editor.slot,
-                    stinger_slot_presentation(stinger_slot_state(stingers, editor.slot)).label
-                ))
-                .size(10.5),
-            )
+            .width(half)
+            .truncate()
+            .selected_text(mono(slot_text(editor.slot)).size(10.5))
             .show_ui(ui, |ui| {
                 for slot in 1..=STINGER_SLOT_COUNT {
-                    let label = stinger_slot_presentation(stinger_slot_state(stingers, slot)).label;
                     if ui
-                        .selectable_label(editor.slot == slot, format!("S{slot} · {label}"))
+                        .selectable_label(editor.slot == slot, slot_text(slot))
                         .clicked()
                     {
                         editor.slot = slot;
@@ -190,12 +222,16 @@ fn draw_stinger_pickers(
                 }
             })
             .response
-            .on_hover_text("Stinger slot to configure");
+            .on_hover_text(l.text(Msg::StingerSlotPickHover));
         ComboBox::from_id_salt("studio-stinger-config-media")
             .width(ui.available_width() - 8.0)
+            .truncate()
             .selected_text(
-                RichText::new(media.map_or_else(|| "no input".to_owned(), |m| input_name(view, m)))
-                    .size(11.0),
+                RichText::new(media.map_or_else(
+                    || l.text(Msg::StingerNoInput).to_owned(),
+                    |m| input_name(view, m),
+                ))
+                .size(11.0),
             )
             .show_ui(ui, |ui| {
                 for (input, name) in view.inputs.iter().zip(&view.input_names) {
@@ -205,58 +241,54 @@ fn draw_stinger_pickers(
                 }
             })
             .response
-            .on_hover_text(
-                "Media input the slot plays (defaults to the slot's media, else Preview)",
-            );
+            .on_hover_text(l.text(Msg::StingerMediaPickHover));
     });
 }
 
 /// Labelled facts about one slot for the Configure section: the replicated
 /// settings of a configured slot, or the defaults ASSIGN applies to an empty one.
 pub(crate) fn stinger_details(
+    l: Locale,
     view: &ClientView,
     slot: u8,
     duration_frames: u32,
 ) -> [(&'static str, String); 4] {
-    let Some(status) = configured_stinger(view, slot) else {
-        return [
-            (
-                "Cut point",
-                format!(
-                    "{} fr (default)",
-                    default_stinger_cut_point_frames(duration_frames)
-                ),
-            ),
-            ("Preload", "yes (default)".to_owned()),
-            ("Audio", "mixed with Program (default)".to_owned()),
-            ("Fallback", "cut (default)".to_owned()),
-        ];
+    let labels = [
+        l.text(Msg::StingerCutPoint),
+        l.text(Msg::StingerPreload),
+        l.text(Msg::StingerAudio),
+        l.text(Msg::StingerFallback),
+    ];
+    let (values, defaults) = match configured_stinger(view, slot) {
+        Some(status) => (
+            [
+                frames(l, status.cut_point_frames),
+                l.text(yes_no(status.preload)).to_owned(),
+                l.text(audio_policy_text(status.audio_policy)).to_owned(),
+                l.text(fallback_text(status.missing_media_fallback))
+                    .to_owned(),
+            ],
+            false,
+        ),
+        // An empty slot lists exactly what ASSIGN would configure.
+        None => (
+            [
+                frames(l, default_stinger_cut_point_frames(duration_frames)),
+                l.text(Msg::WordYes).to_owned(),
+                l.text(Msg::StingerAudioMixed).to_owned(),
+                l.text(Msg::StingerFallbackCut).to_owned(),
+            ],
+            true,
+        ),
     };
-    [
-        ("Cut point", format!("{} fr", status.cut_point_frames)),
-        (
-            "Preload",
-            if status.preload { "yes" } else { "no" }.to_owned(),
-        ),
-        (
-            "Audio",
-            match status.audio_policy {
-                StingerAudioPolicy::Muted => "muted",
-                StingerAudioPolicy::StingerOnly => "stinger only",
-                StingerAudioPolicy::MixWithProgram => "mixed with Program",
-            }
-            .to_owned(),
-        ),
-        (
-            "Fallback",
-            match status.missing_media_fallback {
-                StingerMissingMediaFallback::Cut => "cut",
-                StingerMissingMediaFallback::Fade => "fade",
-                StingerMissingMediaFallback::KeepProgram => "keep Program",
-            }
-            .to_owned(),
-        ),
-    ]
+    let mut values = values.into_iter().map(|value| {
+        if defaults {
+            l.format(Msg::WithDefault, &[("value", Arg::Str(&value))])
+        } else {
+            value
+        }
+    });
+    labels.map(|label| (label, values.next().unwrap_or_default()))
 }
 
 /// Draws the slot/media pickers with Assign and Clear keys.
@@ -275,33 +307,43 @@ pub(crate) fn draw_stinger_configuration(
     editor.slot = editor.slot.clamp(1, STINGER_SLOT_COUNT);
     let stingers = state.view.as_ref().map(|view| view.stingers.as_slice());
     let slot_state = stinger_slot_state(stingers, editor.slot);
+    let l = l10n::locale(ui.ctx());
     card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 6.0;
         ui.horizontal(|ui| {
-            ui.label(section_label(&format!("Configure S{}", editor.slot)));
+            ui.label(section_label(&l.format(
+                Msg::StingerConfigure,
+                &[("slot", Arg::Plain(u64::from(editor.slot)))],
+            )));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                status_chip(
-                    ui,
-                    stinger_slot_presentation(slot_state).label,
-                    stinger_slot_tone(slot_state),
-                    104.0,
-                )
-                .on_hover_text("Replicated readiness of the selected slot");
+                let label = stinger_slot_presentation(slot_state).label;
+                // Sized to the translated word so `ESTADO NO DISPONIBLE`
+                // fits as well as `READY`.
+                let width = ui
+                    .painter()
+                    .layout_no_wrap(
+                        l.tr(label).to_owned(),
+                        egui::FontId::new(9.5, egui::FontFamily::Proportional),
+                        TEXT,
+                    )
+                    .size()
+                    .x
+                    + 16.0;
+                status_chip(ui, label, stinger_slot_tone(slot_state), width.max(72.0))
+                    .on_hover_text(l.text(Msg::StingerReadinessHover));
                 if locked {
-                    lock_badge(ui).on_hover_text(
-                        "Slot setup is locked with the project; firing Stingers still works",
-                    );
+                    lock_badge(ui).on_hover_text(l.text(Msg::StingerLockedHover));
                 }
             });
         });
         let Some(view) = &state.view else {
             ui.label(
-                RichText::new("Stinger state not synchronized")
+                RichText::new(l.text(Msg::StingerConfigNotSynced))
                     .size(11.0)
                     .color(MUTED),
             )
-            .on_hover_text(reason);
+            .on_hover_text(l10n::unavailable(l, reason));
             return;
         };
         let media = stinger_editor_media(view, *editor);
@@ -328,22 +370,22 @@ pub(crate) fn draw_stinger_configuration(
                     ))
                     .min_size(Vec2::new(width, 24.0))
             };
+            let slot_arg = ("slot", Arg::Plain(u64::from(editor.slot)));
             let assign_text = media.map_or_else(
-                || format!("Assign media to Stinger slot {}", editor.slot),
+                || l.format(Msg::StingerAssignHover, &[slot_arg]),
                 |media| {
-                    format!(
-                        "Assign \"{}\" as Stinger slot {} media (other slot settings are kept)",
-                        input_name(view, media),
-                        editor.slot
+                    l.format(
+                        Msg::StingerAssignNamedHover,
+                        &[slot_arg, ("name", Arg::Str(&input_name(view, media)))],
                     )
                 },
             );
             if ui
-                .add_enabled(assign.is_some(), key("ASSIGN", true))
+                .add_enabled(assign.is_some(), key(l.text(Msg::AssignKey), true))
                 .hint(
                     &assign_text,
                     if session_ok {
-                        "choose a media input"
+                        Msg::ReasonChooseMedia.en()
                     } else {
                         reason
                     },
@@ -354,11 +396,11 @@ pub(crate) fn draw_stinger_configuration(
                 intents.push(intent);
             }
             if ui
-                .add_enabled(remove.is_some(), key("CLEAR", false))
+                .add_enabled(remove.is_some(), key(l.text(Msg::ClearKey), false))
                 .hint(
-                    &format!("Clear Stinger slot {}", editor.slot),
+                    &l.format(Msg::ClearStingerSlotHover, &[slot_arg]),
                     if session_ok {
-                        "this Stinger slot is not configured"
+                        Msg::ReasonStingerSlotNotConfigured.en()
                     } else {
                         reason
                     },
@@ -373,13 +415,13 @@ pub(crate) fn draw_stinger_configuration(
             .num_columns(2)
             .spacing(Vec2::new(12.0, 3.0))
             .show(ui, |ui| {
-                for (label, value) in stinger_details(view, editor.slot, duration_frames) {
+                for (label, value) in stinger_details(l, view, editor.slot, duration_frames) {
                     ui.label(RichText::new(label).size(10.5).color(MUTED));
                     ui.label(RichText::new(value).size(10.5).color(TEXT_DIM));
                     ui.end_row();
                 }
             })
             .response
-            .on_hover_text(stinger_summary(view, editor.slot));
+            .on_hover_text(stinger_summary(l, view, editor.slot));
     });
 }

@@ -33,8 +33,8 @@ use fm_types::{InputId, ProjectId};
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 use freemix_studio::{
     ArgsError, Command, ConnectionConfig, ControlTransport, ExistingConfig, LifecycleState,
-    RestartPolicy, StudioConfig, StudioError, StudioRuntime, SupervisedConfig, UiPreferences,
-    parse_args,
+    PREFERENCES_ENV, PreferenceStore, RestartPolicy, SavedPreferences, StudioConfig, StudioError,
+    StudioRuntime, SupervisedConfig, UiPreferences, parse_args, preferences_path,
 };
 #[cfg(unix)]
 use freemix_studio::{DaemonSupervisor, ReadinessRecord, SupervisorError, SupervisorState};
@@ -1612,6 +1612,162 @@ fn console_language_falls_back_to_the_posix_environment_then_english() {
         flagged.locale(env(&[("LANG", "es_ES.UTF-8")])),
         Locale::ENGLISH
     );
+}
+
+fn scratch_directory(tag: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    std::env::temp_dir().join(format!(
+        "freemix-studio-{tag}-{}-{nanos}",
+        std::process::id()
+    ))
+}
+
+#[test]
+fn saved_preferences_round_trip_and_tolerate_hand_edits() {
+    let spanish_12h = SavedPreferences {
+        language: Some(Language::Spanish),
+        hour_cycle: Some(HourCycle::H12),
+    };
+    let text = spanish_12h.render();
+    assert!(text.contains("language = es\n"), "{text}");
+    assert!(text.contains("clock = 12h\n"), "{text}");
+    assert_eq!(SavedPreferences::parse(&text), spanish_12h);
+    assert_eq!(
+        SavedPreferences::from_locale(Locale::ENGLISH),
+        SavedPreferences {
+            language: Some(Language::English),
+            hour_cycle: Some(HourCycle::H23),
+        }
+    );
+    // Comments, blank lines, unknown keys, and bad values are skipped; a
+    // regional tag still selects its catalog.
+    assert_eq!(
+        SavedPreferences::parse(
+            "# note\n\n  language=es_MX.UTF-8 \ntheme = dark\nclock = 25h\nnot a pair\n"
+        ),
+        SavedPreferences {
+            language: Some(Language::Spanish),
+            hour_cycle: None,
+        }
+    );
+    assert_eq!(
+        SavedPreferences::parse("language = fr\n"),
+        SavedPreferences::default()
+    );
+}
+
+#[test]
+fn saved_preferences_persist_in_a_file_created_on_first_change() {
+    let directory = scratch_directory("prefs");
+    let path = directory.join("nested").join("studio.conf");
+    // A missing file is simply no preferences.
+    assert_eq!(
+        SavedPreferences::load(&path).unwrap(),
+        SavedPreferences::default()
+    );
+    let mut store = PreferenceStore::new(Some(path.clone()), Locale::ENGLISH);
+    // The startup locale is never written back.
+    store.observe(Locale::ENGLISH).unwrap();
+    assert!(!path.exists());
+    let spanish = Locale::new(Language::Spanish);
+    store.observe(spanish).unwrap();
+    assert_eq!(
+        SavedPreferences::load(&path).unwrap(),
+        SavedPreferences::from_locale(spanish)
+    );
+    store
+        .observe(spanish.with_hour_cycle(HourCycle::H12))
+        .unwrap();
+    let saved = SavedPreferences::load(&path).unwrap();
+    assert_eq!(saved.hour_cycle, Some(HourCycle::H12));
+    // The next launch starts in the saved locale ...
+    let no_env = |_: &str| None;
+    assert_eq!(
+        UiPreferences::default().locale_with(saved, no_env),
+        spanish.with_hour_cycle(HourCycle::H12)
+    );
+    // ... unless --lang / --clock override it for that session.
+    assert_eq!(
+        UiPreferences {
+            language: Some(Language::English),
+            hour_cycle: Some(HourCycle::H23),
+        }
+        .locale_with(saved, no_env),
+        Locale::ENGLISH
+    );
+    // No temporary file is left behind.
+    let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(leftovers, ["studio.conf"]);
+    // Without a known path the store never fails.
+    let mut detached = PreferenceStore::new(None, Locale::ENGLISH);
+    detached.observe(spanish).unwrap();
+    std::fs::remove_dir_all(&directory).unwrap();
+}
+
+#[test]
+fn saved_language_wins_over_the_environment_but_not_over_the_flag() {
+    let env = |name: &str| (name == "LANG").then(|| "en_US.UTF-8".to_owned());
+    let saved = SavedPreferences {
+        language: Some(Language::Spanish),
+        hour_cycle: None,
+    };
+    let locale = UiPreferences::default().locale_with(saved, env);
+    assert_eq!(locale, Locale::new(Language::Spanish));
+    let flagged = UiPreferences {
+        language: Some(Language::English),
+        hour_cycle: Some(HourCycle::H12),
+    };
+    assert_eq!(
+        flagged.locale_with(saved, env),
+        Locale::ENGLISH.with_hour_cycle(HourCycle::H12)
+    );
+}
+
+#[test]
+fn preferences_live_in_the_platform_config_directory() {
+    let lookup = |pairs: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    };
+    // The explicit override wins everywhere.
+    assert_eq!(
+        preferences_path(lookup(&[
+            (PREFERENCES_ENV, "/tmp/custom.conf"),
+            ("HOME", "/home/op")
+        ])),
+        Some("/tmp/custom.conf".into())
+    );
+    assert_eq!(preferences_path(lookup(&[])), None);
+    if cfg!(all(unix, not(target_os = "macos"))) {
+        assert_eq!(
+            preferences_path(lookup(&[("HOME", "/home/op")])),
+            Some("/home/op/.config/freemix/studio.conf".into())
+        );
+        assert_eq!(
+            preferences_path(lookup(&[("XDG_CONFIG_HOME", "/cfg"), ("HOME", "/home/op")])),
+            Some("/cfg/freemix/studio.conf".into())
+        );
+        // A relative XDG_CONFIG_HOME is invalid per the spec and ignored.
+        assert_eq!(
+            preferences_path(lookup(&[("XDG_CONFIG_HOME", "cfg"), ("HOME", "/home/op")])),
+            Some("/home/op/.config/freemix/studio.conf".into())
+        );
+    }
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            preferences_path(lookup(&[("HOME", "/Users/op")])),
+            Some("/Users/op/Library/Application Support/FreeMix/studio.conf".into())
+        );
+    }
 }
 
 #[test]

@@ -19,6 +19,7 @@ use fm_protocol::{MonitorFrameOrigin, MonitorImage, MonitorTap, WireInputId};
 use fm_types::InputId;
 use fm_ui_model::{BusSelection, ClientView, SwitcherState};
 
+use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{
     AMBER, BORDER, GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PREVIEW, PROGRAM, TEXT, TEXT_DIM,
     routing_color,
@@ -82,11 +83,20 @@ impl Bus {
         }
     }
 
-    const fn label(self) -> &'static str {
-        match self {
-            Self::Preview => "PREVIEW",
-            Self::Program => "PROGRAM",
-        }
+    /// The well's header label in the console language.
+    fn label(self, l: Locale) -> &'static str {
+        l.text(match self {
+            Self::Preview => Msg::TallyPreview,
+            Self::Program => Msg::TallyProgram,
+        })
+    }
+
+    /// The bus named inside a sentence (`preview`, `program`).
+    fn lowercase_label(self, l: Locale) -> &'static str {
+        l.text(match self {
+            Self::Preview => Msg::BusPreviewLower,
+            Self::Program => Msg::BusProgramLower,
+        })
     }
 
     const fn color(self) -> Color32 {
@@ -154,6 +164,8 @@ pub(crate) enum PictureMode {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MonitorCaption {
     pub(crate) picture: PictureMode,
+    /// Badge words as catalog English; worded in the console language when
+    /// painted.
     pub(crate) badges: Vec<&'static str>,
     pub(crate) text: String,
     pub(crate) note: String,
@@ -227,6 +239,7 @@ pub(crate) fn picture_visible(
 /// Caption semantics for one well. `native_runtime` is true when the server
 /// is known to deliver native frames (any tap carries a native frame).
 pub(crate) fn monitor_caption(
+    l: Locale,
     bus: Bus,
     frame: Option<FrameFacts>,
     realized_input: Option<WireInputId>,
@@ -237,65 +250,60 @@ pub(crate) fn monitor_caption(
             MonitorCaption {
                 picture: PictureMode::Hidden,
                 badges: Vec::new(),
-                text: "NO PREVIEW TAP · native Preview image not produced".to_owned(),
-                note: "The native runtime renders Program only; this well shows routing state."
-                    .to_owned(),
+                text: l.text(Msg::MonitorNoPreviewTap).to_owned(),
+                note: l.text(Msg::MonitorNoPreviewTapNote).to_owned(),
             }
         } else {
             MonitorCaption {
                 picture: PictureMode::Hidden,
                 badges: Vec::new(),
-                text: "NO VIDEO FEED · waiting for encoded preview".to_owned(),
-                note: format!(
-                    "Routing state only; no encoded {} frame has arrived.",
-                    bus.label().to_lowercase()
+                text: l.text(Msg::MonitorNoFeed).to_owned(),
+                note: l.format(
+                    Msg::MonitorNoFeedNote,
+                    &[("bus", Arg::Str(bus.lowercase_label(l)))],
                 ),
             }
         };
     };
     let simulated = frame.origin == MonitorFrameOrigin::Simulated;
     let (width, height) = (frame.width, frame.height);
+    let size = [
+        ("width", Arg::Plain(u64::from(width))),
+        ("height", Arg::Plain(u64::from(height))),
+    ];
     if picture_visible(frame.origin, frame.input, realized_input, frame.age) {
         return if simulated {
             MonitorCaption {
                 picture: PictureMode::Live,
-                badges: vec!["SIMULATED"],
-                text: format!("SIMULATED RENDER · {width}×{height} encoded preview"),
-                note: "Simulated render of the realized source only; overlays, scenes, and \
-                       Fade to Black are not composited into this image."
-                    .to_owned(),
+                badges: vec![Msg::BadgeSimulated.en()],
+                text: l.format(Msg::MonitorSimulated, &size),
+                note: l.text(Msg::MonitorSimulatedNote).to_owned(),
             }
         } else {
             MonitorCaption {
                 picture: PictureMode::Live,
                 badges: Vec::new(),
-                text: format!("ENCODED PREVIEW {width}×{height} · CPU readback"),
-                note: format!(
-                    "Native output downscaled and read back to the CPU at {width}×{height}; \
-                     a low-rate monitor, not full-rate output video."
-                ),
+                text: l.format(Msg::MonitorEncoded, &size),
+                note: l.format(Msg::MonitorEncodedNote, &size),
             }
         };
     }
     let text = if frame.age >= MONITOR_STALE_AFTER {
-        format!(
-            "STALE · last encoded frame {:.1} s old",
-            frame.age.as_secs_f32()
-        )
+        #[allow(clippy::cast_possible_truncation)] // ages are far below u64::MAX ms
+        let age = l.seconds_tenths(frame.age.as_millis() as u64);
+        l.format(Msg::MonitorStaleAge, &[("age", Arg::Str(&age))])
     } else {
-        "STALE · encoded frame does not match the realized source".to_owned()
+        l.text(Msg::MonitorStaleMismatch).to_owned()
     };
     MonitorCaption {
         picture: PictureMode::Stale,
         badges: if simulated {
-            vec!["SIMULATED", "STALE"]
+            vec![Msg::BadgeSimulated.en(), Msg::BadgeStale.en()]
         } else {
-            vec!["STALE"]
+            vec![Msg::BadgeStale.en()]
         },
         text,
-        note: "The last encoded frame is stale or predates the realized routing; it is dimmed \
-               and is not proof of current output."
-            .to_owned(),
+        note: l.text(Msg::MonitorStaleNote).to_owned(),
     }
 }
 
@@ -425,6 +433,7 @@ pub(crate) fn draw_monitor(
     if !ui.is_rect_visible(rect) {
         return;
     }
+    let l = l10n::locale(ui.ctx());
     let painter = ui.painter_at(rect.expand(1.0));
     let color = bus.color();
     let header = Rect::from_min_size(rect.min, Vec2::new(width, MONITOR_HEADER_HEIGHT));
@@ -451,18 +460,21 @@ pub(crate) fn draw_monitor(
         },
         color,
     );
-    painter.text(
+    let bus_label = painter.text(
         pos2(header.min.x + 10.0, header.center().y + 1.0),
         Align2::LEFT_CENTER,
-        bus.label(),
+        bus.label(l),
         FontId::new(12.0, FontFamily::Proportional),
         color,
     );
+    // Overlay badges and the source name start after the label, whatever
+    // the label's length in the console language.
+    let label_end = bus_label.max.x.max(header.min.x + 70.0);
     if bus == Bus::Program
         && let Some(view) = view
     {
         // Confirmed active overlay channels keyed over Program (control state).
-        let mut x = header.min.x + 80.0;
+        let mut x = label_end + 10.0;
         for overlay in view
             .realized_overlays
             .iter()
@@ -494,7 +506,7 @@ pub(crate) fn draw_monitor(
             0
         };
         #[allow(clippy::cast_precision_loss)] // at most eight overlay badges
-        let reserved = 90.0 + overlays as f32 * 30.0;
+        let reserved = label_end - header.min.x + 20.0 + overlays as f32 * 30.0;
         let galley = crate::theme::elided(
             &painter,
             &routing.realized.1,
@@ -513,6 +525,7 @@ pub(crate) fn draw_monitor(
     }
 
     let caption = monitor_caption(
+        l,
         bus,
         picture.map(|picture| picture.facts),
         routing
@@ -544,7 +557,7 @@ pub(crate) fn draw_monitor(
         draw_safe_area(&painter, canvas_area);
         let (title, size, title_color) = match &routing {
             Some(routing) => (routing.realized.1.as_str(), title_size, TEXT_DIM),
-            None => ("ROUTING STATE UNAVAILABLE", title_size * 0.7, MUTED),
+            None => (l.text(Msg::RoutingUnavailable), title_size * 0.7, MUTED),
         };
         let galley = crate::theme::elided(
             &painter,
@@ -564,7 +577,10 @@ pub(crate) fn draw_monitor(
     {
         let galley = crate::theme::elided(
             &painter,
-            &format!("DESIRED: {}", routing.desired.1),
+            &l.format(
+                Msg::MonitorDesired,
+                &[("name", Arg::Str(&routing.desired.1))],
+            ),
             FontId::new(12.0, FontFamily::Proportional),
             routing_color(routing.desired.0, routing.realized.0),
             video.width() - 48.0,
@@ -583,33 +599,36 @@ pub(crate) fn draw_monitor(
     if live {
         let band = Rect::from_min_max(pos2(video.min.x, video.max.y - 22.0), video.max);
         painter.rect_filled(band, CornerRadius::ZERO, Color32::from_black_alpha(170));
-        painter.text(
+        centered_line(
+            &painter,
             band.center(),
-            Align2::CENTER_CENTER,
             &caption.text,
             FontId::new(10.5, FontFamily::Proportional),
             TEXT_DIM,
+            video.width() - 16.0,
         );
     } else {
-        painter.text(
+        centered_line(
+            &painter,
             pos2(center.x, video.max.y - 30.0),
-            Align2::CENTER_CENTER,
             &caption.text,
             FontId::new(10.5, FontFamily::Proportional),
             MUTED,
+            video.width() - 16.0,
         );
-        painter.text(
+        centered_line(
+            &painter,
             pos2(center.x, video.max.y - 16.0),
-            Align2::CENTER_CENTER,
-            "routing state, not output video proof",
+            l.text(Msg::MonitorRoutingFootnote),
             FontId::new(9.5, FontFamily::Proportional),
             MUTED.gamma_multiply(0.75),
+            video.width() - 16.0,
         );
     }
     let mut badge_right = canvas_area.max.x - 10.0;
     for badge in caption.badges.iter().rev() {
         let galley = painter.layout_no_wrap(
-            (*badge).to_owned(),
+            l.tr(badge).to_owned(),
             FontId::new(10.0, FontFamily::Proportional),
             Color32::BLACK,
         );
@@ -620,7 +639,11 @@ pub(crate) fn draw_monitor(
             ),
             pos2(badge_right, canvas_area.min.y + 28.0),
         );
-        let fill = if *badge == "STALE" { MUTED } else { AMBER };
+        let fill = if *badge == Msg::BadgeStale.en() {
+            MUTED
+        } else {
+            AMBER
+        };
         painter.rect_filled(badge_rect, CornerRadius::same(3), fill);
         painter.galley(
             Align2::CENTER_CENTER
@@ -652,17 +675,32 @@ pub(crate) fn draw_monitor(
         StrokeKind::Inside,
     );
     let tooltip = match routing {
-        Some(routing) => format!(
-            "{} desired: {}\n{} realized: {}\n{}",
-            bus.label(),
-            routing.desired.1,
-            bus.label(),
-            routing.realized.1,
-            caption.note
+        Some(routing) => l.format(
+            Msg::MonitorRoutingHover,
+            &[
+                ("bus", Arg::Str(bus.label(l))),
+                ("desired", Arg::Str(&routing.desired.1)),
+                ("realized", Arg::Str(&routing.realized.1)),
+                ("note", Arg::Str(&caption.note)),
+            ],
         ),
         None => caption.note,
     };
     response.on_hover_text(tooltip);
+}
+
+/// One line of text centered on `center`, ending in `…` when it is wider
+/// than `max_width` (long translated captions in narrow wells).
+fn centered_line(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) {
+    let galley = crate::theme::elided(painter, text, font, color, max_width);
+    painter.galley(center - galley.size() / 2.0, galley, color);
 }
 
 /// Faint title-safe corner marks so the empty well reads as a monitor.

@@ -31,7 +31,10 @@ use fm_ui_model::ClientView;
 use fm_protocol::{AudioMeterChannel, AudioMetersMessage};
 
 use crate::osc::{OscAction, OscReceiver};
-use crate::{LifecycleState, StudioConfig, StudioRuntime};
+use crate::{
+    LifecycleState, PreferenceStore, SavedPreferences, StudioConfig, StudioRuntime,
+    preferences_path,
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(not(test))]
@@ -202,6 +205,10 @@ struct StudioApp {
     osc: Option<OscReceiver>,
     osc_rejected: u64,
     osc_notice: Option<String>,
+    /// Saves View › Language and the clock choice for the next launch.
+    preferences: PreferenceStore,
+    /// Why the preferences could not be read or saved, shown as a notice.
+    preferences_notice: Option<String>,
 }
 
 impl StudioApp {
@@ -211,7 +218,24 @@ impl StudioApp {
     ) -> Result<Self, std::io::Error> {
         let osc = config.osc_listen.map(OscReceiver::bind).transpose()?;
         let mut shell = StudioShell::default();
-        shell.set_locale(config.ui.locale(|name| std::env::var(name).ok()));
+        let env = |name: &str| std::env::var(name).ok();
+        let path = preferences_path(env);
+        let (saved, preferences_notice) = path.as_deref().map_or_else(
+            || (SavedPreferences::default(), None),
+            |path| match SavedPreferences::load(path) {
+                Ok(saved) => (saved, None),
+                Err(error) => (
+                    SavedPreferences::default(),
+                    Some(format!(
+                        "Console preferences not read from {}: {error}",
+                        path.display()
+                    )),
+                ),
+            },
+        );
+        let locale = config.ui.locale_with(saved, env);
+        shell.set_locale(locale);
+        let preferences = PreferenceStore::new(path, locale);
         let (request_sender, request_receiver) = sync_channel(REQUEST_CAPACITY);
         let repaint_context = creation_context.egui_ctx.clone();
         let (publisher, updates) = state_mailbox(repaint_context);
@@ -231,6 +255,8 @@ impl StudioApp {
             osc,
             osc_rejected: 0,
             osc_notice: None,
+            preferences,
+            preferences_notice,
         })
     }
 
@@ -347,12 +373,20 @@ impl eframe::App for StudioApp {
         }
         self.check_worker_health();
         self.drain_osc();
+        if self.state.external_notice.is_none() {
+            self.state
+                .external_notice
+                .clone_from(&self.preferences_notice);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.flush_pending_intents();
         for intent in self.shell.draw(ui, &self.state) {
             self.enqueue_intent(intent);
+        }
+        if let Err(error) = self.preferences.observe(self.shell.locale()) {
+            self.preferences_notice = Some(format!("Console preferences not saved: {error}"));
         }
     }
 
@@ -2798,6 +2832,8 @@ mod tests {
             osc: None,
             osc_rejected: 0,
             osc_notice: None,
+            preferences: PreferenceStore::new(None, fm_ui_model::i18n::Locale::ENGLISH),
+            preferences_notice: None,
         };
 
         app.check_worker_health();
@@ -4467,6 +4503,8 @@ mod tests {
             osc: Some(receiver),
             osc_rejected: 0,
             osc_notice: None,
+            preferences: PreferenceStore::new(None, fm_ui_model::i18n::Locale::ENGLISH),
+            preferences_notice: None,
         };
         app.shell.set_transition_duration_frames(42);
         app.shell.set_fade_to_black_duration_frames(84);

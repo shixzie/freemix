@@ -41,6 +41,19 @@ pub(crate) fn disabled_text(locale: Locale, action: &str, reason: &str) -> Strin
     format!("{action}\n{}", unavailable(locale, reason))
 }
 
+/// `{action}  [{key}]`: an action with its keyboard shortcut, for tooltips.
+pub(crate) fn with_key(locale: Locale, action: &str, key: &str) -> String {
+    locale.format(
+        Msg::KeyHint,
+        &[("action", Arg::Str(action)), ("key", Arg::Str(key))],
+    )
+}
+
+/// `{frames} fr`, a frame count with the locale's digit grouping.
+pub(crate) fn frames(locale: Locale, frames: u32) -> String {
+    locale.format(Msg::FramesSuffix, &[("frames", Arg::from(frames))])
+}
+
 /// A row that starts where reading starts.
 pub(crate) fn leading_layout(locale: Locale) -> Layout {
     match locale.direction() {
@@ -99,6 +112,17 @@ mod tests {
             unavailable(spanish, "disk full"),
             "No disponible: disk full"
         );
+    }
+
+    #[test]
+    fn shortcut_hints_name_the_key_in_brackets() {
+        let spanish = Locale::new(Language::Spanish);
+        assert_eq!(with_key(Locale::ENGLISH, "Cut", "C"), "Cut  [C]");
+        assert_eq!(
+            with_key(spanish, "Añadir", spanish.text(Msg::KeyEnter)),
+            "Añadir  [Intro]"
+        );
+        assert_eq!(frames(Locale::ENGLISH, 30), "30 fr");
     }
 
     #[test]

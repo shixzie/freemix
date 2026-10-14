@@ -16,7 +16,7 @@ use fm_protocol::{StreamRealizedState, StreamStatusSample, WireStreamTargetId};
 use fm_ui_model::StreamStatus;
 
 use crate::gating::{Capability, Hint, unavailable_reason};
-use crate::l10n::{Arg, Locale, Msg};
+use crate::l10n::{self, Arg, Locale, Msg};
 use crate::panels::{STREAMS_NONE_CONFIGURED, latest_stream_sample, stream_row_text};
 use crate::stream_control::{stream_action_text, stream_unavailable_reason};
 use crate::theme::{
@@ -30,8 +30,30 @@ use crate::{
 
 /// Height of one output row; rows never change height with their state.
 pub(crate) const OUTPUT_ROW_HEIGHT: f32 = 42.0;
-const CHIP_WIDTH: f32 = 78.0;
+/// Wide enough for the longest translated row status (`CONGESTIONADO`).
+const CHIP_WIDTH: f32 = 86.0;
+/// Narrowest Start/Stop key; wider when a translated word needs it.
 const KEY_WIDTH: f32 = 58.0;
+
+/// Width of the Start/Stop key column: both words fit, so every row's key
+/// has the same width whichever action it offers.
+fn key_width(ui: &Ui, l: Locale) -> f32 {
+    [Msg::StartKey, Msg::StopKey]
+        .into_iter()
+        .map(|word| {
+            ui.painter()
+                .layout_no_wrap(
+                    l.text(word).to_owned(),
+                    FontId::new(11.0, FontFamily::Proportional),
+                    TEXT,
+                )
+                .size()
+                .x
+                + 16.0
+        })
+        .fold(KEY_WIDTH, f32::max)
+        .ceil()
+}
 
 /// Operator presentation of one output row.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,13 +169,34 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
     crate::l10n::Locale::ENGLISH.bytes(bytes)
 }
 
+/// What an outputs section header counts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutputKind {
+    /// Recorder slots, on air while recording.
+    Recorders,
+    /// Stream targets, on air while live.
+    Streams,
+}
+
 /// Section header summary: how many rows are on air out of how many, such
 /// as `2 SLOTS` or `1 / 2 RECORDING`.
-pub(crate) fn on_air_summary(on_air: usize, total: usize, noun: &str, active: &str) -> String {
+pub(crate) fn on_air_summary(l: Locale, on_air: usize, total: usize, kind: OutputKind) -> String {
     if on_air == 0 {
-        format!("{total} {noun}")
+        l.format(
+            match kind {
+                OutputKind::Recorders => Msg::SlotsCount,
+                OutputKind::Streams => Msg::TargetsCount,
+            },
+            &[("count", Arg::from(total))],
+        )
     } else {
-        format!("{on_air} / {total} {active}")
+        l.format(
+            match kind {
+                OutputKind::Recorders => Msg::RecordingOfTotal,
+                OutputKind::Streams => Msg::LiveOfTotal,
+            },
+            &[("on_air", Arg::from(on_air)), ("total", Arg::from(total))],
+        )
     }
 }
 
@@ -178,9 +221,10 @@ fn draw_row(
         Vec2::new(ui.available_width(), OUTPUT_ROW_HEIGHT),
         Sense::hover(),
     );
+    let key_width = key_width(ui, l10n::locale(ui.ctx()));
     let key_rect = Rect::from_center_size(
-        pos2(rect.max.x - 8.0 - KEY_WIDTH / 2.0, rect.center().y),
-        Vec2::new(KEY_WIDTH, 26.0),
+        pos2(rect.max.x - 8.0 - key_width / 2.0, rect.center().y),
+        Vec2::new(key_width, 26.0),
     );
     let text_left = rect.min.x + 26.0;
     let text_right = key_rect.min.x - 8.0;
@@ -248,10 +292,15 @@ fn draw_row(
     )
     .on_hover_text(tooltip);
     ui.add_space(1.0);
+    let l = l10n::locale(ui.ctx());
     let (label, fill, stroke) = if key.starts {
-        ("START", PROGRAM_FILL, PROGRAM.gamma_multiply(0.6))
+        (
+            l.text(Msg::StartKey),
+            PROGRAM_FILL,
+            PROGRAM.gamma_multiply(0.6),
+        )
     } else {
-        ("STOP", WIDGET, BORDER_STRONG)
+        (l.text(Msg::StopKey), WIDGET, BORDER_STRONG)
     };
     ui.place(key_rect, |ui: &mut Ui| {
         ui.add_enabled(
@@ -259,7 +308,8 @@ fn draw_row(
             Button::new(RichText::new(label).size(11.0).strong().color(TEXT))
                 .fill(fill)
                 .stroke(Stroke::new(1.0, stroke))
-                .min_size(key_rect.size()),
+                .min_size(key_rect.size())
+                .truncate(),
         )
     })
     .hint(key.action, key.reason)
@@ -268,19 +318,20 @@ fn draw_row(
 
 /// Draws the recorder rows; returns the gated action when a key is clicked.
 pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<RecordingAction> {
+    let l = l10n::locale(ui.ctx());
     let has_view = state.view.is_some();
     let recording = state
         .recording_desired
         .iter()
         .filter(|desired| has_view && **desired)
         .count();
-    section_header(ui, "Recording", |ui| {
+    section_header(ui, l.text(Msg::RecordingHeading), |ui| {
         ui.label(
             mono(on_air_summary(
+                l,
                 recording,
                 state.recording_desired.len(),
-                "SLOTS",
-                "RECORDING",
+                OutputKind::Recorders,
             ))
             .size(10.0)
             .color(if recording > 0 { PROGRAM } else { TEXT_DIM }),
@@ -301,16 +352,20 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
         } else {
             RecordingAction::Start(recorder)
         };
-        let row = recorder_row(crate::l10n::locale(ui.ctx()), has_view, desired, pending);
+        let row = recorder_row(l, has_view, desired, pending);
         let allowed = recording_action(state, requested);
-        let action = if requested.starts() {
-            format!("Start program recorder {slot}")
-        } else {
-            format!("Stop program recorder {slot}")
-        };
-        let tooltip = format!(
-            "Recorder slot {slot}: {}\nShows the daemon's desired recording state; the protocol reports no realized file or duration.",
-            row.status
+        let slot_arg = [("slot", Arg::Plain(slot as u64))];
+        let action = l.format(
+            if requested.starts() {
+                Msg::StartRecorder
+            } else {
+                Msg::StopRecorder
+            },
+            &slot_arg,
+        );
+        let tooltip = l.format(
+            Msg::RecorderRowHover,
+            &[slot_arg[0], ("status", Arg::Str(l.tr(row.status)))],
         );
         if draw_row(
             ui,
@@ -323,7 +378,7 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
                 enabled: allowed.is_some(),
                 action: &action,
                 reason: if has_view && pending {
-                    "an earlier recording command is still pending"
+                    Msg::ReasonRecordingPending.en()
                 } else {
                     unavailable_reason(state, Capability::Transition)
                 },
@@ -337,6 +392,7 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
 
 /// Draws the stream target rows and pushes clicked Start/Stop intents.
 pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+    let l = l10n::locale(ui.ctx());
     let samples: Vec<_> = state
         .streams
         .iter()
@@ -348,7 +404,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
         .zip(&samples)
         .map(|(stream, sample)| {
             stream_row(
-                crate::l10n::locale(ui.ctx()),
+                l,
                 stream,
                 *sample,
                 stream_command_pending(state, WireStreamTargetId::new(stream.target)),
@@ -356,12 +412,12 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
         })
         .collect();
     let live = rows.iter().filter(|row| row.tone == Tone::OnAir).count();
-    section_header(ui, "Streams", |ui| {
+    section_header(ui, l.text(Msg::StreamsHeading), |ui| {
         ui.label(
             mono(if state.view.is_some() {
-                on_air_summary(live, rows.len(), "TARGETS", "LIVE")
+                on_air_summary(l, live, rows.len(), OutputKind::Streams)
             } else {
-                "— TARGETS".to_owned()
+                l.text(Msg::TargetsUnknown).to_owned()
             })
             .size(10.0)
             .color(if live > 0 { PROGRAM } else { TEXT_DIM }),
@@ -373,9 +429,9 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             state.view.is_some(),
             &state.streams,
         ) {
-            STREAMS_NONE_CONFIGURED
+            l.tr(STREAMS_NONE_CONFIGURED)
         } else {
-            "Stream state not synchronized"
+            l.text(Msg::StreamsNotSynced)
         };
         let (rect, _) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), OUTPUT_ROW_HEIGHT),
@@ -400,17 +456,29 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
     for ((stream, sample), row) in state.streams.iter().zip(samples).zip(&rows) {
         let requested = StreamAction::for_stream(stream);
         let allowed = stream_action(state, requested);
-        let action = stream_action_text(requested, &stream.name);
+        let action = stream_action_text(l, requested, &stream.name);
         if draw_row(
             ui,
             egui::Id::new(("studio-stream-row", stream.target)),
             &stream.name,
             row,
             &format!(
-                "{}\nDesired {} · realized {}\n{}",
-                stream.name,
-                if stream.desired_running { "on" } else { "off" },
-                row.status.to_lowercase(),
+                "{}\n{}",
+                l.format(
+                    Msg::StreamRowHover,
+                    &[
+                        ("name", Arg::Str(&stream.name)),
+                        (
+                            "desired",
+                            Arg::Str(l.text(if stream.desired_running {
+                                Msg::WordOn
+                            } else {
+                                Msg::WordOff
+                            })),
+                        ),
+                        ("realized", Arg::Str(&l.tr(row.status).to_lowercase())),
+                    ],
+                ),
                 stream_row_text(stream, sample)
             ),
             &RowKey {
@@ -562,8 +630,19 @@ mod tests {
         assert_eq!(format_bytes(1_023), "1023 B");
         assert_eq!(format_bytes(2_048), "2.0 KB");
         assert_eq!(format_bytes(5 * 1_024 * 1_024 * 1_024), "5.0 GB");
-        assert_eq!(on_air_summary(0, 2, "SLOTS", "RECORDING"), "2 SLOTS");
-        assert_eq!(on_air_summary(1, 2, "TARGETS", "LIVE"), "1 / 2 LIVE");
+        let en = Locale::ENGLISH;
+        assert_eq!(on_air_summary(en, 0, 2, OutputKind::Recorders), "2 SLOTS");
+        assert_eq!(on_air_summary(en, 0, 1, OutputKind::Recorders), "1 SLOT");
+        assert_eq!(on_air_summary(en, 1, 2, OutputKind::Streams), "1 / 2 LIVE");
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            on_air_summary(spanish, 1, 2, OutputKind::Recorders),
+            "1 / 2 GRABANDO"
+        );
+        assert_eq!(
+            on_air_summary(spanish, 0, 2, OutputKind::Streams),
+            "2 DESTINOS"
+        );
     }
 
     #[test]

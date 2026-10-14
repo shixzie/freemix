@@ -1200,7 +1200,8 @@ impl StudioShell {
                             top,
                             egui::pos2(top.x + ui.available_width(), ui.min_rect().max.y),
                         );
-                        if let Some(card) = connection_overlay::connection_card(state) {
+                        if let Some(card) = connection_overlay::connection_card(self.locale, state)
+                        {
                             connection_overlay::paint_connection_card(ui, monitors, &card);
                         }
                         if self.layout.show_input_bank || self.layout.show_mixer {
@@ -2353,6 +2354,7 @@ mod tests {
         );
         assert_eq!(
             crate::stream_control::stream_action_text(
+                crate::l10n::Locale::ENGLISH,
                 StreamAction::Stop(stream_target(40)),
                 "RTMP Primary"
             ),
@@ -2484,11 +2486,18 @@ mod tests {
             stinger_editor_media(view, editor(3, Some(input(9)))),
             Some(input(1))
         );
+        let en = crate::l10n::Locale::ENGLISH;
         assert_eq!(
-            stinger_summary(view, 3),
-            "S3: Camera · cut 10 fr · preload · stinger-only audio · fallback fade"
+            stinger_summary(en, view, 3),
+            "S3: Camera · cut point 10 fr · preload yes · audio stinger only · fallback fade"
         );
-        assert_eq!(stinger_summary(view, 4), "S4 is not configured");
+        assert_eq!(stinger_summary(en, view, 4), "S4 is not configured");
+        let spanish = crate::l10n::Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            stinger_summary(spanish, view, 3),
+            "S3: Camera · punto de corte 10 fr · precarga sí · audio solo stinger · \
+             alternativa fundido"
+        );
     }
 
     #[test]
@@ -2497,7 +2506,7 @@ mod tests {
         let state = stinger_state(vec![configured_slot(3, 1)]);
         let view = state.view.as_ref().unwrap();
         assert_eq!(
-            stinger_details(view, 3, 30),
+            stinger_details(crate::l10n::Locale::ENGLISH, view, 3, 30),
             [
                 ("Cut point", "10 fr".to_owned()),
                 ("Preload", "yes".to_owned()),
@@ -2507,7 +2516,7 @@ mod tests {
         );
         // An empty slot lists exactly what ASSIGN would configure.
         assert_eq!(
-            stinger_details(view, 4, 30),
+            stinger_details(crate::l10n::Locale::ENGLISH, view, 4, 30),
             [
                 ("Cut point", "15 fr (default)".to_owned()),
                 ("Preload", "yes (default)".to_owned()),
@@ -2726,7 +2735,8 @@ mod tests {
             position: ManualTransitionPosition::new(2_500).unwrap(),
         });
         assert_eq!(desired_manual_position(active).basis_points(), 2_500);
-        assert_eq!(manual_transition_label(active), "WIPE 1->2 @ 2500 BP");
+        let en = crate::l10n::Locale::ENGLISH;
+        assert_eq!(manual_transition_label(en, active), "WIPE 1->2 @ 2500 BP");
         let alpha_fade = ManualTransitionStatus::Active(ActiveManualTransition {
             kind: ManualTransitionKind::AlphaFade,
             from: input(1),
@@ -2735,7 +2745,7 @@ mod tests {
             position: ManualTransitionPosition::new(2_500).unwrap(),
         });
         assert_eq!(
-            manual_transition_label(alpha_fade),
+            manual_transition_label(en, alpha_fade),
             "ALPHA FADE 1->2 @ 2500 BP"
         );
         assert_eq!(
@@ -2743,7 +2753,7 @@ mod tests {
             ManualTransitionPosition::START
         );
         assert_eq!(
-            manual_transition_label(ManualTransitionStatus::Inactive),
+            manual_transition_label(en, ManualTransitionStatus::Inactive),
             "INACTIVE"
         );
     }
@@ -3084,6 +3094,9 @@ mod tests {
     #[test]
     fn monitor_captions_state_origin_size_staleness_and_absence() {
         use crate::monitors::{Bus, PictureMode, monitor_caption};
+        let caption_of = |bus, frame, native_runtime| {
+            monitor_caption(Locale::ENGLISH, bus, frame, Some(wire(1)), native_runtime)
+        };
         let sim = MonitorFrameOrigin::Simulated;
         let native = MonitorFrameOrigin::Native;
         #[allow(clippy::type_complexity)]
@@ -3169,14 +3182,14 @@ mod tests {
             ),
         ];
         for (bus, frame, native_runtime, picture, badges, text) in cases {
-            let caption = monitor_caption(bus, frame, Some(wire(1)), native_runtime);
+            let caption = caption_of(bus, frame, native_runtime);
             assert_eq!(caption.picture, picture, "{bus:?} {frame:?}");
             assert_eq!(caption.badges, badges, "{bus:?} {frame:?}");
             assert_eq!(caption.text, text, "{bus:?} {frame:?}");
             assert_ne!(caption.note, "");
         }
         // A simulated live frame is honest about what it does not composite.
-        let note = monitor_caption(Bus::Program, Some(facts(sim, 1, 0)), Some(wire(1)), false).note;
+        let note = caption_of(Bus::Program, Some(facts(sim, 1, 0)), false).note;
         for omitted in ["overlays", "scenes", "Fade to Black", "not composited"] {
             assert!(note.contains(omitted), "{note}");
         }

@@ -165,6 +165,25 @@ pub(crate) fn section_label(text: &str) -> RichText {
         .color(TEXT_DIM)
 }
 
+/// Text size of console captions and hint lines under a control.
+pub(crate) const CAPTION_SIZE: f32 = 10.5;
+/// Text size of small field labels beside a control (`POS`, `DURATION`).
+pub(crate) const FIELD_LABEL_SIZE: f32 = 10.0;
+
+/// A small dim field label beside a control, letter-spaced like a console
+/// legend.
+pub(crate) fn field_label(text: &str) -> RichText {
+    RichText::new(text.to_uppercase())
+        .size(FIELD_LABEL_SIZE)
+        .extra_letter_spacing(0.6)
+        .color(MUTED)
+}
+
+/// A muted caption line that explains a panel or control.
+pub(crate) fn caption(text: impl Into<String>) -> RichText {
+    RichText::new(text).size(CAPTION_SIZE).color(MUTED)
+}
+
 /// Monospace numeric text for timecode, revisions, and counters.
 pub(crate) fn mono(text: impl Into<String>) -> RichText {
     RichText::new(text).monospace()

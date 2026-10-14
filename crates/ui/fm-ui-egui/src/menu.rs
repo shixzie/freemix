@@ -681,7 +681,7 @@ impl StudioShell {
                 allowed.is_some(),
                 &label,
                 (row.status, row.tone),
-                &stream_action_text(requested, &stream.name),
+                &stream_action_text(l, requested, &stream.name),
                 stream_unavailable_reason(state, stream),
             ) && let Some(action) = allowed
             {

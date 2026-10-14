@@ -4,6 +4,7 @@ use egui::{
     Align2, Color32, CornerRadius, FontFamily, FontId, Rect, Stroke, StrokeKind, Ui, Vec2, pos2,
 };
 
+use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{AMBER, BORDER_STRONG, ERROR, GRAPHITE_RAISED, MUTED, TEXT, TEXT_DIM};
 use crate::{StudioConnectionStatus, StudioUiState};
 
@@ -28,25 +29,16 @@ pub(crate) struct ConnectionCard {
     pub(crate) last_error: Option<String>,
 }
 
-/// What every card states about the console's controls.
-pub(crate) const CONTROLS_DISABLED: &str =
-    "Switching, audio, and output controls are disabled until the console is ready.";
-
-/// Formats a millisecond delay as seconds with one decimal.
-fn format_delay(delay_ms: u64) -> String {
-    format!("{}.{} s", delay_ms / 1_000, (delay_ms % 1_000) / 100)
-}
-
 /// Returns the card to show, or `None` when the console is Ready with state.
-pub(crate) fn connection_card(state: &StudioUiState) -> Option<ConnectionCard> {
+pub(crate) fn connection_card(l: Locale, state: &StudioUiState) -> Option<ConnectionCard> {
     // A terminal failure already shows its error as the detail.
     let last_error = match state.connection_status {
         StudioConnectionStatus::Failed => None,
         _ => state.error.clone(),
     };
-    let card = |title: &str, detail: String, tone| {
+    let card = |title: Msg, detail: String, tone| {
         Some(ConnectionCard {
-            title: title.to_owned(),
+            title: l.text(title).to_owned(),
             detail,
             tone,
             last_error: last_error.clone(),
@@ -55,51 +47,52 @@ pub(crate) fn connection_card(state: &StudioUiState) -> Option<ConnectionCard> {
     match state.connection_status {
         StudioConnectionStatus::Ready if state.view.is_some() => None,
         StudioConnectionStatus::Ready | StudioConnectionStatus::Synchronizing => card(
-            "Synchronizing",
-            "Receiving the current project state from freemixd…".to_owned(),
+            Msg::CardSynchronizing,
+            l.text(Msg::CardSynchronizingDetail).to_owned(),
             CardTone::Busy,
         ),
         StudioConnectionStatus::Launching => card(
-            "Starting",
-            "Launching the Studio control client…".to_owned(),
+            Msg::CardStarting,
+            l.text(Msg::CardStartingDetail).to_owned(),
             CardTone::Busy,
         ),
         StudioConnectionStatus::Connecting => card(
-            "Connecting",
-            "Opening the control connection to freemixd…".to_owned(),
+            Msg::CardConnecting,
+            l.text(Msg::CardConnectingDetail).to_owned(),
             CardTone::Busy,
         ),
         StudioConnectionStatus::Backoff => card(
-            "Reconnecting",
+            Msg::CardReconnecting,
             state.reconnect.map_or_else(
-                || "Waiting before the next connection attempt…".to_owned(),
+                || l.text(Msg::CardReconnectWaiting).to_owned(),
                 |reconnect| {
-                    format!(
-                        "Connection lost · attempt {} · retrying after {}",
-                        reconnect.attempt,
-                        format_delay(reconnect.delay_ms)
+                    l.format(
+                        Msg::CardReconnectAttempt,
+                        &[
+                            ("attempt", Arg::from(reconnect.attempt)),
+                            ("delay", Arg::Str(&l.seconds_tenths(reconnect.delay_ms))),
+                        ],
                     )
                 },
             ),
             CardTone::Busy,
         ),
         StudioConnectionStatus::Disconnected => card(
-            "Disconnected",
-            "There is no control connection to freemixd. Controls stay disabled until it reconnects."
-                .to_owned(),
+            Msg::CardDisconnected,
+            l.text(Msg::CardDisconnectedDetail).to_owned(),
             CardTone::Idle,
         ),
         StudioConnectionStatus::Failed => card(
-            "Connection failed",
-            state.error.clone().unwrap_or_else(|| {
-                "The control connection failed. Check that freemixd is running.".to_owned()
-            }),
+            Msg::StatusIdleFailed,
+            state
+                .error
+                .clone()
+                .unwrap_or_else(|| l.text(Msg::CardFailedDetail).to_owned()),
             CardTone::Error,
         ),
         StudioConnectionStatus::ProtocolMismatch => card(
-            "Protocol mismatch",
-            "freemixd did not select this Studio's protocol version. Run matching freemixd and freemix-studio builds."
-                .to_owned(),
+            Msg::CardProtocol,
+            l.text(Msg::CardProtocolDetail).to_owned(),
             CardTone::Error,
         ),
     }
@@ -118,6 +111,7 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
         egui::Id::new("studio-connection-card"),
     ));
     let painter = painter.with_clip_rect(area);
+    let l = l10n::locale(ui.ctx());
     let width = area.width().clamp(240.0, 480.0);
     let detail = painter.layout(
         card.detail.clone(),
@@ -127,7 +121,7 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
     );
     let error = card.last_error.as_ref().map(|error| {
         let mut job = egui::text::LayoutJob::simple(
-            format!("Last error: {error}"),
+            l.format(Msg::CardLastError, &[("error", Arg::Str(error))]),
             FontId::new(11.0, FontFamily::Monospace),
             ERROR,
             width - 48.0,
@@ -136,7 +130,7 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
         painter.layout_job(job)
     });
     let footer = painter.layout(
-        CONTROLS_DISABLED.to_owned(),
+        l.text(Msg::CardControlsDisabled).to_owned(),
         FontId::new(11.0, FontFamily::Proportional),
         MUTED,
         width - 48.0,
@@ -169,6 +163,13 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
         color,
     );
     let title_y = rect.min.y + 32.0;
+    let title = crate::theme::elided(
+        &painter,
+        &card.title,
+        FontId::new(18.0, FontFamily::Proportional),
+        TEXT,
+        width - 64.0,
+    );
     let lamp = pos2(rect.min.x + 26.0, title_y);
     if card.tone == CardTone::Busy {
         // A rotating arc driven by egui's frame time.
@@ -188,11 +189,11 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
     } else {
         painter.circle_filled(lamp, 6.0, color);
     }
-    painter.text(
-        pos2(rect.min.x + 44.0, title_y),
-        Align2::LEFT_CENTER,
-        &card.title,
-        FontId::new(18.0, FontFamily::Proportional),
+    painter.galley(
+        Align2::LEFT_CENTER
+            .anchor_size(pos2(rect.min.x + 44.0, title_y), title.size())
+            .min,
+        title,
         TEXT,
     );
     let mut y = title_y + 22.0;
@@ -224,21 +225,24 @@ mod tests {
     #[test]
     fn ready_without_view_still_reports_synchronizing() {
         let state = StudioUiState::new(StudioConnectionStatus::Ready);
-        assert_eq!(connection_card(&state).unwrap().title, "Synchronizing");
+        assert_eq!(
+            connection_card(Locale::ENGLISH, &state).unwrap().title,
+            "Synchronizing"
+        );
     }
 
     #[test]
     fn reconnecting_reports_attempt_and_delay() {
         let mut state = StudioUiState::new(StudioConnectionStatus::Backoff);
         assert_eq!(
-            connection_card(&state).unwrap().detail,
+            connection_card(Locale::ENGLISH, &state).unwrap().detail,
             "Waiting before the next connection attempt…"
         );
         state.reconnect = Some(ReconnectStatus {
             attempt: 3,
             delay_ms: 2_450,
         });
-        let card = connection_card(&state).unwrap();
+        let card = connection_card(Locale::ENGLISH, &state).unwrap();
         assert_eq!(card.title, "Reconnecting");
         assert_eq!(card.tone, CardTone::Busy);
         assert_eq!(
@@ -248,7 +252,10 @@ mod tests {
         assert_eq!(card.last_error, None);
         state.error = Some("TCP connect refused".to_owned());
         assert_eq!(
-            connection_card(&state).unwrap().last_error.as_deref(),
+            connection_card(Locale::ENGLISH, &state)
+                .unwrap()
+                .last_error
+                .as_deref(),
             Some("TCP connect refused")
         );
     }
@@ -256,16 +263,35 @@ mod tests {
     #[test]
     fn terminal_states_use_error_tone() {
         let state = StudioUiState::new(StudioConnectionStatus::ProtocolMismatch);
-        let card = connection_card(&state).unwrap();
+        let card = connection_card(Locale::ENGLISH, &state).unwrap();
         assert_eq!(card.title, "Protocol mismatch");
         assert_eq!(card.tone, CardTone::Error);
         let mut state = StudioUiState::new(StudioConnectionStatus::Failed);
         state.error = Some("daemon exited".to_owned());
-        let failed = connection_card(&state).unwrap();
+        let failed = connection_card(Locale::ENGLISH, &state).unwrap();
         assert_eq!(failed.detail, "daemon exited");
         // The failure detail already is the error; it is not repeated.
         assert_eq!(failed.last_error, None);
         let state = StudioUiState::new(StudioConnectionStatus::Disconnected);
-        assert_eq!(connection_card(&state).unwrap().tone, CardTone::Idle);
+        assert_eq!(
+            connection_card(Locale::ENGLISH, &state).unwrap().tone,
+            CardTone::Idle
+        );
+    }
+
+    #[test]
+    fn the_card_is_worded_in_the_console_language() {
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let mut state = StudioUiState::new(StudioConnectionStatus::Backoff);
+        state.reconnect = Some(ReconnectStatus {
+            attempt: 2,
+            delay_ms: 1_500,
+        });
+        let card = connection_card(spanish, &state).unwrap();
+        assert_eq!(card.title, "Reconectando");
+        assert_eq!(
+            card.detail,
+            "Conexión perdida · intento 2 · reintento en 1,5 s"
+        );
     }
 }

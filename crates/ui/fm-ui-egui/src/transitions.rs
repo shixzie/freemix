@@ -6,10 +6,11 @@ use fm_protocol::{ManualTransitionKind, ManualTransitionPosition};
 use fm_ui_model::ManualTransitionStatus;
 
 use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::l10n::{self, Arg, Locale, Msg, with_key};
 use crate::theme::{
     ACCENT, ACCENT_FILL, AMBER, AMBER_FILL, BORDER, BORDER_STRONG, MONITOR_BLACK, MUTED, PROGRAM,
-    PROGRAM_FILL, TEXT, TEXT_DIM, WIDGET, WIDGET_ACTIVE, WIDGET_HOVER, console_button, mono,
-    section_label,
+    PROGRAM_FILL, TEXT, TEXT_DIM, WIDGET, WIDGET_ACTIVE, WIDGET_HOVER, console_button, field_label,
+    mono, section_label,
 };
 use crate::{
     ManualTransitionAvailability, StudioIntent, StudioShell, StudioUiState, TransitionGate,
@@ -28,6 +29,7 @@ pub(crate) fn draw_transition_column(
     manual: ManualTransitionAvailability,
     intents: &mut Vec<StudioIntent>,
 ) {
+    let l = l10n::locale(ui.ctx());
     ui.set_width(TRANSITION_COLUMN_WIDTH);
     ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
     let desired = state
@@ -43,19 +45,22 @@ pub(crate) fn draw_transition_column(
             view.switcher.realized_manual_transition
         });
     ui.horizontal(|ui| {
-        ui.label(section_label("Transition"));
+        ui.label(section_label(l.text(Msg::TransitionSection)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let active = matches!(desired, ManualTransitionStatus::Active(_));
             ui.label(
-                RichText::new(if active {
-                    format!(
-                        "T-BAR {}",
-                        crate::l10n::locale(ui.ctx()).percent(i64::from(
-                            desired_manual_position(desired).basis_points() / 100
-                        ))
+                mono(if active {
+                    l.format(
+                        Msg::TBarPercent,
+                        &[(
+                            "percent",
+                            Arg::Str(&l.percent(i64::from(
+                                desired_manual_position(desired).basis_points() / 100,
+                            ))),
+                        )],
                     )
                 } else {
-                    "T-BAR".to_owned()
+                    l.text(Msg::TBar).to_owned()
                 })
                 .size(10.0)
                 .strong()
@@ -70,7 +75,13 @@ pub(crate) fn draw_transition_column(
             draw_auto_transitions(ui, shell, state, intents);
         });
         ui.add_space(4.0);
-        draw_t_bar(ui, desired, manual.active_controls, intents);
+        draw_t_bar(
+            ui,
+            desired,
+            manual.active_controls,
+            manual.alpha_fade_start_exposed,
+            intents,
+        );
     });
     ui.separator();
     let session_reason = unavailable_reason(state, Capability::Transition);
@@ -78,7 +89,7 @@ pub(crate) fn draw_transition_column(
         && state.view.is_some()
         && state.can_transition
     {
-        "no manual transition is active; start one with FADE, WIPE, SLIDE, or ALPHA"
+        Msg::ReasonManualStartFirst.en()
     } else {
         session_reason
     };
@@ -112,6 +123,7 @@ fn draw_auto_transitions(
     intents: &mut Vec<StudioIntent>,
 ) {
     let availability = transition_availability(TransitionGate::from_state(state));
+    let l = l10n::locale(ui.ctx());
     let reason = unavailable_reason(state, Capability::Transition);
     let duration_frames = shell.transition_duration_frames;
     let primary =
@@ -122,23 +134,20 @@ fn draw_auto_transitions(
             .add_enabled(
                 availability.basic(),
                 console_button(
-                    "CUT",
+                    l.text(Msg::CutKey),
                     PROGRAM_FILL,
                     PROGRAM.gamma_multiply(0.7),
                     BUTTON_SIZE,
                 ),
             )
-            .hint("Cut Preview to Program  [C]", reason)
+            .hint(&with_key(l, l.text(Msg::ShortcutCut), "C"), reason)
             .clicked()
         {
             intents.push(StudioIntent::Cut);
         }
         if ui
-            .add_enabled(availability.basic(), primary("FADE"))
-            .hint(
-                "Fade Preview to Program over the shared duration  [F]",
-                reason,
-            )
+            .add_enabled(availability.basic(), primary(l.text(Msg::FadeKey)))
+            .hint(&with_key(l, l.text(Msg::AutoFadeHover), "F"), reason)
             .clicked()
         {
             intents.push(StudioIntent::Fade { duration_frames });
@@ -146,18 +155,15 @@ fn draw_auto_transitions(
     });
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(availability.wipe, secondary("WIPE"))
-            .hint("Wipe Preview to Program over the shared duration", reason)
+            .add_enabled(availability.wipe, secondary(l.text(Msg::WipeKey)))
+            .hint(l.text(Msg::AutoWipeHover), reason)
             .clicked()
         {
             intents.push(StudioIntent::Wipe { duration_frames });
         }
         if ui
-            .add_enabled(availability.alpha_fade, secondary("ALPHA"))
-            .hint(
-                "AlphaFade Preview to Program over the shared duration",
-                reason,
-            )
+            .add_enabled(availability.alpha_fade, secondary(l.text(Msg::AlphaKey)))
+            .hint(l.text(Msg::AutoAlphaHover), reason)
             .clicked()
         {
             intents.push(StudioIntent::AlphaFade { duration_frames });
@@ -165,22 +171,22 @@ fn draw_auto_transitions(
     });
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(availability.slide(), secondary("SLIDE"))
-            .hint("Slide Preview to Program over the shared duration", reason)
+            .add_enabled(availability.slide(), secondary(l.text(Msg::SlideKey)))
+            .hint(l.text(Msg::AutoSlideHover), reason)
             .clicked()
         {
             intents.push(StudioIntent::Slide { duration_frames });
         }
         if ui
-            .add_enabled(availability.zoom(), secondary("ZOOM"))
-            .hint("Zoom Preview to Program over the shared duration", reason)
+            .add_enabled(availability.zoom(), secondary(l.text(Msg::ZoomKey)))
+            .hint(l.text(Msg::AutoZoomHover), reason)
             .clicked()
         {
             intents.push(StudioIntent::Zoom { duration_frames });
         }
     });
     ui.horizontal(|ui| {
-        ui.label(RichText::new("DURATION").size(10.5).color(TEXT_DIM));
+        ui.label(field_label(l.text(Msg::Duration)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_enabled(
                 availability.basic(),
@@ -192,10 +198,7 @@ fn draw_auto_transitions(
                     .suffix(" fr")
                     .speed(1.0),
             )
-            .hint(
-                "Shared automatic transition duration in frames (drag or type)",
-                reason,
-            );
+            .hint(l.text(Msg::DurationHover), reason);
         });
     });
     shell.set_transition_duration_frames(shell.transition_duration_frames);
@@ -209,9 +212,10 @@ fn draw_manual_transition(
     names: InputNames<'_>,
     intents: &mut Vec<StudioIntent>,
 ) {
+    let l = l10n::locale(ui.ctx());
+    ui.label(field_label(l.text(Msg::ManualLabel)));
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(RichText::new("MANUAL").size(10.0).color(MUTED));
         draw_manual_start_buttons(
             ui,
             availability.start,
@@ -235,6 +239,7 @@ fn draw_manual_transition(
         &manual_summary(desired, realized, names),
         desired,
         realized,
+        availability.alpha_fade_start_exposed,
     );
 }
 
@@ -242,7 +247,9 @@ fn draw_manual_transition(
 /// replicated desired and realized manual-transition state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ManualSummary {
-    /// The desired transition kind, or `None` while no manual transition is desired.
+    /// The desired transition kind as catalog English (worded in the
+    /// console language when drawn), or `None` while no manual transition
+    /// is desired.
     pub(crate) kind: Option<&'static str>,
     /// Source and destination input names of the desired transition.
     pub(crate) route: Option<(String, String)>,
@@ -299,11 +306,25 @@ pub(crate) fn manual_summary(
 
 const fn manual_kind_label(kind: ManualTransitionKind) -> &'static str {
     match kind {
-        ManualTransitionKind::Fade => "FADE",
-        ManualTransitionKind::Wipe => "WIPE",
-        ManualTransitionKind::AlphaFade => "ALPHA FADE",
-        ManualTransitionKind::Slide => "SLIDE",
+        ManualTransitionKind::Fade => Msg::FadeKey.en(),
+        ManualTransitionKind::Wipe => Msg::WipeKey.en(),
+        ManualTransitionKind::AlphaFade => Msg::AlphaFadeKind.en(),
+        ManualTransitionKind::Slide => Msg::SlideKey.en(),
     }
+}
+
+/// The manual start keys in console order, joined for hint text
+/// (`FADE · WIPE · SLIDE · ALPHA`).
+fn manual_start_keys(l: Locale, alpha_fade_exposed: bool, separator: &str) -> String {
+    let mut keys = vec![
+        l.text(Msg::FadeKey),
+        l.text(Msg::WipeKey),
+        l.text(Msg::SlideKey),
+    ];
+    if alpha_fade_exposed {
+        keys.push(l.text(Msg::AlphaKey));
+    }
+    keys.join(separator)
 }
 
 /// A compact status card: kind, route, travel, and daemon confirmation.
@@ -312,7 +333,9 @@ fn draw_manual_status(
     summary: &ManualSummary,
     desired: ManualTransitionStatus,
     realized: ManualTransitionStatus,
+    alpha_fade_exposed: bool,
 ) {
+    let l = l10n::locale(ui.ctx());
     let active = summary.kind.is_some();
     let accent = if active { AMBER } else { BORDER_STRONG };
     let response = egui::Frame::new()
@@ -325,7 +348,7 @@ fn draw_manual_status(
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(summary.kind.unwrap_or("NO MANUAL TRANSITION"))
+                    RichText::new(l.tr(summary.kind.unwrap_or(Msg::NoManualTransition.en())))
                         .size(10.5)
                         .strong()
                         .extra_letter_spacing(0.8)
@@ -334,14 +357,19 @@ fn draw_manual_status(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if active {
                         ui.label(
-                            mono(crate::l10n::locale(ui.ctx()).percent(i64::from(summary.percent)))
+                            mono(l.percent(i64::from(summary.percent)))
                                 .size(11.0)
                                 .strong()
                                 .color(TEXT),
                         );
                     }
                     if !summary.confirmed {
-                        ui.label(RichText::new("SYNCING").size(9.5).strong().color(AMBER));
+                        ui.label(
+                            RichText::new(l.text(Msg::Syncing))
+                                .size(9.5)
+                                .strong()
+                                .color(AMBER),
+                        );
                     }
                 });
             });
@@ -349,7 +377,13 @@ fn draw_manual_status(
             let (route, color) = summary.route.as_ref().map_or_else(
                 || {
                     (
-                        "Start one with FADE · WIPE · SLIDE · ALPHA".to_owned(),
+                        l.format(
+                            Msg::ManualStartHint,
+                            &[(
+                                "keys",
+                                Arg::Str(&manual_start_keys(l, alpha_fade_exposed, " · ")),
+                            )],
+                        ),
                         MUTED,
                     )
                 },
@@ -375,16 +409,18 @@ fn draw_manual_status(
             }
         })
         .response;
-    response.on_hover_text(format!(
-        "Desired: {}\nRealized: {}{}",
-        manual_transition_label(desired),
-        manual_transition_label(realized),
-        if summary.confirmed {
-            ""
-        } else {
-            "\nThe daemon has not yet confirmed the desired manual transition."
-        }
-    ));
+    let mut hover = l.format(
+        Msg::ManualStatusHover,
+        &[
+            ("desired", Arg::Str(&manual_transition_label(l, desired))),
+            ("realized", Arg::Str(&manual_transition_label(l, realized))),
+        ],
+    );
+    if !summary.confirmed {
+        hover.push('\n');
+        hover.push_str(l.text(Msg::ManualUnconfirmed));
+    }
+    response.on_hover_text(hover);
 }
 
 /// Converts a T-bar travel fraction (0 = start, 1 = end) to a position.
@@ -403,6 +439,7 @@ fn draw_t_bar(
     ui: &mut Ui,
     desired: ManualTransitionStatus,
     enabled: bool,
+    alpha_fade_exposed: bool,
     intents: &mut Vec<StudioIntent>,
 ) {
     const WIDTH: f32 = 40.0;
@@ -428,11 +465,11 @@ fn draw_t_bar(
             intents.push(StudioIntent::SetManualTransitionPosition { position });
         }
     }
-    let response = response.on_hover_text(if enabled {
-        "Manual T-bar: drag the lever (bottom = start, top = end), then COMMIT or CANCEL  [Esc]"
-    } else {
-        "Manual T-bar: start a manual transition (FADE, WIPE, SLIDE, ALPHA) to enable the lever"
-    });
+    let response = response.on_hover_text(t_bar_hover(
+        l10n::locale(ui.ctx()),
+        enabled,
+        alpha_fade_exposed,
+    ));
     if !ui.is_rect_visible(rect) {
         return;
     }
@@ -499,6 +536,27 @@ fn draw_t_bar(
     }
 }
 
+/// The T-bar tooltip: how to drive the lever, or how to enable it.
+fn t_bar_hover(l: Locale, enabled: bool, alpha_fade_exposed: bool) -> String {
+    if enabled {
+        l.format(
+            Msg::TBarHoverActive,
+            &[
+                ("commit", Arg::Str(l.text(Msg::CommitKey))),
+                ("cancel", Arg::Str(l.text(Msg::CancelKey))),
+            ],
+        )
+    } else {
+        l.format(
+            Msg::TBarHoverIdle,
+            &[(
+                "keys",
+                Arg::Str(&manual_start_keys(l, alpha_fade_exposed, ", ")),
+            )],
+        )
+    }
+}
+
 fn draw_manual_start_buttons(
     ui: &mut Ui,
     enabled: bool,
@@ -506,45 +564,55 @@ fn draw_manual_start_buttons(
     reason: &str,
     intents: &mut Vec<StudioIntent>,
 ) {
-    let size = Vec2::new(44.0, 22.0);
-    for (label, kind, tooltip) in [
+    let l = l10n::locale(ui.ctx());
+    let mut keys = vec![
         (
-            "FADE",
+            Msg::FadeKey,
+            Msg::TransitionFade,
             ManualTransitionKind::Fade,
-            "Start a reversible manual Fade transition",
         ),
         (
-            "WIPE",
+            Msg::WipeKey,
+            Msg::TransitionWipe,
             ManualTransitionKind::Wipe,
-            "Start a reversible manual Wipe transition",
         ),
         (
-            "SLIDE",
+            Msg::SlideKey,
+            Msg::TransitionSlide,
             ManualTransitionKind::Slide,
-            "Start a reversible manual Slide transition",
         ),
-    ] {
+    ];
+    if alpha_fade_exposed {
+        keys.push((
+            Msg::AlphaKey,
+            Msg::TransitionAlphaFade,
+            ManualTransitionKind::AlphaFade,
+        ));
+    }
+    // Equal-width keys that always fill the column, whatever the language.
+    #[allow(clippy::cast_precision_loss)] // three or four keys
+    let count = keys.len() as f32;
+    let spacing = ui.spacing().item_spacing.x;
+    let size = Vec2::new(
+        ((ui.available_width() - spacing * (count - 1.0)) / count).floor(),
+        22.0,
+    );
+    ui.spacing_mut().button_padding.x = 2.0;
+    for (label, name, kind) in keys {
+        let tooltip = l.format(Msg::ManualStartHover, &[("kind", Arg::Str(l.text(name)))]);
         let response = ui
-            .add_enabled(enabled, start_button(label, size))
-            .hint(tooltip, reason);
+            .add_enabled(enabled, start_button(l.text(label), size))
+            .hint(&tooltip, reason);
         if response.clicked() {
             intents.push(StudioIntent::StartManualTransition { kind });
-        }
-    }
-    if alpha_fade_exposed {
-        let response = ui
-            .add_enabled(enabled, start_button("ALPHA", size))
-            .hint("Start a reversible manual AlphaFade transition", reason);
-        if response.clicked() {
-            intents.push(StudioIntent::StartManualTransition {
-                kind: ManualTransitionKind::AlphaFade,
-            });
         }
     }
 }
 
 fn start_button(label: &str, size: Vec2) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(label.to_owned()).size(10.5).color(TEXT)).min_size(size)
+    egui::Button::new(RichText::new(label.to_owned()).size(10.0).color(TEXT))
+        .min_size(size)
+        .truncate()
 }
 
 fn draw_manual_position(
@@ -555,7 +623,8 @@ fn draw_manual_position(
     intents: &mut Vec<StudioIntent>,
 ) {
     {
-        let position_label = ui.label(RichText::new("POS").size(10.0).color(MUTED));
+        let l = l10n::locale(ui.ctx());
+        let position_label = ui.label(field_label(l.text(Msg::PositionShort)));
         let mut position = desired_manual_position(desired).basis_points();
         let response = ui
             .add_enabled(
@@ -568,10 +637,7 @@ fn draw_manual_position(
                     .suffix(" bp"),
             )
             .labelled_by(position_label.id)
-            .hint(
-                "Exact T-bar position from 0 through 10000 basis points; lower values reverse",
-                reason,
-            );
+            .hint(l.text(Msg::PositionHover), reason);
         if response.changed() {
             intents.push(StudioIntent::SetManualTransitionPosition {
                 position: ManualTransitionPosition::new(position)
@@ -587,15 +653,20 @@ fn draw_manual_terminal_buttons(
     reason: &str,
     intents: &mut Vec<StudioIntent>,
 ) {
+    let l = l10n::locale(ui.ctx());
+    // The two keys share the rest of the row equally.
+    let spacing = ui.spacing().item_spacing.x;
+    let width = ((ui.available_width() - spacing) / 2.0).floor().max(40.0);
+    ui.spacing_mut().button_padding.x = 3.0;
     for (label, tooltip, intent) in [
         (
-            "COMMIT",
-            "Commit the active manual transition at its current direction",
+            l.text(Msg::CommitKey),
+            l.text(Msg::CommitHover).to_owned(),
             StudioIntent::CommitManualTransition,
         ),
         (
-            "CANCEL",
-            "Cancel the active manual transition  [Esc]",
+            l.text(Msg::CancelKey),
+            with_key(l, l.text(Msg::ShortcutCancelManual), "Esc"),
             StudioIntent::CancelManualTransition,
         ),
     ] {
@@ -603,9 +674,10 @@ fn draw_manual_terminal_buttons(
             .add_enabled(
                 enabled,
                 egui::Button::new(RichText::new(label).size(10.5).strong())
-                    .min_size(Vec2::new(0.0, 22.0)),
+                    .min_size(Vec2::new(width, 22.0))
+                    .truncate(),
             )
-            .hint(tooltip, reason);
+            .hint(&tooltip, reason);
         if response.clicked() {
             intents.push(intent);
         }
@@ -621,15 +693,20 @@ pub(crate) const fn desired_manual_position(
     }
 }
 
-pub(crate) fn manual_transition_label(status: ManualTransitionStatus) -> String {
+pub(crate) fn manual_transition_label(l: Locale, status: ManualTransitionStatus) -> String {
     match status {
-        ManualTransitionStatus::Inactive => "INACTIVE".to_owned(),
-        ManualTransitionStatus::Active(state) => format!(
-            "{} {}->{} @ {} BP",
-            manual_kind_label(state.kind),
-            state.from,
-            state.to,
-            state.position.basis_points(),
+        ManualTransitionStatus::Inactive => l.text(Msg::ManualInactive).to_owned(),
+        ManualTransitionStatus::Active(state) => l.format(
+            Msg::ManualStateActive,
+            &[
+                ("kind", Arg::Str(l.tr(manual_kind_label(state.kind)))),
+                ("from", Arg::Str(&state.from.to_string())),
+                ("to", Arg::Str(&state.to.to_string())),
+                (
+                    "position",
+                    Arg::Plain(u64::from(state.position.basis_points())),
+                ),
+            ],
         ),
     }
 }
