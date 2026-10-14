@@ -1629,6 +1629,27 @@ independently with tested recovery.
 11. Add project append, bundle, relink, import/export, templates, undo/lock.
 The current persistence slice only audits stored media asset references; all item 11 mutation workflows remain planned.
 
+Current implementation boundary for item 1: `fm-titles` provides dependent,
+bounded title scenes and a deterministic CPU renderer. Templates carry typed
+text, number, color, and image fields with optimistic scene updates; elements
+support text, rectangles, images, clocks, and tickers with style, alignment,
+z-order, visibility, and keyframe animation tracks. Structural validation
+checks field types, element bounds, and referenced assets. Text is real glyph
+rasterization from caller-supplied font bytes through `ab_glyph` with kerned
+advances, greedy word wrapping, horizontal and vertical alignment,
+anti-aliased premultiplied RGBA8 coverage, and frame/box clipping. Image
+elements now render caller-supplied decoded RGBA8 frames with bounded
+nearest-neighbor stretch-to-bounds scaling, clipping, and premultiplied
+source-over including element opacity; unknown or name-only assets keep the
+placeholder path and are reported. All work is capped by output size, font
+size, characters, lines, glyphs, and canvas pixels, and per-element degradation
+is reported instead of failing the frame. Remaining gaps: no grapheme-level
+shaping or bidi, no file decode/orientation/color-profile handling, no fit
+modes or filtering, no GPU rasterization, no title designer or live field
+editor, no project-schema instantiation, and no animation/ticker integration
+with real data sources. Item 1 therefore remains incomplete and `GX-001`
+remains planned.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)
