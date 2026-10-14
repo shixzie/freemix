@@ -479,6 +479,10 @@ impl PairedFrame {
         }
         let audio_f32le = interleave_f32le(&audio)?;
         drop(audio);
+        // `retained_bytes` charges capacity; spare caller capacity would
+        // exceed the `maximum_pair_bytes` budget limits were validated with.
+        let mut rgba = rgba;
+        rgba.shrink_to_fit();
         Ok(Self {
             format: format.clone(),
             sequence,
@@ -1116,7 +1120,7 @@ impl Recorder {
     ///
     /// When [`RecordConfig::wav`] names a path, that path must not exist: it is
     /// created exclusively before any child starts and the same child reopens
-    /// it to write linear PCM directly.
+    /// it to write linear PCM directly. A failed start removes it again.
     ///
     /// # Errors
     ///
@@ -1130,6 +1134,9 @@ impl Recorder {
         let executable = recorder_executable(config.ffmpeg)?;
         let output = prepare_output(output)?;
         prepare_wav(config.wav.as_deref())?;
+        // Every later startup failure removes the sidecar created above, so
+        // a retry is not refused as `AlreadyExists`.
+        let mut created_wav = CreatedWav(config.wav.clone());
         let video_token = random_token()?;
         let audio_token = random_token()?;
         let video_listener = bind_listener(MediaInput::Video)?;
@@ -1376,6 +1383,7 @@ impl Recorder {
             }
         };
         workers.push(dispatcher);
+        created_wav.0 = None;
         Ok(Self {
             format: config.format,
             limits: config.limits,
@@ -1744,6 +1752,17 @@ fn prepare_wav(path: Option<&Path>) -> Result<(), StartError> {
         .map_err(|error| StartError::complete(StartErrorKind::WavOutput(error.kind())))?;
     drop(probe);
     Ok(())
+}
+
+/// Removes a sidecar created by [`prepare_wav`] when startup fails.
+struct CreatedWav(Option<PathBuf>);
+
+impl Drop for CreatedWav {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 /// Reads the sidecar length once the child has stopped writing. A killed child
@@ -2123,6 +2142,7 @@ fn spawn_output(
                         }
                     }
                     Ok(_) => {}
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) => {
                         first_error.get_or_insert(error.kind());
                         shared.fail(RecordFailure::OutputRead(error.kind()));
@@ -2159,6 +2179,7 @@ fn spawn_stderr(
                 match stderr.read(&mut buffer) {
                     Ok(0) => return,
                     Ok(count) => shared.append_stderr(&buffer[..count]),
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) => {
                         shared.fail(RecordFailure::StderrRead(error.kind()));
                         return;
@@ -2608,7 +2629,11 @@ fn command_args(
                 .into_iter()
                 .map(OsString::from),
         );
-        args.push(path.as_os_str().to_owned());
+        // `file:` keeps a relative name such as `take:2.wav`, `pipe:1`, or
+        // `-a.wav` a literal path instead of a protocol, pipe, or option.
+        let mut output = OsString::from("file:");
+        output.push(path.as_os_str());
+        args.push(output);
     }
     args
 }
@@ -3028,8 +3053,32 @@ mod tests {
         let mut expected_wav = strings(&args(None));
         expected_wav
             .extend(["-map", "1:a:0", "-c:a", "pcm_s16le", "-f", "wav", "-y"].map(str::to_owned));
-        expected_wav.push(wav.to_str().unwrap().to_owned());
+        expected_wav.push(format!("file:{}", wav.to_str().unwrap()));
         assert_eq!(strings(&args(Some(wav))), expected_wav);
+    }
+
+    #[test]
+    fn wav_sidecar_argument_is_a_literal_file_path() {
+        // Without the `file:` protocol prefix, FFmpeg reads `take:2.wav` as an
+        // unknown `take` protocol, `pipe:1` as the MP4 stdout pipe, and a
+        // leading `-` as an option.
+        for path in ["take:2.wav", "pipe:1", "-sidecar.wav"] {
+            let args = command_args(
+                &format(),
+                "127.0.0.1:1000".parse().unwrap(),
+                "127.0.0.1:1001".parse().unwrap(),
+                "video-secret",
+                "audio-secret",
+                Some(Path::new(path)),
+                None,
+                None,
+                None,
+            );
+            assert_eq!(
+                args.last().unwrap(),
+                &OsString::from(format!("file:{path}"))
+            );
+        }
     }
 
     #[test]
@@ -3378,6 +3427,110 @@ mod tests {
             !marker.exists(),
             "start spawned the child before refusing the existing sidecar"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_start_removes_the_wav_sidecar_it_created() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let stub = directory.path().join("ffmpeg-stub");
+        fs::write(&stub, "#!/bin/sh\nexit 3\n").unwrap();
+        let mut permissions = fs::metadata(&stub).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&stub, permissions).unwrap();
+
+        let wav = directory.path().join("sidecar.wav");
+        let mut config = RecordConfig::new(format());
+        config.ffmpeg = Executable::Explicit(stub);
+        config.wav = Some(wav.clone());
+        let output = File::create(directory.path().join("output.mp4")).unwrap();
+        let Err(error) = Recorder::start(output, config.clone()) else {
+            panic!("start accepted a child that exits immediately");
+        };
+        assert!(
+            !matches!(error.kind, StartErrorKind::WavOutput(_)),
+            "{error:?}"
+        );
+        assert!(
+            !wav.exists(),
+            "a failed start left its exclusive sidecar behind"
+        );
+
+        // A retry is therefore not refused as `AlreadyExists`.
+        let output = File::create(directory.path().join("output-retry.mp4")).unwrap();
+        let Err(error) = Recorder::start(output, config) else {
+            panic!("start accepted a child that exits immediately");
+        };
+        assert!(
+            !matches!(error.kind, StartErrorKind::WavOutput(_)),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn over_allocated_rgba_is_charged_within_the_pair_budget() {
+        let format = format();
+        let sequence = SequenceNumber::new(10);
+        let samples = format.expected_samples(sequence).unwrap();
+        let mut rgba = Vec::with_capacity(format.rgba_bytes_per_frame() * 64);
+        rgba.resize(format.rgba_bytes_per_frame(), 0);
+        let frame =
+            PairedFrame::new(&format, sequence, rgba, audio(&format, sequence, samples)).unwrap();
+        assert!(frame.retained_bytes() <= format.maximum_pair_bytes().unwrap());
+    }
+
+    #[test]
+    fn output_and_stderr_workers_retry_interrupted_reads() {
+        struct InterruptOnce {
+            interrupted: bool,
+            bytes: Option<Vec<u8>>,
+        }
+
+        impl Read for InterruptOnce {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(io::Error::from(io::ErrorKind::Interrupted));
+                }
+                let Some(bytes) = self.bytes.take() else {
+                    return Ok(0);
+                };
+                buffer[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }
+        }
+
+        let format = format();
+        let shared = Arc::new(Shared::new(&format, 1024, [String::new(), String::new()]));
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("interrupted-output");
+        let result = spawn_output(
+            InterruptOnce {
+                interrupted: false,
+                bytes: Some(b"media".to_vec()),
+            },
+            File::create(&path).unwrap(),
+            Arc::clone(&shared),
+        )
+        .unwrap()
+        .join()
+        .unwrap();
+        assert_eq!(result.finalization, OutputFinalization::Synced);
+        assert_eq!(fs::read(&path).unwrap(), b"media");
+        spawn_stderr(
+            InterruptOnce {
+                interrupted: false,
+                bytes: Some(b"late stderr".to_vec()),
+            },
+            Arc::clone(&shared),
+        )
+        .unwrap()
+        .join()
+        .unwrap();
+        let snapshot = shared.snapshot();
+        assert!(snapshot.failure.is_none(), "{:?}", snapshot.failure);
     }
 
     #[test]

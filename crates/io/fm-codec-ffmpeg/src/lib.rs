@@ -406,6 +406,27 @@ mod tests {
     }
 
     #[test]
+    fn timeouts_that_cannot_form_a_deadline_are_invalid_config() {
+        // `process::run` adds each timeout to `Instant::now()`; an unbounded
+        // value must be refused up front instead of panicking on first use.
+        for set in [
+            |limits: &mut Limits| limits.discovery_timeout = std::time::Duration::MAX,
+            |limits: &mut Limits| limits.probe_timeout = std::time::Duration::MAX,
+            |limits: &mut Limits| limits.frame_metadata_timeout = std::time::Duration::MAX,
+            |limits: &mut Limits| limits.decode_timeout = std::time::Duration::MAX,
+            |limits: &mut Limits| limits.kill_timeout = std::time::Duration::MAX,
+        ] {
+            let mut limits = Limits::default();
+            set(&mut limits);
+            let config = Config {
+                limits,
+                ..Config::default()
+            };
+            assert_eq!(Adapter::new(config).unwrap_err(), Error::InvalidConfig);
+        }
+    }
+
+    #[test]
     fn canonical_path_enforces_root_and_is_one_input_argument() {
         let root = tempdir().unwrap();
         let outside = tempdir().unwrap();

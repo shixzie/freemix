@@ -150,7 +150,8 @@ pub enum DestinationError {
     /// scheme must start with `/`.
     PathNotAbsolute,
     /// The `hls://` path is not a plain sequence of named segments: an empty
-    /// segment (`//`), a trailing `/`, or a `.` or `..` segment is refused.
+    /// segment (`//`), a trailing `/`, a `.` or `..` segment, or a `%` (which
+    /// `FFmpeg` would expand as a segment-template pattern) is refused.
     MalformedHlsPath,
 }
 
@@ -195,8 +196,8 @@ pub struct StreamDestination {
 impl StreamDestination {
     /// Validates scheme, authority, and the presence of a redactable key.
     ///
-    /// For RTMP the secret is everything after the final `/`, including any
-    /// query string, which is where RTMP services carry stream keys and tokens.
+    /// For RTMP the secret is everything after the final `/` of the path,
+    /// including any query string (even one that itself contains `/`), which is where RTMP services carry stream keys and tokens.
     /// For SRT the secret is the value of the single optional `streamid`
     /// parameter; no path component is allowed there at all. An HLS destination
     /// carries no secret: the absolute directory after `hls://` is validated
@@ -250,7 +251,7 @@ impl StreamDestination {
         })
     }
 
-    /// The RTMP secret: everything after the final `/`.
+    /// The RTMP secret: everything after the final `/` before any query.
     fn rtmp_key(rest: &str) -> Result<&str, DestinationError> {
         let (authority, path) = rest
             .split_once('/')
@@ -261,7 +262,10 @@ impl StreamDestination {
         if authority.contains('@') {
             return Err(DestinationError::EmbeddedCredentials);
         }
-        let key_start = path
+        // The query may itself contain `/` (e.g. base64 signatures), so the
+        // key starts after the last `/` of the path proper.
+        let path_end = path.find('?').unwrap_or(path.len());
+        let key_start = path[..path_end]
             .rfind('/')
             .map(|index| index + 1)
             .ok_or(DestinationError::MissingStreamKey)?;
@@ -377,8 +381,9 @@ impl fmt::Display for StreamDestination {
 }
 
 /// Whether `path` is an absolute local directory acceptable as an HLS output:
-/// printable ASCII, at least one segment, and only plain named segments — no
-/// empty segment (`//`), no trailing `/`, and no `.` or `..` segment.
+/// printable ASCII without `%`, at least one segment, and only plain named
+/// segments — no empty segment (`//`), no trailing `/`, and no `.` or `..`
+/// segment.
 ///
 /// This is the one rule set for HLS paths: a destination that parses here is
 /// exactly a directory [`Streamer::start`] is willing to publish into.
@@ -389,6 +394,9 @@ fn valid_local_directory(path: &str) -> bool {
     if !path.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
         || path.ends_with('/')
         || path.contains("//")
+        // The directory is pasted into FFmpeg's segment filename template,
+        // where `%d` or `%v` would be substituted.
+        || path.contains('%')
     {
         return false;
     }
@@ -3376,6 +3384,18 @@ mod tests {
     }
 
     #[test]
+    fn rtmp_query_with_a_slash_does_not_expose_the_stream_key() {
+        // Base64 signatures in the query commonly contain `/`; the secret
+        // still starts after the last `/` of the path, not of the query.
+        let destination =
+            StreamDestination::parse(&format!("rtmp://ingest.example/app/{KEY}?sig=ab/cd=="))
+                .unwrap();
+        assert_eq!(destination.redacted(), "rtmp://ingest.example/app/****");
+        assert!(!format!("{destination:?}").contains(KEY));
+        assert_eq!(destination.key(), format!("{KEY}?sig=ab/cd=="));
+    }
+
+    #[test]
     fn destinations_are_scheme_checked_and_never_render_their_key() {
         for rejected in [
             ("", DestinationError::Empty),
@@ -3857,6 +3877,10 @@ mod tests {
                 "hls:///dotdot/../segment",
                 DestinationError::MalformedHlsPath,
             ),
+            // The directory is pasted into FFmpeg's `%05d` segment template,
+            // where `%d` or `%v` would be substituted and redirect segments.
+            ("hls:///srv/a%dz", DestinationError::MalformedHlsPath),
+            ("hls:///srv/%v/out", DestinationError::MalformedHlsPath),
         ] {
             assert_eq!(
                 StreamDestination::parse(rejected),

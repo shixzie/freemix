@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fm_frame::CpuVideoPayload;
 
@@ -134,4 +134,20 @@ pub(crate) fn validate_limits(limits: Limits) -> bool {
         && !limits.frame_metadata_timeout.is_zero()
         && !limits.decode_timeout.is_zero()
         && !limits.kill_timeout.is_zero()
+        && timeouts_form_deadlines(&limits)
+}
+
+/// Every timeout is added to `Instant::now()` when an operation starts; a
+/// value that cannot form a deadline would panic there instead.
+fn timeouts_form_deadlines(limits: &Limits) -> bool {
+    let now = Instant::now();
+    [
+        limits.discovery_timeout,
+        limits.probe_timeout,
+        limits.frame_metadata_timeout,
+        limits.decode_timeout,
+        limits.kill_timeout,
+    ]
+    .into_iter()
+    .all(|timeout| now.checked_add(timeout).is_some())
 }
