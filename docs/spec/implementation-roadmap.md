@@ -1655,6 +1655,20 @@ editor, no project-schema instantiation, and no animation/ticker integration
 with real data sources. Item 1 therefore remains incomplete and `GX-001`
 remains planned.
 
+Current implementation boundary for item 10: `fm-telestrator` provides a
+sequenced, bounded collaborative board with normalized strokes, per-author and
+global undo/redo with bounded history, redo invalidation on new edits, and
+explicit undo/redo conflicts instead of silent corruption. A freehand eraser
+removes coverage from earlier strokes only, per-author laser pointers expire
+against a caller-supplied clock outside the undoable operation log, an author
+limit bounds participants, and ten fixed shortcut slots carry validated tool
+presets. Deterministic CPU rendering exports straight or premultiplied RGBA.
+Remaining gaps: no text primitives or custom image stamps, no GPU renderer or
+persistence, no protocol, browser, or device input integration, no
+low-latency program/input preview, no web monitor, and no routing of the layer
+into the compositor. Laser pointers are not replicated, so item 10 remains
+incomplete and `GX-007` remains planned.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)
