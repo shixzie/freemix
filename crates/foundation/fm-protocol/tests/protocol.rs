@@ -1372,7 +1372,10 @@ fn streaming_decoder_handles_split_and_multiple_records() {
     let bytes = format!("{command}{command}");
     let split = bytes.len() / 3;
     let mut decoder = LineDecoder::new();
-    assert!(decoder.push(&bytes.as_bytes()[..split]).unwrap().is_empty());
+    assert_eq!(
+        decoder.push(&bytes.as_bytes()[..split]).unwrap(),
+        [] as [fm_protocol::WireMessage; 0]
+    );
     let messages = decoder.push(&bytes.as_bytes()[split..]).unwrap();
     assert_eq!(messages.len(), 2);
     decoder.finish().unwrap();

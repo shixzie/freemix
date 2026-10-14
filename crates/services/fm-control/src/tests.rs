@@ -236,7 +236,7 @@ fn stinger_slot_mutation_is_transition_authorized_and_projects_durable_state() {
         )
         .unwrap();
     control.tick(&server_identity()).unwrap();
-    assert!(control.snapshot().snapshot.stingers.is_empty());
+    assert_eq!(control.snapshot().snapshot.stingers.len(), 0);
 }
 
 fn command(id: &str, key: &str, payload: CommandPayload) -> CommandMessage {
@@ -358,7 +358,7 @@ fn manual_transition_is_authorized_durable_reversible_and_replay_safe() {
             .submit(&principal(Role::Operator), message, 0)
             .unwrap();
         assert!(replay.replayed);
-        assert!(replay.output.events.is_empty());
+        assert_eq!(replay.output.events.len(), 0);
     }
     assert_eq!(
         control
@@ -505,7 +505,7 @@ fn wipe_propagates_with_authorization_idempotency_resume_and_exact_endpoints() {
         .unwrap();
     assert!(duplicate.replayed);
     assert_eq!(duplicate.output.result, accepted.output.result);
-    assert!(duplicate.output.events.is_empty());
+    assert_eq!(duplicate.output.events.len(), 0);
     assert_eq!(control.diagnostics().current_revision, 1);
 
     let ResumeDecision::Events(events) = control.resume(&EventCursor {
@@ -794,7 +794,7 @@ fn fade_to_black_is_authorized_reversible_and_runtime_ordered_with_program() {
     );
 
     let first = control.tick(&server).unwrap();
-    assert!(first.runtime_events.is_empty());
+    assert_eq!(first.runtime_events.len(), 0);
     assert_eq!(first.frame.fade_to_black.interval_end().numerator(), 16_383);
 
     control
@@ -809,7 +809,7 @@ fn fade_to_black_is_authorized_reversible_and_runtime_ordered_with_program() {
     assert_eq!(cut.runtime_events[0].revision, 2);
     assert_eq!(cut.runtime_events[0].generation, 2);
     assert_eq!(cut.runtime_events[0].sequence, 1);
-    assert!(control.tick(&server).unwrap().runtime_events.is_empty());
+    assert_eq!(control.tick(&server).unwrap().runtime_events.len(), 0);
 
     let completed = control.tick(&server).unwrap();
     assert_eq!(completed.runtime_events.len(), 1);
@@ -863,7 +863,7 @@ fn reversing_fade_to_black_supersedes_only_the_displaced_intent() {
             0,
         )
         .unwrap();
-    assert!(control.tick(&server).unwrap().runtime_events.is_empty());
+    assert_eq!(control.tick(&server).unwrap().runtime_events.len(), 0);
     control
         .submit(
             &operator,
@@ -889,7 +889,7 @@ fn reversing_fade_to_black_supersedes_only_the_displaced_intent() {
             ..
         }]
     ));
-    assert!(control.tick(&server).unwrap().runtime_events.is_empty());
+    assert_eq!(control.tick(&server).unwrap().runtime_events.len(), 0);
     let reversed_completion = control.tick(&server).unwrap();
     assert!(matches!(
         reversed_completion.runtime_events.as_slice(),
@@ -969,7 +969,7 @@ fn accepted_preparation_is_isolated_until_commit_and_projects_exactly() {
     };
     assert!(replay.replayed);
     assert!(replay.accepted.is_none());
-    assert!(replay.output.events.is_empty());
+    assert_eq!(replay.output.events.len(), 0);
     assert_eq!(replay.output.result, committed.output.result);
 }
 
@@ -997,7 +997,7 @@ fn rejected_preparation_and_drop_have_no_effects_but_commit_installs_receipt() {
         rejected.output().result,
         CommandResult::Rejected { ref code, .. } if code == "not_found"
     ));
-    assert!(rejected.output().events.is_empty());
+    assert_eq!(rejected.output().events.len(), 0);
     assert_eq!(rejected.project(0).unwrap().receipts().len(), 1);
     assert_eq!(subscription.try_recv(), Err(TryRecvError::Empty));
     drop(rejected);
@@ -1122,7 +1122,7 @@ fn authorization_denial_replays_after_role_and_command_change_without_engine_mut
 
     assert_eq!(replayed.output.result, denied.output.result);
     assert!(replayed.replayed);
-    assert!(replayed.output.events.is_empty());
+    assert_eq!(replayed.output.events.len(), 0);
     assert!(replayed.accepted.is_none());
     assert_eq!(control.snapshot(), &before);
     assert_eq!(control.diagnostics().current_revision, 0);
@@ -1212,7 +1212,7 @@ fn engine_controls_accepted_rejected_and_duplicate_behavior() {
     assert!(duplicate.is_accepted());
     assert!(duplicate.replayed);
     assert!(duplicate.accepted.is_none());
-    assert!(duplicate.output.events.is_empty());
+    assert_eq!(duplicate.output.events.len(), 0);
     assert_eq!(duplicate.output.result, accepted.output.result);
 
     let rejected = control
@@ -1723,8 +1723,8 @@ fn shutdown_ticks_settle_fade_without_claiming_runtime_realization() {
 
     for _ in 0..3 {
         let outcome = control.tick_for_shutdown(&server_identity()).unwrap();
-        assert!(outcome.runtime_events.is_empty());
-        assert!(outcome.subscriber_failures.is_empty());
+        assert_eq!(outcome.runtime_events.len(), 0);
+        assert_eq!(outcome.subscriber_failures.len(), 0);
         assert_eq!(subscription.try_recv(), Err(TryRecvError::Empty));
     }
 
@@ -1976,7 +1976,7 @@ fn stream_commands_require_transition_permission_and_project_full_status() {
         )
         .unwrap();
     assert!(replay.replayed);
-    assert!(replay.output.events.is_empty());
+    assert_eq!(replay.output.events.len(), 0);
 }
 
 #[test]
@@ -2161,7 +2161,7 @@ fn record_command_replays_and_stops_only_the_addressed_slot() {
         )
         .unwrap();
     assert!(replay.replayed);
-    assert!(replay.output.events.is_empty());
+    assert_eq!(replay.output.events.len(), 0);
 
     let stopped = control
         .submit(

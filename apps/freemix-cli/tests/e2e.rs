@@ -2255,7 +2255,7 @@ fn local_media_input_add_persists_offline_asset_contract() {
         &input.kind,
         InputKind::Media { asset_uri } if asset_uri == "asset://missing/video.ppm"
     ));
-    assert!(input.required_capabilities.is_empty());
+    assert_eq!(input.required_capabilities.len(), 0);
     assert_eq!(
         after.project().input_audio_strip(input.id).unwrap(),
         InputAudioStripState::default()
@@ -2796,7 +2796,7 @@ fn local_stream_destinations_are_authored_offline_and_never_print_the_stream_key
         context.project_path(),
         "40",
     ]));
-    assert!(store.load().unwrap().project().stream_targets().is_empty());
+    assert_eq!(store.load().unwrap().project().stream_targets().len(), 0);
     assert_eq!(
         stdout(&invoke_bounded(&["streams", context.project_path()])),
         ""
@@ -3562,13 +3562,13 @@ fn local_output_editing_persists_routes_and_names_and_rejects_unknown_references
         BusId::new(NonZeroU128::new(20).unwrap())
     );
     assert_eq!(before.project().audio_buses()[0].name, "Master");
-    assert!(before.project().audio_buses()[0].sends.is_empty());
+    assert_eq!(before.project().audio_buses()[0].sends.len(), 0);
     assert_eq!(
         before.project().audio_buses()[1].id,
         BusId::new(NonZeroU128::new(21).unwrap())
     );
     assert_eq!(before.project().audio_buses()[1].name, "Aux \"A\"");
-    assert!(before.project().audio_buses()[1].sends.is_empty());
+    assert_eq!(before.project().audio_buses()[1].sends.len(), 0);
     assert_eq!(before.project().outputs().len(), 2);
     assert_eq!(
         before.project().outputs()[0].id,
@@ -3586,11 +3586,7 @@ fn local_output_editing_persists_routes_and_names_and_rejects_unknown_references
         before.project().outputs()[0].startup,
         StartupPolicy::Stopped
     );
-    assert!(
-        before.project().outputs()[0]
-            .required_capabilities
-            .is_empty()
-    );
+    assert_eq!(before.project().outputs()[0].required_capabilities.len(), 0);
     assert_eq!(
         before.project().outputs()[1].id,
         OutputId::new(NonZeroU128::new(31).unwrap())
@@ -3955,7 +3951,7 @@ fn project_rename_preserves_runtime_state_and_rejects_blank_name() {
     let journal_before = journal_bytes(&store);
     assert!(before.runtime_manual_transitions().desired.is_some());
     assert!(before.position().revision > 0);
-    assert!(!before.idempotency_receipts().is_empty());
+    assert_ne!(before.idempotency_receipts().len(), 0);
 
     let supplied = "  Final \"Show\"  ";
     assert_success(&invoke_bounded(&[
@@ -4194,7 +4190,7 @@ fn local_scene_input_add_persists_empty_scene_without_routing() {
     assert_eq!(scene.id.get().get(), 7);
     assert_eq!(scene.name, name);
     assert_eq!(scene.background, Rgba8::OPAQUE_BLACK);
-    assert!(scene.layers.is_empty());
+    assert_eq!(scene.layers.len(), 0);
     let input = after.project().inputs().last().unwrap();
     assert_eq!(input.id.get().get(), 3);
     assert_eq!(input.name, name);
@@ -4303,7 +4299,7 @@ fn local_scene_input_duplicate_persists_scene_pair_and_default_strip() {
     let copied_input = &after.project().inputs()[3];
     assert_eq!(copied_input.id, InputId::new(NonZeroU128::new(11).unwrap()));
     assert_eq!(copied_input.name, "Copied Input");
-    assert!(copied_input.required_capabilities.is_empty());
+    assert_eq!(copied_input.required_capabilities.len(), 0);
     assert!(matches!(
         copied_input.kind,
         InputKind::Scene { scene_id, audio_source: None } if scene_id == expected_scene.id
@@ -4448,19 +4444,18 @@ fn scene_rename_persists_exact_name_and_failures_preserve_manifest() {
     let before = store.load().unwrap();
     assert_ne!(before.project().scenes()[0].background, Rgba8::OPAQUE_BLACK);
     assert_eq!(before.project().scenes()[0].layers.len(), 1);
-    assert!(!before.project().audio_buses().is_empty());
-    assert!(!before.project().outputs().is_empty());
+    assert_ne!(before.project().audio_buses().len(), 0);
+    assert_ne!(before.project().outputs().len(), 0);
     assert!(before.runtime_routing().desired_program_id.is_some());
     assert!(before.runtime_manual_transitions().desired.is_some());
     assert!(before.runtime_fade_to_black().desired.target_active);
     assert!(before.runtime_overlays().desired[0].source.is_some());
-    assert!(
-        !before.runtime_overlays().desired[0]
-            .included_outputs
-            .is_empty()
+    assert_ne!(
+        before.runtime_overlays().desired[0].included_outputs.len(),
+        0
     );
     assert!(before.position().revision > 0);
-    assert!(!before.idempotency_receipts().is_empty());
+    assert_ne!(before.idempotency_receipts().len(), 0);
     let manifest_before = fs::read(context.project.join("project.json")).unwrap();
     let journal_before = journal_bytes(&store);
     for (scene, name, expected) in [
@@ -5254,7 +5249,7 @@ fn local_scene_layer_rename_persists_exact_name_and_rejects_invalid_target() {
     let before = store.load().unwrap();
     assert!(before.runtime_manual_transitions().desired.is_some());
     assert!(before.position().revision > 0);
-    assert!(!before.idempotency_receipts().is_empty());
+    assert_ne!(before.idempotency_receipts().len(), 0);
     let supplied = "  Exact layer  ";
     run(&[
         "scene-layer-rename",
@@ -6334,7 +6329,7 @@ fn local_scene_layer_effects_author_render_and_clear_exactly() {
     );
     apply!(&["scene-layer-effect-clear", path, "11", "0"]);
     let stored = ProjectStore::new(&project).unwrap().load().unwrap();
-    assert!(stored.project().scenes()[0].layers[0].effects.is_empty());
+    assert_eq!(stored.project().scenes()[0].layers[0].effects.len(), 0);
     let scenes = invoke(&["scenes", path]);
     assert_success(&scenes);
     assert!(stdout(&scenes).contains("effects=none"));
@@ -6700,7 +6695,7 @@ fn local_input_replace_media_preserves_identity_and_runtime() {
     let before = store.load().unwrap();
     assert!(before.runtime_manual_transitions().desired.is_some());
     assert!(before.position().revision > 0);
-    assert!(!before.idempotency_receipts().is_empty());
+    assert_ne!(before.idempotency_receipts().len(), 0);
     let input = InputId::new(NonZeroU128::new(2).unwrap());
     let before_input = before
         .project()
@@ -6730,7 +6725,7 @@ fn local_input_replace_media_preserves_identity_and_runtime() {
             asset_uri: "asset://clip.ppm".into(),
         }
     );
-    assert!(after_input.required_capabilities.is_empty());
+    assert_eq!(after_input.required_capabilities.len(), 0);
     assert_eq!(
         after.project().schema_version(),
         before.project().schema_version()
@@ -8222,7 +8217,7 @@ fn assert_solid_ppm(path: &Path, width: u32, height: u32, rgb: [u8; 3]) {
     assert!(bytes.starts_with(header.as_bytes()));
     let pixels = &bytes[header.len()..];
     assert_eq!(pixels.len(), (width * height * 3) as usize);
-    assert!(pixels.chunks_exact(3).all(|pixel| pixel == rgb));
+    assert!(pixels.as_chunks::<3>().0.iter().all(|pixel| *pixel == rgb));
 }
 
 fn assert_ppm_top_row(path: &Path, width: u32, height: u32, expected: &[[u8; 3]]) {
@@ -8230,10 +8225,7 @@ fn assert_ppm_top_row(path: &Path, width: u32, height: u32, expected: &[[u8; 3]]
     let header = format!("P6\n{width} {height}\n255\n");
     assert!(bytes.starts_with(header.as_bytes()));
     let top_row = &bytes[header.len()..header.len() + width as usize * 3];
-    assert_eq!(
-        top_row.chunks_exact(3).collect::<Vec<_>>(),
-        expected.iter().map(<[u8; 3]>::as_slice).collect::<Vec<_>>()
-    );
+    assert_eq!(top_row.as_chunks::<3>().0, expected);
 }
 
 fn unique_test_root() -> PathBuf {

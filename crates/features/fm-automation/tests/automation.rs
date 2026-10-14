@@ -113,7 +113,10 @@ fn triggers_filter_delay_and_fire_in_deterministic_order() {
     let mut event = AutomationEvent::new("transition-in", 100);
     event.source = Some("camera-1".into());
     engine.ingest(&event).unwrap();
-    assert!(engine.poll(109, &ConditionContext::new()).is_empty());
+    assert_eq!(
+        engine.poll(109, &ConditionContext::new()),
+        [] as [fm_automation::TriggerFire<TestCommand>; 0]
+    );
     let fired = engine.poll(110, &ConditionContext::new());
     assert_eq!(
         fired
@@ -138,13 +141,19 @@ fn delayed_trigger_conditions_use_fire_time_state_and_can_be_cancelled() {
         })
         .unwrap();
     engine.ingest(&AutomationEvent::new("ready", 20)).unwrap();
-    assert!(engine.poll(25, &ConditionContext::new()).is_empty());
+    assert_eq!(
+        engine.poll(25, &ConditionContext::new()),
+        [] as [fm_automation::TriggerFire<TestCommand>; 0]
+    );
 
     let ids = engine.ingest(&AutomationEvent::new("ready", 30)).unwrap();
     assert!(engine.cancel_action(ids[0]));
     let mut state = ConditionContext::new();
     state.insert("armed".into(), true.into());
-    assert!(engine.poll(35, &state).is_empty());
+    assert_eq!(
+        engine.poll(35, &state),
+        [] as [fm_automation::TriggerFire<TestCommand>; 0]
+    );
 }
 
 #[test]
@@ -244,7 +253,10 @@ fn schedule_boundaries_are_inclusive_anchored_and_caller_driven() {
             CommandIntent::discrete(TestCommand::Named("once")),
         )
         .unwrap();
-    assert!(schedules.poll(9).unwrap().is_empty());
+    assert_eq!(
+        schedules.poll(9).unwrap(),
+        [] as [fm_automation::ScheduleFire<TestCommand>; 0]
+    );
     assert_eq!(schedules.poll(10).unwrap()[0].occurrence_ms, 10);
 
     schedules
@@ -258,7 +270,10 @@ fn schedule_boundaries_are_inclusive_anchored_and_caller_driven() {
     let late = schedules.poll(45).unwrap();
     assert_eq!(late[0].occurrence_ms, 20);
     assert_eq!(late[0].missed_occurrences, 2);
-    assert!(schedules.poll(49).unwrap().is_empty());
+    assert_eq!(
+        schedules.poll(49).unwrap(),
+        [] as [fm_automation::ScheduleFire<TestCommand>; 0]
+    );
     assert_eq!(schedules.poll(50).unwrap()[0].occurrence_ms, 50);
     schedules.cancel(&ScheduleId::from("repeat"));
 
@@ -270,7 +285,10 @@ fn schedule_boundaries_are_inclusive_anchored_and_caller_driven() {
             CommandIntent::discrete(TestCommand::Named("timer")),
         )
         .unwrap();
-    assert!(schedules.poll(1_024).unwrap().is_empty());
+    assert_eq!(
+        schedules.poll(1_024).unwrap(),
+        [] as [fm_automation::ScheduleFire<TestCommand>; 0]
+    );
     assert_eq!(
         schedules.poll(1_025).unwrap()[0].id,
         ScheduleId::from("timer")
@@ -320,7 +338,10 @@ fn programmed_go_previews_orders_cancels_and_suppresses_a_retried_press() {
     );
     assert_eq!(engine.poll(110)[0].action.index, 1);
     assert!(engine.cancel(first.run_id));
-    assert!(engine.poll(115).is_empty());
+    assert_eq!(
+        engine.poll(115),
+        [] as [fm_automation::GoActionFire<TestCommand>; 0]
+    );
 
     // A different press is a different run.
     let second = engine
@@ -360,7 +381,7 @@ fn controller_maps_ranges_velocity_and_retains_mapping_across_reconnect() {
     };
     assert_close(mapped.value, 1.0);
     assert_close(mapped.velocity.unwrap(), 0.5);
-    assert!(
+    assert_eq!(
         controllers
             .map_input(ControllerInput {
                 address: &address,
@@ -368,8 +389,8 @@ fn controller_maps_ranges_velocity_and_retains_mapping_across_reconnect() {
                 velocity: None,
                 timestamp: MediaTimestamp::new(3),
             })
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [fm_automation::CommandIntent<fm_automation::MappedControllerIntent>; 0]
     );
 
     controllers
@@ -450,7 +471,10 @@ fn controller_learn_and_activator_reconnect_are_state_only() {
         ..TallySnapshot::default()
     };
     assert_close(activators.derive(&tally)[0].value, 1.0);
-    assert!(activators.derive(&tally).is_empty());
+    assert_eq!(
+        activators.derive(&tally),
+        [] as [fm_automation::ControllerFeedback; 0]
+    );
     activators.reconnect("surface");
     assert_close(activators.derive(&tally)[0].value, 1.0);
 }

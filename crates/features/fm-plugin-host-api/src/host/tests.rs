@@ -142,7 +142,7 @@ fn host_mutations_are_enveloped_idempotent_commands() {
     let replay = host.execute(envelope, 0);
     assert!(!first.replayed);
     assert!(replay.replayed);
-    assert!(replay.events.is_empty());
+    assert_eq!(replay.events.len(), 0);
     assert_eq!(host.revision(), Revision::new(1));
     assert!(
         host.commands

@@ -935,7 +935,7 @@ mod tests {
             run_control_loop(input, &mut output, &mut lifecycle),
             Err(RunError::ControlLineTooLong)
         ));
-        assert!(output.is_empty());
+        assert_eq!(output, [] as [u8; 0]);
     }
 
     #[test]

@@ -74,8 +74,10 @@ fn video_frames_have_importer_compatible_rgba_contracts() {
             .plane(0)
             .unwrap()
             .bytes()
-            .chunks_exact(4)
-            .all(|pixel| pixel == solid_color.to_bytes())
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == solid_color.to_bytes())
     );
 }
 

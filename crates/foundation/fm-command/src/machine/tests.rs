@@ -146,7 +146,7 @@ fn duplicate_key_replays_original_receipt_without_running_mutation() {
 
     assert!(duplicate.replayed);
     assert_eq!(duplicate.receipt, original.receipt);
-    assert!(duplicate.events.is_empty());
+    assert_eq!(duplicate.events.len(), 0);
     assert_eq!(commands.state().value, 10);
     assert_eq!(commands.revision(), Revision::new(1));
 }
@@ -209,7 +209,7 @@ fn failed_transaction_rolls_back_state_events_and_revision() {
     assert_eq!(commands.state().value, 5);
     assert_eq!(commands.revision(), Revision::default());
     assert_eq!(commands.event_sequence(), EventSequence::default());
-    assert!(outcome.events.is_empty());
+    assert_eq!(outcome.events.len(), 0);
     assert_eq!(
         outcome.receipt.rejected().unwrap().rejection.code,
         RejectionCode::Conflict
@@ -296,14 +296,14 @@ fn later_transaction_failure_rolls_back_every_mutation() {
         .unwrap();
 
     assert_eq!(prepared.draft().value, 5);
-    assert!(prepared.events().is_empty());
+    assert_eq!(prepared.events().len(), 0);
     assert_eq!(
         prepared.receipt().rejected().unwrap().rejection.code,
         RejectionCode::Conflict
     );
 
     let outcome = commands.commit(prepared).unwrap();
-    assert!(outcome.events.is_empty());
+    assert_eq!(outcome.events.len(), 0);
     assert_eq!(commands.state().value, 5);
     assert_eq!(commands.revision(), Revision::default());
     assert_eq!(commands.event_sequence(), EventSequence::default());
@@ -439,7 +439,7 @@ fn transaction_can_accept_with_no_events() {
         .prepared()
         .unwrap();
 
-    assert!(prepared.events().is_empty());
+    assert_eq!(prepared.events().len(), 0);
     commands.commit(prepared).unwrap();
     assert_eq!(commands.state().value, 11);
     assert_eq!(commands.revision(), Revision::new(1));
@@ -473,7 +473,7 @@ fn duplicate_transaction_replays_one_receipt_without_preparing_items() {
 
     assert!(replay.replayed);
     assert_eq!(replay.receipt, original.receipt);
-    assert!(replay.events.is_empty());
+    assert_eq!(replay.events.len(), 0);
     assert_eq!(commands.state().value, 4);
     assert_eq!(commands.revision(), Revision::new(1));
 }

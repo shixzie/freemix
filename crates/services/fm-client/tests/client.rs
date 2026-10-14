@@ -625,7 +625,7 @@ fn replayed_evicted_receipt_terminally_fails_sent_commands_and_forces_snapshot()
     );
     assert_eq!(client.retained_command_count(), 2);
     assert_eq!(client.outbound_len(), 0);
-    assert!(client.model().pending_commands().is_empty());
+    assert_eq!(client.model().pending_commands(), []);
     assert_eq!(
         client.model().view().unwrap().switcher.desired.preview,
         input(2).to_domain()
@@ -710,7 +710,7 @@ fn whitespace_only_idempotency_key_does_not_mutate_command_state() {
     assert_eq!(error.to_string(), "idempotency key must not be blank");
     assert_eq!(client.outbound_len(), 0);
     assert_eq!(client.retained_command_count(), 0);
-    assert!(client.model().pending_commands().is_empty());
+    assert_eq!(client.model().pending_commands(), []);
 
     let command = client
         .queue_command(CommandPayload::Cut, " accepted ", None, None)

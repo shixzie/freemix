@@ -229,7 +229,6 @@ impl EventLog {
         self.dropped
     }
 
-    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &EventRecord> {
         self.records.iter()
     }

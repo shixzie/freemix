@@ -913,13 +913,11 @@ impl Adapter {
         let output = self.run_audio_window(source, prepared)?;
         let samples = output
             .stdout
-            .chunks_exact(size_of::<f32>())
+            .as_chunks::<{ size_of::<f32>() }>()
+            .0
+            .iter()
             .map(|bytes| {
-                let bytes: [u8; 4] = bytes.try_into().map_err(|_| Error::OutputMismatch {
-                    expected: prepared.total_bytes,
-                    actual: output.stdout.len(),
-                })?;
-                let sample = f32::from_le_bytes(bytes);
+                let sample = f32::from_le_bytes(*bytes);
                 if sample.is_finite() {
                     Ok(sample)
                 } else {

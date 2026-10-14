@@ -358,7 +358,12 @@ fn planar_meter_slices_match_allocating_reference_in_stable_order() {
             .collect::<Vec<_>>(),
         [first, silent, muted, follow_video, not_soloed]
     );
-    for (actual, expected) in input_meters.chunks_exact(2).zip(&expected.input_meters) {
+    for (actual, expected) in input_meters
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .zip(&expected.input_meters)
+    {
         assert_eq!(actual, expected.meters.channels());
     }
     assert_meter(input_meters[0], 0.125, (0.028_320_313_f32 / 4.0).sqrt());

@@ -603,7 +603,7 @@ impl FfmpegRtmpSink {
         let mut planes = (0..channels)
             .map(|_| Vec::with_capacity(timing.samples))
             .collect::<Vec<_>>();
-        for (index, sample) in audio.chunks_exact(BYTES_PER_SAMPLE).enumerate() {
+        for (index, sample) in audio.as_chunks::<BYTES_PER_SAMPLE>().0.iter().enumerate() {
             let mut bytes = [0_u8; BYTES_PER_SAMPLE];
             bytes.copy_from_slice(sample);
             planes[index % channels].push(f32::from_le_bytes(bytes));

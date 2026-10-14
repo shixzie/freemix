@@ -232,7 +232,7 @@ fn safe_areas_never_enter_program_but_render_in_operator_output() {
     scene.push_safe_area(SafeAreaGuide::new(1, 1, 2, 2, Rgba8::new(255, 255, 0, 255)));
     let (program, _) = compile_scene(&scene, OutputTarget::Program).unwrap();
     let (operator, _) = compile_scene(&scene, OutputTarget::Operator).unwrap();
-    assert!(program.safe_areas().is_empty());
+    assert_eq!(program.safe_areas(), []);
     assert_eq!(
         execute_cpu(&program, &[]).unwrap().pixel(1, 1),
         Some(Rgba8::new(0, 0, 0, 255))

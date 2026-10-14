@@ -459,7 +459,10 @@ fn duplicate_scene_input_is_atomic_and_preserves_layer_fields() {
             audio_source: None,
         }
     );
-    assert!(project.inputs()[1].required_capabilities.is_empty());
+    assert_eq!(
+        project.inputs()[1].required_capabilities,
+        [] as [std::string::String; 0]
+    );
     assert_eq!(
         project.input_audio_strip(input_id(2)),
         Some(InputAudioStripState::default())
@@ -521,7 +524,10 @@ fn add_scene_input_is_atomic_and_uses_current_name_contract() {
             audio_source: None
         } if added_scene == scene_id(2)
     ));
-    assert!(project.inputs()[1].required_capabilities.is_empty());
+    assert_eq!(
+        project.inputs()[1].required_capabilities,
+        [] as [std::string::String; 0]
+    );
     assert_eq!(
         project.input_audio_strip(input_id(2)),
         Some(InputAudioStripState::default())
@@ -1715,7 +1721,7 @@ fn stinger_slots_can_be_reconfigured_and_removed_without_duplicates() {
     project.set_stinger(replacement);
     assert_eq!(project.stingers(), &[replacement]);
     assert_eq!(project.remove_stinger(first.slot), Some(replacement));
-    assert!(project.stingers().is_empty());
+    assert_eq!(project.stingers(), []);
     assert_eq!(project.remove_stinger(first.slot), None);
     assert_eq!(project.validate(), Ok(()));
 }
@@ -2001,7 +2007,7 @@ fn scene_layer_effect_mutations_are_bounded_and_atomic() {
         vec![LayerEffect::new("future.effect", vec![-1, 7])]
     );
     project.remove_scene_layer_effect(scene, 0, 0).unwrap();
-    assert!(effects(&project).is_empty());
+    assert_eq!(effects(&project), [] as [fm_model::LayerEffect; 0]);
 
     let full = (0..LayerEffect::MAX_EFFECTS_PER_LAYER)
         .map(|_| LayerEffect::new("levels", vec![0, 128]))

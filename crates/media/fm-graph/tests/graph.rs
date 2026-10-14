@@ -471,7 +471,7 @@ fn plan_report_text_is_deterministic_and_complete() {
     );
     assert_eq!(report.as_str(), expected);
     assert_eq!(plan.report(), &report);
-    assert!(report.validation_failures().is_empty());
+    assert_eq!(report.validation_failures(), []);
 
     let (_, repeated) =
         ExecutionPlan::compile_with_report(&graph, &capabilities, ample_budget()).unwrap();

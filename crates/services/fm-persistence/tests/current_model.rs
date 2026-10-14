@@ -1267,7 +1267,10 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
     let loaded = store.load().unwrap();
     assert_eq!(loaded, expected);
     assert_eq!(loaded.project().schema_version(), CURRENT_SCHEMA_VERSION);
-    assert!(loaded.project().scenes()[0].layers[0].effects.is_empty());
+    assert_eq!(
+        loaded.project().scenes()[0].layers[0].effects,
+        [] as [fm_model::LayerEffect; 0]
+    );
     assert_eq!(
         loaded.project().scenes()[0].layers[1].effects,
         vec![

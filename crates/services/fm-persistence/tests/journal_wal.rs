@@ -161,7 +161,7 @@ fn the_write_ahead_log_stays_flat_across_many_checkpoints() {
     drop(writer);
     assert_eq!(write_ahead_log_bytes(&store), settled[0]);
     assert_eq!(store.load().unwrap().position().revision, sequence);
-    assert!(store.scan_journal().unwrap().batches().is_empty());
+    assert_eq!(store.scan_journal().unwrap().batches(), []);
 }
 
 /// An append must go through the handle the writer already holds, not reopen
@@ -203,5 +203,5 @@ fn the_held_writer_appends_without_reopening_the_database() {
     let scan = store.scan_journal().unwrap();
     let sequences: Vec<u64> = scan.batches().iter().map(MutationBatch::sequence).collect();
     assert_eq!(sequences, vec![1, 2, 3]);
-    assert!(scan.observations().is_empty());
+    assert_eq!(scan.observations(), []);
 }

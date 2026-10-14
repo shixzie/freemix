@@ -72,7 +72,7 @@ fn frame(format: &RecordFormat, offset: u64) -> PairedFrame {
     )
     .unwrap();
     let mut rgba = vec![0_u8; format.rgba_bytes_per_frame()];
-    for pixel in rgba.chunks_exact_mut(4) {
+    for pixel in rgba.as_chunks_mut::<4>().0 {
         pixel.copy_from_slice(&[
             u8::try_from(offset % 255).unwrap(),
             80,

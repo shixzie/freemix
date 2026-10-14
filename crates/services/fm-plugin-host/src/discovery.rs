@@ -175,7 +175,6 @@ impl Catalog {
         self.plugins.get(&plugin_key(*id))
     }
 
-    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (PluginId, &PluginArtifact)> {
         self.plugins
             .iter()

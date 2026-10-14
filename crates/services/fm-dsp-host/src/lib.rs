@@ -752,7 +752,6 @@ impl DspHost {
     }
 
     /// Returns plugin instance IDs in processing order.
-    #[must_use]
     pub fn plugin_ids(&self) -> impl ExactSizeIterator<Item = PluginId> + '_ {
         self.plugins.iter().map(|node| node.status.id)
     }
@@ -766,7 +765,6 @@ impl DspHost {
     }
 
     /// Returns current runtime statuses in processing order.
-    #[must_use]
     pub fn plugin_statuses(&self) -> impl ExactSizeIterator<Item = PluginStatus> + '_ {
         self.plugins.iter().map(PluginNode::public_status)
     }
@@ -1271,8 +1269,8 @@ impl DspPlugin for FakeDelayPlugin {
         {
             return Err(PluginError::InvalidState);
         }
-        for bytes in state[16..].chunks_exact(4) {
-            let value = f32::from_le_bytes(bytes.try_into().expect("four-byte chunk"));
+        for bytes in state[16..].as_chunks::<4>().0 {
+            let value = f32::from_le_bytes(*bytes);
             if !value.is_finite() {
                 return Err(PluginError::InvalidState);
             }
@@ -1284,8 +1282,12 @@ impl DspPlugin for FakeDelayPlugin {
         self.validate_state(state)?;
         self.cursor =
             usize::try_from(read_u64(state, 8)?).map_err(|_| PluginError::InvalidState)?;
-        for (sample, bytes) in self.delay_line.iter_mut().zip(state[16..].chunks_exact(4)) {
-            *sample = f32::from_le_bytes(bytes.try_into().expect("four-byte chunk"));
+        for (sample, bytes) in self
+            .delay_line
+            .iter_mut()
+            .zip(state[16..].as_chunks::<4>().0)
+        {
+            *sample = f32::from_le_bytes(*bytes);
         }
         Ok(())
     }

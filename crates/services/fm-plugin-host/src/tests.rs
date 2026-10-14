@@ -121,7 +121,7 @@ fn supervisor_policy() -> SupervisorPolicy {
 
 fn catalog(artifacts: Vec<PluginArtifact>) -> Catalog {
     let report = Catalog::discover(artifacts, discovery_policy(), &FakeVerifier);
-    assert!(report.rejections.is_empty());
+    assert_eq!(report.rejections, [] as [discovery::DiscoveryRejection; 0]);
     report.catalog
 }
 

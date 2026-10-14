@@ -328,7 +328,7 @@ fn push_preset_guides_preflights_capacity_without_partial_application() {
     // Geometry errors are preflighted too: nothing is pushed on a tiny canvas.
     let mut tiny = Scene::new(1, 1, BACKGROUND).unwrap();
     assert!(push_preset_guides(&mut tiny, SafeAreaPreset::Smpte, YELLOW).is_err());
-    assert!(tiny.safe_areas().is_empty());
+    assert_eq!(tiny.safe_areas(), []);
 }
 
 #[test]

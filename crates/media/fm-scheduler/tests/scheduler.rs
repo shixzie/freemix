@@ -116,7 +116,7 @@ fn restored_scheduler_starts_idle_and_counts_only_post_restore_ticks() {
     let tick = scheduler.tick(next_deadline.at_ns).unwrap();
     assert_eq!(tick.deadline, next_deadline);
     assert!(!tick.late);
-    assert!(tick.actions.is_empty());
+    assert_eq!(tick.actions, [] as [fm_scheduler::ScheduledAction<&str>; 0]);
     assert_eq!(tick.plan_generation, generation);
     assert!(Arc::ptr_eq(&tick.plan, &plan));
     assert_eq!(tick.activation, None);

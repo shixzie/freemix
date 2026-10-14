@@ -742,7 +742,7 @@ fn journal_refuses_sequence_and_revision_gaps_without_recording_them() {
         Err(StoreError::Journal(JournalError::RevisionGap { .. }))
     ));
     // Every refusal rolled back: the journal is still empty.
-    assert!(store.scan_journal().unwrap().batches().is_empty());
+    assert_eq!(store.scan_journal().unwrap().batches(), []);
 
     store
         .append_batch(&MutationBatch::new(1, 6, 7, Vec::new()))

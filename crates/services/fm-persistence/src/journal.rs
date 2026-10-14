@@ -1828,7 +1828,7 @@ mod tests {
         // The resolution is durable, so the next scan has nothing left to
         // reconcile and the batch it already applied is gone.
         let settled = store.scan_journal().unwrap();
-        assert!(settled.observations().is_empty());
+        assert_eq!(settled.observations(), []);
         assert_eq!(settled.checkpoint_sequence(), 1);
         assert_eq!(settled.batches().len(), 1);
     }
@@ -1911,7 +1911,7 @@ mod tests {
         // Recovery rewrites the log from its header, so the damage is reported
         // while it is there and not forever afterwards.
         store.recover_journal().unwrap();
-        assert!(store.scan_journal().unwrap().observations().is_empty());
+        assert_eq!(store.scan_journal().unwrap().observations(), []);
     }
 
     /// Recovery memory is bounded by bytes, not only by record count: the count

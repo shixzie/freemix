@@ -372,7 +372,6 @@ impl NetworkTelemetry {
         self.last_successful_media_timestamp
     }
 
-    #[must_use]
     pub fn failures(&self) -> impl ExactSizeIterator<Item = &FailureRecord> {
         self.failures.iter()
     }

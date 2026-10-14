@@ -174,7 +174,7 @@ fn automation_commands_are_authorized_as_their_requesting_principal() {
 
     let tick = plane.tick(&mut control, 100, &ConditionContext::new());
     assert_eq!(sources(&tick), ["schedule/operator", "schedule/viewer"]);
-    assert!(tick.refusals.is_empty());
+    assert_eq!(tick.refusals.len(), 0);
     assert!(tick.error.is_none());
 
     let operator_result = &tick.submitted[0].submission.output.result;
@@ -284,8 +284,8 @@ fn one_action_submitted_twice_is_replayed_not_put_on_air_twice() {
         first
     );
     let after = plane.tick(&mut control, 400, &ConditionContext::new());
-    assert!(after.submitted.is_empty());
-    assert!(after.refusals.is_empty());
+    assert_eq!(after.submitted.len(), 0);
+    assert_eq!(after.refusals.len(), 0);
 
     // The same press emitted twice: the second submission is replayed and the
     // engine state does not move again.
@@ -333,7 +333,7 @@ fn a_continuous_collision_across_bindings_reports_both_commands() {
         ["schedule/a", "schedule/b"],
         "two bindings sharing a stream name are two commands, not one"
     );
-    assert!(tick.refusals.is_empty());
+    assert_eq!(tick.refusals.len(), 0);
     assert_eq!(
         preview(&control),
         input(3),
@@ -403,7 +403,7 @@ fn authority_is_resolved_at_emission_not_frozen_at_arm_time() {
     // and the refusal carries the payload it did not submit.
     sessions.end(&identity);
     let tick = plane.tick(&mut control, 300, &ConditionContext::new());
-    assert!(tick.submitted.is_empty());
+    assert_eq!(tick.submitted.len(), 0);
     assert_eq!(tick.refusals.len(), 1);
     assert_eq!(
         tick.refusals[0].reason,
@@ -418,10 +418,10 @@ fn authority_is_resolved_at_emission_not_frozen_at_arm_time() {
         [AutomationBinding::Schedule(ScheduleId::from("break"))]
     );
     assert_eq!(plane.schedule_len(), 0);
-    assert!(plane.bindings_for(&identity).is_empty());
+    assert_eq!(plane.bindings_for(&identity).len(), 0);
     let tick = plane.tick(&mut control, 400, &ConditionContext::new());
-    assert!(tick.submitted.is_empty());
-    assert!(tick.refusals.is_empty());
+    assert_eq!(tick.submitted.len(), 0);
+    assert_eq!(tick.refusals.len(), 0);
 }
 
 /// Every bound refuses observably: nothing is queued without a limit and
@@ -507,8 +507,8 @@ fn bounds_refuse_a_flood_instead_of_queueing_or_dropping_it() {
     );
 
     let settled = plane.tick(&mut control, 11, &ConditionContext::new());
-    assert!(settled.submitted.is_empty());
-    assert!(settled.refusals.is_empty());
+    assert_eq!(settled.submitted.len(), 0);
+    assert_eq!(settled.refusals.len(), 0);
 
     // Presses do not consume the automation budget, but they are bounded, and
     // the allowance is replenished once per frame.
@@ -557,7 +557,7 @@ fn a_stalled_frame_reports_the_occurrences_it_skipped() {
         )
         .unwrap();
     let tick = plane.tick(&mut control, 100, &ConditionContext::new());
-    assert!(tick.missed.is_empty());
+    assert_eq!(tick.missed.len(), 0);
 
     let tick = plane.tick(&mut control, 600, &ConditionContext::new());
     assert_eq!(tick.submitted.len(), 1, "no catch-up burst on air");

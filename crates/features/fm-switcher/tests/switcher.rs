@@ -69,14 +69,20 @@ fn fade_realizes_on_exact_frame_boundary() {
         (initial.mix_start_numerator, initial.mix_end_numerator),
         (0, 1)
     );
-    assert!(switcher.advance_frame_events().is_empty());
+    assert_eq!(
+        switcher.advance_frame_events(),
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
     let second = switcher.program_frame();
     assert_eq!(second.mix_numerator, 1);
     assert_eq!(
         (second.mix_start_numerator, second.mix_end_numerator),
         (1, 2)
     );
-    assert!(switcher.advance_frame_events().is_empty());
+    assert_eq!(
+        switcher.advance_frame_events(),
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
     let third = switcher.program_frame();
     assert_eq!(third.mix_numerator, 2);
     assert_eq!((third.mix_start_numerator, third.mix_end_numerator), (2, 3));
@@ -189,7 +195,10 @@ fn t_bar_can_reverse_then_commit_or_cancel() {
         (forward.mix_start_numerator, forward.mix_end_numerator),
         (0, 8_000)
     );
-    assert!(switcher.advance_frame_events().is_empty());
+    assert_eq!(
+        switcher.advance_frame_events(),
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
     let held = switcher.program_frame();
     assert_eq!(
         (held.mix_start_numerator, held.mix_end_numerator),
@@ -206,7 +215,10 @@ fn t_bar_can_reverse_then_commit_or_cancel() {
         (reverse.mix_start_numerator, reverse.mix_end_numerator),
         (8_000, 2_500)
     );
-    assert!(switcher.advance_frame_events().is_empty());
+    assert_eq!(
+        switcher.advance_frame_events(),
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
     switcher
         .apply(SwitcherCommand::SetTBarPosition(
             TBarPosition::new(7_333).unwrap(),
@@ -265,7 +277,10 @@ fn alpha_fade_t_bar_preserves_kind_through_hold_restore_and_commit() {
         (moving.mix_start_numerator, moving.mix_end_numerator),
         (0, 6_250)
     );
-    assert!(switcher.advance_frame_events().is_empty());
+    assert_eq!(
+        switcher.advance_frame_events(),
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
 
     let mut restored = state();
     restored.restore_t_bar(switcher.t_bar().unwrap()).unwrap();
@@ -306,7 +321,10 @@ fn slide_t_bar_holds_reverses_restores_commits_and_cancels() {
         ),
         (Some(TransitionKind::Slide), 0, 8_000)
     );
-    assert!(switcher.advance_frame_events().is_empty());
+    assert_eq!(
+        switcher.advance_frame_events(),
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
     switcher
         .apply(SwitcherCommand::SetTBarPosition(
             TBarPosition::new(2_500).unwrap(),
@@ -319,7 +337,10 @@ fn slide_t_bar_holds_reverses_restores_commits_and_cancels() {
         ),
         (8_000, 2_500)
     );
-    assert!(switcher.advance_frame_events().is_empty());
+    assert_eq!(
+        switcher.advance_frame_events(),
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
 
     let mut restored = state();
     restored.restore_t_bar(switcher.t_bar().unwrap()).unwrap();
@@ -502,7 +523,10 @@ fn reversing_before_progress_cancels_without_noop_frame_spam() {
     );
     assert!(!switcher.fade_to_black());
     assert_eq!(switcher.fade_to_black_position(), FadeToBlackPosition::LIVE);
-    assert!(switcher.advance_frame_events().is_empty());
+    assert_eq!(
+        switcher.advance_frame_events(),
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
 }
 
 #[test]
@@ -653,7 +677,7 @@ fn overlay_inclusion_is_routed_per_output_without_duplicates() {
     assert_eq!(switcher.overlay(channel).included_outputs(), &[dirty]);
 
     let _ = switcher.set_overlay_output_inclusion(channel, dirty, false);
-    assert!(switcher.overlay(channel).included_outputs().is_empty());
+    assert_eq!(switcher.overlay(channel).included_outputs(), []);
 }
 
 #[test]
@@ -915,7 +939,10 @@ fn timed_transition_reports_completion() {
         })
         .unwrap();
 
-    assert!(switcher.advance_frame_events().is_empty());
+    assert_eq!(
+        switcher.advance_frame_events(),
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
     assert_eq!(
         switcher.advance_frame_events(),
         [

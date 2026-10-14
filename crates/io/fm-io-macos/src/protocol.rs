@@ -515,7 +515,9 @@ impl<R: Read> FrameReader<R> {
         })?;
         if payload.chunks_exact(stride).any(|row| {
             row[..minimum_stride]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .any(|pixel| pixel[3] != 255)
         }) {
             return Err(ProtocolError::malformed(
@@ -784,11 +786,8 @@ impl<R: Read> AudioBlockReader<R> {
         let mut payload = vec![0; payload_len];
         self.reader.read_exact(&mut payload)?;
         let mut planes = vec![Vec::with_capacity(sample_count); usize::from(channels)];
-        for (index, bytes) in payload.chunks_exact(4).enumerate() {
-            let sample =
-                f32::from_le_bytes(bytes.try_into().map_err(|_| {
-                    ProtocolError::malformed("invalid audio sample representation")
-                })?);
+        for (index, bytes) in payload.as_chunks::<4>().0.iter().enumerate() {
+            let sample = f32::from_le_bytes(*bytes);
             if !sample.is_finite() {
                 return Err(ProtocolError::malformed(
                     "audio payload contains a non-finite sample",

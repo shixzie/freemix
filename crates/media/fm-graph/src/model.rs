@@ -324,7 +324,6 @@ impl EditableGraph {
         self.nodes.get(id)
     }
 
-    #[must_use]
     pub fn nodes(&self) -> impl ExactSizeIterator<Item = (&NodeId, &Node)> {
         self.nodes.iter()
     }

@@ -3723,7 +3723,7 @@ mod tests {
             let retained = shared.snapshot().stderr_tail;
             assert!(!retained.contains(&KEY[..8]), "{retained}");
         }
-        assert!(pending.is_empty());
+        assert_eq!(pending.len(), 0);
 
         let telemetry = shared.snapshot();
         assert!(telemetry.stderr_truncated, "{telemetry:?}");

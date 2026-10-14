@@ -318,7 +318,6 @@ impl ChannelMapping {
         &self.destination_layout
     }
 
-    #[must_use]
     pub fn routes(&self) -> impl ExactSizeIterator<Item = ChannelMappingRoute> + '_ {
         self.routes.iter().map(|route| route.route)
     }

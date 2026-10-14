@@ -138,7 +138,6 @@ impl MetricSeries {
         self.dropped
     }
 
-    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &MetricPoint> {
         self.points.iter()
     }
@@ -355,7 +354,6 @@ impl MetricStore {
             .expect("all built-in metrics exist")
     }
 
-    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (Metric, &MetricSeries)> {
         self.series.iter().map(|(metric, series)| (*metric, series))
     }

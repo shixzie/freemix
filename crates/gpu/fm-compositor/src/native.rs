@@ -695,7 +695,7 @@ fn encode_composition_uniform(
         0,
     ];
     let mut bytes = [0; COMPOSITION_UNIFORM_SIZE];
-    for (chunk, word) in bytes.chunks_exact_mut(4).zip(words) {
+    for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
         chunk.copy_from_slice(&word.to_le_bytes());
     }
     bytes
@@ -1005,7 +1005,7 @@ fn encode_fade_to_black_uniform(plan: FadeToBlackPlan) -> [u8; FADE_TO_BLACK_UNI
         0,
     ];
     let mut bytes = [0; FADE_TO_BLACK_UNIFORM_SIZE];
-    for (chunk, word) in bytes.chunks_exact_mut(4).zip(words) {
+    for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
         chunk.copy_from_slice(&word.to_le_bytes());
     }
     bytes
@@ -1183,7 +1183,7 @@ fn encode_uniform(plan: TransitionPlan, width: u32, height: u32) -> [u8; TRANSIT
         0,
     ];
     let mut bytes = [0; TRANSITION_UNIFORM_SIZE];
-    for (chunk, word) in bytes.chunks_exact_mut(4).zip(words) {
+    for (chunk, word) in bytes.as_chunks_mut::<4>().0.iter_mut().zip(words) {
         chunk.copy_from_slice(&word.to_le_bytes());
     }
     bytes
@@ -1209,8 +1209,8 @@ mod tests {
 
     fn uniform_words(uniform: [u8; COMPOSITION_UNIFORM_SIZE]) -> [u32; 24] {
         let mut words = [0; 24];
-        for (word, bytes) in words.iter_mut().zip(uniform.chunks_exact(4)) {
-            *word = u32::from_le_bytes(bytes.try_into().unwrap());
+        for (word, bytes) in words.iter_mut().zip(uniform.as_chunks::<4>().0) {
+            *word = u32::from_le_bytes(*bytes);
         }
         words
     }
@@ -1445,8 +1445,8 @@ mod tests {
         );
         let uniform = encode_fade_to_black_uniform(plan);
         let mut words = [0_u32; 8];
-        for (word, bytes) in words.iter_mut().zip(uniform.chunks_exact(4)) {
-            *word = u32::from_le_bytes(bytes.try_into().unwrap());
+        for (word, bytes) in words.iter_mut().zip(uniform.as_chunks::<4>().0) {
+            *word = u32::from_le_bytes(*bytes);
         }
         assert_eq!(uniform.len(), FADE_TO_BLACK_UNIFORM_SIZE);
         assert_eq!(words, [3, 4, 1, 5, 2, 3, 0, 0]);

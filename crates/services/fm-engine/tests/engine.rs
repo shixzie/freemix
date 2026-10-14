@@ -80,13 +80,13 @@ fn unknown_overlay_output_is_rejected_before_mutation() {
         RejectionCode::NotFound
     );
     assert_eq!(engine.revision(), Revision::new(0));
-    assert!(
+    assert_eq!(
         engine
             .show()
             .desired_switcher()
             .overlay(channel)
-            .included_outputs()
-            .is_empty()
+            .included_outputs(),
+        []
     );
 }
 
@@ -224,12 +224,18 @@ fn rename_input_is_bounded_unique_and_replay_safe() {
 
     let replay = engine.execute(command, 0).unwrap();
     assert!(replay.replayed);
-    assert!(replay.events.is_empty());
+    assert_eq!(
+        replay.events,
+        [] as [fm_command::DurableEvent<fm_engine::EngineEvent>; 0]
+    );
     assert_eq!(engine.revision(), Revision::new(1));
 
     let frame = engine.tick().unwrap();
-    assert!(frame.events.is_empty());
-    assert!(frame.input_audio_strip_updates.is_empty());
+    assert_eq!(frame.events, [] as [fm_switcher::SwitcherEvent; 0]);
+    assert_eq!(
+        frame.input_audio_strip_updates,
+        [] as [(fm_types::InputId, fm_engine::EngineInputAudioStripState); 0]
+    );
     let snapshot = engine.snapshot().unwrap();
     assert_eq!(
         snapshot.show().input_name(input(1)),
@@ -370,7 +376,10 @@ fn reorder_inputs_preserves_id_references_and_rejects_invalid_orders_atomically(
         .unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.receipt, accepted.receipt);
-    assert!(replay.events.is_empty());
+    assert_eq!(
+        replay.events,
+        [] as [fm_command::DurableEvent<fm_engine::EngineEvent>; 0]
+    );
     assert_eq!(engine.show(), &before_tick_show);
     assert_eq!(engine.realized_switcher(), &before_tick_realized);
     assert_eq!(engine.frame_cursor(), before_tick_cursor);
@@ -900,7 +909,7 @@ fn rejected_receipt_is_staged_and_becomes_durable_only_on_commit() {
 
     let rejection = prepared.outcome().receipt.rejected().unwrap();
     assert_eq!(rejection.rejection.code, RejectionCode::RevisionConflict);
-    assert!(engine.snapshot().unwrap().receipts().is_empty());
+    assert_eq!(engine.snapshot().unwrap().receipts(), []);
     assert_eq!(
         prepared
             .staged_engine()
@@ -994,7 +1003,10 @@ fn duplicate_prepare_is_a_replay_without_a_staged_execution() {
 
     let boundary = engine.tick().unwrap();
     assert_eq!(boundary.events.len(), 1);
-    assert!(engine.tick().unwrap().events.is_empty());
+    assert_eq!(
+        engine.tick().unwrap().events,
+        [] as [fm_switcher::SwitcherEvent; 0]
+    );
 }
 
 #[test]
@@ -1077,7 +1089,7 @@ fn preparing_does_not_schedule_work_on_the_live_engine() {
     assert!(engine.snapshot().is_ok());
     prepared.abort();
     let frame = engine.tick().unwrap();
-    assert!(frame.events.is_empty());
+    assert_eq!(frame.events, [] as [fm_switcher::SwitcherEvent; 0]);
     assert_eq!(engine.realized_switcher().program(), input(1));
     assert_eq!(engine.runtime_generation(), RuntimeGeneration::default());
 }
@@ -1103,7 +1115,7 @@ fn duplicate_key_replays_receipt_without_rescheduling() {
     assert_eq!(boundary.events.len(), 1);
     assert_eq!(engine.realized_switcher().preview(), input(3));
     let following = engine.tick().unwrap();
-    assert!(following.events.is_empty());
+    assert_eq!(following.events, [] as [fm_switcher::SwitcherEvent; 0]);
     assert_eq!(engine.realized_switcher().program(), input(1));
 }
 
@@ -1937,7 +1949,7 @@ fn idle_snapshot_restores_state_counters_timeline_and_receipts() {
     let next = restored.tick().unwrap();
     assert_eq!(next.frame.get(), 1);
     assert_eq!(next.deadline.as_nanos(), 40_000_000);
-    assert!(next.events.is_empty());
+    assert_eq!(next.events, [] as [fm_switcher::SwitcherEvent; 0]);
     assert_eq!(next.runtime_generation, RuntimeGeneration::new(1));
 }
 
@@ -2002,7 +2014,7 @@ fn persisted_restore_preserves_coordinates_and_replays_all_receipts() {
     let next = restored.tick().unwrap();
     assert_eq!(next.frame, FrameNumber::new(2));
     assert_eq!(next.deadline.as_nanos(), 80_000_000);
-    assert!(next.events.is_empty());
+    assert_eq!(next.events, [] as [fm_switcher::SwitcherEvent; 0]);
     assert_eq!(next.runtime_generation, RuntimeGeneration::new(1));
 }
 
@@ -2481,7 +2493,10 @@ fn stream_commands_replay_receipts_and_reject_unknown_targets_atomically() {
     let replay = engine.execute(command, 0).unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.receipt, first.receipt);
-    assert!(replay.events.is_empty());
+    assert_eq!(
+        replay.events,
+        [] as [fm_command::DurableEvent<fm_engine::EngineEvent>; 0]
+    );
     assert_eq!(engine.revision(), Revision::new(1));
     assert_eq!(engine.event_sequence(), EventSequence::new(1));
 
@@ -2757,7 +2772,10 @@ fn record_commands_are_instant_and_replay_receipts_atomically() {
         .unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.receipt, accepted.receipt);
-    assert!(replay.events.is_empty());
+    assert_eq!(
+        replay.events,
+        [] as [fm_command::DurableEvent<fm_engine::EngineEvent>; 0]
+    );
     assert_eq!(engine.revision(), Revision::new(2));
 }
 

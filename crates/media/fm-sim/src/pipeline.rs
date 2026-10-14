@@ -74,7 +74,6 @@ impl SimulatedPipeline {
         self.sources.get(&input)
     }
 
-    #[must_use]
     pub fn inputs(&self) -> impl ExactSizeIterator<Item = InputId> + '_ {
         self.sources.keys().copied()
     }

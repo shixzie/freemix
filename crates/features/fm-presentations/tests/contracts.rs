@@ -217,7 +217,10 @@ fn looping_wraps_in_both_directions_without_entering_end() {
 fn auto_advance_consumes_time_across_slides_and_honors_end_and_loop() {
     let imported = imported();
     let mut navigator = PresentationNavigator::new(&imported.document, deck_id(10)).unwrap();
-    assert!(navigator.advance_time(Duration::from_secs(4)).is_empty());
+    assert_eq!(
+        navigator.advance_time(Duration::from_secs(4)),
+        [] as [fm_presentations::NavigationEvent; 0]
+    );
     assert_eq!(navigator.current_slide().id, slide_id(100));
     assert_eq!(
         navigator.advance_time(Duration::from_secs(3)),

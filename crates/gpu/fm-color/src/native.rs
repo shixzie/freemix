@@ -206,12 +206,12 @@ fn aspect_fit_viewport(
 
 fn encode_viewport(viewport: OutputViewport) -> [u8; 16] {
     let mut bytes = [0; 16];
-    for (chunk, value) in bytes.chunks_exact_mut(size_of::<u32>()).zip([
-        viewport.x,
-        viewport.y,
-        viewport.width,
-        viewport.height,
-    ]) {
+    for (chunk, value) in bytes
+        .as_chunks_mut::<{ size_of::<u32>() }>()
+        .0
+        .iter_mut()
+        .zip([viewport.x, viewport.y, viewport.width, viewport.height])
+    {
         chunk.copy_from_slice(&value.to_le_bytes());
     }
     bytes
@@ -617,7 +617,7 @@ fn rgba_upload_bytes<'a>(source: &ValidatedSource<'a>) -> Cow<'a, [u8]> {
     }
     let mut rgba = source.bytes.to_vec();
     for row in rgba.chunks_exact_mut(source.stride) {
-        for pixel in row[..source.active_row_bytes].chunks_exact_mut(4) {
+        for pixel in row[..source.active_row_bytes].as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
     }

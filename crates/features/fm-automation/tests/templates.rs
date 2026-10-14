@@ -566,7 +566,10 @@ fn profile_round_trips_every_target_and_delivery_class() {
     let codec = TestCodec;
     let empty = render_shortcut_profile::<TestCommand>(&[], &codec);
     assert_eq!(empty, "freemix-shortcuts\t1\n");
-    assert!(parse_shortcut_profile(&empty, &codec).unwrap().is_empty());
+    assert_eq!(
+        parse_shortcut_profile(&empty, &codec).unwrap(),
+        [] as [fm_automation::ShortcutTemplate<TestCommand>; 0]
+    );
 
     let templates = sample_templates();
     let rendered = render_shortcut_profile(&templates, &codec);
@@ -702,10 +705,9 @@ fn profile_headers_are_validated() {
         unsupported,
         ShortcutProfileError::UnsupportedVersion(version) if version == "2"
     ));
-    assert!(
-        parse_shortcut_profile(&format!("{HEADER}\n"), &TestCodec)
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        parse_shortcut_profile(&format!("{HEADER}\n"), &TestCodec).unwrap(),
+        [] as [fm_automation::ShortcutTemplate<TestCommand>; 0]
     );
     let long_header = "x".repeat(MAX_PROFILE_LINE_BYTES + 1);
     assert!(matches!(

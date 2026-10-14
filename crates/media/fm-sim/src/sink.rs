@@ -141,7 +141,6 @@ impl<T> CollectingSink<T> {
         self.telemetry
     }
 
-    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &T> {
         self.items.iter()
     }

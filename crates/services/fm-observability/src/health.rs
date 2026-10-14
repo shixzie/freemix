@@ -108,7 +108,6 @@ impl HealthRegistry {
         self.checks.get(component)
     }
 
-    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &HealthCheck> {
         self.checks.values()
     }

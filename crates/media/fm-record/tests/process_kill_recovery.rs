@@ -249,7 +249,7 @@ fn subprocess_child_writes_torn_tail() {
     });
     let (mut coordinator, report) =
         RecorderCoordinator::open_with_writer_factory(&root, factory).expect("open child recorder");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures, [] as [fm_record::ReconciliationFailure; 0]);
     let recorder = id(1);
     coordinator
         .start(
@@ -309,7 +309,7 @@ fn process_kill_repairs_torn_tail_and_resumes_active_recording() {
     let stop_receipt = receipt(2);
     let (mut reopened, report) =
         RecorderCoordinator::open(temp.path()).expect("repair and reopen recording");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures, [] as [fm_record::ReconciliationFailure; 0]);
     let (_, recovery) = report
         .recovered
         .iter()
@@ -355,7 +355,7 @@ fn process_kill_repairs_torn_tail_and_resumes_active_recording() {
 
     let (mut finalized, report) =
         RecorderCoordinator::open(temp.path()).expect("reopen finalized recorder");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures, [] as [fm_record::ReconciliationFailure; 0]);
     let (_, recovery) = report
         .recovered
         .iter()

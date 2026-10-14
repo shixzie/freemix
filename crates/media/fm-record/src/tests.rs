@@ -125,7 +125,7 @@ fn segments_by_frames_bytes_and_manual_rotation() {
     let temp = TempDirectory::new("segmentation");
     let (mut coordinator, report) =
         RecorderCoordinator::open(temp.path()).expect("open coordinator");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures.len(), 0);
 
     let frame_recorder = id(1);
     coordinator
@@ -312,7 +312,7 @@ fn repair_truncates_a_torn_manifest_tail_and_reopens_active_recording() {
 
     let (mut reopened, report) =
         RecorderCoordinator::open(temp.path()).expect("reopen active recording");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures.len(), 0);
     assert_eq!(
         reopened.snapshot(recorder).expect("snapshot").state,
         RecorderState::Recording
@@ -602,8 +602,8 @@ fn assert_start_setup_failure_does_not_commit_receipt(name: &str, factory: Arc<d
 
     let (mut reopened, report) =
         RecorderCoordinator::open(temp.path()).expect("reconcile failed start");
-    assert!(report.failures.is_empty());
-    assert!(report.recovered[0].1.segments.is_empty());
+    assert_eq!(report.failures.len(), 0);
+    assert_eq!(report.recovered[0].1.segments.len(), 0);
     assert!(!format::segment_path(&recording_directory(temp.path(), recorder), 0).exists());
     assert_eq!(
         reopened
@@ -749,7 +749,7 @@ fn recovery_removes_uncommitted_rotation_artifact_without_skipping_index() {
 
     let (reopened, report) =
         RecorderCoordinator::open(temp.path()).expect("recover rotation artifact");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures.len(), 0);
     assert_eq!(report.recovered[0].1.segments.len(), 1);
     assert_eq!(
         reopened.snapshot(recorder).expect("snapshot").segment_index,
@@ -1108,7 +1108,7 @@ fn stop_and_action_receipts_are_idempotent_across_restart() {
 
     let (mut restarted, report) =
         RecorderCoordinator::open(temp.path()).expect("reconcile coordinator");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures.len(), 0);
     assert_eq!(
         restarted
             .start(recorder, start_receipt, config(SegmentPolicy::by_frames(1)),)
@@ -1158,7 +1158,7 @@ fn segments_rotate_by_duration_and_track_segment_duration() {
 
     let (mut reopened, report) =
         RecorderCoordinator::open(temp.path()).expect("reopen duration recorder");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures.len(), 0);
     let (_, recovery) = &report.recovered[0];
     assert_eq!(
         recovery
@@ -1228,7 +1228,7 @@ fn iso_tap_and_timecode_manifest_persist_and_recover_across_restart() {
 
     let (mut reopened, report) =
         RecorderCoordinator::open(temp.path()).expect("recover iso tap recorder");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures.len(), 0);
     assert_eq!(
         reopened.snapshot(recorder).expect("recovered snapshot").tap,
         Some(tap)

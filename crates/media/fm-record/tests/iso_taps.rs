@@ -346,7 +346,7 @@ fn later_start_failure_rolls_back_started_taps() {
     );
 
     let (reopened, report) = RecorderCoordinator::open(&root).expect("reopen session root");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures, [] as [fm_record::ReconciliationFailure; 0]);
     assert_eq!(
         reopened.snapshot(id(1)).expect("first tap snapshot").state,
         RecorderState::Stopped,
@@ -766,7 +766,7 @@ fn already_applied_start_is_idempotent() {
     drop(second);
 
     let (reopened, report) = RecorderCoordinator::open(&root).expect("reopen root");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures, [] as [fm_record::ReconciliationFailure; 0]);
     let snapshot = reopened.snapshot(id(1)).expect("recovered snapshot");
     assert_eq!(snapshot.state, RecorderState::Recording);
     assert_eq!(snapshot.written_frames, 1);
@@ -787,7 +787,7 @@ fn mixed_start_receipts_are_rejected_and_rolled_back() {
     assert!(matches!(error, IsoTapError::MixedStartOutcome));
 
     let (reopened, report) = RecorderCoordinator::open(&root).expect("reopen root");
-    assert!(report.failures.is_empty());
+    assert_eq!(report.failures, [] as [fm_record::ReconciliationFailure; 0]);
     assert_eq!(
         reopened.snapshot(id(1)).expect("first tap").state,
         RecorderState::Stopped

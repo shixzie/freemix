@@ -528,7 +528,7 @@ fn decodes_nonempty_prefixes_through_end_of_stream_without_weakening_exact_count
         .decode_local_up_to(&path, video_request)
         .expect("decode all available video frames");
     assert_eq!(video.video.len(), 5);
-    assert!(video.audio.is_empty());
+    assert_eq!(video.audio, [] as [fm_frame::AudioBlock; 0]);
     assert_eq!(
         adapter.decode_local(&path, video_request),
         Err(Error::MissingFrames)
@@ -561,8 +561,8 @@ fn decodes_nonempty_prefixes_through_end_of_stream_without_weakening_exact_count
             },
         )
         .expect("decode all available audio blocks");
-    assert!(audio.video.is_empty());
-    assert!(!audio.audio.is_empty());
+    assert_eq!(audio.video, [] as [fm_frame::CpuVideoFrame; 0]);
+    assert_ne!(audio.audio, [] as [fm_frame::AudioBlock; 0]);
     assert!(audio.audio.len() <= 60);
     assert_eq!(
         audio
@@ -720,7 +720,7 @@ fn sequential_video_windows_match_leading_decode_and_have_sticky_eos() {
 
     std::fs::remove_file(&path).unwrap();
     let sticky = cursor.decode_up_to(NonZeroU32::new(1).unwrap()).unwrap();
-    assert!(sticky.frames.is_empty());
+    assert_eq!(sticky.frames, [] as [fm_frame::CpuVideoFrame; 0]);
     assert!(sticky.end_of_stream);
 }
 
@@ -1240,7 +1240,7 @@ fn audio_full_final_eos_is_sticky() {
     );
 
     let sticky = full.decode_up_to(NonZeroU32::new(1).unwrap()).unwrap();
-    assert!(sticky.blocks.is_empty());
+    assert_eq!(sticky.blocks, [] as [fm_frame::AudioBlock; 0]);
     assert!(sticky.end_of_stream);
 
     std::fs::remove_file(&path).unwrap();

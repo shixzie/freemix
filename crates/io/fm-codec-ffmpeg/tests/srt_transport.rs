@@ -118,7 +118,7 @@ fn frame(format: &RecordFormat, offset: u64) -> PairedFrame {
     let mut rgba = vec![0_u8; format.rgba_bytes_per_frame()];
     for (row, line) in rgba.chunks_exact_mut(width * 4).enumerate() {
         let base = u8::try_from((row + usize::try_from(offset).unwrap() * 11) % 255).unwrap();
-        for (column, pixel) in line.chunks_exact_mut(4).enumerate() {
+        for (column, pixel) in line.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             pixel.copy_from_slice(&[
                 base,
                 u8::try_from(column % 251).unwrap(),

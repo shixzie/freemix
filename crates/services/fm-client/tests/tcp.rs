@@ -687,7 +687,7 @@ fn replayed_evicted_receipt_forces_snapshot_without_retransmitting_collision() {
         session.client().command(&collision.id).unwrap().status,
         CommandStatus::TerminalUncertain(_)
     ));
-    assert!(session.client().model().pending_commands().is_empty());
+    assert_eq!(session.client().model().pending_commands(), []);
     assert_eq!(session.in_flight_len(), 1);
 
     assert!(matches!(
