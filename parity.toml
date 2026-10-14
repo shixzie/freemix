@@ -239,7 +239,9 @@ paths = ["crates/media/fm-audio/tests/multichannel.rs", "crates/media/fm-audio/t
 commands = ["cargo test -p fm-audio --test multichannel", "cargo test -p fm-audio --test multichannel_flow"]
 [[tests]]
 id = "accept-au-004"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-audio/tests/sample_rate_sync.rs"]
+commands = ["cargo test -p fm-audio --test sample_rate_sync"]
 [[tests]]
 id = "accept-au-005"
 state = "present"
