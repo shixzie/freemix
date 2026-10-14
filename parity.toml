@@ -262,7 +262,9 @@ paths = ["crates/media/fm-audio/tests/automix_monitor.rs"]
 commands = ["cargo test -p fm-audio --test automix_monitor"]
 [[tests]]
 id = "accept-au-009"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-automation/tests/fader_feedback.rs", "crates/media/fm-audio/tests/gain_smoothing.rs"]
+commands = ["cargo test -p fm-automation --test fader_feedback", "cargo test -p fm-audio --test gain_smoothing"]
 [[tests]]
 id = "accept-au-010"
 state = "present"
