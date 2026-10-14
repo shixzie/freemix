@@ -9,19 +9,27 @@
 //!   per-element pixel sizes, greedy word wrapping, horizontal and vertical
 //!   alignment, anti-aliased coverage composited into premultiplied RGBA8, and
 //!   clipping at the element box and the frame edge.
+//! * Image rendering: a caller-decoded premultiplied RGBA8 frame registered
+//!   with [`AssetCatalog::with_decoded_image`] is stretched to the element
+//!   bounds with deterministic nearest-neighbor sampling, clipped to the
+//!   element box and the frame edge, and composited source-over. An element
+//!   whose asset has no decoded pixels keeps the placeholder.
 //! * Bounded work: output size, font size, characters per element, lines per
 //!   element, glyphs per frame, and per-glyph rasterization area are capped,
 //!   and every fill iterates its intersection with the canvas rather than the
 //!   element's declared extent. Reaching a per-element cap degrades that
 //!   element and is listed in [`RenderReport::degraded`] so the rest of the
-//!   frame still goes to air; only a whole-frame cap is a [`RenderError`].
+//!   frame still goes to air; only a whole-frame cap is a [`RenderError`]. The
+//!   catalog likewise caps image asset count and decoded frame bytes.
 //!
 //! # What is still missing
 //!
 //! * Grapheme-level shaping. Text is laid out in codepoint order: no bidi, no
 //!   complex-script shaping, no ligatures or other OpenType features.
-//! * Image decoding. Image elements still draw a placeholder and their assets
-//!   are only reported; see [`REFERENCE_RENDERER_LIMITATIONS`].
+//! * Image decoding. Callers hand the renderer decoded premultiplied RGBA8
+//!   frames; this crate parses no image files and applies no fit modes,
+//!   filtering, color profiles, orientation, or animation. See
+//!   [`REFERENCE_RENDERER_LIMITATIONS`].
 //! * GPU rasterization, production effects, and any pipeline wiring. Nothing
 //!   in the project schema instantiates these scenes yet.
 
@@ -53,6 +61,6 @@ pub use runtime::{
     evaluate_ticker_position,
 };
 pub use validation::{
-    AssetCatalog, MissingFont, MissingImage, ValidationError, ValidationReport, validate_scene,
-    validate_template,
+    AssetCatalog, ImageAssetError, MAX_IMAGE_ASSET_BYTES, MAX_IMAGE_ASSETS, MissingFont,
+    MissingImage, ValidationError, ValidationReport, validate_scene, validate_template,
 };

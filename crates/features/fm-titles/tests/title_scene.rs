@@ -296,7 +296,7 @@ fn validation_and_rendering_report_missing_assets_and_limitations() {
             alignment: Alignment::default(),
         },
         color_field: None,
-        kind: ElementKind::ImagePlaceholder { field: logo },
+        kind: ElementKind::Image { field: logo },
         animations: Vec::new(),
     };
     let template = template(fields, vec![element], 8, 8);
@@ -323,7 +323,15 @@ fn validation_and_rendering_report_missing_assets_and_limitations() {
             .report
             .limitations
             .iter()
-            .any(|limitation| limitation.contains("never decoded"))
+            .any(|limitation| limitation.contains("nearest-neighbor"))
+    );
+    assert!(
+        rendered
+            .report
+            .limitations
+            .iter()
+            .all(|limitation| !limitation.contains("never decoded")),
+        "decoded image frames are rendered now, not only reported"
     );
 }
 

@@ -149,9 +149,16 @@ impl FieldDefinition {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ElementKind {
-    Text { field: FieldId },
+    Text {
+        field: FieldId,
+    },
     Rectangle,
-    ImagePlaceholder { field: FieldId },
+    /// Draws an image field. When the referenced asset has decoded pixels in
+    /// the renderer's [`crate::AssetCatalog`] they are stretched to the element
+    /// bounds; otherwise the element draws the image placeholder.
+    Image {
+        field: FieldId,
+    },
     Clock(ClockSpec),
     Ticker(TickerSpec),
 }
