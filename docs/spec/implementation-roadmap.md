@@ -139,7 +139,7 @@ half-open post-crop source space, with exact CPU-oracle coverage and ignored
 native Metal readback coverage that remains opt-in and is not claimed without
 an adapter. The current schema persists each scene background and each layer's explicit
 input/scene source, geometry, crop, optional hard-edged rectangular mask,
-opacity, and z-order. Mask
+opacity, z-order, and ordered reference-effect stack. Mask
 bounds are validated against the effective
 post-crop source dimensions before native planning; inversion does not change
 planner capacity or transient-resource accounting.
