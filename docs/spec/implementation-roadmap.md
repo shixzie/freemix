@@ -1978,6 +1978,19 @@ editor, no project-schema instantiation, and no animation/ticker integration
 with real data sources. Item 1 therefore remains incomplete and `GX-001`
 remains planned.
 
+Current implementation boundary for item 1 project hosting: project schema
+27 adds title inputs that reference a bundled `.fmtitle` template and carry a
+persisted field revision plus typed text, number, colour, and image field
+values within bounded counts, text length, and content bytes. `fm-persistence`
+reads and writes templates strictly (every element kind except production
+clocks, 1 MiB cap), imports fonts with dedupe and parse validation, checks
+project fields against their templates, audits missing template, font, and
+image assets, and copies title assets on export and append, refusing rather
+than renaming keys. `freemix-cli title-input-add` imports a template with
+`--font` files. Native freemixd refuses title inputs and the simulated
+monitors do not render them; there is no protocol, engine title state, or
+Studio editor yet, so `GX-001` remains planned.
+
 Current implementation boundary for item 1 scoreboards and tickers
 (`GX-003`): `fm-titles` provides a deterministic ticker crawl (horizontal
 crawl and vertical roll) driven only by the engine frame index and an exact
