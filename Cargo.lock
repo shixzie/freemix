@@ -1319,6 +1319,7 @@ dependencies = [
  "fm-automation",
  "fm-clock",
  "fm-command",
+ "fm-grade",
  "fm-model",
  "fm-scheduler",
  "fm-switcher",
@@ -1412,6 +1413,7 @@ dependencies = [
 name = "fm-model"
 version = "0.1.0"
 dependencies = [
+ "fm-grade",
  "fm-types",
 ]
 
@@ -1427,6 +1429,7 @@ name = "fm-persistence"
 version = "0.1.0"
 dependencies = [
  "fm-clock",
+ "fm-grade",
  "fm-model",
  "fm-titles",
  "fm-types",
@@ -1702,6 +1705,7 @@ dependencies = [
  "fm-command",
  "fm-compositor",
  "fm-engine",
+ "fm-grade",
  "fm-model",
  "fm-persistence",
  "fm-protocol",

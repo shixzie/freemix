@@ -1,11 +1,12 @@
 use fm_types::{BusId, InputId, MAX_INPUT_NAME_BYTES, OutputId, PixelFormat, SceneId};
 
 use crate::{
-    CropRect, InputKind, Layer, LayerEffect, MAX_STREAM_TARGET_NAME_BYTES, Project,
+    CropRect, GradeSource, InputKind, Layer, LayerEffect, MAX_GRADE_NAME_BYTES, MAX_LUT_NAME_BYTES,
+    MAX_PROJECT_GRADES, MAX_PROJECT_LUTS, MAX_STREAM_TARGET_NAME_BYTES, Project, ProjectGrading,
     ProjectSettings, RestartPolicy, SimulatedAudio, SourceRef, StreamTargetId, TitleFieldsError,
     TitleInput,
     cycles::{mark_alias_cycles, mark_audio_input_cycles, mark_bus_cycles, mark_scene_cycles},
-    validate_title_fields,
+    lut_id_from_uri, validate_title_fields,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,6 +17,8 @@ pub enum EntityRef {
     AudioBus(BusId),
     Output(OutputId),
     StreamTarget(StreamTargetId),
+    Grade(crate::GradeId),
+    Lut(crate::LutId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +54,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_input_audio_strips(project, &mut errors);
     validate_input_locks(project, &mut errors);
     validate_playlist(project, &mut errors);
+    validate_grading(project, &mut errors);
     validate_main_mix(project, &mut errors);
     validate_stingers(project, &mut errors);
     validate_scenes(project, &mut errors);
@@ -168,6 +172,153 @@ fn validate_playlist(project: &Project, errors: &mut Vec<ValidationError>) {
             kind: ValidationErrorKind::OutOfRange,
         });
     }
+}
+
+fn validate_grading(project: &Project, errors: &mut Vec<ValidationError>) {
+    let grading = project.grading();
+    if grading.luts.len() > MAX_PROJECT_LUTS {
+        errors.push(ValidationError {
+            entity: None,
+            field: "luts",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    for (index, lut) in grading.luts.iter().enumerate() {
+        let entity = Some(EntityRef::Lut(lut.id));
+        let previous = &grading.luts[..index];
+        if previous.iter().any(|other| other.id == lut.id) {
+            push_error(errors, entity, "luts.id", ValidationErrorKind::DuplicateId);
+        }
+        if previous.iter().any(|other| other.name == lut.name) {
+            push_error(
+                errors,
+                entity,
+                "luts.name",
+                ValidationErrorKind::DuplicateName,
+            );
+        }
+        if let Some(kind) = bounded_name_error(&lut.name, MAX_LUT_NAME_BYTES) {
+            push_error(errors, entity, "luts.name", kind);
+        }
+        if !lut.size_in_bounds() {
+            push_error(errors, entity, "luts.size", ValidationErrorKind::OutOfRange);
+        }
+    }
+    if grading.grades.len() > MAX_PROJECT_GRADES {
+        push_error(errors, None, "grades", ValidationErrorKind::OutOfRange);
+    }
+    for (index, entry) in grading.grades.iter().enumerate() {
+        let entity = Some(EntityRef::Grade(entry.id));
+        let previous = &grading.grades[..index];
+        if previous.iter().any(|other| other.id == entry.id) {
+            push_error(
+                errors,
+                entity,
+                "grades.id",
+                ValidationErrorKind::DuplicateId,
+            );
+        }
+        if previous.iter().any(|other| other.name == entry.name) {
+            push_error(
+                errors,
+                entity,
+                "grades.name",
+                ValidationErrorKind::DuplicateName,
+            );
+        }
+        if let Some(kind) = bounded_name_error(&entry.name, MAX_GRADE_NAME_BYTES) {
+            push_error(errors, entity, "grades.name", kind);
+        }
+        validate_grade_values(errors, grading, &entry.grade, entity, "grades.grade");
+    }
+    for (input, source) in &grading.inputs {
+        let entity = Some(EntityRef::Input(*input));
+        if !project
+            .inputs()
+            .iter()
+            .any(|candidate| candidate.id == *input)
+        {
+            push_error(
+                errors,
+                entity,
+                "input_grades.input",
+                ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            );
+        }
+        validate_grade_source(errors, grading, source, entity, "input_grades.grade");
+    }
+    if let Some(source) = &grading.program {
+        validate_grade_source(errors, grading, source, None, "program_grade");
+    }
+}
+
+fn validate_grade_source(
+    errors: &mut Vec<ValidationError>,
+    grading: &ProjectGrading,
+    source: &GradeSource,
+    entity: Option<EntityRef>,
+    field: &'static str,
+) {
+    match source {
+        GradeSource::Library(id) => {
+            if grading.grade(*id).is_none() {
+                push_error(
+                    errors,
+                    entity,
+                    field,
+                    ValidationErrorKind::MissingReference(EntityRef::Grade(*id)),
+                );
+            }
+        }
+        GradeSource::Inline(grade) => validate_grade_values(errors, grading, grade, entity, field),
+    }
+}
+
+fn validate_grade_values(
+    errors: &mut Vec<ValidationError>,
+    grading: &ProjectGrading,
+    grade: &fm_grade::Grade,
+    entity: Option<EntityRef>,
+    field: &'static str,
+) {
+    if grade.validate().is_err() {
+        push_error(errors, entity, field, ValidationErrorKind::OutOfRange);
+    }
+    if let Some(lut) = &grade.lut {
+        match lut_id_from_uri(&lut.asset_uri) {
+            None => push_error(errors, entity, field, ValidationErrorKind::FormatMismatch),
+            Some(id) if grading.lut(id).is_none() => push_error(
+                errors,
+                entity,
+                field,
+                ValidationErrorKind::MissingReference(EntityRef::Lut(id)),
+            ),
+            Some(_) => {}
+        }
+    }
+}
+
+fn bounded_name_error(name: &str, maximum: usize) -> Option<ValidationErrorKind> {
+    if name.trim().is_empty() {
+        Some(ValidationErrorKind::Empty)
+    } else if name.len() > maximum || name.chars().any(char::is_control) {
+        Some(ValidationErrorKind::OutOfRange)
+    } else {
+        None
+    }
+}
+
+fn push_error(
+    errors: &mut Vec<ValidationError>,
+    entity: Option<EntityRef>,
+    field: &'static str,
+    kind: ValidationErrorKind,
+) {
+    errors.push(ValidationError {
+        entity,
+        field,
+        kind,
+    });
 }
 
 fn validate_settings(project: &Project, errors: &mut Vec<ValidationError>) {

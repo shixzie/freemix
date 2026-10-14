@@ -111,6 +111,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     }
     output.push_str("]}");
     write_playlist(output, project.playlist());
+    super::grade::write_grading(output, project.grading());
     output.push_str("\n  },");
 }
 

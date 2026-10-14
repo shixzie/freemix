@@ -109,14 +109,33 @@ impl SimulatedPipeline {
         frame_number: u64,
         program: ProgramFrame,
     ) -> Result<ImageFrame, RenderError> {
-        let primary = self.render_source(program.primary, frame_number)?;
+        self.render_mapped(frame_number, program, |_, frame| Ok(frame))
+    }
+
+    /// Renders the program frame like [`Self::render`], passing each source
+    /// picture through `map` (for example a per-input colour grade) before
+    /// the transition mixes them.
+    ///
+    /// # Errors
+    ///
+    /// Returns every error of [`Self::render`] and any error of `map`.
+    pub fn render_mapped(
+        &self,
+        frame_number: u64,
+        program: ProgramFrame,
+        map: impl Fn(InputId, ImageFrame) -> Result<ImageFrame, FrameError>,
+    ) -> Result<ImageFrame, RenderError> {
+        let primary = map(
+            program.primary,
+            self.render_source(program.primary, frame_number)?,
+        )?;
         let Some(secondary) = program
             .secondary
             .filter(|secondary| *secondary != program.primary)
         else {
             return Ok(primary);
         };
-        let secondary = self.render_source(secondary, frame_number)?;
+        let secondary = map(secondary, self.render_source(secondary, frame_number)?)?;
         match program.transition_kind {
             Some(TransitionKind::Fade | TransitionKind::AlphaFade) => Ok(crossfade(
                 &primary,

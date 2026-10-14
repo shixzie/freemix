@@ -2103,6 +2103,43 @@ timeline, curve editor, scrubbed preview, or Studio/protocol surface, and
 production clocks and images are not drawn by the CLI frame render, so
 `GX-011` remains planned.
 
+Current implementation boundary for the color grading suite (`SW-019`):
+`fm-grade` is the pure, all-integer grade model (white balance, exposure,
+lift/gamma/gain/offset wheels, contrast, saturation, RGB curves,
+hue/saturation curves, and a `.cube` LUT stage with strength) with a CPU
+reference evaluator, exact `CompiledGrade` tables, a bounded `.cube` parser
+(16 MiB input, 65^3 3D edge, 65 536-entry 1D), and stable built-in presets
+(neutral, warm, cool, punchy, faded, bw). `fm-compositor` applies
+`SourceLayer::with_grade` after a layer's effects and before its transform,
+on the CPU and in the native GPU pass through a baked 65^3 LUT atlas. Project
+schema 31 makes grades project state: `project.json` strictly stores imported
+LUTs (`luts`: id, name, kind, size; at most 64), a named grade library
+(`grades`: at most 256, names at most 128 bytes), per-input grades
+(`input_grades`) and the program output grade (`program_grade`), each either
+a library reference or an inline grade; schema 30 is refused. Validation
+checks every grade bound, unique ids and names, and that a grade's LUT URI is
+exactly `asset://luts/<id>.cube` of an imported LUT; removing an input drops
+its grade, and in-use library grades and LUTs cannot be removed.
+`fm-persistence` imports a `.cube` file by reading it once under the size
+cap, parsing it, and writing exactly those bytes to `assets/luts/<id>.cube`;
+loading re-parses under the same cap and refuses a file whose kind or size
+no longer matches. Portable bundles and templates copy every imported LUT.
+`fm-engine` compiles a project's grades for scene builders (library grades
+compiled once and shared, identity grades omitted, missing LUTs bypassed
+and reported). `freemix-cli` adds `grade-set` (preset plus exposure, white
+balance, contrast, saturation, and LUT overrides, inline or saved to the
+library with `--save-as`, or `--grade` by reference), `grade-clear`,
+`grade-import-lut`, and `grade-list`, honouring the project and input
+padlocks; `render` grades each input before the transition or scene-layer
+transform and grades the composed program picture. Remaining gaps: grades
+are per input, not per scene layer; freemixd (simulated monitors and native
+media) does not apply project grades and the protocol carries no grade
+commands or state; grade edits are not engine edits with undo; project
+append drops appended inputs' grades; presets cannot be exported between
+projects; and there is no Studio grading panel, wheel or curve editor,
+before/after split preview, or scopes beside it, so `SW-019` remains
+planned.
+
 Current implementation boundary for item 2 browser title control (`GX-006`):
 `freemix-web` provides a transport-free title editor model over a narrow server
 port, reusing `fm-titles` field identities, types, and values. Per-field drafts

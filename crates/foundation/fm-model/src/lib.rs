@@ -1,4 +1,5 @@
 mod cycles;
+mod grade;
 mod playlist;
 mod project;
 mod resolve;
@@ -6,6 +7,11 @@ mod stream;
 mod title;
 mod validation;
 
+pub use grade::{
+    GradeEditError, GradeId, GradeSource, LutId, MAX_GRADE_NAME_BYTES, MAX_LUT_FILE_BYTES,
+    MAX_LUT_NAME_BYTES, MAX_PROJECT_GRADES, MAX_PROJECT_LUTS, ProjectGrade, ProjectGrading,
+    ProjectLut, lut_asset_key, lut_asset_uri, lut_id_from_uri,
+};
 pub use playlist::{
     MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_FRAMES, MAX_PLAYLIST_TRANSITION_FRAMES, Playlist,
     PlaylistEntry, PlaylistEntryError, PlaylistLoop, PlaylistRunState, PlaylistTransition,

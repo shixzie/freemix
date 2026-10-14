@@ -2,8 +2,9 @@
 //!
 //! Both operations copy a source bundle's durable manifest and exactly the
 //! assets its media and title inputs reference (title templates, their fonts
-//! and image defaults, and title image values) into a brand-new destination
-//! bundle. Title asset keys are never rewritten: a title key that would need a
+//! and image defaults, and title image values) plus every imported grading
+//! LUT into a brand-new destination bundle. Title and LUT asset keys are
+//! never rewritten: a title key that would need a
 //! portable rename refuses the export with
 //! [`BundleError::TitleAssetRewriteUnsupported`].
 //! The destination is assembled in a hidden staging sibling and published with
@@ -140,10 +141,29 @@ fn export_bundle(
         .map_err(|(input, error)| {
             BundleError::UnresolvedAssets(vec![template_issue(input, &error)])
         })?;
-    let mapping = portable_mapping(&stored, &title_uris)?;
+    // Imported LUTs are named by id (`luts/<id>.cube`), so their keys are
+    // already portable and, like title keys, are never rewritten.
+    let lut_uris = stored
+        .project()
+        .luts()
+        .iter()
+        .map(fm_model::ProjectLut::asset_uri)
+        .collect::<BTreeSet<_>>();
+    if let Some(uri) = lut_uris
+        .iter()
+        .find(|uri| source.resolve_asset_uri(uri).is_err())
+    {
+        return Err(BundleError::UnresolvedLut { uri: uri.clone() });
+    }
+    let fixed_uris = title_uris
+        .iter()
+        .chain(&lut_uris)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mapping = portable_mapping(&stored, &fixed_uris)?;
     if let Some((uri, _)) = mapping
         .iter()
-        .find(|(uri, bundled)| title_uris.contains(*uri) && uri != bundled)
+        .find(|(uri, bundled)| fixed_uris.contains(*uri) && uri != bundled)
     {
         return Err(BundleError::TitleAssetRewriteUnsupported { uri: uri.clone() });
     }

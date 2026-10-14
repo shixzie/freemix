@@ -2258,7 +2258,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 30,
+  "schema_version": 31,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -2465,7 +2465,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 30", "\"schema_version\": 29"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 31", "\"schema_version\": 30"),
     )
     .unwrap();
     assert_failure_contains(
@@ -2479,7 +2479,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 29 is unsupported; expected 30",
+        "title template schema 30 is unsupported; expected 31",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -2497,7 +2497,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 30,
+  "schema_version": 31,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -2705,7 +2705,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 30,
+  "schema_version": 31,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -3856,13 +3856,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        30
+        31
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 30);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 31);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -3875,7 +3875,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 30);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 31);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -3951,7 +3951,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        30
+        31
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -3959,7 +3959,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 30);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 31);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -3969,7 +3969,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 30);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 31);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -3977,7 +3977,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 30);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 31);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));

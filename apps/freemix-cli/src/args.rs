@@ -170,6 +170,32 @@ pub enum Command {
         phase: TitlePhase,
         frames: u32,
     },
+    /// Grades one input or the program output, inline or from the library.
+    GradeSet {
+        path: PathBuf,
+        target: GradeTargetArg,
+        /// Assigns this existing library grade instead of building one.
+        library: Option<u32>,
+        spec: GradeSpec,
+        /// Saves the built grade to the library under this name and
+        /// assigns it by reference.
+        save_as: Option<String>,
+    },
+    /// Removes the grade of one input or the program output.
+    GradeClear {
+        path: PathBuf,
+        target: GradeTargetArg,
+    },
+    /// Copies a `.cube` file into the bundle and registers it.
+    GradeImportLut {
+        path: PathBuf,
+        file: PathBuf,
+        name: Option<String>,
+    },
+    /// Lists imported LUTs, library grades, and grade assignments.
+    GradeList {
+        path: PathBuf,
+    },
     /// Renders one title input at one frame of one animation phase.
     TitleRenderFrame {
         path: PathBuf,
@@ -970,6 +996,11 @@ pub enum ArgsError {
         option: &'static str,
         requires: &'static str,
     },
+    /// An option cannot be combined with others.
+    ConflictingOptions {
+        option: &'static str,
+        conflicts: &'static str,
+    },
 }
 
 impl core::fmt::Display for ArgsError {
@@ -1015,6 +1046,9 @@ impl core::fmt::Display for ArgsError {
             Self::RequiresOption { option, requires } => {
                 write!(formatter, "{option} requires {requires}")
             }
+            Self::ConflictingOptions { option, conflicts } => {
+                write!(formatter, "{option} cannot be combined with {conflicts}")
+            }
         }
     }
 }
@@ -1038,6 +1072,10 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "title-animation-preset" => parse_title_animation_preset(arguments),
         "title-animation-stretch" => parse_title_animation_stretch(arguments),
         "title-render-frame" => parse_title_render_frame(arguments),
+        "grade-set" => parse_grade_set(arguments),
+        "grade-clear" => parse_grade_clear(arguments),
+        "grade-import-lut" => parse_grade_import_lut(arguments),
+        "grade-list" => parse_grade_list(arguments),
         "audio-bus-add" => parse_audio_bus_add(arguments),
         "audio-bus-rename" => parse_audio_bus_rename(arguments),
         "audio-bus-remove" => parse_audio_bus_remove(arguments),
@@ -2205,6 +2243,130 @@ fn parse_title_animation_stretch(
         phase: phase.ok_or(ArgsError::MissingValue("--phase"))?,
         frames: frames.ok_or(ArgsError::MissingValue("--frames"))?,
     })
+}
+
+/// What a grade command colours.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GradeTargetArg {
+    Input(u128),
+    Program,
+}
+
+/// Grade values given on the command line, applied over a preset (neutral
+/// when none is named). Bounds are checked when the grade is assigned.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GradeSpec {
+    pub preset: Option<String>,
+    pub exposure_millistops: Option<i16>,
+    pub temperature: Option<i16>,
+    pub tint: Option<i16>,
+    pub contrast: Option<i16>,
+    pub saturation_permille: Option<u16>,
+    pub lut: Option<u32>,
+    pub lut_strength_permille: Option<u16>,
+}
+
+impl GradeSpec {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+fn grade_target(arguments: &mut impl Iterator<Item = String>) -> Result<GradeTargetArg, ArgsError> {
+    let value = required(arguments, "grade target")?;
+    if value == "program" {
+        Ok(GradeTargetArg::Program)
+    } else {
+        number(&value, "grade target (an input id or `program`)").map(GradeTargetArg::Input)
+    }
+}
+
+fn parse_grade_set(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let target = grade_target(&mut arguments)?;
+    let mut library = None;
+    let mut save_as = None;
+    let mut spec = GradeSpec::default();
+    while let Some(option) = arguments.next() {
+        let field = match option.as_str() {
+            "--grade" => "grade",
+            "--save-as" => "grade name",
+            "--preset" => "preset",
+            "--exposure" => "exposure",
+            "--temperature" => "temperature",
+            "--tint" => "tint",
+            "--contrast" => "contrast",
+            "--saturation" => "saturation",
+            "--lut" => "lut",
+            "--lut-strength" => "lut strength",
+            _ => return Err(ArgsError::UnknownOption(option)),
+        };
+        let value = required(&mut arguments, field)?;
+        match option.as_str() {
+            "--grade" => library = Some(number(&value, field)?),
+            "--save-as" => {
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue(field));
+                }
+                save_as = Some(value);
+            }
+            "--preset" => spec.preset = Some(value),
+            "--exposure" => spec.exposure_millistops = Some(number(&value, field)?),
+            "--temperature" => spec.temperature = Some(number(&value, field)?),
+            "--tint" => spec.tint = Some(number(&value, field)?),
+            "--contrast" => spec.contrast = Some(number(&value, field)?),
+            "--saturation" => spec.saturation_permille = Some(number(&value, field)?),
+            "--lut" => spec.lut = Some(number(&value, field)?),
+            _ => spec.lut_strength_permille = Some(number(&value, field)?),
+        }
+    }
+    if library.is_some() && (!spec.is_empty() || save_as.is_some()) {
+        return Err(ArgsError::ConflictingOptions {
+            option: "--grade",
+            conflicts: "grade values and --save-as",
+        });
+    }
+    if spec.lut_strength_permille.is_some() && spec.lut.is_none() {
+        return Err(ArgsError::RequiresOption {
+            option: "--lut-strength",
+            requires: "--lut",
+        });
+    }
+    Ok(Command::GradeSet {
+        path,
+        target,
+        library,
+        spec,
+        save_as,
+    })
+}
+
+fn parse_grade_clear(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let target = grade_target(&mut arguments)?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::GradeClear { path, target })
+}
+
+fn parse_grade_import_lut(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let file = required_path(&mut arguments, "LUT file")?;
+    let mut name = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--name" => name = Some(nonblank(&mut arguments, "LUT name")?),
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::GradeImportLut { path, file, name })
+}
+
+fn parse_grade_list(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::GradeList { path })
 }
 
 fn parse_title_render_frame(
@@ -4210,6 +4372,79 @@ mod tests {
                 project: "show.freemix".into(),
                 capacity: fm_persistence::DEFAULT_RECENT_PROJECTS,
             })
+        );
+    }
+
+    #[test]
+    fn parses_grade_commands() {
+        assert_eq!(
+            parse(strings(&[
+                "grade-set",
+                "show.freemix",
+                "7",
+                "--preset",
+                "warm",
+                "--exposure",
+                "-500",
+                "--saturation",
+                "1200",
+                "--lut",
+                "2",
+                "--lut-strength",
+                "400",
+                "--save-as",
+                "Look",
+            ])),
+            Ok(Command::GradeSet {
+                path: "show.freemix".into(),
+                target: GradeTargetArg::Input(7),
+                library: None,
+                spec: GradeSpec {
+                    preset: Some("warm".into()),
+                    exposure_millistops: Some(-500),
+                    saturation_permille: Some(1200),
+                    lut: Some(2),
+                    lut_strength_permille: Some(400),
+                    ..GradeSpec::default()
+                },
+                save_as: Some("Look".into()),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["grade-set", "s", "program", "--grade", "3"])),
+            Ok(Command::GradeSet {
+                path: "s".into(),
+                target: GradeTargetArg::Program,
+                library: Some(3),
+                spec: GradeSpec::default(),
+                save_as: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&["grade-set", "s", "1", "--exposure", "40000"])),
+            Err(ArgsError::InvalidNumber {
+                field: "exposure",
+                value: "40000".into(),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["grade-clear", "s", "program"])),
+            Ok(Command::GradeClear {
+                path: "s".into(),
+                target: GradeTargetArg::Program,
+            })
+        );
+        assert_eq!(
+            parse(strings(&["grade-import-lut", "s", "a.cube", "--name", "A"])),
+            Ok(Command::GradeImportLut {
+                path: "s".into(),
+                file: "a.cube".into(),
+                name: Some("A".into()),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["grade-list", "s", "x"])),
+            Err(ArgsError::UnexpectedArgument("x".into()))
         );
     }
 

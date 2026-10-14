@@ -1,5 +1,6 @@
 mod decoder;
 mod encoder;
+mod grade;
 mod reader;
 
 use crate::ProjectValidationError;

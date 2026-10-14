@@ -1431,6 +1431,18 @@ pub fn run(command: Command) -> AppResult<()> {
             frame,
             output,
         } => title_animation::render_frame(&path, input, phase, frame, &output)?,
+        Command::GradeSet {
+            path,
+            target,
+            library,
+            spec,
+            save_as,
+        } => crate::grading::set(&path, target, library, &spec, save_as)?,
+        Command::GradeClear { path, target } => crate::grading::clear(&path, target)?,
+        Command::GradeImportLut { path, file, name } => {
+            crate::grading::import_lut(&path, &file, name)?;
+        }
+        Command::GradeList { path } => crate::grading::list(&path)?,
         Command::ProjectAutosave { path, keep } => project_bundle::autosave(&path, keep)?,
         Command::ProjectRecover { path, restore } => project_bundle::recover(&path, restore)?,
         Command::RecentProjects { file } => project_bundle::list_recent(&file)?,
@@ -2903,7 +2915,7 @@ fn remove_stinger(path: &Path, slot: StingerSlotNumber) -> AppResult<()> {
     })
 }
 
-fn update_project(
+pub(crate) fn update_project(
     path: &Path,
     update: impl FnOnce(&mut Project) -> AppResult<()>,
 ) -> AppResult<()> {
@@ -3400,6 +3412,7 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
             InputKind::Scene { scene_id, .. } => Some(*scene_id),
             _ => None,
         });
+    let grades = crate::grading::compiled_grades(path, &project.project)?;
     let frame = if let Some(scene) = scene {
         // Scene geometry, crops and masks are authored in project pixels, so
         // the scene is composed at the project dimensions from sources
@@ -3411,6 +3424,7 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
             &project.project,
             scene,
             &scene_pipeline,
+            &grades,
             engine.frame_cursor().get(),
             width,
             height,
@@ -3429,7 +3443,19 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
                 source_pattern(input)?;
             }
         }
-        pipeline.render(engine.frame_cursor().get(), program)?
+        // Each input is graded before the transition mixes it; the program
+        // grade colours the mixed picture.
+        let mixed =
+            pipeline.render_mapped(engine.frame_cursor().get(), program, |input, frame| {
+                match grades.input(input) {
+                    Some(grade) => fm_compositor::apply_grade(&frame, grade),
+                    None => Ok(frame),
+                }
+            })?;
+        match grades.program() {
+            Some(grade) => fm_compositor::apply_grade(&mixed, grade)?,
+            None => mixed,
+        }
     };
     write_ppm_atomic(output, |file| write_ppm(&frame, file))?;
     println!(
@@ -3993,6 +4019,16 @@ Usage:
       Renders the title input's field values at frame f of the phase, at
       the template canvas size, with the bundle's fonts. Image fields draw
       the placeholder and production clocks are reported, not drawn.
+  freemix-cli grade-set <show.freemix> <input-id|program> [--preset <id>] [--exposure <millistops>] [--temperature <t>] [--tint <t>] [--contrast <amount>] [--saturation <permille>] [--lut <lut-id> [--lut-strength <permille>]] [--save-as <name>]
+  freemix-cli grade-set <show.freemix> <input-id|program> --grade <grade-id>
+      Grades an input (before its scene-layer transform) or the program
+      output. Values apply over a built-in preset (neutral, warm, cool,
+      punchy, faded, bw); --save-as keeps the grade in the project library
+      and assigns it by reference, --grade assigns a library grade.
+  freemix-cli grade-clear <show.freemix> <input-id|program>
+  freemix-cli grade-import-lut <show.freemix> <file.cube> [--name <name>]
+      Copies a .cube LUT (at most 16 MiB, 65^3) to assets/luts/<id>.cube.
+  freemix-cli grade-list <show.freemix>
   freemix-cli audio-bus-add <show.freemix> <nonzero-bus-id> <name>
   freemix-cli audio-bus-rename <show.freemix> <existing-bus-id> <name>
   freemix-cli audio-bus-remove <show.freemix> <existing-bus-id>

@@ -8,6 +8,7 @@ mod fsutil;
 mod journal;
 mod journal_db;
 mod json;
+mod lut;
 mod media;
 mod model;
 mod recent;
@@ -30,6 +31,7 @@ pub use journal::{
     JournalScan, JournalWriter, MAX_JOURNAL_PROGRESS_BYTES, MAX_JOURNAL_RECORD_BYTES,
     MAX_UNAPPLIED_JOURNAL_BATCHES, MAX_UNAPPLIED_JOURNAL_BYTES, MutationBatch,
 };
+pub use lut::{ImportedLut, LutError};
 pub use media::{
     AssetDisposition, BundleError, ImportedAsset, RelinkEntry, RelinkOutcome, RelinkPlan,
     RelinkResolution, RelinkSearch,

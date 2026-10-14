@@ -1,5 +1,6 @@
 mod app;
 mod args;
+mod grading;
 mod project_bundle;
 mod remote;
 mod scene_render;

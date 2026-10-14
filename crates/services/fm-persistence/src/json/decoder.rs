@@ -4,9 +4,9 @@ use fm_model::{
     AudioBus, BusSend, CropRect, Input, InputAudioStrip, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerEffect,
     LayerGeometry, MainMix, MixFeed, Output, Playlist, PlaylistEntry, PlaylistLoop,
-    PlaylistRunState, PlaylistTransition, PlaylistTransitionKind, Project, ProjectSettings,
-    RECORDER_SLOT_COUNT, RecorderSlot, RectMask, RestartPolicy, Rgba8, Rotation, Scene,
-    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
+    PlaylistRunState, PlaylistTransition, PlaylistTransitionKind, Project, ProjectGrading,
+    ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RectMask, RestartPolicy, Rgba8, Rotation,
+    Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
     StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
     StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol, StreamTarget,
     StreamTargetId, TitleFieldEntry, TitleFieldId, TitleFieldValue, TitleInput,
@@ -73,6 +73,7 @@ struct ProjectDto {
     restart_policy: RestartPolicy,
     edit_locks: EditLocks,
     playlist: Playlist,
+    grading: ProjectGrading,
 }
 
 struct EditLocks {
@@ -111,6 +112,7 @@ impl ProjectDto {
             restart_policy: parse_restart_policy(object.take("restart_policy")?)?,
             edit_locks: parse_edit_locks(object.take("edit_locks")?)?,
             playlist: parse_playlist(object.take("playlist")?)?,
+            grading: super::grade::parse_grading(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -181,6 +183,9 @@ impl ProjectDto {
         // validation; whether the state is reachable is checked when an
         // engine restores it.
         project.set_playlist(self.playlist);
+        // Grade bounds, names, and library and LUT references are reported
+        // by project validation.
+        project.set_grading(self.grading);
         project
     }
 }

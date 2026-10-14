@@ -68,6 +68,10 @@ pub enum BundleError {
     TitleAssetRewriteUnsupported {
         uri: String,
     },
+    /// An imported LUT's bundled file could not be resolved.
+    UnresolvedLut {
+        uri: String,
+    },
     /// The source journal holds acknowledged batches the manifest lacks.
     UnappliedJournal {
         batches: usize,
@@ -119,6 +123,9 @@ impl fmt::Display for BundleError {
                 "title asset `{uri}` would need a different key in the destination; \
                  rewriting title asset keys is not supported"
             ),
+            Self::UnresolvedLut { uri } => {
+                write!(formatter, "imported LUT `{uri}` cannot be resolved")
+            }
             Self::UnappliedJournal { batches } => write!(
                 formatter,
                 "the source journal holds {batches} unapplied batch(es); checkpoint it first"

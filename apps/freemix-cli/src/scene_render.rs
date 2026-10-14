@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 
 use fm_compositor::{
     CompositionPlan, CpuExecutionError, CpuSourceFrame, Effect, OutputTarget, PlanError, RectMask,
-    Rotation, Scene, SceneError, SourceId, SourceLayer, Transform, compile_scene, execute_cpu,
+    Rotation, Scene, SceneError, SourceId, SourceLayer, Transform, apply_grade, compile_scene,
+    execute_cpu,
 };
+use fm_engine::CompiledProjectGrades;
 use fm_model::{Input, InputKind, Project, SimulatedVideo, SourceRef};
 use fm_types::{InputId, SceneId};
 use fm_video::{CropRect, FrameError, ImageFrame, Rgba8, scale_nearest};
@@ -37,6 +39,7 @@ pub(crate) enum SceneRenderError {
     Plan(PlanError),
     Source(fm_sim::RenderError),
     Cpu(CpuExecutionError),
+    Grade(FrameError),
     Scale(FrameError),
 }
 
@@ -78,6 +81,7 @@ impl fmt::Display for SceneRenderError {
             Self::Plan(error) => error.fmt(formatter),
             Self::Source(error) => error.fmt(formatter),
             Self::Cpu(error) => error.fmt(formatter),
+            Self::Grade(error) => write!(formatter, "program grade failed: {error}"),
             Self::Scale(error) => error.fmt(formatter),
         }
     }
@@ -95,10 +99,15 @@ impl std::error::Error for SceneRenderError {}
 /// scaling once keeps every authored rectangle exact in project pixels; when
 /// the output divides the project size evenly (1920x1080 to 640x360, for
 /// example) each authored edge lands on an exact output pixel.
+///
+/// Each layer carries its input's grade (applied by the compositor after
+/// the layer's effects and before its transform), and the program grade
+/// colours the composed picture before it is scaled.
 pub(crate) fn render_scene(
     project: &Project,
     scene: SceneId,
     pipeline: &fm_sim::SimulatedPipeline,
+    grades: &CompiledProjectGrades,
     frame_number: u64,
     width: u32,
     height: u32,
@@ -147,7 +156,11 @@ pub(crate) fn render_scene(
             sources.insert(input.id, token);
             token
         };
-        composition.push_layer(compositor_layer(token, layer));
+        let mut source_layer = compositor_layer(token, layer);
+        if let Some(grade) = grades.input(input.id) {
+            source_layer = source_layer.with_grade(grade.clone());
+        }
+        composition.push_layer(source_layer);
     }
 
     let (plan, _) =
@@ -165,7 +178,10 @@ pub(crate) fn render_scene(
         .iter()
         .map(|(source, frame)| CpuSourceFrame::new(*source, frame))
         .collect::<Vec<_>>();
-    let composed = execute_cpu(&plan, &bindings).map_err(SceneRenderError::Cpu)?;
+    let mut composed = execute_cpu(&plan, &bindings).map_err(SceneRenderError::Cpu)?;
+    if let Some(grade) = grades.program() {
+        composed = apply_grade(&composed, grade).map_err(SceneRenderError::Grade)?;
+    }
     if composed.width() == width && composed.height() == height {
         return Ok(composed);
     }
