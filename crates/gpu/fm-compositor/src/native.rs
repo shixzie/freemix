@@ -1,4 +1,5 @@
 use core::fmt;
+use std::sync::Arc;
 
 use fm_gpu::{
     NativeContext, NativeFullscreenBlend, NativeFullscreenDraw, NativeFullscreenLoadOp,
@@ -6,8 +7,10 @@ use fm_gpu::{
     NativeSourceExtentPolicy, NativeTexture, ShaderDescriptor, ShaderLanguage, ShaderSource,
     ShaderStage, TextureFormat,
 };
+use fm_grade::CompiledGrade;
 use fm_video::{CropRect, Rotation, Transform};
 
+use crate::native_grade::{NativeGradeCache, NativeGradeError, NativeGradeRenderer};
 use crate::{
     CompositionPlan, FadeToBlackPlan, RectMask, SourceId, StingerBase, StingerFramePlan,
     StingerFrameRole, TransitionKind, TransitionPlan,
@@ -325,9 +328,6 @@ pub enum NativeCompositionError {
     UnsupportedSafeAreas {
         count: usize,
     },
-    UnsupportedGrade {
-        layer: usize,
-    },
     Gpu(NativeGpuError),
 }
 
@@ -387,10 +387,6 @@ impl fmt::Display for NativeCompositionError {
                 formatter,
                 "native composition does not support {count} safe-area guides"
             ),
-            Self::UnsupportedGrade { layer } => write!(
-                formatter,
-                "layer {layer} colour grades are unsupported by native composition"
-            ),
             Self::Gpu(error) => error.fmt(formatter),
         }
     }
@@ -411,13 +407,29 @@ impl From<NativeGpuError> for NativeCompositionError {
     }
 }
 
+/// Maps a grade-pass failure for `source`. Source formats are validated
+/// before any grade runs, so a format error here still names the source.
+fn grade_error(source: SourceId, error: NativeGradeError) -> NativeCompositionError {
+    match error {
+        NativeGradeError::SourceFormat { actual } => {
+            NativeCompositionError::SourceFormat { source, actual }
+        }
+        NativeGradeError::Gpu(error) => NativeCompositionError::Gpu(error),
+    }
+}
+
 /// Native executor for compiled composition plans.
 ///
 /// Inputs are canonical `Rgba16Float`, linear-light, premultiplied-alpha working
 /// textures. `PlanLayer::alpha_mode` describes pre-normalization/CPU execution
 /// and does not cause additional premultiplication in this executor.
+///
+/// Layers with a non-identity grade are first graded as whole source frames
+/// by [`NativeGradeRenderer`]; baked LUTs are cached across frames.
 pub struct NativeCompositionRenderer {
     pipeline: NativeFullscreenPipeline,
+    grade: NativeGradeRenderer,
+    grade_cache: NativeGradeCache,
 }
 
 impl NativeCompositionRenderer {
@@ -444,7 +456,19 @@ impl NativeCompositionRenderer {
                 },
             )
             .await?;
-        Ok(Self { pipeline })
+        let grade = NativeGradeRenderer::new(context)
+            .await
+            .map_err(|error| match error {
+                NativeGradeError::Gpu(error) => NativeCompositionError::Gpu(error),
+                NativeGradeError::SourceFormat { .. } => {
+                    unreachable!("grade pipeline creation does not inspect sources")
+                }
+            })?;
+        Ok(Self {
+            pipeline,
+            grade,
+            grade_cache: NativeGradeCache::default(),
+        })
     }
 
     /// Renders `plan` into one GPU-resident `Rgba16Float` output texture.
@@ -453,8 +477,10 @@ impl NativeCompositionRenderer {
     /// premultiplied-alpha textures. Compositor-owned plan, source identifier,
     /// format, crop, and transform validation completes before output allocation;
     /// opaque GPU context ownership is validated by `fm-gpu` at submission.
-    /// Layers are submitted in plan order as one bounded, premultiplied
-    /// source-over render pass without readback.
+    /// Graded layers first run one grade pass each over their whole source
+    /// texture (grades precede crop, transform, mask, and opacity, as on the
+    /// CPU path). Layers are then submitted in plan order as one bounded,
+    /// premultiplied source-over render pass without readback.
     ///
     /// # Errors
     ///
@@ -466,18 +492,19 @@ impl NativeCompositionRenderer {
         sources: &[NativeSourceFrame<'_>],
     ) -> Result<NativeTexture, NativeCompositionError> {
         let prepared = validate_composition(plan, sources)?;
+        let mut graded = Vec::with_capacity(prepared.len());
+        for layer in &prepared {
+            graded.push(self.grade_layer(context, layer).await?);
+        }
         let output = context
             .create_rgba16_float_render_target(plan.width(), plan.height())
             .await?;
         let draws = prepared
             .iter()
-            .map(|layer| {
-                NativeFullscreenDraw::new(
-                    &self.pipeline,
-                    layer.texture,
-                    layer.texture,
-                    &layer.uniform,
-                )
+            .zip(&graded)
+            .map(|(layer, graded)| {
+                let texture = graded.as_ref().unwrap_or(layer.texture);
+                NativeFullscreenDraw::new(&self.pipeline, texture, texture, &layer.uniform)
             })
             .collect::<Vec<_>>();
         let background = plan.background();
@@ -495,15 +522,40 @@ impl NativeCompositionRenderer {
             .await?;
         Ok(output)
     }
+
+    async fn grade_layer(
+        &self,
+        context: &NativeContext,
+        layer: &PreparedLayer<'_>,
+    ) -> Result<Option<NativeTexture>, NativeCompositionError> {
+        let Some(grade) = layer.grade else {
+            return Ok(None);
+        };
+        let Some(lut) = self
+            .grade_cache
+            .lut(&self.grade, context, grade)
+            .await
+            .map_err(|error| grade_error(layer.source, error))?
+        else {
+            return Ok(None);
+        };
+        self.grade
+            .apply(context, &lut, layer.texture)
+            .await
+            .map(Some)
+            .map_err(|error| grade_error(layer.source, error))
+    }
 }
 
 struct PreparedLayer<'a> {
+    source: SourceId,
     texture: &'a NativeTexture,
+    grade: Option<&'a Arc<CompiledGrade>>,
     uniform: [u8; COMPOSITION_UNIFORM_SIZE],
 }
 
 fn validate_composition<'a>(
-    plan: &CompositionPlan,
+    plan: &'a CompositionPlan,
     sources: &'a [NativeSourceFrame<'a>],
 ) -> Result<Vec<PreparedLayer<'a>>, NativeCompositionError> {
     validate_unique_native_sources(sources)?;
@@ -531,7 +583,9 @@ fn validate_composition<'a>(
         validate_native_transform(layer_index, layer.transform())?;
         let visible = transform_is_visible(plan.width(), plan.height(), layer.transform());
         prepared.push(PreparedLayer {
+            source: layer.source(),
             texture,
+            grade: layer.grade().filter(|grade| !grade.is_identity()),
             uniform: encode_composition_uniform(
                 layer.transform(),
                 crop,
@@ -577,9 +631,6 @@ fn validate_supported_work(plan: &CompositionPlan) -> Result<(), NativeCompositi
                     name: effect.name().to_owned(),
                 });
             }
-        }
-        if layer.active_grade().is_some() {
-            return Err(NativeCompositionError::UnsupportedGrade { layer: layer_index });
         }
     }
     Ok(())
@@ -1333,7 +1384,8 @@ mod tests {
     }
 
     #[test]
-    fn rect_masks_are_supported_while_other_native_plan_features_return_indexed_errors() {
+    fn rect_masks_and_grades_are_supported_while_other_native_plan_features_return_indexed_errors()
+    {
         let source = SourceId::new(1);
         let base = transform(0, 0, 1, 1, Rotation::Deg0);
 
@@ -1379,10 +1431,7 @@ mod tests {
                 .unwrap(),
             )),
         );
-        assert_eq!(
-            validate_supported_work(&graded),
-            Err(NativeCompositionError::UnsupportedGrade { layer: 0 })
-        );
+        assert_eq!(validate_supported_work(&graded), Ok(()));
 
         let mut scene = Scene::new(2, 2, Rgba8::new(0, 0, 0, 255)).unwrap();
         scene.push_safe_area(SafeAreaGuide::new(

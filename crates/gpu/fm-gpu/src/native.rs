@@ -1267,18 +1267,63 @@ impl NativeContext {
         stride: usize,
         rgba: &[u8],
     ) -> Result<NativeTexture, NativeGpuError> {
-        let layout = validate_upload(width, height, stride, rgba.len())?;
-        self.validate_texture_dimensions(width, height, TextureFormat::Rgba8Unorm)?;
-        let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let texture = self.create_texture(
+        self.upload_texture(
             "fm-gpu RGBA8 upload",
+            TextureFormat::Rgba8Unorm,
             width,
             height,
-            TextureFormat::Rgba8Unorm,
-            wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-        )?;
+            stride,
+            rgba,
+        )
+        .await
+    }
+
+    /// Uploads validated, row-strided RGBA16-float texels to a sampleable
+    /// source texture.
+    ///
+    /// `bytes` holds little-endian IEEE 754 binary16 components in RGBA order,
+    /// eight bytes per texel; `stride` is the byte distance between rows. The
+    /// texture can be bound beside canonical `Rgba16Float` working textures,
+    /// for example as a lookup-table atlas.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for zero, overflowing, or unsupported dimensions, an
+    /// invalid stride or source length, or backend validation failure.
+    pub async fn upload_rgba16_float(
+        &self,
+        width: u32,
+        height: u32,
+        stride: usize,
+        bytes: &[u8],
+    ) -> Result<NativeTexture, NativeGpuError> {
+        self.upload_texture(
+            "fm-gpu RGBA16-float upload",
+            TextureFormat::Rgba16Float,
+            width,
+            height,
+            stride,
+            bytes,
+        )
+        .await
+    }
+
+    async fn upload_texture(
+        &self,
+        label: &str,
+        format: TextureFormat,
+        width: u32,
+        height: u32,
+        stride: usize,
+        bytes: &[u8],
+    ) -> Result<NativeTexture, NativeGpuError> {
+        let layout = validate_upload(format, width, height, stride, bytes.len())?;
+        self.validate_texture_dimensions(width, height, format)?;
+        let usage = wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING;
+        let validation_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let texture = self.create_texture(label, width, height, format, usage)?;
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -1286,7 +1331,7 @@ impl NativeContext {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &rgba[..layout.required],
+            &bytes[..layout.required],
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(layout.stride),
@@ -1295,15 +1340,7 @@ impl NativeContext {
             texture_extent(width, height),
         );
         check_validation(validation_scope).await?;
-        Ok(self.wrap_texture(
-            texture,
-            width,
-            height,
-            TextureFormat::Rgba8Unorm,
-            wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-        ))
+        Ok(self.wrap_texture(texture, width, height, format, usage))
     }
 
     /// Allocates an RGBA8 render target that remains GPU-resident and may be
@@ -2080,15 +2117,18 @@ struct UploadLayout {
 }
 
 fn validate_upload(
+    format: TextureFormat,
     width: u32,
     height: u32,
     stride: usize,
     length: usize,
 ) -> Result<UploadLayout, NativeGpuError> {
-    validate_texture_dimensions(width, height, TextureFormat::Rgba8Unorm)?;
+    validate_texture_dimensions(width, height, format)?;
+    let bytes_per_texel = usize::try_from(format.bytes_per_texel())
+        .map_err(|_| NativeGpuError::TextureSizeOverflow)?;
     let tight_stride = usize::try_from(width)
         .ok()
-        .and_then(|width| width.checked_mul(RGBA_BYTES_PER_PIXEL as usize))
+        .and_then(|width| width.checked_mul(bytes_per_texel))
         .ok_or(NativeGpuError::TextureSizeOverflow)?;
     if stride < tight_stride {
         return Err(NativeGpuError::UploadStrideTooSmall {
@@ -2661,32 +2701,59 @@ mod tests {
 
     #[test]
     fn upload_layout_accepts_padding_and_rejects_bad_inputs() {
-        let layout = validate_upload(2, 2, 12, 24).unwrap();
+        let layout = validate_upload(TextureFormat::Rgba8Unorm, 2, 2, 12, 24).unwrap();
         assert_eq!((layout.stride, layout.required), (12, 24));
         assert_eq!(
-            validate_upload(0, 2, 8, 16).err(),
+            validate_upload(TextureFormat::Rgba8Unorm, 0, 2, 8, 16).err(),
             Some(NativeGpuError::ZeroTextureDimension {
                 width: 0,
                 height: 2,
             })
         );
         assert_eq!(
-            validate_upload(2, 1, 7, 8).err(),
+            validate_upload(TextureFormat::Rgba8Unorm, 2, 1, 7, 8).err(),
             Some(NativeGpuError::UploadStrideTooSmall {
                 minimum: 8,
                 actual: 7,
             })
         );
         assert_eq!(
-            validate_upload(2, 2, 8, 15).err(),
+            validate_upload(TextureFormat::Rgba8Unorm, 2, 2, 8, 15).err(),
             Some(NativeGpuError::UploadLengthTooSmall {
                 required: 16,
                 actual: 15,
             })
         );
         assert_eq!(
-            validate_upload(u32::MAX, 2, usize::MAX, usize::MAX).err(),
+            validate_upload(
+                TextureFormat::Rgba8Unorm,
+                u32::MAX,
+                2,
+                usize::MAX,
+                usize::MAX
+            )
+            .err(),
             Some(NativeGpuError::TextureSizeOverflow)
+        );
+    }
+
+    #[test]
+    fn half_float_upload_layout_uses_eight_byte_texels() {
+        let layout = validate_upload(TextureFormat::Rgba16Float, 3, 2, 24, 48).unwrap();
+        assert_eq!((layout.stride, layout.required), (24, 48));
+        assert_eq!(
+            validate_upload(TextureFormat::Rgba16Float, 3, 2, 23, 48).err(),
+            Some(NativeGpuError::UploadStrideTooSmall {
+                minimum: 24,
+                actual: 23,
+            })
+        );
+        assert_eq!(
+            validate_upload(TextureFormat::Rgba16Float, 3, 2, 32, 63).err(),
+            Some(NativeGpuError::UploadLengthTooSmall {
+                required: 64,
+                actual: 63,
+            })
         );
     }
 

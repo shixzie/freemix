@@ -9,6 +9,8 @@ mod keying;
 mod multiview;
 #[cfg(feature = "native-wgpu")]
 mod native;
+#[cfg(feature = "native-wgpu")]
+mod native_grade;
 mod plan;
 mod safe_area;
 mod scene;
@@ -45,6 +47,10 @@ pub use native::{
     MAX_NATIVE_TRANSFORM_DIMENSION, NativeCompositionError, NativeCompositionRenderer,
     NativeFadeToBlackError, NativeFadeToBlackRenderer, NativeSourceFrame, NativeStingerError,
     NativeStingerRenderer, NativeTransitionError, NativeTransitionRenderer,
+};
+#[cfg(feature = "native-wgpu")]
+pub use native_grade::{
+    DEFAULT_NATIVE_GRADE_LUT_EDGE, NativeGradeError, NativeGradeLut, NativeGradeRenderer,
 };
 pub use plan::{
     CompilationReport, CompositionPlan, PlanError, PlanLayer, ReportEntry, compile_scene,

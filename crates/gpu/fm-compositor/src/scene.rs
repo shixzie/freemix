@@ -351,8 +351,8 @@ impl SourceLayer {
 
     /// Colour-grades the layer after its effect chain, on straight colour
     /// and before premultiplication. Alpha is never changed. The native GPU
-    /// path does not execute grades yet and rejects graded layers with
-    /// `UnsupportedGrade`.
+    /// path grades the layer's working texture through a baked trilinear LUT
+    /// before composition (see `NativeGradeRenderer`).
     #[must_use]
     pub fn with_grade(mut self, grade: Arc<CompiledGrade>) -> Self {
         self.grade = Some(grade);
