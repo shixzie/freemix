@@ -9,9 +9,10 @@ use fm_protocol::StreamRealizedState;
 
 use crate::panels::latest_stream_sample;
 use crate::theme::{
-    ACCENT, AMBER, AMBER_FILL, BORDER, BORDER_STRONG, ERROR, GRAPHITE, MUTED, PROGRAM, TEXT,
+    ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PROGRAM, TEXT,
     TEXT_DIM, connection_color, mono, pill, status_dot,
 };
+use crate::toasts::{Toast, ToastKind};
 use crate::{StudioConnectionStatus, StudioUiState};
 
 /// On-air indicator facts for the top bar, derived only from replicated state.
@@ -185,51 +186,84 @@ fn on_air_badge(ui: &mut Ui, label: &str, color: Color32, lit: bool) -> egui::Re
     response
 }
 
-/// Full-width banner for errors, notices, and terminally uncertain commands.
-pub(crate) fn draw_message_banner(ui: &mut Ui, state: &StudioUiState) {
-    let has_messages = state.error.is_some()
-        || state.notice.is_some()
-        || state.external_notice.is_some()
-        || !state.terminal_uncertainties.is_empty();
-    if !has_messages {
-        return;
-    }
-    let (color, fill) = if state.error.is_some() {
-        (ERROR, Color32::from_rgb(56, 18, 18))
-    } else {
-        (AMBER, AMBER_FILL.gamma_multiply(0.6))
+/// Draws one toast card; returns `true` when the operator dismissed it.
+pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
+    let color = match toast.kind {
+        ToastKind::Error => ERROR,
+        ToastKind::Notice | ToastKind::Uncertain => AMBER,
     };
-    Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(1.0, color.gamma_multiply(0.6)))
-        .corner_radius(CornerRadius::same(4))
-        .inner_margin(Margin::symmetric(10, 6))
+    let mut dismissed = false;
+    let response = Frame::new()
+        .fill(GRAPHITE_RAISED)
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.55)))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin {
+            left: 14,
+            right: 8,
+            top: 8,
+            bottom: 10,
+        })
+        .shadow(egui::Shadow {
+            offset: [0, 4],
+            blur: 14,
+            spread: 0,
+            color: Color32::from_black_alpha(140),
+        })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if let Some(error) = &state.error {
+            ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("ERROR | {error}"))
-                        .color(ERROR)
-                        .strong(),
+                    RichText::new(toast.kind.title())
+                        .size(10.5)
+                        .strong()
+                        .extra_letter_spacing(1.0)
+                        .color(color),
                 );
-            }
-            if let Some(notice) = &state.notice {
-                ui.label(RichText::new(format!("NOTICE | {notice}")).color(AMBER));
-            }
-            if let Some(notice) = &state.external_notice {
-                ui.label(RichText::new(format!("NOTICE | {notice}")).color(AMBER));
-            }
-            for uncertainty in &state.terminal_uncertainties {
-                ui.label(
-                    RichText::new(format!(
-                        "Command {} | Server receipt {}",
-                        uncertainty.command_id, uncertainty.received_command_id
-                    ))
-                    .color(AMBER),
-                );
-            }
-        });
-    ui.add_space(8.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("×").size(15.0).color(TEXT_DIM))
+                                .frame(false),
+                        )
+                        .on_hover_text("Dismiss; the status bar keeps the latest message")
+                        .clicked()
+                    {
+                        dismissed = true;
+                    }
+                });
+            });
+            ui.add(egui::Label::new(RichText::new(&toast.message).size(12.0).color(TEXT)).wrap());
+        })
+        .response;
+    let rect = response.rect;
+    let painter = ui.painter();
+    // Severity stripe and remaining-lifetime bar.
+    painter.rect_filled(
+        egui::Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())),
+        CornerRadius {
+            nw: 6,
+            sw: 6,
+            ne: 0,
+            se: 0,
+        },
+        color,
+    );
+    #[allow(clippy::cast_precision_loss)] // lifetimes are a few thousand ms
+    let fraction = toast.remaining_ms as f32 / toast.lifetime_ms.max(1) as f32;
+    let track = egui::Rect::from_min_max(
+        egui::pos2(rect.min.x + 14.0, rect.max.y - 4.0),
+        egui::pos2(rect.max.x - 8.0, rect.max.y - 2.0),
+    );
+    painter.rect_filled(track, CornerRadius::same(1), BORDER);
+    painter.rect_filled(
+        egui::Rect::from_min_size(
+            track.min,
+            Vec2::new(track.width() * fraction, track.height()),
+        ),
+        CornerRadius::same(1),
+        color.gamma_multiply(0.7),
+    );
+    dismissed
 }
 
 /// One-line bottom status bar: connection, last result, and key hints.
@@ -258,10 +292,12 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState) {
         ui.add(egui::Label::new(RichText::new(message).size(10.5).color(color)).truncate());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
-                RichText::new("1–8 PVW   C CUT   F FADE   B FTB   ESC CANCEL T-BAR")
-                    .size(10.0)
-                    .extra_letter_spacing(0.5)
-                    .color(MUTED),
+                RichText::new(
+                    "1–8 PVW   C CUT   F FADE   B FTB   ESC CANCEL T-BAR   ·   HELP › SHORTCUTS",
+                )
+                .size(10.0)
+                .extra_letter_spacing(0.5)
+                .color(MUTED),
             );
             if status.controls_enabled() {
                 ui.label(RichText::new("KEYS").size(10.0).color(TEXT_DIM));

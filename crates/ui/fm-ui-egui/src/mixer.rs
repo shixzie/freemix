@@ -10,6 +10,8 @@ use egui::{
 use fm_protocol::AudioMeterChannel;
 use fm_ui_model::{ClientView, InputAudioStripStatus};
 
+use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::meter_ballistics::{ChannelBallistics, MeterBallistics, MeterKey};
 use crate::monitors::label_for_input;
 use crate::theme::{
     ACCENT, ACCENT_FILL, AMBER, AMBER_FILL, BORDER, BORDER_STRONG, GRAPHITE_RAISED, MONITOR_BLACK,
@@ -33,6 +35,8 @@ const METER_FLOOR_DB: f32 = -60.0;
 const METER_YELLOW_DB: f32 = -18.0;
 const METER_RED_DB: f32 = -6.0;
 const METER_SEGMENTS: usize = 30;
+/// Height of the clip lamp above each meter bar.
+const CLIP_LAMP_HEIGHT: f32 = 5.0;
 
 /// Total width the mixer wants for `strips` input strips plus Master.
 #[allow(clippy::cast_precision_loss)] // strip counts are tiny
@@ -109,7 +113,13 @@ const fn meters_unavailable(state: &StudioUiState) -> bool {
         && state.view.is_some()
 }
 
-pub(crate) fn draw_mixer(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+pub(crate) fn draw_mixer(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    ballistics: &mut MeterBallistics,
+    dt_ms: u32,
+    intents: &mut Vec<StudioIntent>,
+) {
     let fader_height =
         (ui.available_height() - STRIP_CHROME_HEIGHT).clamp(MIN_FADER_HEIGHT, MAX_FADER_HEIGHT);
     let enabled = state.connection_status.controls_enabled()
@@ -120,10 +130,15 @@ pub(crate) fn draw_mixer(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
             ui.label(RichText::new("METERS UNAVAILABLE").size(10.0).color(AMBER))
                 .on_hover_text("No audio meter sample has been received from the daemon");
         } else if state.audio_meters.is_some() {
-            ui.label(RichText::new("PEAK · RMS").size(10.0).color(MUTED));
+            ui.label(RichText::new("RMS · PEAK HOLD · CLIP").size(10.0).color(MUTED))
+                .on_hover_text(
+                    "Lit segments show RMS; the line marks the held peak (1.5 s, then falls 20 dB/s); the top lamp latches 3 s at 0 dBFS",
+                );
         }
     });
+    ballistics.begin_frame(state.audio_meters.as_ref().map(|meters| meters.sequence));
     let Some(view) = &state.view else {
+        ballistics.retain(|_| false);
         ui.label(
             RichText::new("INPUT AUDIO UNAVAILABLE")
                 .size(11.0)
@@ -131,6 +146,14 @@ pub(crate) fn draw_mixer(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
         );
         return;
     };
+    ballistics.retain(|key| match key {
+        MeterKey::Master => true,
+        MeterKey::Input(input) => view
+            .input_audio_strips
+            .iter()
+            .any(|strip| strip.input == input),
+    });
+    let audio_reason = unavailable_reason(state, Capability::Audio);
     // Master stays pinned at the right edge; input strips scroll when the
     // mixer is narrower than all strips.
     let master_width = STRIP_WIDTH + 2.0 + STRIP_GAP;
@@ -155,12 +178,21 @@ pub(crate) fn draw_mixer(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
                                         .find(|meter| meter.input.to_domain() == status.input)
                                         .map(|meter| meter.channels.as_slice())
                                 });
+                                let holds = ballistics
+                                    .update(MeterKey::Input(status.input), channels, dt_ms)
+                                    .to_vec();
                                 draw_input_strip(
                                     ui,
                                     view,
                                     status,
-                                    channels,
-                                    enabled,
+                                    MeterFeed {
+                                        channels,
+                                        holds: &holds,
+                                    },
+                                    StripGate {
+                                        enabled,
+                                        reason: audio_reason,
+                                    },
                                     fader_height,
                                     intents,
                                 );
@@ -169,15 +201,38 @@ pub(crate) fn draw_mixer(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
                     });
             },
         );
+        let master = state
+            .audio_meters
+            .as_ref()
+            .map(|meters| meters.master.as_slice());
+        let holds = ballistics.update(MeterKey::Master, master, dt_ms).to_vec();
         draw_master_strip(
             ui,
-            state
-                .audio_meters
-                .as_ref()
-                .map(|meters| meters.master.as_slice()),
+            MeterFeed {
+                channels: master,
+                holds: &holds,
+            },
             fader_height,
         );
     });
+    if ballistics.animating() {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(33));
+    }
+}
+
+/// One meter's latest sample plus its ballistic state.
+#[derive(Clone, Copy)]
+struct MeterFeed<'a> {
+    channels: Option<&'a [AudioMeterChannel]>,
+    holds: &'a [ChannelBallistics],
+}
+
+/// Whether strip controls are enabled, and why not.
+#[derive(Clone, Copy)]
+struct StripGate {
+    enabled: bool,
+    reason: &'static str,
 }
 
 fn strip_frame(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut Ui)) {
@@ -217,11 +272,12 @@ fn draw_input_strip(
     ui: &mut Ui,
     view: &ClientView,
     status: &InputAudioStripStatus,
-    channels: Option<&[AudioMeterChannel]>,
-    enabled: bool,
+    feed: MeterFeed<'_>,
+    gate: StripGate,
     fader_height: f32,
     intents: &mut Vec<StudioIntent>,
 ) {
+    let StripGate { enabled, reason } = gate;
     let name = label_for_input(view, status.input);
     let tally = tally_state(status.input, view.switcher);
     let accent = if tally.is_none() {
@@ -246,7 +302,7 @@ fn draw_input_strip(
             .on_hover_text(&name);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            draw_meter(ui, channels, fader_height);
+            draw_meter(ui, feed, fader_height);
             let fader_changed = ui
                 .scope(|ui| {
                     ui.spacing_mut().slider_width = fader_height;
@@ -262,7 +318,10 @@ fn draw_input_strip(
                             .trailing_fill(true)
                             .handle_shape(HandleShape::Rect { aspect_ratio: 0.5 }),
                     )
-                    .on_hover_text("Input gain fader")
+                    .hint(
+                        "Input gain fader (drag; double-click the dB entry to type)",
+                        reason,
+                    )
                     .changed()
                 })
                 .inner;
@@ -286,7 +345,10 @@ fn draw_input_strip(
                                 .map(|db| db * 1000.0)
                         }),
                 )
-                .on_hover_text("Input gain in decibels (stored in one-thousandths of a dB)")
+                .hint(
+                    "Input gain in decibels (stored in one-thousandths of a dB)",
+                    reason,
+                )
                 .changed();
             gain_changed |= entry_changed;
             balance_changed = ui
@@ -299,7 +361,10 @@ fn draw_input_strip(
                         .custom_formatter(|value, _| format_balance(value))
                         .custom_parser(parse_balance),
                 )
-                .on_hover_text("Stereo balance: L100 full left, C center, R100 full right")
+                .hint(
+                    "Stereo balance: L100 full left, C center, R100 full right",
+                    reason,
+                )
                 .changed();
             delay_changed = ui
                 .add_enabled(
@@ -310,17 +375,20 @@ fn draw_input_strip(
                         .prefix("DLY ")
                         .suffix(" smp"),
                 )
-                .on_hover_text("Input delay in samples at the 48 kHz Master sample rate")
+                .hint(
+                    "Input delay in samples at the 48 kHz Master sample rate",
+                    reason,
+                )
                 .changed();
         });
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let half = (STRIP_WIDTH - 13.0) / 2.0;
             mute_changed = toggle(ui, enabled, &mut muted, "M", PROGRAM, PROGRAM_FILL, half)
-                .on_hover_text("Mute this input")
+                .hint("Mute this input", reason)
                 .changed();
             solo_changed = toggle(ui, enabled, &mut soloed, "S", AMBER, AMBER_FILL, half)
-                .on_hover_text("Solo this input")
+                .hint("Solo this input", reason)
                 .changed();
         });
         follow_changed = toggle(
@@ -332,7 +400,10 @@ fn draw_input_strip(
             ACCENT_FILL,
             STRIP_WIDTH - 10.0,
         )
-        .on_hover_text("Audio follows video: open only while the input is on Program")
+        .hint(
+            "Audio follows video: open only while the input is on Program",
+            reason,
+        )
         .changed();
     });
     let update = InputAudioStripUpdate {
@@ -378,11 +449,12 @@ fn toggle(
     response
 }
 
-fn draw_master_strip(ui: &mut Ui, channels: Option<&[AudioMeterChannel]>, fader_height: f32) {
+fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) {
+    let channels = feed.channels;
     strip_frame(ui, ACCENT, |ui| {
         ui.label(RichText::new("MASTER").size(11.0).strong().color(TEXT));
         ui.horizontal_top(|ui| {
-            draw_meter(ui, channels, fader_height);
+            draw_meter(ui, feed, fader_height);
             draw_meter_scale(ui, fader_height);
         });
         let peak = channels
@@ -413,8 +485,11 @@ fn draw_master_strip(ui: &mut Ui, channels: Option<&[AudioMeterChannel]>, fader_
 }
 
 /// Draws one segmented meter well with a bar per channel: RMS as the lit
-/// segments and peak as a hold line. Without channels the well stays unlit.
-fn draw_meter(ui: &mut Ui, channels: Option<&[AudioMeterChannel]>, height: f32) {
+/// segments, the latest peak as a thin line, the held peak as a bright marker,
+/// and a clip lamp on top. Without channels the well stays unlit.
+#[allow(clippy::too_many_lines)] // one painter pass per meter region
+fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) {
+    let MeterFeed { channels, holds } = feed;
     let bars = channels.map_or(2, |channels| channels.len().clamp(1, 2));
     #[allow(clippy::cast_precision_loss)] // one or two bars
     let width = bars as f32 * 7.0 + 4.0;
@@ -424,7 +499,11 @@ fn draw_meter(ui: &mut Ui, channels: Option<&[AudioMeterChannel]>, height: f32) 
     }
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, CornerRadius::same(2), MONITOR_BLACK);
-    let inner = rect.shrink(2.0);
+    let well = rect.shrink(2.0);
+    let inner = Rect::from_min_max(
+        pos2(well.min.x, well.min.y + CLIP_LAMP_HEIGHT + 2.0),
+        well.max,
+    );
     #[allow(clippy::cast_precision_loss)]
     let segment_height = inner.height() / METER_SEGMENTS as f32;
     for bar in 0..bars {
@@ -464,11 +543,37 @@ fn draw_meter(ui: &mut Ui, channels: Option<&[AudioMeterChannel]>, height: f32) 
             painter.line_segment(
                 [pos2(x, y), pos2(x + 5.0, y)],
                 Stroke::new(
-                    2.0,
-                    meter_segment_color(METER_FLOOR_DB + peak * -METER_FLOOR_DB),
+                    1.0,
+                    meter_segment_color(METER_FLOOR_DB + peak * -METER_FLOOR_DB)
+                        .gamma_multiply(0.8),
                 ),
             );
         }
+        let hold = channel.and(holds.get(bar)).copied();
+        if let Some(hold) = hold {
+            #[allow(clippy::cast_precision_loss)] // milli-dB fits f32 exactly
+            let held_db = hold.held_mdb as f32 / 1_000.0;
+            let fraction = meter_fraction(held_db);
+            if fraction > 0.0 {
+                let y = inner.max.y - fraction * inner.height();
+                painter.line_segment(
+                    [pos2(x - 0.5, y), pos2(x + 5.5, y)],
+                    Stroke::new(2.0, meter_segment_color(held_db).gamma_multiply(1.15)),
+                );
+            }
+        }
+        // Clip lamp: dark when idle, lit red while latched.
+        let lamp = Rect::from_min_size(pos2(x, well.min.y), Vec2::new(5.0, CLIP_LAMP_HEIGHT));
+        let clipping = hold.is_some_and(ChannelBallistics::clipping);
+        painter.rect_filled(
+            lamp,
+            CornerRadius::same(1),
+            if clipping {
+                PROGRAM
+            } else {
+                PROGRAM.gamma_multiply(0.15)
+            },
+        );
     }
     painter.rect_stroke(
         rect,
@@ -481,11 +586,22 @@ fn draw_meter(ui: &mut Ui, channels: Option<&[AudioMeterChannel]>, height: f32) 
             .iter()
             .enumerate()
             .map(|(index, channel)| {
+                let hold = holds.get(index).copied();
                 format!(
-                    "{} P {:.3} R {:.3}",
+                    "Ch {}  peak {}  RMS {}  hold {}{}",
                     index + 1,
-                    f64::from(channel.peak_millionths) / 1_000_000.0,
-                    f64::from(channel.rms_millionths) / 1_000_000.0
+                    format_db(meter_db(channel.peak_millionths)),
+                    format_db(meter_db(channel.rms_millionths)),
+                    hold.map_or_else(
+                        || "--".to_owned(),
+                        #[allow(clippy::cast_precision_loss)]
+                        |hold| format_db(hold.held_mdb as f32 / 1_000.0)
+                    ),
+                    if hold.is_some_and(ChannelBallistics::clipping) {
+                        "  CLIP"
+                    } else {
+                        ""
+                    }
                 )
             })
             .collect::<Vec<_>>()
@@ -496,11 +612,22 @@ fn draw_meter(ui: &mut Ui, channels: Option<&[AudioMeterChannel]>, height: f32) 
     }
 }
 
+/// Formats a dBFS level for meter tooltips.
+pub(crate) fn format_db(db: f32) -> String {
+    if db.is_finite() && db > METER_FLOOR_DB {
+        format!("{db:+.1} dB")
+    } else {
+        "-inf dB".to_owned()
+    }
+}
+
 fn draw_meter_scale(ui: &mut Ui, height: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(22.0, height), Sense::hover());
     let painter = ui.painter_at(rect.expand2(Vec2::new(0.0, 6.0)));
+    let top = rect.min.y + 2.0 + CLIP_LAMP_HEIGHT + 2.0;
+    let bottom = rect.max.y - 2.0;
     for db in [0.0_f32, -6.0, -12.0, -18.0, -30.0, -48.0, -60.0] {
-        let y = rect.max.y - 2.0 - meter_fraction(db) * (rect.height() - 4.0);
+        let y = bottom - meter_fraction(db) * (bottom - top);
         painter.text(
             pos2(rect.min.x + 2.0, y),
             egui::Align2::LEFT_CENTER,
@@ -552,5 +679,13 @@ mod tests {
         assert!(!meters_unavailable(&state));
         let state = StudioUiState::new(StudioConnectionStatus::Connecting);
         assert!(!meters_unavailable(&state));
+    }
+
+    #[test]
+    fn meter_tooltips_format_levels_and_floor() {
+        assert_eq!(format_db(-6.02), "-6.0 dB");
+        assert_eq!(format_db(0.0), "+0.0 dB");
+        assert_eq!(format_db(f32::NEG_INFINITY), "-inf dB");
+        assert_eq!(format_db(-60.0), "-inf dB");
     }
 }

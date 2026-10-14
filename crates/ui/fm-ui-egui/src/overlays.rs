@@ -6,12 +6,18 @@ use fm_protocol::{
 };
 use fm_types::InputId;
 
+use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::monitors::label_for_input;
 use crate::theme::{
     ACCENT, AMBER, BORDER, GRAPHITE_RAISED, MUTED, PROGRAM, TEXT, TEXT_DIM, mono, pill,
     small_button,
 };
 use crate::{StudioIntent, StudioUiState, overlay_status};
+
+/// The specific reason when session gates pass, the session reason otherwise.
+fn why(enabled: bool, session: &'static str, specific: &'static str) -> &'static str {
+    if enabled { specific } else { session }
+}
 
 pub(crate) fn draw_overlays(
     ui: &mut Ui,
@@ -70,6 +76,7 @@ fn draw_overlay_channel(
         .view
         .as_ref()
         .map(|view| view.switcher.desired.preview);
+    let reason = unavailable_reason(state, Capability::Transition);
     let desired_active = desired.is_some_and(|overlay| overlay.active);
     let confirmed_active = realized.is_some_and(|overlay| overlay.active);
     let (state_label, on_air) = overlay_state_label(desired_active, confirmed_active);
@@ -126,7 +133,10 @@ fn draw_overlay_channel(
                             Button::new(RichText::new("OFF").size(11.0).strong())
                                 .min_size(Vec2::new(0.0, 20.0)),
                         )
-                        .on_hover_text("Remove this overlay channel from Program")
+                        .hint(
+                            "Remove this overlay channel from Program",
+                            why(enabled, reason, "this overlay channel is already off"),
+                        )
                         .clicked()
                     {
                         intents.push(StudioIntent::OverlayOff { channel });
@@ -138,7 +148,10 @@ fn draw_overlay_channel(
                                 .fill(crate::theme::ACCENT_FILL)
                                 .stroke(Stroke::new(1.0, ACCENT.gamma_multiply(0.6))),
                         )
-                        .on_hover_text("Take the current Preview source on this overlay channel")
+                        .hint(
+                            "Take the current Preview source on this overlay channel",
+                            why(enabled, reason, "no Preview source is selected"),
+                        )
                         .clicked()
                         && let Some(source) = source
                     {
@@ -200,11 +213,19 @@ fn draw_overlay_details(
         duration_frames,
         enabled,
     } = context;
+    let reason = unavailable_reason(state, Capability::Transition);
     ui.horizontal_wrapped(|ui| {
         let update = overlay_update_intent(enabled, channel, desired, source);
         if ui
             .add_enabled(update.is_some(), small_button("UPDATE"))
-            .on_hover_text("Update this active overlay channel from the current Preview source")
+            .hint(
+                "Update this active overlay channel from the current Preview source",
+                why(
+                    enabled,
+                    reason,
+                    "the channel is off or already shows the Preview source",
+                ),
+            )
             .clicked()
             && let Some(update) = update
         {
@@ -218,7 +239,10 @@ fn draw_overlay_details(
                     desired.map_or(0, |value| value.queued_sources.len())
                 )),
             )
-            .on_hover_text("Append the current Preview source to this overlay queue")
+            .hint(
+                "Append the current Preview source to this overlay queue",
+                why(enabled, reason, "no Preview source is selected"),
+            )
             .clicked()
             && let Some(source) = source
         {
@@ -229,7 +253,10 @@ fn draw_overlay_details(
                 enabled && desired.is_some_and(|value| !value.queued_sources.is_empty()),
                 small_button("NEXT"),
             )
-            .on_hover_text("Take and remove the head of this overlay queue")
+            .hint(
+                "Take and remove the head of this overlay queue",
+                why(enabled, reason, "this overlay queue is empty"),
+            )
             .clicked()
         {
             intents.push(StudioIntent::TakeNextOverlay { channel });
@@ -243,7 +270,7 @@ fn draw_overlay_details(
                     OverlayTransitionKind::Fade => "FADE",
                 }),
             )
-            .on_hover_text("Toggle this overlay channel between Cut and Fade")
+            .hint("Toggle this overlay channel between Cut and Fade", reason)
             .clicked()
         {
             intents.push(StudioIntent::ToggleOverlayTransition {
@@ -258,14 +285,14 @@ fn draw_overlay_details(
                 enabled,
                 small_button(overlay_status::position_label(position)),
             )
-            .on_hover_text("Cycle this overlay channel's position preset")
+            .hint("Cycle this overlay channel's position preset", reason)
             .clicked()
         {
             intents.push(StudioIntent::CycleOverlayPosition { channel });
         }
         if ui
             .add_enabled(enabled, small_button(overlay_status::border_label(border)))
-            .on_hover_text("Cycle this overlay channel's white border preset")
+            .hint("Cycle this overlay channel's white border preset", reason)
             .clicked()
         {
             intents.push(StudioIntent::CycleOverlayBorder { channel });
@@ -285,6 +312,14 @@ fn draw_overlay_details(
                             egui::Checkbox::new(
                                 &mut included,
                                 RichText::new(&output.name).size(11.0),
+                            ),
+                        )
+                        .hint(
+                            "Include this overlay channel on this output",
+                            why(
+                                enabled,
+                                reason,
+                                "the overlay channel has not been taken yet",
                             ),
                         )
                         .changed()

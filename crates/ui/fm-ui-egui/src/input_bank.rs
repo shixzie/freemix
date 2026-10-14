@@ -10,9 +10,10 @@ use egui::{
 };
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
 
+use crate::gating::{self, Capability, Hint, unavailable_reason};
 use crate::theme::{
-    BORDER_STRONG, GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PROGRAM, TEXT, TEXT_DIM, mono,
-    section_header, small_button, tally_badge, tally_color,
+    ACCENT, BORDER_STRONG, GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PROGRAM, TEXT, TEXT_DIM, mono,
+    section_header, section_label, small_button, tally_badge, tally_color,
 };
 use crate::{
     InputMoveDirection, RenameDraft, StudioIntent, StudioShell, StudioUiState, TransitionGate,
@@ -112,7 +113,7 @@ impl StudioShell {
         let count = state.view.as_ref().map_or(0, |view| view.inputs.len());
         section_header(ui, "Input bank", |ui| {
             ui.label(
-                RichText::new("click PVW · double-click CUT · 1–8 keys")
+                RichText::new("click PVW · double-click CUT · right-click more")
                     .size(10.0)
                     .color(MUTED),
             );
@@ -169,6 +170,7 @@ impl StudioShell {
             });
     }
 
+    #[allow(clippy::too_many_lines)] // one immediate-mode tile plus its key row
     fn draw_tile(
         &mut self,
         ui: &mut Ui,
@@ -187,21 +189,49 @@ impl StudioShell {
             cut_enabled,
             reorder_enabled,
         } = tile;
-        let thumb_height = (width * 9.0 / 16.0).round();
-        let sense = if enabled {
-            Sense::click()
+        let preview_reason = unavailable_reason(state, Capability::SelectPreview);
+        let cut_reason = if enabled {
+            unavailable_reason(state, Capability::Transition)
         } else {
-            Sense::hover()
+            preview_reason
         };
-        let (rect, response) =
-            ui.allocate_exact_size(Vec2::new(width, thumb_height + TILE_NAME_HEIGHT), sense);
+        let edit_reason = unavailable_reason(state, Capability::EditProject);
+        let thumb_height = (width * 9.0 / 16.0).round();
+        // Tiles always sense clicks so hover, focus, and the context menu work;
+        // the Preview and transition gates still decide which intents result.
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(width, thumb_height + TILE_NAME_HEIGHT),
+            Sense::click(),
+        );
         if ui.is_rect_visible(rect) {
-            paint_tile(ui, rect, index, name, tally, enabled, response.hovered());
+            paint_tile(
+                ui,
+                rect,
+                TilePaint {
+                    index,
+                    name,
+                    tally,
+                    enabled,
+                    hovered: response.hovered(),
+                    focused: response.has_focus(),
+                    pressed: response.is_pointer_button_down_on(),
+                },
+            );
         }
-        let response = response.on_hover_text(format!(
-            "{name}\n{}\nClick: select Preview · Double-click: cut to Program",
+        let shortcut = if index < 8 {
+            format!("  [{}]", index + 1)
+        } else {
+            String::new()
+        };
+        let hover = format!(
+            "{name}\n{}\nClick: select Preview{shortcut} · Double-click: cut to Program · Right-click: more",
             tally.operator_label()
-        ));
+        );
+        let response = if enabled {
+            response.on_hover_text(hover)
+        } else {
+            response.on_hover_text(gating::disabled_text(&hover, preview_reason))
+        };
         let gates = TileGates {
             preview: enabled,
             transition: cut_enabled,
@@ -214,12 +244,31 @@ impl StudioShell {
             TileGesture::None
         };
         intents.extend(tile_intents(input, gesture, gates));
+        response.context_menu(|ui| {
+            self.draw_tile_menu(
+                ui,
+                tile,
+                TileReasons {
+                    preview: preview_reason,
+                    cut: cut_reason,
+                    edit: edit_reason,
+                },
+                intents,
+            );
+        });
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let up = ui
                 .add_enabled(reorder_enabled && index > 0, small_button("◀"))
-                .on_hover_text("Move this input earlier in the project order");
+                .hint(
+                    "Move this input earlier in the project order",
+                    if reorder_enabled {
+                        "this input is already first"
+                    } else {
+                        edit_reason
+                    },
+                );
             if up.clicked() {
                 intents.push(StudioIntent::MoveInput {
                     input,
@@ -228,7 +277,14 @@ impl StudioShell {
             }
             let down = ui
                 .add_enabled(reorder_enabled && index + 1 < count, small_button("▶"))
-                .on_hover_text("Move this input later in the project order");
+                .hint(
+                    "Move this input later in the project order",
+                    if reorder_enabled {
+                        "this input is already last"
+                    } else {
+                        edit_reason
+                    },
+                );
             if down.clicked() {
                 intents.push(StudioIntent::MoveInput {
                     input,
@@ -237,14 +293,10 @@ impl StudioShell {
             }
             if ui
                 .add_enabled(reorder_enabled, small_button("RENAME"))
-                .on_hover_text("Rename this input")
+                .hint("Rename this input", edit_reason)
                 .clicked()
             {
-                self.rename_draft = Some(RenameDraft {
-                    input,
-                    name: name.to_owned(),
-                    confirmed_name: name.to_owned(),
-                });
+                self.rename_draft = Some(RenameDraft::new(input, name));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let cut = ui
@@ -254,7 +306,10 @@ impl StudioShell {
                             .stroke(Stroke::new(1.0, PROGRAM.gamma_multiply(0.35)))
                             .min_size(Vec2::new(0.0, 20.0)),
                     )
-                    .on_hover_text("Select this input on Preview, then cut it to Program");
+                    .hint(
+                        "Select this input on Preview, then cut it to Program  [double-click]",
+                        cut_reason,
+                    );
                 if cut.clicked() {
                     intents.extend(tile_intents(input, TileGesture::Cut, gates));
                 }
@@ -266,6 +321,92 @@ impl StudioShell {
             .is_some_and(|draft| draft.input == input)
         {
             self.draw_rename_editor(ui, state, input, name, intents);
+        }
+    }
+
+    fn draw_tile_menu(
+        &mut self,
+        ui: &mut Ui,
+        tile: TileContext<'_>,
+        reasons: TileReasons,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let TileContext {
+            input,
+            index,
+            name,
+            count,
+            enabled,
+            cut_enabled,
+            reorder_enabled,
+            ..
+        } = tile;
+        let TileReasons {
+            preview: preview_reason,
+            cut: cut_reason,
+            edit: edit_reason,
+        } = reasons;
+        let gates = TileGates {
+            preview: enabled,
+            transition: cut_enabled,
+        };
+        ui.set_min_width(210.0);
+        ui.label(section_label(name));
+        let item = |ui: &mut Ui, enabled: bool, label: &str, shortcut: &str, reason: &str| {
+            let mut button = egui::Button::new(label);
+            if !shortcut.is_empty() {
+                button = button.shortcut_text(RichText::new(shortcut).color(MUTED));
+            }
+            ui.add_enabled(enabled, button)
+                .on_disabled_hover_text(format!("Unavailable: {reason}"))
+                .clicked()
+        };
+        let key = if index < 8 {
+            format!("{}", index + 1)
+        } else {
+            String::new()
+        };
+        if item(ui, enabled, "Select on Preview", &key, preview_reason) {
+            intents.extend(tile_intents(input, TileGesture::Click, gates));
+        }
+        if item(ui, cut_enabled, "Cut to Program", "Dbl-click", cut_reason) {
+            intents.extend(tile_intents(input, TileGesture::Cut, gates));
+        }
+        ui.separator();
+        if item(ui, reorder_enabled, "Rename…", "", edit_reason) {
+            self.rename_draft = Some(RenameDraft::new(input, name));
+        }
+        if item(
+            ui,
+            reorder_enabled && index > 0,
+            "Move left",
+            "",
+            if reorder_enabled {
+                "this input is already first"
+            } else {
+                edit_reason
+            },
+        ) {
+            intents.push(StudioIntent::MoveInput {
+                input,
+                direction: InputMoveDirection::Up,
+            });
+        }
+        if item(
+            ui,
+            reorder_enabled && index + 1 < count,
+            "Move right",
+            "",
+            if reorder_enabled {
+                "this input is already last"
+            } else {
+                edit_reason
+            },
+        ) {
+            intents.push(StudioIntent::MoveInput {
+                input,
+                direction: InputMoveDirection::Down,
+            });
         }
     }
 
@@ -291,16 +432,44 @@ impl StudioShell {
             && !duplicate
             && draft.name != current;
         let mut close = false;
-        ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(ui.available_width()));
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut draft.name)
+                .id(egui::Id::new(("studio-rename", input)))
+                .desired_width(ui.available_width()),
+        );
+        if draft.focus_pending {
+            draft.focus_pending = false;
+            edit.request_focus();
+        }
+        let submitted = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        let reason = if draft.name.trim().is_empty() {
+            "the name is empty"
+        } else if draft.name.len() > MAX_INPUT_NAME_BYTES {
+            "the name is too long"
+        } else if duplicate {
+            "another input already uses this name"
+        } else {
+            "the name is unchanged"
+        };
         ui.horizontal(|ui| {
-            if ui.add_enabled(valid, small_button("APPLY")).clicked() {
+            if (ui
+                .add_enabled(valid, small_button("APPLY"))
+                .hint("Rename this input  [Enter]", reason)
+                .clicked()
+                || (submitted && valid))
+                && !close
+            {
                 intents.push(StudioIntent::RenameInput {
                     input,
                     name: draft.name.clone(),
                 });
                 close = true;
             }
-            if ui.add(small_button("CANCEL")).clicked() {
+            if ui
+                .add(small_button("CANCEL"))
+                .on_hover_text("Discard this rename")
+                .clicked()
+            {
                 close = true;
             }
         });
@@ -308,6 +477,14 @@ impl StudioShell {
             self.rename_draft = None;
         }
     }
+}
+
+/// Why each tile action is unavailable, when it is.
+#[derive(Clone, Copy)]
+struct TileReasons {
+    preview: &'static str,
+    cut: &'static str,
+    edit: &'static str,
 }
 
 #[derive(Clone, Copy)]
@@ -323,24 +500,46 @@ struct TileContext<'a> {
     reorder_enabled: bool,
 }
 
-#[allow(clippy::too_many_lines)] // one painter pass per tile region
-fn paint_tile(
-    ui: &Ui,
-    rect: Rect,
+/// Per-frame facts that change how one tile is painted.
+#[allow(clippy::struct_excessive_bools)] // independent interaction states
+#[derive(Clone, Copy)]
+struct TilePaint<'a> {
     index: usize,
-    name: &str,
+    name: &'a str,
     tally: crate::TallyState,
     enabled: bool,
     hovered: bool,
-) {
-    let painter = ui.painter_at(rect.expand(2.0));
+    focused: bool,
+    pressed: bool,
+}
+
+#[allow(clippy::too_many_lines)] // one painter pass per tile region
+fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
+    let TilePaint {
+        index,
+        name,
+        tally,
+        enabled,
+        hovered,
+        focused,
+        pressed,
+    } = paint;
+    let painter = ui.painter_at(rect.expand(4.0));
     let radius = CornerRadius::same(4);
     let thumb = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - TILE_NAME_HEIGHT));
     let name_bar = Rect::from_min_max(pos2(rect.min.x, thumb.max.y), rect.max);
     let border = tally_color(tally);
     let has_tally = !tally.is_none();
 
-    painter.rect_filled(rect, radius, MONITOR_BLACK);
+    painter.rect_filled(
+        rect,
+        radius,
+        if hovered && enabled {
+            Color32::from_rgb(14, 16, 19)
+        } else {
+            MONITOR_BLACK
+        },
+    );
     // Large dim ordinal, like a multiview label on an empty source.
     painter.text(
         thumb.center(),
@@ -426,7 +625,7 @@ fn paint_tile(
     );
     let stroke_width = if has_tally { 2.0 } else { 1.0 };
     let stroke_color = if hovered && enabled && !has_tally {
-        crate::theme::ACCENT
+        ACCENT.gamma_multiply(0.8)
     } else if hovered && enabled {
         border.gamma_multiply(1.2)
     } else {
@@ -438,6 +637,18 @@ fn paint_tile(
         Stroke::new(stroke_width, stroke_color),
         StrokeKind::Inside,
     );
+    if pressed && enabled {
+        painter.rect_filled(rect, radius, Color32::from_white_alpha(10));
+    }
+    if focused {
+        // Keyboard focus ring outside the tally border.
+        painter.rect_stroke(
+            rect.expand(2.0),
+            CornerRadius::same(6),
+            Stroke::new(2.0, ACCENT),
+            StrokeKind::Outside,
+        );
+    }
 }
 
 #[cfg(test)]

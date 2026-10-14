@@ -6,7 +6,10 @@
 //! Drawing is split by console region: `theme` (palette and style),
 //! `chrome` (top and status bars), `monitors` (Preview/Program wells),
 //! `transitions` (transition column, T-bar, FTB), `input_bank` (source
-//! tiles), `mixer` (channel strips), and `panels`/`overlays` (side panel).
+//! tiles), `mixer` (channel strips), `panels`/`overlays` (side panel),
+//! `menu` (menu bar and Help windows), `connection_overlay` (the status card
+//! over the monitors), and `toasts` (transient notices). Pure helpers live in
+//! `gating` (disabled-control reasons) and `meter_ballistics` (peak hold).
 
 use egui::{
     Align, CentralPanel, Event, Frame, Key, Layout, Margin, Modifiers, Panel, ScrollArea, Stroke,
@@ -20,17 +23,23 @@ use fm_types::{InputId, OutputId};
 use fm_ui_model::{ClientView, ManualTransitionStatus, StreamStatus, SwitcherState};
 
 mod chrome;
+mod connection_overlay;
 mod fade_to_black;
+mod gating;
 mod input_bank;
+mod menu;
+mod meter_ballistics;
 mod mixer;
 mod monitors;
 mod overlay_status;
 mod overlays;
 mod panels;
 mod theme;
+mod toasts;
 mod transitions;
 
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
+pub use menu::ConsoleLayout;
 
 use panels::SideTab;
 use theme::{BORDER, GRAPHITE, PANEL};
@@ -206,6 +215,15 @@ pub struct TerminalUncertaintyNotice {
     pub received_command_id: String,
 }
 
+/// Reconnect backoff facts shown while the control connection retries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReconnectStatus {
+    /// One-based reconnect attempt number.
+    pub attempt: u32,
+    /// Delay before the next attempt in milliseconds.
+    pub delay_ms: u64,
+}
+
 /// Owned render input for one studio frame.
 #[allow(clippy::struct_excessive_bools)] // each bool is a distinct operator permission gate
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -228,6 +246,8 @@ pub struct StudioUiState {
     pub recording_desired: [bool; RECORDER_SLOT_COUNT],
     /// Whether one recorder slot's record command is still unresolved.
     pub recording_pending: [bool; RECORDER_SLOT_COUNT],
+    /// Reconnect attempt and delay while the connection is in backoff.
+    pub reconnect: Option<ReconnectStatus>,
 }
 
 impl StudioUiState {
@@ -251,6 +271,7 @@ impl StudioUiState {
             stream_status: None,
             recording_desired: [false; RECORDER_SLOT_COUNT],
             recording_pending: [false; RECORDER_SLOT_COUNT],
+            reconnect: None,
         }
     }
 
@@ -574,6 +595,93 @@ const fn numbered_preview_index(key: Key) -> Option<usize> {
     }
 }
 
+/// Section of the keyboard shortcuts reference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ShortcutGroup {
+    Switching,
+    Transitions,
+    InputBank,
+}
+
+impl ShortcutGroup {
+    pub(crate) const fn title(self) -> &'static str {
+        match self {
+            Self::Switching => "Switching",
+            Self::Transitions => "Transitions",
+            Self::InputBank => "Input bank (pointer and focus)",
+        }
+    }
+}
+
+/// One entry of the keyboard shortcuts reference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ShortcutEntry {
+    pub(crate) group: ShortcutGroup,
+    pub(crate) keys: &'static str,
+    pub(crate) action: &'static str,
+    /// The key handled by [`studio_shortcuts`], when this is a global key.
+    pub(crate) key: Option<Key>,
+}
+
+/// The shortcuts reference shown in Help; global keys are verified against
+/// [`studio_shortcuts`] by unit test.
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 9] = [
+    ShortcutEntry {
+        group: ShortcutGroup::Switching,
+        keys: "1 – 8",
+        action: "Select input 1–8 on Preview",
+        key: Some(Key::Num1),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Switching,
+        keys: "C",
+        action: "Cut Preview to Program",
+        key: Some(Key::C),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Transitions,
+        keys: "F",
+        action: "Fade Preview to Program (shared duration)",
+        key: Some(Key::F),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Transitions,
+        keys: "B",
+        action: "Toggle Fade-to-Black",
+        key: Some(Key::B),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Transitions,
+        keys: "Esc",
+        action: "Cancel the active manual T-bar transition",
+        key: Some(Key::Escape),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::InputBank,
+        keys: "Click",
+        action: "Select the input on Preview",
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::InputBank,
+        keys: "Double-click",
+        action: "Select on Preview, then Cut to Program",
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::InputBank,
+        keys: "Right-click",
+        action: "Input menu: Preview, Cut, Rename, Move",
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::InputBank,
+        keys: "Tab · Enter",
+        action: "Focus a tile, then select it on Preview",
+        key: None,
+    },
+];
+
 fn studio_shortcuts(
     ui: &mut Ui,
     gate: TransitionGate,
@@ -759,6 +867,11 @@ pub struct StudioShell {
     fade_to_black_duration_frames: u32,
     rename_draft: Option<RenameDraft>,
     side_tab: SideTab,
+    layout: ConsoleLayout,
+    show_shortcuts: bool,
+    show_about: bool,
+    toasts: toasts::ToastQueue,
+    meters: meter_ballistics::MeterBallistics,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -766,6 +879,19 @@ struct RenameDraft {
     input: InputId,
     name: String,
     confirmed_name: String,
+    /// The editor takes keyboard focus once, on the frame it opens.
+    focus_pending: bool,
+}
+
+impl RenameDraft {
+    fn new(input: InputId, name: &str) -> Self {
+        Self {
+            input,
+            name: name.to_owned(),
+            confirmed_name: name.to_owned(),
+            focus_pending: true,
+        }
+    }
 }
 
 impl StudioShell {
@@ -801,6 +927,17 @@ impl StudioShell {
         );
     }
 
+    /// Returns which console regions are visible.
+    #[must_use]
+    pub const fn layout(&self) -> ConsoleLayout {
+        self.layout
+    }
+
+    /// Shows or hides console regions.
+    pub const fn set_layout(&mut self, layout: ConsoleLayout) {
+        self.layout = layout;
+    }
+
     /// Draws one complete shell frame and returns operator intents in UI order.
     ///
     /// The UI must belong to an active `egui` pass, as is customary for
@@ -833,31 +970,49 @@ impl StudioShell {
             self.transition_duration_frames,
             self.fade_to_black_duration_frames,
         );
+        let dt_ms = meter_ballistics::frame_dt_ms(ui.input(|input| input.stable_dt));
+        self.toasts.observe(state);
+        self.toasts.tick(dt_ms);
         let bar_frame = Frame::new()
             .fill(PANEL)
             .stroke(Stroke::new(1.0, BORDER))
             .inner_margin(Margin::symmetric(14, 0));
+        Panel::top("studio-menu-bar")
+            .exact_size(26.0)
+            .frame(
+                Frame::new()
+                    .fill(theme::GRAPHITE)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(Margin::symmetric(8, 0)),
+            )
+            .show(ui, |ui| {
+                self.draw_menu_bar(ui, state, manual_transition_controls, &mut intents);
+            });
         Panel::top("studio-top-bar")
             .exact_size(46.0)
             .frame(bar_frame)
             .show(ui, |ui| chrome::draw_top_bar(ui, state));
-        Panel::bottom("studio-status-bar")
-            .exact_size(26.0)
-            .frame(bar_frame)
-            .show(ui, |ui| chrome::draw_status_bar(ui, state));
-        Panel::right("studio-side-panel")
-            .resizable(true)
-            .default_size(SIDE_PANEL_WIDTH)
-            .min_size(300.0)
-            .max_size(560.0)
-            .frame(
-                Frame::new()
-                    .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER))
-                    .inner_margin(Margin::same(10)),
-            )
-            .show(ui, |ui| self.draw_side_panel(ui, state, &mut intents));
-        CentralPanel::default()
+        if self.layout.show_status_bar {
+            Panel::bottom("studio-status-bar")
+                .exact_size(26.0)
+                .frame(bar_frame)
+                .show(ui, |ui| chrome::draw_status_bar(ui, state));
+        }
+        if self.layout.show_side_panel {
+            Panel::right("studio-side-panel")
+                .resizable(true)
+                .default_size(SIDE_PANEL_WIDTH)
+                .min_size(300.0)
+                .max_size(560.0)
+                .frame(
+                    Frame::new()
+                        .fill(PANEL)
+                        .stroke(Stroke::new(1.0, BORDER))
+                        .inner_margin(Margin::same(10)),
+                )
+                .show(ui, |ui| self.draw_side_panel(ui, state, &mut intents));
+        }
+        let central = CentralPanel::default()
             .frame(Frame::new().fill(GRAPHITE).inner_margin(Margin::same(12)))
             .show(ui, |ui| {
                 // Small windows keep every region reachable by scrolling.
@@ -865,13 +1020,50 @@ impl StudioShell {
                     .id_salt("studio-console")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        chrome::draw_message_banner(ui, state);
+                        let top = ui.cursor().min;
                         self.draw_switcher_row(ui, state, manual_transition_controls, &mut intents);
-                        ui.add_space(12.0);
-                        self.draw_lower_row(ui, state, &mut intents);
+                        let monitors = egui::Rect::from_min_max(
+                            top,
+                            egui::pos2(top.x + ui.available_width(), ui.min_rect().max.y),
+                        );
+                        if let Some(card) = connection_overlay::connection_card(state) {
+                            connection_overlay::paint_connection_card(ui, monitors, &card);
+                        }
+                        if self.layout.show_input_bank || self.layout.show_mixer {
+                            ui.add_space(12.0);
+                            self.draw_lower_row(ui, state, dt_ms, &mut intents);
+                        }
                     });
             });
+        self.draw_toasts(ui.ctx(), central.response.rect);
+        self.draw_help_windows(ui.ctx());
         intents
+    }
+
+    /// Stacked toasts at the bottom-right of the console area.
+    fn draw_toasts(&mut self, context: &egui::Context, area: egui::Rect) {
+        if self.toasts.is_empty() {
+            return;
+        }
+        context.request_repaint_after(std::time::Duration::from_millis(100));
+        let mut dismissed = None;
+        egui::Area::new(egui::Id::new("studio-toasts"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::RIGHT_BOTTOM)
+            .fixed_pos(area.right_bottom() - Vec2::new(16.0, 16.0))
+            .interactable(true)
+            .show(context, |ui| {
+                ui.set_width(380.0);
+                for toast in self.toasts.iter() {
+                    if chrome::draw_toast(ui, toast) {
+                        dismissed = Some(toast.id);
+                    }
+                    ui.add_space(6.0);
+                }
+            });
+        if let Some(id) = dismissed {
+            self.toasts.dismiss(id);
+        }
     }
 
     /// Preview monitor, transition column, Program monitor.
@@ -930,10 +1122,12 @@ impl StudioShell {
     }
 
     /// Input bank beside the audio mixer; stacked when the window is narrow.
+    /// Either region may be hidden from the View menu.
     fn draw_lower_row(
         &mut self,
         ui: &mut Ui,
         state: &StudioUiState,
+        dt_ms: u32,
         intents: &mut Vec<StudioIntent>,
     ) {
         let strips = state
@@ -941,32 +1135,48 @@ impl StudioShell {
             .as_ref()
             .map_or(0, |view| view.input_audio_strips.len());
         let available = ui.available_width();
-        let mixer_width = mixer::mixer_width(strips).min(available * 0.55);
         let height = ui.available_height().max(MIN_LOWER_ROW_HEIGHT);
-        let bank_width = available - mixer_width - 12.0;
-        if bank_width >= input_bank::MIN_TILE_WIDTH * 2.0 + 24.0 {
+        let show_bank = self.layout.show_input_bank;
+        let show_mixer = self.layout.show_mixer;
+        let mixer_width = if show_bank {
+            mixer::mixer_width(strips).min(available * 0.55)
+        } else {
+            available
+        };
+        let bank_width = if show_mixer {
+            available - mixer_width - 12.0
+        } else {
+            available
+        };
+        let side_by_side =
+            !(show_bank && show_mixer) || bank_width >= input_bank::MIN_TILE_WIDTH * 2.0 + 24.0;
+        if side_by_side {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 12.0;
-                ui.allocate_ui_with_layout(
-                    Vec2::new(bank_width, height),
-                    Layout::top_down(Align::Min),
-                    |ui| {
-                        theme::card().show(ui, |ui| {
-                            ui.set_min_size(Vec2::new(ui.available_width(), height - 22.0));
-                            self.draw_inputs(ui, state, intents);
-                        });
-                    },
-                );
-                ui.allocate_ui_with_layout(
-                    Vec2::new(mixer_width, height),
-                    Layout::top_down(Align::Min),
-                    |ui| {
-                        theme::card().show(ui, |ui| {
-                            ui.set_min_size(Vec2::new(ui.available_width(), height - 22.0));
-                            mixer::draw_mixer(ui, state, intents);
-                        });
-                    },
-                );
+                if show_bank {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(bank_width, height),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            theme::card().show(ui, |ui| {
+                                ui.set_min_size(Vec2::new(ui.available_width(), height - 22.0));
+                                self.draw_inputs(ui, state, intents);
+                            });
+                        },
+                    );
+                }
+                if show_mixer {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(mixer_width, height),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            theme::card().show(ui, |ui| {
+                                ui.set_min_size(Vec2::new(ui.available_width(), height - 22.0));
+                                mixer::draw_mixer(ui, state, &mut self.meters, dt_ms, intents);
+                            });
+                        },
+                    );
+                }
             });
         } else {
             theme::card().show(ui, |ui| {
@@ -977,7 +1187,7 @@ impl StudioShell {
             ui.add_space(12.0);
             theme::card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                mixer::draw_mixer(ui, state, intents);
+                mixer::draw_mixer(ui, state, &mut self.meters, dt_ms, intents);
             });
         }
     }
@@ -990,6 +1200,11 @@ impl Default for StudioShell {
             fade_to_black_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
             rename_draft: None,
             side_tab: SideTab::default(),
+            layout: ConsoleLayout::default(),
+            show_shortcuts: false,
+            show_about: false,
+            toasts: toasts::ToastQueue::default(),
+            meters: meter_ballistics::MeterBallistics::default(),
         }
     }
 }
@@ -1285,6 +1500,78 @@ mod tests {
                 Event::Key { key: Key::F, .. }
             ]
         ));
+    }
+
+    #[test]
+    fn shortcut_reference_lists_exactly_the_handled_keys() {
+        let inputs = [11, 12].map(input);
+        let gate = TransitionGate {
+            connection_status: StudioConnectionStatus::Ready,
+            has_view: true,
+            can_transition: true,
+            manual_transition_in_flight: false,
+        };
+        let context = egui::Context::default();
+        let press = |key| {
+            context.begin_pass(egui::RawInput {
+                events: vec![Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                }],
+                ..Default::default()
+            });
+            let mut ui = egui::Ui::new(
+                context.clone(),
+                egui::Id::new("studio-shortcut-reference"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(context.viewport_rect()),
+            );
+            let intents = studio_shortcuts(&mut ui, gate, true, true, &inputs, 30, 30);
+            drop(ui);
+            let _ = context.end_pass();
+            intents
+        };
+        let listed: Vec<Key> = STUDIO_SHORTCUTS
+            .iter()
+            .filter_map(|entry| entry.key)
+            .collect();
+        for key in &listed {
+            assert_eq!(press(*key).len(), 1, "{key:?} is listed but not handled");
+        }
+        // The numbered row is listed once as "1 – 8"; other keys stay unbound.
+        assert_eq!(press(Key::Num2).len(), 1);
+        for key in [
+            Key::A,
+            Key::D,
+            Key::E,
+            Key::G,
+            Key::Space,
+            Key::Enter,
+            Key::Num9,
+        ] {
+            assert!(press(key).is_empty(), "{key:?} is handled but not listed");
+        }
+        assert!(
+            STUDIO_SHORTCUTS
+                .iter()
+                .all(|entry| !entry.action.is_empty())
+        );
+    }
+
+    #[test]
+    fn console_layout_defaults_to_every_region_and_round_trips() {
+        let mut shell = StudioShell::default();
+        assert_eq!(shell.layout(), ConsoleLayout::default());
+        let layout = ConsoleLayout {
+            show_mixer: false,
+            ..ConsoleLayout::default()
+        };
+        shell.set_layout(layout);
+        assert_eq!(shell.layout(), layout);
     }
 
     #[test]

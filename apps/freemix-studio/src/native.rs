@@ -20,9 +20,9 @@ use fm_protocol::{
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
-    ExternalStudioAction, InputAudioStripUpdate, InputMoveDirection, RecordingAction,
-    StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice,
-    external_intent,
+    ExternalStudioAction, InputAudioStripUpdate, InputMoveDirection, ReconnectStatus,
+    RecordingAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
+    TerminalUncertaintyNotice, external_intent,
 };
 use fm_ui_model::ClientView;
 
@@ -1817,11 +1817,27 @@ const fn lifecycle_status(lifecycle: LifecycleState) -> StudioConnectionStatus {
     }
 }
 
+/// Reconnect attempt facts for the operator while the client is in backoff.
+const fn lifecycle_reconnect(lifecycle: LifecycleState) -> Option<ReconnectStatus> {
+    match lifecycle {
+        LifecycleState::Backoff(backoff) => Some(ReconnectStatus {
+            attempt: backoff.attempt,
+            delay_ms: backoff.delay_ms,
+        }),
+        _ => None,
+    }
+}
+
 fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUiState {
-    let (connection_status, lifecycle_error) = match runtime.lifecycle() {
-        Ok(lifecycle) => (lifecycle_status(lifecycle), None),
+    let (connection_status, reconnect, lifecycle_error) = match runtime.lifecycle() {
+        Ok(lifecycle) => (
+            lifecycle_status(lifecycle),
+            lifecycle_reconnect(lifecycle),
+            None,
+        ),
         Err(error) => (
             StudioConnectionStatus::Failed,
+            None,
             Some(format!("Lifecycle check failed: {error}")),
         ),
     };
@@ -1838,6 +1854,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
         .with_switcher_permissions(can_select_preview, can_transition)
         .with_audio_permission(can_control_audio)
         .with_edit_project_permission(can_edit_project);
+    state.reconnect = reconnect;
     if connection_status == StudioConnectionStatus::Ready {
         let view = client.model().view();
         state.streams = view
@@ -2425,6 +2442,24 @@ mod tests {
         );
         drop(updates);
         assert!(!publisher.publish(StudioUiState::new(StudioConnectionStatus::Failed)));
+    }
+
+    #[test]
+    fn backoff_lifecycle_exposes_reconnect_attempt_to_the_ui() {
+        let backoff = LifecycleState::Backoff(fm_client::ReconnectBackoff {
+            attempt: 4,
+            delay_ms: 1_600,
+        });
+        assert_eq!(lifecycle_status(backoff), StudioConnectionStatus::Backoff);
+        assert_eq!(
+            lifecycle_reconnect(backoff),
+            Some(ReconnectStatus {
+                attempt: 4,
+                delay_ms: 1_600,
+            })
+        );
+        assert_eq!(lifecycle_reconnect(LifecycleState::Ready), None);
+        assert_eq!(lifecycle_reconnect(LifecycleState::Connecting), None);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use fm_protocol::{
 };
 use fm_ui_model::{StingerStatus, StreamStatus};
 
+use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::theme::{
     ACCENT, AMBER, BORDER, ERROR, GRAPHITE_RAISED, MUTED, PREVIEW, PROGRAM, PROGRAM_FILL, TEXT,
     TEXT_DIM, card, mono, pill, section_header, section_label,
@@ -150,14 +151,21 @@ impl StudioShell {
                                 .stroke(Stroke::new(1.0, stroke))
                                 .min_size(Vec2::new(84.0, 24.0)),
                         )
-                        .on_hover_text(match requested {
-                            RecordingAction::Start(_) => {
-                                format!("Start configured program recorder {slot}")
-                            }
-                            RecordingAction::Stop(_) => {
-                                format!("Stop configured program recorder {slot}")
-                            }
-                        })
+                        .hint(
+                            &match requested {
+                                RecordingAction::Start(_) => {
+                                    format!("Start configured program recorder {slot}")
+                                }
+                                RecordingAction::Stop(_) => {
+                                    format!("Stop configured program recorder {slot}")
+                                }
+                            },
+                            if state.recording_pending[index] {
+                                "an earlier recording command is still pending"
+                            } else {
+                                unavailable_reason(state, Capability::Transition)
+                            },
+                        )
                         .clicked()
                     {
                         selected = recording_action(state, requested);
@@ -397,6 +405,7 @@ fn draw_stingers(
     intents: &mut Vec<StudioIntent>,
 ) {
     let availability = transition_availability(TransitionGate::from_state(state));
+    let reason = unavailable_reason(state, Capability::Transition);
     ui.label(
         RichText::new("Fire a configured stinger from Preview to Program.")
             .size(10.5)
@@ -410,7 +419,13 @@ fn draw_stingers(
             ui.spacing_mut().item_spacing.x = 8.0;
             for slot in row {
                 let presentation = stinger_slot_presentation(stinger_slot_state(stingers, slot));
-                if stinger_button(ui, availability.stinger(), slot, presentation, width) {
+                if stinger_button(
+                    ui,
+                    (availability.stinger(), reason),
+                    slot,
+                    presentation,
+                    width,
+                ) {
                     intents.push(StudioIntent::Stinger {
                         slot: WireStingerSlotId::new(slot)
                             .expect("Studio renders only Stinger slots 1 through 8"),
@@ -433,7 +448,7 @@ fn draw_stingers(
 
 fn stinger_button(
     ui: &mut Ui,
-    enabled: bool,
+    (enabled, reason): (bool, &str),
     slot: u8,
     presentation: StingerSlotPresentation,
     width: f32,
@@ -450,6 +465,16 @@ fn stinger_button(
         .stroke(Stroke::new(1.0, presentation.color.gamma_multiply(0.5)))
         .min_size(Vec2::new(width, 44.0)),
     )
-    .on_hover_text(format!("Stinger slot {slot}: {}", presentation.label))
+    .hint(
+        &format!(
+            "Fire Stinger slot {slot} from Preview to Program: {}",
+            presentation.label
+        ),
+        if enabled {
+            "this Stinger slot is not configured and ready"
+        } else {
+            reason
+        },
+    )
     .clicked()
 }

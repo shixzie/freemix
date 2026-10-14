@@ -1,6 +1,7 @@
 use egui::{Button, DragValue, RichText, Stroke, Ui, Vec2};
 use fm_protocol::{FadeToBlackPosition, FadeToBlackState};
 
+use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::theme::{PROGRAM, PROGRAM_FILL, TEXT, TEXT_DIM, mono, section_label};
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
@@ -68,6 +69,7 @@ pub(super) fn draw_fade_to_black(
         .map(|view| view.switcher.realized_fade_to_black);
     let availability = fade_to_black_availability(FadeToBlackGate::from_state(state), desired);
     let black = desired.is_some_and(|desired| desired.target_active);
+    let reason = unavailable_reason(state, Capability::Transition);
 
     ui.horizontal(|ui| {
         // One console key: it offers exactly the reversal the replicated
@@ -100,7 +102,7 @@ pub(super) fn draw_fade_to_black(
                     .stroke(Stroke::new(1.0, stroke))
                     .min_size(Vec2::new(100.0, 40.0)),
             )
-            .on_hover_text(hover)
+            .hint(hover, reason)
             .clicked()
         {
             intents.push(StudioIntent::FadeToBlack {
@@ -118,7 +120,7 @@ pub(super) fn draw_fade_to_black(
                     .suffix(" fr")
                     .speed(1.0),
             )
-            .on_hover_text("Fade-to-Black duration in frames");
+            .hint("Fade-to-Black duration in frames (drag or type)", reason);
         });
     });
     ui.add(

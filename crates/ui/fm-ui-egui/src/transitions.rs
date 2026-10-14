@@ -5,6 +5,7 @@ use egui::{CornerRadius, DragValue, Rect, RichText, Sense, Stroke, StrokeKind, U
 use fm_protocol::{ManualTransitionKind, ManualTransitionPosition};
 use fm_ui_model::ManualTransitionStatus;
 
+use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::theme::{
     ACCENT, ACCENT_FILL, AMBER, BORDER, BORDER_STRONG, MONITOR_BLACK, MUTED, PROGRAM, PROGRAM_FILL,
     TEXT, TEXT_DIM, WIDGET, WIDGET_ACTIVE, WIDGET_HOVER, console_button, mono, section_label,
@@ -62,7 +63,22 @@ pub(crate) fn draw_transition_column(
         draw_t_bar(ui, desired, manual.active_controls, intents);
     });
     ui.separator();
-    draw_manual_transition(ui, desired, realized, manual, intents);
+    let session_reason = unavailable_reason(state, Capability::Transition);
+    let manual_reason = if state.connection_status.controls_enabled()
+        && state.view.is_some()
+        && state.can_transition
+    {
+        "no manual transition is active; start one with FADE, WIPE, SLIDE, or ALPHA"
+    } else {
+        session_reason
+    };
+    draw_manual_transition(
+        ui,
+        (desired, realized),
+        manual,
+        (session_reason, manual_reason),
+        intents,
+    );
     ui.separator();
     fade_to_black::draw_fade_to_black(ui, &mut shell.fade_to_black_duration_frames, state, intents);
     shell.set_fade_to_black_duration_frames(shell.fade_to_black_duration_frames);
@@ -75,6 +91,7 @@ fn draw_auto_transitions(
     intents: &mut Vec<StudioIntent>,
 ) {
     let availability = transition_availability(TransitionGate::from_state(state));
+    let reason = unavailable_reason(state, Capability::Transition);
     let duration_frames = shell.transition_duration_frames;
     let primary =
         |label: &str| console_button(label, ACCENT_FILL, ACCENT.gamma_multiply(0.6), BUTTON_SIZE);
@@ -90,14 +107,17 @@ fn draw_auto_transitions(
                     BUTTON_SIZE,
                 ),
             )
-            .on_hover_text("Cut Preview to Program  [C]")
+            .hint("Cut Preview to Program  [C]", reason)
             .clicked()
         {
             intents.push(StudioIntent::Cut);
         }
         if ui
             .add_enabled(availability.basic(), primary("FADE"))
-            .on_hover_text("Fade Preview to Program  [F]")
+            .hint(
+                "Fade Preview to Program over the shared duration  [F]",
+                reason,
+            )
             .clicked()
         {
             intents.push(StudioIntent::Fade { duration_frames });
@@ -106,14 +126,17 @@ fn draw_auto_transitions(
     ui.horizontal(|ui| {
         if ui
             .add_enabled(availability.wipe, secondary("WIPE"))
-            .on_hover_text("Wipe Preview to Program")
+            .hint("Wipe Preview to Program over the shared duration", reason)
             .clicked()
         {
             intents.push(StudioIntent::Wipe { duration_frames });
         }
         if ui
             .add_enabled(availability.alpha_fade, secondary("ALPHA"))
-            .on_hover_text("AlphaFade Preview to Program")
+            .hint(
+                "AlphaFade Preview to Program over the shared duration",
+                reason,
+            )
             .clicked()
         {
             intents.push(StudioIntent::AlphaFade { duration_frames });
@@ -122,14 +145,14 @@ fn draw_auto_transitions(
     ui.horizontal(|ui| {
         if ui
             .add_enabled(availability.slide(), secondary("SLIDE"))
-            .on_hover_text("Slide Preview to Program")
+            .hint("Slide Preview to Program over the shared duration", reason)
             .clicked()
         {
             intents.push(StudioIntent::Slide { duration_frames });
         }
         if ui
             .add_enabled(availability.zoom(), secondary("ZOOM"))
-            .on_hover_text("Zoom Preview to Program")
+            .hint("Zoom Preview to Program over the shared duration", reason)
             .clicked()
         {
             intents.push(StudioIntent::Zoom { duration_frames });
@@ -148,7 +171,10 @@ fn draw_auto_transitions(
                     .suffix(" fr")
                     .speed(1.0),
             )
-            .on_hover_text("Shared automatic transition duration in frames");
+            .hint(
+                "Shared automatic transition duration in frames (drag or type)",
+                reason,
+            );
         });
     });
     shell.set_transition_duration_frames(shell.transition_duration_frames);
@@ -156,9 +182,9 @@ fn draw_auto_transitions(
 
 fn draw_manual_transition(
     ui: &mut Ui,
-    desired: ManualTransitionStatus,
-    realized: ManualTransitionStatus,
+    (desired, realized): (ManualTransitionStatus, ManualTransitionStatus),
     availability: ManualTransitionAvailability,
+    (start_reason, active_reason): (&str, &str),
     intents: &mut Vec<StudioIntent>,
 ) {
     ui.horizontal(|ui| {
@@ -168,12 +194,19 @@ fn draw_manual_transition(
             ui,
             availability.start,
             availability.alpha_fade_start_exposed,
+            start_reason,
             intents,
         );
     });
     ui.horizontal(|ui| {
-        draw_manual_position(ui, desired, availability.active_controls, intents);
-        draw_manual_terminal_buttons(ui, availability.active_controls, intents);
+        draw_manual_position(
+            ui,
+            desired,
+            availability.active_controls,
+            active_reason,
+            intents,
+        );
+        draw_manual_terminal_buttons(ui, availability.active_controls, active_reason, intents);
     });
     ui.add(
         egui::Label::new(
@@ -231,9 +264,11 @@ fn draw_t_bar(
             intents.push(StudioIntent::SetManualTransitionPosition { position });
         }
     }
-    let response = response.on_hover_text(
-        "Manual T-bar: start a manual transition, then drag the lever (bottom = start, top = end)",
-    );
+    let response = response.on_hover_text(if enabled {
+        "Manual T-bar: drag the lever (bottom = start, top = end), then COMMIT or CANCEL  [Esc]"
+    } else {
+        "Manual T-bar: start a manual transition (FADE, WIPE, SLIDE, ALPHA) to enable the lever"
+    });
     if !ui.is_rect_visible(rect) {
         return;
     }
@@ -304,6 +339,7 @@ fn draw_manual_start_buttons(
     ui: &mut Ui,
     enabled: bool,
     alpha_fade_exposed: bool,
+    reason: &str,
     intents: &mut Vec<StudioIntent>,
 ) {
     let size = Vec2::new(44.0, 22.0);
@@ -326,7 +362,7 @@ fn draw_manual_start_buttons(
     ] {
         let response = ui
             .add_enabled(enabled, start_button(label, size))
-            .on_hover_text(tooltip);
+            .hint(tooltip, reason);
         if response.clicked() {
             intents.push(StudioIntent::StartManualTransition { kind });
         }
@@ -334,7 +370,7 @@ fn draw_manual_start_buttons(
     if alpha_fade_exposed {
         let response = ui
             .add_enabled(enabled, start_button("ALPHA", size))
-            .on_hover_text("Start a reversible manual AlphaFade transition");
+            .hint("Start a reversible manual AlphaFade transition", reason);
         if response.clicked() {
             intents.push(StudioIntent::StartManualTransition {
                 kind: ManualTransitionKind::AlphaFade,
@@ -351,6 +387,7 @@ fn draw_manual_position(
     ui: &mut Ui,
     desired: ManualTransitionStatus,
     enabled: bool,
+    reason: &str,
     intents: &mut Vec<StudioIntent>,
 ) {
     {
@@ -367,8 +404,9 @@ fn draw_manual_position(
                     .suffix(" bp"),
             )
             .labelled_by(position_label.id)
-            .on_hover_text(
+            .hint(
                 "Exact T-bar position from 0 through 10000 basis points; lower values reverse",
+                reason,
             );
         if response.changed() {
             intents.push(StudioIntent::SetManualTransitionPosition {
@@ -379,11 +417,16 @@ fn draw_manual_position(
     }
 }
 
-fn draw_manual_terminal_buttons(ui: &mut Ui, enabled: bool, intents: &mut Vec<StudioIntent>) {
+fn draw_manual_terminal_buttons(
+    ui: &mut Ui,
+    enabled: bool,
+    reason: &str,
+    intents: &mut Vec<StudioIntent>,
+) {
     for (label, tooltip, intent) in [
         (
             "COMMIT",
-            "Commit the active manual transition",
+            "Commit the active manual transition at its current direction",
             StudioIntent::CommitManualTransition,
         ),
         (
@@ -398,7 +441,7 @@ fn draw_manual_terminal_buttons(ui: &mut Ui, enabled: bool, intents: &mut Vec<St
                 egui::Button::new(RichText::new(label).size(10.5).strong())
                     .min_size(Vec2::new(0.0, 22.0)),
             )
-            .on_hover_text(tooltip);
+            .hint(tooltip, reason);
         if response.clicked() {
             intents.push(intent);
         }
