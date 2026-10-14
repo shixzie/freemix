@@ -131,7 +131,9 @@ paths = ["crates/gpu/fm-scopes/tests/monitor.rs", "crates/gpu/fm-scopes/tests/re
 commands = ["cargo test -p fm-scopes --test monitor", "cargo test -p fm-scopes --test reference"]
 [[tests]]
 id = "accept-sw-011"
-state = "planned"
+state = "present"
+paths = ["crates/gpu/fm-compositor/tests/multiview.rs", "crates/gpu/fm-compositor/tests/golden.rs"]
+commands = ["cargo test -p fm-compositor --test multiview", "cargo test -p fm-compositor --test golden"]
 [[tests]]
 id = "accept-sw-012"
 state = "planned"
