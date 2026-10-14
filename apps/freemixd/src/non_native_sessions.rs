@@ -2011,17 +2011,32 @@ mod tests {
         live.session = Some(limited_session(1_000, 1_000, 15_000));
 
         // The stalled peer's send buffer and its client's receive buffer are
-        // full: the client never reads.
+        // full: the client never reads. A first `WouldBlock` only means the
+        // send buffer is full *now*: under load the loopback receiver may not
+        // have processed (and ACKed) the queued segments yet, and once it
+        // does the send buffer frees up again. Refill until the socket stays
+        // full across a quiet period, i.e. the receive window has closed.
         let Transport::Raw(stream) = &mut stalled.transport else {
             unreachable!("raw peer")
         };
         let chunk = vec![b'\n'; 64 * 1024];
-        loop {
-            match stream.write(&chunk) {
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
-                Err(error) => panic!("{error}"),
+        let settle_deadline = Instant::now() + Duration::from_secs(10);
+        let mut quiet_rounds = 0;
+        while quiet_rounds < 3 {
+            assert!(
+                Instant::now() < settle_deadline,
+                "the stalled socket never stayed full"
+            );
+            let mut accepted = false;
+            loop {
+                match stream.write(&chunk) {
+                    Ok(_) => accepted = true,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(error) => panic!("{error}"),
+                }
             }
+            quiet_rounds = if accepted { 0 } else { quiet_rounds + 1 };
+            thread::sleep(Duration::from_millis(20));
         }
 
         let mut peers = vec![stalled, live];
