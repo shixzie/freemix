@@ -1,25 +1,26 @@
-//! Frame-indexed take/off-air playback of a design's transition timelines.
+//! Frame-indexed take/off-air playback of a design's In/Out animation.
 //!
 //! [`TitlePlayback`] is driven only by engine frame indices supplied by the
 //! caller; it reads no clock. Frames must never go backwards.
 //!
 //! | state            | `take(f)`                   | `off_air(f)`              |
 //! |------------------|-----------------------------|---------------------------|
-//! | off              | start the in timeline at f  | ignored                   |
-//! | transition in    | ignored                     | start the out timeline    |
-//! | hold             | ignored                     | start the out timeline    |
-//! | transition out   | restart the in timeline     | ignored                   |
+//! | off              | start the In phase at f     | ignored                   |
+//! | transition in    | ignored                     | start the Out phase       |
+//! | hold             | ignored                     | start the Out phase       |
+//! | transition out   | restart the In phase        | ignored                   |
 //!
-//! A transition of `n` frames shows local frames `0..n` on the `n` engine
-//! frames starting at its start frame; the next frame is Hold (after In) or
-//! Off (after Out). A zero-length transition therefore completes on the frame
-//! that started it. Hold samples the In timeline at local frame `n` (its
-//! `duration_frames`), one past the last transition frame: keyframes may sit
-//! at `duration_frames`, and that end point is the title's resting state, so
-//! the final keyframe value is what stays on air.
+//! A phase of `n` frames shows clip frames `0..n` on the `n` engine frames
+//! starting at its start frame (engine and clip frames are one to one); the
+//! next frame is Hold (after In) or Off (after Out). A zero-length phase
+//! therefore completes on the frame that started it. Hold is
+//! [`ClipState::Hold`]: the In phase at clip frame `n`, one past the last
+//! transition frame. Keyframes may sit at `n`, and that end point is the
+//! title's resting state, so the final keyframe value is what stays on air.
 
-use crate::{Composition, TimelineSample, TitleDesign, TransitionKind};
+use crate::{Composition, TitleDesign};
 use core::fmt;
+use fm_animation::{ClipPosition, ClipState, Phase};
 
 /// What is on screen at one frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,7 +34,7 @@ pub enum PlaybackPhase {
 /// What a command did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlaybackOutcome {
-    Started(TransitionKind),
+    Started(Phase),
     Ignored,
 }
 
@@ -84,13 +85,13 @@ impl TitlePlayback {
         }
     }
 
-    /// Starts off air with the design's current timeline lengths. Rebuild
-    /// after editing a timeline duration.
+    /// Starts off air with the design's current phase lengths. Rebuild
+    /// after editing a phase length.
     #[must_use]
     pub fn for_design(design: &TitleDesign) -> Self {
         Self::new(
-            design.timeline(TransitionKind::In).duration_frames,
-            design.timeline(TransitionKind::Out).duration_frames,
+            design.animation().in_frames(),
+            design.animation().out_frames(),
         )
     }
 
@@ -141,7 +142,7 @@ impl TitlePlayback {
         Ok(match phase {
             PlaybackPhase::Off | PlaybackPhase::TransitionOut { .. } => {
                 self.state = State::In { start: frame };
-                PlaybackOutcome::Started(TransitionKind::In)
+                PlaybackOutcome::Started(Phase::In)
             }
             PlaybackPhase::TransitionIn { .. } | PlaybackPhase::Hold => PlaybackOutcome::Ignored,
         })
@@ -158,32 +159,27 @@ impl TitlePlayback {
         Ok(match phase {
             PlaybackPhase::TransitionIn { .. } | PlaybackPhase::Hold => {
                 self.state = State::Out { start: frame };
-                PlaybackOutcome::Started(TransitionKind::Out)
+                PlaybackOutcome::Started(Phase::Out)
             }
             PlaybackPhase::Off | PlaybackPhase::TransitionOut { .. } => PlaybackOutcome::Ignored,
         })
     }
 
-    /// The timeline sample for `frame`, or `None` while off air.
+    /// The animation sample for `frame`, or `None` while off air.
     ///
     /// # Errors
     ///
     /// Returns [`PlaybackError::FrameRegressed`].
-    pub fn sample(&self, frame: u64) -> Result<Option<TimelineSample>, PlaybackError> {
+    pub fn sample(&self, frame: u64) -> Result<Option<ClipState>, PlaybackError> {
         Ok(match self.phase(frame)? {
             PlaybackPhase::Off => None,
-            PlaybackPhase::TransitionIn { frame } => Some(TimelineSample::At {
-                transition: TransitionKind::In,
-                frame,
-            }),
-            PlaybackPhase::Hold => Some(TimelineSample::At {
-                transition: TransitionKind::In,
-                frame: self.in_frames,
-            }),
-            PlaybackPhase::TransitionOut { frame } => Some(TimelineSample::At {
-                transition: TransitionKind::Out,
-                frame,
-            }),
+            PlaybackPhase::TransitionIn { frame } => {
+                Some(ClipState::In(ClipPosition::frame(frame)))
+            }
+            PlaybackPhase::Hold => Some(ClipState::Hold),
+            PlaybackPhase::TransitionOut { frame } => {
+                Some(ClipState::Out(ClipPosition::frame(frame)))
+            }
         })
     }
 

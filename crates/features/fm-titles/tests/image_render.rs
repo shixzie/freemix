@@ -75,7 +75,6 @@ fn image_element(id: u128, z_index: i32, bounds: Bounds, style: Style) -> Elemen
             fit: ImageFit::Stretch,
             filter: ImageFilter::Nearest,
         },
-        animations: Vec::new(),
     }
 }
 
@@ -92,7 +91,6 @@ fn rectangle(id: u128, z_index: i32, fill: Color, bounds: Bounds) -> Element {
         },
         color_field: None,
         kind: ElementKind::Rectangle,
-        animations: Vec::new(),
     }
 }
 
@@ -115,6 +113,7 @@ fn image_template(
             default: FieldValue::Image(ImageSource::new(asset)),
         }],
         elements,
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 

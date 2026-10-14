@@ -1,9 +1,11 @@
+use fm_titles::fm_animation::{
+    ClipError, ClipPosition, ClipState, Keyframe, Phase, Property, TrackKey, Value,
+};
 use fm_titles::{
     AssetCatalog, Bounds, ClipMask, Color, CubicBezier, DesignEdit, DesignEditor, DesignError,
     EASE_ONE, Easing, EasingError, Element, ElementId, ElementKind, Group, GroupTransform,
-    MAX_GROUP_DEPTH, NodeProperty, NodeSlot, PlaybackError, PlaybackOutcome, PlaybackPhase,
-    ReferenceRenderer, Style, TemplateId, TimelineKeyframe, TimelineSample, TitleDesign, TitleId,
-    TitlePlayback, TransitionKind, ease_between, progress_q16,
+    MAX_GROUP_DEPTH, NodeSlot, PlaybackError, PlaybackOutcome, PlaybackPhase, ReferenceRenderer,
+    Style, TemplateId, TitleDesign, TitleId, TitlePlayback, ease_between, progress_q16,
 };
 use std::num::NonZeroU128;
 
@@ -35,7 +37,6 @@ fn rect(element: u128, area: Bounds, fill: Color) -> Element {
         },
         color_field: None,
         kind: ElementKind::Rectangle,
-        animations: Vec::new(),
     }
 }
 
@@ -72,16 +73,39 @@ fn add_rect(editor: &mut DesignEditor, slot: NodeSlot, element: Element) {
         .unwrap();
 }
 
-fn keyframe(frame: u32, value: i64, easing: Easing) -> TimelineKeyframe {
-    TimelineKeyframe {
-        frame,
-        value,
-        easing,
-    }
+fn keyframe(frame: u32, value: i64, easing: Easing) -> Keyframe {
+    Keyframe::new(frame, Value::Scalar(value), easing)
+}
+
+fn track(node: u128, phase: Phase, property: Property) -> TrackKey<ElementId> {
+    TrackKey::new(id(node), phase, property)
+}
+
+fn in_frame(frame: u32) -> ClipState {
+    ClipState::In(ClipPosition::frame(frame))
+}
+
+/// The frames and scalar values of one track.
+fn keys(design: &DesignEditor, key: TrackKey<ElementId>) -> Vec<(u32, i64)> {
+    design
+        .document()
+        .animation()
+        .track(key)
+        .map(|track| {
+            track
+                .keys
+                .iter()
+                .map(|keyframe| match keyframe.value {
+                    Value::Scalar(value) => (keyframe.frame, value),
+                    Value::Color(_) => (keyframe.frame, i64::MIN),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Renders the design at a timeline sample and returns the alpha plane.
-fn render_alpha(design: &TitleDesign, sample: TimelineSample) -> Vec<u8> {
+fn render_alpha(design: &TitleDesign, sample: ClipState) -> Vec<u8> {
     render_pixels(design, sample)
         .as_chunks::<4>()
         .0
@@ -90,7 +114,7 @@ fn render_alpha(design: &TitleDesign, sample: TimelineSample) -> Vec<u8> {
         .collect()
 }
 
-fn render_pixels(design: &TitleDesign, sample: TimelineSample) -> Vec<u8> {
+fn render_pixels(design: &TitleDesign, sample: ClipState) -> Vec<u8> {
     let scene = design
         .to_template()
         .instantiate(TitleId::new(NonZeroU128::new(9).unwrap()))
@@ -282,21 +306,18 @@ fn nested_group_offsets_compose_exactly_and_render_identically() {
         rect(1, bounds(13, 7, 4, 3), RED),
     );
 
-    let composition = nested.document().compose(TimelineSample::Static);
+    let composition = nested.document().compose(ClipState::Static);
     let placement = composition.placement(id(1)).unwrap();
     assert_eq!((placement.offset_x, placement.offset_y), (13, 7));
     assert_eq!(placement.clips(), &[]);
 
-    let reference = render_pixels(absolute.document(), TimelineSample::Static);
+    let reference = render_pixels(absolute.document(), ClipState::Static);
     assert_eq!(
-        render_pixels(nested.document(), TimelineSample::Static),
+        render_pixels(nested.document(), ClipState::Static),
         reference
     );
-    assert_eq!(
-        render_pixels(flat.document(), TimelineSample::Static),
-        reference
-    );
-    let alpha = render_alpha(nested.document(), TimelineSample::Static);
+    assert_eq!(render_pixels(flat.document(), ClipState::Static), reference);
+    let alpha = render_alpha(nested.document(), ClipState::Static);
     assert_eq!(alpha[7 * 32 + 13], 255);
     assert_eq!(alpha[9 * 32 + 16], 255);
     assert_eq!(alpha[7 * 32 + 12], 0);
@@ -321,7 +342,7 @@ fn group_opacity_composes_with_one_rounding() {
         NodeSlot::under(id(11), 0),
         rect(1, bounds(0, 0, 4, 4), Color::new(255, 255, 255, 255)),
     );
-    let composition = nested.document().compose(TimelineSample::Static);
+    let composition = nested.document().compose(ClipState::Static);
     let placement = composition.placement(id(1)).unwrap();
     // round(255 * 128 * 128 / 255^2) = round(64.25)
     assert_eq!(placement.compose_opacity(255), 64);
@@ -329,7 +350,7 @@ fn group_opacity_composes_with_one_rounding() {
     // time would give round(round(9 * 128 / 255) * 128 / 255) = 3.
     assert_eq!(placement.compose_opacity(9), 2);
     assert_eq!(
-        render_alpha(nested.document(), TimelineSample::Static),
+        render_alpha(nested.document(), ClipState::Static),
         vec![64; 16]
     );
 
@@ -352,8 +373,8 @@ fn group_opacity_composes_with_one_rounding() {
         rect(1, bounds(1, 1, 2, 2), RED),
     );
     assert_eq!(
-        render_pixels(identity.document(), TimelineSample::Static),
-        render_pixels(bare.document(), TimelineSample::Static)
+        render_pixels(identity.document(), ClipState::Static),
+        render_pixels(bare.document(), ClipState::Static)
     );
 }
 
@@ -371,7 +392,7 @@ fn rounded_rect_mask_clips_exact_pixels() {
         NodeSlot::under(id(10), 0),
         rect(1, bounds(0, 0, 16, 12), RED),
     );
-    let alpha = render_alpha(masked.document(), TimelineSample::Static);
+    let alpha = render_alpha(masked.document(), ClipState::Static);
 
     // Per mask row, the inclusive local x span inside a 12x10 radius-4 mask:
     // pixel centers tested exactly against circles of radius 4.
@@ -413,12 +434,12 @@ fn rounded_rect_mask_clips_exact_pixels() {
         NodeSlot::under(id(10), 0),
         rect(1, bounds(0, 0, 8, 4), RED),
     );
-    let composition = pill.document().compose(TimelineSample::Static);
+    let composition = pill.document().compose(ClipState::Static);
     assert_eq!(
         composition.placement(id(1)).unwrap().clips()[0].corner_radius,
         2
     );
-    let alpha = render_alpha(pill.document(), TimelineSample::Static);
+    let alpha = render_alpha(pill.document(), ClipState::Static);
     let row = |y: usize| -> Vec<u8> { alpha[y * 8..y * 8 + 8].to_vec() };
     assert_eq!(row(0), vec![0, 255, 255, 255, 255, 255, 255, 0]);
     assert_eq!(row(1), vec![255; 8]);
@@ -451,7 +472,7 @@ fn nested_masks_intersect_and_move_with_their_group() {
         NodeSlot::under(id(11), 0),
         rect(1, bounds(-2, -2, 10, 10), RED),
     );
-    let alpha = render_alpha(design.document(), TimelineSample::Static);
+    let alpha = render_alpha(design.document(), ClipState::Static);
     for y in 0..10 {
         for x in 0..10 {
             // Outer mask 0..5, inner mask (1..6) + offset 2 = 3..8.
@@ -480,10 +501,10 @@ fn hidden_groups_hide_their_subtree() {
             visible: false,
         })
         .unwrap();
-    let composition = design.document().compose(TimelineSample::Static);
+    let composition = design.document().compose(ClipState::Static);
     assert!(composition.is_empty());
     assert_eq!(
-        render_alpha(design.document(), TimelineSample::Static),
+        render_alpha(design.document(), ClipState::Static),
         vec![0; 16]
     );
 }
@@ -493,10 +514,7 @@ fn playback_state_machine_follows_frame_indices() {
     let mut playback = TitlePlayback::new(10, 5);
     assert_eq!(playback.phase(0), Ok(PlaybackPhase::Off));
     assert_eq!(playback.off_air(1), Ok(PlaybackOutcome::Ignored));
-    assert_eq!(
-        playback.take(100),
-        Ok(PlaybackOutcome::Started(TransitionKind::In))
-    );
+    assert_eq!(playback.take(100), Ok(PlaybackOutcome::Started(Phase::In)));
     assert_eq!(
         playback.phase(100),
         Ok(PlaybackPhase::TransitionIn { frame: 0 })
@@ -511,7 +529,7 @@ fn playback_state_machine_follows_frame_indices() {
     assert_eq!(playback.phase(150), Ok(PlaybackPhase::Hold));
     assert_eq!(
         playback.off_air(200),
-        Ok(PlaybackOutcome::Started(TransitionKind::Out))
+        Ok(PlaybackOutcome::Started(Phase::Out))
     );
     assert_eq!(
         playback.phase(204),
@@ -539,17 +557,14 @@ fn playback_state_machine_follows_frame_indices() {
     playback.take(0).unwrap();
     assert_eq!(
         playback.off_air(4),
-        Ok(PlaybackOutcome::Started(TransitionKind::Out))
+        Ok(PlaybackOutcome::Started(Phase::Out))
     );
     assert_eq!(playback.off_air(5), Ok(PlaybackOutcome::Ignored));
     assert_eq!(
         playback.phase(6),
         Ok(PlaybackPhase::TransitionOut { frame: 2 })
     );
-    assert_eq!(
-        playback.take(6),
-        Ok(PlaybackOutcome::Started(TransitionKind::In))
-    );
+    assert_eq!(playback.take(6), Ok(PlaybackOutcome::Started(Phase::In)));
     assert_eq!(
         playback.phase(6),
         Ok(PlaybackPhase::TransitionIn { frame: 0 })
@@ -559,13 +574,7 @@ fn playback_state_machine_follows_frame_indices() {
     let mut cut = TitlePlayback::new(0, 0);
     cut.take(3).unwrap();
     assert_eq!(cut.phase(3), Ok(PlaybackPhase::Hold));
-    assert_eq!(
-        cut.sample(3),
-        Ok(Some(TimelineSample::At {
-            transition: TransitionKind::In,
-            frame: 0
-        }))
-    );
+    assert_eq!(cut.sample(3), Ok(Some(ClipState::Hold)));
     cut.off_air(3).unwrap();
     assert_eq!(cut.phase(3), Ok(PlaybackPhase::Off));
     assert_eq!(cut.sample(3), Ok(None));
@@ -584,46 +593,37 @@ fn transitions_animate_groups_through_take_hold_and_off_air() {
         NodeSlot::under(id(10), 0),
         rect(1, bounds(20, 0, 4, 4), RED),
     );
-    for (transition, frames) in [(TransitionKind::In, 10), (TransitionKind::Out, 4)] {
+    for (phase, frames) in [(Phase::In, 10), (Phase::Out, 4)] {
         design
-            .apply(DesignEdit::SetTimelineDuration { transition, frames })
+            .apply(DesignEdit::SetPhaseFrames { phase, frames })
             .unwrap();
     }
     let edits = [
         (
-            TransitionKind::In,
-            NodeProperty::OffsetX,
+            track(10, Phase::In, Property::PositionX),
             keyframe(0, -20, Easing::QuadOut),
         ),
         (
-            TransitionKind::In,
-            NodeProperty::OffsetX,
+            track(10, Phase::In, Property::PositionX),
             keyframe(10, 0, Easing::Linear),
         ),
         (
-            TransitionKind::Out,
-            NodeProperty::Opacity,
+            track(10, Phase::Out, Property::Opacity),
             keyframe(0, 255, Easing::Linear),
         ),
         (
-            TransitionKind::Out,
-            NodeProperty::Opacity,
+            track(10, Phase::Out, Property::Opacity),
             keyframe(4, 0, Easing::Linear),
         ),
     ];
-    for (transition, property, frame) in edits {
+    for (track, keyframe) in edits {
         design
-            .apply(DesignEdit::AddKeyframe {
-                transition,
-                node: id(10),
-                property,
-                keyframe: frame,
-            })
+            .apply(DesignEdit::AddKeyframe { track, keyframe })
             .unwrap();
     }
     let document = design.document();
-    assert_eq!(document.timeline(TransitionKind::In).name, "TransitionIn");
-    assert_eq!(document.timeline(TransitionKind::Out).name, "TransitionOut");
+    assert_eq!(document.animation().in_frames(), 10);
+    assert_eq!(document.animation().out_frames(), 4);
     let mut playback = TitlePlayback::for_design(document);
     playback.take(1_000).unwrap();
     let offset = |frame: u64| {
@@ -720,9 +720,7 @@ fn tree_edits_reorder_reparent_and_delete() {
 
     design
         .apply(DesignEdit::AddKeyframe {
-            transition: TransitionKind::In,
-            node: id(3),
-            property: NodeProperty::OffsetY,
+            track: track(3, Phase::In, Property::PositionY),
             keyframe: keyframe(0, 1, Easing::Linear),
         })
         .unwrap();
@@ -737,7 +735,7 @@ fn tree_edits_reorder_reparent_and_delete() {
     let document = design.document();
     assert_eq!(document.node_count(), 3);
     assert!(document.node(id(3)).is_none());
-    assert_eq!(document.timeline(TransitionKind::In).tracks, vec![]);
+    assert_eq!(document.animation().tracks(), &[]);
     assert_eq!(document.paint_order(), vec![id(2), id(1)]);
 }
 
@@ -750,93 +748,80 @@ fn keyframe_edits_add_remove_and_retime() {
         rect(1, bounds(0, 0, 2, 2), RED),
     );
     design
-        .apply(DesignEdit::SetTimelineDuration {
-            transition: TransitionKind::In,
+        .apply(DesignEdit::SetPhaseFrames {
+            phase: Phase::In,
             frames: 20,
         })
         .unwrap();
+    let key = track(1, Phase::In, Property::PositionX);
     let add = |frame: u32, value: i64| DesignEdit::AddKeyframe {
-        transition: TransitionKind::In,
-        node: id(1),
-        property: NodeProperty::OffsetX,
+        track: key,
         keyframe: keyframe(frame, value, Easing::Linear),
     };
     design.apply(add(10, 100)).unwrap();
     design.apply(add(0, 0)).unwrap();
-    let frames = |design: &DesignEditor| -> Vec<u32> {
-        design.document().timeline(TransitionKind::In).tracks[0]
-            .keyframes
-            .iter()
-            .map(|keyframe| keyframe.frame)
-            .collect()
+    assert_eq!(keys(&design, key), vec![(0, 0), (10, 100)]);
+    let sample = |design: &DesignEditor, frame: u32| {
+        design
+            .document()
+            .animation()
+            .sample(id(1), Property::PositionX, in_frame(frame))
     };
-    assert_eq!(frames(&design), vec![0, 10]);
-    let track = design.document().timeline(TransitionKind::In).tracks[0].clone();
-    assert_eq!(track.value_at(5), Some(50));
-    assert_eq!(track.value_at(15), Some(100));
+    assert_eq!(sample(&design, 5), Some(Value::Scalar(50)));
+    assert_eq!(sample(&design, 15), Some(Value::Scalar(100)));
     assert_eq!(
         design.apply(add(10, 7)),
         Err(DesignError::KeyframeExists {
-            transition: TransitionKind::In,
-            node: id(1),
+            track: key,
             frame: 10
         })
     );
 
     design
         .apply(DesignEdit::RetimeKeyframe {
-            transition: TransitionKind::In,
-            node: id(1),
-            property: NodeProperty::OffsetX,
+            track: key,
             from: 10,
             to: 20,
         })
         .unwrap();
-    let track = design.document().timeline(TransitionKind::In).tracks[0].clone();
-    assert_eq!(track.value_at(10), Some(50));
-    // Retiming past another keyframe re-sorts the track.
-    design
-        .apply(DesignEdit::RetimeKeyframe {
-            transition: TransitionKind::In,
-            node: id(1),
-            property: NodeProperty::OffsetX,
+    assert_eq!(sample(&design, 10), Some(Value::Scalar(50)));
+    // Landing on another keyframe is refused.
+    assert_eq!(
+        design.apply(DesignEdit::RetimeKeyframe {
+            track: key,
             from: 0,
             to: 20,
+        }),
+        Err(DesignError::KeyframeExists {
+            track: key,
+            frame: 20
         })
-        .unwrap_err();
+    );
     design
         .apply(DesignEdit::RetimeKeyframe {
-            transition: TransitionKind::In,
-            node: id(1),
-            property: NodeProperty::OffsetX,
+            track: key,
             from: 20,
             to: 5,
         })
         .unwrap();
-    let track = design.document().timeline(TransitionKind::In).tracks[0].clone();
-    assert_eq!(
-        track
-            .keyframes
-            .iter()
-            .map(|k| (k.frame, k.value))
-            .collect::<Vec<_>>(),
-        vec![(0, 0), (5, 100)]
-    );
+    assert_eq!(keys(&design, key), vec![(0, 0), (5, 100)]);
 
-    for frame in [0, 5] {
+    // Stretching the phase scales every key proportionally.
+    design
+        .apply(DesignEdit::StretchPhase {
+            phase: Phase::In,
+            frames: 40,
+        })
+        .unwrap();
+    assert_eq!(design.document().animation().in_frames(), 40);
+    assert_eq!(keys(&design, key), vec![(0, 0), (10, 100)]);
+
+    for frame in [0, 10] {
         design
-            .apply(DesignEdit::RemoveKeyframe {
-                transition: TransitionKind::In,
-                node: id(1),
-                property: NodeProperty::OffsetX,
-                frame,
-            })
+            .apply(DesignEdit::RemoveKeyframe { track: key, frame })
             .unwrap();
     }
-    assert_eq!(
-        design.document().timeline(TransitionKind::In).tracks,
-        vec![]
-    );
+    assert_eq!(design.document().animation().tracks(), &[]);
 }
 
 #[test]
@@ -849,8 +834,8 @@ fn invalid_edits_change_nothing() {
         rect(1, bounds(0, 0, 2, 2), RED),
     );
     design
-        .apply(DesignEdit::SetTimelineDuration {
-            transition: TransitionKind::Out,
+        .apply(DesignEdit::SetPhaseFrames {
+            phase: Phase::Out,
             frames: 5,
         })
         .unwrap();
@@ -927,40 +912,48 @@ fn invalid_edits_change_nothing() {
         ),
         (
             DesignEdit::AddKeyframe {
-                transition: TransitionKind::Out,
-                node: id(1),
-                property: NodeProperty::Opacity,
+                track: track(1, Phase::Out, Property::Opacity),
                 keyframe: keyframe(0, 300, Easing::Linear),
             },
-            DesignError::InvalidKeyframeValue {
-                transition: TransitionKind::Out,
-                node: id(1),
-                property: NodeProperty::Opacity,
+            DesignError::Animation(ClipError::InvalidValue {
+                track: track(1, Phase::Out, Property::Opacity),
+                frame: 0,
+            }),
+        ),
+        (
+            DesignEdit::AddKeyframe {
+                track: track(1, Phase::Out, Property::PositionX),
+                keyframe: keyframe(6, 0, Easing::Linear),
+            },
+            DesignError::Animation(ClipError::KeyOutsidePhase {
+                track: track(1, Phase::Out, Property::PositionX),
+                frame: 6,
+            }),
+        ),
+        (
+            DesignEdit::AddKeyframe {
+                track: track(100, Phase::In, Property::ScaleX),
+                keyframe: keyframe(0, 0, Easing::Linear),
+            },
+            DesignError::UnsupportedGroupProperty {
+                node: id(100),
+                property: Property::ScaleX,
             },
         ),
         (
             DesignEdit::AddKeyframe {
-                transition: TransitionKind::Out,
-                node: id(1),
-                property: NodeProperty::OffsetX,
-                keyframe: keyframe(6, 0, Easing::Linear),
+                track: track(77, Phase::In, Property::PositionX),
+                keyframe: keyframe(0, 0, Easing::Linear),
             },
-            DesignError::KeyframeAfterEnd {
-                transition: TransitionKind::Out,
-                node: id(1),
-                frame: 6,
-            },
+            DesignError::UnknownNode(id(77)),
         ),
         (
             DesignEdit::RemoveKeyframe {
-                transition: TransitionKind::Out,
-                node: id(1),
-                property: NodeProperty::OffsetX,
+                track: track(1, Phase::Out, Property::PositionX),
                 frame: 0,
             },
             DesignError::UnknownKeyframe {
-                transition: TransitionKind::Out,
-                node: id(1),
+                track: track(1, Phase::Out, Property::PositionX),
                 frame: 0,
             },
         ),
@@ -976,21 +969,22 @@ fn invalid_edits_change_nothing() {
         assert_eq!(design.undo_len(), undo);
     }
 
-    // A keyframe left past a shortened timeline refuses the shortening.
+    // A keyframe left past a shortened phase refuses the shortening.
     design
         .apply(DesignEdit::AddKeyframe {
-            transition: TransitionKind::Out,
-            node: id(1),
-            property: NodeProperty::OffsetX,
+            track: track(1, Phase::Out, Property::PositionX),
             keyframe: keyframe(5, 0, Easing::Linear),
         })
         .unwrap();
     assert!(matches!(
-        design.apply(DesignEdit::SetTimelineDuration {
-            transition: TransitionKind::Out,
+        design.apply(DesignEdit::SetPhaseFrames {
+            phase: Phase::Out,
             frames: 4,
         }),
-        Err(DesignError::KeyframeAfterEnd { frame: 5, .. })
+        Err(DesignError::Animation(ClipError::KeyOutsidePhase {
+            frame: 5,
+            ..
+        }))
     ));
 }
 
@@ -1044,47 +1038,106 @@ fn undo_redo_restores_exact_documents_with_bounded_depth() {
 #[test]
 fn overshooting_opacity_easing_clamps_to_opaque_instead_of_vanishing() {
     let mut design = editor(8, 8);
-    add_rect(
+    add_group(
         &mut design,
         NodeSlot::root(0),
+        group(10, GroupTransform::IDENTITY, None),
+    );
+    add_rect(
+        &mut design,
+        NodeSlot::under(id(10), 0),
         rect(1, bounds(0, 0, 2, 2), RED),
     );
     design
-        .apply(DesignEdit::SetTimelineDuration {
-            transition: TransitionKind::In,
+        .apply(DesignEdit::SetPhaseFrames {
+            phase: Phase::In,
             frames: 10,
         })
         .unwrap();
     // easeOutBack-style control points overshoot past the end value.
     let back = Easing::CubicBezier(CubicBezier::new(22_282, 102_236, 41_943, 65_536).unwrap());
+    let key = track(10, Phase::In, Property::Opacity);
     for frame in [keyframe(0, 0, back), keyframe(10, 255, Easing::Linear)] {
         design
             .apply(DesignEdit::AddKeyframe {
-                transition: TransitionKind::In,
-                node: id(1),
-                property: NodeProperty::Opacity,
+                track: key,
                 keyframe: frame,
             })
             .unwrap();
     }
     let document = design.document();
-    let track = document
-        .timeline(TransitionKind::In)
-        .track(id(1), NodeProperty::Opacity)
-        .unwrap();
+    let raw = document.animation().track(key).unwrap();
     let mut overshot = false;
     for frame in 0..=10 {
-        let value = track.value_at(frame).unwrap();
+        let Some(Value::Scalar(value)) = raw.sample(ClipPosition::frame(frame)) else {
+            panic!("scalar opacity");
+        };
         overshot |= value > 255;
         let opacity = document
-            .compose(TimelineSample::At {
-                transition: TransitionKind::In,
-                frame,
-            })
+            .compose(in_frame(frame))
             .placement(id(1))
             .unwrap()
             .compose_opacity(255);
         assert_eq!(i64::from(opacity), value.clamp(0, 255), "frame {frame}");
     }
     assert!(overshot, "the easing must overshoot for this test to bite");
+}
+
+#[test]
+fn element_tracks_travel_with_the_template_and_group_tracks_stay_in_the_design() {
+    let mut design = editor(8, 2);
+    add_group(
+        &mut design,
+        NodeSlot::root(0),
+        group(10, GroupTransform::IDENTITY, None),
+    );
+    add_rect(
+        &mut design,
+        NodeSlot::under(id(10), 0),
+        rect(1, bounds(0, 0, 2, 2), RED),
+    );
+    design
+        .apply(DesignEdit::SetPhaseFrames {
+            phase: Phase::In,
+            frames: 4,
+        })
+        .unwrap();
+    for (key, keyframe) in [
+        (
+            track(10, Phase::In, Property::PositionX),
+            keyframe(0, 2, Easing::Linear),
+        ),
+        (
+            track(1, Phase::In, Property::PositionX),
+            keyframe(0, 4, Easing::Linear),
+        ),
+        (
+            track(1, Phase::In, Property::PositionX),
+            keyframe(4, 0, Easing::Linear),
+        ),
+    ] {
+        design
+            .apply(DesignEdit::AddKeyframe {
+                track: key,
+                keyframe,
+            })
+            .unwrap();
+    }
+    let template = design.document().to_template();
+    assert_eq!(template.animation.clip.in_frames(), 4);
+    assert_eq!(
+        template
+            .animation
+            .clip
+            .tracks()
+            .iter()
+            .map(|track| track.key)
+            .collect::<Vec<_>>(),
+        vec![track(1, Phase::In, Property::PositionX)]
+    );
+    // Frame 0: group +2, element +4 -> columns 6 and 7. Hold: group +2 only.
+    let alpha = render_alpha(design.document(), in_frame(0));
+    assert_eq!(&alpha[..8], &[0, 0, 0, 0, 0, 0, 255, 255]);
+    let alpha = render_alpha(design.document(), ClipState::Hold);
+    assert_eq!(&alpha[..8], &[0, 0, 255, 255, 0, 0, 0, 0]);
 }

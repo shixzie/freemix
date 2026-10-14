@@ -1,10 +1,10 @@
 use fm_titles::{
-    Alignment, AnimatedProperty, AnimationTrack, AssetCatalog, Bounds, ClockDirection, ClockFormat,
-    ClockSpec, Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldType,
-    FieldValue, FontError, FontFace, FontStyle, ImageFilter, ImageFit, ImageSource, Interpolation,
-    Keyframe, MAX_FONT_SIZE_PX, MAX_OUTPUT_WIDTH, ReferenceRenderer, RenderError, Style,
-    TemplateId, TickerDirection, TickerSpec, TitleId, TitleTemplate, UpdateError, ValidationError,
-    evaluate_clock, evaluate_ticker_position, validate_template,
+    Alignment, AssetCatalog, Bounds, ClockDirection, ClockFormat, ClockSpec, Color, Element,
+    ElementId, ElementKind, FieldDefinition, FieldId, FieldType, FieldValue, FontError, FontFace,
+    FontStyle, ImageFilter, ImageFit, ImageSource, MAX_FONT_SIZE_PX, MAX_OUTPUT_WIDTH,
+    ReferenceRenderer, RenderError, Style, TemplateId, TickerDirection, TickerSpec, TitleId,
+    TitleTemplate, UpdateError, ValidationError, evaluate_clock, evaluate_ticker_position,
+    validate_template,
 };
 use std::num::NonZeroU128;
 use std::sync::mpsc;
@@ -47,7 +47,6 @@ fn rectangle(id: u128, z_index: i32, fill: Color, bounds: Bounds) -> Element {
         style: style(fill),
         color_field: None,
         kind: ElementKind::Rectangle,
-        animations: Vec::new(),
     }
 }
 
@@ -65,6 +64,7 @@ fn template(
         background: Color::TRANSPARENT,
         fields,
         elements,
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 
@@ -151,73 +151,38 @@ fn z_order_controls_exact_pixels() {
 }
 
 #[test]
-fn animation_interpolation_is_integer_and_deterministic() {
-    let linear = AnimationTrack {
-        property: AnimatedProperty::X,
-        keyframes: vec![
-            Keyframe {
-                at_ms: 0,
-                value: -10,
-                interpolation: Interpolation::Linear,
+fn template_animation_is_validated_with_the_template() {
+    use fm_titles::fm_animation::{Easing, Keyframe, Phase, Property, Track, TrackKey, Value};
+    let mut template = template(
+        Vec::new(),
+        vec![rectangle(
+            1,
+            0,
+            Color::BLACK,
+            Bounds {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
             },
-            Keyframe {
-                at_ms: 1_000,
-                value: 11,
-                interpolation: Interpolation::Hold,
-            },
-        ],
+        )],
+        2,
+        2,
+    );
+    let track = |element: u128| {
+        Track::new(
+            TrackKey::new(element_id(element), Phase::In, Property::PositionX),
+            vec![Keyframe::new(0, Value::Scalar(-2), Easing::Linear)],
+        )
     };
-    assert_eq!(linear.value_at(0), Some(-10));
-    assert_eq!(linear.value_at(500), Some(0));
-    assert_eq!(linear.value_at(1_000), Some(11));
-
-    let hold = AnimationTrack {
-        property: AnimatedProperty::Opacity,
-        keyframes: vec![
-            Keyframe {
-                at_ms: 0,
-                value: 0,
-                interpolation: Interpolation::Hold,
-            },
-            Keyframe {
-                at_ms: 100,
-                value: 255,
-                interpolation: Interpolation::Linear,
-            },
-        ],
-    };
-    assert_eq!(hold.value_at(99), Some(0));
-    assert_eq!(hold.value_at(100), Some(255));
-}
-
-#[test]
-fn linear_animation_spanning_the_full_value_and_time_range_does_not_overflow() {
-    let track = |from: i64, to: i64| AnimationTrack {
-        property: AnimatedProperty::X,
-        keyframes: vec![
-            Keyframe {
-                at_ms: 0,
-                value: from,
-                interpolation: Interpolation::Linear,
-            },
-            Keyframe {
-                at_ms: u64::MAX,
-                value: to,
-                interpolation: Interpolation::Hold,
-            },
-        ],
-    };
-    let rising = track(i64::MIN, i64::MAX);
-    assert_eq!(rising.value_at(1 << 63), Some(0));
-    assert_eq!(rising.value_at(u64::MAX - 1), Some(i64::MAX - 1));
-    assert_eq!(rising.value_at(u64::MAX), Some(i64::MAX));
-    let falling = track(i64::MAX, i64::MIN);
-    assert_eq!(falling.value_at(1 << 63), Some(-1));
-    assert_eq!(falling.value_at(u64::MAX - 1), Some(i64::MIN + 1));
-    // Truncation stays toward zero on both sides of the split division.
-    let small = track(0, -3);
-    assert_eq!(small.value_at(u64::MAX / 2), Some(-1));
-    assert_eq!(track(0, 3).value_at(u64::MAX / 2), Some(1));
+    template.animation.clip.set_track(track(1)).unwrap();
+    assert!(validate_template(&template, &AssetCatalog::new()).is_valid());
+    template.animation.clip.set_track(track(9)).unwrap();
+    assert_eq!(
+        validate_template(&template, &AssetCatalog::new()).errors,
+        vec![ValidationError::AnimationTargetUnknown(element_id(9))]
+    );
+    assert!(template.instantiate(title_id(1)).is_err());
 }
 
 #[test]
@@ -360,7 +325,6 @@ fn validation_and_rendering_report_missing_assets_and_limitations() {
             fit: ImageFit::default(),
             filter: ImageFilter::default(),
         },
-        animations: Vec::new(),
     };
     let template = template(fields, vec![element], 8, 8);
     let report = validate_template(&template, &AssetCatalog::new());
@@ -421,7 +385,6 @@ fn text_elements_require_a_resolvable_font_style() {
         style: style(Color::new(255, 255, 255, 255)),
         color_field: None,
         kind: ElementKind::Text { field: message },
-        animations: Vec::new(),
     };
     let without_font = template(fields.clone(), vec![element.clone()], 8, 8);
     assert!(
@@ -464,7 +427,6 @@ fn font_sizes_above_the_render_limit_are_rejected_at_validation() {
         style: style(Color::new(255, 255, 255, 255)),
         color_field: None,
         kind: ElementKind::Text { field: message },
-        animations: Vec::new(),
     };
     element.style.font = Some(FontStyle {
         family: "Sans".into(),

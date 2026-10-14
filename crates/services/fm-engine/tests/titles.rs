@@ -85,8 +85,8 @@ fn template() -> TitleTemplate {
             },
             color_field: Some(field(FILL)),
             kind: ElementKind::Rectangle,
-            animations: Vec::new(),
         }],
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 

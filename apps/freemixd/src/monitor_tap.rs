@@ -1399,7 +1399,6 @@ mod tests {
             },
             color_field: None,
             kind,
-            animations: Vec::new(),
         };
         let mut bar = element(1, ElementKind::Rectangle, None);
         bar.color_field = Some(field(1));
@@ -1431,6 +1430,7 @@ mod tests {
                 default: FieldValue::Color(Color::new(1, 2, 3, 255)),
             }],
             elements,
+            animation: fm_titles::TitleAnimation::default(),
         }
     }
 

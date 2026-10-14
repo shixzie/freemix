@@ -3,6 +3,7 @@ mod args;
 mod project_bundle;
 mod remote;
 mod scene_render;
+mod title_animation;
 
 use std::process::ExitCode;
 

@@ -449,6 +449,7 @@ fn template(
         background: Color::TRANSPARENT,
         fields,
         elements,
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 
@@ -493,7 +494,6 @@ fn reference_scene(
             },
             color_field: None,
             kind: ElementKind::Text { field: field(1) },
-            animations: Vec::new(),
         }],
     ))
 }

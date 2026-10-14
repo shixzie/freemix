@@ -21,14 +21,16 @@
 //! replaced by a newer one, so nothing queues.
 //!
 //! A title re-renders when its persisted state (template, field revision, or
-//! field values) changes. A time-dependent template (clock, ticker, or
-//! animated elements) also re-renders on a bounded refresh: at most once per
+//! field values) changes. A time-dependent template (a clock or ticker
+//! element) also re-renders on a bounded refresh: at most once per
 //! project frame interval and never more often than every
 //! [`MIN_ANIMATED_TITLE_REFRESH`] (25 Hz), on the one worker. A render
 //! slower than that just lowers the refresh rate; it never delays a frame.
 //! Scene time is the most recent frame cursor the loop published times the
 //! project frame duration, the same approximation the simulated monitor tap
 //! documents: every title is treated as having started at frame zero.
+//! Keyframe animation is drawn in its Hold pose and never forces a refresh:
+//! take and off-air phases are not driven by frame yet.
 //!
 //! Production clock elements read their template's clocks in the daemon's
 //! clock domain (see [`title_render::TitleTime`]): the monotonic clock is the
@@ -519,7 +521,6 @@ mod tests {
             },
             color_field: None,
             kind,
-            animations: Vec::new(),
         }
     }
 
@@ -557,6 +558,7 @@ mod tests {
                 default: FieldValue::Color(Color::new(1, 2, 3, 255)),
             }],
             elements,
+            animation: fm_titles::TitleAnimation::default(),
         }
     }
 
@@ -862,8 +864,8 @@ mod daemon_tests {
                 style: Style::default(),
                 color_field: Some(field),
                 kind: ElementKind::Rectangle,
-                animations: Vec::new(),
             }],
+            animation: fm_titles::TitleAnimation::default(),
         };
         let document = fm_persistence::encode_title_template(&StoredTitleTemplate {
             template,

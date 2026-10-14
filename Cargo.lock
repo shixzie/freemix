@@ -1707,6 +1707,7 @@ dependencies = [
  "fm-protocol",
  "fm-sim",
  "fm-switcher",
+ "fm-titles",
  "fm-types",
  "fm-ui-model",
  "fm-video",

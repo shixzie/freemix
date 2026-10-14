@@ -152,6 +152,32 @@ pub enum Command {
         /// `(family, font file)` pairs in command-line order.
         fonts: Vec<(String, PathBuf)>,
     },
+    /// Applies a built-in animation preset to one element of a stored
+    /// title template.
+    TitleAnimationPreset {
+        path: PathBuf,
+        template_uri: String,
+        element: u128,
+        phase: TitlePhase,
+        /// A stable `fm_animation` preset id, checked when applied.
+        preset: String,
+        frames: u32,
+    },
+    /// Scales every key of one phase of a stored title template.
+    TitleAnimationStretch {
+        path: PathBuf,
+        template_uri: String,
+        phase: TitlePhase,
+        frames: u32,
+    },
+    /// Renders one title input at one frame of one animation phase.
+    TitleRenderFrame {
+        path: PathBuf,
+        input: u128,
+        phase: TitlePhase,
+        frame: u32,
+        output: PathBuf,
+    },
     AudioBusAdd {
         path: PathBuf,
         bus: u128,
@@ -1009,6 +1035,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "media-input-add" => parse_media_input_add(arguments),
         "media-input-relink" => parse_media_input_relink(arguments),
         "title-input-add" => parse_title_input_add(arguments),
+        "title-animation-preset" => parse_title_animation_preset(arguments),
+        "title-animation-stretch" => parse_title_animation_stretch(arguments),
+        "title-render-frame" => parse_title_render_frame(arguments),
         "audio-bus-add" => parse_audio_bus_add(arguments),
         "audio-bus-rename" => parse_audio_bus_rename(arguments),
         "audio-bus-remove" => parse_audio_bus_remove(arguments),
@@ -2107,6 +2136,102 @@ fn parse_title_input_add(
         name: name.ok_or(ArgsError::MissingValue("--name"))?,
         template: template.ok_or(ArgsError::MissingValue("--template"))?,
         fonts,
+    })
+}
+
+/// The title animation phase a command addresses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TitlePhase {
+    In,
+    Out,
+}
+
+fn title_phase(arguments: &mut impl Iterator<Item = String>) -> Result<TitlePhase, ArgsError> {
+    let value = required(arguments, "phase")?;
+    match value.as_str() {
+        "in" => Ok(TitlePhase::In),
+        "out" => Ok(TitlePhase::Out),
+        _ => Err(ArgsError::InvalidChoice {
+            field: "phase (expected in or out)",
+            value,
+        }),
+    }
+}
+
+fn parse_title_animation_preset(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let template_uri = nonblank(&mut arguments, "template URI")?;
+    let element = number(&required(&mut arguments, "element")?, "element")?;
+    let mut phase = None;
+    let mut preset = None;
+    let mut frames = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--phase" => phase = Some(title_phase(&mut arguments)?),
+            "--preset" => preset = Some(nonblank(&mut arguments, "preset")?),
+            "--frames" => frames = Some(number(&required(&mut arguments, "frames")?, "frames")?),
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::TitleAnimationPreset {
+        path,
+        template_uri,
+        element,
+        phase: phase.ok_or(ArgsError::MissingValue("--phase"))?,
+        preset: preset.ok_or(ArgsError::MissingValue("--preset"))?,
+        frames: frames.ok_or(ArgsError::MissingValue("--frames"))?,
+    })
+}
+
+fn parse_title_animation_stretch(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let template_uri = nonblank(&mut arguments, "template URI")?;
+    let mut phase = None;
+    let mut frames = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--phase" => phase = Some(title_phase(&mut arguments)?),
+            "--frames" => frames = Some(number(&required(&mut arguments, "frames")?, "frames")?),
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::TitleAnimationStretch {
+        path,
+        template_uri,
+        phase: phase.ok_or(ArgsError::MissingValue("--phase"))?,
+        frames: frames.ok_or(ArgsError::MissingValue("--frames"))?,
+    })
+}
+
+fn parse_title_render_frame(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let mut phase = None;
+    let mut frame = None;
+    let mut output = None;
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--phase" => phase = Some(title_phase(&mut arguments)?),
+            "--frame" => frame = Some(number(&required(&mut arguments, "frame")?, "frame")?),
+            option if option.starts_with("--") => {
+                return Err(ArgsError::UnknownOption(argument));
+            }
+            _ if output.is_none() => output = Some(PathBuf::from(argument)),
+            _ => return Err(ArgsError::UnexpectedArgument(argument)),
+        }
+    }
+    Ok(Command::TitleRenderFrame {
+        path,
+        input,
+        phase: phase.ok_or(ArgsError::MissingValue("--phase"))?,
+        frame: frame.ok_or(ArgsError::MissingValue("--frame"))?,
+        output: output.ok_or(ArgsError::MissingValue("output path"))?,
     })
 }
 

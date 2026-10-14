@@ -1,8 +1,9 @@
 use crate::{
-    AnimatedProperty, Element, ElementId, ElementKind, FieldId, FieldType, FieldValue, FontError,
-    FontFace, MAX_FONT_SIZE_PX, TitleScene, TitleTemplate,
+    Element, ElementId, ElementKind, FieldId, FieldType, FieldValue, FontError, FontFace,
+    MAX_FONT_SIZE_PX, TitleScene, TitleTemplate,
 };
 use core::fmt;
+use fm_animation::ClipError;
 use fm_video::ImageFrame;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -230,16 +231,10 @@ pub enum ValidationError {
         required: &'static str,
     },
     EmptyImageAsset(FieldId),
-    EmptyAnimation(ElementId),
-    NonIncreasingKeyframes(ElementId),
-    DuplicateAnimationProperty {
-        element: ElementId,
-        property: AnimatedProperty,
-    },
-    InvalidAnimationValue {
-        element: ElementId,
-        property: AnimatedProperty,
-    },
+    /// The animation clip breaks a structural rule or limit.
+    Animation(ClipError<ElementId>),
+    /// An animation track targets an element the template does not have.
+    AnimationTargetUnknown(ElementId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -328,6 +323,18 @@ pub(crate) fn validate_template_structure(template: &TitleTemplate) -> Vec<Valid
         }
         validate_element(element, &fields, &mut errors);
     }
+
+    let clip = &template.animation.clip;
+    if let Err(error) = clip.validate() {
+        errors.push(ValidationError::Animation(error));
+    }
+    let mut unknown = BTreeSet::new();
+    for track in clip.tracks() {
+        let target = track.key.target;
+        if !elements.contains(&target) && unknown.insert(target) {
+            errors.push(ValidationError::AnimationTargetUnknown(target));
+        }
+    }
     errors
 }
 
@@ -402,40 +409,6 @@ fn validate_element(
             &[FieldType::Color],
             "color",
         );
-    }
-
-    let mut properties = Vec::new();
-    for track in &element.animations {
-        if properties.contains(&track.property) {
-            errors.push(ValidationError::DuplicateAnimationProperty {
-                element: element.id,
-                property: track.property,
-            });
-        }
-        properties.push(track.property);
-        if track.keyframes.is_empty() {
-            errors.push(ValidationError::EmptyAnimation(element.id));
-        }
-        if track
-            .keyframes
-            .windows(2)
-            .any(|pair| pair[0].at_ms >= pair[1].at_ms)
-        {
-            errors.push(ValidationError::NonIncreasingKeyframes(element.id));
-        }
-        if track.keyframes.iter().any(|keyframe| {
-            matches!(
-                track.property,
-                AnimatedProperty::Width | AnimatedProperty::Height
-            ) && !(0..=i64::from(u32::MAX)).contains(&keyframe.value)
-                || track.property == AnimatedProperty::Opacity
-                    && !(0..=255).contains(&keyframe.value)
-        }) {
-            errors.push(ValidationError::InvalidAnimationValue {
-                element: element.id,
-                property: track.property,
-            });
-        }
     }
 }
 

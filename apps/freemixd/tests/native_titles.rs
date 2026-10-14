@@ -87,8 +87,8 @@ fn save_title_project(path: &Path) {
             style: Style::default(),
             color_field: Some(field),
             kind: ElementKind::Rectangle,
-            animations: Vec::new(),
         }],
+        animation: fm_titles::TitleAnimation::default(),
     };
     let store = ProjectStore::new(path).unwrap();
     let document = fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {

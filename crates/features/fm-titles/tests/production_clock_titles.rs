@@ -339,7 +339,6 @@ fn element(kind: ElementKind) -> Element {
         style: style(),
         color_field: None,
         kind,
-        animations: Vec::new(),
     }
 }
 
@@ -356,6 +355,7 @@ fn template(fields: Vec<FieldDefinition>, element: Element) -> TitleTemplate {
         background: Color::TRANSPARENT,
         fields,
         elements: vec![element],
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 
@@ -751,6 +751,7 @@ fn template_clock_tables_must_match_the_elements_exactly() {
         background: Color::TRANSPARENT,
         fields: Vec::new(),
         elements: elements.to_vec(),
+        animation: fm_titles::TitleAnimation::default(),
     };
     assert_eq!(
         validate_title_clocks(&build(&elements), &title_clocks()),

@@ -8,8 +8,9 @@
 
 use crate::{
     Bounds, ClipMask, DesignError, DesignNode, Element, ElementId, Group, GroupTransform,
-    NodeProperty, TimelineKeyframe, TimelineTrack, TitleDesign, TransitionKind,
+    TitleDesign,
 };
+use fm_animation::{AnimationEdit, KeySelection, Keyframe, Phase, TrackKey};
 use std::collections::VecDeque;
 
 /// Deepest undo history an editor may keep.
@@ -83,39 +84,46 @@ pub enum DesignEdit {
         group: ElementId,
         visible: bool,
     },
-    /// Deletes a node and its whole subtree, and every timeline track that
+    /// Deletes a node and its whole subtree, and every animation track that
     /// targets a deleted node.
     Delete {
         node: ElementId,
     },
-    SetTimelineDuration {
-        transition: TransitionKind,
+    /// Changes a phase length without moving keys
+    /// ([`AnimationEdit::SetPhaseFrames`]).
+    SetPhaseFrames {
+        phase: Phase,
         frames: u32,
     },
-    /// Adds a keyframe, creating the track if needed. Refused when the track
-    /// already has a keyframe on that frame.
-    AddKeyframe {
-        transition: TransitionKind,
-        node: ElementId,
-        property: NodeProperty,
-        keyframe: TimelineKeyframe,
+    /// Scales every key of a phase to a new length
+    /// ([`AnimationEdit::StretchPhase`]).
+    StretchPhase {
+        phase: Phase,
+        frames: u32,
     },
-    /// Removes a keyframe; a track left empty is removed.
+    /// Adds a keyframe, creating the track if needed
+    /// ([`AnimationEdit::SetKey`]). Refused when the track already has a
+    /// keyframe on that frame.
+    AddKeyframe {
+        track: TrackKey<ElementId>,
+        keyframe: Keyframe,
+    },
+    /// Removes a keyframe; a track left empty is removed
+    /// ([`AnimationEdit::RemoveKeys`]).
     RemoveKeyframe {
-        transition: TransitionKind,
-        node: ElementId,
-        property: NodeProperty,
+        track: TrackKey<ElementId>,
         frame: u32,
     },
-    /// Moves a keyframe to another frame, keeping its value and easing. The
-    /// track is re-sorted; landing on an occupied frame is refused.
+    /// Moves a keyframe to another frame of its phase, keeping its value and
+    /// easing ([`AnimationEdit::MoveKeys`]). Landing on an occupied frame or
+    /// past the phase end is refused.
     RetimeKeyframe {
-        transition: TransitionKind,
-        node: ElementId,
-        property: NodeProperty,
+        track: TrackKey<ElementId>,
         from: u32,
         to: u32,
     },
+    /// Any other atomic clip edit: retime a selection, set easing, paste.
+    Animation(AnimationEdit<ElementId>),
 }
 
 /// A design under edit with bounded undo/redo.
@@ -311,19 +319,6 @@ fn group_mut(design: &mut TitleDesign, id: ElementId) -> Result<&mut Group, Desi
     }
 }
 
-fn track_mut(
-    design: &mut TitleDesign,
-    transition: TransitionKind,
-    node: ElementId,
-    property: NodeProperty,
-) -> Option<&mut TimelineTrack> {
-    design
-        .timeline_mut(transition)
-        .tracks
-        .iter_mut()
-        .find(|track| track.node == node && track.property == property)
-}
-
 fn apply_edit(design: &mut TitleDesign, edit: DesignEdit) -> Result<(), DesignError> {
     match edit {
         DesignEdit::AddElement { slot, element } => {
@@ -386,112 +381,94 @@ fn apply_edit(design: &mut TitleDesign, edit: DesignEdit) -> Result<(), DesignEr
                 design.nodes.remove(id);
                 design.children.remove(id);
             }
-            for transition in [TransitionKind::In, TransitionKind::Out] {
-                design
-                    .timeline_mut(transition)
-                    .tracks
-                    .retain(|track| !removed.contains(&track.node));
+            let orphaned: Vec<_> = design
+                .animation
+                .tracks()
+                .iter()
+                .map(|track| track.key)
+                .filter(|key| removed.contains(&key.target))
+                .collect();
+            for key in orphaned {
+                design.animation.remove_track(key);
             }
             Ok(())
         }
-        DesignEdit::SetTimelineDuration { transition, frames } => {
-            design.timeline_mut(transition).duration_frames = frames;
-            Ok(())
+        DesignEdit::SetPhaseFrames { phase, frames } => {
+            apply_animation(design, AnimationEdit::SetPhaseFrames { phase, frames })
         }
+        DesignEdit::StretchPhase { phase, frames } => {
+            apply_animation(design, AnimationEdit::StretchPhase { phase, frames })
+        }
+        DesignEdit::Animation(edit) => apply_animation(design, edit),
         keyframe_edit => apply_keyframe_edit(design, &keyframe_edit),
     }
 }
 
 fn apply_keyframe_edit(design: &mut TitleDesign, edit: &DesignEdit) -> Result<(), DesignError> {
     match *edit {
-        DesignEdit::AddKeyframe {
-            transition,
-            node,
-            property,
-            keyframe,
-        } => {
-            if !design.nodes.contains_key(&node) {
-                return Err(DesignError::UnknownNode(node));
+        DesignEdit::AddKeyframe { track, keyframe } => {
+            if !design.nodes.contains_key(&track.target) {
+                return Err(DesignError::UnknownNode(track.target));
             }
-            if let Some(track) = track_mut(design, transition, node, property) {
-                match track
-                    .keyframes
-                    .binary_search_by_key(&keyframe.frame, |existing| existing.frame)
-                {
-                    Ok(_) => Err(DesignError::KeyframeExists {
-                        transition,
-                        node,
-                        frame: keyframe.frame,
-                    }),
-                    Err(index) => {
-                        track.keyframes.insert(index, keyframe);
-                        Ok(())
-                    }
-                }
-            } else {
-                design.timeline_mut(transition).tracks.push(TimelineTrack {
-                    node,
-                    property,
-                    keyframes: vec![keyframe],
-                });
-                Ok(())
-            }
-        }
-        DesignEdit::RemoveKeyframe {
-            transition,
-            node,
-            property,
-            frame,
-        } => {
-            let missing = DesignError::UnknownKeyframe {
-                transition,
-                node,
-                frame,
-            };
-            let track = track_mut(design, transition, node, property).ok_or(missing.clone())?;
-            let index = track
-                .keyframes
-                .iter()
-                .position(|keyframe| keyframe.frame == frame)
-                .ok_or(missing)?;
-            track.keyframes.remove(index);
-            if track.keyframes.is_empty() {
-                design
-                    .timeline_mut(transition)
-                    .tracks
-                    .retain(|track| !(track.node == node && track.property == property));
-            }
-            Ok(())
-        }
-        DesignEdit::RetimeKeyframe {
-            transition,
-            node,
-            property,
-            from,
-            to,
-        } => {
-            let missing = DesignError::UnknownKeyframe {
-                transition,
-                node,
-                frame: from,
-            };
-            let track = track_mut(design, transition, node, property).ok_or(missing.clone())?;
-            let index = track
-                .keyframes
-                .iter()
-                .position(|keyframe| keyframe.frame == from)
-                .ok_or(missing)?;
-            if from != to && track.keyframes.iter().any(|keyframe| keyframe.frame == to) {
+            if design.animation.key(track, keyframe.frame).is_some() {
                 return Err(DesignError::KeyframeExists {
-                    transition,
-                    node,
-                    frame: to,
+                    track,
+                    frame: keyframe.frame,
                 });
             }
-            track.keyframes[index].frame = to;
-            track.keyframes.sort_by_key(|keyframe| keyframe.frame);
-            Ok(())
+            apply_animation(
+                design,
+                AnimationEdit::SetKey {
+                    track,
+                    key: keyframe,
+                },
+            )
+        }
+        DesignEdit::RemoveKeyframe { track, frame } => {
+            if design.animation.key(track, frame).is_none() {
+                return Err(DesignError::UnknownKeyframe { track, frame });
+            }
+            apply_animation(design, AnimationEdit::RemoveKeys(selection(track, frame)))
+        }
+        DesignEdit::RetimeKeyframe { track, from, to } => {
+            if design.animation.key(track, from).is_none() {
+                return Err(DesignError::UnknownKeyframe { track, frame: from });
+            }
+            if from == to {
+                return Ok(());
+            }
+            if design.animation.key(track, to).is_some() {
+                return Err(DesignError::KeyframeExists { track, frame: to });
+            }
+            if to > design.animation.phase_frames(track.phase) {
+                return Err(DesignError::Animation(
+                    fm_animation::ClipError::KeyOutsidePhase { track, frame: to },
+                ));
+            }
+            apply_animation(
+                design,
+                AnimationEdit::MoveKeys {
+                    selection: selection(track, from),
+                    delta: i64::from(to) - i64::from(from),
+                },
+            )
         }
         _ => Ok(()),
     }
+}
+
+fn selection(track: TrackKey<ElementId>, frame: u32) -> KeySelection<ElementId> {
+    let mut selection = KeySelection::new();
+    selection.insert(track, frame);
+    selection
+}
+
+/// Applies one clip edit; the clip itself is atomic, and the design is
+/// validated as a whole by the caller.
+fn apply_animation(
+    design: &mut TitleDesign,
+    edit: AnimationEdit<ElementId>,
+) -> Result<(), DesignError> {
+    design.animation.apply(edit)?;
+    Ok(())
 }

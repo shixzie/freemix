@@ -2950,6 +2950,7 @@ mod titles {
                 },
             ],
             elements: Vec::new(),
+            animation: fm_titles::TitleAnimation::default(),
         }
     }
 

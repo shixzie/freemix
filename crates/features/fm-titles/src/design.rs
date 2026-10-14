@@ -30,33 +30,33 @@
 //! * A group's [`ClipMask`] is expressed in its children's coordinate space and
 //!   moves with the group's own offset; nested masks intersect.
 //!
-//! # Timelines
+//! # Animation
 //!
-//! The design owns two named timelines: [`TransitionKind::In`] plays on take
-//! and [`TransitionKind::Out`] on off-air. Keyframes are frame indexed, carry
-//! the [`Easing`](crate::Easing) used towards the next keyframe, and animate per-node
-//! [`NodeProperty`] offsets and opacity layered on top of the node's static
-//! values. A property with no track in the timeline being evaluated keeps its
-//! static value.
+//! The design owns one [`TitleClip`](crate::TitleClip): an In phase played on
+//! take and an Out phase played on off-air, in whole frames of the clip's
+//! timebase, with tracks keyed by node, phase, and
+//! [`Property`](fm_animation::Property). Group tracks may animate only
+//! `PositionX`, `PositionY`, and `Opacity`, which [`TitleDesign::compose`]
+//! folds onto every descendant exactly like the static transform. Element
+//! tracks may animate every property; they travel with the flattened template
+//! ([`TitleDesign::to_template`]) and are applied per element by the renderer
+//! at the composition's sample. A property with no track keeps its static
+//! value.
 
 use crate::{
-    Bounds, Color, Element, ElementId, FieldDefinition, TemplateId, TitleTemplate, ValidationError,
+    Bounds, Color, Element, ElementId, FieldDefinition, TemplateId, TitleAnimation, TitleClip,
+    TitleTemplate, ValidationError, default_title_timebase,
     validation::validate_template_structure,
 };
 use core::fmt;
+use fm_animation::{ClipError, ClipState, Property, TrackKey, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Deepest permitted group nesting. A root group is depth 1.
 pub const MAX_GROUP_DEPTH: usize = 8;
 /// Most nodes (elements plus groups) a design may hold.
 pub const MAX_DESIGN_NODES: usize = 1_024;
-/// Most tracks one timeline may hold.
-pub const MAX_TIMELINE_TRACKS: usize = 256;
-/// Most keyframes one track may hold.
-pub const MAX_TRACK_KEYFRAMES: usize = 256;
-/// Longest permitted transition, in frames (ten minutes at 60 fps).
-pub const MAX_TIMELINE_FRAMES: u32 = 36_000;
-/// Longest permitted node or timeline name, in characters.
+/// Longest permitted node name, in characters.
 pub const MAX_DESIGN_NAME_CHARS: usize = 128;
 
 /// A static group transform. The identity is offset zero, opacity 255.
@@ -220,95 +220,9 @@ impl DesignNode {
     }
 }
 
-/// Which transition timeline.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum TransitionKind {
-    /// Plays on take.
-    In,
-    /// Plays on off-air.
-    Out,
-}
-
-/// An animatable per-node property layered on the node's static values.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum NodeProperty {
-    /// Added to the node's x. Values must fit `i32`.
-    OffsetX,
-    /// Added to the node's y. Values must fit `i32`.
-    OffsetY,
-    /// Multiplied into the node's opacity. Values must be `0..=255`.
-    Opacity,
-}
-
-impl NodeProperty {
-    fn accepts(self, value: i64) -> bool {
-        match self {
-            Self::OffsetX | Self::OffsetY => i32::try_from(value).is_ok(),
-            Self::Opacity => (0..=255).contains(&value),
-        }
-    }
-}
-
-/// A keyframe; `easing` shapes the interval towards the next keyframe. The
-/// shared [`fm_animation::Keyframe`] with a raw `i64` value.
-pub type TimelineKeyframe = fm_animation::Keyframe<i64>;
-
-/// One animated property of one node.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TimelineTrack {
-    pub node: ElementId,
-    pub property: NodeProperty,
-    /// Strictly increasing frames, all at or before the timeline duration.
-    pub keyframes: Vec<TimelineKeyframe>,
-}
-
-impl TimelineTrack {
-    /// Holds the first value before the first keyframe and the last after the
-    /// last; between keyframes `k` and `k + 1` it is
-    /// `ease_between(k.value, next.value, k.easing(progress))`.
-    #[must_use]
-    pub fn value_at(&self, frame: u32) -> Option<i64> {
-        fm_animation::sample_frame(&self.keyframes, frame)
-    }
-}
-
-/// A named transition timeline.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Timeline {
-    pub name: String,
-    pub duration_frames: u32,
-    pub tracks: Vec<TimelineTrack>,
-}
-
-impl Timeline {
-    #[must_use]
-    pub fn new(name: impl Into<String>, duration_frames: u32) -> Self {
-        Self {
-            name: name.into(),
-            duration_frames,
-            tracks: Vec::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn track(&self, node: ElementId, property: NodeProperty) -> Option<&TimelineTrack> {
-        self.tracks
-            .iter()
-            .find(|track| track.node == node && track.property == property)
-    }
-}
-
-/// Which timeline, at which local frame, a composition samples.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TimelineSample {
-    /// Static values only.
-    Static,
-    /// One timeline at a local frame.
-    At {
-        transition: TransitionKind,
-        frame: u32,
-    },
-}
+/// The properties a group track may animate: they fold onto descendants.
+pub const GROUP_PROPERTIES: [Property; 3] =
+    [Property::PositionX, Property::PositionY, Property::Opacity];
 
 /// Every reason a design or an edit is refused.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -335,58 +249,24 @@ pub enum DesignError {
     EmptyMask(ElementId),
     /// The flattened template failed structural validation.
     Template(Vec<ValidationError>),
-    EmptyTimelineName(TransitionKind),
-    TimelineTooLong {
-        transition: TransitionKind,
-        maximum: u32,
-    },
-    TooManyTracks {
-        transition: TransitionKind,
-        maximum: usize,
-    },
-    DuplicateTrack {
-        transition: TransitionKind,
+    /// The animation clip refused the document or an edit.
+    Animation(ClipError<ElementId>),
+    /// An animation track targets a node the design does not have.
+    TrackTargetUnknown(ElementId),
+    /// A group track animates a property groups cannot fold onto their
+    /// children; see [`GROUP_PROPERTIES`].
+    UnsupportedGroupProperty {
         node: ElementId,
-        property: NodeProperty,
-    },
-    TrackTargetUnknown {
-        transition: TransitionKind,
-        node: ElementId,
-    },
-    EmptyTrack {
-        transition: TransitionKind,
-        node: ElementId,
-        property: NodeProperty,
-    },
-    TooManyKeyframes {
-        transition: TransitionKind,
-        maximum: usize,
-    },
-    NonIncreasingKeyframes {
-        transition: TransitionKind,
-        node: ElementId,
-        property: NodeProperty,
-    },
-    KeyframeAfterEnd {
-        transition: TransitionKind,
-        node: ElementId,
-        frame: u32,
-    },
-    InvalidKeyframeValue {
-        transition: TransitionKind,
-        node: ElementId,
-        property: NodeProperty,
+        property: Property,
     },
     /// An edit named a keyframe frame that the track does not have.
     UnknownKeyframe {
-        transition: TransitionKind,
-        node: ElementId,
+        track: TrackKey<ElementId>,
         frame: u32,
     },
     /// An edit would place two keyframes on one frame.
     KeyframeExists {
-        transition: TransitionKind,
-        node: ElementId,
+        track: TrackKey<ElementId>,
         frame: u32,
     },
     /// A child index past the end of its parent's child list.
@@ -416,6 +296,12 @@ impl fmt::Display for DesignError {
 
 impl std::error::Error for DesignError {}
 
+impl From<ClipError<ElementId>> for DesignError {
+    fn from(error: ClipError<ElementId>) -> Self {
+        Self::Animation(error)
+    }
+}
+
 /// Where an element sits on the canvas after its ancestors are folded in.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ElementPlacement {
@@ -442,12 +328,21 @@ impl ElementPlacement {
         self.opacity_denominator *= 255;
     }
 
-    /// Composes an element's own evaluated opacity with every ancestor factor,
+    /// Composes an element's own static opacity with every ancestor factor,
     /// rounding once, half up.
     #[must_use]
     pub fn compose_opacity(&self, element_opacity: u8) -> u8 {
-        let numerator = u128::from(element_opacity) * self.opacity_numerator;
-        let rounded = (2 * numerator + self.opacity_denominator) / (2 * self.opacity_denominator);
+        self.compose_opacity_with(element_opacity, u8::MAX)
+    }
+
+    /// Composes an element's static opacity, its animated opacity factor
+    /// (`255` is identity), and every ancestor factor, rounding once, half
+    /// up.
+    #[must_use]
+    pub fn compose_opacity_with(&self, element_opacity: u8, animated: u8) -> u8 {
+        let numerator = u128::from(element_opacity) * u128::from(animated) * self.opacity_numerator;
+        let denominator = 255 * self.opacity_denominator;
+        let rounded = (2 * numerator + denominator) / (2 * denominator);
         u8::try_from(rounded).unwrap_or(u8::MAX)
     }
 
@@ -460,16 +355,33 @@ impl ElementPlacement {
 
 /// Every drawable element's placement for one sample. Elements absent from
 /// the composition (hidden by a group) are not drawn.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Composition {
     placements: BTreeMap<ElementId, ElementPlacement>,
+    sample: ClipState,
+}
+
+impl Default for Composition {
+    fn default() -> Self {
+        Self::empty()
+    }
 }
 
 impl Composition {
     /// An empty composition: nothing is drawn but the scene background.
     #[must_use]
-    pub fn empty() -> Self {
-        Self::default()
+    pub const fn empty() -> Self {
+        Self {
+            placements: BTreeMap::new(),
+            sample: ClipState::Static,
+        }
+    }
+
+    /// The animation sample this composition was folded at; the renderer
+    /// samples element tracks at the same point.
+    #[must_use]
+    pub const fn sample(&self) -> ClipState {
+        self.sample
     }
 
     #[must_use]
@@ -500,13 +412,12 @@ pub struct TitleDesign {
     pub(crate) nodes: BTreeMap<ElementId, DesignNode>,
     pub(crate) roots: Vec<ElementId>,
     pub(crate) children: BTreeMap<ElementId, Vec<ElementId>>,
-    pub(crate) transition_in: Timeline,
-    pub(crate) transition_out: Timeline,
+    pub(crate) animation: TitleClip,
 }
 
 impl TitleDesign {
-    /// Creates an empty design with zero-length `TransitionIn` and
-    /// `TransitionOut` timelines.
+    /// Creates an empty design whose animation has zero-length In and Out
+    /// phases at [`default_title_timebase`].
     ///
     /// # Errors
     ///
@@ -530,8 +441,7 @@ impl TitleDesign {
             nodes: BTreeMap::new(),
             roots: Vec::new(),
             children: BTreeMap::new(),
-            transition_in: Timeline::new("TransitionIn", 0),
-            transition_out: Timeline::new("TransitionOut", 0),
+            animation: TitleAnimation::empty(default_title_timebase()).clip,
         };
         design.validate()?;
         Ok(design)
@@ -582,19 +492,10 @@ impl TitleDesign {
             .map(|(parent, _)| *parent)
     }
 
+    /// The design's In/Out animation, group and element tracks alike.
     #[must_use]
-    pub const fn timeline(&self, transition: TransitionKind) -> &Timeline {
-        match transition {
-            TransitionKind::In => &self.transition_in,
-            TransitionKind::Out => &self.transition_out,
-        }
-    }
-
-    pub(crate) fn timeline_mut(&mut self, transition: TransitionKind) -> &mut Timeline {
-        match transition {
-            TransitionKind::In => &mut self.transition_in,
-            TransitionKind::Out => &mut self.transition_out,
-        }
+    pub const fn animation(&self) -> &TitleClip {
+        &self.animation
     }
 
     /// Elements in paint order (depth first through the tree).
@@ -617,9 +518,11 @@ impl TitleDesign {
     }
 
     /// Flattens the tree into a template whose elements are in paint order
-    /// with `z_index` rewritten to the paint index. Group transforms, masks,
-    /// and timelines are not part of the template; render the instantiated
-    /// scene with a [`Composition`] from [`Self::compose`].
+    /// with `z_index` rewritten to the paint index. The template carries the
+    /// design's animation clip (timebase and phase lengths) with only the
+    /// element tracks, at revision zero; group transforms, masks, and group
+    /// tracks are not part of the template. Render the instantiated scene with
+    /// a [`Composition`] from [`Self::compose`].
     #[must_use]
     pub fn to_template(&self) -> TitleTemplate {
         let elements = self
@@ -643,25 +546,36 @@ impl TitleDesign {
             background: self.background,
             fields: self.fields.clone(),
             elements,
+            animation: TitleAnimation::new(self.element_clip(), 0),
         }
     }
 
-    /// Folds every ancestor into each visible element's placement for one
-    /// timeline sample. See the module documentation for the exact rules.
+    /// The animation without its group tracks.
+    fn element_clip(&self) -> TitleClip {
+        let mut clip = self.animation.clone();
+        let group_tracks: Vec<_> = clip
+            .tracks()
+            .iter()
+            .map(|track| track.key)
+            .filter(|key| matches!(self.nodes.get(&key.target), Some(DesignNode::Group(_))))
+            .collect();
+        for key in group_tracks {
+            clip.remove_track(key);
+        }
+        clip
+    }
+
+    /// Folds every group into each visible element's placement for one
+    /// animation sample. See the module documentation for the exact rules.
+    /// Element tracks are not folded here: the renderer applies them at
+    /// [`Composition::sample`].
     #[must_use]
-    pub fn compose(&self, sample: TimelineSample) -> Composition {
-        let timeline = match sample {
-            TimelineSample::Static => None,
-            TimelineSample::At { transition, frame } => Some((self.timeline(transition), frame)),
-        };
-        let animated = |node: ElementId, property: NodeProperty, fallback: i64| -> i64 {
-            timeline
-                .and_then(|(timeline, frame)| {
-                    timeline
-                        .track(node, property)
-                        .and_then(|track| track.value_at(frame))
-                })
-                .unwrap_or(fallback)
+    pub fn compose(&self, sample: ClipState) -> Composition {
+        let animated = |node: ElementId, property: Property, fallback: i64| -> i64 {
+            match self.animation.sample(node, property, sample) {
+                Some(Value::Scalar(value)) => value,
+                _ => fallback,
+            }
         };
         let mut placements = BTreeMap::new();
         let mut stack: Vec<(ElementId, ElementPlacement)> = self
@@ -671,26 +585,28 @@ impl TitleDesign {
             .map(|id| (*id, ElementPlacement::root()))
             .collect();
         while let Some((id, mut placement)) = stack.pop() {
-            let dx = animated(id, NodeProperty::OffsetX, 0);
-            let dy = animated(id, NodeProperty::OffsetY, 0);
-            // Keyframes are 0..=255, but an overshooting bezier easing can
-            // carry the interpolated value past either end; clamp it instead
-            // of mapping an overshoot above 255 to fully transparent.
-            let opacity = u8::try_from(animated(id, NodeProperty::Opacity, 255).clamp(0, 255))
-                .unwrap_or(u8::MAX);
             match self.nodes.get(&id) {
                 Some(DesignNode::Element(_)) => {
-                    placement.offset_x += dx;
-                    placement.offset_y += dy;
-                    placement.multiply_opacity(opacity);
                     placements.insert(id, placement);
                 }
                 Some(DesignNode::Group(group)) => {
                     if !group.visible {
                         continue;
                     }
-                    placement.offset_x += i64::from(group.transform.offset_x) + dx;
-                    placement.offset_y += i64::from(group.transform.offset_y) + dy;
+                    let dx = animated(id, Property::PositionX, 0);
+                    let dy = animated(id, Property::PositionY, 0);
+                    // The clip clamps samples to the property range, so an
+                    // overshooting easing cannot leave 0..=255.
+                    let opacity = u8::try_from(animated(id, Property::Opacity, 255).clamp(0, 255))
+                        .unwrap_or(u8::MAX);
+                    placement.offset_x = placement
+                        .offset_x
+                        .saturating_add(i64::from(group.transform.offset_x))
+                        .saturating_add(dx);
+                    placement.offset_y = placement
+                        .offset_y
+                        .saturating_add(i64::from(group.transform.offset_y))
+                        .saturating_add(dy);
                     placement.multiply_opacity(multiply_u8(group.transform.opacity, opacity));
                     if let Some(mask) = group.mask {
                         placement.clips.push(ResolvedClip::new(
@@ -711,7 +627,7 @@ impl TitleDesign {
                 None => {}
             }
         }
-        Composition { placements }
+        Composition { placements, sample }
     }
 
     /// Checks the whole document. Every edit runs this on its candidate before
@@ -731,10 +647,7 @@ impl TitleDesign {
         if !errors.is_empty() {
             return Err(DesignError::Template(errors));
         }
-        for transition in [TransitionKind::In, TransitionKind::Out] {
-            self.validate_timeline(transition)?;
-        }
-        Ok(())
+        self.validate_animation()
     }
 
     fn validate_tree(&self) -> Result<(), DesignError> {
@@ -793,75 +706,19 @@ impl TitleDesign {
         Ok(())
     }
 
-    fn validate_timeline(&self, transition: TransitionKind) -> Result<(), DesignError> {
-        let timeline = self.timeline(transition);
-        if timeline.name.trim().is_empty() {
-            return Err(DesignError::EmptyTimelineName(transition));
-        }
-        if timeline.duration_frames > MAX_TIMELINE_FRAMES {
-            return Err(DesignError::TimelineTooLong {
-                transition,
-                maximum: MAX_TIMELINE_FRAMES,
-            });
-        }
-        if timeline.tracks.len() > MAX_TIMELINE_TRACKS {
-            return Err(DesignError::TooManyTracks {
-                transition,
-                maximum: MAX_TIMELINE_TRACKS,
-            });
-        }
-        let mut seen = BTreeSet::new();
-        for track in &timeline.tracks {
-            let (node, property) = (track.node, track.property);
-            if !seen.insert((node, property)) {
-                return Err(DesignError::DuplicateTrack {
-                    transition,
-                    node,
-                    property,
-                });
-            }
-            if !self.nodes.contains_key(&node) {
-                return Err(DesignError::TrackTargetUnknown { transition, node });
-            }
-            if track.keyframes.is_empty() {
-                return Err(DesignError::EmptyTrack {
-                    transition,
-                    node,
-                    property,
-                });
-            }
-            if track.keyframes.len() > MAX_TRACK_KEYFRAMES {
-                return Err(DesignError::TooManyKeyframes {
-                    transition,
-                    maximum: MAX_TRACK_KEYFRAMES,
-                });
-            }
-            if track
-                .keyframes
-                .windows(2)
-                .any(|pair| pair[0].frame >= pair[1].frame)
-            {
-                return Err(DesignError::NonIncreasingKeyframes {
-                    transition,
-                    node,
-                    property,
-                });
-            }
-            for keyframe in &track.keyframes {
-                if keyframe.frame > timeline.duration_frames {
-                    return Err(DesignError::KeyframeAfterEnd {
-                        transition,
+    fn validate_animation(&self) -> Result<(), DesignError> {
+        self.animation.validate()?;
+        for track in self.animation.tracks() {
+            let node = track.key.target;
+            match self.nodes.get(&node) {
+                None => return Err(DesignError::TrackTargetUnknown(node)),
+                Some(DesignNode::Group(_)) if !GROUP_PROPERTIES.contains(&track.key.property) => {
+                    return Err(DesignError::UnsupportedGroupProperty {
                         node,
-                        frame: keyframe.frame,
+                        property: track.key.property,
                     });
                 }
-                if !property.accepts(keyframe.value) {
-                    return Err(DesignError::InvalidKeyframeValue {
-                        transition,
-                        node,
-                        property,
-                    });
-                }
+                Some(_) => {}
             }
         }
         Ok(())

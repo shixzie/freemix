@@ -2,8 +2,15 @@
 //!
 //! # What is real
 //!
-//! * Templates, typed fields, optimistic scene updates, keyframe animation,
-//!   clock and ticker runtime, and structural validation.
+//! * Templates, typed fields, optimistic scene updates, clock and ticker
+//!   runtime, and structural validation.
+//! * Keyframe animation through the shared `fm_animation` model: every
+//!   template carries one [`TitleAnimation`] clip with In and Out phases in
+//!   whole frames of its timebase, and
+//!   [`ReferenceRenderer::render_sampled`] draws a scene at any
+//!   [`AnimSample`] with per-element position, scale about the box centre,
+//!   rotation (offscreen, fixed-point bilinear), crop, color, and opacity.
+//!   The plain render methods draw the Hold pose.
 //! * [`TitleFieldSet`]: a title's typed, revisioned field values separated
 //!   from layout, with compare-and-set updates bounded by
 //!   [`MAX_TITLE_FIELDS`], [`MAX_TITLE_TEXT_CHARS`], and
@@ -45,8 +52,8 @@
 //! * Designer document ([`TitleDesign`]): a bounded tree of elements and
 //!   nested groups whose offsets and opacity compose exactly onto children,
 //!   rectangular and rounded-rect group [`ClipMask`]s applied per pixel by
-//!   [`ReferenceRenderer::render_composed`], frame-indexed `TransitionIn` /
-//!   `TransitionOut` timelines with a fixed-point [`Easing`] library, a
+//!   [`ReferenceRenderer::render_composed`], an In/Out animation clip whose
+//!   group tracks fold onto descendants, a fixed-point [`Easing`] library, a
 //!   [`TitlePlayback`] take/hold/off-air state machine, and a
 //!   [`DesignEditor`] whose every edit validates atomically with bounded
 //!   undo/redo.
@@ -81,23 +88,26 @@ mod scoreboard;
 mod text;
 mod validation;
 
-pub use animation::{AnimatedProperty, AnimationTrack, Interpolation, Keyframe};
+pub use animation::{
+    AnimSample, AnimationEditError, TitleAnimation, TitleClip, default_title_timebase,
+};
 pub use crawl::{
     Crawl, CrawlConfig, CrawlError, CrawlMeasure, CrawlMode, CrawlSchedule, CrawlSegment,
     CrawlSegmentKind, CrawlSpeed, CrawlView, FontCrawlMeasure, MAX_CRAWL_EPOCHS, MAX_CRAWL_GAP_PX,
     MAX_CRAWL_ITEM_CHARS, MAX_CRAWL_ITEMS, MAX_CRAWL_SEPARATOR_CHARS, MAX_CRAWL_VISIBLE_SEGMENTS,
 };
 pub use design::{
-    ClipMask, Composition, DesignError, DesignNode, ElementPlacement, Group, GroupTransform,
-    MAX_DESIGN_NAME_CHARS, MAX_DESIGN_NODES, MAX_GROUP_DEPTH, MAX_TIMELINE_FRAMES,
-    MAX_TIMELINE_TRACKS, MAX_TRACK_KEYFRAMES, NodeProperty, ResolvedClip, Timeline,
-    TimelineKeyframe, TimelineSample, TimelineTrack, TitleDesign, TransitionKind,
+    ClipMask, Composition, DesignError, DesignNode, ElementPlacement, GROUP_PROPERTIES, Group,
+    GroupTransform, MAX_DESIGN_NAME_CHARS, MAX_DESIGN_NODES, MAX_GROUP_DEPTH, ResolvedClip,
+    TitleDesign,
 };
 pub use easing::{
     CubicBezier, EASE_ONE, Easing, EasingError, EasingPreset, MAX_BEZIER_Y, MIN_BEZIER_Y,
     ease_between, progress_q16,
 };
 pub use editor::{DEFAULT_UNDO_DEPTH, DesignEdit, DesignEditor, MAX_UNDO_DEPTH, NodeSlot};
+/// The shared keyframe model titles animate with.
+pub use fm_animation;
 pub use font::{FontError, FontFace, MAX_FONT_BYTES};
 pub use id::{ElementId, FieldId, TemplateId, TitleId};
 pub use model::{
@@ -114,8 +124,8 @@ pub use production_clock::{
 pub use render::{
     CrawlLayer, Degradation, DegradedElement, MAX_FONT_SIZE_PX, MAX_GLYPH_RASTER_DIMENSION,
     MAX_GLYPH_RASTER_PIXELS, MAX_GLYPHS_PER_ELEMENT, MAX_GLYPHS_PER_FRAME, MAX_OUTPUT_HEIGHT,
-    MAX_OUTPUT_WIDTH, REFERENCE_RENDERER_LIMITATIONS, ReferenceRenderer, RenderError, RenderOutput,
-    RenderReport,
+    MAX_OUTPUT_WIDTH, MAX_ROTATED_ELEMENT_PIXELS, REFERENCE_RENDERER_LIMITATIONS,
+    ReferenceRenderer, RenderError, RenderOutput, RenderReport,
 };
 pub use runtime::{
     ClockDirection, ClockFormat, ClockSpec, TickerDirection, TickerSpec, evaluate_clock,

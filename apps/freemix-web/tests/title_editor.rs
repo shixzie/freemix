@@ -98,6 +98,7 @@ fn template(id: u128, fields: Vec<FieldDefinition>) -> TitleTemplate {
         background: Color::TRANSPARENT,
         fields,
         elements: Vec::new(),
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 

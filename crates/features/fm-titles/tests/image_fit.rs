@@ -95,8 +95,8 @@ impl Case {
                     fit: self.fit,
                     filter: self.filter,
                 },
-                animations: Vec::new(),
             }],
+            animation: fm_titles::TitleAnimation::default(),
         }
         .instantiate(TitleId::new(id(1)))
         .expect("valid template")

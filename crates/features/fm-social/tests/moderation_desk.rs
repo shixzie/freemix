@@ -500,6 +500,7 @@ fn lower_third() -> TitleTemplate {
             },
         ],
         elements: Vec::new(),
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 

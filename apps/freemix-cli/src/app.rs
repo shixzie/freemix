@@ -45,7 +45,7 @@ use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
     ProjectId, SampleFormat, SampleRate, ScanMode, SceneId, VideoDimensions, VideoFormat,
 };
-use fm_video::write_ppm;
+use fm_video::{ImageFrame, write_ppm};
 
 use crate::{
     args::{
@@ -54,7 +54,7 @@ use crate::{
         StingerAudioPolicy as CliStingerAudioPolicy, StingerFallback as CliStingerFallback,
         StreamSpec, TBarAction,
     },
-    project_bundle, remote,
+    project_bundle, remote, title_animation,
 };
 
 pub(crate) type AppResult<T> = Result<T, Box<dyn Error>>;
@@ -1410,6 +1410,27 @@ pub fn run(command: Command) -> AppResult<()> {
             template,
             fonts,
         } => project_bundle::title_input_add(&path, input, name, &template, &fonts)?,
+        Command::TitleAnimationPreset {
+            path,
+            template_uri,
+            element,
+            phase,
+            preset,
+            frames,
+        } => title_animation::preset(&path, &template_uri, element, phase, &preset, frames)?,
+        Command::TitleAnimationStretch {
+            path,
+            template_uri,
+            phase,
+            frames,
+        } => title_animation::stretch(&path, &template_uri, phase, frames)?,
+        Command::TitleRenderFrame {
+            path,
+            input,
+            phase,
+            frame,
+            output,
+        } => title_animation::render_frame(&path, input, phase, frame, &output)?,
         Command::ProjectAutosave { path, keep } => project_bundle::autosave(&path, keep)?,
         Command::ProjectRecover { path, restore } => project_bundle::recover(&path, restore)?,
         Command::RecentProjects { file } => project_bundle::list_recent(&file)?,
@@ -3428,6 +3449,11 @@ fn is_scene_input(project: &Project, input: InputId) -> bool {
         .any(|candidate| candidate.id == input && matches!(candidate.kind, InputKind::Scene { .. }))
 }
 
+/// Writes a rendered title frame as a binary PPM, atomically.
+pub(crate) fn write_title_ppm(output: &Path, frame: &ImageFrame) -> io::Result<()> {
+    write_ppm_atomic(output, |file| write_ppm(frame, file))
+}
+
 fn write_ppm_atomic(
     output: &Path,
     write: impl FnOnce(&mut File) -> io::Result<()>,
@@ -3953,6 +3979,20 @@ Usage:
       assets/titles/<source-stem>.fmtitle and fonts are copied to
       assets/fonts/, reusing identical files. Image field defaults
       must already be bundle asset:// URIs that resolve.
+  freemix-cli title-animation-preset <show.freemix> <asset://titles/...fmtitle> <element-id> --phase in|out --preset <id> --frames <n>
+      Applies a built-in animation preset (fade, slide-from-left,
+      slide-from-right, slide-from-top, slide-from-bottom, pop, wipe, drop) to
+      one element over n frames of the template's animation timebase,
+      growing the phase to n frames when shorter. In presets end at the
+      static design and Out presets start there. The stored template is
+      rewritten in place and its animation revision advances.
+  freemix-cli title-animation-stretch <show.freemix> <asset://titles/...fmtitle> --phase in|out --frames <n>
+      Sets a phase to n frames, scaling every key of the phase
+      proportionally (frames rounded half up).
+  freemix-cli title-render-frame <show.freemix> <title-input-id> --phase in|out --frame <f> <out.ppm>
+      Renders the title input's field values at frame f of the phase, at
+      the template canvas size, with the bundle's fonts. Image fields draw
+      the placeholder and production clocks are reported, not drawn.
   freemix-cli audio-bus-add <show.freemix> <nonzero-bus-id> <name>
   freemix-cli audio-bus-rename <show.freemix> <existing-bus-id> <name>
   freemix-cli audio-bus-remove <show.freemix> <existing-bus-id>

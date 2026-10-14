@@ -47,13 +47,52 @@
 //! while drawing one element degrades that element and is listed in
 //! [`RenderReport::degraded`]; the frame still renders. Only a cap that makes
 //! the whole frame meaningless is a [`RenderError`].
+//!
+//! # Animation
+//!
+//! [`ReferenceRenderer::render_sampled`] samples the scene's
+//! [`crate::TitleAnimation`] for every element at one [`AnimSample`]; the
+//! other render methods draw [`AnimSample::Hold`], the on-air pose, and
+//! [`ReferenceRenderer::render_composed`] uses the composition's sample. Per
+//! element, in this order:
+//!
+//! 1. **Position**: the animated x/y offsets (and any design placement
+//!    offset) are added to the static box, saturating, and clamped to `i32`
+//!    once.
+//! 2. **Scale** about the box centre: each extent becomes
+//!    `round_half_up(extent * scale_bp / 10_000)` and the box moves by
+//!    `floor((old - new) / 2)`, so an odd change puts the extra pixel on the
+//!    right/bottom. Scaling applies to the laid-out box: rectangles and image
+//!    fits use the scaled box, and text is laid out again inside it (wrapping
+//!    at the scaled width) at a font size of
+//!    `round_half_up(size_px * min(scale_x, scale_y) / 10_000)`, capped at
+//!    [`MAX_FONT_SIZE_PX`]. A zero extent or a zero font size draws nothing.
+//! 3. **Crop**: the four crop amounts inset the scaled box, applied as a
+//!    [`crate::ResolvedClip`] alongside any design masks. Cropping everything
+//!    draws nothing.
+//! 4. **Color** overrides the fill (rectangles, image placeholder marks, and
+//!    text) ahead of any color field. Backgrounds keep their static color.
+//! 5. **Opacity** multiplies into the static opacity; with a design
+//!    placement the product with every ancestor factor is rounded once.
+//! 6. **Rotation** (millidegrees, clockwise on screen, about the scaled box
+//!    centre): the element is painted at full opacity into an offscreen
+//!    premultiplied buffer the size of its scaled box (crop included, in
+//!    element space), then every canvas pixel in the rotated bounding box
+//!    inverse-maps its centre into that buffer with fixed-point sine and
+//!    cosine (Q30, exact at multiples of 90 degrees) and samples it bilinearly
+//!    with 8-bit weights, transparent outside, before compositing source-over
+//!    at the element opacity through any design masks. A quarter turn of a box
+//!    whose width and height differ by an even number of pixels is an exact
+//!    pixel permutation. A box larger than [`MAX_ROTATED_ELEMENT_PIXELS`] (or
+//!    wider or taller than the output caps) is drawn unrotated and reported as
+//!    [`Degradation::RotationTooLarge`].
 
 use crate::{
     Alignment, AssetCatalog, Bounds, ClockSource, ClockUnresolved, Color, Composition, Crawl,
     CrawlMode, Element, ElementId, ElementKind, ElementPlacement, FieldId, FieldValue, FontFace,
     HorizontalAlignment, ImageFilter, ImageFit, MissingFont, ResolvedClip, TickerSpec, TitleScene,
     VerticalAlignment,
-    animation::evaluate_tracks,
+    animation::{AnimSample, ElementAnimation},
     crawl::{MAX_CRAWL_VISIBLE_SEGMENTS, layout_segment},
     evaluate_clock, evaluate_production_clock, evaluate_ticker_position,
     font::ScaledFace,
@@ -82,6 +121,10 @@ pub const MAX_GLYPH_RASTER_DIMENSION: u32 = 4_096;
 /// Maximum area of one glyph's rasterization box, in pixels. Bounds the
 /// transient coverage buffer `ab_glyph` allocates while rasterizing.
 pub const MAX_GLYPH_RASTER_PIXELS: u64 = 4 * 1024 * 1024;
+
+/// Largest element box, in pixels, drawn rotated: the offscreen layer is
+/// `4 * MAX_ROTATED_ELEMENT_PIXELS` bytes (16 MiB) at most.
+pub const MAX_ROTATED_ELEMENT_PIXELS: u64 = 4 * 1024 * 1024;
 
 /// Glyphs whose pen origin lies further than `MAX_FONT_SIZE_PX * this` outside
 /// the element box cannot contribute ink and are skipped before rasterizing.
@@ -112,6 +155,10 @@ pub enum Degradation {
     /// A crawl had more than this many segments inside its viewport; the
     /// trailing ones were not drawn.
     CrawlSegmentsCapped { maximum: usize },
+    /// A rotated element's scaled box exceeded
+    /// [`MAX_ROTATED_ELEMENT_PIXELS`] or an output dimension cap; it was
+    /// drawn unrotated.
+    RotationTooLarge { maximum: u64 },
 }
 
 /// One element that could not be drawn in full, and why.
@@ -144,6 +191,11 @@ impl fmt::Display for DegradedElement {
             Degradation::CrawlSegmentsCapped { maximum } => write!(
                 formatter,
                 "crawl {} drew only its first {maximum} visible segments",
+                self.element
+            ),
+            Degradation::RotationTooLarge { maximum } => write!(
+                formatter,
+                "element {} is larger than {maximum} pixels and was drawn unrotated",
                 self.element
             ),
         }
@@ -284,6 +336,53 @@ impl ReferenceRenderer {
         self.render_with_crawls(scene, scene_time_ms, assets, &[])
     }
 
+    /// Renders like [`Self::render`] with every element's animation sampled
+    /// at `sample` instead of the Hold pose. `scene_time_ms` still drives
+    /// scene clocks and tickers. See the module documentation for how each
+    /// property is applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::render`].
+    pub fn render_sampled(
+        self,
+        scene: &TitleScene,
+        scene_time_ms: u64,
+        assets: &AssetCatalog,
+        sample: AnimSample,
+    ) -> Result<RenderOutput, RenderError> {
+        render_frame(
+            scene,
+            assets,
+            &[],
+            None,
+            FrameContext::new(scene_time_ms, sample, None),
+        )
+    }
+
+    /// [`Self::render_sampled`] with production clocks read from `clocks`,
+    /// as [`Self::render_with_clocks`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::render`].
+    pub fn render_sampled_with_clocks(
+        self,
+        scene: &TitleScene,
+        scene_time_ms: u64,
+        assets: &AssetCatalog,
+        sample: AnimSample,
+        clocks: ClockSource<'_>,
+    ) -> Result<RenderOutput, RenderError> {
+        render_frame(
+            scene,
+            assets,
+            &[],
+            None,
+            FrameContext::new(scene_time_ms, sample, Some(clocks)),
+        )
+    }
+
     /// Renders like [`Self::render`], then draws each crawl layer on top of
     /// every scene element, in slice order.
     ///
@@ -308,15 +407,21 @@ impl ReferenceRenderer {
         assets: &AssetCatalog,
         crawls: &[CrawlLayer<'_>],
     ) -> Result<RenderOutput, RenderError> {
-        render_frame(scene, scene_time_ms, assets, crawls, None, None)
+        render_frame(
+            scene,
+            assets,
+            crawls,
+            None,
+            FrameContext::new(scene_time_ms, AnimSample::Hold, None),
+        )
     }
 
     /// Renders like [`Self::render`], reading every
     /// [`ElementKind::ProductionClock`] element from `clocks` at
     /// `clocks.at`.
     ///
-    /// Scene-time animation, tickers and [`ElementKind::Clock`] elements
-    /// still follow `scene_time_ms`; only production clock text comes from
+    /// Tickers and [`ElementKind::Clock`] elements still follow
+    /// `scene_time_ms`; only production clock text comes from
     /// the source. Without a source (every other render method), or for an
     /// unknown clock or a preset of the wrong kind, a production clock
     /// element draws its background and no text and is listed in
@@ -332,19 +437,27 @@ impl ReferenceRenderer {
         assets: &AssetCatalog,
         clocks: ClockSource<'_>,
     ) -> Result<RenderOutput, RenderError> {
-        render_frame(scene, scene_time_ms, assets, &[], None, Some(clocks))
+        render_frame(
+            scene,
+            assets,
+            &[],
+            None,
+            FrameContext::new(scene_time_ms, AnimSample::Hold, Some(clocks)),
+        )
     }
 
     /// Renders a scene instantiated from [`crate::TitleDesign::to_template`]
     /// with a design [`Composition`] folded in.
     ///
-    /// Only elements with a placement are drawn. Each drawn element's
-    /// evaluated bounds are translated by the placement offset (clamped to
-    /// `i32` once), its evaluated opacity is composed with the placement's
-    /// ancestor opacity by [`ElementPlacement::compose_opacity`], and every
+    /// Only elements with a placement are drawn. Element animation is sampled
+    /// at [`Composition::sample`]. Each drawn element's box is translated by
+    /// the placement offset together with its animated offset (clamped to
+    /// `i32` once), its static and animated opacity are composed with the
+    /// placement's ancestor opacity by
+    /// [`ElementPlacement::compose_opacity_with`] (one rounding), and every
     /// pixel it would write is kept only when it lies inside all of the
     /// placement's [`ElementPlacement::clips`]. Everything else matches
-    /// [`Self::render`].
+    /// [`Self::render_sampled`].
     ///
     /// # Errors
     ///
@@ -356,17 +469,41 @@ impl ReferenceRenderer {
         assets: &AssetCatalog,
         composition: &Composition,
     ) -> Result<RenderOutput, RenderError> {
-        render_frame(scene, scene_time_ms, assets, &[], Some(composition), None)
+        render_frame(
+            scene,
+            assets,
+            &[],
+            Some(composition),
+            FrameContext::new(scene_time_ms, composition.sample(), None),
+        )
+    }
+}
+
+/// What every element of one frame shares: scene time for clocks and
+/// tickers, the animation sample, and the production clock source.
+#[derive(Clone, Copy)]
+struct FrameContext<'a> {
+    time_ms: u64,
+    sample: AnimSample,
+    clocks: Option<ClockSource<'a>>,
+}
+
+impl<'a> FrameContext<'a> {
+    const fn new(time_ms: u64, sample: AnimSample, clocks: Option<ClockSource<'a>>) -> Self {
+        Self {
+            time_ms,
+            sample,
+            clocks,
+        }
     }
 }
 
 fn render_frame(
     scene: &TitleScene,
-    scene_time_ms: u64,
     assets: &AssetCatalog,
     crawls: &[CrawlLayer<'_>],
     composition: Option<&Composition>,
-    clocks: Option<ClockSource<'_>>,
+    context: FrameContext<'_>,
 ) -> Result<RenderOutput, RenderError> {
     if scene.width() > MAX_OUTPUT_WIDTH || scene.height() > MAX_OUTPUT_HEIGHT {
         return Err(RenderError::OutputTooLarge {
@@ -424,7 +561,7 @@ fn render_frame(
             &mut canvas,
             scene,
             element,
-            (scene_time_ms, placement, clocks),
+            (context, placement),
             assets,
             &mut state,
         )?;
@@ -478,55 +615,251 @@ impl FrameState {
     }
 }
 
+/// An element resolved for one frame: where and how it is painted.
+#[derive(Clone, Copy, Debug)]
+struct Resolved {
+    bounds: Bounds,
+    fill: Color,
+    opacity: u8,
+    /// Basis points the font size is scaled by.
+    font_scale_bp: i64,
+}
+
 fn draw_element(
     canvas: &mut Canvas<'_>,
     scene: &TitleScene,
     element: &Element,
-    (time_ms, placement, clocks): (u64, Option<&ElementPlacement>, Option<ClockSource<'_>>),
+    (context, placement): (FrameContext<'_>, Option<&ElementPlacement>),
     assets: &AssetCatalog,
     state: &mut FrameState,
 ) -> Result<(), RenderError> {
-    let mut evaluated = evaluate_tracks(
-        element.bounds,
-        element.style.opacity,
-        &element.animations,
-        time_ms,
-    );
-    if let Some(placement) = placement {
-        let shift = |base: i32, offset: i64| -> i32 {
-            let value = i64::from(base).saturating_add(offset);
-            i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
-        };
-        evaluated.bounds.x = shift(evaluated.bounds.x, placement.offset_x);
-        evaluated.bounds.y = shift(evaluated.bounds.y, placement.offset_y);
-        evaluated.opacity = placement.compose_opacity(evaluated.opacity);
-    }
-    if evaluated.bounds.width == 0 || evaluated.bounds.height == 0 {
+    let animation = ElementAnimation::sample(&scene.animation().clip, element.id, context.sample);
+    let width = scale_extent(element.bounds.width, animation.scale_x);
+    let height = scale_extent(element.bounds.height, animation.scale_y);
+    if width == 0 || height == 0 {
         return Ok(());
     }
-    let fill = element
-        .color_field
-        .and_then(|field| scene.field_value(field))
-        .and_then(|value| match value {
-            FieldValue::Color(color) => Some(*color),
-            _ => None,
+    let (offset_x, offset_y) =
+        placement.map_or((0, 0), |placement| (placement.offset_x, placement.offset_y));
+    // Scaling keeps the box centre: half the change comes off each side,
+    // the odd pixel going to the right/bottom.
+    let x = i64::from(element.bounds.x)
+        .saturating_add(offset_x)
+        .saturating_add(animation.dx)
+        .saturating_add((i64::from(element.bounds.width) - i64::from(width)).div_euclid(2));
+    let y = i64::from(element.bounds.y)
+        .saturating_add(offset_y)
+        .saturating_add(animation.dy)
+        .saturating_add((i64::from(element.bounds.height) - i64::from(height)).div_euclid(2));
+    let bounds = Bounds {
+        x: clamp_i32(x),
+        y: clamp_i32(y),
+        width,
+        height,
+    };
+    let opacity = placement.map_or_else(
+        || multiply_u8(element.style.opacity, animation.opacity),
+        |placement| placement.compose_opacity_with(element.style.opacity, animation.opacity),
+    );
+    let fill = animation
+        .color
+        .map(|color| Color::new(color.r, color.g, color.b, color.a))
+        .or_else(|| {
+            element
+                .color_field
+                .and_then(|field| scene.field_value(field))
+                .and_then(|value| match value {
+                    FieldValue::Color(color) => Some(*color),
+                    _ => None,
+                })
         })
         .unwrap_or(element.style.fill);
+    let resolved = Resolved {
+        bounds,
+        fill,
+        opacity,
+        font_scale_bp: animation.scale_x.min(animation.scale_y),
+    };
+    let crop = crop_window(bounds, animation.crop);
+    if matches!(crop, CropWindow::Hidden) {
+        return Ok(());
+    }
+    let rotation = animation.rotation.rem_euclid(FULL_TURN_MILLIDEGREES);
+    if rotation != 0 {
+        if u64::from(width) * u64::from(height) <= MAX_ROTATED_ELEMENT_PIXELS
+            && width <= MAX_OUTPUT_WIDTH
+            && height <= MAX_OUTPUT_HEIGHT
+        {
+            return draw_rotated(
+                canvas,
+                (scene, element, assets),
+                resolved,
+                (animation.crop, rotation),
+                context,
+                state,
+            );
+        }
+        state.degrade(
+            element.id,
+            Degradation::RotationTooLarge {
+                maximum: MAX_ROTATED_ELEMENT_PIXELS,
+            },
+        );
+    }
+    let clips = canvas.clips.len();
+    canvas.clips.extend(crop.clip());
+    let painted = paint_element(canvas, scene, element, resolved, context, assets, state);
+    canvas.clips.truncate(clips);
+    painted
+}
 
+/// A full turn in millidegrees.
+const FULL_TURN_MILLIDEGREES: i64 = 360_000;
+
+/// `round_half_up(extent * scale_bp / 10_000)`, saturating at `u32`.
+fn scale_extent(extent: u32, scale_bp: i64) -> u32 {
+    if scale_bp == fm_animation::SCALE_IDENTITY_BP {
+        return extent;
+    }
+    let identity = i128::from(fm_animation::SCALE_IDENTITY_BP);
+    let product = i128::from(extent) * i128::from(scale_bp.max(0));
+    u32::try_from((2 * product + identity).div_euclid(2 * identity)).unwrap_or(u32::MAX)
+}
+
+fn clamp_i32(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
+}
+
+/// What an animated crop leaves of a box.
+#[derive(Clone, Copy, Debug)]
+enum CropWindow {
+    /// No crop.
+    Whole,
+    /// The visible part, as a clip.
+    Window(ResolvedClip),
+    /// Nothing stays visible.
+    Hidden,
+}
+
+impl CropWindow {
+    fn clip(self) -> Option<ResolvedClip> {
+        match self {
+            Self::Window(clip) => Some(clip),
+            Self::Whole | Self::Hidden => None,
+        }
+    }
+}
+
+/// The clip a crop insets `bounds` to.
+fn crop_window(bounds: Bounds, crop: [i64; 4]) -> CropWindow {
+    if crop == [0; 4] {
+        return CropWindow::Whole;
+    }
+    let [left, top, right, bottom] = crop;
+    let width = i64::from(bounds.width)
+        .saturating_sub(left)
+        .saturating_sub(right);
+    let height = i64::from(bounds.height)
+        .saturating_sub(top)
+        .saturating_sub(bottom);
+    let (Ok(width), Ok(height)) = (u32::try_from(width), u32::try_from(height)) else {
+        return CropWindow::Hidden;
+    };
+    if width == 0 || height == 0 {
+        return CropWindow::Hidden;
+    }
+    CropWindow::Window(ResolvedClip {
+        x: i64::from(bounds.x).saturating_add(left),
+        y: i64::from(bounds.y).saturating_add(top),
+        width,
+        height,
+        corner_radius: 0,
+    })
+}
+
+/// Paints the element at full opacity into an offscreen layer the size of
+/// its scaled box, then composites the layer rotated about the box centre.
+fn draw_rotated(
+    canvas: &mut Canvas<'_>,
+    (scene, element, assets): (&TitleScene, &Element, &AssetCatalog),
+    resolved: Resolved,
+    (crop, rotation): ([i64; 4], i64),
+    context: FrameContext<'_>,
+    state: &mut FrameState,
+) -> Result<(), RenderError> {
+    let bounds = resolved.bounds;
+    let Some(placement) = RotatedPlacement::new(bounds, rotation) else {
+        return Ok(());
+    };
+    if !placement.touches(canvas.width, canvas.height) {
+        return Ok(());
+    }
+    let length = usize::try_from(u64::from(bounds.width) * u64::from(bounds.height) * 4)
+        .map_err(|_| FrameError::LayoutOverflow)?;
+    let mut layer = vec![0_u8; length];
+    let local = Bounds {
+        x: 0,
+        y: 0,
+        width: bounds.width,
+        height: bounds.height,
+    };
+    {
+        let mut offscreen = Canvas {
+            pixels: &mut layer,
+            width: bounds.width,
+            height: bounds.height,
+            clips: Vec::new(),
+        };
+        // `draw_element` already refused a crop that hides everything.
+        offscreen.clips.extend(crop_window(local, crop).clip());
+        paint_element(
+            &mut offscreen,
+            scene,
+            element,
+            Resolved {
+                bounds: local,
+                opacity: u8::MAX,
+                ..resolved
+            },
+            context,
+            assets,
+            state,
+        )?;
+    }
+    canvas.rotated(&layer, placement, resolved.opacity);
+    Ok(())
+}
+
+/// Paints one resolved element: its kind's drawing at `resolved.bounds`.
+fn paint_element(
+    canvas: &mut Canvas<'_>,
+    scene: &TitleScene,
+    element: &Element,
+    resolved: Resolved,
+    context: FrameContext<'_>,
+    assets: &AssetCatalog,
+    state: &mut FrameState,
+) -> Result<(), RenderError> {
+    let Resolved {
+        bounds,
+        fill,
+        opacity,
+        font_scale_bp,
+    } = resolved;
     match element.kind {
         ElementKind::Rectangle => {
-            canvas.rect(evaluated.bounds, fill, evaluated.opacity);
+            canvas.rect(bounds, fill, opacity);
             return Ok(());
         }
         ElementKind::Image { field, fit, filter } => {
             ImagePaint {
                 element,
-                bounds: evaluated.bounds,
+                bounds,
                 field,
                 fit,
                 filter,
                 fill,
-                opacity: evaluated.opacity,
+                opacity,
             }
             .paint(canvas, scene, assets);
             return Ok(());
@@ -538,7 +871,7 @@ fn draw_element(
     }
 
     if let Some(background) = element.style.background {
-        canvas.rect(evaluated.bounds, background, evaluated.opacity);
+        canvas.rect(bounds, background, opacity);
     }
     let Some(style) = element.style.font.as_ref() else {
         return Ok(());
@@ -550,6 +883,10 @@ fn draw_element(
             maximum: MAX_FONT_SIZE_PX,
         });
     }
+    let size_px = scale_extent(style.size_px.max(1), font_scale_bp).min(MAX_FONT_SIZE_PX);
+    if size_px == 0 {
+        return Ok(());
+    }
     // A family the caller never supplied bytes for is reported as a missing
     // asset by the render report; the element keeps its background and draws
     // no text rather than substituting another face.
@@ -557,25 +894,26 @@ fn draw_element(
         return Ok(());
     };
     // Nothing of this element is on the canvas, so no glyph of it can be.
-    let Some(region) = canvas.region(evaluated.bounds) else {
+    let Some(region) = canvas.region(bounds) else {
         return Ok(());
     };
 
     let paint = TextPaint {
         element: element.id,
-        bounds: evaluated.bounds,
+        bounds,
         region,
         color: fill,
-        opacity: evaluated.opacity,
+        opacity,
         alignment: element.style.alignment,
         face,
-        size_px: style.size_px.max(1),
+        size_px,
     };
+    let time_ms = context.time_ms;
     let flow = match element.kind {
         ElementKind::Ticker(spec) => TextFlow::Ticker { spec, time_ms },
         _ => TextFlow::Wrapped,
     };
-    match element_text(element, scene, time_ms, clocks) {
+    match element_text(element, scene, time_ms, context.clocks) {
         Ok(Some(text)) => paint.paint(canvas, &text, flow, state),
         Ok(None) => Ok(()),
         Err(reason) => {
@@ -1087,6 +1425,70 @@ impl Canvas<'_> {
         }
     }
 
+    /// Composites a premultiplied offscreen `layer` rotated into place: each
+    /// covered pixel inverse-maps to the layer and samples it bilinearly
+    /// (8-bit weights, transparent outside the layer), then blends
+    /// source-over at `opacity` through the active clips. Work is bounded by
+    /// the canvas: only the rotated bounding box's intersection with the
+    /// canvas is iterated.
+    fn rotated(&mut self, layer: &[u8], placement: RotatedPlacement, opacity: u8) {
+        let Some((x0, y0, x1, y1)) = placement.clipped(self.width, self.height) else {
+            return;
+        };
+        let width = i128::from(placement.width);
+        let height = i128::from(placement.height);
+        let texel = |x: i128, y: i128| -> [u32; 4] {
+            if x < 0 || y < 0 || x >= width || y >= height {
+                return [0; 4];
+            }
+            let Ok(offset) = usize::try_from((y * width + x) * 4) else {
+                return [0; 4];
+            };
+            layer.get(offset..offset + 4).map_or([0; 4], |pixel| {
+                [
+                    u32::from(pixel[0]),
+                    u32::from(pixel[1]),
+                    u32::from(pixel[2]),
+                    u32::from(pixel[3]),
+                ]
+            })
+        };
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (source_x, source_y) = placement.source_q8(x, y);
+                let (column, row) = (source_x >> 8, source_y >> 8);
+                if column < -1 || row < -1 || column >= width || row >= height {
+                    continue;
+                }
+                let fx = u32::try_from(source_x & 255).unwrap_or(0);
+                let fy = u32::try_from(source_y & 255).unwrap_or(0);
+                let taps = [
+                    texel(column, row),
+                    texel(column + 1, row),
+                    texel(column, row + 1),
+                    texel(column + 1, row + 1),
+                ];
+                let mut channels = [0_u8; 4];
+                for (channel, value) in channels.iter_mut().enumerate() {
+                    let top = taps[0][channel] * (256 - fx) + taps[1][channel] * fx;
+                    let bottom = taps[2][channel] * (256 - fx) + taps[3][channel] * fx;
+                    let mixed = (top * (256 - fy) + bottom * fy + 32_768) >> 16;
+                    *value = u8::try_from(mixed).unwrap_or(u8::MAX);
+                }
+                if channels == [0; 4] {
+                    continue;
+                }
+                let pixel = Rgba8 {
+                    r: channels[0],
+                    g: channels[1],
+                    b: channels[2],
+                    a: channels[3],
+                };
+                self.blend_premultiplied(x, y, pixel, opacity);
+            }
+        }
+    }
+
     /// Source-over composite of one already-premultiplied RGBA8 source pixel
     /// scaled by `opacity`.
     ///
@@ -1154,6 +1556,134 @@ impl Canvas<'_> {
         for (channel, value) in destination.iter_mut().zip(source) {
             *channel = value.saturating_add(multiply_u8(*channel, inverse));
         }
+    }
+}
+
+/// Q30 fixed-point `1.0`.
+const TRIG_ONE: i64 = 1 << 30;
+/// `round(pi * 2^60)`.
+const PI_Q60: i128 = 3_622_009_729_038_561_421;
+
+/// `(sin, cos)` of `millidegrees` in Q30, deterministic on every host.
+///
+/// The angle is reduced to a quadrant and a remainder `r < 90` degrees;
+/// multiples of 90 degrees are exact (`0` and `±2^30`). Otherwise both are
+/// Taylor series of `x = r * pi / 180` evaluated in Q60 `i128` to the
+/// `x^25`/`x^24` term (truncation below `2^-80` for `x <= pi/2`) and rounded
+/// once, half up, to Q30, so each is within `2^-31 + 2^-55` of the real
+/// value.
+fn sin_cos_q30(millidegrees: i64) -> (i64, i64) {
+    let angle = millidegrees.rem_euclid(FULL_TURN_MILLIDEGREES);
+    let quadrant = angle / 90_000;
+    let remainder = angle % 90_000;
+    let (sin, cos) = if remainder == 0 {
+        (0, TRIG_ONE)
+    } else {
+        let one = 1_i128 << 60;
+        let x = i128::from(remainder) * PI_Q60 / 180_000;
+        let square = (x * x) >> 60;
+        let (mut sin, mut sin_term) = (x, x);
+        let (mut cos, mut cos_term) = (one, one);
+        for k in 1..=12_i128 {
+            sin_term = -((sin_term * square) >> 60) / ((2 * k) * (2 * k + 1));
+            cos_term = -((cos_term * square) >> 60) / ((2 * k - 1) * (2 * k));
+            sin += sin_term;
+            cos += cos_term;
+        }
+        let round =
+            |value: i128| -> i64 { i64::try_from((value + (1 << 29)) >> 30).unwrap_or(TRIG_ONE) };
+        (round(sin), round(cos))
+    };
+    match quadrant {
+        0 => (sin, cos),
+        1 => (cos, -sin),
+        2 => (-sin, -cos),
+        _ => (-cos, sin),
+    }
+}
+
+/// Where a rotated offscreen layer lands: its box, the rotation, and the
+/// canvas pixels its rotated bounding box (widened by one pixel for the
+/// bilinear taps) covers.
+#[derive(Clone, Copy, Debug)]
+struct RotatedPlacement {
+    width: u32,
+    height: u32,
+    /// Twice the box centre, so half pixels stay integral.
+    double_center_x: i128,
+    double_center_y: i128,
+    sin: i128,
+    cos: i128,
+    /// Half-open covered rows and columns, before canvas clipping.
+    x0: i128,
+    y0: i128,
+    x1: i128,
+    y1: i128,
+}
+
+impl RotatedPlacement {
+    fn new(bounds: Bounds, millidegrees: i64) -> Option<Self> {
+        if bounds.width == 0 || bounds.height == 0 {
+            return None;
+        }
+        let (sin, cos) = sin_cos_q30(millidegrees);
+        let (sin, cos) = (i128::from(sin), i128::from(cos));
+        let width = i128::from(bounds.width);
+        let height = i128::from(bounds.height);
+        let double_center_x = 2 * i128::from(bounds.x) + width;
+        let double_center_y = 2 * i128::from(bounds.y) + height;
+        // Doubled half extents of the rotated box, in Q30.
+        let extent_x = cos.abs() * width + sin.abs() * height;
+        let extent_y = sin.abs() * width + cos.abs() * height;
+        let one = i128::from(TRIG_ONE);
+        let low = |center2: i128, extent: i128| (center2 * one - extent).div_euclid(2 * one) - 1;
+        let high = |center2: i128, extent: i128| (center2 * one + extent).div_euclid(2 * one) + 2;
+        Some(Self {
+            width: bounds.width,
+            height: bounds.height,
+            double_center_x,
+            double_center_y,
+            sin,
+            cos,
+            x0: low(double_center_x, extent_x),
+            y0: low(double_center_y, extent_y),
+            x1: high(double_center_x, extent_x),
+            y1: high(double_center_y, extent_y),
+        })
+    }
+
+    /// The covered region clipped to a `width` by `height` canvas.
+    fn clipped(&self, width: u32, height: u32) -> Option<(u32, u32, u32, u32)> {
+        let x0 = self.x0.clamp(0, i128::from(width));
+        let y0 = self.y0.clamp(0, i128::from(height));
+        let x1 = self.x1.clamp(0, i128::from(width));
+        let y1 = self.y1.clamp(0, i128::from(height));
+        if x0 >= x1 || y0 >= y1 {
+            return None;
+        }
+        Some((
+            u32::try_from(x0).ok()?,
+            u32::try_from(y0).ok()?,
+            u32::try_from(x1).ok()?,
+            u32::try_from(y1).ok()?,
+        ))
+    }
+
+    fn touches(&self, width: u32, height: u32) -> bool {
+        self.clipped(width, height).is_some()
+    }
+
+    /// The layer position, in Q8 pixel-centre coordinates, that canvas pixel
+    /// `(x, y)` inverse-maps to: `u = cos*dx + sin*dy + (w - 1)/2` and
+    /// `v = -sin*dx + cos*dy + (h - 1)/2`, where `(dx, dy)` is the pixel
+    /// centre relative to the box centre. Floors once.
+    fn source_q8(&self, x: u32, y: u32) -> (i128, i128) {
+        let dx2 = 2 * i128::from(x) + 1 - self.double_center_x;
+        let dy2 = 2 * i128::from(y) + 1 - self.double_center_y;
+        let one = i128::from(TRIG_ONE);
+        let u = self.cos * dx2 + self.sin * dy2 + (i128::from(self.width) - 1) * one;
+        let v = -self.sin * dx2 + self.cos * dy2 + (i128::from(self.height) - 1) * one;
+        (u >> 23, v >> 23)
     }
 }
 

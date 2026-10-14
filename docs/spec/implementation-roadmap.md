@@ -1982,7 +1982,8 @@ Current implementation boundary for item 1: `fm-titles` provides dependent,
 bounded title scenes and a deterministic CPU renderer. Templates carry typed
 text, number, color, and image fields with optimistic scene updates; elements
 support text, rectangles, images, clocks, and tickers with style, alignment,
-z-order, visibility, and keyframe animation tracks. Structural validation
+z-order, and visibility, animated by one shared `fm-animation` clip per
+template (see the `GX-011` boundary below). Structural validation
 checks field types, element bounds, and referenced assets. Text is real glyph
 rasterization from caller-supplied font bytes through `ab_glyph` with kerned
 advances, greedy word wrapping, horizontal and vertical alignment,
@@ -2010,7 +2011,8 @@ persisted field revision plus typed text, number, colour, and image field
 values within bounded counts, text length, and content bytes. `fm-persistence`
 reads and writes templates strictly (every element kind, 1 MiB cap; schema 29
 adds a `clocks` table that defines exactly the production clocks the
-template's elements show), imports fonts with dedupe and parse validation, checks
+template's elements show; schema 30 replaces per-element animation tracks
+with one template `animation` clip), imports fonts with dedupe and parse validation, checks
 project fields against their templates, audits missing template, font, and
 image assets, and copies title assets on export and append, refusing rather
 than renaming keys. `freemix-cli title-input-add` imports a template with
@@ -2064,15 +2066,42 @@ Current implementation boundary for item 2: `fm-titles` provides a designer
 document model with a bounded tree of elements and nested groups whose offsets
 compose exactly, whose opacity multiplies through ancestors and rounds once,
 and whose rectangular or rounded-rect clip masks apply per pixel in the CPU
-renderer. Frame-indexed TransitionIn and TransitionOut timelines use a
-fixed-point easing library (polynomial curves and a bisection-solved
-cubic-bezier with a documented error bound) under a take, hold, and off-air
-playback state machine driven only by engine frame indices, and a designer
-edit API validates every edit atomically with bounded snapshot undo and redo.
-Remaining gaps: group transforms are translation and opacity only, mask edges
-are not anti-aliased, timelines animate only offset and opacity, rendering is
-CPU-only, and there is no designer UI, live field editor, persistence,
-protocol, or engine playback. `GX-002` remains planned.
+renderer. The design's In and Out animation is one `fm-animation` clip
+(fixed-point easing library with polynomial, sine, back, bounce, and a
+bisection-solved cubic-bezier with a documented error bound) under a take,
+hold, and off-air playback state machine driven only by engine frame indices;
+group tracks fold position and opacity onto descendants and element tracks
+travel with the flattened template. A designer edit API maps keyframe add,
+remove, retime, phase stretch, and every other clip edit onto atomic
+`fm-animation` edits and validates the whole document, with bounded snapshot
+undo and redo. Remaining gaps: group transforms are translation and opacity
+only, mask edges are not anti-aliased, rendering is CPU-only, and there is no
+designer UI, live field editor, design persistence, protocol, or engine
+playback. `GX-002` remains planned.
+
+Current implementation boundary for the keyframe animation editor (`GX-011`):
+`fm-animation` is the shared, pure model: Q16 easing presets with stable ids
+and a cubic-bezier curve, clip timebases with exact cross-rate positions,
+bounded In/Out clips of property tracks (position, scale, rotation, opacity,
+crop, color), atomic set/remove/move/retime/stretch/easing/copy-paste edits,
+snapping, and Fade/Slide/Pop/Wipe/Drop presets. Titles use it end to end:
+every `fm-titles` template carries one clip keyed by element with an edit
+revision, and `ReferenceRenderer::render_sampled` draws any In/Hold/Out sample
+with per-element position, scale about the box centre (text laid out again in
+the scaled box at a scaled, capped font size), crop, colour override,
+opacity, and rotation (offscreen layer resampled with Q30 fixed-point sine
+and cosine and 8-bit bilinear weights; quarter turns are exact pixel
+permutations; boxes over 4 Mpx draw unrotated and are reported). Project
+schema 30 stores the clip strictly in `.fmtitle` (`timebase`, `revision`,
+phase lengths, canonical track order, preset or `cubic_bezier` easing, every
+clip limit). `freemix-cli title-animation-preset`, `title-animation-stretch`,
+and `title-render-frame` apply presets, retime a phase proportionally, and
+render exact frames. The daemon draws titles in the Hold pose and refreshes
+only clock and ticker titles on time. Remaining gaps: take and off-air phases
+are not played on air, scene layers are not animated, there is no visual
+timeline, curve editor, scrubbed preview, or Studio/protocol surface, and
+production clocks and images are not drawn by the CLI frame render, so
+`GX-011` remains planned.
 
 Current implementation boundary for item 2 browser title control (`GX-006`):
 `freemix-web` provides a transport-free title editor model over a narrow server

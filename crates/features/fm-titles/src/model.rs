@@ -1,5 +1,5 @@
 use crate::{
-    AnimationTrack, ClockSpec, ElementId, FieldId, ProductionClockSpec, TemplateId, TickerSpec,
+    ClockSpec, ElementId, FieldId, ProductionClockSpec, TemplateId, TickerSpec, TitleAnimation,
     TitleId, validation::validate_template_structure,
 };
 use core::fmt;
@@ -217,7 +217,6 @@ pub struct Element {
     /// Optional color field overriding `style.fill`.
     pub color_field: Option<FieldId>,
     pub kind: ElementKind,
-    pub animations: Vec<AnimationTrack>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -229,6 +228,8 @@ pub struct TitleTemplate {
     pub background: Color,
     pub fields: Vec<FieldDefinition>,
     pub elements: Vec<Element>,
+    /// Keyframe animation of the elements; see [`crate::TitleAnimation`].
+    pub animation: TitleAnimation,
 }
 
 impl TitleTemplate {
@@ -251,6 +252,7 @@ impl TitleTemplate {
             background: self.background,
             fields: TitleFieldSet::from_definitions(&self.fields),
             elements: self.elements.clone(),
+            animation: self.animation.clone(),
         })
     }
 }
@@ -281,6 +283,7 @@ pub struct TitleScene {
     background: Color,
     fields: TitleFieldSet,
     elements: Vec<Element>,
+    animation: TitleAnimation,
 }
 
 impl TitleScene {
@@ -333,6 +336,12 @@ impl TitleScene {
     #[must_use]
     pub fn elements(&self) -> &[Element] {
         &self.elements
+    }
+
+    /// The template animation this scene samples.
+    #[must_use]
+    pub const fn animation(&self) -> &TitleAnimation {
+        &self.animation
     }
 
     /// Atomically applies typed field values if `expected_revision` is current.

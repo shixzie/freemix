@@ -248,7 +248,9 @@ paths = ["crates/features/fm-social/tests/moderation_desk.rs"]
 commands = ["cargo test -p fm-social --test moderation_desk"]
 [[tests]]
 id = "accept-gx-011"
-state = "planned"
+state = "present"
+paths = ["crates/foundation/fm-animation/tests/easing.rs", "crates/foundation/fm-animation/tests/evaluate.rs", "crates/foundation/fm-animation/tests/edit.rs", "crates/foundation/fm-animation/tests/retime.rs", "crates/foundation/fm-animation/tests/presets.rs", "crates/features/fm-titles/tests/title_animation.rs", "crates/features/fm-titles/tests/title_designer.rs", "crates/services/fm-persistence/tests/title_templates.rs", "apps/freemix-cli/tests/e2e.rs"]
+commands = ["cargo test -p fm-animation --test easing", "cargo test -p fm-animation --test evaluate", "cargo test -p fm-animation --test edit", "cargo test -p fm-animation --test retime", "cargo test -p fm-animation --test presets", "cargo test -p fm-titles --test title_animation", "cargo test -p fm-titles --test title_designer", "cargo test -p fm-persistence --test title_templates", "cargo test -p freemix-cli --test e2e"]
 [[tests]]
 id = "accept-au-001"
 state = "planned"

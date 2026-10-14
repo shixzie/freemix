@@ -6,9 +6,14 @@
 //! family the template draws with to a font file in the same bundle:
 //!
 //! ```json
-//! {"schema_version": 29,
+//! {"schema_version": 30,
 //!  "template": {"id": 1, "name": "Lower third", "width": 1920, "height": 1080,
-//!               "background": "#00000000", "fields": [...], "elements": [...]},
+//!               "background": "#00000000", "fields": [...], "elements": [...],
+//!               "animation": {"timebase": "30/1", "revision": 3,
+//!                             "in_frames": 15, "out_frames": 10, "tracks": [
+//!                 {"element": 2, "phase": "in", "property": "position_x",
+//!                  "keys": [{"frame": 0, "value": -400, "easing": "back-out"},
+//!                           {"frame": 15, "value": 0, "easing": "linear"}]}]}},
 //!  "fonts": [{"family": "Inter Bold", "asset_uri": "asset://fonts/Inter-Bold.ttf"}],
 //!  "clocks": [{"name": "Local", "kind": "time_of_day",
 //!              "zone": "EST5EDT,M3.2.0,M11.1.0",
@@ -18,6 +23,18 @@
 //! The codec is as strict as the manifest codec: unknown or missing keys,
 //! unknown enum values, and any `schema_version` other than the current one
 //! are refused, and documents are capped at [`MAX_TITLE_TEMPLATE_BYTES`].
+//!
+//! The template `animation` is its [`fm_titles::TitleAnimation`]: the clip
+//! timebase as a lowest-terms `"numerator/denominator"`, the edit revision,
+//! both phase lengths in frames, and the tracks in clip order (element, then
+//! `in` before `out`, then property). Properties are `position_x`,
+//! `position_y`, `scale_x`, `scale_y` (basis points), `rotation`
+//! (millidegrees), `opacity`, `crop_left`, `crop_top`, `crop_right`,
+//! `crop_bottom` (integers), and `color` (a `"#rrggbbaa"` string). Key
+//! easing is a stable `fm_animation` preset id (`"linear"`, `"hold"`,
+//! `"back-out"`, ...) or `{"cubic_bezier": [x1, y1, x2, y2]}` with Q16
+//! control points. Keys must strictly increase inside their phase and every
+//! `fm_animation` limit applies; violations are refused.
 //!
 //! A production clock element (`{"type": "production_clock", "clock": name,
 //! "format": preset or null}`) names a clock in the document's `clocks`
@@ -51,13 +68,16 @@ use fm_model::{
     InputKind, MAX_TITLE_FIELDS, Project, Rgba8, TitleFieldEntry, TitleFieldId, TitleFieldValue,
     TitleFieldsError, validate_title_fields,
 };
+use fm_titles::fm_animation::{
+    Clip, ClipError, CubicBezier, Easing, EasingPreset, Keyframe, Phase, Property, Rgba, Timebase,
+    Track, TrackKey, Value as AnimationValue,
+};
 use fm_titles::{
-    Alignment, AnimatedProperty, AnimationTrack, Bounds, ClockDirection, ClockFormat, ClockSpec,
-    Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldType, FieldValue,
-    FontError, FontFace, FontStyle, HorizontalAlignment, ImageFilter, ImageFit, ImageSource,
-    Interpolation, Keyframe, MAX_FONT_BYTES, ProductionClockSpec, Style, TemplateId,
-    TickerDirection, TickerSpec, TitleClock, TitleClockError, TitleClockKind, TitleTemplate,
-    VerticalAlignment,
+    Alignment, Bounds, ClockDirection, ClockFormat, ClockSpec, Color, Element, ElementId,
+    ElementKind, FieldDefinition, FieldId, FieldType, FieldValue, FontError, FontFace, FontStyle,
+    HorizontalAlignment, ImageFilter, ImageFit, ImageSource, MAX_FONT_BYTES, ProductionClockSpec,
+    Style, TemplateId, TickerDirection, TickerSpec, TitleAnimation, TitleClock, TitleClockError,
+    TitleClockKind, TitleTemplate, VerticalAlignment,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -171,6 +191,10 @@ pub enum TitleTemplateError {
     },
     /// The template fails structural validation.
     InvalidTemplate(Vec<fm_titles::ValidationError>),
+    /// The animation clip breaks an `fm_animation` rule or limit.
+    InvalidAnimation(ClipError<ElementId>),
+    /// The animation holds a value the document has no form for.
+    UnencodableAnimation(&'static str),
     /// The template has more fields than a title input may carry.
     TooManyFields {
         count: usize,
@@ -219,6 +243,13 @@ impl fmt::Display for TitleTemplateError {
                 "title template has {} validation error(s): {errors:?}",
                 errors.len()
             ),
+            Self::InvalidAnimation(error) => write!(formatter, "title template animation: {error}"),
+            Self::UnencodableAnimation(reason) => {
+                write!(
+                    formatter,
+                    "title template animation cannot be stored: {reason}"
+                )
+            }
             Self::TooManyFields { count } => write!(
                 formatter,
                 "title template has {count} fields, maximum is {MAX_TITLE_FIELDS}"
@@ -408,6 +439,30 @@ impl ProjectStore {
             .resolve_asset_uri(uri)
             .map_err(TitleTemplateError::Asset)?;
         decode_title_template(&read_template_file(&path)?)
+    }
+
+    /// Replaces the stored template at `uri` with `stored`, atomically.
+    ///
+    /// The URI must already resolve to a template that loads: this rewrites
+    /// a template in place (for example after an animation edit) and never
+    /// creates one. Every title input naming the URI sees the new template;
+    /// `project.json` is not touched.
+    ///
+    /// # Errors
+    ///
+    /// Returns the load errors of the current document, the encode errors of
+    /// `stored`, and [`TitleTemplateError::Io`] when the write fails.
+    pub fn replace_title_template(
+        &self,
+        uri: &str,
+        stored: &StoredTitleTemplate,
+    ) -> Result<(), TitleTemplateError> {
+        self.load_title_template(uri)?;
+        let document = encode_title_template(stored)?;
+        let path = self
+            .resolve_asset_uri(uri)
+            .map_err(TitleTemplateError::Asset)?;
+        fsutil::write_atomically(&path, document.as_bytes()).map_err(TitleTemplateError::Io)
     }
 
     /// Imports a source template document and its fonts into this bundle.
@@ -905,10 +960,12 @@ pub fn encode_title_template(stored: &StoredTitleTemplate) -> Result<String, Tit
         write_element(&mut output, element);
     }
     output.push_str(if template.elements.is_empty() {
-        "]\n  },\n"
+        "],\n"
     } else {
-        "\n    ]\n  },\n"
+        "\n    ],\n"
     });
+    write_animation(&mut output, &template.animation)?;
+    output.push_str("\n  },\n");
     output.push_str("  \"fonts\": [");
     for (index, font) in fonts.iter().enumerate() {
         output.push_str(if index == 0 { "\n    " } else { ",\n    " });
@@ -1019,36 +1076,109 @@ fn write_element(output: &mut String, element: &Element) {
     }
     output.push_str(", \"kind\": ");
     write_element_kind(output, element);
-    output.push_str(", \"animations\": [");
-    for (index, track) in element.animations.iter().enumerate() {
-        if index != 0 {
-            output.push_str(", ");
-        }
+    output.push('}');
+}
+
+/// Writes `"animation": {...}` with the tracks in clip order.
+fn write_animation(
+    output: &mut String,
+    animation: &TitleAnimation,
+) -> Result<(), TitleTemplateError> {
+    let clip = &animation.clip;
+    let rate = clip.timebase().rate();
+    write!(
+        output,
+        "    \"animation\": {{\"timebase\": \"{}/{}\", \"revision\": {}, \"in_frames\": {}, \"out_frames\": {}, \"tracks\": [",
+        rate.numerator(),
+        rate.denominator(),
+        animation.revision,
+        clip.in_frames(),
+        clip.out_frames()
+    )
+    .expect("writing to a string cannot fail");
+    for (index, track) in clip.tracks().iter().enumerate() {
+        output.push_str(if index == 0 { "\n      " } else { ",\n      " });
         write!(
             output,
-            "{{\"property\": \"{}\", \"keyframes\": [",
-            property_name(track.property)
+            "{{\"element\": {}, \"phase\": \"{}\", \"property\": \"{}\", \"keys\": [",
+            track.key.target,
+            phase_name(track.key.phase),
+            property_name(track.key.property)
         )
         .expect("writing to a string cannot fail");
-        for (index, keyframe) in track.keyframes.iter().enumerate() {
+        for (index, key) in track.keys.iter().enumerate() {
             if index != 0 {
                 output.push_str(", ");
             }
-            write!(
-                output,
-                "{{\"at_ms\": {}, \"value\": {}, \"interpolation\": \"{}\"}}",
-                keyframe.at_ms,
-                keyframe.value,
-                match keyframe.interpolation {
-                    Interpolation::Hold => "hold",
-                    Interpolation::Linear => "linear",
+            write!(output, "{{\"frame\": {}, \"value\": ", key.frame)
+                .expect("writing to a string cannot fail");
+            match key.value {
+                AnimationValue::Scalar(value) => {
+                    write!(output, "{value}").expect("writing to a string cannot fail");
                 }
-            )
-            .expect("writing to a string cannot fail");
+                AnimationValue::Color(color) => {
+                    write_color(output, Color::new(color.r, color.g, color.b, color.a));
+                }
+            }
+            output.push_str(", \"easing\": ");
+            write_easing(output, key.easing)?;
+            output.push('}');
         }
         output.push_str("]}");
     }
-    output.push_str("]}");
+    output.push_str(if clip.tracks().is_empty() {
+        "]}"
+    } else {
+        "\n    ]}"
+    });
+    Ok(())
+}
+
+fn write_easing(output: &mut String, easing: Easing) -> Result<(), TitleTemplateError> {
+    match easing {
+        Easing::CubicBezier(curve) => {
+            let (x1, y1, x2, y2) = curve.control_points();
+            write!(output, "{{\"cubic_bezier\": [{x1}, {y1}, {x2}, {y2}]}}")
+                .expect("writing to a string cannot fail");
+        }
+        // Step and Hold sample identically but are distinct values; the
+        // document names only the editor's Hold.
+        Easing::Step => {
+            return Err(TitleTemplateError::UnencodableAnimation(
+                "step easing is stored as hold; use Easing::Hold",
+            ));
+        }
+        other => {
+            let preset = EasingPreset::from_easing(other).ok_or(
+                TitleTemplateError::UnencodableAnimation("easing has no stable preset id"),
+            )?;
+            write_string(output, preset.id());
+        }
+    }
+    Ok(())
+}
+
+const fn phase_name(phase: Phase) -> &'static str {
+    match phase {
+        Phase::In => "in",
+        Phase::Out => "out",
+    }
+}
+
+const fn property_name(property: Property) -> &'static str {
+    match property {
+        Property::PositionX => "position_x",
+        Property::PositionY => "position_y",
+        Property::ScaleX => "scale_x",
+        Property::ScaleY => "scale_y",
+        Property::Rotation => "rotation",
+        Property::Opacity => "opacity",
+        Property::CropLeft => "crop_left",
+        Property::CropTop => "crop_top",
+        Property::CropRight => "crop_right",
+        Property::CropBottom => "crop_bottom",
+        Property::Color => "color",
+    }
 }
 
 fn write_clock(output: &mut String, clock: &TitleClock) {
@@ -1218,16 +1348,6 @@ const fn filter_name(filter: ImageFilter) -> &'static str {
     match filter {
         ImageFilter::Nearest => "nearest",
         ImageFilter::Bilinear => "bilinear",
-    }
-}
-
-const fn property_name(property: AnimatedProperty) -> &'static str {
-    match property {
-        AnimatedProperty::X => "x",
-        AnimatedProperty::Y => "y",
-        AnimatedProperty::Width => "width",
-        AnimatedProperty::Height => "height",
-        AnimatedProperty::Opacity => "opacity",
     }
 }
 
@@ -1412,6 +1532,7 @@ fn parse_template(value: Value) -> Result<TitleTemplate, TitleTemplateError> {
     for value in values {
         elements.push(parse_element(value)?);
     }
+    let animation = parse_animation(object.take("animation")?)?;
     object.finish()?;
     Ok(TitleTemplate {
         id,
@@ -1421,6 +1542,7 @@ fn parse_template(value: Value) -> Result<TitleTemplate, TitleTemplateError> {
         background,
         fields,
         elements,
+        animation,
     })
 }
 
@@ -1465,7 +1587,6 @@ fn parse_element(value: Value) -> Result<Element, TitleTemplateError> {
         parse_field_id(&value, "color_field")
     })?;
     let kind = parse_kind(object.take("kind")?)?;
-    let animations = parse_array(object.take("animations")?, "animations", parse_track)?;
     object.finish()?;
     Ok(Element {
         id,
@@ -1476,7 +1597,6 @@ fn parse_element(value: Value) -> Result<Element, TitleTemplateError> {
         style,
         color_field,
         kind,
-        animations,
     })
 }
 
@@ -1610,37 +1730,120 @@ fn parse_kind(value: Value) -> Result<ElementKind, DecodeError> {
     Ok(kind)
 }
 
-fn parse_track(value: Value) -> Result<AnimationTrack, DecodeError> {
-    let mut object = Object::new(value, "animation track")?;
-    let property = match object.string("property")?.as_str() {
-        "x" => AnimatedProperty::X,
-        "y" => AnimatedProperty::Y,
-        "width" => AnimatedProperty::Width,
-        "height" => AnimatedProperty::Height,
-        "opacity" => AnimatedProperty::Opacity,
-        value => return Err(unknown_enum("animated property", value)),
-    };
-    let keyframes = parse_array(object.take("keyframes")?, "keyframes", parse_keyframe)?;
+fn parse_animation(value: Value) -> Result<TitleAnimation, TitleTemplateError> {
+    let mut object = Object::new(value, "title animation")?;
+    let timebase = parse_timebase(&object.string("timebase")?)?;
+    let revision = object.u64("revision")?;
+    let in_frames = object.u32("in_frames")?;
+    let out_frames = object.u32("out_frames")?;
+    let tracks = parse_array(object.take("tracks")?, "animation tracks", parse_track)?;
     object.finish()?;
-    Ok(AnimationTrack {
-        property,
-        keyframes,
-    })
+    if tracks.windows(2).any(|pair| pair[0].key >= pair[1].key) {
+        return Err(syntax(
+            "animation tracks must be sorted by element, phase, and property without repeats",
+        )
+        .into());
+    }
+    let clip = Clip::from_tracks(timebase, in_frames, out_frames, tracks)
+        .map_err(TitleTemplateError::InvalidAnimation)?;
+    Ok(TitleAnimation::new(clip, revision))
 }
 
-fn parse_keyframe(value: Value) -> Result<Keyframe, DecodeError> {
-    let mut object = Object::new(value, "keyframe")?;
-    let keyframe = Keyframe {
-        at_ms: object.u64("at_ms")?,
-        value: object.i64("value")?,
-        interpolation: match object.string("interpolation")?.as_str() {
-            "hold" => Interpolation::Hold,
-            "linear" => Interpolation::Linear,
-            value => return Err(unknown_enum("interpolation", value)),
-        },
+/// Parses exactly `numerator/denominator` in lowest terms.
+fn parse_timebase(text: &str) -> Result<Timebase, DecodeError> {
+    let invalid = || {
+        syntax(format!(
+            "timebase `{text}` is not a lowest-terms `N/D` rate"
+        ))
     };
+    let (numerator, denominator) = text.split_once('/').ok_or_else(invalid)?;
+    let number = |digits: &str| -> Result<u32, DecodeError> {
+        if digits.is_empty()
+            || !digits.bytes().all(|byte| byte.is_ascii_digit())
+            || (digits.len() > 1 && digits.starts_with('0'))
+        {
+            return Err(invalid());
+        }
+        digits.parse().map_err(|_| invalid())
+    };
+    let (numerator, denominator) = (number(numerator)?, number(denominator)?);
+    let rate = FrameRate::new(numerator, denominator).map_err(|_| invalid())?;
+    if rate.numerator() != numerator || rate.denominator() != denominator {
+        return Err(invalid());
+    }
+    Ok(Timebase::new(rate))
+}
+
+fn parse_track(value: Value) -> Result<Track<ElementId>, DecodeError> {
+    let mut object = Object::new(value, "animation track")?;
+    let element = ElementId::new(object.nonzero_u128("element")?);
+    let phase = match object.string("phase")?.as_str() {
+        "in" => Phase::In,
+        "out" => Phase::Out,
+        value => return Err(unknown_enum("animation phase", value)),
+    };
+    let property = {
+        let name = object.string("property")?;
+        Property::ALL
+            .into_iter()
+            .find(|property| property_name(*property) == name)
+            .ok_or_else(|| unknown_enum("animated property", &name))?
+    };
+    let keys = parse_array(object.take("keys")?, "animation keys", |value| {
+        parse_key(value, property)
+    })?;
     object.finish()?;
-    Ok(keyframe)
+    Ok(Track::new(TrackKey::new(element, phase, property), keys))
+}
+
+fn parse_key(value: Value, property: Property) -> Result<Keyframe, DecodeError> {
+    let mut object = Object::new(value, "animation key")?;
+    let frame = object.u32("frame")?;
+    let value = if property == Property::Color {
+        let color = parse_color(&object.string("value")?)?;
+        AnimationValue::Color(Rgba::new(color.r, color.g, color.b, color.a))
+    } else {
+        AnimationValue::Scalar(object.i64("value")?)
+    };
+    let easing = parse_easing(object.take("easing")?)?;
+    object.finish()?;
+    Ok(Keyframe::new(frame, value, easing))
+}
+
+fn parse_easing(value: Value) -> Result<Easing, DecodeError> {
+    match value {
+        Value::String(id) => EasingPreset::from_id(&id)
+            .map(EasingPreset::easing)
+            .ok_or_else(|| unknown_enum("easing", &id)),
+        value => {
+            let mut object = Object::new(value, "easing")?;
+            let Value::Array(points) = object.take("cubic_bezier")? else {
+                return Err(syntax("cubic_bezier must be an array of four integers"));
+            };
+            object.finish()?;
+            let [x1, y1, x2, y2] = <[Value; 4]>::try_from(points)
+                .map_err(|_| syntax("cubic_bezier must hold exactly four integers"))?;
+            let unsigned = |value: Value| match value {
+                Value::Number(number) => {
+                    u32::try_from(number).map_err(|_| syntax("cubic_bezier x is out of range"))
+                }
+                _ => Err(syntax("cubic_bezier x must be an unsigned integer")),
+            };
+            let signed = |value: Value| match value {
+                Value::Number(number) => {
+                    i32::try_from(number).map_err(|_| syntax("cubic_bezier y is out of range"))
+                }
+                Value::NegativeNumber(number) => i128::try_from(number)
+                    .ok()
+                    .and_then(|number| i32::try_from(-number).ok())
+                    .ok_or_else(|| syntax("cubic_bezier y is out of range")),
+                _ => Err(syntax("cubic_bezier y must be an integer")),
+            };
+            CubicBezier::new(unsigned(x1)?, signed(y1)?, unsigned(x2)?, signed(y2)?)
+                .map(Easing::CubicBezier)
+                .map_err(|error| syntax(error.to_string()))
+        }
+    }
 }
 
 /// The audit issue for a title template that does not load.

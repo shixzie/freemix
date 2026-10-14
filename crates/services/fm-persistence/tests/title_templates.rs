@@ -29,12 +29,16 @@ use fm_persistence::{
     TitleImportError, TitleIssue, TitleProblem, TitleTemplateError, decode_title_template,
     encode_title_template, title_field_defaults,
 };
+use fm_titles::fm_animation::{
+    Clip, ClipError, CubicBezier, Easing, Keyframe, MAX_TRACK_KEYS, Phase, Property, Rgba,
+    Timebase, Track, TrackKey, Value,
+};
 use fm_titles::{
-    Alignment, AnimatedProperty, AnimationTrack, Bounds, ClockDirection, ClockFormat, ClockSpec,
-    Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldType, FieldValue,
-    FontError, FontStyle, HorizontalAlignment, ImageFilter, ImageFit, ImageSource, Interpolation,
-    Keyframe, ProductionClockSpec, Style, TemplateId, TickerDirection, TickerSpec, TitleClock,
-    TitleClockError, TitleClockKind, TitleTemplate, VerticalAlignment,
+    Alignment, Bounds, ClockDirection, ClockFormat, ClockSpec, Color, Element, ElementId,
+    ElementKind, FieldDefinition, FieldId, FieldType, FieldValue, FontError, FontStyle,
+    HorizontalAlignment, ImageFilter, ImageFit, ImageSource, ProductionClockSpec, Style,
+    TemplateId, TickerDirection, TickerSpec, TitleAnimation, TitleClock, TitleClockError,
+    TitleClockKind, TitleTemplate, ValidationError, VerticalAlignment,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -120,7 +124,6 @@ fn element(id: u128, kind: ElementKind, font: Option<&str>) -> Element {
         style: style(font),
         color_field: None,
         kind,
-        animations: Vec::new(),
     }
 }
 
@@ -148,6 +151,7 @@ fn shape_template(name: &str) -> TitleTemplate {
             },
         ],
         elements: vec![bar],
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 
@@ -169,6 +173,7 @@ fn text_template(family: &str) -> TitleTemplate {
             ElementKind::Text { field: field_id(1) },
             Some(family),
         )],
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 
@@ -189,41 +194,8 @@ fn rich_template() -> StoredTitleTemplate {
     text.z_index = -3;
     text.visible = false;
     text.bounds.x = -400;
-    text.animations = vec![
-        AnimationTrack {
-            property: AnimatedProperty::X,
-            keyframes: vec![
-                Keyframe {
-                    at_ms: 0,
-                    value: -400,
-                    interpolation: Interpolation::Linear,
-                },
-                Keyframe {
-                    at_ms: 500,
-                    value: 40,
-                    interpolation: Interpolation::Hold,
-                },
-            ],
-        },
-        AnimationTrack {
-            property: AnimatedProperty::Opacity,
-            keyframes: vec![Keyframe {
-                at_ms: 0,
-                value: 255,
-                interpolation: Interpolation::Hold,
-            }],
-        },
-    ];
     let mut rectangle = element(2, ElementKind::Rectangle, None);
     rectangle.color_field = Some(field_id(3));
-    rectangle.animations = vec![AnimationTrack {
-        property: AnimatedProperty::Width,
-        keyframes: vec![Keyframe {
-            at_ms: 10,
-            value: 300,
-            interpolation: Interpolation::Linear,
-        }],
-    }];
     let mut image = element(
         3,
         ElementKind::Image {
@@ -307,24 +279,6 @@ fn rich_template() -> StoredTitleTemplate {
         Some("Mono"),
     );
     left_ticker.style.alignment.vertical = VerticalAlignment::Center;
-    left_ticker.animations = vec![
-        AnimationTrack {
-            property: AnimatedProperty::Y,
-            keyframes: vec![Keyframe {
-                at_ms: 0,
-                value: i64::MIN,
-                interpolation: Interpolation::Hold,
-            }],
-        },
-        AnimationTrack {
-            property: AnimatedProperty::Height,
-            keyframes: vec![Keyframe {
-                at_ms: u64::MAX,
-                value: i64::from(u32::MAX),
-                interpolation: Interpolation::Hold,
-            }],
-        },
-    ];
     StoredTitleTemplate {
         template: TitleTemplate {
             id: TemplateId::new(NonZeroU128::MAX),
@@ -366,6 +320,7 @@ fn rich_template() -> StoredTitleTemplate {
                 count_up,
                 left_ticker,
             ],
+            animation: rich_animation(),
         },
         fonts: vec![
             TitleFontAsset {
@@ -379,6 +334,85 @@ fn rich_template() -> StoredTitleTemplate {
         ],
         clocks: Vec::new(),
     }
+}
+
+fn key(frame: u32, value: Value, easing: Easing) -> Keyframe {
+    Keyframe::new(frame, value, easing)
+}
+
+fn scalar(frame: u32, value: i64, easing: Easing) -> Keyframe {
+    key(frame, Value::Scalar(value), easing)
+}
+
+fn track(element: u128, phase: Phase, property: Property, keys: Vec<Keyframe>) -> Track<ElementId> {
+    Track::new(TrackKey::new(element_id(element), phase, property), keys)
+}
+
+/// Every property kind, preset and bezier easings, both phases, extreme
+/// values, and a non-integer timebase.
+fn rich_animation() -> TitleAnimation {
+    let bezier = Easing::CubicBezier(CubicBezier::new(22_282, -65_536, 41_943, 131_072).unwrap());
+    let clip = Clip::from_tracks(
+        Timebase::new(FrameRate::new(30_000, 1_001).unwrap()),
+        15,
+        10,
+        vec![
+            track(
+                1,
+                Phase::In,
+                Property::PositionX,
+                vec![
+                    scalar(0, -400, Easing::BackOut),
+                    scalar(15, 0, Easing::Linear),
+                ],
+            ),
+            track(
+                1,
+                Phase::In,
+                Property::Opacity,
+                vec![scalar(0, 0, Easing::Hold), scalar(5, 255, Easing::Linear)],
+            ),
+            track(
+                1,
+                Phase::Out,
+                Property::CropRight,
+                vec![scalar(10, i64::from(i32::MAX), Easing::SineInOut)],
+            ),
+            track(
+                2,
+                Phase::In,
+                Property::ScaleX,
+                vec![scalar(0, 0, bezier), scalar(15, 100_000, Easing::Linear)],
+            ),
+            track(
+                2,
+                Phase::In,
+                Property::Color,
+                vec![
+                    key(0, Value::Color(Rgba::new(1, 2, 3, 4)), Easing::BounceInOut),
+                    key(
+                        15,
+                        Value::Color(Rgba::new(255, 254, 253, 252)),
+                        Easing::Linear,
+                    ),
+                ],
+            ),
+            track(
+                10,
+                Phase::Out,
+                Property::PositionY,
+                vec![scalar(0, i64::from(i32::MIN), Easing::Hold)],
+            ),
+            track(
+                10,
+                Phase::Out,
+                Property::Rotation,
+                vec![scalar(3, -90_000, Easing::QuadIn)],
+            ),
+        ],
+    )
+    .unwrap();
+    TitleAnimation::new(clip, 7)
 }
 
 /// A source document for import: the stored format with an empty font table
@@ -526,7 +560,7 @@ fn assets_listing(store: &ProjectStore) -> Vec<String> {
 fn every_element_kind_round_trips_exactly() {
     let expected = rich_template();
     let encoded = encode_title_template(&expected).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 29,\n  \"template\": {\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 30,\n  \"template\": {\n"));
     assert!(encoded.contains(
         "\"kind\": {\"type\": \"image\", \"field\": 4, \"fit\": \"contain\", \"filter\": \"bilinear\"}"
     ));
@@ -538,7 +572,14 @@ fn every_element_kind_round_trips_exactly() {
     ));
     assert!(encoded.contains("\"alignment\": {\"horizontal\": \"center\", \"vertical\": \"end\"}"));
     assert!(encoded.contains("\"background\": \"#00000080\""));
-    assert!(encoded.contains("{\"at_ms\": 0, \"value\": -400, \"interpolation\": \"linear\"}"));
+    assert!(encoded.contains(
+        "    \"animation\": {\"timebase\": \"30000/1001\", \"revision\": 7, \"in_frames\": 15, \"out_frames\": 10, \"tracks\": [\n      {\"element\": 1, \"phase\": \"in\", \"property\": \"position_x\", \"keys\": [{\"frame\": 0, \"value\": -400, \"easing\": \"back-out\"}, {\"frame\": 15, \"value\": 0, \"easing\": \"linear\"}]},"
+    ));
+    assert!(encoded.contains("\"easing\": {\"cubic_bezier\": [22282, -65536, 41943, 131072]}"));
+    assert!(
+        encoded.contains("{\"frame\": 0, \"value\": \"#01020304\", \"easing\": \"bounce-in-out\"}")
+    );
+    assert!(!encoded.contains("animations"));
     assert!(
         encoded.contains(
             "{\"family\": \"Inter Bold\", \"asset_uri\": \"asset://fonts/Inter-Bold.ttf\"}"
@@ -600,12 +641,63 @@ fn strict_decoder_refuses_unknown_missing_and_out_of_contract_content() {
             1,
         ),
         encoded.replacen("\"direction\": \"right\"", "\"direction\": \"up\"", 1),
+        encoded.replacen("\"easing\": \"back-out\"", "\"easing\": \"elastic\"", 1),
+        encoded.replacen("\"easing\": \"back-out\"", "\"easing\": \"step\"", 1),
+        encoded.replacen("\"easing\": \"back-out\"", "\"easing\": null", 1),
         encoded.replacen(
-            "\"interpolation\": \"linear\"",
-            "\"interpolation\": \"ease\"",
+            "[22282, -65536, 41943, 131072]",
+            "[22282, -65536, 41943]",
             1,
         ),
-        encoded.replacen("\"property\": \"x\"", "\"property\": \"rotation\"", 1),
+        encoded.replacen(
+            "[22282, -65536, 41943, 131072]",
+            "[22282, -65536, 41943, 131073]",
+            1,
+        ),
+        encoded.replacen(
+            "[22282, -65536, 41943, 131072]",
+            "[65537, -65536, 41943, 131072]",
+            1,
+        ),
+        encoded.replacen(
+            "\"property\": \"position_x\"",
+            "\"property\": \"position-x\"",
+            1,
+        ),
+        encoded.replacen("\"property\": \"position_x\"", "\"property\": \"skew\"", 1),
+        encoded.replacen("\"phase\": \"in\"", "\"phase\": \"hold\"", 1),
+        encoded.replacen(
+            "\"timebase\": \"30000/1001\"",
+            "\"timebase\": \"60000/2002\"",
+            1,
+        ),
+        encoded.replacen("\"timebase\": \"30000/1001\"", "\"timebase\": \"29.97\"", 1),
+        encoded.replacen(
+            "\"timebase\": \"30000/1001\"",
+            "\"timebase\": \"30000/0\"",
+            1,
+        ),
+        encoded.replacen("\"revision\": 7, ", "", 1),
+        encoded.replacen("\"revision\": 7", "\"revision\": -7", 1),
+        encoded.replacen("\"value\": \"#01020304\"", "\"value\": 16909060", 1),
+        encoded.replacen("\"value\": -400", "\"value\": \"-400\"", 1),
+        encoded.replacen(
+            "\"easing\": \"back-out\"}",
+            "\"easing\": \"back-out\", \"tension\": 1}",
+            1,
+        ),
+        // Tracks out of clip order are not canonical.
+        encoded.replacen(
+            "\"element\": 1, \"phase\": \"in\"",
+            "\"element\": 3, \"phase\": \"in\"",
+            1,
+        ),
+        // Removed contract: per-element animations.
+        encoded.replacen(
+            "\"color_field\": 3,",
+            "\"color_field\": 3, \"animations\": [],",
+            1,
+        ),
         encoded.replacen("{\"type\": \"rectangle\"}", "{\"type\": \"ellipse\"}", 1),
         encoded.replacen(
             "{\"type\": \"rectangle\"}",
@@ -638,15 +730,15 @@ fn strict_decoder_refuses_unknown_missing_and_out_of_contract_content() {
         );
     }
 
-    for (schema, found) in [("28", 28), ("30", 30)] {
+    for (schema, found) in [("29", 29), ("31", 31)] {
         let document = encoded.replacen(
-            "\"schema_version\": 29",
+            "\"schema_version\": 30",
             &format!("\"schema_version\": {schema}"),
             1,
         );
         assert!(matches!(
             decode_title_template(&document),
-            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 29 }) if f == found
+            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 30 }) if f == found
         ));
     }
 
@@ -710,6 +802,148 @@ fn strict_decoder_refuses_unknown_missing_and_out_of_contract_content() {
             1
         )),
         Err(TitleTemplateError::InvalidFieldDefaults(_))
+    ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn animation_round_trips_and_refuses_out_of_contract_clips() {
+    let expected = rich_template();
+    let encoded = encode_title_template(&expected).unwrap();
+    let decoded = decode_title_template(&encoded).unwrap();
+    assert_eq!(decoded.template.animation, rich_animation());
+
+    // An empty clip still writes its timebase, revision, and phases.
+    let shape = StoredTitleTemplate {
+        template: shape_template("Bar"),
+        fonts: Vec::new(),
+        clocks: Vec::new(),
+    };
+    let plain = encode_title_template(&shape).unwrap();
+    assert!(plain.contains(
+        "    \"animation\": {\"timebase\": \"30/1\", \"revision\": 0, \"in_frames\": 0, \"out_frames\": 0, \"tracks\": []}\n  },"
+    ));
+    assert_eq!(decode_title_template(&plain).unwrap(), shape);
+
+    let first = "{\"frame\": 0, \"value\": -400, \"easing\": \"back-out\"}, {\"frame\": 15,";
+    let animation_error = |document: &str| match decode_title_template(document) {
+        Err(TitleTemplateError::InvalidAnimation(error)) => error,
+        other => panic!("expected an animation error, got {other:?}"),
+    };
+    let position = TrackKey::new(element_id(1), Phase::In, Property::PositionX);
+    // Keys must strictly increase.
+    assert_eq!(
+        animation_error(&encoded.replacen(
+            first,
+            "{\"frame\": 15, \"value\": -400, \"easing\": \"back-out\"}, {\"frame\": 15,",
+            1
+        )),
+        ClipError::NonIncreasingKeys {
+            track: position,
+            frame: 15
+        }
+    );
+    // Keys stay inside their phase.
+    assert_eq!(
+        animation_error(&encoded.replacen("\"in_frames\": 15", "\"in_frames\": 14", 1)),
+        ClipError::KeyOutsidePhase {
+            track: position,
+            frame: 15
+        }
+    );
+    // Values stay inside the property range.
+    assert_eq!(
+        animation_error(&encoded.replacen(
+            "{\"frame\": 5, \"value\": 255,",
+            "{\"frame\": 5, \"value\": 256,",
+            1
+        )),
+        ClipError::InvalidValue {
+            track: TrackKey::new(element_id(1), Phase::In, Property::Opacity),
+            frame: 5
+        }
+    );
+    // Too many keys on one track.
+    let mut keys = String::new();
+    for frame in 0..=MAX_TRACK_KEYS {
+        if frame != 0 {
+            keys.push_str(", ");
+        }
+        write!(
+            keys,
+            "{{\"frame\": {frame}, \"value\": 0, \"easing\": \"linear\"}}"
+        )
+        .unwrap();
+    }
+    let crowded = encoded
+        .replacen("\"in_frames\": 15", "\"in_frames\": 300", 1)
+        .replacen(
+            "{\"frame\": 0, \"value\": -400, \"easing\": \"back-out\"}, {\"frame\": 15, \"value\": 0, \"easing\": \"linear\"}",
+            &keys,
+            1,
+        );
+    assert_eq!(
+        animation_error(&crowded),
+        ClipError::TooManyTrackKeys {
+            track: position,
+            count: MAX_TRACK_KEYS + 1
+        }
+    );
+    // Phases are bounded.
+    assert!(matches!(
+        animation_error(&encoded.replacen("\"out_frames\": 10", "\"out_frames\": 36001", 1)),
+        ClipError::PhaseTooLong { .. }
+    ));
+    // Tracks target template elements (both element 10 tracks move, so the
+    // order stays canonical).
+    let unknown = encoded.replace("{\"element\": 10, ", "{\"element\": 99, ");
+    assert!(matches!(
+        decode_title_template(&unknown),
+        Err(TitleTemplateError::InvalidTemplate(errors))
+            if errors == vec![ValidationError::AnimationTargetUnknown(element_id(99))]
+    ));
+    // Unknown easing ids are refused.
+    assert!(matches!(
+        decode_title_template(&encoded.replacen("\"bounce-in-out\"", "\"bounce\"", 1)),
+        Err(TitleTemplateError::Malformed { message, .. }) if message.contains("bounce")
+    ));
+
+    // Step easing has no document form; Hold is the stored name.
+    let mut step = expected.clone();
+    step.template
+        .edit_animation(|clip| {
+            clip.set_track(track(
+                3,
+                Phase::In,
+                Property::PositionY,
+                vec![scalar(0, 1, Easing::Step)],
+            ))
+        })
+        .unwrap();
+    assert!(matches!(
+        encode_title_template(&step),
+        Err(TitleTemplateError::UnencodableAnimation(_))
+    ));
+
+    // An animation that pushes the document over the cap is refused before
+    // it is parsed.
+    let cap = usize::try_from(fm_persistence::MAX_TITLE_TEMPLATE_BYTES).unwrap();
+    let filler = format!(
+        ", {{\"frame\": 0, \"value\": 0, \"easing\": \"linear\"}}{}",
+        " ".repeat(64)
+    );
+    let mut padding = String::new();
+    while padding.len() + encoded.len() <= cap {
+        padding.push_str(&filler);
+    }
+    let oversized = encoded.replacen(
+        "\"easing\": \"back-out\"}",
+        &format!("\"easing\": \"back-out\"}}{padding}"),
+        1,
+    );
+    assert!(matches!(
+        decode_title_template(&oversized),
+        Err(TitleTemplateError::TooLarge { .. })
     ));
 }
 
@@ -818,6 +1052,7 @@ fn clock_template() -> StoredTitleTemplate {
             background: Color::TRANSPARENT,
             fields: Vec::new(),
             elements,
+            animation: fm_titles::TitleAnimation::default(),
         },
         fonts: vec![TitleFontAsset {
             family: "Mono".into(),
@@ -1044,7 +1279,7 @@ fn imports_keep_the_source_clock_table() {
     let path = temp.path("doors.fmtitle");
     let no_font = source_document_with_clocks(&shape_template("Clock"), Vec::new()).replacen(
         "\"elements\": [",
-        "\"elements\": [\n      {\"id\": 5, \"name\": \"Doors\", \"bounds\": {\"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}, \"z_index\": 0, \"visible\": true, \"style\": {\"fill\": \"#ffffffff\", \"background\": null, \"opacity\": 255, \"font\": null, \"alignment\": {\"horizontal\": \"start\", \"vertical\": \"start\"}}, \"color_field\": null, \"kind\": {\"type\": \"production_clock\", \"clock\": \"Doors\", \"format\": null}, \"animations\": []},",
+        "\"elements\": [\n      {\"id\": 5, \"name\": \"Doors\", \"bounds\": {\"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}, \"z_index\": 0, \"visible\": true, \"style\": {\"fill\": \"#ffffffff\", \"background\": null, \"opacity\": 255, \"font\": null, \"alignment\": {\"horizontal\": \"start\", \"vertical\": \"start\"}}, \"color_field\": null, \"kind\": {\"type\": \"production_clock\", \"clock\": \"Doors\", \"format\": null}},",
         1,
     );
     write(&path, no_font.as_bytes());
@@ -1109,7 +1344,7 @@ fn a_compact_source_whose_stored_form_exceeds_the_cap_is_refused() {
     // would leave a template that never loads again.
     let cap = usize::try_from(fm_persistence::MAX_TITLE_TEMPLATE_BYTES).unwrap();
     let mut source = String::from(
-        r##"{"schema_version":29,"template":{"id":1,"name":"Big","width":16,"height":9,"background":"#00000000","fields":[],"elements":["##,
+        r##"{"schema_version":30,"template":{"id":1,"name":"Big","width":16,"height":9,"background":"#00000000","fields":[],"elements":["##,
     );
     let mut id = 1_u32;
     while source.len() < cap - 1024 {
@@ -1118,12 +1353,12 @@ fn a_compact_source_whose_stored_form_exceeds_the_cap_is_refused() {
         }
         write!(
             source,
-            r##"{{"id":{id},"name":"r","bounds":{{"x":0,"y":0,"width":1,"height":1}},"z_index":0,"visible":true,"style":{{"fill":"#ffffffff","background":null,"opacity":255,"font":null,"alignment":{{"horizontal":"start","vertical":"start"}}}},"color_field":null,"kind":{{"type":"rectangle"}},"animations":[]}}"##
+            r##"{{"id":{id},"name":"r","bounds":{{"x":0,"y":0,"width":1,"height":1}},"z_index":0,"visible":true,"style":{{"fill":"#ffffffff","background":null,"opacity":255,"font":null,"alignment":{{"horizontal":"start","vertical":"start"}}}},"color_field":null,"kind":{{"type":"rectangle"}}}}"##
         )
         .unwrap();
         id += 1;
     }
-    source.push_str(r#"]},"fonts":[],"clocks":[]}"#);
+    source.push_str(r#"],"animation":{"timebase":"30/1","revision":0,"in_frames":0,"out_frames":0,"tracks":[]}},"fonts":[],"clocks":[]}"#);
     assert!(source.len() <= cap);
 
     let temp = TestDirectory::new("encoded-cap");

@@ -124,7 +124,6 @@ fn text_element(bounds: Bounds, style: Style) -> Element {
         style,
         color_field: None,
         kind: ElementKind::Text { field: field_id(1) },
-        animations: Vec::new(),
     }
 }
 
@@ -141,6 +140,7 @@ fn scene_of(text: &str, width: u32, height: u32, element: Element) -> TitleTempl
             default: FieldValue::Text(text.into()),
         }],
         elements: vec![element],
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 

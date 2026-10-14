@@ -66,6 +66,7 @@ fn template() -> TitleTemplate {
             definition(SCORE, "Score", FieldValue::Number(0)),
         ],
         elements: Vec::new(),
+        animation: fm_titles::TitleAnimation::default(),
     }
 }
 

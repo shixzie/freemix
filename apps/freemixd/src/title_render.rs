@@ -46,7 +46,7 @@ use fm_clock::production::{TimeReading, UtcInstant};
 use fm_model::{InputKind, Project, TitleFieldEntry, TitleFieldValue, TitleInput};
 use fm_persistence::ProjectStore;
 use fm_titles::{
-    AssetCatalog, ClockSource, Color, ElementKind, FieldId, FieldValue, ImageSource,
+    AnimSample, AssetCatalog, ClockSource, Color, ElementKind, FieldId, FieldValue, ImageSource,
     MAX_FONT_BYTES, ReferenceRenderer, TitleClock, TitleClockKind, TitleClockTime, TitleId,
     TitleTemplate, title_clock_registry,
 };
@@ -66,8 +66,10 @@ pub(crate) struct LoadedTitleTemplate {
     template: Arc<TitleTemplate>,
     /// Fonts and image assets; decoded images join on demand.
     images: Mutex<TitleImages>,
-    /// Whether a rendered picture depends on scene time (clock, ticker, or
-    /// animated elements), so the frame cursor belongs in its cache key.
+    /// Whether a rendered picture depends on scene time (a clock or ticker
+    /// element), so the frame cursor belongs in its cache key. Keyframe
+    /// animation does not count: titles render in the Hold pose until take
+    /// and off-air phases are driven by frame.
     time_dependent: bool,
     /// The production clocks the template defines for its elements.
     clocks: Vec<TitleClock>,
@@ -85,13 +87,10 @@ struct TitleImages {
 impl LoadedTitleTemplate {
     pub(crate) fn new(template: TitleTemplate, catalog: AssetCatalog) -> Self {
         let time_dependent = template.elements.iter().any(|element| {
-            !element.animations.is_empty()
-                || matches!(
-                    element.kind,
-                    ElementKind::Clock(_)
-                        | ElementKind::Ticker(_)
-                        | ElementKind::ProductionClock(_)
-                )
+            matches!(
+                element.kind,
+                ElementKind::Clock(_) | ElementKind::Ticker(_) | ElementKind::ProductionClock(_)
+            )
         });
         Self {
             template: Arc::new(template),
@@ -426,7 +425,9 @@ pub(crate) fn utc_now() -> UtcInstant {
 /// to be layered as an overlay or flattened over black. Returns `None` when
 /// the template was not loaded or does not instantiate, a persisted field
 /// does not match the template, or rendering fails. Production clock
-/// elements read the template's clocks at `time`.
+/// elements read the template's clocks at `time`. Keyframe animation is drawn
+/// in its Hold pose (the In phase at its last frame): take and off-air
+/// phases are not driven yet.
 pub(crate) fn render_title_at(
     assets: &TitleAssets,
     input: InputId,
@@ -448,14 +449,15 @@ pub(crate) fn render_title_at(
         .collect::<Vec<_>>();
     scene.update_fields(scene.revision(), &updates).ok()?;
     let output = if loaded.clocks.is_empty() {
-        ReferenceRenderer.render(&scene, time.scene_time_ms(), &catalog)
+        ReferenceRenderer.render_sampled(&scene, time.scene_time_ms(), &catalog, AnimSample::Hold)
     } else {
         let clock_time = time.clock_time();
         let registry = title_clock_registry(&loaded.clocks, clock_time).ok()?;
-        ReferenceRenderer.render_with_clocks(
+        ReferenceRenderer.render_sampled_with_clocks(
             &scene,
             time.scene_time_ms(),
             &catalog,
+            AnimSample::Hold,
             ClockSource::new(&registry, clock_time.at),
         )
     }
@@ -563,8 +565,8 @@ mod tests {
                     fit: ImageFit::Stretch,
                     filter: ImageFilter::Nearest,
                 },
-                animations: Vec::new(),
             }],
+            animation: fm_titles::TitleAnimation::default(),
         }
     }
 
@@ -593,6 +595,53 @@ mod tests {
     fn pixel(frame: &ImageFrame, x: u32, y: u32) -> [u8; 4] {
         let pixel = frame.pixel(x, y).unwrap();
         [pixel.r, pixel.g, pixel.b, pixel.a]
+    }
+
+    #[test]
+    fn animated_titles_render_the_hold_pose_and_are_not_time_dependent() {
+        use fm_titles::fm_animation::{Easing, Keyframe, Phase, Property, Track, TrackKey, Value};
+
+        let mut animated = template();
+        animated.elements[0].kind = ElementKind::Rectangle;
+        let element = animated.elements[0].id;
+        let track = |phase, value| {
+            Track::new(
+                TrackKey::new(element, phase, Property::PositionX),
+                vec![Keyframe::new(0, Value::Scalar(value), Easing::Linear)],
+            )
+        };
+        animated
+            .edit_animation(|clip| {
+                // Hold shows the In phase's end (+4); the Out phase (+40) is
+                // never sampled until off-air is driven by frame.
+                clip.set_track(track(Phase::In, 4))?;
+                clip.set_track(track(Phase::Out, 40))
+            })
+            .unwrap();
+        let loaded = LoadedTitleTemplate::new(animated, AssetCatalog::new());
+        assert!(!loaded.time_dependent());
+        let mut assets = TitleAssets::default();
+        assets.insert(URI, loaded);
+        let input = InputId::new(NonZeroU128::MIN);
+        for frame in [0, 1_000] {
+            let rendered = render_title_at(
+                &assets,
+                input,
+                &title("asset://images/absent.png"),
+                TitleTime {
+                    frame,
+                    ..frame_zero()
+                },
+                64,
+                36,
+            )
+            .unwrap();
+            assert_eq!(pixel(&rendered, 11, 8), [0; 4]);
+            for (x, y) in [(12, 8), (27, 15)] {
+                assert_eq!(pixel(&rendered, x, y), [255; 4], "({x}, {y})");
+            }
+            assert_eq!(pixel(&rendered, 28, 8), [0; 4]);
+        }
     }
 
     #[test]
@@ -746,7 +795,6 @@ mod clock_tests {
             },
             color_field: None,
             kind,
-            animations: Vec::new(),
         }
     }
 
@@ -759,6 +807,7 @@ mod clock_tests {
             background: Color::TRANSPARENT,
             fields,
             elements: vec![element],
+            animation: fm_titles::TitleAnimation::default(),
         }
     }
 

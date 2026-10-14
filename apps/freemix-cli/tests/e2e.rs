@@ -2258,7 +2258,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 29,
+  "schema_version": 30,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -2270,8 +2270,9 @@ const SHAPE_TITLE_SOURCE: &str = r##"{
       {"id": 1, "name": "Score", "default": {"type": "number", "value": -4}}
     ],
     "elements": [
-      {"id": 1, "name": "Bar", "bounds": {"x": 0, "y": 900, "width": 1920, "height": 120}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": 2, "kind": {"type": "rectangle"}, "animations": []}
-    ]
+      {"id": 1, "name": "Bar", "bounds": {"x": 0, "y": 900, "width": 1920, "height": 120}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": 2, "kind": {"type": "rectangle"}}
+    ],
+    "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}
   },
   "fonts": [],
   "clocks": []
@@ -2464,7 +2465,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 29", "\"schema_version\": 28"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 30", "\"schema_version\": 29"),
     )
     .unwrap();
     assert_failure_contains(
@@ -2478,7 +2479,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 28 is unsupported; expected 29",
+        "title template schema 29 is unsupported; expected 30",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -2493,11 +2494,218 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     fs::remove_dir_all(context.root).unwrap();
 }
 
+/// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
+/// (4, 2) and no animation yet.
+const SLIDE_TITLE_SOURCE: &str = r##"{
+  "schema_version": 30,
+  "template": {
+    "id": 11,
+    "name": "Slide",
+    "width": 16,
+    "height": 8,
+    "background": "#00000000",
+    "fields": [],
+    "elements": [
+      {"id": 1, "name": "Bar", "bounds": {"x": 4, "y": 2, "width": 8, "height": 4}, "z_index": 0, "visible": true, "style": {"fill": "#ff0000ff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "rectangle"}}
+    ],
+    "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}
+  },
+  "fonts": [],
+  "clocks": []
+}
+"##;
+
+/// The binary PPM golden of the 16x8 slide title: `color` over columns
+/// `columns` of rows 2..6, black elsewhere (premultiplied over black).
+fn slide_golden(columns: std::ops::Range<u32>, color: [u8; 3]) -> Vec<u8> {
+    let mut golden = b"P6\n16 8\n255\n".to_vec();
+    for y in 0..8 {
+        for x in 0..16 {
+            let inside = (2..6).contains(&y) && columns.contains(&x);
+            golden.extend_from_slice(&if inside { color } else { [0; 3] });
+        }
+    }
+    golden
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn title_animation_presets_retime_and_render_exact_frames() {
+    const RED: [u8; 3] = [255, 0, 0];
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let source = context.root.join("slide.fmtitle");
+    fs::write(&source, SLIDE_TITLE_SOURCE).unwrap();
+    assert_success(&invoke(&[
+        "title-input-add",
+        context.project_path(),
+        "--id",
+        "9",
+        "--name",
+        "Slide",
+        "--template",
+        source.to_str().unwrap(),
+    ]));
+    let uri = "asset://titles/slide.fmtitle";
+    let render = |phase: &str, frame: &str| {
+        let output = context.root.join(format!("{phase}-{frame}.ppm"));
+        let rendered = invoke(&[
+            "title-render-frame",
+            context.project_path(),
+            "9",
+            "--phase",
+            phase,
+            "--frame",
+            frame,
+            output.to_str().unwrap(),
+        ]);
+        assert_success(&rendered);
+        assert!(
+            stdout(&rendered).starts_with(&format!(
+                "title-render-frame: input 9 phase={phase} frame={frame} 16x8 to "
+            )),
+            "{}",
+            stdout(&rendered)
+        );
+        fs::read(output).unwrap()
+    };
+    // Without animation every frame is the static design.
+    assert_eq!(render("in", "0"), slide_golden(4..12, RED));
+
+    let preset = invoke(&[
+        "title-animation-preset",
+        context.project_path(),
+        uri,
+        "1",
+        "--phase",
+        "in",
+        "--preset",
+        "slide-from-left",
+        "--frames",
+        "10",
+    ]);
+    assert_success(&preset);
+    assert_eq!(
+        stdout(&preset),
+        "title-animation-preset: asset://titles/slide.fmtitle revision=1 in_frames=10 out_frames=0 tracks=1"
+    );
+    let stored = fs::read_to_string(context.project.join("assets/titles/slide.fmtitle")).unwrap();
+    assert!(stored.contains(
+        "{\"element\": 1, \"phase\": \"in\", \"property\": \"position_x\", \"keys\": [{\"frame\": 0, \"value\": -12, \"easing\": \"cubic-out\"}, {\"frame\": 10, \"value\": 0, \"easing\": \"linear\"}]}"
+    ), "{stored}");
+
+    // Frame 0 starts fully off the left edge (x = 4 - 12); frame N is the
+    // static design; halfway CubicOut is 0.875: -12 + trunc(10.5) = -2.
+    assert_eq!(render("in", "0"), slide_golden(0..0, RED));
+    assert_eq!(render("in", "10"), slide_golden(4..12, RED));
+    assert_eq!(render("in", "5"), slide_golden(2..10, RED));
+
+    // An Out fade: halfway through four frames is 255 - trunc(127.5).
+    assert_success(&invoke(&[
+        "title-animation-preset",
+        context.project_path(),
+        uri,
+        "1",
+        "--phase",
+        "out",
+        "--preset",
+        "fade",
+        "--frames",
+        "4",
+    ]));
+    assert_eq!(render("out", "0"), slide_golden(4..12, RED));
+    assert_eq!(render("out", "2"), slide_golden(4..12, [128, 0, 0]));
+    assert_eq!(render("out", "4"), slide_golden(0..0, RED));
+
+    // Stretching the In phase to 20 frames moves the halfway pose to 10.
+    let stretched = invoke(&[
+        "title-animation-stretch",
+        context.project_path(),
+        uri,
+        "--phase",
+        "in",
+        "--frames",
+        "20",
+    ]);
+    assert_success(&stretched);
+    assert_eq!(
+        stdout(&stretched),
+        "title-animation-stretch: asset://titles/slide.fmtitle revision=3 in_frames=20 out_frames=4 tracks=2"
+    );
+    assert_eq!(render("in", "10"), slide_golden(2..10, RED));
+    assert_eq!(render("in", "20"), slide_golden(4..12, RED));
+
+    // Refusals leave the stored template untouched.
+    let before = fs::read(context.project.join("assets/titles/slide.fmtitle")).unwrap();
+    for (arguments, expected) in [
+        (
+            vec!["1", "--phase", "in", "--preset", "spin", "--frames", "4"],
+            "unknown animation preset `spin`",
+        ),
+        (
+            vec!["7", "--phase", "in", "--preset", "fade", "--frames", "4"],
+            "unknown title element 7",
+        ),
+        (
+            vec![
+                "1", "--phase", "in", "--preset", "fade", "--frames", "36001",
+            ],
+            "exceeds 36000",
+        ),
+    ] {
+        let mut command = vec!["title-animation-preset", context.project_path(), uri];
+        command.extend(arguments);
+        assert_failure_contains(&invoke(&command), expected);
+    }
+    assert_failure_contains(
+        &invoke(&[
+            "title-animation-stretch",
+            context.project_path(),
+            "asset://titles/missing.fmtitle",
+            "--phase",
+            "in",
+            "--frames",
+            "4",
+        ]),
+        "title template asset://titles/missing.fmtitle",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "title-animation-stretch",
+            context.project_path(),
+            uri,
+            "--phase",
+            "hold",
+            "--frames",
+            "4",
+        ]),
+        "phase (expected in or out)",
+    );
+    assert_eq!(
+        fs::read(context.project.join("assets/titles/slide.fmtitle")).unwrap(),
+        before
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "title-render-frame",
+            context.project_path(),
+            "77",
+            "--phase",
+            "in",
+            "--frame",
+            "0",
+            context.root.join("never.ppm").to_str().unwrap(),
+        ]),
+        "input 77 is not a title input",
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 /// A `.fmtitle` source document whose three production clock elements show
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 29,
+  "schema_version": 30,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -2506,10 +2714,11 @@ const CLOCK_TITLE_SOURCE: &str = r##"{
     "background": "#00000000",
     "fields": [],
     "elements": [
-      {"id": 1, "name": "Doors", "bounds": {"x": 0, "y": 0, "width": 600, "height": 80}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 48}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "doors", "format": null}, "animations": []},
-      {"id": 2, "name": "Local", "bounds": {"x": 0, "y": 100, "width": 600, "height": 80}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 48}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "eastern", "format": {"type": "time_of_day", "preset": "hours_12"}}, "animations": []},
-      {"id": 3, "name": "On air", "bounds": {"x": 0, "y": 200, "width": 600, "height": 80}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 48}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "on-air", "format": null}, "animations": []}
-    ]
+      {"id": 1, "name": "Doors", "bounds": {"x": 0, "y": 0, "width": 600, "height": 80}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 48}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "doors", "format": null}},
+      {"id": 2, "name": "Local", "bounds": {"x": 0, "y": 100, "width": 600, "height": 80}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 48}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "eastern", "format": {"type": "time_of_day", "preset": "hours_12"}}},
+      {"id": 3, "name": "On air", "bounds": {"x": 0, "y": 200, "width": 600, "height": 80}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 48}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "on-air", "format": null}}
+    ],
+    "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}
   },
   "fonts": [],
   "clocks": [
@@ -3647,13 +3856,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        29
+        30
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 29);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 30);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -3666,7 +3875,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 29);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 30);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -3742,7 +3951,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        29
+        30
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -3750,7 +3959,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 29);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 30);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -3760,7 +3969,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 29);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 30);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -3768,7 +3977,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 29);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 30);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
