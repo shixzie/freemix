@@ -1335,6 +1335,21 @@ secondary-mix output renders; stinger effects do not check slot readiness or
 fallback; and overlay fades, mix-sourced overlays, T-bar, Fade-to-Black, and
 audio are absent. `IN-023` remains planned.
 
+Current implementation boundary for keying (`SW-008`): beyond the existing
+chroma and luma keys, rectangular masks, and straight or premultiplied alpha,
+the `fm-compositor` CPU reference adds a bounded auto key that samples a border
+or region, takes a fixed-point BT.709 chroma median, classifies green or blue
+backing, and yields manual chroma parameters; matte refinement with black and
+white clip, choke or spread up to eight pixels, and exact green or blue
+despill that only lowers channels; and key/fill layers whose alpha comes from
+a same-size key source's luma. The planner rejects conflicting keys and
+refinements without a key. Remaining gaps: auto key is a one-shot sample
+assuming an opaque backing, the native GPU path refuses every key, nothing is
+persisted or exposed in Studio or the daemon, key/fill is not tied to paired
+SDI or NDI inputs, distance is per RGB channel rather than perceptual, and
+edge blur, garbage mattes, and light wrap are absent. `SW-008` remains
+planned.
+
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
