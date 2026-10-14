@@ -10,6 +10,10 @@ mod event;
 mod health;
 mod metric;
 mod redact;
+mod registry;
+mod rules;
+mod snapshot;
+mod window;
 
 pub use alert::{
     AlertPolicy, AlertPolicyError, AlertState, AlertTransition, ThresholdAlert, ThresholdDirection,
@@ -24,3 +28,18 @@ pub use metric::{
     MetricSeries, MetricStore,
 };
 pub use redact::Redactor;
+pub use registry::{
+    BucketHistogram, HistogramBuckets, LabelSet, MAX_BUCKET_EDGES, MAX_ID_BYTES,
+    MAX_LABEL_KEY_BYTES, MAX_LABEL_VALUE_BYTES, MAX_LABELS, MetricDescriptor, MetricId,
+    MetricRegistry, RegistryLimits, SeriesEntry, SeriesKey, SeriesKind, SeriesValue,
+    StatisticsError,
+};
+pub use rules::{
+    AlertEngine, AlertEngineLimits, AlertNotification, AlertRule, AlertRuleError, AlertSeverity,
+    NotificationKind, NotificationQueue, RuleCondition, RuleId, RuleReading, RuleState, RuleStatus,
+    RuleTransition, Silence, SilenceId,
+};
+pub use snapshot::{STATISTICS_HEADING, StatisticsSnapshot};
+pub use window::{
+    DepthWindowStats, FrameWindow, FrameWindowStats, QueueDepthWindow, WindowedHistogram,
+};
