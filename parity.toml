@@ -176,7 +176,9 @@ id = "accept-gx-002"
 state = "planned"
 [[tests]]
 id = "accept-gx-003"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-titles/tests/crawl_scoreboard.rs"]
+commands = ["cargo test -p fm-titles --test crawl_scoreboard"]
 [[tests]]
 id = "accept-gx-004"
 state = "present"
