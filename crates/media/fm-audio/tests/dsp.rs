@@ -469,6 +469,16 @@ fn limiter_never_exceeds_ceiling_and_releases() {
 }
 
 #[test]
+fn limiter_clamps_infinite_input_to_the_ceiling() {
+    let mut limiter = Limiter::new(SAMPLE_RATE_HZ, -6.0, 5.0).unwrap();
+    let ceiling = limiter.ceiling_linear();
+    assert_eq!(limiter.process(f32::INFINITY), ceiling);
+    assert_eq!(limiter.process(f32::NEG_INFINITY), -ceiling);
+    let after = limiter.process(0.25);
+    assert!(after.is_finite() && after.abs() <= ceiling, "{after}");
+}
+
+#[test]
 fn limiter_zero_ceiling_is_exactly_unity() {
     let mut limiter = Limiter::new(SAMPLE_RATE_HZ, 0.0, 1.0).unwrap();
     assert_eq!(limiter.ceiling_linear(), 1.0);

@@ -1173,7 +1173,13 @@ impl Limiter {
         } else {
             -20.0 * self.gain.log10()
         };
-        let output = (input * self.gain).clamp(-self.ceiling_linear, self.ceiling_linear);
+        // An infinite input drives the gain to exactly zero, and `inf * 0` is
+        // NaN, which `clamp` would pass through unchanged.
+        let output = if magnitude.is_infinite() {
+            self.ceiling_linear.copysign(input)
+        } else {
+            (input * self.gain).clamp(-self.ceiling_linear, self.ceiling_linear)
+        };
         to_f32(output)
     }
 }
