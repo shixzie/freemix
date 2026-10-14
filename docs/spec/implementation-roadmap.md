@@ -549,7 +549,39 @@ bounded loopback OSC action contract, including zero-argument manual commit and
 cancel and automatic AlphaFade, Slide, Zoom, and Wipe actions, with the same
 current view, permission, and manual-transition gates;
 malformed, rejected, and overflow counts are visible to
-the operator. RC-004 remains planned.
+the operator. `fm-automation` now also carries a bounded shortcut template layer
+beside the existing chords, scopes, and conflict detection. Each template pairs
+its id, name, scope, chord, and delivery intent with a dynamic target that
+resolves a 1-based roster slot, an explicit full-width input identity, or a
+caller-supplied value inside a validated range at press time. The template
+registry reuses the exact/prefix conflict and local-over-global resolution rules,
+press results are deterministic and never mutate the registry, and a versioned
+tab-separated profile with a caller-supplied command codec round-trips every
+field exactly while rejecting malformed, duplicated, or oversized documents
+wholesale. This is model and import/export groundwork only: no durable shortcut
+state, binding editor, shortcut wire payload, runtime dispatch, default key map,
+or resolved engine binding exists in the project schema, protocol, engine,
+Studio, or Web, so RC-004 remains planned.
+
+Current implementation boundary for item 8: `fm-scopes` now provides a bounded
+reference color-monitoring session on top of its scope math: an exact
+monitoring point (program, preview, or a full-width input ID), a bounded ordered
+waveform/parade/vectorscope/histogram selection, a validated integer video/scope
+split layout, a 1–3,600-frame analysis cadence that skips non-cadence frames
+without touching them, an exhaustive false-color luma band map, and
+deterministic reports that reuse the existing reference scope functions.
+`fm-compositor` now executes a typed reference effect set on its CPU oracle:
+white/black levels, brightness/contrast, BT.601 saturation, per-mille unsharp
+sharpen, and horizontal/vertical flip. Each effect validates its parameter
+schema, leaves alpha untouched, runs in declared order after key/mask and before
+premultiplication and transform, and documents exact integer rounding; known
+names with bad parameters report a distinct invalid-effect error while unknown
+names still fail as unsupported, and the native backend still rejects every
+non-passthrough effect. Neither slice is surfaced: there is no scope renderer,
+monitoring-point frame tap, overlay, or telemetry, no scope or effect
+persistence in the project schema, no daemon effect mapping, no GPU/WGSL effect
+execution, no deinterlace, and no `fm-color` grading integration. Item 8
+therefore remains incomplete, and `SW-007`/`SW-010` remain planned.
 
 Current implementation boundary for item 6: the switcher and engine now own
 eight independently addressed overlay channels with a retained source, exact
@@ -1456,11 +1488,21 @@ record before validating and repairing torn tails. `RecorderConfig.tap`
 `Timecode`, all stored in the CRC-protected `manifest.fmr` start record and
 restored across restart; unknown timecode sources, invalid timecodes, zero
 input ids, and truncated or checksum-corrupt records are refused
-transactionally. This is spool metadata only: no daemon path selects per-input
-taps, writes an editing-format timecode manifest, records several inputs
-simultaneously, or exposes tap or timecode state on the wire, and per-camera
-storage roots, ISO/MultiCorder graph taps, and `OR-004` acceptance remain
-planned, so item 5 remains incomplete.
+transactionally. The crate now also provides `IsoTapSession`, a bounded
+orchestration layer that starts up to eight selected raw input feeds as
+independent crash-safe recorders under one session root: recorder and
+video-input identity are unique and bounded per tap, an optional audio input
+maps embedded audio, each tap resolves a shared-master or source-original start
+timecode, the whole roster is validated before any file exists, and a later
+start or manifest failure rolls already-started taps back. The session writes a
+deterministic bounded `iso-manifest.txt` carrying the ordered roster, resolved
+timecodes, and per-tap segment and queue bounds, and parses it back exactly
+while rejecting malformed, duplicated, or out-of-bounds documents wholesale.
+This is still a reference orchestration and manifest layer, not daemon
+integration: no daemon path selects per-input taps, no editing-format
+(EDL/XML-class) interchange is written, no graph tap or per-camera storage root
+exists, no wire, Studio, or Web projection exposes tap or timecode state, and no
+hardware or cross-platform acceptance exists, so item 5 remains incomplete.
 
 Current implementation boundary for item 7: native `freemixd` can expose a
 bounded loopback operator status listener (`--status-listen`, guarded by
