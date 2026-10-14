@@ -1881,7 +1881,11 @@ fragment splitter into the resilient writer, `--record-fallback-dir` provides
 failover, a free-space preflight runs before each segment, and startup recovers
 sessions a crash left open before any recorder starts; FFmpeg-gated daemon tests
 cover a primary made read-only mid-show and a killed daemon with a torn tail.
-Remaining gaps: the WAV sidecar does not fail over, recovery has no
+The `--record-wav` sidecar now streams from FFmpeg into the daemon and is
+written by a resilient WAV writer in its own session beside the video: it
+fails over to the fallback root with no lost audio, patches RIFF sizes on
+close, and startup repairs a sidecar a crash left open.
+Remaining gaps: recovery has no
 cross-process lock, the fallback is refused with fullscreen output, runtime
 remaining-time warnings are not wired, roots disabled for space stay disabled; repaired files are not re-finalized; corrupt
 mid-file fragments end recovery; and only fragmented MP4 is handled. `OR-003`
