@@ -1350,6 +1350,19 @@ SDI or NDI inputs, distance is per RGB channel rather than perceptual, and
 edge blur, garbage mattes, and light wrap are absent. `SW-008` remains
 planned.
 
+Current implementation boundary for freeze and snapshot (`SW-016`): `fm-video`
+provides a per-input freeze controller that latches the first source frame at
+or after a requested index, repeats it on the output cadence while holding at
+most two frames, and resumes live with output timestamps of
+`max(map(source_pts), last_output_pts + d)` on a grid anchored at the first
+source timestamp, so output never regresses. A std-only PNG encoder writes
+exact RGBA8 and RGBA16 stills with stored DEFLATE blocks, CRC32, and Adler32,
+checked by golden bytes and a structural decoder. Remaining gaps: no engine,
+scheduler, simulator, protocol, daemon, or UI calls either piece; timestamps
+are bare ticks rather than `fm-frame` timing types; audio and clock-domain
+conversion are absent; and stills carry no color metadata or compression.
+`SW-016` remains planned.
+
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
