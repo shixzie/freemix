@@ -36,3 +36,4 @@ virtual_set_id!(ShotId);
 virtual_set_id!(LayerId);
 virtual_set_id!(TalentId);
 virtual_set_id!(CameraId);
+virtual_set_id!(PresetId);
