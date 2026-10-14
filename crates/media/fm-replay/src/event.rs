@@ -108,6 +108,11 @@ impl EventDatabase {
     }
 
     fn validate_event(&self, event: &ReplayEvent) -> Result<(), ReplayError> {
+        // `TimelineRange` fields are public, so a range that bypassed
+        // `TimelineRange::new` must still be refused here.
+        if event.timeline.start >= event.timeline.end {
+            return Err(ReplayError::InvalidRange);
+        }
         check_name(&event.name)?;
         check_bytes(&event.note, ReplayLimit::NoteBytes, MAX_NOTE_BYTES)?;
         check_count(

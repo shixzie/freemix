@@ -8587,7 +8587,7 @@ struct CommandDelivery {
     runtime_events: Vec<RuntimeEventMessage>,
 }
 
-#[allow(clippy::too_many_arguments, clippy::used_underscore_binding)]
+#[allow(clippy::too_many_arguments)]
 fn execute_session_command(
     session: &mut Session,
     control: &SharedControl,
@@ -8615,6 +8615,37 @@ fn execute_session_command(
             runtime_events: Vec::new(),
         });
     }
+    // Admission reserved an in-flight slot; it is released whether execution
+    // succeeds, is refused, or fails, so no exit path can leak the slot.
+    let delivery = execute_admitted_command(
+        control,
+        store,
+        durable,
+        principal,
+        server,
+        command,
+        now,
+        native,
+        process_shutdown,
+    );
+    let completed = session.command_completed();
+    let delivery = delivery?;
+    completed?;
+    Ok(delivery)
+}
+
+#[allow(clippy::too_many_arguments, clippy::used_underscore_binding)]
+fn execute_admitted_command(
+    control: &SharedControl,
+    store: &dyn DurableStore,
+    durable: &mut StoredProject,
+    principal: &Principal,
+    server: &ServerIdentity,
+    command: &CommandMessage,
+    now: u64,
+    native: Option<&mut NativeDaemon>,
+    process_shutdown: Option<&ProcessShutdown>,
+) -> AppResult<CommandDelivery> {
     let execution = {
         let mut control = control.borrow_mut();
         if let Some(native) = native {
@@ -8633,8 +8664,6 @@ fn execute_session_command(
                 )? {
                     Ok(execution) => execution,
                     Err(failure) => {
-                        drop(control);
-                        session.command_completed()?;
                         return Ok(CommandDelivery {
                             result: failure.result,
                             #[cfg(test)]
@@ -8690,7 +8719,6 @@ fn execute_session_command(
             )?
         }
     };
-    session.command_completed()?;
     let DurableExecution {
         submission,
         runtime_events: _runtime_events,
@@ -14249,6 +14277,63 @@ mod tests {
             .prepared()
             .expect("failed save must not install a receipt");
         prepared.abort();
+    }
+
+    /// An admitted command whose execution fails must still release its
+    /// in-flight slot; a leaked slot would eventually refuse every command.
+    #[test]
+    fn failed_command_execution_releases_its_inflight_slot() {
+        let mut durable = test_project();
+        let project_id = durable.project().id();
+        let control = Rc::new(RefCell::new(test_control(&durable)));
+        let config = ServerConfig::new(
+            ServerMode::Development,
+            AuthenticationMode::Development,
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            CAPABILITIES_DIGEST,
+        );
+        let mut server = Server::new(config, ControlHandle(Rc::clone(&control))).unwrap();
+        server.mark_ready().unwrap();
+        let principal = development_principal().unwrap();
+        let (hello, _) = current_handshake(
+            &HandshakeRequest {
+                protocol: PROTOCOL_VERSION,
+                build: "inflight-leak-test".into(),
+                client_type: ClientType::Integration,
+                desired_role: Role::Operator,
+                resume_cursor: None,
+            },
+            &control,
+            project_id,
+        );
+        let mut session = server
+            .handshake(&hello, &principal, now_millis().unwrap())
+            .unwrap()
+            .session;
+        // A foreign authority makes the post-commit tick of a timed transition
+        // fail, so execution returns an error after admission.
+        let mut foreign = control_server_identity(&control.borrow(), project_id);
+        foreign.log_id = "foreign-log".into();
+
+        let failed = execute_session_command(
+            &mut session,
+            &control,
+            &CountingSaver::default(),
+            &mut durable,
+            &principal,
+            &foreign,
+            &test_command(
+                "failing-fade",
+                "failing-fade-key",
+                CommandPayload::Fade { duration_frames: 2 },
+            ),
+            None,
+            None,
+        );
+
+        assert!(failed.is_err());
+        assert_eq!(session.accounting().inbound_commands_admitted_total, 1);
+        assert_eq!(session.accounting().inbound_commands_inflight, 0);
     }
 
     #[test]

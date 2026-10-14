@@ -171,20 +171,28 @@ impl Endpoint {
     }
 }
 
+/// Longest local HLS directory: the codec bounds the whole `hls://<path>`
+/// destination URL to 2,048 bytes.
+const MAX_LOCAL_DIRECTORY_BYTES: usize = 2_048 - "hls://".len();
+
 /// Whether `path` is an absolute local directory acceptable as an HLS output:
-/// printable ASCII, at least one segment, and only plain named segments — no
-/// empty segment (`//`), no trailing `/`, and no `.` or `..` segment.
+/// printable ASCII without `%`, at least one segment, and only plain named
+/// segments — no empty segment (`//`), no trailing `/`, and no `.` or `..`
+/// segment — short enough that `hls://<path>` fits the codec's URL bound.
 ///
 /// This is the same rule set the codec applies to an `hls://` destination, so
 /// a directory the transport accepts can always be composed into a URL the
 /// codec accepts.
 fn valid_local_directory(path: &str) -> bool {
-    if !path.starts_with('/') || path.len() < 2 {
+    if !path.starts_with('/') || path.len() < 2 || path.len() > MAX_LOCAL_DIRECTORY_BYTES {
         return false;
     }
     if !path.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
         || path.ends_with('/')
         || path.contains("//")
+        // The codec refuses `%`: FFmpeg would expand it in the segment
+        // filename template.
+        || path.contains('%')
     {
         return false;
     }

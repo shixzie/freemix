@@ -444,7 +444,7 @@ impl MediaM3u8Parser {
             self.playlist_type,
         )?;
         for segment in self.segments {
-            playlist.append(segment)?;
+            playlist.append_with_duration_rule(segment, DurationRule::RoundedToTarget)?;
         }
         if self.end_list {
             playlist.finish();
@@ -456,6 +456,17 @@ impl MediaM3u8Parser {
         Ok(metadata)
     }
 }
+
+/// How a segment duration is held against the playlist target duration.
+#[derive(Clone, Copy)]
+enum DurationRule {
+    /// A playlist this crate writes: the exact duration fits the target.
+    Exact,
+    /// A parsed playlist: the RFC 8216 rounded-duration rule.
+    RoundedToTarget,
+}
+
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HlsPlaylist {
@@ -497,7 +508,9 @@ impl HlsPlaylist {
             maximum_segments,
             playlist_type,
             end_list: false,
-            segments: VecDeque::with_capacity(maximum_segments),
+            // The window is caller-chosen; reserve no more than a playlist can
+            // ever hold so a huge window cannot abort in a fallible constructor.
+            segments: VecDeque::with_capacity(maximum_segments.min(MAX_M3U8_SEGMENTS)),
         })
     }
 
@@ -508,13 +521,35 @@ impl HlsPlaylist {
     /// Rejects wrong renditions, gaps/regressions, invalid discontinuities,
     /// overlapping timestamps, oversized durations, or writes after end-list.
     pub fn append(&mut self, segment: HlsSegmentMetadata) -> Result<(), HlsError> {
+        self.append_with_duration_rule(segment, DurationRule::Exact)
+    }
+
+    fn append_with_duration_rule(
+        &mut self,
+        segment: HlsSegmentMetadata,
+        rule: DurationRule,
+    ) -> Result<(), HlsError> {
         if self.end_list {
             return Err(HlsError::PlaylistEnded);
         }
         if segment.rendition != self.rendition {
             return Err(HlsError::WrongRendition);
         }
-        if segment.duration.as_nanos() > self.target_duration.as_nanos() {
+        let exceeds = match rule {
+            DurationRule::Exact => segment.duration.as_nanos() > self.target_duration.as_nanos(),
+            // RFC 8216 4.3.3.1: the EXTINF duration rounded to the nearest
+            // integer must not exceed the integer target duration. FFmpeg
+            // writes playlists such as TARGETDURATION:2 with EXTINF:2.002000.
+            DurationRule::RoundedToTarget => {
+                segment
+                    .duration
+                    .as_nanos()
+                    .saturating_add(NANOS_PER_SECOND / 2)
+                    / NANOS_PER_SECOND
+                    > self.target_duration.as_nanos().div_ceil(NANOS_PER_SECOND)
+            }
+        };
+        if exceeds {
             return Err(HlsError::DurationExceedsTarget);
         }
         let expected_sequence = match self.segments.back() {

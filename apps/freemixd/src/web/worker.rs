@@ -66,6 +66,13 @@ pub(super) fn worker_loop(
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        // BSD-derived `accept` (macOS included) hands the accepted socket the
+        // non-blocking listener's `O_NONBLOCK`; the handshake and relay rely on
+        // blocking reads bounded by timeouts, so restore blocking mode first.
+        if stream.set_nonblocking(false).is_err() {
+            let _ = stream.shutdown(Shutdown::Both);
+            continue;
+        }
         if let Err(error) = stream.set_read_timeout(Some(SOCKET_HANDSHAKE_TIMEOUT)) {
             let _ = stream.shutdown(Shutdown::Both);
             if error.kind() == io::ErrorKind::Interrupted {
@@ -211,4 +218,80 @@ fn http_error(status: StatusCode) -> ErrorResponse {
         .status(status)
         .body(None)
         .expect("static WebSocket HTTP error response is valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{TcpListener, TcpStream},
+        sync::{Arc, atomic::AtomicBool, mpsc},
+        thread,
+        time::Duration,
+    };
+
+    use super::super::{TOKEN_MAX_BYTES, WebEvent, WebToken};
+    use super::worker_loop;
+
+    const TOKEN: &[u8] = b"worker-test-token-0123456789abcdef";
+
+    fn token() -> WebToken {
+        let mut bytes = [0; TOKEN_MAX_BYTES];
+        bytes[..TOKEN.len()].copy_from_slice(TOKEN);
+        WebToken {
+            bytes,
+            length: TOKEN.len(),
+        }
+    }
+
+    /// An accepted socket that arrives non-blocking, as every socket accepted
+    /// from the non-blocking listener does on BSD-derived systems, must still
+    /// complete a handshake whose request arrives after the worker picks it up.
+    #[test]
+    fn handshake_waits_for_a_late_request_on_a_nonblocking_accepted_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = TcpStream::connect(address).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        accepted.set_nonblocking(true).unwrap();
+
+        let (accepted_tx, accepted_rx) = mpsc::sync_channel(1);
+        let (events_tx, events_rx) = mpsc::sync_channel(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_token = Arc::new(token());
+        accepted_tx.send(accepted).unwrap();
+        let worker = thread::spawn(move || {
+            worker_loop(&accepted_rx, &events_tx, &worker_cancel, &worker_token);
+        });
+        // Let the worker reach the handshake before any request byte exists.
+        thread::sleep(Duration::from_millis(100));
+
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let request = tungstenite::http::Request::builder()
+            .uri(format!("ws://{address}/v1/control"))
+            .header("Host", address.to_string())
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header("Sec-WebSocket-Version", "13")
+            .header(
+                "Sec-WebSocket-Key",
+                tungstenite::handshake::client::generate_key(),
+            )
+            .header(
+                "Authorization",
+                format!("Bearer {}", std::str::from_utf8(TOKEN).unwrap()),
+            )
+            .body(())
+            .unwrap();
+        let handshake = tungstenite::client::client(request, client);
+        let connected = events_rx.recv_timeout(Duration::from_secs(2));
+
+        cancel.store(true, std::sync::atomic::Ordering::Release);
+        drop(accepted_tx);
+        worker.join().unwrap();
+        assert!(handshake.is_ok(), "the WebSocket handshake must complete");
+        assert!(matches!(connected, Ok(WebEvent::Connected(_))));
+    }
 }

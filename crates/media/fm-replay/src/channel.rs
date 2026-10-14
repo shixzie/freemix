@@ -186,7 +186,9 @@ impl ReplayChannel {
             return false;
         };
         let start = i128::from(timeline.start.as_nanos());
-        let end = i128::from(timeline.end.as_nanos()) - 1;
+        // An empty or reversed range (constructible through the public fields)
+        // pins the cursor to `start` instead of panicking in `clamp`.
+        let end = (i128::from(timeline.end.as_nanos()) - 1).max(start);
         let requested = i128::from(self.cursor.as_nanos()).saturating_add(delta);
         let bounded = requested.clamp(start, end);
         self.cursor = NormalizedTimestamp::from_nanos(
@@ -369,6 +371,7 @@ impl ReplayDecks {
                 channel.cursor = timeline.start;
                 channel.move_cursor(offset);
                 channel.transport = ChannelTransport::Paused;
+                channel.rate = PlaybackRate::PAUSED;
             }
         });
         Ok(())

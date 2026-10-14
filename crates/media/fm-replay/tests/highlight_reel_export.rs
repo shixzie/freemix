@@ -429,6 +429,32 @@ fn bed(tracks: Vec<MusicTrack>, repeat: BedRepeat) -> MusicBedSpec {
     }
 }
 
+/// A track whose duration reaches the top of the sample range must end
+/// placement at the program end instead of overflowing the next start or the
+/// fade-out position.
+#[test]
+fn music_bed_with_an_enormous_track_does_not_overflow() {
+    for repeat in [BedRepeat::Once, BedRepeat::Loop] {
+        let plan = MusicBedSpec {
+            crossfade_samples: 0,
+            ..bed(vec![track(1, 10), track(2, u64::MAX)], repeat)
+        }
+        .plan_samples(100, &[])
+        .unwrap();
+        let starts: Vec<_> = plan
+            .entries()
+            .iter()
+            .map(|entry| (entry.output_start, entry.length_samples))
+            .collect();
+        assert_eq!(starts, vec![(0, 10), (10, 90)]);
+        let voices = plan.voices_at(50);
+        assert_eq!(voices.len(), 1);
+        assert_eq!(voices[0].entry_index, 1);
+        assert_eq!(voices[0].source_sample, 40);
+        assert_eq!(voices[0].gain.q16(), UNITY);
+    }
+}
+
 #[test]
 fn music_bed_loops_with_exact_crossfades() {
     let plan = bed(vec![track(1, 100), track(2, 60)], BedRepeat::Loop)

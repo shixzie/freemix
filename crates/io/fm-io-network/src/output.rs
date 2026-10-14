@@ -729,10 +729,13 @@ impl OutputSet {
             output.state,
             DestinationState::Stopped | DestinationState::Failed
         ) {
+            // A failed destination keeps its queue, which can resume mid-GOP
+            // behind a keyframe the dead session already carried; the new
+            // session must recover to a random-access point like a reconnect.
+            output.recover_queue_on_connect = output.state == DestinationState::Failed;
             output.state = DestinationState::Connecting;
             output.reconnect_attempt = 0;
             output.connection_target = ConnectionTarget::Primary;
-            output.recover_queue_on_connect = false;
         }
         Ok(())
     }

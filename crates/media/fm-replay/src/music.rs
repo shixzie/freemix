@@ -154,7 +154,8 @@ impl BedEntry {
         let fade_out = ramp(
             BedGain::UNITY,
             BedGain::SILENCE,
-            self.output_start + self.duration_samples - self.fade_out_samples,
+            self.output_start
+                .saturating_add(self.duration_samples.saturating_sub(self.fade_out_samples)),
             self.fade_out_samples,
             sample,
         );
@@ -325,7 +326,9 @@ impl MusicBedSpec {
                 },
                 fade_out_samples: 0,
             });
-            start = start + track.duration_samples - self.crossfade_samples;
+            // Validation keeps the crossfade within half the track, so only the
+            // addition can overflow; saturating ends placement at the program end.
+            start = start.saturating_add(track.duration_samples - self.crossfade_samples);
             position += 1;
         }
         Ok(entries)

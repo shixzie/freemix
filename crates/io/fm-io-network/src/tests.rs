@@ -298,6 +298,8 @@ fn local_directory_endpoints_are_validated_and_carry_placeholders() {
         "/dot/./segment",
         "/dotdot/../segment",
         "/non ascii/é",
+        "/srv/hls%d",
+        "/srv/%v/hls",
     ] {
         assert_eq!(
             Endpoint::local_directory(rejected).err(),
@@ -309,6 +311,14 @@ fn local_directory_endpoints_are_validated_and_carry_placeholders() {
     // carry is still refused, not truncated.
     assert_eq!(
         Endpoint::local_directory(format!("/{}", "a".repeat(2_048))).err(),
+        Some(ConfigError::InvalidPath)
+    );
+    // `hls://` plus the directory must fit the codec's 2,048-byte URL bound.
+    let longest = format!("/{}", "a".repeat(2_041));
+    assert_eq!(Endpoint::local_directory(&longest).unwrap().path(), longest);
+    assert!(fm_codec_ffmpeg::stream::StreamDestination::parse(&format!("hls://{longest}")).is_ok());
+    assert_eq!(
+        Endpoint::local_directory(format!("/{}", "a".repeat(2_042))).err(),
         Some(ConfigError::InvalidPath)
     );
 }
@@ -624,6 +634,56 @@ fn recovery_queue_priority_preserves_queued_random_access() {
         PollEvent::PacketSent { sequence: 2 }
     );
     assert_eq!(sink.sequences, [2]);
+}
+
+/// Restarting a destination that failed mid-GOP must not open the new session
+/// with the interframes that followed the dead session's keyframe.
+#[test]
+fn restart_after_failure_recovers_to_a_random_access_point() {
+    let id = rendition_id(1);
+    let mut outputs = OutputSet::new();
+    outputs
+        .add_destination(config(1, 8, OutputProtocol::Rtmp))
+        .unwrap();
+    outputs.start(destination_id(1)).unwrap();
+    let mut sink = FakeSink::with_write_results([
+        Ok(SinkWrite::Sent(SendObservation::default())),
+        Err(SinkError::new(FailureStage::Write, None, "refused", false)),
+    ]);
+    assert_eq!(
+        outputs.poll(destination_id(1), 0, &mut sink).unwrap(),
+        PollEvent::Connected
+    );
+    for (sequence, random_access) in [(1, true), (2, false), (3, false), (4, true)] {
+        outputs
+            .enqueue(
+                destination_id(1),
+                packet_with_random_access(id, sequence, random_access, 1),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        outputs.poll(destination_id(1), 1, &mut sink).unwrap(),
+        PollEvent::PacketSent { sequence: 1 }
+    );
+    assert_eq!(
+        outputs.poll(destination_id(1), 2, &mut sink).unwrap(),
+        PollEvent::Failed
+    );
+
+    outputs.start(destination_id(1)).unwrap();
+    assert_eq!(
+        outputs.poll(destination_id(1), 3, &mut sink).unwrap(),
+        PollEvent::AwaitingRandomAccess {
+            dropped_packets: 2,
+            dropped_bytes: 2,
+        }
+    );
+    assert_eq!(
+        outputs.poll(destination_id(1), 4, &mut sink).unwrap(),
+        PollEvent::PacketSent { sequence: 4 }
+    );
+    assert_eq!(sink.sequences, [1, 4]);
 }
 
 #[test]
@@ -1142,6 +1202,40 @@ fn hls_media_playlist_parser_rejects_oversized_and_malformed_inputs() {
         ),
         Err(HlsError::DurationExceedsTarget)
     );
+}
+
+/// `FFmpeg` rounds the target duration (`TARGETDURATION:2` over 2.002 s NTSC
+/// segments, `TARGETDURATION:1` over 1.233 s segments). RFC 8216 compares the
+/// rounded `EXTINF`, so such playlists must parse.
+#[test]
+fn hls_media_playlist_parser_applies_the_rounded_target_duration_rule() {
+    let id = rendition_id(1);
+    let parsed = HlsPlaylistMetadata::parse_m3u8(
+        "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:4\n\
+         #EXTINF:2.002000,\nindex4.ts\n#EXTINF:2.499999,\nindex5.ts\n",
+        id,
+        1,
+    )
+    .unwrap();
+    assert_eq!(parsed.segments().len(), 2);
+    assert_eq!(parsed.target_duration(), duration(2));
+    assert_eq!(
+        HlsPlaylistMetadata::parse_m3u8(
+            "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.500000,\nseg-0.ts\n",
+            id,
+            1,
+        ),
+        Err(HlsError::DurationExceedsTarget)
+    );
+}
+
+/// A fallible constructor must not abort on an enormous caller window.
+#[test]
+fn hls_playlist_accepts_an_enormous_window_without_aborting() {
+    let id = rendition_id(1);
+    let playlist =
+        HlsPlaylist::new(3, id, duration(2), 0, usize::MAX, HlsPlaylistType::Live).unwrap();
+    assert_eq!(playlist.metadata().segments(), []);
 }
 
 #[test]

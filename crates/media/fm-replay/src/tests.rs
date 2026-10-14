@@ -247,6 +247,81 @@ fn transport_supports_speed_jog_shuttle_reverse_and_auto_return() {
     assert_eq!(decks.channel(ReplayChannelId::A).cursor, timestamp(5_000));
 }
 
+/// An event range that bypassed `TimelineRange::new` is refused by the
+/// database, and cueing one directly pins the cursor instead of panicking.
+#[test]
+fn empty_event_ranges_are_refused_and_cannot_panic_transport() {
+    let mut empty = event(1, 0, 1, camera(1));
+    empty.timeline = TimelineRange {
+        start: timestamp(10),
+        end: timestamp(10),
+    };
+    let mut database = EventDatabase::default();
+    assert_eq!(
+        database.insert_event(empty.clone()),
+        Err(ReplayError::InvalidRange)
+    );
+    let mut reversed = empty.clone();
+    reversed.timeline.start = timestamp(20);
+    assert_eq!(
+        database.insert_event(reversed),
+        Err(ReplayError::InvalidRange)
+    );
+
+    let mut decks = ReplayDecks::new(camera(1), camera(2), timestamp(100));
+    decks.cue_event(ReplayChannelId::A, &empty);
+    decks.jog(ReplayChannelId::A, 1, 100).unwrap();
+    assert_eq!(decks.channel(ReplayChannelId::A).cursor, timestamp(10));
+    decks
+        .seek_frame(ReplayChannelId::A, FrameIndex::new(5), 100)
+        .unwrap();
+    assert_eq!(decks.channel(ReplayChannelId::A).cursor, timestamp(10));
+}
+
+/// Seeking pauses, so it must also drop the playback rate like every other
+/// pausing transition.
+#[test]
+fn seek_frame_pauses_with_a_paused_rate() {
+    let replay_event = event(1, 0, 1_000, camera(1));
+    let mut decks = ReplayDecks::new(camera(1), camera(2), timestamp(2_000));
+    decks.cue_event(ReplayChannelId::A, &replay_event);
+    decks.play(ReplayChannelId::A, PlaybackRate::from_milli(2_000).unwrap());
+    decks
+        .seek_frame(ReplayChannelId::A, FrameIndex::new(5), 100)
+        .unwrap();
+    let channel = decks.channel(ReplayChannelId::A);
+    assert_eq!(channel.cursor, timestamp(500));
+    assert_eq!(channel.transport, ChannelTransport::Paused);
+    assert_eq!(channel.rate, PlaybackRate::PAUSED);
+}
+
+/// Cameras at opposite ends of the timeline report a saturated skew instead
+/// of overflowing the subtraction.
+#[test]
+fn quad_view_skew_spanning_the_whole_timeline_does_not_overflow() {
+    let source_catalog = sources(4);
+    let mut timeline = SourceTimeline::new(&source_catalog);
+    for (value, at) in [(1, i64::MIN + 1), (2, 0), (3, 1), (4, i64::MAX - 1)] {
+        timeline
+            .observe(
+                camera(value),
+                timestamp(at),
+                SequenceNumber::new(1),
+                FrameIndex::new(1),
+            )
+            .unwrap();
+    }
+    let quad = timeline
+        .quad_view(
+            [camera(1), camera(2), camera(3), camera(4)],
+            timestamp(i64::MAX),
+            10,
+        )
+        .unwrap();
+    assert_eq!(quad.skew_nanos, u64::MAX - 2);
+    assert!(!quad.in_sync);
+}
+
 #[test]
 fn quad_view_resolves_one_synchronized_target_and_reports_skew() {
     let source_catalog = sources(8);

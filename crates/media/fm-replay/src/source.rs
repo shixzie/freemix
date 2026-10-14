@@ -340,16 +340,18 @@ impl SourceTimeline {
                 observation,
             });
         }
+        // Widened so cameras at opposite ends of the i64 timeline cannot
+        // overflow the skew subtraction.
         let minimum = cells
             .iter()
-            .map(|cell| cell.observation.synchronized_at.as_nanos())
+            .map(|cell| i128::from(cell.observation.synchronized_at.as_nanos()))
             .min()
-            .unwrap_or(synchronized_at.as_nanos());
+            .unwrap_or_else(|| i128::from(synchronized_at.as_nanos()));
         let maximum = cells
             .iter()
-            .map(|cell| cell.observation.synchronized_at.as_nanos())
+            .map(|cell| i128::from(cell.observation.synchronized_at.as_nanos()))
             .max()
-            .unwrap_or(synchronized_at.as_nanos());
+            .unwrap_or_else(|| i128::from(synchronized_at.as_nanos()));
         let skew_nanos = u64::try_from(maximum - minimum).unwrap_or(u64::MAX);
         let cells: [QuadCell; 4] = cells
             .try_into()
