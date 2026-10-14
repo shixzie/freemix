@@ -1738,7 +1738,17 @@ independently with tested recovery.
 9. Add PTZ protocols, presets as virtual inputs, mouse/joystick control.
 10. Add telestrator and web monitor.
 11. Add project append, bundle, relink, import/export, templates, undo/lock.
-The current persistence slice only audits stored media asset references; all item 11 mutation workflows remain planned.
+The current persistence slice audits stored media asset references and
+provides a secret-free settings export with an import planner (`RC-013`):
+outputs, buses, stream targets, and video/audio settings export as one exact
+contract whose secrets serialize only as placeholders, and imports preview
+per-key changes, merge by replace, prefer-incoming, prefer-current, or
+per-section choice, report secret re-entry, unknown references, and ID
+collisions, and apply atomically only when resolved against an unchanged base.
+Applied snapshots are not yet turned into project mutations or engine
+commands, nothing in the daemon, protocol, CLI, or UI calls the planner,
+secrets are excluded rather than separately encrypted, and append, bundle,
+relink, templates, and undo/lock remain planned.
 
 Current implementation boundary for item 1: `fm-titles` provides dependent,
 bounded title scenes and a deterministic CPU renderer. Templates carry typed
