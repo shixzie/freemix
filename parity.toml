@@ -166,7 +166,9 @@ id = "accept-sw-015"
 state = "planned"
 [[tests]]
 id = "accept-sw-016"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-video/tests/snapshot_freeze.rs"]
+commands = ["cargo test -p fm-video --test snapshot_freeze"]
 [[tests]]
 id = "accept-sw-017"
 state = "planned"
