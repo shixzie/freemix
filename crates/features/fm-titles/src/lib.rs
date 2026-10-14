@@ -30,6 +30,14 @@
 //! * Scoreboards: a typed [`Scoreboard`] with bounded/saturating score and
 //!   period actions, a frame-exact [`GameClock`] with a once-only expiry event,
 //!   external key/value mapping, and atomic publication onto template fields.
+//! * Designer document ([`TitleDesign`]): a bounded tree of elements and
+//!   nested groups whose offsets and opacity compose exactly onto children,
+//!   rectangular and rounded-rect group [`ClipMask`]s applied per pixel by
+//!   [`ReferenceRenderer::render_composed`], frame-indexed `TransitionIn` /
+//!   `TransitionOut` timelines with a fixed-point [`Easing`] library, a
+//!   [`TitlePlayback`] take/hold/off-air state machine, and a
+//!   [`DesignEditor`] whose every edit validates atomically with bounded
+//!   undo/redo.
 //!
 //! # What is still missing
 //!
@@ -40,14 +48,20 @@
 //!   orientation, animation, or mipmapped minification. See
 //!   [`REFERENCE_RENDERER_LIMITATIONS`].
 //! * GPU rasterization, production effects, and any pipeline wiring. Nothing
-//!   in the project schema instantiates these scenes yet.
+//!   in the project schema instantiates these scenes yet. The designer has no
+//!   UI, persistence, protocol commands, or anti-aliased mask edges, and its
+//!   group transforms are translation and opacity only (no scale/rotation).
 
 mod animation;
 mod crawl;
+mod design;
+mod easing;
+mod editor;
 mod font;
 mod id;
 mod image;
 mod model;
+mod playback;
 mod render;
 mod runtime;
 mod scoreboard;
@@ -60,6 +74,17 @@ pub use crawl::{
     CrawlSegmentKind, CrawlSpeed, CrawlView, FontCrawlMeasure, MAX_CRAWL_EPOCHS, MAX_CRAWL_GAP_PX,
     MAX_CRAWL_ITEM_CHARS, MAX_CRAWL_ITEMS, MAX_CRAWL_SEPARATOR_CHARS, MAX_CRAWL_VISIBLE_SEGMENTS,
 };
+pub use design::{
+    ClipMask, Composition, DesignError, DesignNode, ElementPlacement, Group, GroupTransform,
+    MAX_DESIGN_NAME_CHARS, MAX_DESIGN_NODES, MAX_GROUP_DEPTH, MAX_TIMELINE_FRAMES,
+    MAX_TIMELINE_TRACKS, MAX_TRACK_KEYFRAMES, NodeProperty, ResolvedClip, Timeline,
+    TimelineKeyframe, TimelineSample, TimelineTrack, TitleDesign, TransitionKind,
+};
+pub use easing::{
+    CubicBezier, EASE_ONE, Easing, EasingError, MAX_BEZIER_Y, MIN_BEZIER_Y, ease_between,
+    progress_q16,
+};
+pub use editor::{DEFAULT_UNDO_DEPTH, DesignEdit, DesignEditor, MAX_UNDO_DEPTH, NodeSlot};
 pub use font::{FontError, FontFace, MAX_FONT_BYTES};
 pub use id::{ElementId, FieldId, TemplateId, TitleId};
 pub use model::{
@@ -67,6 +92,7 @@ pub use model::{
     FontStyle, HorizontalAlignment, ImageFilter, ImageFit, ImageSource, InstantiationError, Style,
     TitleScene, TitleTemplate, UpdateError, VerticalAlignment,
 };
+pub use playback::{PlaybackError, PlaybackOutcome, PlaybackPhase, TitlePlayback};
 pub use render::{
     CrawlLayer, Degradation, DegradedElement, MAX_FONT_SIZE_PX, MAX_GLYPH_RASTER_DIMENSION,
     MAX_GLYPH_RASTER_PIXELS, MAX_GLYPHS_PER_ELEMENT, MAX_GLYPHS_PER_FRAME, MAX_OUTPUT_HEIGHT,

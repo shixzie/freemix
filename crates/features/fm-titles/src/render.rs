@@ -49,9 +49,9 @@
 //! the whole frame meaningless is a [`RenderError`].
 
 use crate::{
-    Alignment, AssetCatalog, Bounds, Color, Crawl, CrawlMode, Element, ElementId, ElementKind,
-    FieldId, FieldValue, FontFace, HorizontalAlignment, ImageFilter, ImageFit, MissingFont,
-    TickerSpec, TitleScene, VerticalAlignment,
+    Alignment, AssetCatalog, Bounds, Color, Composition, Crawl, CrawlMode, Element, ElementId,
+    ElementKind, ElementPlacement, FieldId, FieldValue, FontFace, HorizontalAlignment, ImageFilter,
+    ImageFit, MissingFont, ResolvedClip, TickerSpec, TitleScene, VerticalAlignment,
     animation::evaluate_tracks,
     crawl::{MAX_CRAWL_VISIBLE_SEGMENTS, layout_segment},
     evaluate_clock, evaluate_ticker_position,
@@ -296,75 +296,123 @@ impl ReferenceRenderer {
         assets: &AssetCatalog,
         crawls: &[CrawlLayer<'_>],
     ) -> Result<RenderOutput, RenderError> {
-        if scene.width() > MAX_OUTPUT_WIDTH || scene.height() > MAX_OUTPUT_HEIGHT {
-            return Err(RenderError::OutputTooLarge {
-                width: scene.width(),
-                height: scene.height(),
-                max_width: MAX_OUTPUT_WIDTH,
-                max_height: MAX_OUTPUT_HEIGHT,
-            });
-        }
-        let stride = usize::try_from(scene.width())
-            .ok()
-            .and_then(|width| width.checked_mul(4))
-            .ok_or(FrameError::LayoutOverflow)?;
-        let length = stride
-            .checked_mul(usize::try_from(scene.height()).map_err(|_| FrameError::LayoutOverflow)?)
-            .ok_or(FrameError::LayoutOverflow)?;
-        if length > ImageFrame::MAX_BUFFER_BYTES {
-            return Err(FrameError::BufferTooLarge {
-                required: length,
-                maximum: ImageFrame::MAX_BUFFER_BYTES,
-            }
-            .into());
-        }
-        let mut pixels = vec![0; length];
-        let mut canvas = Canvas {
-            pixels: &mut pixels,
+        render_frame(scene, scene_time_ms, assets, crawls, None)
+    }
+
+    /// Renders a scene instantiated from [`crate::TitleDesign::to_template`]
+    /// with a design [`Composition`] folded in.
+    ///
+    /// Only elements with a placement are drawn. Each drawn element's
+    /// evaluated bounds are translated by the placement offset (clamped to
+    /// `i32` once), its evaluated opacity is composed with the placement's
+    /// ancestor opacity by [`ElementPlacement::compose_opacity`], and every
+    /// pixel it would write is kept only when it lies inside all of the
+    /// placement's [`ElementPlacement::clips`]. Everything else matches
+    /// [`Self::render`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::render`].
+    pub fn render_composed(
+        self,
+        scene: &TitleScene,
+        scene_time_ms: u64,
+        assets: &AssetCatalog,
+        composition: &Composition,
+    ) -> Result<RenderOutput, RenderError> {
+        render_frame(scene, scene_time_ms, assets, &[], Some(composition))
+    }
+}
+
+fn render_frame(
+    scene: &TitleScene,
+    scene_time_ms: u64,
+    assets: &AssetCatalog,
+    crawls: &[CrawlLayer<'_>],
+    composition: Option<&Composition>,
+) -> Result<RenderOutput, RenderError> {
+    if scene.width() > MAX_OUTPUT_WIDTH || scene.height() > MAX_OUTPUT_HEIGHT {
+        return Err(RenderError::OutputTooLarge {
             width: scene.width(),
             height: scene.height(),
-        };
-        canvas.fill(scene.background());
-
-        let mut elements: Vec<(usize, &Element)> = scene.elements().iter().enumerate().collect();
-        elements.sort_by_key(|(index, element)| (element.z_index, *index));
-        let mut state = FrameState {
-            glyphs: MAX_GLYPHS_PER_FRAME,
-            degraded: Vec::new(),
-        };
-        for (_, element) in elements {
-            if element.visible {
-                draw_element(
-                    &mut canvas,
-                    scene,
-                    element,
-                    scene_time_ms,
-                    assets,
-                    &mut state,
-                )?;
-            }
-        }
-
-        let mut validation = validate_scene(scene, assets);
-        for layer in crawls {
-            draw_crawl(
-                &mut canvas,
-                *layer,
-                assets,
-                &mut state,
-                &mut validation.missing_fonts,
-            )?;
-        }
-        Ok(RenderOutput {
-            frame: ImageFrame::new(scene.width(), scene.height(), stride, pixels)?,
-            report: RenderReport {
-                missing_fonts: validation.missing_fonts,
-                missing_images: validation.missing_images,
-                degraded: state.degraded,
-                limitations: REFERENCE_RENDERER_LIMITATIONS,
-            },
-        })
+            max_width: MAX_OUTPUT_WIDTH,
+            max_height: MAX_OUTPUT_HEIGHT,
+        });
     }
+    let stride = usize::try_from(scene.width())
+        .ok()
+        .and_then(|width| width.checked_mul(4))
+        .ok_or(FrameError::LayoutOverflow)?;
+    let length = stride
+        .checked_mul(usize::try_from(scene.height()).map_err(|_| FrameError::LayoutOverflow)?)
+        .ok_or(FrameError::LayoutOverflow)?;
+    if length > ImageFrame::MAX_BUFFER_BYTES {
+        return Err(FrameError::BufferTooLarge {
+            required: length,
+            maximum: ImageFrame::MAX_BUFFER_BYTES,
+        }
+        .into());
+    }
+    let mut pixels = vec![0; length];
+    let mut canvas = Canvas {
+        pixels: &mut pixels,
+        width: scene.width(),
+        height: scene.height(),
+        clips: Vec::new(),
+    };
+    canvas.fill(scene.background());
+
+    let mut elements: Vec<(usize, &Element)> = scene.elements().iter().enumerate().collect();
+    elements.sort_by_key(|(index, element)| (element.z_index, *index));
+    let mut state = FrameState {
+        glyphs: MAX_GLYPHS_PER_FRAME,
+        degraded: Vec::new(),
+    };
+    for (_, element) in elements {
+        if !element.visible {
+            continue;
+        }
+        let placement = match composition {
+            None => None,
+            Some(composition) => match composition.placement(element.id) {
+                Some(placement) => Some(placement),
+                None => continue,
+            },
+        };
+        canvas.clips.clear();
+        if let Some(placement) = placement {
+            canvas.clips.extend_from_slice(placement.clips());
+        }
+        draw_element(
+            &mut canvas,
+            scene,
+            element,
+            (scene_time_ms, placement),
+            assets,
+            &mut state,
+        )?;
+    }
+    canvas.clips.clear();
+
+    let mut validation = validate_scene(scene, assets);
+    for layer in crawls {
+        draw_crawl(
+            &mut canvas,
+            *layer,
+            assets,
+            &mut state,
+            &mut validation.missing_fonts,
+        )?;
+    }
+    Ok(RenderOutput {
+        frame: ImageFrame::new(scene.width(), scene.height(), stride, pixels)?,
+        report: RenderReport {
+            missing_fonts: validation.missing_fonts,
+            missing_images: validation.missing_images,
+            degraded: state.degraded,
+            limitations: REFERENCE_RENDERER_LIMITATIONS,
+        },
+    })
 }
 
 /// The frame's remaining glyph budget and the degradations spending it caused.
@@ -397,16 +445,25 @@ fn draw_element(
     canvas: &mut Canvas<'_>,
     scene: &TitleScene,
     element: &Element,
-    time_ms: u64,
+    (time_ms, placement): (u64, Option<&ElementPlacement>),
     assets: &AssetCatalog,
     state: &mut FrameState,
 ) -> Result<(), RenderError> {
-    let evaluated = evaluate_tracks(
+    let mut evaluated = evaluate_tracks(
         element.bounds,
         element.style.opacity,
         &element.animations,
         time_ms,
     );
+    if let Some(placement) = placement {
+        let shift = |base: i32, offset: i64| -> i32 {
+            let value = i64::from(base).saturating_add(offset);
+            i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
+        };
+        evaluated.bounds.x = shift(evaluated.bounds.x, placement.offset_x);
+        evaluated.bounds.y = shift(evaluated.bounds.y, placement.offset_y);
+        evaluated.opacity = placement.compose_opacity(evaluated.opacity);
+    }
     if evaluated.bounds.width == 0 || evaluated.bounds.height == 0 {
         return Ok(());
     }
@@ -861,9 +918,19 @@ struct Canvas<'a> {
     pixels: &'a mut [u8],
     width: u32,
     height: u32,
+    /// Design clip masks for the element being drawn; a pixel outside any of
+    /// them is never written. Empty outside [`render_frame`]'s design path.
+    clips: Vec<ResolvedClip>,
 }
 
 impl Canvas<'_> {
+    /// Whether every active design clip contains pixel `(x, y)`.
+    fn unclipped(&self, x: u32, y: u32) -> bool {
+        self.clips
+            .iter()
+            .all(|clip| clip.contains(i64::from(x), i64::from(y)))
+    }
+
     fn fill(&mut self, color: Color) {
         let color = premultiply(color, u8::MAX);
         for pixel in self.pixels.as_chunks_mut::<4>().0 {
@@ -979,6 +1046,9 @@ impl Canvas<'_> {
     /// `destination = source_scaled + round(destination * (255 - source_alpha) / 255)`
     /// with saturating addition.
     fn blend_premultiplied(&mut self, x: u32, y: u32, pixel: Rgba8, opacity: u8) {
+        if !self.unclipped(x, y) {
+            return;
+        }
         let Some(offset) = pixel_offset(self.width, x, y) else {
             return;
         };
@@ -1015,6 +1085,9 @@ impl Canvas<'_> {
 
     /// Source-over blend of `color` scaled by `alpha` into premultiplied RGBA8.
     fn blend_pixel(&mut self, x: u32, y: u32, color: Color, alpha: u8) {
+        if !self.unclipped(x, y) {
+            return;
+        }
         let Some(offset) = pixel_offset(self.width, x, y) else {
             return;
         };
