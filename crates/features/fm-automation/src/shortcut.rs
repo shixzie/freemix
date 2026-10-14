@@ -7,7 +7,7 @@ pub enum ShortcutScope {
 }
 
 impl ShortcutScope {
-    fn overlaps(&self, other: &Self) -> bool {
+    pub(crate) fn overlaps(&self, other: &Self) -> bool {
         matches!(self, Self::Global)
             || matches!(other, Self::Global)
             || matches!((self, other), (Self::Local(left), Self::Local(right)) if left == right)
@@ -104,7 +104,7 @@ impl Chord {
         &self.0
     }
 
-    fn conflict(&self, other: &Self) -> Option<ConflictKind> {
+    pub(crate) fn conflict(&self, other: &Self) -> Option<ConflictKind> {
         if self.0 == other.0 {
             Some(ConflictKind::Exact)
         } else if self.0.starts_with(&other.0) || other.0.starts_with(&self.0) {
