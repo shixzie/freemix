@@ -322,6 +322,14 @@ pub fn execute_cpu_frame(
         .map(|(source, frame)| CpuSourceFrame::new(*source, frame))
         .collect::<Vec<_>>();
     let output = execute_cpu(plan, &bindings)?;
+    video_frame_from_image(&output, output_timing)
+}
+
+/// Wraps a composed RGBA8 image as a portable frame with caller timing.
+pub(crate) fn video_frame_from_image(
+    output: &ImageFrame,
+    output_timing: MediaTiming,
+) -> Result<CpuVideoFrame, CpuExecutionError> {
     let dimensions = VideoDimensions::new(output.width(), output.height())
         .ok_or(CpuExecutionError::Frame(FrameError::LayoutOverflow))?;
     let plane = CpuVideoPlane::new(output.stride(), output.pixels().to_vec())?;

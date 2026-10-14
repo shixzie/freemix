@@ -97,6 +97,24 @@ impl PlanLayer {
     pub const fn scene_index(&self) -> usize {
         self.scene_index
     }
+
+    /// `inner` (the only layer of a nested scene this layer draws) moved into
+    /// this layer's scene: it keeps this layer's stacking position and
+    /// overlay routing and lands at the summed translation.
+    pub(crate) fn hoisted_through(
+        &self,
+        inner: &Self,
+        translation_x: i32,
+        translation_y: i32,
+    ) -> Self {
+        let mut layer = inner.clone();
+        layer.transform.translation_x = translation_x;
+        layer.transform.translation_y = translation_y;
+        layer.z = self.z;
+        layer.scene_index = self.scene_index;
+        layer.overlay_inclusion = self.overlay_inclusion;
+        layer
+    }
 }
 
 /// Immutable, validated work description suitable for a CPU or GPU backend.
@@ -145,6 +163,14 @@ impl CompositionPlan {
     #[must_use]
     pub fn safe_areas(&self) -> &[SafeAreaGuide] {
         &self.safe_areas
+    }
+
+    /// The same plan with its layers replaced by an equally ordered list.
+    pub(crate) fn with_layers(&self, layers: Vec<PlanLayer>) -> Self {
+        Self {
+            layers,
+            ..self.clone()
+        }
     }
 }
 

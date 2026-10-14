@@ -3,6 +3,7 @@
 mod cpu;
 mod effects;
 mod fade_to_black;
+mod flatten;
 mod keying;
 mod multiview;
 #[cfg(feature = "native-wgpu")]
@@ -21,6 +22,11 @@ pub use effects::{ReferenceEffect, ReferenceEffectError, apply_reference_effect}
 pub use fade_to_black::{
     FadeToBlackPlan, FadeToBlackPlanError, FadeToBlackPosition, MAX_FADE_TO_BLACK_DENOMINATOR,
     execute_fade_to_black_cpu,
+};
+pub use flatten::{
+    FlattenError, FlattenExecutionError, FlattenLimits, FlattenMode, FlattenOutput, FlattenPlan,
+    FlattenStep, FlattenedScene, HoistedLayer, SceneGraph, execute_flatten_cpu,
+    execute_flatten_cpu_frame, plan_flatten,
 };
 pub use keying::{
     AutoKey, AutoKeyError, AutoKeyOptions, AutoKeyRegion, Backing, Despill, KeyFill, KeyRefinement,
