@@ -6,8 +6,11 @@
 
 mod capacity;
 mod channel;
+mod controller;
+mod disk_health;
 mod event;
 mod highlight;
+mod multiview;
 mod resolve;
 mod source;
 mod storage;
@@ -21,10 +24,23 @@ pub use channel::{
     AudioPolicy, ChannelMode, ChannelTransport, PlaybackRate, ReplayAudioSource, ReplayChannel,
     ReplayChannelId, ReplayDecks, VariableSpeedAudio,
 };
+pub use controller::{
+    AngleSlot, BindingConflict, ControlInput, ControllerCommand, ControllerContext,
+    ControllerError, ControllerProfile, ControllerSlot, ControllerSurface, JogStep,
+    MAX_BINDINGS_PER_PROFILE, MAX_JOG_FRAMES, Modifiers, ReplayAction, binding_conflicts,
+};
+pub use disk_health::{
+    CameraBitrate, DiskHealthError, DiskHealthLevel, DiskHealthMonitor, DiskHealthReport,
+    DiskSample, DiskThresholds, MAX_CAMERA_BITS_PER_SECOND, MAX_OVERHEAD_PERMILLE, RecordingLoad,
+};
 pub use event::{EventDatabase, EventFolder, EventList, ReplayEvent, ReplayMarks};
 pub use highlight::{
     CaptureState, ExportJob, ExportJobState, HighlightItem, HighlightTimeline, MusicBed,
     ReplaySession, Transition,
+};
+pub use multiview::{
+    MAX_MULTIVIEW_ANGLES, MAX_MULTIVIEW_TILES, MultiviewError, MultiviewLayout, MultiviewPlan,
+    MultiviewTile, QUAD_VIEW_ANGLES, TileMode, TileSource,
 };
 pub use resolve::{
     AngleSpan, CapturedEvent, ChannelFrame, FrameSpan, LastNPreset, SegmentCoverage,
