@@ -1163,6 +1163,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-animation"
+version = "0.1.0"
+dependencies = [
+ "fm-types",
+]
+
+[[package]]
 name = "fm-audio"
 version = "0.1.0"
 dependencies = [
@@ -1557,6 +1564,7 @@ name = "fm-titles"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "fm-animation",
  "fm-clock",
  "fm-types",
  "fm-video",

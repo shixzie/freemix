@@ -94,8 +94,8 @@ pub use design::{
     TimelineKeyframe, TimelineSample, TimelineTrack, TitleDesign, TransitionKind,
 };
 pub use easing::{
-    CubicBezier, EASE_ONE, Easing, EasingError, MAX_BEZIER_Y, MIN_BEZIER_Y, ease_between,
-    progress_q16,
+    CubicBezier, EASE_ONE, Easing, EasingError, EasingPreset, MAX_BEZIER_Y, MIN_BEZIER_Y,
+    ease_between, progress_q16,
 };
 pub use editor::{DEFAULT_UNDO_DEPTH, DesignEdit, DesignEditor, MAX_UNDO_DEPTH, NodeSlot};
 pub use font::{FontError, FontFace, MAX_FONT_BYTES};

@@ -10,6 +10,7 @@ rust-version.workspace = true
 # 0.2.x may tessellate or accumulate differently. See the determinism notes in
 # `src/render.rs` - reproducibility is scoped to one pinned build.
 ab_glyph = "=0.2.32"
+fm-animation = { path = "../../foundation/fm-animation" }
 fm-clock = { path = "../../media/fm-clock" }
 fm-types = { path = "../../foundation/fm-types" }
 fm-video = { path = "../../media/fm-video" }

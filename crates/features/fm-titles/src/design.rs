@@ -34,15 +34,13 @@
 //!
 //! The design owns two named timelines: [`TransitionKind::In`] plays on take
 //! and [`TransitionKind::Out`] on off-air. Keyframes are frame indexed, carry
-//! the [`Easing`] used towards the next keyframe, and animate per-node
+//! the [`Easing`](crate::Easing) used towards the next keyframe, and animate per-node
 //! [`NodeProperty`] offsets and opacity layered on top of the node's static
 //! values. A property with no track in the timeline being evaluated keeps its
 //! static value.
 
 use crate::{
-    Bounds, Color, Easing, Element, ElementId, FieldDefinition, TemplateId, TitleTemplate,
-    ValidationError,
-    easing::{ease_between, progress_q16},
+    Bounds, Color, Element, ElementId, FieldDefinition, TemplateId, TitleTemplate, ValidationError,
     validation::validate_template_structure,
 };
 use core::fmt;
@@ -251,13 +249,9 @@ impl NodeProperty {
     }
 }
 
-/// A keyframe; `easing` shapes the interval towards the next keyframe.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TimelineKeyframe {
-    pub frame: u32,
-    pub value: i64,
-    pub easing: Easing,
-}
+/// A keyframe; `easing` shapes the interval towards the next keyframe. The
+/// shared [`fm_animation::Keyframe`] with a raw `i64` value.
+pub type TimelineKeyframe = fm_animation::Keyframe<i64>;
 
 /// One animated property of one node.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -274,25 +268,7 @@ impl TimelineTrack {
     /// `ease_between(k.value, next.value, k.easing(progress))`.
     #[must_use]
     pub fn value_at(&self, frame: u32) -> Option<i64> {
-        let first = self.keyframes.first()?;
-        if frame <= first.frame {
-            return Some(first.value);
-        }
-        for pair in self.keyframes.windows(2) {
-            let (from, to) = (pair[0], pair[1]);
-            if frame < to.frame {
-                let progress = progress_q16(
-                    u64::from(frame - from.frame),
-                    u64::from(to.frame - from.frame),
-                );
-                return Some(ease_between(
-                    from.value,
-                    to.value,
-                    from.easing.apply(progress),
-                ));
-            }
-        }
-        self.keyframes.last().map(|keyframe| keyframe.value)
+        fm_animation::sample_frame(&self.keyframes, frame)
     }
 }
 

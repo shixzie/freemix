@@ -7,6 +7,7 @@ members = [
     "apps/freemix-plugin-host",
     "apps/freemix-dsp-host",
     "apps/freemix-capture-node",
+    "crates/foundation/fm-animation",
     "crates/foundation/fm-capabilities",
     "crates/foundation/fm-command",
     "crates/foundation/fm-model",
@@ -63,6 +64,7 @@ members = [
 ]
 default-members = [
     "apps/freemix-cli",
+    "crates/foundation/fm-animation",
     "crates/foundation/fm-capabilities",
     "crates/foundation/fm-command",
     "crates/foundation/fm-model",
