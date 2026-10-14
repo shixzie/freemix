@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Screenshot aid: with FREEMIX_STUDIO_CAPTURE_METERS=1, feed a synthetic
+# audio meter signal when the daemon sends none (see docs/progress).
+capture-meter-signal = []
+
 [dependencies]
 command-group = "5.0.1"
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }

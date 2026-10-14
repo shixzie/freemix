@@ -3,7 +3,7 @@ use fm_protocol::{FadeToBlackPosition, FadeToBlackState};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg, with_key};
-use crate::theme::{AMBER, BORDER, PROGRAM, PROGRAM_FILL, TEXT, TEXT_DIM, section_label};
+use crate::theme::{AMBER, BORDER, PROGRAM, TEXT, TEXT_DIM, WIDGET, section_label};
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
 /// Pure Fade-to-Black control availability derived from replicated state and session gates.
@@ -92,10 +92,12 @@ pub(super) fn draw_fade_to_black(
                 with_key(l, l.text(Msg::FtbHover), "B"),
             )
         };
+        // Lit red only while Program is (going) black, as on a hardware
+        // panel; an idle FTB key is an unlit console key.
         let (fill, stroke) = if black {
             (PROGRAM, PROGRAM)
         } else {
-            (PROGRAM_FILL, PROGRAM.gamma_multiply(0.7))
+            (WIDGET, PROGRAM.gamma_multiply(0.45))
         };
         if ui
             .add_enabled(

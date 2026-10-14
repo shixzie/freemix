@@ -10,7 +10,8 @@
 use core::fmt::Write as _;
 
 use egui::{
-    Button, CornerRadius, FontFamily, FontId, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2,
+    Button, Color32, CornerRadius, FontFamily, FontId, Rect, RichText, Sense, Stroke, Ui, Vec2,
+    pos2,
 };
 use fm_protocol::{StreamRealizedState, StreamStatusSample, WireStreamTargetId};
 use fm_ui_model::StreamStatus;
@@ -20,8 +21,8 @@ use crate::l10n::{self, Arg, Locale, Msg};
 use crate::panels::{STREAMS_NONE_CONFIGURED, latest_stream_sample, stream_row_text};
 use crate::stream_control::{stream_action_text, stream_unavailable_reason};
 use crate::theme::{
-    BORDER, BORDER_STRONG, GRAPHITE, MUTED, PROGRAM, PROGRAM_FILL, TEXT, TEXT_DIM, Tone, WIDGET,
-    elided, mono, paint_lamp, section_header, status_chip_painted,
+    AMBER, BORDER, BORDER_STRONG, GRAPHITE, MUTED, PROGRAM, PROGRAM_FILL, TEXT, TEXT_DIM, Tone,
+    WIDGET, elided, mono, paint_lamp, section_header, status_chip_painted,
 };
 use crate::{
     RecordingAction, StreamAction, StudioIntent, StudioUiState, recording_action, stream_action,
@@ -208,6 +209,19 @@ struct RowKey<'a> {
     reason: &'a str,
 }
 
+/// The row key's label, fill, and outline. Red is reserved for on air: an
+/// idle START key is a neutral console key, the STOP key of an output that
+/// is on air is lit red like the row's lamp and chip, and a STOP key for a
+/// requested-but-not-realized output takes the row's amber.
+pub(crate) fn row_key_style(starts: bool, tone: Tone) -> (Msg, Color32, Color32) {
+    match (starts, tone) {
+        (true, _) => (Msg::StartKey, WIDGET, BORDER_STRONG),
+        (false, Tone::OnAir) => (Msg::StopKey, PROGRAM_FILL, PROGRAM.gamma_multiply(0.8)),
+        (false, Tone::Pending) => (Msg::StopKey, WIDGET, AMBER.gamma_multiply(0.7)),
+        (false, _) => (Msg::StopKey, WIDGET, BORDER_STRONG),
+    }
+}
+
 /// Paints one fixed-height row and returns whether its key was clicked.
 fn draw_row(
     ui: &mut Ui,
@@ -293,15 +307,8 @@ fn draw_row(
     .on_hover_text(tooltip);
     ui.add_space(1.0);
     let l = l10n::locale(ui.ctx());
-    let (label, fill, stroke) = if key.starts {
-        (
-            l.text(Msg::StartKey),
-            PROGRAM_FILL,
-            PROGRAM.gamma_multiply(0.6),
-        )
-    } else {
-        (l.text(Msg::StopKey), WIDGET, BORDER_STRONG)
-    };
+    let (label, fill, stroke) = row_key_style(key.starts, row.tone);
+    let label = l.text(label);
     ui.place(key_rect, |ui: &mut Ui| {
         ui.add_enabled(
             key.enabled,
@@ -479,7 +486,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                         ("realized", Arg::Str(&l.tr(row.status).to_lowercase())),
                     ],
                 ),
-                stream_row_text(stream, sample)
+                stream_row_text(l, sample)
             ),
             &RowKey {
                 starts: requested.starts(),
@@ -546,6 +553,22 @@ mod tests {
         let pending = recorder_row(Locale::ENGLISH, true, true, true);
         assert_eq!((pending.status, pending.tone), ("RECORDING", Tone::Pending));
         assert!(pending.detail.starts_with("Command pending"));
+    }
+
+    #[test]
+    fn row_keys_are_red_only_while_on_air() {
+        assert_eq!(
+            row_key_style(true, Tone::Idle),
+            (Msg::StartKey, WIDGET, BORDER_STRONG)
+        );
+        // A START key never turns red, whatever the row shows.
+        assert_eq!(row_key_style(true, Tone::OnAir).1, WIDGET);
+        assert_eq!(row_key_style(false, Tone::OnAir).1, PROGRAM_FILL);
+        assert_eq!(
+            row_key_style(false, Tone::Pending).2,
+            crate::theme::AMBER.gamma_multiply(0.7)
+        );
+        assert_eq!(row_key_style(false, Tone::Fault).1, WIDGET);
     }
 
     #[test]

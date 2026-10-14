@@ -2,13 +2,17 @@
 
 Captured from the native `freemix-studio` console running headless on this
 development host (Linux aarch64, Xvfb + Mesa lavapipe software Vulkan). The
-supervised daemon runs in simulated mode, so the mixer header reports
-`METERS UNAVAILABLE` with unlit meter wells. The Preview/Program monitors show
+supervised daemon runs in simulated mode and sends no audio meters, so a
+normal build reports `METERS UNAVAILABLE` with unlit meter wells. The UI
+round 7 captures were taken with a synthetic meter feed (see Reproducing):
+those meter levels are a Studio-side test signal, not daemon audio. The
+Preview/Program monitors show
 the daemon's encoded-fallback `monitor_frame` images (Protocol 2.21, at most
 640x360) letterboxed into each 16:9 well: in simulated mode each frame is a
 render of the realized simulated source, badged `SIMULATED` and captioned
-`SIMULATED RENDER · {w}×{h} encoded preview`; its tooltip states that
-overlays, scenes, and Fade to Black are not composited. A tap with no frame
+`SIMULATED RENDER · {w}×{h} encoded preview`; the daemon composites scene
+layers and, on Program, active overlays into it, and its tooltip states that
+Fade to Black is not composited. A tap with no frame
 (for example a scene input, which the simulated tap does not render) keeps the
 routing placeholder captioned `NO VIDEO FEED · waiting for encoded preview`. A
 frame older than one second, or a simulated frame whose input no longer
@@ -51,11 +55,8 @@ scrolls only when even minimum-width tiles do not fit) (click = Preview, double-
 channel strips whose meters and faders grow with the window, and a pinned
 Master meter strip. Each strip has a fixed-height name plate (the input's key
 cap, tally-tinted, and up to two lines of name ending in an ellipsis; full
-name on hover), a peak-hold readout, a segmented meter (RMS segments, a thin
-latest-peak line, a held-peak marker that holds 1.5 s then falls 20 dB/s, and
-a clip lamp), scale ticks in a gutter beside the meter at 0/-6/-12/-18/-30/
--48/-60 dBFS (labelled on the Master strip, 0 in red), a console fader, the
-gain/balance/delay entries, and LED keys for M (red), S (amber), and AFV
+name on hover), a peak-hold readout, a broadcast-style segmented meter, a
+console fader, the gain/balance/delay entries, and LED keys for M (red), S (amber), and AFV
 (accent): lit keys show a lit LED bar, a tinted fill, and a coloured border;
 unlit keys have a dark LED and a dim label. The fader has a taper that gives
 most travel to the range around unity (0 dB at 72 %), a slot with scale
@@ -63,10 +64,24 @@ marks (+10, 0, 10, 20, 40, 60, ∞; unity longer and brighter), a trailing
 level fill (grey while muted), and a ridged two-tone cap with a white index
 line (red while muted) and an accent outline while dragged or focused. Drags
 are relative, so grabbing the cap never jumps the gain; double-click returns
-to 0 dB and Up/Down nudge 0.5 dB. The clip lamp, the readout (red `CLIP`),
-and the meter outline latch at 0 dBFS until the operator clicks the meter or
-readout, or `RESET n CLIPS` in the mixer header. Meters use only the
-per-channel peak and RMS the daemon already sends; a side panel
+to 0 dB and Up/Down nudge 0.5 dB. Meters use only the per-channel peak and RMS the daemon already sends.
+
+The meters (UI round 7) use an expanded dBFS scale like a programme meter:
+-60 to -24 dBFS takes the lower third and -24 to 0 dBFS the upper two
+thirds, with scale ticks at 0, -6, -12, -18, -24, -36, -48, and -60 in a
+gutter beside every meter and signed labels (`0` in red) on the Master
+strip; on a short meter the crowded middle labels drop out while `0` and
+`-60` stay. The segment count follows the meter height (one segment per
+about 4 px). Segments are green below -18 dBFS, amber from -18, and red
+from -6; unlit segments keep a faint zone tint so the zones read on a quiet
+meter. Each bar lights its RMS segments at full brightness and the segments
+between RMS and the latest peak dimly, with a thin latest-peak line; the
+held-peak marker holds 1.5 s, then falls 20 dB/s. The clip lamp, the
+readout (red `CLIP`), and the meter outline latch at 0 dBFS until clicked
+(or `RESET n CLIPS`). The scale mapping, segment lighting, label
+thinning, hold, decay, and latch logic are unit-tested.
+
+The console layout continues with a side panel
 whose outputs card lists one fixed-height status row per recorder slot and
 per stream target, above Overlays/Stingers tabs; and a bottom status bar with
 the latest result/notice and keyboard hints.
@@ -102,7 +117,16 @@ an overlay confirmed on Program), green for ready (Preview, a READY stinger),
 amber for requested-but-not-realized or degraded state, error red for
 failures, and an unlit outline when idle or unknown. An output row is a lamp,
 the name (ellipsized, full name on hover), a status chip with a one-line
-detail beside it, and exactly one `START`/`STOP` key. Recorder rows show
+detail beside it, and exactly one `START`/`STOP` key. Red is reserved for
+on air (UI round 7): an idle `START` key is a neutral console key, the
+`STOP` key of a recording recorder or live stream is lit red like its lamp,
+and the `STOP` key of a requested-but-not-live stream has an amber outline.
+The input tiles' `CUT` keys and the transition column's `CUT` key are
+neutral (the take key is the brightest neutral key), and `FTB` is an unlit
+key until Program is going or gone black, when it lights solid red. Each
+monitor header names its bus on a solid tally chip (`PREVIEW` black on
+green, `PROGRAM` white on red) with the source name in larger type, legible
+across the room. Recorder rows show
 `RECORDING`/`STOPPED` from the replicated desired flag (the protocol reports no
 realized file or duration, so none is shown) and `NO STATE` before
 synchronization. Stream rows combine the desired flag with the latest
@@ -166,7 +190,7 @@ cancelling a manual transition. Repeated "Queued N command(s)" notices update
 one toast instead of stacking. Audio meters go stale when no meter message has
 arrived for more than a second: lit segments, peak lines, and hold markers dim,
 peak readouts read `STALE`, and the mixer header shows `METERS STALE · x.y s`
-(not visible in these simulated captures, which have no meters).
+(not visible in these captures, whose synthetic feed never stalls).
 View toggles the input bank, mixer, side panel, and status bar. Every gated
 control, menu item, and tile action shows its action and shortcut as a tooltip
 and, when disabled, the first blocking gate ("Unavailable: this session lacks
@@ -190,8 +214,9 @@ side panel is at most a quarter of the window wide (minimum 320 px), so the
 monitors keep their width in compact windows. Command rejections, notices, and
 terminal-uncertainty notices raise bounded, auto-expiring toasts at the
 bottom-right while the console is Ready; the status bar keeps the latest
-message. The meters stay unlit in these simulated-mode captures, so peak hold
-and clip lamps are not visible here.
+message. With the synthetic meter feed, peak-hold markers, the dim peak
+band, and the latched clip lamp of Guest Remote (strip 4 peaks into 0 dBFS
+every six seconds) are visible in the round 7 captures.
 
 Window sizes: the side panel takes at most a quarter of the window (320-560
 px). At 2560x1440 the monitors, the input bank tiles (four columns of about
@@ -203,22 +228,22 @@ the counts and lock chips.
 
 | File | What it shows |
 |---|---|
-| `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click: both wells show `SIMULATED` encoded frames (Camera 1 Wide on Preview, Camera 2 Close on Program), and the two tiles borrow those frames. |
-| `studio-console-monitors-scene.png` | 1920x1080 with the Main Scene input on Program: Preview shows a simulated frame of Camera 2 Close and Program the simulated composite of the scene's layers. Both recorders `STOPPED`, the HLS ladder amber `NOT LIVE` (desired on, no transport sample), RTMP Backup `OFF`. |
-| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder `NOT LIVE` with its `STOP` key, the stopped RTMP target with `START`. |
-| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: the monospace `T-BAR` percentage header, the amber status card naming the transition, sources, and position, equal-width manual start keys, and the active `COMMIT`/`CANCEL` keys sharing the row while automatic transitions are blocked. |
-| `studio-console-fade-to-black.png` | 1920x1080 after `FTB`: the lit `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program canvas; the `+` tile is now in the bank. |
-| `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with `STOP` keys and amber `NOT LIVE` chips, and the Output menu with `NOT LIVE` beside both Stop items and `STOPPED` beside the recorder items. |
+| `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click, hovering the Program well: both wells show `SIMULATED` frames (Camera 1 Wide on Preview, Camera 2 Close on Program) under the solid `PREVIEW`/`PROGRAM` tally chips, the two tiles borrow those frames, and the tooltip states that Fade to Black is not composited. |
+| `studio-console-monitors-scene.png` | 1920x1080, the demo show as launched: Main Scene on Program (the simulated composite of its layers), Camera 2 Close on Preview, the neutral `CUT` and `FTB` keys, neutral `START` keys on both stopped recorders, the HLS ladder `NOT LIVE` with an amber-outlined `STOP`, and the lit meter bridge with Guest Remote's latched `CLIP` and `RESET CLIP` in the mixer header. |
+| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, lit red `STOP` key, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` with its `TAKE OFF` key (composited into the Program frame and badged on the Program header), the HLS ladder `NOT LIVE` with its amber `STOP`, the stopped RTMP target with a neutral `START`. |
+| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: the amber `T-BAR 46%` header, the amber status card naming the transition, sources, and position, and the active `COMMIT`/`CANCEL` keys while automatic transitions are blocked. |
+| `studio-console-fade-to-black.png` | 1920x1080 after `FTB` (with REC 2 recording and O1 on air): the lit red `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program canvas. |
+| `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with amber `NOT LIVE` chips and amber-outlined `STOP` keys, and the Output menu with `NOT LIVE` beside both Stop items and `RECORDING` beside Stop recorder 2. |
 | `studio-console-stingers.png` | 1920x1080, Stingers tab after choosing Playback Clip in the Configure media picker and clicking `ASSIGN` for S1: the S1 card lit green `READY` with its media name, the Configure card's green `READY` chip, enabled `CLEAR`, and the replicated cut point (15 fr), preload, audio, and fallback. |
-| `studio-console-top.png` | The default 1600x940 window, idle: the top-bar padlock (`UNLOCKED`) with disabled Undo/Redo keys (the operator session lacks `edit_project`), both recorder rows `STOPPED`, overlays collapsed to one row per channel. |
-| `studio-console-stopped.png` | The compact 1280x800 layout: the side panel narrows to 320 px so the monitors keep their width; the input bank header keeps `7 SOURCES` and drops the gesture hint; the mixer scrolls inside its card and the Master strip stays pinned. |
+| `studio-console-top.png` | The default 1600x940 window, idle: the top-bar padlock (`UNLOCKED`) with disabled Undo/Redo keys (the operator session lacks `edit_project`), both recorder rows `STOPPED` with neutral `START` keys, overlays collapsed to one row per channel. |
+| `studio-console-stopped.png` | The compact 1280x800 layout: the side panel narrows to 320 px so the monitors keep their width; the input bank header keeps `7 SOURCES` and drops the gesture hint; the mixer scrolls inside its card and the Master strip stays pinned, its short scale dropping the crowded `-48` label. |
 | `studio-console-compact-720.png` | 1280x720: the same compact layout at the smallest supported height; the console scrolls to reach the lower row. |
-| `studio-console-recording.png` | 1600x940 with REC 2 `RECORDING` / `STOP` and the Stingers tab: eight empty slot cards (S1 outlined), the shared duration line, and the Configure card listing the defaults `ASSIGN` would apply. |
+| `studio-console-recording.png` | 1920x1080 with REC 2 `RECORDING` / lit `STOP`, both streams `NOT LIVE`, and the Stingers tab: eight empty slot cards (S1 outlined), the shared duration line, and the Configure card listing the defaults `ASSIGN` would apply. |
 | `studio-console-menu.png` | 1920x1080 with the Output menu open: transitions with their keys, Fade to black `B`, the disabled manual T-bar Commit/Cancel, recorder items with `STOPPED`, stream items with `NOT LIVE`/`OFF`, and the Stingers submenus. |
 | `studio-console-edit-menu.png` | 1920x1080, admin session after two renames and an undo, with Host Laptop's own padlock engaged: Edit › History with `Undo edit at REV 10  Ctrl+Z` and `Redo edit at REV 11  Ctrl+Shift+Z`, `Lock project edits` with `UNLOCKED` in the state column, and under Preview input (Camera 2 Close) `Move later` disabled with an amber `LOCKED` (its neighbour is locked). The enabled Undo/Redo keys sit beside the padlock in the top bar. |
 | `studio-console-locked.png` | The same session after `remote-lock on`: the amber `LOCKED` padlock with disabled Undo/Redo keys, `EDITS LOCKED` in the status bar and the input bank header (with a padlock badge), a padlock badge on every tile's name bar, and on the Stingers tab the Configure card's padlock badge with `ASSIGN`/`CLEAR` disabled. Switching, audio, and output keys stay live. |
-| `studio-console-mixer.png` | Mixer crop at 1920x1080 with Camera 1 Wide at -6.0 dB, Camera 2 Close muted and balanced L25 (lit red M, red cap index line, grey fill), Guest Remote soloed at +4.5 dB with AFV off and 480 samples delay (lit amber S), Lower Third at -18.0 dB with AFV off, Playback Clip muted at -inf: two-line name plates with tally-tinted key caps, peak readouts (`--` without meter samples), meter tick gutters, fader scales with the brighter unity mark, and the Master scale. |
-| `studio-console-2560.png` | 2560x1440: larger monitors, input tiles of about 290 px in four columns, and mixer faders with the full 620 px travel; the side panel stops at 560 px. |
+| `studio-console-mixer.png` | Mixer crop at 1920x1080 (admin) with Camera 1 Wide at -6.0 dB, Camera 2 Close muted and balanced L25 (lit red M, red cap index line, grey fill), Guest Remote soloed at +4.5 dB with AFV off and 480 samples delay (lit amber S), Lower Third at -18.0 dB with AFV off, Playback Clip muted at -inf, on the synthetic meter feed: expanded-scale meters with green/amber/red zones, bright RMS and dim peak segments, held-peak markers, Guest Remote's latched clip lamps and red `CLIP` readout, `RESET CLIP`, and the signed Master scale `0 … -60`. The synthetic levels ignore strip gain and mute. |
+| `studio-console-2560.png` | 2560x1440: larger monitors, input tiles of about 290 px in four columns, mixer faders with the full 620 px travel, and 120-segment meters; the side panel stops at 560 px. |
 | `studio-console-portrait.png` | 1920x1080 with the demo project's video settings changed to 1080x1920 (Main Scene layers refitted): both wells grow to half the console height and pillarbox the 202x360 portrait frames; the tiles borrowing the frames pillarbox them too. |
 | `studio-console-shortcuts.png` | Help › Keyboard shortcuts: the green `Keys active` lamp, the reference generated from the same table the console's key handler is tested against, with fixed-width key caps (including Ctrl+Z / Ctrl+Shift+Z). |
 | `studio-console-input-menu.png` | Right-click menu on the Host Laptop tile: key cap and name header, Select on Preview / Cut to Program enabled, Rename, Move, and Remove disabled, and the footer note that the operator session lacks `edit_project`. |
@@ -230,14 +255,37 @@ the counts and lock chips.
 | `studio-console-inputs-menu.png` | Inputs menu with the Catalogue group: `Add input…` and the `Remove input` submenu, where Main Scene (`PGM`) and Solid Colour 1 (`PVW`) are disabled with their tally marks. |
 | `studio-console-add-input-disabled.png` | Operator session hovering the dimmed `+` tile: the tooltip "Add input… A solid colour or colour bars, appended to the end of the bank. Unavailable: this session lacks the edit_project permission". |
 | `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with attempt count, retry delay, the last error, and the disabled-controls footer over the dimmed monitors; `NO STATE` chips, `— TARGETS`, `— SOURCES`, centered empty states for the input bank and mixer, and "No synchronized show" in the top bar (no edit group without synchronized state). |
-| `studio-console-spanish.png` | 1920x1080 demo show with Studio started with `--lang es`: the menu bar (`Archivo` … `Ayuda`), top bar (`CONTROL LISTO`, `DESBLOQUEADO` padlock sized to the Spanish word, `VIVO`/`REC` badges), the `BANCO DE ENTRADAS` card (`7 FUENTES`, `sin miniatura`, `CORTE` keys, `Añadir entrada`), the recorder and stream chips and details (`DETENIDO`, `GRABANDO`, `NO EN VIVO`, `APAGADO`), Spanish decimals in the mixer gain entries (`+0,0 dB`), and the status bar (`0 pendientes`, `Listo`, the Spanish key hints). Since UI round 6 the transition column (`FUNDIDO`, `CORTINA`, `ALFA`, `DESLIZ`, `ZOOM`, `MANUAL`), Fade to Black, monitor captions, overlays (`TOMAR`, `AL AIRE`), Stinger cards, and mixer labels (`MÁSTER`, `MEZCLA PGM`, `RET`) are Spanish too. |
-| `studio-console-spanish-menu.png` | The same session with `Salida` open: every transition, Fade to black, T-bar, recorder (`Iniciar grabador 1` / `DETENIDO`), stream, and Stinger item worded in Spanish. |
+| `studio-console-spanish.png` | 1920x1080 demo show with Studio started with `--lang es`, REC 2 recording, and O1 taken and opened: the `PREVIO`/`PROGRAMA` tally chips, the lit red `DETENER` key of REC 2, neutral `INICIAR` keys, the overlay keys `TOMAR` / `RETIRAR` beside the `APAGADO` / `AL AIRE` state chips (button and state are distinct catalog keys since round 7), and the open O1 card's Spanish diagnostic line (`O1 · pedido: Camera 2 Close, activo, opacidad 255, cola 0, completo, sin borde · confirmado: …`), plus the Spanish mixer header (`RMS · RETENCIÓN · CLIP`, `BORRAR CLIP`). |
+| `studio-console-spanish-menu.png` | The same session with `Salida` open: every transition, Fade to black, T-bar, recorder (`Detener grabador 2` / `GRABANDO`), stream, and Stinger item worded in Spanish. |
+| `studio-console-spanish-input-refused.png` | 1920x1080 `--lang es --role admin` after asking to remove Camera 1 Wide: the localized refusal toast `Baja rechazada (conflict): «Camera 1 Wide» está en uso: a layer source of scene 100. Quite esa referencia sin conexión primero.` (the daemon's own reference detail is quoted as sent). |
+| `studio-console-overlay-details.png` | 1920x1080 with O1 on air and its card open: `TAKE` / `TAKE OFF`, the UPDATE/queue/transition/position/border keys, OUTPUTS, and the localized diagnostic line `O1 · desired: Camera 2 Close, active, opacity 255, queue 0, full, no border · confirmed: …` naming the source instead of its raw id. |
 | `studio-console-spanish-transition.png` | 1920x1080 `--lang es` after manual `FUNDIDO` and a T-bar drag: the Spanish status card, `COMPLETAR`/`CANCELAR`, and the hover tooltip with requested/realized position. |
 | `studio-console-spanish-stingers.png` | 1920x1080 `--lang es` with Fade to Black on (`PROGRAMA EN NEGRO`) and the Stingers tab: the slot cards, the Configure card (`ASIGNAR`/`VACIAR`, cut point in `fr`, preload, audio, fallback), and the S4 card tooltip. |
 | `studio-console-spanish-compact.png` | 1280x800 `--lang es` with the Stingers tab: long Spanish labels and details ellipsize inside fixed-width keys and chips instead of overflowing; tooltips carry the full text. |
 | `studio-console-spanish-add-input.png` | 1920x1080 `--lang es --role admin`: the Añadir entrada dialog with `COLOR SÓLIDO`, the suggested name "Color sólido 1", the amber preset, and the preview tagged `ENTRADA 8` / `SIN AUDIO`. |
 | `studio-console-spanish-remove-input.png` | The Quitar entrada confirmation for "Color sólido 1" (entrada 8, posición 8) with the Spanish warning and the red `QUITAR` key. |
 | `studio-console-spanish-reconnecting.png` | 1600x940 `--lang es --connect` with no daemon: the Spanish Reconectando card (attempt, retry delay, last error, disabled-controls footer). |
+
+UI round 7 reviewed every capture as an operator would. The main fixes:
+red is reserved for on air (neutral `START`, tile `CUT`, transition `CUT`,
+and idle `FTB` keys; a `STOP` key lit red only while its output is on air),
+monitor headers name their bus on a solid tally chip, the meters became
+broadcast-grade (expanded dBFS scale with the 0/-6/-12/-18/-24/-36/-48/-60
+tick set, zone tints, a dim peak band, label thinning on short meters), the
+overlay `OFF` button became `TAKE OFF` (`RETIRAR`), distinct from the `OFF`
+(`APAGADO`) state chip, and the overlay diagnostic line, the stream
+transport tooltip, the Add/Remove input refusal toasts, and the fallback
+`Input {id}` name are now localized. The monitor tooltip now says what the
+simulated tap composites (scene layers and Program overlays, never Fade to
+Black). This round regenerated `-monitors`, `-monitors-scene`, `-overview`,
+`-manual-transition`, `-fade-to-black`, `-streams`, `-stingers`, `-top`,
+`-stopped`, `-compact-720`, `-recording`, `-menu`, `-mixer`, `-2560`,
+`-portrait`, `-shortcuts`, `-input-menu`, `-spanish`, and `-spanish-menu`
+on the synthetic meter feed, and added `-overlay-details` and
+`-spanish-input-refused`. `-edit-menu`, `-locked`, the Add/Remove input
+captures, `-reconnecting`, and the other Spanish captures are from round 6
+or earlier and still show the old red `CUT`/`START`/`FTB` keys, plain bus
+labels, and unlit meters.
 
 UI round 6 moved the transition column, Fade to Black, monitor captions,
 mixer labels, overlays, Stinger configuration, the connection card, the
@@ -349,6 +397,19 @@ Colour 1 tile for `-input-added.png`; right-click Colour Bars 1 and choose
 `Remove…` and confirm for `-input-refused.png`; open `Inputs` and hover
 `Remove input` for `-inputs-menu.png`. `-add-input-disabled.png` uses the
 default operator role and hovers the `+` tile.
+
+The UI round 7 captures build Studio with the `capture-meter-signal` feature
+(`cargo build -p freemix-studio --features capture-meter-signal`) and run it
+with `FREEMIX_STUDIO_CAPTURE_METERS=1`. Studio then feeds its mixer a
+deterministic synthetic meter message (each strip at its own level with
+slow movement, strip 4 peaking into 0 dBFS every six seconds, Master below
+the loudest strip) whenever the daemon sends none; daemon meters always
+win. Without both the feature and the variable no synthetic level is ever
+shown, and the test suite never sets the variable. The synthetic levels do
+not follow strip gain or mute. The Spanish refusal capture runs
+`--lang es --role admin`, right-clicks Camera 1 Wide, chooses `Quitar…`, and
+confirms with `QUITAR`; the overlay-details capture clicks O1 `TAKE` and
+then O1's disclosure triangle.
 
 Software Vulkan is slow; allow roughly ten seconds after the window maps
 before capturing. The overview's overlay take was a click on O1 `TAKE` in the

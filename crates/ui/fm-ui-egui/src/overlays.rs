@@ -128,13 +128,17 @@ fn draw_overlay_channel(
                 let source_name = desired
                     .and_then(|overlay| overlay.source)
                     .zip(state.view.as_ref())
-                    .map(|(source, view)| label_for_input(view, source));
+                    .map(|(source, view)| label_for_input(l, view, source));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add_enabled(
                             enabled && desired_active,
-                            Button::new(RichText::new(l.text(Msg::StreamOff)).size(11.0).strong())
-                                .min_size(Vec2::new(0.0, 20.0)),
+                            Button::new(
+                                RichText::new(l.text(Msg::OverlayOffKey))
+                                    .size(11.0)
+                                    .strong(),
+                            )
+                            .min_size(Vec2::new(0.0, 20.0)),
                         )
                         .hint(
                             l.text(Msg::OverlayOffHover),
@@ -355,9 +359,20 @@ fn draw_overlay_details(
     }
     ui.add(
         egui::Label::new(
-            mono(overlay_status::format(channel_number, desired, realized))
-                .size(9.5)
-                .color(MUTED),
+            mono(overlay_status::format(
+                l,
+                channel_number,
+                desired,
+                realized,
+                |input| {
+                    state.view.as_ref().map_or_else(
+                        || crate::monitors::fallback_input_name(l, input),
+                        |view| label_for_input(l, view, input),
+                    )
+                },
+            ))
+            .size(9.5)
+            .color(MUTED),
         )
         .wrap(),
     );

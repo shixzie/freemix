@@ -1,6 +1,8 @@
 //! Native Studio application, TCP runtime, and optional daemon supervision.
 
 mod args;
+#[cfg(feature = "capture-meter-signal")]
+mod capture_signal;
 mod native;
 mod osc;
 mod prefs;

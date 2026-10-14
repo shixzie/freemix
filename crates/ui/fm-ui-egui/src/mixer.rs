@@ -45,14 +45,32 @@ const NAME_PLATE_HEIGHT: f32 = 30.0;
 const READOUT_HEIGHT: f32 = 16.0;
 /// Lowest level shown on the meter scale.
 const METER_FLOOR_DB: f32 = -60.0;
-/// Meter segment boundaries: green below, yellow between, red above.
+/// Meter zone boundaries: green below, amber between, red above.
 const METER_YELLOW_DB: f32 = -18.0;
 const METER_RED_DB: f32 = -6.0;
-const METER_SEGMENTS: usize = 30;
+/// Segment count bounds; the count follows the meter height so each
+/// segment stays about [`METER_SEGMENT_PITCH`] tall.
+const METER_MIN_SEGMENTS: usize = 24;
+const METER_MAX_SEGMENTS: usize = 120;
+const METER_SEGMENT_PITCH: f32 = 4.0;
 /// Height of the clip lamp above each meter bar.
 const CLIP_LAMP_HEIGHT: f32 = 5.0;
 /// Meter scale marks in dBFS.
-pub(crate) const METER_TICKS_DB: [f32; 7] = [0.0, -6.0, -12.0, -18.0, -30.0, -48.0, -60.0];
+pub(crate) const METER_TICKS_DB: [f32; 8] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0, -48.0, -60.0];
+/// The meter scale: (dBFS, travel 0..=1) breakpoints, piecewise linear in
+/// dB between them. Like a broadcast programme meter the scale expands
+/// toward full scale, so the working range from -24 to 0 dBFS takes most of
+/// the height and the noise floor is compressed.
+const METER_SCALE: [(f32, f32); 8] = [
+    (-60.0, 0.0),
+    (-48.0, 0.08),
+    (-36.0, 0.18),
+    (-24.0, 0.32),
+    (-18.0, 0.44),
+    (-12.0, 0.59),
+    (-6.0, 0.78),
+    (0.0, 1.0),
+];
 /// Width of the tick-mark gutter on the right of a meter well.
 const METER_TICK_GUTTER: f32 = 4.0;
 /// Fader travel breakpoints: (travel 0..=1, gain in milli-dB). Piecewise
@@ -154,13 +172,76 @@ pub(crate) fn meter_db(millionths: u32) -> f32 {
     db
 }
 
-/// Maps a dBFS level onto the meter's 0..=1 travel.
+/// Maps a dBFS level onto the meter's 0..=1 travel along [`METER_SCALE`].
 pub(crate) fn meter_fraction(db: f32) -> f32 {
     if db.is_nan() || db <= METER_FLOOR_DB {
+        return 0.0;
+    }
+    METER_SCALE
+        .windows(2)
+        .find(|pair| db <= pair[1].0)
+        .map_or(1.0, |pair| {
+            let ((d0, f0), (d1, f1)) = (pair[0], pair[1]);
+            f0 + (db - d0) / (d1 - d0) * (f1 - f0)
+        })
+}
+
+/// The dBFS level at a 0..=1 meter travel; the inverse of
+/// [`meter_fraction`] on the scale.
+pub(crate) fn meter_db_at(fraction: f32) -> f32 {
+    let fraction = if fraction.is_nan() {
         0.0
     } else {
-        ((db - METER_FLOOR_DB) / -METER_FLOOR_DB).clamp(0.0, 1.0)
+        fraction.clamp(0.0, 1.0)
+    };
+    METER_SCALE
+        .windows(2)
+        .find(|pair| fraction <= pair[1].1)
+        .map_or(0.0, |pair| {
+            let ((d0, f0), (d1, f1)) = (pair[0], pair[1]);
+            d0 + (fraction - f0) / (f1 - f0) * (d1 - d0)
+        })
+}
+
+/// How many segments a meter of `height` points shows.
+pub(crate) fn meter_segments(height: f32) -> usize {
+    if !height.is_finite() || height <= 0.0 {
+        return METER_MIN_SEGMENTS;
     }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // positive, bounded
+    let count = (height / METER_SEGMENT_PITCH).round() as usize;
+    count.clamp(METER_MIN_SEGMENTS, METER_MAX_SEGMENTS)
+}
+
+/// How one meter segment is lit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SegmentLight {
+    /// Below the RMS level: fully lit.
+    Rms,
+    /// Between the RMS level and the latest peak: dimly lit.
+    Peak,
+    /// Above the latest peak: only the zone tint shows.
+    Unlit,
+}
+
+/// Lights the segment whose lower edge sits at `low` (meter travel), given
+/// the RMS and latest-peak travel of its bar.
+pub(crate) fn segment_light(low: f32, rms: f32, peak: f32) -> SegmentLight {
+    if low < rms {
+        SegmentLight::Rms
+    } else if low < peak {
+        SegmentLight::Peak
+    } else {
+        SegmentLight::Unlit
+    }
+}
+
+/// The Master scale's label for a tick: `0`, `-6`, … (ASCII minus, as on
+/// hardware meter bridges).
+pub(crate) fn meter_tick_label(db: f32) -> String {
+    #[allow(clippy::cast_possible_truncation)] // whole-dB ticks
+    let whole = db.round() as i32;
+    format!("{whole}")
 }
 
 /// Color of the meter segment whose lower edge sits at `db`.
@@ -604,7 +685,7 @@ fn draw_input_strip(
 ) -> bool {
     let l = l10n::locale(ui.ctx());
     let StripGate { enabled, reason } = gate;
-    let name = label_for_input(view, status.input);
+    let name = label_for_input(l, view, status.input);
     let ordinal = view
         .inputs
         .iter()
@@ -1112,8 +1193,9 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
             ),
         );
     }
+    let segments = meter_segments(inner.height());
     #[allow(clippy::cast_precision_loss)]
-    let segment_height = inner.height() / METER_SEGMENTS as f32;
+    let segment_height = inner.height() / segments as f32;
     for bar in 0..bars {
         #[allow(clippy::cast_precision_loss)]
         let x = inner.min.x + bar as f32 * 7.0;
@@ -1124,25 +1206,29 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
         let peak = channel.map_or(0.0, |channel| {
             meter_fraction(meter_db(channel.peak_millionths))
         });
-        for segment in 0..METER_SEGMENTS {
+        for segment in 0..segments {
             #[allow(clippy::cast_precision_loss)]
-            let low = segment as f32 / METER_SEGMENTS as f32;
-            let db = METER_FLOOR_DB + low * -METER_FLOOR_DB;
-            let color = meter_segment_color(db);
+            let low = segment as f32 / segments as f32;
+            let color = meter_segment_color(meter_db_at(low));
             #[allow(clippy::cast_precision_loss)]
             let y_bottom = inner.max.y - segment as f32 * segment_height;
             let segment_rect = Rect::from_min_max(
                 pos2(x, y_bottom - segment_height + 1.0),
                 pos2(x + 5.0, y_bottom),
             );
-            let lit = channel.is_some() && low < rms;
+            let light = if channel.is_some() {
+                segment_light(low, rms, peak)
+            } else {
+                SegmentLight::Unlit
+            };
             painter.rect_filled(
                 segment_rect,
                 CornerRadius::ZERO,
-                if lit {
-                    stale_dim(color, stale)
-                } else {
-                    color.gamma_multiply(0.12)
+                match light {
+                    SegmentLight::Rms => stale_dim(color, stale),
+                    SegmentLight::Peak => stale_dim(color.gamma_multiply(0.45), stale),
+                    // The zone tint stays visible on an unlit meter.
+                    SegmentLight::Unlit => color.gamma_multiply(0.16),
                 },
             );
         }
@@ -1153,8 +1239,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
                 Stroke::new(
                     1.0,
                     stale_dim(
-                        meter_segment_color(METER_FLOOR_DB + peak * -METER_FLOOR_DB)
-                            .gamma_multiply(0.8),
+                        meter_segment_color(meter_db_at(peak)).gamma_multiply(0.9),
                         stale,
                     ),
                 ),
@@ -1261,18 +1346,40 @@ pub(crate) fn format_db(l: Locale, db: f32) -> String {
     l.decibels(f64::from(db), f64::from(METER_FLOOR_DB))
 }
 
+/// Least vertical distance between two Master scale labels.
+const METER_LABEL_SPACING: f32 = 10.0;
+
+/// The scale ticks that get a label on a meter spanning `top..bottom`, with
+/// their y positions: full scale and the floor always, and each other tick
+/// only when it keeps `spacing` from the labels around it, so a short
+/// compact-window meter drops crowded labels instead of overprinting them.
+pub(crate) fn labelled_meter_ticks(top: f32, bottom: f32, spacing: f32) -> Vec<(f32, f32)> {
+    let y_of = |db: f32| bottom - meter_fraction(db) * (bottom - top);
+    let floor_y = y_of(METER_FLOOR_DB);
+    let mut labels: Vec<(f32, f32)> = Vec::new();
+    for db in METER_TICKS_DB {
+        let y = y_of(db);
+        let is_end = db >= 0.0 || db <= METER_FLOOR_DB;
+        let clear =
+            labels.last().is_none_or(|(_, last)| y - last >= spacing) && floor_y - y >= spacing;
+        if is_end || clear {
+            labels.push((db, y));
+        }
+    }
+    labels
+}
+
 /// The Master meter's dB scale: a label beside each tick in the gutter.
 fn draw_meter_scale(ui: &mut Ui, height: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(22.0, height), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(24.0, height), Sense::hover());
     let painter = ui.painter_at(rect.expand2(Vec2::new(0.0, 6.0)));
     let top = rect.min.y + 2.0 + CLIP_LAMP_HEIGHT + 2.0;
     let bottom = rect.max.y - 2.0;
-    for db in METER_TICKS_DB {
-        let y = bottom - meter_fraction(db) * (bottom - top);
+    for (db, y) in labelled_meter_ticks(top, bottom, METER_LABEL_SPACING) {
         painter.text(
             pos2(rect.min.x + 1.0, y),
             egui::Align2::LEFT_CENTER,
-            format!("{}", db.abs()),
+            meter_tick_label(db),
             egui::FontId::new(8.5, egui::FontFamily::Monospace),
             if db >= 0.0 {
                 PROGRAM.gamma_multiply(0.9)
@@ -1295,8 +1402,90 @@ mod tests {
         assert!((meter_fraction(0.0) - 1.0).abs() < f32::EPSILON);
         assert!(meter_fraction(f32::NEG_INFINITY).abs() < f32::EPSILON);
         assert!(meter_fraction(-90.0).abs() < f32::EPSILON);
-        assert!((meter_fraction(-30.0) - 0.5).abs() < 1e-6);
         assert!((meter_fraction(6.0) - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn meter_scale_expands_toward_full_scale_and_inverts() {
+        // Every tick sits on the travel, in order, with -18 dBFS below the
+        // middle and more room per dB toward the top.
+        let ticks: Vec<f32> = METER_TICKS_DB
+            .iter()
+            .map(|db| meter_fraction(*db))
+            .collect();
+        assert!(ticks.windows(2).all(|pair| pair[0] > pair[1]));
+        assert!((meter_fraction(-18.0) - 0.44).abs() < 1e-6);
+        assert!((meter_fraction(-21.0) - 0.38).abs() < 1e-6);
+        let per_db =
+            |high: f32, low: f32| (meter_fraction(high) - meter_fraction(low)) / (high - low);
+        assert!(per_db(0.0, -6.0) > per_db(-6.0, -12.0));
+        assert!(per_db(-24.0, -36.0) > per_db(-48.0, -60.0));
+        // The inverse maps every level back.
+        let mut db = -60.0_f32;
+        while db <= 0.0 {
+            assert!((meter_db_at(meter_fraction(db)) - db).abs() < 1e-3, "{db}");
+            db += 0.5;
+        }
+        assert!((meter_db_at(-1.0) + 60.0).abs() < f32::EPSILON);
+        assert!(meter_db_at(2.0).abs() < f32::EPSILON);
+        assert!((meter_db_at(f32::NAN) + 60.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn meter_segments_follow_height_and_light_rms_then_peak() {
+        assert_eq!(meter_segments(0.0), METER_MIN_SEGMENTS);
+        assert_eq!(meter_segments(f32::NAN), METER_MIN_SEGMENTS);
+        assert_eq!(meter_segments(200.0), 50);
+        assert_eq!(meter_segments(5_000.0), METER_MAX_SEGMENTS);
+        assert_eq!(segment_light(0.1, 0.5, 0.7), SegmentLight::Rms);
+        assert_eq!(segment_light(0.5, 0.5, 0.7), SegmentLight::Peak);
+        assert_eq!(segment_light(0.69, 0.5, 0.7), SegmentLight::Peak);
+        assert_eq!(segment_light(0.7, 0.5, 0.7), SegmentLight::Unlit);
+        // A silent bar lights nothing; a peak below RMS adds no peak band.
+        assert_eq!(segment_light(0.0, 0.0, 0.0), SegmentLight::Unlit);
+        assert_eq!(segment_light(0.3, 0.5, 0.2), SegmentLight::Rms);
+        assert_eq!(segment_light(0.6, 0.5, 0.2), SegmentLight::Unlit);
+    }
+
+    #[test]
+    fn crowded_scale_labels_are_dropped_but_the_ends_stay() {
+        let all = |height: f32| -> Vec<f32> {
+            labelled_meter_ticks(0.0, height, METER_LABEL_SPACING)
+                .into_iter()
+                .map(|(db, _)| db)
+                .collect()
+        };
+        assert_eq!(all(600.0), METER_TICKS_DB.to_vec());
+        let short = all(110.0);
+        assert_eq!(short.first(), Some(&0.0));
+        assert_eq!(short.last(), Some(&-60.0));
+        assert!(short.len() < METER_TICKS_DB.len());
+        let ys: Vec<f32> = labelled_meter_ticks(0.0, 110.0, METER_LABEL_SPACING)
+            .into_iter()
+            .map(|(_, y)| y)
+            .collect();
+        assert!(
+            ys.windows(2)
+                .all(|pair| pair[1] - pair[0] >= METER_LABEL_SPACING)
+        );
+    }
+
+    #[test]
+    fn meter_ticks_are_the_broadcast_set_with_signed_labels() {
+        assert_eq!(
+            METER_TICKS_DB.map(meter_tick_label),
+            ["0", "-6", "-12", "-18", "-24", "-36", "-48", "-60"]
+        );
+        // The zones change colour exactly on the -18 and -6 ticks.
+        assert_eq!(
+            meter_segment_color(meter_db_at(meter_fraction(-18.01))),
+            PREVIEW
+        );
+        assert_eq!(
+            meter_segment_color(meter_db_at(meter_fraction(-17.99))),
+            Color32::from_rgb(232, 200, 40)
+        );
+        assert_eq!(meter_segment_color(-6.0), PROGRAM);
     }
 
     #[test]

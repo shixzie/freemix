@@ -1,15 +1,27 @@
 use fm_protocol::{OverlayBorderPreset, OverlayPositionPreset};
+use fm_types::InputId;
 use fm_ui_model::OverlayStatus;
 
-use crate::l10n::Msg;
+use crate::l10n::{Arg, Locale, Msg};
 
+/// The overlay card's diagnostic line in the console language: the desired
+/// state beside the daemon's last confirmation, with each source named by
+/// `name`.
 pub(super) fn format(
+    l: Locale,
     channel: u8,
     desired: Option<&OverlayStatus>,
     confirmed: Option<&OverlayStatus>,
+    name: impl Fn(InputId) -> String,
 ) -> String {
-    let desired = state(desired);
-    format!("O{channel} · D: {desired} · C: {}", state(confirmed))
+    l.format(
+        Msg::OverlayDiagLine,
+        &[
+            ("channel", Arg::Plain(u64::from(channel))),
+            ("desired", Arg::Str(&state(l, desired, &name))),
+            ("confirmed", Arg::Str(&state(l, confirmed, &name))),
+        ],
+    )
 }
 
 /// The position preset key label.
@@ -32,27 +44,40 @@ pub(super) const fn border_label(border: OverlayBorderPreset) -> Msg {
     }
 }
 
-fn state(status: Option<&OverlayStatus>) -> String {
+fn state(l: Locale, status: Option<&OverlayStatus>, name: &impl Fn(InputId) -> String) -> String {
     let Some(status) = status else {
-        return "unavailable".to_owned();
+        return l.text(Msg::OverlayDiagUnavailable).to_owned();
     };
-    // The diagnostic line keeps the protocol's own English vocabulary.
-    let position = position_label(status.position).en();
-    let position = if position == "FULL" { "full" } else { position };
-    format!(
-        "src {}, {}, op {}, q {}, {}, {}",
-        status
-            .source
-            .map_or_else(|| "none".to_owned(), |source| source.to_string()),
-        if status.active { "active" } else { "inactive" },
-        status.opacity,
-        status.queued_sources.len(),
-        position,
-        match status.border {
-            OverlayBorderPreset::None => "none",
-            OverlayBorderPreset::ThinWhite => "thin",
-            OverlayBorderPreset::ThickWhite => "thick",
-        },
+    l.format(
+        Msg::OverlayDiagState,
+        &[
+            (
+                "source",
+                Arg::Str(
+                    &status
+                        .source
+                        .map_or_else(|| l.text(Msg::None).to_owned(), name),
+                ),
+            ),
+            (
+                "active",
+                Arg::Str(l.text(if status.active {
+                    Msg::OverlayDiagActive
+                } else {
+                    Msg::OverlayDiagInactive
+                })),
+            ),
+            ("opacity", Arg::Plain(u64::from(status.opacity))),
+            ("queued", Arg::from(status.queued_sources.len())),
+            (
+                "position",
+                Arg::Str(&l.text(position_label(status.position)).to_lowercase()),
+            ),
+            (
+                "border",
+                Arg::Str(&l.text(border_label(status.border)).to_lowercase()),
+            ),
+        ],
     )
 }
 
@@ -97,10 +122,20 @@ mod tests {
         let desired = overlay(Some(2), true, u8::MAX);
         let confirmed = overlay(None, false, 0);
 
+        let name = |input: InputId| format!("Cam {input}");
         assert_eq!(
-            format(1, Some(&desired), Some(&confirmed)),
-            "O1 · D: src 2, active, op 255, q 1, TL, thin · C: src none, inactive, op 0, q 0, full, none"
+            format(Locale::ENGLISH, 1, Some(&desired), Some(&confirmed), name),
+            "O1 · desired: Cam 2, active, opacity 255, queue 1, tl, thin · \
+             confirmed: none, inactive, opacity 0, queue 0, full, no border"
         );
-        assert!(format(1, None, Some(&confirmed)).contains("D: unavailable"));
+        assert!(
+            format(Locale::ENGLISH, 1, None, Some(&confirmed), name)
+                .contains("desired: unavailable")
+        );
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            format(spanish, 1, Some(&desired), None, name),
+            "O1 · pedido: Cam 2, activo, opacidad 255, cola 1, si, fino · confirmado: no disponible"
+        );
     }
 }

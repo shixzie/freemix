@@ -8,9 +8,9 @@ use fm_ui_model::ManualTransitionStatus;
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg, with_key};
 use crate::theme::{
-    ACCENT, ACCENT_FILL, AMBER, AMBER_FILL, BORDER, BORDER_STRONG, MONITOR_BLACK, MUTED, PROGRAM,
-    PROGRAM_FILL, TEXT, TEXT_DIM, WIDGET, WIDGET_ACTIVE, WIDGET_HOVER, console_button, field_label,
-    mono, section_label,
+    ACCENT, ACCENT_FILL, AMBER, AMBER_FILL, BORDER, BORDER_STRONG, MONITOR_BLACK, MUTED, TEXT,
+    TEXT_DIM, WIDGET, WIDGET_ACTIVE, WIDGET_HOVER, console_button, field_label, mono,
+    section_label,
 };
 use crate::{
     ManualTransitionAvailability, StudioIntent, StudioShell, StudioUiState, TransitionGate,
@@ -95,10 +95,12 @@ pub(crate) fn draw_transition_column(
     };
     let names = state.view.as_ref().map_or(
         InputNames {
+            locale: l,
             inputs: &[],
             names: &[],
         },
         |view| InputNames {
+            locale: l,
             inputs: &view.inputs,
             names: &view.input_names,
         },
@@ -133,10 +135,12 @@ fn draw_auto_transitions(
         if ui
             .add_enabled(
                 availability.basic(),
+                // The take key is the brightest neutral key, not red: red
+                // on the panel means on air.
                 console_button(
                     l.text(Msg::CutKey),
-                    PROGRAM_FILL,
-                    PROGRAM.gamma_multiply(0.7),
+                    WIDGET_ACTIVE,
+                    TEXT.gamma_multiply(0.7),
                     BUTTON_SIZE,
                 ),
             )
@@ -262,13 +266,14 @@ pub(crate) struct ManualSummary {
 /// Input names, in project order, used to label manual-transition routes.
 #[derive(Clone, Copy)]
 pub(crate) struct InputNames<'a> {
+    pub(crate) locale: Locale,
     pub(crate) inputs: &'a [fm_types::InputId],
     pub(crate) names: &'a [String],
 }
 
 impl InputNames<'_> {
     fn name(self, input: fm_types::InputId) -> String {
-        crate::monitors::input_name(self.inputs, self.names, input)
+        crate::monitors::input_name(self.locale, self.inputs, self.names, input)
     }
 }
 
@@ -747,6 +752,7 @@ mod tests {
         let inputs = [input(1), input(2)];
         let names = ["Camera 1".to_owned(), "Camera 2".to_owned()];
         let names = InputNames {
+            locale: Locale::ENGLISH,
             inputs: &inputs,
             names: &names,
         };

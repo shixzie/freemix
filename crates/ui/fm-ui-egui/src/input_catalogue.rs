@@ -327,51 +327,100 @@ pub fn input_in_use_detail(message: &str) -> Option<&str> {
     (!detail.is_empty()).then_some(detail)
 }
 
-/// Words a refused add or remove for its toast: the action, the stable
-/// reason code, what it means for this input, and what to do next.
+/// Words a refused add or remove for its toast in the console language: the
+/// action, the stable reason code, what it means for this input, and what to
+/// do next. A daemon detail the console does not recognise passes through.
 #[must_use]
-pub fn catalogue_refusal_message(refusal: &CatalogueRefusal, name: &str) -> String {
-    let add = refusal.request.is_add();
-    let lead = if add { "Add refused" } else { "Remove refused" };
+pub fn catalogue_refusal_message(l: Locale, refusal: &CatalogueRefusal, name: &str) -> String {
+    let lead = if refusal.request.is_add() {
+        Msg::AddRefused
+    } else {
+        Msg::RemoveRefused
+    };
     let code = refusal.reason.as_deref().unwrap_or(refusal.code.as_str());
+    let named = |msg: Msg| l.format(msg, &[("name", Arg::Str(name))]);
     let advice = match code {
-        "duplicate_input" => format!(
-            "Input {} already exists; open Add input again for a fresh id.",
-            refusal.request.input()
+        "duplicate_input" => l.format(
+            Msg::RefuseDuplicateInput,
+            &[("input", Arg::Str(&refusal.request.input().to_string()))],
         ),
-        "too_many_inputs" => {
-            format!("The show is at its {MAX_LIVE_INPUTS}-input limit; remove an input first.")
-        }
-        "unknown_input" => format!("\"{name}\" no longer exists; another editor removed it."),
-        "invalid_name" => "Use a non-blank name of at most 128 bytes.".to_owned(),
-        "duplicate_name" => format!("Another input is already named \"{name}\"; pick another."),
-        "project_locked" => {
-            "The project is locked; unlock the padlock in the top bar to change inputs.".to_owned()
-        }
-        "input_locked" => format!("\"{name}\" has its own padlock; unlock it to remove it."),
-        "unavailable" => "This daemon cannot change its inputs while running (native media); \
-                          add or remove inputs offline."
-            .to_owned(),
+        "too_many_inputs" => l.format(
+            Msg::RefuseTooManyInputs,
+            &[("limit", Arg::Plain(MAX_LIVE_INPUTS as u64))],
+        ),
+        "unknown_input" => named(Msg::RefuseUnknownInput),
+        "invalid_name" => l.text(Msg::RefuseInvalidName).to_owned(),
+        "duplicate_name" => named(Msg::RefuseDuplicateName),
+        "project_locked" => l.text(Msg::RefuseProjectLocked).to_owned(),
+        "input_locked" => named(Msg::RefuseInputLocked),
+        "unavailable" => l.text(Msg::RefuseUnavailable).to_owned(),
         _ => match input_in_use_detail(&refusal.message) {
-            Some(detail) => format!("\"{name}\" is {detail}. {}", in_use_advice(detail)),
+            Some(detail) => {
+                let (sentence, advice) = in_use_sentence(l, name, detail);
+                format!("{sentence} {}", l.text(advice))
+            }
             None => refusal.message.clone(),
         },
     };
-    format!("{lead} ({code}): {advice}")
+    l.format(
+        lead,
+        &[("code", Arg::Str(code)), ("advice", Arg::Str(&advice))],
+    )
 }
 
-/// What to do about one `input_in_use` detail.
-fn in_use_advice(detail: &str) -> &'static str {
-    if detail.starts_with("on Program") || detail.starts_with("on Preview") {
-        "Route another input to that bus first."
-    } else if detail.contains("transition") {
-        "Wait for the transition to finish."
-    } else if detail.contains("overlay") {
-        "Take the overlay off or clear its queue first."
-    } else if detail.contains("Stinger") {
-        "Clear or reassign that Stinger slot first."
+/// One `input_in_use` detail as a sentence naming the input, plus the advice
+/// for it. The engine's usage wording is matched exactly; anything else (a
+/// daemon `conflict` reference such as a scene layer) is quoted as sent.
+fn in_use_sentence(l: Locale, name: &str, detail: &str) -> (String, Msg) {
+    let named = |msg: Msg| l.format(msg, &[("name", Arg::Str(name))]);
+    let numbered = |msg: Msg, arg: &str, number: &str| {
+        l.format(msg, &[("name", Arg::Str(name)), (arg, Arg::Str(number))])
+    };
+    let number_after = |prefix: &str| {
+        detail
+            .strip_prefix(prefix)
+            .filter(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
+    };
+    if detail == "on Program" {
+        (named(Msg::InUseOnProgram), Msg::AdviceRouteAway)
+    } else if detail == "on Preview" {
+        (named(Msg::InUseOnPreview), Msg::AdviceRouteAway)
+    } else if detail == "in a transition in flight" {
+        (named(Msg::InUseTransition), Msg::AdviceWaitTransition)
+    } else if detail == "in the active manual transition" {
+        (named(Msg::InUseManualTransition), Msg::AdviceWaitTransition)
+    } else if let Some(channel) = number_after("the source of overlay ") {
+        (
+            numbered(Msg::InUseOverlaySource, "channel", channel),
+            Msg::AdviceOverlay,
+        )
+    } else if let Some(channel) = number_after("queued on overlay ") {
+        (
+            numbered(Msg::InUseOverlayQueue, "channel", channel),
+            Msg::AdviceOverlay,
+        )
+    } else if let Some(slot) = number_after("the media of Stinger ") {
+        (
+            numbered(Msg::InUseStinger, "slot", slot),
+            Msg::AdviceStinger,
+        )
     } else {
-        "Remove that reference offline first."
+        let advice = if detail.contains("transition") {
+            Msg::AdviceWaitTransition
+        } else if detail.contains("overlay") {
+            Msg::AdviceOverlay
+        } else if detail.contains("Stinger") {
+            Msg::AdviceStinger
+        } else {
+            Msg::AdviceOffline
+        };
+        (
+            l.format(
+                Msg::InUseOther,
+                &[("name", Arg::Str(name)), ("detail", Arg::Str(detail))],
+            ),
+            advice,
+        )
     }
 }
 
@@ -564,9 +613,10 @@ impl CatalogueTracker {
                     name.clone(),
                 )),
                 StudioIntent::RemoveInput { input } => {
-                    let name = view
-                        .and_then(|view| input_name(view, *input))
-                        .map_or_else(|| format!("Input {input}"), str::to_owned);
+                    let name = view.and_then(|view| input_name(view, *input)).map_or_else(
+                        || crate::monitors::fallback_input_name(self.locale, *input),
+                        str::to_owned,
+                    );
                     Some(self.submit(CatalogueRequest::Remove { input: *input }, name))
                 }
                 _ => None,
@@ -620,12 +670,15 @@ impl CatalogueTracker {
                     .view
                     .as_ref()
                     .and_then(|view| input_name(view, *input))
-                    .map_or_else(|| format!("Input {input}"), str::to_owned),
+                    .map_or_else(
+                        || crate::monitors::fallback_input_name(locale, *input),
+                        str::to_owned,
+                    ),
             };
             outcomes.toasts.push(CatalogueToast {
                 key: format!("input-catalogue-refusal-{}", refusal.command_id),
                 kind: ToastKind::Error,
-                message: catalogue_refusal_message(refusal, &name),
+                message: catalogue_refusal_message(locale, refusal, &name),
             });
             outcomes.refusal_announced = true;
         }
@@ -743,7 +796,10 @@ fn resolve(
         }
     }
     if let Some(refusal) = fresh_refusal.filter(|refusal| refusal.request == outstanding.request) {
-        return Some((ToastKind::Error, catalogue_refusal_message(refusal, name)));
+        return Some((
+            ToastKind::Error,
+            catalogue_refusal_message(l, refusal, name),
+        ));
     }
     if !ready || pending {
         return None;
@@ -1797,6 +1853,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one table of refusal cases per language
     fn refusal_messages_name_the_reason_code_and_next_step() {
         let refusal = |request, reason: Option<&str>, code: &str, message: &str| CatalogueRefusal {
             command_id: "c".to_owned(),
@@ -1859,13 +1916,48 @@ mod tests {
             ),
         ];
         for (refusal, expected) in cases {
-            assert_eq!(catalogue_refusal_message(&refusal, "X"), expected);
+            assert_eq!(
+                catalogue_refusal_message(Locale::ENGLISH, &refusal, "X"),
+                expected
+            );
         }
         assert_eq!(
             input_in_use_detail("input 2 cannot be removed: it is on Program."),
             Some("on Program")
         );
         assert_eq!(input_in_use_detail("busy"), None);
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let stinger = refusal(
+            remove(),
+            Some("input_in_use"),
+            "conflict",
+            "input 2 cannot be removed: it is the media of Stinger 3",
+        );
+        assert_eq!(
+            catalogue_refusal_message(spanish, &stinger, "X"),
+            "Baja rechazada (input_in_use): «X» es el medio del Stinger 3. \
+             Vacíe o reasigne esa ranura de Stinger primero."
+        );
+        let scene = refusal(
+            remove(),
+            None,
+            "conflict",
+            "input 2 cannot be removed: it is a layer source of Scene 100",
+        );
+        assert_eq!(
+            catalogue_refusal_message(spanish, &scene, "X"),
+            "Baja rechazada (conflict): «X» está en uso: a layer source of Scene 100. \
+             Quite esa referencia sin conexión primero."
+        );
+        let full = refusal(add(5, "Cam"), None, "too_many_inputs", "m");
+        assert!(
+            catalogue_refusal_message(spanish, &full, "X")
+                .starts_with("Alta rechazada (too_many_inputs): El show ya tiene el máximo de 256")
+        );
+        assert_eq!(
+            crate::monitors::fallback_input_name(spanish, input(9)),
+            "Entrada 9"
+        );
     }
 
     #[test]

@@ -371,6 +371,8 @@ impl eframe::App for StudioApp {
         {
             self.state = state;
         }
+        #[cfg(feature = "capture-meter-signal")]
+        crate::capture_signal::inject(&mut self.state);
         self.check_worker_health();
         self.drain_osc();
         if self.state.external_notice.is_none() {

@@ -834,7 +834,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MonitorSimulatedNote,
         t(
-            "Render simulado solo de la fuente realizada; los overlays, las escenas y el fundido a negro no se componen en esta imagen.",
+            "Render simulado de la fuente realizada, con las capas de escena y, en Programa, los overlays activos; el fundido a negro no se compone en esta imagen.",
         ),
     ),
     (
@@ -900,7 +900,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MeterLegendHover,
         t(
-            "Los segmentos encendidos muestran el RMS; la línea fina es el último pico; la marca brillante retiene el pico 1,5 s y luego cae 20 dB/s; la lámpara superior se enclava a 0 dBFS hasta que se pulsa",
+            "Los segmentos brillantes muestran el RMS y los tenues el último pico por encima; la línea fina marca ese pico; la marca brillante retiene el pico 1,5 s y luego cae 20 dB/s; la lámpara superior se enclava a 0 dBFS hasta que se pulsa. Zonas: verde por debajo de -18 dBFS, ámbar desde -18, rojo desde -6. La escala se amplía hacia 0 dBFS.",
         ),
     ),
     (Msg::NoAudioState, t("Sin estado de audio")),
@@ -973,11 +973,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     // Overlays.
     (
         Msg::OverlaysIntro,
-        t("TOMAR usa la fuente actual de Previo. D = pedido, C = última confirmación del daemon."),
+        t("TOMAR pone la fuente de Previo en el canal; RETIRAR lo libera."),
     ),
     (
         Msg::OverlaysIntroHover,
-        t("La confirmación es estado de control, no prueba del vídeo de salida."),
+        t(
+            "La última línea de una tarjeta abierta compara el estado pedido con la última confirmación del daemon. La confirmación es estado de control, no prueba del vídeo de salida.",
+        ),
     ),
     (Msg::OverlayOnAir, t("AL AIRE")),
     (Msg::OverlayTaking, t("ENTRANDO")),
@@ -985,6 +987,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::TakeKey, t("TOMAR")),
     (Msg::UpdateKey, t("ACTUALIZAR")),
     (Msg::NextKey, t("SIGUIENTE")),
+    (Msg::OverlayOffKey, t("RETIRAR")),
     (
         Msg::OverlayOffHover,
         t("Quitar este canal de overlay de Programa"),
@@ -1298,5 +1301,119 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ReasonStreamPending,
         t("un comando anterior para este destino de stream sigue pendiente"),
+    ),
+    // Overlay diagnostic line.
+    (
+        Msg::OverlayDiagLine,
+        t("O{channel} · pedido: {desired} · confirmado: {confirmed}"),
+    ),
+    (
+        Msg::OverlayDiagState,
+        t("{source}, {active}, opacidad {opacity}, cola {queued}, {position}, {border}"),
+    ),
+    (Msg::OverlayDiagUnavailable, t("no disponible")),
+    (Msg::OverlayDiagActive, t("activo")),
+    (Msg::OverlayDiagInactive, t("inactivo")),
+    // Stream transport diagnostics (output row tooltip).
+    (
+        Msg::StreamDiagTransport,
+        t("Transporte: {link} · {bytes} enviados · {queued} en cola · {dropped} descartados"),
+    ),
+    (Msg::StreamDiagConnected, t("conectado")),
+    (Msg::StreamDiagDisconnected, t("sin conexión")),
+    (Msg::StreamDiagFailure, t("Fallo: {failure}")),
+    (
+        Msg::StreamDiagLocal,
+        plural(
+            "HLS local: {count} segmento de {target} · {free} libres",
+            "HLS local: {count} segmentos de {target} · {free} libres",
+        ),
+    ),
+    (
+        Msg::StreamDiagNoSample,
+        t("Aún no hay muestra de transporte"),
+    ),
+    // Input fallback name and catalogue refusals.
+    (Msg::InputFallbackName, t("Entrada {input}")),
+    (Msg::AddRefused, t("Alta rechazada ({code}): {advice}")),
+    (Msg::RemoveRefused, t("Baja rechazada ({code}): {advice}")),
+    (
+        Msg::RefuseDuplicateInput,
+        t("La entrada {input} ya existe; abra Añadir entrada de nuevo para obtener un id libre."),
+    ),
+    (
+        Msg::RefuseTooManyInputs,
+        t("El show ya tiene el máximo de {limit} entradas; quite una entrada primero."),
+    ),
+    (
+        Msg::RefuseUnknownInput,
+        t("«{name}» ya no existe; otro editor la quitó."),
+    ),
+    (
+        Msg::RefuseInvalidName,
+        t("Use un nombre no vacío de 128 bytes como máximo."),
+    ),
+    (
+        Msg::RefuseDuplicateName,
+        t("Otra entrada ya se llama «{name}»; elija otro nombre."),
+    ),
+    (
+        Msg::RefuseProjectLocked,
+        t(
+            "El proyecto está bloqueado; abra el candado de la barra superior para cambiar entradas.",
+        ),
+    ),
+    (
+        Msg::RefuseInputLocked,
+        t("«{name}» tiene su propio candado; ábralo para quitarla."),
+    ),
+    (
+        Msg::RefuseUnavailable,
+        t(
+            "Este daemon no puede cambiar sus entradas en marcha (medios nativos); añada o quite entradas sin conexión.",
+        ),
+    ),
+    (Msg::InUseOnProgram, t("«{name}» está en Programa.")),
+    (Msg::InUseOnPreview, t("«{name}» está en Previo.")),
+    (
+        Msg::InUseTransition,
+        t("«{name}» está en una transición en curso."),
+    ),
+    (
+        Msg::InUseManualTransition,
+        t("«{name}» está en la transición manual activa."),
+    ),
+    (
+        Msg::InUseOverlaySource,
+        t("«{name}» es la fuente del overlay {channel}."),
+    ),
+    (
+        Msg::InUseOverlayQueue,
+        t("«{name}» está en la cola del overlay {channel}."),
+    ),
+    (
+        Msg::InUseStinger,
+        t("«{name}» es el medio del Stinger {slot}."),
+    ),
+    (Msg::InUseOther, t("«{name}» está en uso: {detail}.")),
+    (
+        Msg::AdviceRouteAway,
+        t("Enrute otra entrada a ese bus primero."),
+    ),
+    (
+        Msg::AdviceWaitTransition,
+        t("Espere a que termine la transición."),
+    ),
+    (
+        Msg::AdviceOverlay,
+        t("Retire el overlay o vacíe su cola primero."),
+    ),
+    (
+        Msg::AdviceStinger,
+        t("Vacíe o reasigne esa ranura de Stinger primero."),
+    ),
+    (
+        Msg::AdviceOffline,
+        t("Quite esa referencia sin conexión primero."),
     ),
 ];

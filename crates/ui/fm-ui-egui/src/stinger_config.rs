@@ -123,12 +123,8 @@ pub(crate) fn stinger_editor_media(view: &ClientView, editor: StingerEditor) -> 
         })
 }
 
-fn input_name(view: &ClientView, input: InputId) -> String {
-    view.inputs
-        .iter()
-        .position(|candidate| *candidate == input)
-        .and_then(|index| view.input_names.get(index).cloned())
-        .unwrap_or_else(|| format!("Input {input}"))
+fn input_name(l: Locale, view: &ClientView, input: InputId) -> String {
+    crate::monitors::label_for_input(l, view, input)
 }
 
 /// The audio policy in words.
@@ -163,7 +159,7 @@ pub(crate) fn stinger_summary(l: Locale, view: &ClientView, slot: u8) -> String 
         Msg::StingerSummary,
         &[
             slot_arg,
-            ("media", Arg::Str(&input_name(view, status.media_input))),
+            ("media", Arg::Str(&input_name(l, view, status.media_input))),
             ("cut", Arg::Str(&frames(l, status.cut_point_frames))),
             ("preload", Arg::Str(l.text(yes_no(status.preload)))),
             (
@@ -229,7 +225,7 @@ fn draw_stinger_pickers(
             .selected_text(
                 RichText::new(media.map_or_else(
                     || l.text(Msg::StingerNoInput).to_owned(),
-                    |m| input_name(view, m),
+                    |m| input_name(l, view, m),
                 ))
                 .size(11.0),
             )
@@ -376,7 +372,7 @@ pub(crate) fn draw_stinger_configuration(
                 |media| {
                     l.format(
                         Msg::StingerAssignNamedHover,
-                        &[slot_arg, ("name", Arg::Str(&input_name(view, media)))],
+                        &[slot_arg, ("name", Arg::Str(&input_name(l, view, media)))],
                     )
                 },
             );

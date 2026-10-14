@@ -1452,8 +1452,8 @@ mod tests {
     use crate::overlays::overlay_update_intent;
     use crate::panels::{
         STREAMS_NONE_CONFIGURED, StingerSlotPresentation, StingerSlotState, latest_stream_sample,
-        recording_status_label, stinger_slot_presentation, stinger_slot_state,
-        stream_realized_name, stream_row_text, streams_show_none_configured,
+        recording_status_label, stinger_slot_presentation, stinger_slot_state, stream_row_text,
+        streams_show_none_configured,
     };
     use crate::theme::{AMBER, ERROR, MUTED, PREVIEW, routing_color};
     use crate::transitions::{desired_manual_position, manual_transition_label};
@@ -1866,8 +1866,12 @@ mod tests {
             "Graphics".to_owned(),
         ];
         let switcher = switcher((3, 2), (1, 2));
-        let preview = monitor_routing(switcher, &inputs, &names, |selection| selection.preview);
-        let program = monitor_routing(switcher, &inputs, &names, |selection| selection.program);
+        let preview = monitor_routing(Locale::ENGLISH, switcher, &inputs, &names, |selection| {
+            selection.preview
+        });
+        let program = monitor_routing(Locale::ENGLISH, switcher, &inputs, &names, |selection| {
+            selection.program
+        });
 
         assert_eq!(preview.desired, (input(2), "Camera B".to_owned()));
         assert_eq!(preview.realized, (input(2), "Camera B".to_owned()));
@@ -2561,39 +2565,23 @@ mod tests {
 
     #[test]
     fn stream_rows_report_desired_only_without_samples_and_counters_with_samples() {
-        for (state, expected) in [
-            (StreamRealizedState::Stopped, "stopped"),
-            (StreamRealizedState::Starting, "starting"),
-            (StreamRealizedState::Live, "live"),
-            (
-                StreamRealizedState::WaitingToReconnect,
-                "waiting-to-reconnect",
-            ),
-            (StreamRealizedState::Congested, "congested"),
-            (StreamRealizedState::Failed, "failed"),
-            (StreamRealizedState::Unavailable, "unavailable"),
-        ] {
-            assert_eq!(stream_realized_name(state), expected);
-        }
-
+        let en = Locale::ENGLISH;
         let idle = stream_roster_entry(40, "RTMP Primary", true);
-        assert_eq!(stream_row_text(&idle, None), "RTMP Primary desired=true");
+        assert_eq!(stream_row_text(en, None), "No transport sample yet");
 
         let sample = stream_sample(40, Some("auth_rejected"));
         assert_eq!(
-            stream_row_text(&idle, Some(&sample)),
-            "RTMP Primary desired=true realized=live connected=true muxed_bytes=2048 \
-             enqueued_pairs=12 dropped_pairs=3 failure=auth_rejected"
+            stream_row_text(en, Some(&sample)),
+            "Transport: connected · 2.0 KB sent · 12 queued · 3 dropped\nFailure: auth_rejected"
         );
 
         let clean = StreamStatusSample {
             failure: None,
             ..sample
         };
-        assert!(stream_row_text(&idle, Some(&clean)).ends_with("failure=none"));
+        assert!(!stream_row_text(en, Some(&clean)).contains('\n'));
 
-        // Local HLS output health appends one field after the counters; a
-        // sample without it keeps the row text above unchanged.
+        // Local HLS output health adds one line after the counters.
         let local = StreamStatusSample {
             local: Some(fm_protocol::StreamLocalStatus {
                 segments: 6,
@@ -2603,13 +2591,16 @@ mod tests {
             ..clean
         };
         assert_eq!(
-            stream_row_text(&idle, Some(&local)),
-            "RTMP Primary desired=true realized=live connected=true muxed_bytes=2048 \
-             enqueued_pairs=12 dropped_pairs=3 failure=none local=6seg/6000ms/1073741824B"
+            stream_row_text(en, Some(&local)),
+            "Transport: connected · 2.0 KB sent · 12 queued · 3 dropped\n\
+             Local HLS: 6 segments of 6.0 s · 1.0 GB free"
         );
-
-        let stopped = stream_roster_entry(41, "Backup", false);
-        assert_eq!(stream_row_text(&stopped, None), "Backup desired=false");
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            stream_row_text(spanish, Some(&local)),
+            "Transporte: conectado · 2,0 KB enviados · 12 en cola · 3 descartados\n\
+             HLS local: 6 segmentos de 6,0 s · 1,0 GB libres"
+        );
 
         // Samples for targets outside the roster never leak into other rows.
         let status = StreamStatusMessage {
@@ -3188,10 +3179,10 @@ mod tests {
             assert_eq!(caption.text, text, "{bus:?} {frame:?}");
             assert_ne!(caption.note, "");
         }
-        // A simulated live frame is honest about what it does not composite.
+        // A simulated frame says what it composites, and never FTB.
         let note = caption_of(Bus::Program, Some(facts(sim, 1, 0)), false).note;
-        for omitted in ["overlays", "scenes", "Fade to Black", "not composited"] {
-            assert!(note.contains(omitted), "{note}");
+        for part in ["scene layers", "overlays", "Fade to Black is not"] {
+            assert!(note.contains(part), "{note}");
         }
     }
 

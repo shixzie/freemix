@@ -5,8 +5,8 @@
 //! decoded image is letterboxed into the surface with an explicit caption
 //! naming its origin and size; otherwise the well shows the routed source
 //! name and states that no video feed has arrived. A simulated frame shows
-//! only the realized source: overlays, scenes, and Fade to Black are not
-//! composited into it.
+//! the realized source with its scene layers and, on Program, the active
+//! overlays; Fade to Black is not composited into it.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -41,6 +41,7 @@ pub(crate) struct MonitorRouting {
 }
 
 pub(crate) fn monitor_routing(
+    l: Locale,
     switcher: SwitcherState,
     inputs: &[InputId],
     input_names: &[String],
@@ -49,23 +50,35 @@ pub(crate) fn monitor_routing(
     let desired = select(switcher.desired);
     let realized = select(switcher.realized);
     MonitorRouting {
-        desired: (desired, input_name(inputs, input_names, desired)),
-        realized: (realized, input_name(inputs, input_names, realized)),
+        desired: (desired, input_name(l, inputs, input_names, desired)),
+        realized: (realized, input_name(l, inputs, input_names, realized)),
     }
 }
 
-pub(crate) fn label_for_input(view: &ClientView, input: InputId) -> String {
-    input_name(&view.inputs, &view.input_names, input)
+pub(crate) fn label_for_input(l: Locale, view: &ClientView, input: InputId) -> String {
+    input_name(l, &view.inputs, &view.input_names, input)
 }
 
-pub(crate) fn input_name(inputs: &[InputId], input_names: &[String], input: InputId) -> String {
+/// `Input {id}` in the console language, for an input the view does not
+/// name.
+pub(crate) fn fallback_input_name(l: Locale, input: InputId) -> String {
+    l.format(
+        Msg::InputFallbackName,
+        &[("input", Arg::Str(&input.to_string()))],
+    )
+}
+
+pub(crate) fn input_name(
+    l: Locale,
+    inputs: &[InputId],
+    input_names: &[String],
+    input: InputId,
+) -> String {
     inputs
         .iter()
         .position(|candidate| *candidate == input)
-        .map_or_else(
-            || format!("Input {input}"),
-            |index| input_names[index].clone(),
-        )
+        .and_then(|index| input_names.get(index).cloned())
+        .unwrap_or_else(|| fallback_input_name(l, input))
 }
 
 /// Which bus a monitor well shows.
@@ -106,8 +119,9 @@ impl Bus {
         }
     }
 
-    fn routing(self, view: &ClientView) -> MonitorRouting {
+    fn routing(self, l: Locale, view: &ClientView) -> MonitorRouting {
         monitor_routing(
+            l,
             view.switcher,
             &view.inputs,
             &view.input_names,
@@ -423,7 +437,7 @@ pub(crate) fn draw_monitor(
         video_height,
         canvas,
     } = shape;
-    let routing = view.map(|view| bus.routing(view));
+    let routing = view.map(|view| bus.routing(l10n::locale(ui.ctx()), view));
     let fade_to_black = bus == Bus::Program
         && view.is_some_and(|view| view.switcher.desired_fade_to_black.target_active);
     let (rect, response) = ui.allocate_exact_size(
@@ -460,13 +474,29 @@ pub(crate) fn draw_monitor(
         },
         color,
     );
-    let bus_label = painter.text(
-        pos2(header.min.x + 10.0, header.center().y + 1.0),
-        Align2::LEFT_CENTER,
-        bus.label(l),
-        FontId::new(12.0, FontFamily::Proportional),
-        color,
+    // The bus name sits on a solid tally chip, legible across the room as
+    // on a hardware multiviewer label.
+    let label_ink = if bus == Bus::Program {
+        Color32::WHITE
+    } else {
+        Color32::BLACK
+    };
+    let label_galley = painter.layout_no_wrap(
+        bus.label(l).to_owned(),
+        FontId::new(12.5, FontFamily::Proportional),
+        label_ink,
     );
+    let chip = Rect::from_min_size(
+        pos2(header.min.x + 6.0, header.center().y + 1.5 - 9.0),
+        Vec2::new(label_galley.size().x + 14.0, 18.0),
+    );
+    painter.rect_filled(chip, CornerRadius::same(3), color);
+    painter.galley(
+        chip.center() - label_galley.size() / 2.0,
+        label_galley,
+        label_ink,
+    );
+    let bus_label = chip;
     // Overlay badges and the source name start after the label, whatever
     // the label's length in the console language.
     let label_end = bus_label.max.x.max(header.min.x + 70.0);
@@ -510,7 +540,7 @@ pub(crate) fn draw_monitor(
         let galley = crate::theme::elided(
             &painter,
             &routing.realized.1,
-            FontId::new(12.0, FontFamily::Proportional),
+            FontId::new(13.5, FontFamily::Proportional),
             TEXT,
             width - reserved - 10.0,
         );

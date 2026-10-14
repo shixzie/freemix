@@ -465,9 +465,11 @@ impl StudioShell {
                             RichText::new(l.text(Msg::CutKey))
                                 .size(11.0)
                                 .strong()
-                                .color(PROGRAM),
+                                .color(TEXT),
                         )
-                        .stroke(Stroke::new(1.0, PROGRAM.gamma_multiply(0.35)))
+                        // Neutral: red in the bank means "this input is on
+                        // Program", never "this key cuts".
+                        .stroke(Stroke::new(1.0, BORDER_STRONG))
                         .min_size(Vec2::new(56.0, 20.0)),
                     )
                     .hint(l.text(Msg::TileCutHover), cut_reason);

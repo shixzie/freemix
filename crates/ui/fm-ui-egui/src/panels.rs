@@ -8,14 +8,11 @@ use egui::{
     Align2, Button, Color32, CornerRadius, FontFamily, FontId, RichText, ScrollArea, Sense, Stroke,
     StrokeKind, Ui, Vec2, pos2,
 };
-use fm_protocol::{
-    StingerReadiness, StreamRealizedState, StreamStatusMessage, StreamStatusSample,
-    WireStingerSlotId,
-};
+use fm_protocol::{StingerReadiness, StreamStatusMessage, StreamStatusSample, WireStingerSlotId};
 use fm_ui_model::{StingerStatus, StreamStatus};
 
 use crate::gating::{Capability, unavailable_reason};
-use crate::l10n::{self, Arg, Msg, frames};
+use crate::l10n::{self, Arg, Locale, Msg, frames};
 use crate::stinger_config::{self, StingerEditor};
 use crate::theme::{
     ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PREVIEW, TEXT,
@@ -167,50 +164,50 @@ pub(crate) fn latest_stream_sample(
     })
 }
 
-/// Lowercase realized-state label matching the operator-facing protocol text.
-pub(crate) const fn stream_realized_name(state: StreamRealizedState) -> &'static str {
-    match state {
-        StreamRealizedState::Stopped => "stopped",
-        StreamRealizedState::Starting => "starting",
-        StreamRealizedState::Live => "live",
-        StreamRealizedState::WaitingToReconnect => "waiting-to-reconnect",
-        StreamRealizedState::Congested => "congested",
-        StreamRealizedState::Failed => "failed",
-        StreamRealizedState::Unavailable => "unavailable",
-    }
-}
-
-/// One compact roster row: canonical name plus desired flag and, when a latest
-/// sample exists for that target, the retained realized transport counters and
-/// any local HLS output health. Roster entries without samples show the desired
-/// flag only; samples without roster entries are ignored by the caller.
-pub(crate) fn stream_row_text(
-    stream: &StreamStatus,
-    sample: Option<&StreamStatusSample>,
-) -> String {
-    use core::fmt::Write as _;
-    let mut row = format!("{} desired={}", stream.name, stream.desired_running);
+/// The transport diagnostics under a stream row's tooltip, in the console
+/// language: link state and counters from the latest sample, any failure
+/// code, and local HLS playlist health. Without a sample it says so; the
+/// row's own first tooltip line already names the desired and realized
+/// state.
+pub(crate) fn stream_row_text(l: Locale, sample: Option<&StreamStatusSample>) -> String {
     let Some(sample) = sample else {
-        return row;
+        return l.text(Msg::StreamDiagNoSample).to_owned();
     };
-    let _ = write!(
-        row,
-        " realized={} connected={} muxed_bytes={} enqueued_pairs={} dropped_pairs={} failure={}",
-        stream_realized_name(sample.realized),
-        sample.connected,
-        sample.muxed_bytes,
-        sample.enqueued_pairs,
-        sample.dropped_pairs,
-        sample.failure.as_deref().unwrap_or("none"),
+    let mut text = l.format(
+        Msg::StreamDiagTransport,
+        &[
+            (
+                "link",
+                Arg::Str(l.text(if sample.connected {
+                    Msg::StreamDiagConnected
+                } else {
+                    Msg::StreamDiagDisconnected
+                })),
+            ),
+            ("bytes", Arg::Str(&l.bytes(sample.muxed_bytes))),
+            ("queued", Arg::Count(sample.enqueued_pairs)),
+            ("dropped", Arg::Count(sample.dropped_pairs)),
+        ],
     );
-    if let Some(local) = sample.local {
-        let _ = write!(
-            row,
-            " local={}seg/{}ms/{}B",
-            local.segments, local.target_duration_ms, local.free_bytes
-        );
+    if let Some(failure) = &sample.failure {
+        text.push('\n');
+        text.push_str(&l.format(Msg::StreamDiagFailure, &[("failure", Arg::Str(failure))]));
     }
-    row
+    if let Some(local) = sample.local {
+        text.push('\n');
+        text.push_str(&l.format(
+            Msg::StreamDiagLocal,
+            &[
+                ("count", Arg::from(local.segments)),
+                (
+                    "target",
+                    Arg::Str(&l.seconds_tenths(u64::from(local.target_duration_ms))),
+                ),
+                ("free", Arg::Str(&l.bytes(local.free_bytes))),
+            ],
+        ));
+    }
+    text
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -322,7 +319,7 @@ fn draw_stingers(
                 let slot_state = stinger_slot_state(stingers, slot);
                 let media = state.view.as_ref().and_then(|view| {
                     stinger_config::configured_stinger(view, slot)
-                        .map(|status| crate::monitors::label_for_input(view, status.media_input))
+                        .map(|status| crate::monitors::label_for_input(l, view, status.media_input))
                 });
                 let card = StingerCard {
                     slot,
