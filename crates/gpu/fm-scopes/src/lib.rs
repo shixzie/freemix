@@ -713,7 +713,9 @@ fn frame_pixels(frame: &ImageFrame) -> impl Iterator<Item = (usize, Rgba8)> + '_
         .chunks_exact(frame.stride())
         .flat_map(move |row| {
             row[..packed_width]
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .enumerate()
                 .map(|(x, bytes)| (x, Rgba8::new(bytes[0], bytes[1], bytes[2], bytes[3])))
         })

@@ -164,7 +164,7 @@ fn jpeg_has_expected_dimensions_pixels_and_opaque_alpha() {
     assert_eq!(decoded.source_dimensions.height(), 2);
     assert!(!decoded.source_has_alpha);
     assert_eq!(decoded.frame.metadata(), Some(expected_metadata()));
-    for pixel in bytes(&decoded).chunks_exact(4) {
+    for pixel in bytes(&decoded).as_chunks::<4>().0 {
         assert_channel_near(pixel[0], 30, 8);
         assert_channel_near(pixel[1], 80, 8);
         assert_channel_near(pixel[2], 160, 8);
