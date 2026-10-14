@@ -270,12 +270,7 @@ fn is_private_host(host: &str) -> bool {
 fn is_private_ip(address: IpAddr) -> bool {
     match address {
         IpAddr::V4(address) => is_private_ipv4(address),
-        IpAddr::V6(address) => {
-            if let Some(mapped) = address.to_ipv4_mapped() {
-                return is_private_ipv4(mapped);
-            }
-            is_private_ipv6(address)
-        }
+        IpAddr::V6(address) => is_private_ipv6(address),
     }
 }
 
@@ -295,13 +290,63 @@ fn is_private_ipv4(address: Ipv4Addr) -> bool {
         || a >= 224
 }
 
+/// IPv6 private-network policy.
+///
+/// Native IPv6 blocks: unspecified `::`, loopback `::1`, unique-local
+/// `fc00::/7`, link-local `fe80::/10`, deprecated site-local `fec0::/10`, and
+/// multicast `ff00::/8`.
+///
+/// Forms that embed an IPv4 address are judged by that address so a private
+/// IPv4 target cannot be reached through a translator or tunnel:
+///
+/// - IPv4-mapped `::ffff:a.b.c.d` and SIIT `::ffff:0:a.b.c.d` (RFC 6052/7915)
+///   check the embedded address.
+/// - Deprecated IPv4-compatible `::a.b.c.d` (`::/96` other than `::`/`::1`)
+///   checks the embedded address.
+/// - Well-known NAT64 `64:ff9b::/96` checks the embedded address.
+/// - Local-use NAT64 `64:ff9b:1::/48` (RFC 8215) is operator-defined and
+///   always blocked.
+/// - 6to4 `2002::/16` checks the IPv4 in bits 16..48.
+/// - Teredo `2001::/32` is always blocked: the client IPv4 is XOR-obfuscated
+///   and the relay path is not under our control, so it fails closed.
 fn is_private_ipv6(address: Ipv6Addr) -> bool {
-    let first = address.segments()[0];
-    address.is_unspecified()
+    let segments = address.segments();
+    let first = segments[0];
+    if address.is_unspecified()
         || address.is_loopback()
         || first & 0xfe00 == 0xfc00
         || first & 0xffc0 == 0xfe80
+        || first & 0xffc0 == 0xfec0
         || first & 0xff00 == 0xff00
+    {
+        return true;
+    }
+    let octets = address.octets();
+    let embedded_low = Ipv4Addr::new(octets[12], octets[13], octets[14], octets[15]);
+    // `::a.b.c.d` (IPv4-compatible) and `::ffff:a.b.c.d` (IPv4-mapped).
+    if segments[..5] == [0; 5] && (segments[5] == 0 || segments[5] == 0xffff) {
+        return is_private_ipv4(embedded_low);
+    }
+    // `::ffff:0:a.b.c.d` (SIIT IPv4-translated).
+    if segments[..4] == [0; 4] && segments[4] == 0xffff && segments[5] == 0 {
+        return is_private_ipv4(embedded_low);
+    }
+    // NAT64: well-known prefix checks the embedded IPv4; local-use is blocked.
+    if first == 0x0064 && segments[1] == 0xff9b {
+        if segments[2] == 0x0001 {
+            return true;
+        }
+        if segments[2..6] == [0; 4] {
+            return is_private_ipv4(embedded_low);
+        }
+    }
+    // 6to4: the IPv4 address occupies bits 16..48.
+    if first == 0x2002 {
+        let embedded = Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5]);
+        return is_private_ipv4(embedded);
+    }
+    // Teredo: obfuscated client address; fail closed.
+    first == 0x2001 && segments[1] == 0
 }
 
 // Browsers accept legacy integer, hexadecimal, octal, and shortened IPv4 forms.

@@ -412,3 +412,49 @@ fn granted_special_schemes_without_slashes_still_get_private_checks() {
     }
     policy.check("ftp://example.com/file").unwrap();
 }
+
+#[test]
+fn navigation_blocks_ipv6_forms_that_embed_private_ipv4() {
+    let policy = NavigationPolicy::new();
+    for url in [
+        // NAT64 well-known prefix with private IPv4.
+        "http://[64:ff9b::7f00:1]/",
+        "http://[64:ff9b::a9fe:a9fe]/",
+        // Local-use NAT64 is always blocked.
+        "http://[64:ff9b:1::808:808]/",
+        // 6to4 embedding 127.0.0.1 and 10.0.0.1.
+        "http://[2002:7f00:1::]/",
+        "http://[2002:a00:1::1]/",
+        // Deprecated IPv4-compatible.
+        "http://[::127.0.0.1]/",
+        "http://[::a9fe:a9fe]/",
+        // SIIT IPv4-translated.
+        "http://[::ffff:0:10.0.0.1]/",
+        // Site-local.
+        "http://[fec0::1]/",
+        // Teredo fails closed.
+        "http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/",
+    ] {
+        assert!(
+            matches!(
+                policy.check(url).map_err(|error| error.reason),
+                Err(NavigationBlockReason::PrivateNetwork { .. })
+            ),
+            "{url}"
+        );
+    }
+    let resolved: IpAddr = "64:ff9b::c0a8:101".parse().unwrap();
+    assert!(
+        policy
+            .check_resolved("https://public.example/", &[resolved])
+            .is_err()
+    );
+    // Embedded public IPv4 is still allowed.
+    for url in [
+        "https://[64:ff9b::808:808]/",
+        "https://[2002:808:808::1]/",
+        "https://[::ffff:0:8.8.8.8]/",
+    ] {
+        policy.check(url).unwrap();
+    }
+}

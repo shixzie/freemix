@@ -387,10 +387,19 @@ enum Condition {
     Unknown,
 }
 
+/// Last sample a rate-of-change rule measured from.
+#[derive(Clone, Copy, Debug)]
+struct RateBaseline {
+    time: u64,
+    value: f64,
+    updates: u64,
+    generation: u64,
+}
+
 #[derive(Clone, Debug)]
 struct RuleRuntime {
     status: RuleStatus,
-    rate_baseline: Option<(u64, f64, u64)>,
+    rate_baseline: Option<RateBaseline>,
     notified_firing: bool,
 }
 
@@ -736,24 +745,48 @@ impl RuleRuntime {
                 let Some((entry, reading)) = entry.and_then(|entry| {
                     read(&entry.value, rule.reading).map(|reading| (entry, reading))
                 }) else {
+                    // A missing series has no rate; a later recreation must
+                    // not be compared against the removed series' baseline.
+                    self.rate_baseline = None;
+                    self.status.last_value = None;
                     return Condition::Unknown;
                 };
-                let (time, updates) = (entry.updated_millis, entry.updates);
+                let current = RateBaseline {
+                    time: entry.updated_millis,
+                    value: reading,
+                    updates: entry.updates,
+                    generation: entry.generation,
+                };
                 match self.rate_baseline {
-                    Some((base_time, base_value, base_updates)) if base_updates != updates => {
-                        if time > base_time {
-                            let rate = (reading - base_value) * 1_000.0
-                                / crate::registry::as_f64(time - base_time);
+                    // The series was removed and recreated, or a monotonic
+                    // reading went backwards (counter reset): restart the
+                    // rate from the current sample instead of reporting a
+                    // spurious rate across the discontinuity.
+                    Some(base)
+                        if base.generation != current.generation
+                            || (monotonic_reading(&entry.value, rule.reading)
+                                && current.value < base.value) =>
+                    {
+                        self.rate_baseline = Some(current);
+                        self.status.last_value = None;
+                    }
+                    Some(base) if base.updates != current.updates => {
+                        if current.time > base.time {
+                            let rate = (current.value - base.value) * 1_000.0
+                                / crate::registry::as_f64(current.time - base.time);
                             self.status.last_value = Some(rate);
-                            self.rate_baseline = Some((time, reading, updates));
+                            self.rate_baseline = Some(current);
                         } else {
                             // Same timestamp: keep the baseline time, adopt
                             // the newer value for the next rate.
-                            self.rate_baseline = Some((base_time, reading, updates));
+                            self.rate_baseline = Some(RateBaseline {
+                                time: base.time,
+                                ..current
+                            });
                         }
                     }
                     Some(_) => {}
-                    None => self.rate_baseline = Some((time, reading, updates)),
+                    None => self.rate_baseline = Some(current),
                 }
                 match self.status.last_value {
                     Some(rate) if self.rate_baseline.is_some() && rate.is_finite() => {
@@ -764,6 +797,15 @@ impl RuleRuntime {
             }
         }
     }
+}
+
+/// Readings that can only grow while a series lives; a decrease means reset.
+const fn monotonic_reading(value: &SeriesValue, reading: RuleReading) -> bool {
+    matches!(
+        (value, reading),
+        (SeriesValue::Counter(_), RuleReading::Value)
+            | (SeriesValue::Histogram(_), RuleReading::Count)
+    )
 }
 
 fn read(value: &SeriesValue, reading: RuleReading) -> Option<f64> {

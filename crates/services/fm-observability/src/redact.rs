@@ -148,7 +148,59 @@ fn redact_secrets(value: &str) -> String {
         }
     }
 
+    push_rtmp_stream_key_ranges(value, &mut ranges);
+
     replace_ranges(value, ranges)
+}
+
+/// RTMP-family URLs carry the stream key as the final path segment
+/// (`rtmp://host/app/KEY`). When the path has at least two segments the last
+/// one is redacted; the host and application name are kept. Other schemes
+/// (HTTP, HLS playlists) are untouched.
+fn push_rtmp_stream_key_ranges(value: &str, ranges: &mut Vec<(usize, usize, &str)>) {
+    const SCHEMES: [&str; 6] = ["rtmp", "rtmps", "rtmpt", "rtmpe", "rtmpte", "rtmpts"];
+    let bytes = value.as_bytes();
+    for (separator, _) in value.match_indices("://") {
+        let scheme_start = bytes[..separator]
+            .iter()
+            .rposition(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'+' | b'-' | b'.'))
+            .map_or(0, |position| position + 1);
+        let scheme = &value[scheme_start..separator];
+        if !SCHEMES
+            .iter()
+            .any(|candidate| scheme.eq_ignore_ascii_case(candidate))
+        {
+            continue;
+        }
+        let authority_start = separator + 3;
+        let url_end = bytes[authority_start..]
+            .iter()
+            .position(|byte| {
+                byte.is_ascii_whitespace()
+                    || matches!(byte, b'?' | b'#' | b'"' | b'\'' | b'<' | b'>')
+            })
+            .map_or(bytes.len(), |offset| authority_start + offset);
+        let Some(path_offset) = value[authority_start..url_end].find('/') else {
+            continue;
+        };
+        let path_start = authority_start + path_offset;
+        let path = value[path_start..url_end].trim_end_matches('/');
+        let segments = path
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .count();
+        if segments < 2 {
+            continue;
+        }
+        let Some(last_slash) = path.rfind('/') else {
+            continue;
+        };
+        let key_start = path_start + last_slash + 1;
+        let key_end = path_start + path.len();
+        if key_start < key_end {
+            ranges.push((key_start, key_end, Redactor::SECRET_MARKER));
+        }
+    }
 }
 
 /// Covers the token after every standalone `Bearer` scheme word.
@@ -434,6 +486,34 @@ mod tests {
             Redactor.redact_field("passphrase", "12345"),
             Redactor::SECRET_MARKER
         );
+    }
+
+    #[test]
+    fn rtmp_stream_keys_in_the_last_path_segment_are_redacted() {
+        for (input, expected) in [
+            (
+                "push rtmp://live.example/app/sk-live-123 ok",
+                "push rtmp://live.example/app/[REDACTED_SECRET] ok",
+            ),
+            (
+                "RTMPS://a.rtmps.example:443/rtmp/FB-key-9?x=1",
+                "RTMPS://a.rtmps.example:443/rtmp/[REDACTED_SECRET]?x=1",
+            ),
+            (
+                "rtmp://live.example/app/inst/key-7/",
+                "rtmp://live.example/app/inst/[REDACTED_SECRET]/",
+            ),
+            // Only an application name: nothing to redact.
+            ("rtmp://live.example/app", "rtmp://live.example/app"),
+        ] {
+            assert_eq!(Redactor.redact(input), expected);
+        }
+        for unaffected in [
+            "https://cdn.example/hls/stream/index.m3u8",
+            "http://cdn.example/live/channel/playlist.m3u8",
+        ] {
+            assert_eq!(Redactor.redact(unaffected), unaffected);
+        }
     }
 
     #[test]

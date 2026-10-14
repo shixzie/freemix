@@ -496,6 +496,10 @@ pub struct SeriesEntry {
     pub updated_millis: u64,
     /// Number of accepted updates.
     pub updates: u64,
+    /// Registry-unique creation number. A series removed and created again
+    /// under the same key gets a new generation, so consumers holding state
+    /// derived from the old series (rate baselines) can detect the change.
+    pub generation: u64,
 }
 
 /// Registry bounds; every field must be non-zero.
@@ -523,6 +527,7 @@ pub struct MetricRegistry {
     descriptors: BTreeMap<MetricId, MetricDescriptor>,
     series: BTreeMap<SeriesKey, SeriesEntry>,
     series_per_metric: BTreeMap<MetricId, usize>,
+    next_generation: u64,
 }
 
 impl MetricRegistry {
@@ -540,6 +545,7 @@ impl MetricRegistry {
             descriptors: BTreeMap::new(),
             series: BTreeMap::new(),
             series_per_metric: BTreeMap::new(),
+            next_generation: 0,
         })
     }
 
@@ -724,9 +730,11 @@ impl MetricRegistry {
                     value,
                     updated_millis: monotonic_millis,
                     updates: 0,
+                    generation: self.next_generation,
                 },
             );
             *self.series_per_metric.entry(id.clone()).or_insert(0) += 1;
+            self.next_generation = self.next_generation.wrapping_add(1);
         }
         let entry = self.series.get_mut(&key).expect("series inserted above");
         if entry.updates > 0 && monotonic_millis < entry.updated_millis {

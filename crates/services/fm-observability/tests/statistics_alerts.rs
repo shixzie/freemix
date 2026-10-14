@@ -751,3 +751,54 @@ notification 0 rule=latency.p95 kind=firing severity=critical at_ms=6 occurrence
     assert!(capped.truncated);
     assert!(capped.text.len() <= 256);
 }
+
+#[test]
+fn rate_rule_rebases_after_series_is_removed_and_recreated() {
+    let mut registry = registry();
+    let depth = id("engine.queue_depth");
+    let none = LabelSet::new();
+    let key = SeriesKey::new(depth.clone(), none.clone());
+    let rate = rule_id("depth.rate");
+    let mut alerts = engine();
+    alerts
+        .add_rule(
+            AlertRule::new(
+                rate.clone(),
+                AlertSeverity::Warning,
+                key.clone(),
+                RuleReading::Value,
+                RuleCondition::RateOfChange(
+                    AlertPolicy::new(ThresholdDirection::Above, 10.0, 2.0).unwrap(),
+                ),
+            ),
+            &registry,
+        )
+        .unwrap();
+
+    registry.set_gauge(&depth, &none, 1_000, 0.0).unwrap();
+    alerts.evaluate(&registry, 1_000).unwrap();
+    registry.set_gauge(&depth, &none, 2_000, 1.0).unwrap();
+    alerts.evaluate(&registry, 2_000).unwrap();
+    approx(alerts.status(&rate).unwrap().last_value, 1.0);
+
+    // Removed and recreated between evaluations: the new series must not be
+    // measured against the old baseline (499 units in 1 ms would fire).
+    assert!(registry.remove_series(&key));
+    registry.set_gauge(&depth, &none, 2_001, 500.0).unwrap();
+    alerts.evaluate(&registry, 2_001).unwrap();
+    assert_eq!(alerts.status(&rate).unwrap().state, RuleState::Inactive);
+    assert_eq!(alerts.status(&rate).unwrap().last_value, None);
+
+    // The next update measures from the recreated series.
+    registry.set_gauge(&depth, &none, 3_001, 503.0).unwrap();
+    alerts.evaluate(&registry, 3_001).unwrap();
+    approx(alerts.status(&rate).unwrap().last_value, 3.0);
+    assert_eq!(alerts.status(&rate).unwrap().state, RuleState::Inactive);
+
+    // Removal observed by an evaluation also drops the baseline.
+    assert!(registry.remove_series(&key));
+    alerts.evaluate(&registry, 3_500).unwrap();
+    registry.set_gauge(&depth, &none, 3_600, 9_000.0).unwrap();
+    alerts.evaluate(&registry, 3_600).unwrap();
+    assert_eq!(alerts.status(&rate).unwrap().state, RuleState::Inactive);
+}

@@ -504,3 +504,21 @@ fn surface_custom_css_rejects_style_breakout_without_changing_config() {
     config.set_custom_css(None, limits).unwrap();
     assert_eq!(config.custom_css(), None);
 }
+
+#[test]
+fn network_policy_blocks_ipv6_embedded_private_ipv4() {
+    let policy = NetworkPolicy::default();
+    for url in [
+        "https://[64:ff9b::a00:1]/",
+        "https://[2002:c0a8:101::]/",
+        "https://[fec0::1]/",
+    ] {
+        assert!(private_denial(&policy.check(url).unwrap_err()), "{url}");
+    }
+    let nat64: IpAddr = "64:ff9b::7f00:1".parse().unwrap();
+    assert!(private_denial(
+        &policy
+            .check_resolved("https://public.example/", &[nat64])
+            .unwrap_err()
+    ));
+}
