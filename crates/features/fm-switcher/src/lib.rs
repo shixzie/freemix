@@ -2,6 +2,7 @@
 
 mod command;
 mod fade_to_black;
+mod mix_bank;
 mod overlay;
 mod recorder;
 mod state;
@@ -14,6 +15,12 @@ pub use fade_to_black::{
     FADE_TO_BLACK_POSITION_DENOMINATOR, FadeToBlackAdvance, FadeToBlackController,
     FadeToBlackError, FadeToBlackFrame, FadeToBlackPosition, FadeToBlackRequest,
     FadeToBlackStarted, FadeToBlackTarget, MAX_FADE_TO_BLACK_DURATION_FRAMES,
+};
+pub use mix_bank::{
+    MAX_MIX_BANK_INPUTS, MAX_MIX_TRANSITION_DURATION_FRAMES, MAX_PENDING_MIX_EFFECTS,
+    MAX_SECONDARY_MIXES, MIX_BANK_CAPACITY, MixBank, MixBankCommand, MixBankError, MixBankEvent,
+    MixBankFrame, MixConfig, MixEffect, MixFrame, MixId, MixLayer, MixMode, MixSet, MixSource,
+    MixState, MixTransition,
 };
 pub use overlay::{
     MAX_OVERLAY_QUEUE_DEPTH, MAX_OVERLAY_TRANSITION_DURATION_FRAMES, OVERLAY_CHANNEL_COUNT,
