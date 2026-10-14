@@ -44,7 +44,7 @@ use fm_control::{
 use fm_engine::FrameResult;
 use fm_engine::{
     Engine, EngineAcceptance, EngineInputAudioStripState, EngineRestoreState, EngineSnapshot,
-    ShowState,
+    EngineTitle, ShowState,
 };
 use fm_model::{
     InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, MainMix,
@@ -8217,12 +8217,13 @@ fn serve_inner(
 
     let store = ProjectStore::new(path)?;
     let project = load_and_recover(&store, recover_to_checkpoint)?;
+    let title_templates = load_title_templates(&store, project.project())?;
     // Opened once and held for the run: this process is the journal's only
     // writer, and reopening it per command is what made an accepted command
     // cost what the whole show had cost so far.
     let journal = DurableJournal::new(store.open_journal_writer()?);
     let project_id = project.project().id();
-    let engine = restore_engine(&project)?;
+    let engine = restore_engine_with_titles(&project, &title_templates)?;
     let identity = format!("project-{project_id}");
     let control = Rc::new(RefCell::new(ControlService::new(
         engine,
@@ -8585,7 +8586,8 @@ fn load_and_recover(store: &ProjectStore, recover_to_checkpoint: bool) -> AppRes
         .last()
         .map_or_else(|| scan.checkpoint_sequence(), MutationBatch::sequence);
 
-    let durable = replay_journal(&manifest, scan.batches())?;
+    let title_templates = load_title_templates(store, manifest.project())?;
+    let durable = replay_journal(&manifest, &title_templates, scan.batches())?;
     // Fold the replayed mutations into the manifest and discard them, so the
     // next crash replays only what happened after this point and a second
     // recovery of the same batches is impossible.
@@ -8650,12 +8652,16 @@ fn abandon_to_checkpoint(
 /// different from the one the operator was acknowledged against. A divergence
 /// means the replay is not that history, so it is reported instead of silently
 /// becoming the project's state.
-fn replay_journal(manifest: &StoredProject, batches: &[MutationBatch]) -> AppResult<StoredProject> {
+fn replay_journal(
+    manifest: &StoredProject,
+    title_templates: &TitleTemplates,
+    batches: &[MutationBatch],
+) -> AppResult<StoredProject> {
     let mut durable = manifest.clone();
     let project_id = durable.project().id();
     let identity = format!("project-{project_id}");
     let mut control = ControlService::new(
-        restore_engine(&durable)?,
+        restore_engine_with_titles(&durable, title_templates)?,
         Policy::development(),
         identity.clone(),
         format!("{identity}-log"),
@@ -8705,7 +8711,110 @@ fn switcher_recorder_slot(slot: ModelRecorderSlot) -> RecorderSlot {
     RecorderSlot::new(slot.get()).expect("model recorder slots are in the switcher range")
 }
 
+/// The stored template of every title input, keyed by input id.
+type TitleTemplates = std::collections::BTreeMap<InputId, fm_titles::TitleTemplate>;
+
+/// Loads the stored template of every title input in `project`.
+///
+/// Title field state is restored against its template, so a title whose
+/// template does not load, or whose names do not fit the wire bounds of a
+/// `title_state` record, makes the daemon refuse to start: serving it would
+/// mean inventing or dropping the operator's field values.
+fn load_title_templates(
+    store: &ProjectStore,
+    project: &fm_model::Project,
+) -> AppResult<TitleTemplates> {
+    let mut templates = TitleTemplates::new();
+    for input in project.inputs() {
+        let fm_model::InputKind::Title(title) = &input.kind else {
+            continue;
+        };
+        let stored = store
+            .load_title_template(&title.template_uri)
+            .map_err(|error| {
+                AppFailure(format!(
+                    "title input {} template `{}` could not be loaded: {error}",
+                    input.id, title.template_uri
+                ))
+            })?;
+        let template = stored.template;
+        if template.name.trim().is_empty()
+            || template.name.len() > fm_protocol::MAX_TITLE_NAME_BYTES
+        {
+            return Err(AppFailure(format!(
+                "title input {} template name must be nonblank and at most {} bytes",
+                input.id,
+                fm_protocol::MAX_TITLE_NAME_BYTES
+            ))
+            .into());
+        }
+        let names_bytes = template
+            .fields
+            .iter()
+            .map(|field| field.name.len())
+            .fold(0_usize, usize::saturating_add);
+        if template
+            .fields
+            .iter()
+            .any(|field| field.name.trim().is_empty())
+            || names_bytes > fm_protocol::MAX_TITLE_FIELD_NAMES_BYTES
+        {
+            return Err(AppFailure(format!(
+                "title input {} template field names must be nonblank and total at most {} bytes",
+                input.id,
+                fm_protocol::MAX_TITLE_FIELD_NAMES_BYTES
+            ))
+            .into());
+        }
+        templates.insert(input.id, template);
+    }
+    Ok(templates)
+}
+
+/// Seeds every title input's persisted field values and revision into the
+/// restored show, checked against its template.
+fn restore_titles(
+    show: &mut ShowState,
+    project: &fm_model::Project,
+    templates: &TitleTemplates,
+) -> AppResult<()> {
+    for input in project.inputs() {
+        let fm_model::InputKind::Title(title) = &input.kind else {
+            continue;
+        };
+        let template = templates.get(&input.id).ok_or_else(|| {
+            AppFailure(format!("title input {} has no loaded template", input.id))
+        })?;
+        let fields = fm_titles::TitleFieldSet::restore(
+            template,
+            title.field_revision,
+            title.fields.iter().map(|entry| {
+                (
+                    fm_titles::FieldId::new(entry.id.get()),
+                    title_render::field_value(&entry.value),
+                )
+            }),
+        )
+        .map_err(|error| {
+            AppFailure(format!(
+                "title input {} fields do not match template `{}`: {error}",
+                input.id, title.template_uri
+            ))
+        })?;
+        show.set_title(input.id, EngineTitle::new(template.name.clone(), fields))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
+    restore_engine_with_titles(project, &TitleTemplates::new())
+}
+
+fn restore_engine_with_titles(
+    project: &StoredProject,
+    title_templates: &TitleTemplates,
+) -> AppResult<Engine> {
     let canonical = project.project();
     let inputs = canonical
         .inputs()
@@ -8787,6 +8896,7 @@ fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
     realized.restore_settled_fade_to_black(fade_to_black.realized.target_active);
     restore_overlays(&mut show, &mut realized, project.runtime_overlays())?;
     restore_edit_locks(&mut show, canonical)?;
+    restore_titles(&mut show, canonical, title_templates)?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -8968,6 +9078,9 @@ fn handle_client(
     match handshake.sync {
         SyncPayload::Snapshot(snapshot) => {
             write_session_message(&mut writer, &mut session, &WireMessage::Snapshot(*snapshot))?;
+            for state in control.borrow().title_states() {
+                write_session_message(&mut writer, &mut session, &WireMessage::TitleState(state))?;
+            }
         }
         SyncPayload::Resume(events) => {
             for event in events {
@@ -10143,12 +10256,15 @@ fn command_ticks(
         }
         CommandPayload::TakeOverlay { channel, .. }
         | CommandPayload::OverlayOff { channel }
-        | CommandPayload::TakeNextOverlay { channel } => {
+        | CommandPayload::TakeNextOverlay { channel }
+        | CommandPayload::TakeTitle { channel, .. } => {
             let channel =
                 OverlayChannelId::new(channel.number()).expect("wire overlay channels are bounded");
             prepared.overlay_transition_ticks(channel)
         }
+        CommandPayload::TitleOffAir { input } => prepared.title_off_air_ticks(input.to_domain()),
         CommandPayload::RenameInput { .. }
+        | CommandPayload::SetTitleFields { .. }
         | CommandPayload::ReorderInputs { .. }
         | CommandPayload::SetInputAudioStrip { .. }
         | CommandPayload::SelectPreview { .. }
@@ -10302,6 +10418,7 @@ fn stored_project_with_receipts(
     sync_project_streams(&mut project, desired)?;
     sync_project_recording(&mut project, desired);
     sync_project_edit_locks(&mut project, show)?;
+    sync_project_titles(&mut project, show)?;
     StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {
@@ -10482,6 +10599,29 @@ fn sync_project_edit_locks(project: &mut fm_model::Project, show: &ShowState) ->
         project
             .set_input_locked_checked(input, true)
             .map_err(|error| AppFailure(format!("edit lock could not be persisted: {error}")))?;
+    }
+    Ok(())
+}
+
+/// Persists every title's live field values and revision.
+fn sync_project_titles(project: &mut fm_model::Project, show: &ShowState) -> AppResult<()> {
+    for (&input, title) in show.titles() {
+        let fields = title
+            .fields
+            .values()
+            .iter()
+            .map(|(field, value)| fm_model::TitleFieldEntry {
+                id: fm_model::TitleFieldId::new(field.get()),
+                value: title_render::model_field_value(value),
+            })
+            .collect();
+        project
+            .set_title_fields(input, title.fields.revision(), fields)
+            .map_err(|error| {
+                AppFailure(format!(
+                    "title input {input} fields could not be persisted: {error:?}"
+                ))
+            })?;
     }
     Ok(())
 }
@@ -17708,7 +17848,7 @@ mod tests {
         let manifest = reloaded.load().unwrap();
         let scan = reloaded.scan_journal().unwrap();
         assert_eq!(scan.batches().len(), 1);
-        let replayed = replay_journal(&manifest, scan.batches()).unwrap();
+        let replayed = replay_journal(&manifest, &TitleTemplates::new(), scan.batches()).unwrap();
         assert_eq!(replayed.position().revision, 1);
         assert_eq!(replayed.project().recording_desired_slots(), [false, false]);
 

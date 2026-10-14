@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.23 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.24 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -198,6 +198,61 @@ Protocol 2.23 adds live input add and remove:
 - A native-media daemon refuses both with `unavailable` (not retryable): the
   native runtime builds its source graph at startup and cannot add or retire
   one while running, so the catalogue may only change offline there.
+
+Protocol 2.24 adds live title field state:
+
+- Field lists use a counted encoding inside the record's ordinary percent
+  escaping, so arbitrary text never needs a second escaping layer:
+  `fields=<item>,<item>,...` with items in strictly ascending nonzero field
+  ID order, each one of `<id>:t:<byte-len>:<text>`, `<id>:n:<i64>`,
+  `<id>:c:<rrggbbaa>` (eight lowercase hex digits, straight alpha) and
+  `<id>:i:<byte-len>:<asset-uri>` (non-blank). Numbers and IDs are
+  canonical decimal. A list holds at most 128 fields, each text at most 4096
+  characters, and all text plus image URIs together at most 12288 UTF-8
+  bytes; anything else, including trailing data or an empty item, is
+  rejected by the codec.
+- `payload=title_fields` carries `input`, `base_revision`,
+  `require=off_air|on_air` and `fields` (the changed fields). It is a
+  project edit (`EditProject`: Graphics, Admin), realizes in `project`, and
+  publishes `event=title_changed`.
+- `payload=title_take` carries `input`, `channel=1..=8`, `base_revision` and
+  `fields` (possibly empty). It applies the fields to an off-air title and
+  takes it onto the overlay channel with that channel's configured
+  transition, as one revision. It is a transition (Operator, Admin); with a
+  non-empty field list it additionally requires `EditProject`, so in the
+  production role matrix only Admin may edit fields while taking. It realizes
+  in `switcher` and publishes `event=title_changed`.
+- `payload=title_off_air` carries `input` and takes the title off the single
+  desired overlay channel that shows it. It is a transition, realizes in
+  `switcher`, and publishes `event=desired_switcher` like `overlay_off`.
+- `event=title_changed` carries `input`, `field_revision`, the title's
+  complete `fields` list (every template field, ascending) and the full
+  desired `overlays` (same encoding as `desired_switcher`).
+- Refusals use the top-level codes `conflict` (stale `base_revision`, on or
+  off air against `require`, on the Program bus, on several overlay
+  channels), `not_found` (unknown or non-title input), `invalid_command`
+  (unknown, duplicate or mistyped field, blank image URI, text or content
+  bounds) and `resource_exhausted` (field revision exhausted).
+- Snapshots end with `titles=<input>:<field_revision>,...`, ascending
+  snapshot input IDs, possibly empty. A snapshot only announces titles: the
+  server follows every `snapshot` record immediately, before any event,
+  with exactly one `kind=title_state` record per announced title in that
+  order, carrying `revision` (the snapshot revision), `input`, `name` (the
+  template name, non-blank, at most 256 bytes), `field_revision`, the
+  complete `fields`, and `field_names=<byte-len>:<name>,...` positionally
+  naming each field (non-blank, together at most 4096 bytes). A client stays
+  synchronizing until every announced title is complete; a `title_state`
+  that does not complete an announced title at the snapshot revision, one
+  arriving at any other time, or an event arriving before the titles are
+  complete forces a fresh snapshot, and an incomplete client never resumes.
+  Resumed event streams carry no title states; `title_changed` keeps
+  replicated titles current.
+- Durability: the daemon folds every title's field values and revision into
+  the stored project before journaling and restores them against each
+  title's stored template on start. A template that does not load, whose
+  names exceed the `title_state` bounds, or whose persisted values do not
+  match it stops the daemon at startup naming the input.
+- Clients apply no optimistic change for title commands.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
@@ -372,8 +427,9 @@ Suggested roles:
 - `operator`: switcher and show controls;
 - `admin`: projects, devices, users, secrets, plugins, updates.
 
-Undo, redo, the edit padlock, and live input add/remove require
-`edit_project`. Undo and redo
+Undo, redo, the edit padlock, live input add/remove, and title field saves
+require `edit_project`; title takes and off-airs require `transition`, and a
+take that also edits fields requires both. Undo and redo
 additionally require the class of the edit they target (for example
 `transition` for a stinger slot edit), so history never escalates a role. The
 padlock is an operator guard against accidental edits, not access control:

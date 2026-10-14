@@ -2884,3 +2884,321 @@ fn input_add_and_remove_respect_the_padlock_and_live_references() {
     }
     assert_eq!(control.snapshot().snapshot.inputs.len(), 4);
 }
+
+mod titles {
+    use fm_protocol::{
+        OverlayStatus, TitleAirRequirement, TitleFieldStatus, TitleFieldUpdate, TitleFieldValue,
+        TitleStateMessage, TitleSummary, WireOverlayChannelId, WireTitleFieldId,
+    };
+    use fm_titles::{FieldDefinition, TemplateId, TitleFieldSet, TitleTemplate};
+
+    use super::*;
+
+    const TITLE: u128 = 3;
+    const NAME: u128 = 1;
+    const SCORE: u128 = 2;
+
+    fn field(value: u128) -> WireTitleFieldId {
+        WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn template() -> TitleTemplate {
+        TitleTemplate {
+            id: TemplateId::new(NonZeroU128::new(9).unwrap()),
+            name: "Lower third".into(),
+            width: 64,
+            height: 16,
+            background: TitleColor::TRANSPARENT,
+            fields: vec![
+                FieldDefinition {
+                    id: FieldId::new(NonZeroU128::new(NAME).unwrap()),
+                    name: "Name".into(),
+                    default: FieldValue::Text("Ana".into()),
+                },
+                FieldDefinition {
+                    id: FieldId::new(NonZeroU128::new(SCORE).unwrap()),
+                    name: "Score".into(),
+                    default: FieldValue::Number(0),
+                },
+            ],
+            elements: Vec::new(),
+        }
+    }
+
+    fn title_service() -> ControlService {
+        let mut show = ShowState::new(
+            "show",
+            named_inputs([input(1), input(2), input(TITLE)]),
+            input(1),
+            input(2),
+        )
+        .unwrap();
+        show.set_title(
+            input(TITLE),
+            EngineTitle::new(
+                "Lower third",
+                TitleFieldSet::from_template(&template()).unwrap(),
+            ),
+        )
+        .unwrap();
+        let engine = Engine::new(
+            show,
+            FrameRate::new(60, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        );
+        ControlService::new(
+            engine,
+            Policy::production(),
+            "engine-a",
+            "log-a",
+            ControlLimits {
+                retained_events: 8,
+                max_subscribers: 4,
+                subscriber_queue: 8,
+            },
+        )
+    }
+
+    fn score(value: i64) -> Vec<TitleFieldUpdate> {
+        vec![TitleFieldUpdate {
+            field: field(SCORE),
+            value: TitleFieldValue::Number(value),
+        }]
+    }
+
+    fn set_fields(base_revision: u64, value: i64) -> CommandPayload {
+        CommandPayload::SetTitleFields {
+            input: WireInputId::from_domain(input(TITLE)),
+            base_revision,
+            require: TitleAirRequirement::OffAir,
+            fields: score(value),
+        }
+    }
+
+    fn take(base_revision: u64, fields: Vec<TitleFieldUpdate>) -> CommandPayload {
+        CommandPayload::TakeTitle {
+            input: WireInputId::from_domain(input(TITLE)),
+            channel: WireOverlayChannelId::new(2).unwrap(),
+            base_revision,
+            fields,
+        }
+    }
+
+    fn off_air() -> CommandPayload {
+        CommandPayload::TitleOffAir {
+            input: WireInputId::from_domain(input(TITLE)),
+        }
+    }
+
+    fn denied(submission: &CommandSubmission) -> bool {
+        matches!(
+            &submission.output.result,
+            CommandResult::Rejected { code, .. } if code == "permission_denied"
+        )
+    }
+
+    fn expected_fields(name: &str, score: i64) -> Vec<TitleFieldUpdate> {
+        vec![
+            TitleFieldUpdate {
+                field: field(NAME),
+                value: TitleFieldValue::Text(name.into()),
+            },
+            TitleFieldUpdate {
+                field: field(SCORE),
+                value: TitleFieldValue::Number(score),
+            },
+        ]
+    }
+
+    #[test]
+    fn authorization_matrix_covers_every_title_command_and_role() {
+        let cases = [
+            (Role::Viewer, set_fields(0, 1), false),
+            (Role::Viewer, take(0, Vec::new()), false),
+            (Role::Viewer, take(0, score(1)), false),
+            (Role::Viewer, off_air(), false),
+            (Role::Graphics, set_fields(0, 1), true),
+            (Role::Graphics, take(0, Vec::new()), false),
+            (Role::Graphics, take(0, score(1)), false),
+            (Role::Graphics, off_air(), false),
+            (Role::Operator, set_fields(0, 1), false),
+            (Role::Operator, take(0, Vec::new()), true),
+            (Role::Operator, take(0, score(1)), false),
+            (Role::Operator, off_air(), true),
+            (Role::Audio, take(0, Vec::new()), false),
+            (Role::Admin, set_fields(0, 1), true),
+            (Role::Admin, take(0, score(1)), true),
+            (Role::Admin, off_air(), true),
+        ];
+        for (index, (role, payload, allowed)) in cases.into_iter().enumerate() {
+            let mut control = title_service();
+            let before = control.engine.snapshot().unwrap();
+            let submission = control
+                .submit(
+                    &principal(role),
+                    command(&format!("c{index}"), &format!("k{index}"), payload.clone()),
+                    0,
+                )
+                .unwrap();
+            assert_eq!(
+                !denied(&submission),
+                allowed,
+                "{role:?} {payload:?}: {:?}",
+                submission.output.result
+            );
+            if !allowed {
+                assert_eq!(control.engine.snapshot().unwrap(), before);
+            }
+        }
+    }
+
+    #[test]
+    fn take_with_fields_denial_is_cached_by_idempotency_key() {
+        let mut control = title_service();
+        let denied_submission = control
+            .submit(
+                &principal(Role::Operator),
+                command("take", "take-key", take(0, score(5))),
+                0,
+            )
+            .unwrap();
+        assert!(denied(&denied_submission));
+        let replayed = control
+            .submit(
+                &principal(Role::Admin),
+                command("take-again", "take-key", take(0, score(5))),
+                0,
+            )
+            .unwrap();
+        assert!(replayed.replayed);
+        assert_eq!(replayed.output.result, denied_submission.output.result);
+        assert_eq!(
+            control
+                .engine
+                .show()
+                .title(input(TITLE))
+                .unwrap()
+                .fields
+                .revision(),
+            0
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn title_commands_publish_exact_events_snapshot_and_title_states() {
+        let mut control = title_service();
+        assert_eq!(
+            control.snapshot().snapshot.titles,
+            [TitleSummary {
+                input: WireInputId::from_domain(input(TITLE)),
+                field_revision: 0,
+            }]
+        );
+
+        let saved = control
+            .submit(
+                &principal(Role::Graphics),
+                command("save", "save-key", set_fields(0, 7)),
+                0,
+            )
+            .unwrap();
+        assert!(saved.is_accepted(), "{:?}", saved.output.result);
+        assert_eq!(saved.output.events.len(), 1);
+        assert_eq!(
+            saved.output.events[0].payload,
+            EventPayload::TitleChanged {
+                input: WireInputId::from_domain(input(TITLE)),
+                field_revision: 1,
+                fields: expected_fields("Ana", 7),
+                overlays: OverlayStatus::empty_channels(),
+            }
+        );
+
+        let stale = control
+            .submit(
+                &principal(Role::Graphics),
+                command("stale", "stale-key", set_fields(0, 8)),
+                0,
+            )
+            .unwrap();
+        assert!(
+            matches!(&stale.output.result, CommandResult::Rejected { code, .. } if code != "permission_denied"),
+            "{:?}",
+            stale.output.result
+        );
+
+        let taken = control
+            .submit(
+                &principal(Role::Admin),
+                command("take", "take-key", take(1, score(9))),
+                0,
+            )
+            .unwrap();
+        assert!(taken.is_accepted(), "{:?}", taken.output.result);
+        assert_eq!(taken.output.events.len(), 1);
+        let EventPayload::TitleChanged {
+            input: changed,
+            field_revision,
+            fields,
+            overlays,
+        } = &taken.output.events[0].payload
+        else {
+            panic!("take publishes title_changed: {:?}", taken.output.events[0]);
+        };
+        assert_eq!(*changed, WireInputId::from_domain(input(TITLE)));
+        assert_eq!(*field_revision, 2);
+        assert_eq!(fields, &expected_fields("Ana", 9));
+        assert_eq!(
+            overlays[1].source,
+            Some(WireInputId::from_domain(input(TITLE)))
+        );
+        assert!(overlays[1].active);
+
+        let revision = control.diagnostics().current_revision;
+        assert_eq!(
+            control.title_states(),
+            [TitleStateMessage {
+                revision,
+                input: WireInputId::from_domain(input(TITLE)),
+                name: "Lower third".into(),
+                field_revision: 2,
+                fields: vec![
+                    TitleFieldStatus {
+                        field: field(NAME),
+                        name: "Name".into(),
+                        value: TitleFieldValue::Text("Ana".into()),
+                    },
+                    TitleFieldStatus {
+                        field: field(SCORE),
+                        name: "Score".into(),
+                        value: TitleFieldValue::Number(9),
+                    },
+                ],
+            }]
+        );
+        assert_eq!(
+            control.snapshot().snapshot.titles,
+            [TitleSummary {
+                input: WireInputId::from_domain(input(TITLE)),
+                field_revision: 2,
+            }]
+        );
+
+        let off = control
+            .submit(
+                &principal(Role::Operator),
+                command("off", "off-key", off_air()),
+                0,
+            )
+            .unwrap();
+        assert!(off.is_accepted(), "{:?}", off.output.result);
+        let EventPayload::DesiredSwitcher { overlays, .. } = &off.output.events[0].payload else {
+            panic!(
+                "off-air publishes desired_switcher: {:?}",
+                off.output.events[0]
+            );
+        };
+        assert!(!overlays[1].active);
+    }
+}

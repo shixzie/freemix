@@ -735,6 +735,7 @@ fn serve_streams_snapshot_peer(
             realized_overlays: OverlayStatus::empty_channels(),
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            titles: Vec::new(),
         }),
     );
 }
@@ -1284,6 +1285,7 @@ fn write_handshake_version_with_manual(
             realized_overlays: OverlayStatus::empty_channels(),
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            titles: Vec::new(),
         }),
     );
 }
@@ -1359,6 +1361,7 @@ fn write_handshake_version_with_fade_to_black(
             stingers: Vec::new(),
             streams: Vec::new(),
             recordings: recording_roster([false, false]),
+            titles: Vec::new(),
         }),
     );
 }

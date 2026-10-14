@@ -119,6 +119,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         },
         edit_locks: EditLocks::default(),
         edit_history: EditHistoryStatus::EMPTY,
+        titles: Vec::new(),
     }
 }
 
@@ -1261,4 +1262,360 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
         model.state().unwrap().inputs(),
         [input(1), input(2), input(9)]
     );
+}
+
+mod titles {
+    use fm_protocol::{
+        TitleFieldStatus, TitleFieldUpdate, TitleFieldValue, TitleStateMessage, WireInputId,
+        WireTitleFieldId,
+    };
+
+    use super::*;
+
+    const TITLE: u128 = 3;
+
+    fn field(value: u128) -> WireTitleFieldId {
+        WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn titled_snapshot(revision: u64) -> ProjectSnapshot {
+        let mut snapshot = snapshot(project(1), revision);
+        snapshot.titles = vec![TitleStatus::announced(input(TITLE), 2)];
+        snapshot
+    }
+
+    fn title_state(revision: u64, field_revision: u64) -> TitleStateMessage {
+        TitleStateMessage {
+            revision,
+            input: WireInputId::from_domain(input(TITLE)),
+            name: "Lower third".into(),
+            field_revision,
+            fields: vec![
+                TitleFieldStatus {
+                    field: field(1),
+                    name: "Name".into(),
+                    value: TitleFieldValue::Text("Ana".into()),
+                },
+                TitleFieldStatus {
+                    field: field(2),
+                    name: "Score".into(),
+                    value: TitleFieldValue::Number(0),
+                },
+            ],
+        }
+    }
+
+    fn installed() -> ClientModel {
+        let mut model = ClientModel::new(project(1));
+        model.install_snapshot(titled_snapshot(10)).unwrap();
+        model
+    }
+
+    fn completed() -> ClientModel {
+        let mut model = installed();
+        model.apply_title_state(title_state(10, 2)).unwrap();
+        model
+    }
+
+    fn on_channel_two(source: InputId) -> Vec<OverlayStatus> {
+        let mut overlays = overlays();
+        overlays[1].source = Some(source);
+        overlays[1].active = true;
+        overlays[1].opacity = 255;
+        overlays
+    }
+
+    fn title_changed(
+        field_revision: u64,
+        name: &str,
+        overlays: Vec<OverlayStatus>,
+    ) -> DurableChange {
+        DurableChange::TitleChanged {
+            input: input(TITLE),
+            field_revision,
+            fields: vec![
+                TitleFieldUpdate {
+                    field: field(1),
+                    value: TitleFieldValue::Text(name.into()),
+                },
+                TitleFieldUpdate {
+                    field: field(2),
+                    value: TitleFieldValue::Number(7),
+                },
+            ],
+            overlays,
+        }
+    }
+
+    #[test]
+    fn snapshot_installs_incomplete_summaries_that_title_states_complete() {
+        let model = installed();
+        let state = model.state().unwrap();
+        assert_eq!(state.titles(), &[TitleStatus::announced(input(TITLE), 2)]);
+        assert!(!state.titles_complete());
+
+        let model = completed();
+        let state = model.state().unwrap();
+        let title = state.title(input(TITLE)).unwrap();
+        assert!(title.complete && state.titles_complete());
+        assert_eq!(title.name, "Lower third");
+        assert_eq!(title.field_revision, 2);
+        assert_eq!(title.fields, title_state(10, 2).fields);
+
+        // The protocol snapshot DTO announces the same incomplete summaries.
+        let protocol = fm_protocol::SnapshotMessage {
+            titles: vec![fm_protocol::TitleSummary {
+                input: WireInputId::from_domain(input(TITLE)),
+                field_revision: 2,
+            }],
+            ..edit_history_protocol_snapshot()
+        };
+        assert_eq!(
+            ProjectSnapshot::from_protocol(project(1), protocol).titles,
+            vec![TitleStatus::announced(input(TITLE), 2)]
+        );
+    }
+
+    fn edit_history_protocol_snapshot() -> fm_protocol::SnapshotMessage {
+        let wire = |value| WireInputId::from_domain(input(value));
+        fm_protocol::SnapshotMessage {
+            engine: engine("engine-a", 1, "log-a"),
+            revision: 10,
+            show_name: "Show".into(),
+            inputs: (1..=3)
+                .map(|value| fm_protocol::InputStatus {
+                    input: wire(value),
+                    name: format!("Input {value}"),
+                })
+                .collect(),
+            outputs: Vec::new(),
+            input_audio_strips: Vec::new(),
+            desired_program: wire(1),
+            desired_preview: wire(2),
+            realized_program: wire(1),
+            realized_preview: wire(2),
+            desired_manual_transition: fm_protocol::ManualTransitionStatus::Inactive,
+            realized_manual_transition: fm_protocol::ManualTransitionStatus::Inactive,
+            desired_fade_to_black: fade_to_black(false, 0),
+            realized_fade_to_black: fade_to_black(false, 0),
+            stingers: Vec::new(),
+            streams: Vec::new(),
+            recordings: recordings(),
+            desired_overlays: fm_protocol::OverlayStatus::empty_channels(),
+            realized_overlays: fm_protocol::OverlayStatus::empty_channels(),
+            edit_locks: fm_protocol::EditLockStatus::default(),
+            edit_history: EditHistoryStatus::EMPTY,
+            titles: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn mismatched_title_states_are_refused_without_change() {
+        let mut stale_revision = title_state(9, 2);
+        let wrong_field_revision = title_state(10, 3);
+        let mut unknown = title_state(10, 2);
+        unknown.input = WireInputId::from_domain(input(1));
+        let mut unordered = title_state(10, 2);
+        unordered.fields.reverse();
+        for message in [
+            stale_revision.clone(),
+            wrong_field_revision,
+            unknown,
+            unordered,
+        ] {
+            let mut model = installed();
+            let input = message.input.to_domain();
+            assert_eq!(
+                model.apply_title_state(message),
+                Err(ModelError::TitleStateMismatch(input))
+            );
+            assert!(!model.state().unwrap().titles_complete());
+        }
+        // A title completes once.
+        let mut model = completed();
+        assert_eq!(
+            model.apply_title_state(title_state(10, 2)),
+            Err(ModelError::TitleStateMismatch(input(TITLE)))
+        );
+        // No snapshot, no titles.
+        stale_revision.revision = 10;
+        assert_eq!(
+            ClientModel::new(project(1)).apply_title_state(stale_revision),
+            Err(ModelError::StateUnavailable)
+        );
+        // The reducer surface dispatches the same operation.
+        let mut model = installed();
+        assert_eq!(
+            model.reduce(Action::ApplyTitleState(title_state(10, 2))),
+            Ok(Reduction::TitleStateApplied)
+        );
+    }
+
+    #[test]
+    fn title_changed_merges_values_and_replaces_desired_overlays() {
+        let mut model = completed();
+        let engine_a = engine("engine-a", 1, "log-a");
+        assert!(!model.state().unwrap().title_on_air(input(TITLE)));
+        model
+            .apply_event(event(
+                project(1),
+                engine_a.clone(),
+                11,
+                title_changed(3, "Bea", on_channel_two(input(TITLE))),
+            ))
+            .unwrap();
+        let state = model.state().unwrap();
+        let title = state.title(input(TITLE)).unwrap();
+        assert_eq!(title.field_revision, 3);
+        assert_eq!(title.fields[0].name, "Name", "names are kept");
+        assert_eq!(title.fields[0].value, TitleFieldValue::Text("Bea".into()));
+        assert_eq!(title.fields[1].value, TitleFieldValue::Number(7));
+        assert_eq!(
+            state.desired_overlays(),
+            on_channel_two(input(TITLE)).as_slice()
+        );
+        assert!(state.title_on_air(input(TITLE)));
+        assert!(!state.title_on_air(input(2)));
+        // Program is on air too.
+        assert!(state.title_on_air(input(1)));
+
+        // A fading-out overlay keeps its source on air until opacity is zero.
+        let mut fading = on_channel_two(input(TITLE));
+        fading[1].active = false;
+        fading[1].opacity = 40;
+        model
+            .apply_event(event(
+                project(1),
+                engine_a.clone(),
+                12,
+                title_changed(3, "Bea", fading),
+            ))
+            .unwrap();
+        assert!(model.state().unwrap().title_on_air(input(TITLE)));
+    }
+
+    #[test]
+    fn invalid_title_changes_are_refused_atomically() {
+        let engine_a = engine("engine-a", 1, "log-a");
+        let mut regressed = completed();
+        assert_eq!(
+            regressed.apply_event(event(
+                project(1),
+                engine_a.clone(),
+                11,
+                title_changed(1, "Bea", overlays()),
+            )),
+            Err(ModelError::InvalidTitleChange(input(TITLE)))
+        );
+        let mut missing_field = completed();
+        let DurableChange::TitleChanged {
+            input: title,
+            field_revision,
+            mut fields,
+            overlays: channels,
+        } = title_changed(3, "Bea", overlays())
+        else {
+            unreachable!();
+        };
+        fields.pop();
+        assert_eq!(
+            missing_field.apply_event(event(
+                project(1),
+                engine_a.clone(),
+                11,
+                DurableChange::TitleChanged {
+                    input: title,
+                    field_revision,
+                    fields,
+                    overlays: channels,
+                },
+            )),
+            Err(ModelError::InvalidTitleChange(input(TITLE)))
+        );
+        let mut incomplete = installed();
+        assert_eq!(
+            incomplete.apply_event(event(
+                project(1),
+                engine_a.clone(),
+                11,
+                title_changed(3, "Bea", overlays()),
+            )),
+            Err(ModelError::TitleIncomplete(input(TITLE)))
+        );
+        let mut not_a_title = completed();
+        assert_eq!(
+            not_a_title.apply_event(event(
+                project(1),
+                engine_a.clone(),
+                11,
+                DurableChange::TitleChanged {
+                    input: input(2),
+                    field_revision: 1,
+                    fields: Vec::new(),
+                    overlays: overlays(),
+                },
+            )),
+            Err(ModelError::UnknownTitle(input(2)))
+        );
+        let mut bad_overlay = completed();
+        assert_eq!(
+            bad_overlay.apply_event(event(
+                project(1),
+                engine_a,
+                11,
+                title_changed(3, "Bea", on_channel_two(input(99))),
+            )),
+            Err(ModelError::UnknownInput(input(99)))
+        );
+        for model in [regressed, missing_field, bad_overlay] {
+            let state = model.state().unwrap();
+            assert_eq!(state.title(input(TITLE)).unwrap().field_revision, 2);
+            assert_eq!(
+                model.reconnect_cursor().unwrap().revision,
+                Revision::new(10)
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_titles_must_be_ascending_show_inputs() {
+        for titles in [
+            vec![
+                TitleStatus::announced(input(3), 0),
+                TitleStatus::announced(input(2), 0),
+            ],
+            vec![
+                TitleStatus::announced(input(3), 0),
+                TitleStatus::announced(input(3), 0),
+            ],
+            vec![TitleStatus::announced(input(9), 0)],
+        ] {
+            let mut snapshot = snapshot(project(1), 10);
+            snapshot.titles = titles;
+            assert_eq!(
+                ClientModel::new(project(1)).install_snapshot(snapshot),
+                Err(ModelError::InvalidTitles)
+            );
+        }
+    }
+
+    #[test]
+    fn removing_a_title_input_drops_its_title() {
+        let mut model = completed();
+        let mut snapshot_inputs = model.state().unwrap().inputs().to_vec();
+        snapshot_inputs.retain(|candidate| *candidate != input(TITLE));
+        model
+            .apply_event(event(
+                project(1),
+                engine("engine-a", 1, "log-a"),
+                11,
+                DurableChange::InputRemoved {
+                    input: input(TITLE),
+                },
+            ))
+            .unwrap();
+        let state = model.state().unwrap();
+        assert_eq!(state.titles(), &[] as &[crate::TitleStatus]);
+        assert_eq!(state.inputs(), snapshot_inputs.as_slice());
+    }
 }

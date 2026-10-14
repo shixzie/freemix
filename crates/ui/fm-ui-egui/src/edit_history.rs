@@ -477,6 +477,7 @@ mod tests {
             realized_overlays: fm_protocol::OverlayStatus::empty_channels(),
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: history,
+            titles: Vec::new(),
         };
         snapshot.edit_locks.project = locks.project;
         snapshot.edit_locks.inputs = locks

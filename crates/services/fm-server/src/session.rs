@@ -171,15 +171,17 @@ impl Session {
         self.ensure_connected()?;
 
         let class = match command.payload {
-            // Undo, redo, and the edit padlock are project edits; fm-control
-            // additionally authorizes the class of the edit undo/redo targets.
+            // Undo, redo, the edit padlock, and title field saves are project
+            // edits; fm-control additionally authorizes the class of the edit
+            // undo/redo targets and EditProject for a title take with fields.
             CommandPayload::RenameInput { .. }
             | CommandPayload::ReorderInputs { .. }
             | CommandPayload::AddInput { .. }
             | CommandPayload::RemoveInput { .. }
             | CommandPayload::Undo { .. }
             | CommandPayload::Redo { .. }
-            | CommandPayload::SetEditLock { .. } => CommandClass::EditProject,
+            | CommandPayload::SetEditLock { .. }
+            | CommandPayload::SetTitleFields { .. } => CommandClass::EditProject,
             CommandPayload::SetInputAudioStrip { .. } => CommandClass::ControlAudio,
             CommandPayload::SelectPreview { .. } => CommandClass::SelectPreview,
             CommandPayload::Cut
@@ -207,9 +209,17 @@ impl Session {
             | CommandPayload::StreamStart { .. }
             | CommandPayload::StreamStop { .. }
             | CommandPayload::RecordStart { .. }
-            | CommandPayload::RecordStop { .. } => CommandClass::Transition,
+            | CommandPayload::RecordStop { .. }
+            | CommandPayload::TakeTitle { .. }
+            | CommandPayload::TitleOffAir { .. } => CommandClass::Transition,
         };
         self.policy.authorize(&self.principal, class)?;
+        // A title take that also edits fields needs both authorities.
+        if matches!(&command.payload, CommandPayload::TakeTitle { fields, .. } if !fields.is_empty())
+        {
+            self.policy
+                .authorize(&self.principal, CommandClass::EditProject)?;
+        }
 
         if command.protocol != self.protocol {
             return Err(SessionError::ProtocolMismatch {

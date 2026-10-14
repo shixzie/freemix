@@ -610,6 +610,122 @@ pub enum LiveInputSource {
     Bars,
 }
 
+/// Most fields one title carries; equals the title domain bound.
+pub const MAX_TITLE_FIELDS: usize = 128;
+/// Longest text field value, in Unicode scalar values.
+pub const MAX_TITLE_TEXT_CHARS: usize = 4_096;
+/// Largest total of text values plus image asset URIs in one field list, in
+/// UTF-8 bytes.
+pub const MAX_TITLE_CONTENT_BYTES: usize = 12_288;
+/// Largest title (template) display name carried by `title_state`, in UTF-8
+/// bytes.
+pub const MAX_TITLE_NAME_BYTES: usize = 256;
+/// Largest total of every field name one `title_state` carries, in UTF-8
+/// bytes.
+pub const MAX_TITLE_FIELD_NAMES_BYTES: usize = 4_096;
+
+/// Stable identity of one title template field carried on the wire.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WireTitleFieldId(NonZeroU128);
+
+impl WireTitleFieldId {
+    #[must_use]
+    pub const fn new(value: NonZeroU128) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> NonZeroU128 {
+        self.0
+    }
+}
+
+impl fmt::Display for WireTitleFieldId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// One typed title field value.
+///
+/// Inside a field list a value is `t:<len>:<text>`, `n:<i64>`,
+/// `c:<rrggbbaa>`, or `i:<len>:<asset uri>`, where `<len>` is the canonical
+/// decimal UTF-8 byte length of the raw text that follows (see
+/// `docs/spec/server-client-protocol.md`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TitleFieldValue {
+    Text(String),
+    Number(i64),
+    /// A straight (not premultiplied) RGBA color.
+    Color {
+        red: u8,
+        green: u8,
+        blue: u8,
+        alpha: u8,
+    },
+    /// A nonblank image asset URI.
+    Image {
+        asset_uri: String,
+    },
+}
+
+impl TitleFieldValue {
+    /// UTF-8 bytes this value contributes to [`MAX_TITLE_CONTENT_BYTES`].
+    #[must_use]
+    pub fn content_bytes(&self) -> usize {
+        match self {
+            Self::Text(text) => text.len(),
+            Self::Image { asset_uri } => asset_uri.len(),
+            Self::Number(_) | Self::Color { .. } => 0,
+        }
+    }
+}
+
+/// One title field and its value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleFieldUpdate {
+    pub field: WireTitleFieldId,
+    pub value: TitleFieldValue,
+}
+
+/// Whether a `title_fields` edit requires its title to be off air (prepare)
+/// or on air (live update). Wire encoding: `require=off_air|on_air`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TitleAirRequirement {
+    OffAir,
+    OnAir,
+}
+
+/// One title input's field revision at a snapshot's revision. The values
+/// follow in that title's `title_state` record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TitleSummary {
+    pub input: WireInputId,
+    pub field_revision: u64,
+}
+
+/// One title field: its template name and current value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleFieldStatus {
+    pub field: WireTitleFieldId,
+    pub name: String,
+    pub value: TitleFieldValue,
+}
+
+/// The complete field state of one title input at durable `revision`.
+///
+/// A session writes exactly one `title_state` per [`TitleSummary`] of a
+/// snapshot, in summary order, immediately after that snapshot and before any
+/// event. `fields` is complete and strictly ascending by field id.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleStateMessage {
+    pub revision: u64,
+    pub input: WireInputId,
+    pub name: String,
+    pub field_revision: u64,
+    pub fields: Vec<TitleFieldStatus>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommandPayload {
     ReorderInputs {
@@ -746,6 +862,26 @@ pub enum CommandPayload {
         scope: EditLockScope,
         locked: bool,
     },
+    /// Atomically sets title field values when `base_revision` is the
+    /// title's current field revision and its air state meets `require`.
+    SetTitleFields {
+        input: WireInputId,
+        base_revision: u64,
+        require: TitleAirRequirement,
+        fields: Vec<TitleFieldUpdate>,
+    },
+    /// Applies field values to an off-air title and takes it onto `channel`
+    /// in the same revision.
+    TakeTitle {
+        input: WireInputId,
+        channel: WireOverlayChannelId,
+        base_revision: u64,
+        fields: Vec<TitleFieldUpdate>,
+    },
+    /// Takes a title off the single overlay channel that shows it.
+    TitleOffAir {
+        input: WireInputId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -862,6 +998,8 @@ pub struct SnapshotMessage {
     pub realized_overlays: Vec<OverlayStatus>,
     pub edit_locks: EditLockStatus,
     pub edit_history: EditHistoryStatus,
+    /// Every title input in ascending input order with its field revision.
+    pub titles: Vec<TitleSummary>,
 }
 
 /// A durable state change. Runtime progress uses [`RuntimeEventMessage`].
@@ -913,6 +1051,15 @@ pub enum EventPayload {
     EditLockChanged {
         scope: EditLockScope,
         locked: bool,
+    },
+    /// A title's fields were saved, or it was taken on air. `fields` is the
+    /// complete value set after this revision, strictly ascending by id, and
+    /// `overlays` is the complete desired overlay state.
+    TitleChanged {
+        input: WireInputId,
+        field_revision: u64,
+        fields: Vec<TitleFieldUpdate>,
+        overlays: Vec<OverlayStatus>,
     },
 }
 
@@ -1255,4 +1402,5 @@ pub enum WireMessage {
     DiagnosticsRequest(DiagnosticsRequest),
     DiagnosticsResponse(DiagnosticsResponse),
     Error(ErrorMessage),
+    TitleState(TitleStateMessage),
 }

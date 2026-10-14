@@ -231,7 +231,7 @@ pub(crate) fn flatten_over_black(frame: &ImageFrame) -> Option<ImageFrame> {
     ImageFrame::new(frame.width(), frame.height(), frame.stride(), pixels).ok()
 }
 
-fn field_value(value: &TitleFieldValue) -> FieldValue {
+pub(crate) fn field_value(value: &TitleFieldValue) -> FieldValue {
     match value {
         TitleFieldValue::Text(text) => FieldValue::Text(text.clone()),
         TitleFieldValue::Number(number) => FieldValue::Number(*number),
@@ -239,5 +239,22 @@ fn field_value(value: &TitleFieldValue) -> FieldValue {
             FieldValue::Color(Color::new(color.red, color.green, color.blue, color.alpha))
         }
         TitleFieldValue::Image { asset_uri } => FieldValue::Image(ImageSource::new(asset_uri)),
+    }
+}
+
+/// The persisted form of one live title field value.
+pub(crate) fn model_field_value(value: &FieldValue) -> TitleFieldValue {
+    match value {
+        FieldValue::Text(text) => TitleFieldValue::Text(text.clone()),
+        FieldValue::Number(number) => TitleFieldValue::Number(*number),
+        FieldValue::Color(color) => TitleFieldValue::Color(fm_model::Rgba8 {
+            red: color.r,
+            green: color.g,
+            blue: color.b,
+            alpha: color.a,
+        }),
+        FieldValue::Image(image) => TitleFieldValue::Image {
+            asset_uri: image.asset.clone(),
+        },
     }
 }

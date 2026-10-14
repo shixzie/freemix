@@ -106,6 +106,7 @@ fn control() -> FakeControl {
         realized_overlays: fm_protocol::OverlayStatus::empty_channels(),
         edit_locks: fm_protocol::EditLockStatus::default(),
         edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+        titles: Vec::new(),
     };
     let events = [3, 4]
         .map(|revision| EventMessage {
@@ -356,6 +357,45 @@ fn wipe_uses_transition_authorization_and_fade_rate_accounting() {
         operator.admit_command(&fade, 10, 0),
         Err(SessionError::InboundRateLimited)
     );
+}
+
+#[test]
+fn title_take_with_fields_also_needs_project_edit_authority() {
+    let server = ready_server(config());
+    let take = |fields: Vec<fm_protocol::TitleFieldUpdate>| {
+        let mut message = command(CommandPayload::TakeTitle {
+            input: fm_protocol::WireInputId::new(core::num::NonZeroU128::new(4).unwrap()),
+            channel: fm_protocol::WireOverlayChannelId::new(1).unwrap(),
+            base_revision: 0,
+            fields,
+        });
+        message.protocol = CURRENT_PROTOCOL_VERSION;
+        message
+    };
+    let fields = vec![fm_protocol::TitleFieldUpdate {
+        field: fm_protocol::WireTitleFieldId::new(core::num::NonZeroU128::new(1).unwrap()),
+        value: fm_protocol::TitleFieldValue::Number(1),
+    }];
+    let mut operator = server
+        .handshake(
+            &hello(Role::Operator, None),
+            &principal(AuthRole::Operator),
+            0,
+        )
+        .unwrap()
+        .session;
+    assert!(matches!(
+        operator.admit_command(&take(fields.clone()), 10, 0),
+        Err(SessionError::Authorization(_))
+    ));
+    operator.admit_command(&take(Vec::new()), 10, 0).unwrap();
+    operator.command_completed().unwrap();
+
+    let mut admin = server
+        .handshake(&hello(Role::Admin, None), &principal(AuthRole::Admin), 0)
+        .unwrap()
+        .session;
+    admin.admit_command(&take(fields), 10, 0).unwrap();
 }
 
 #[test]

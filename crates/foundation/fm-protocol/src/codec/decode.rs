@@ -13,10 +13,15 @@ use crate::{
     MonitorTap, OverlayStatus, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
     RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
     StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
-    StreamStatusMessage, StreamStatusSample, StructuredError, WireInputId, WireMessage,
-    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    StreamStatusMessage, StreamStatusSample, StructuredError, TitleFieldStatus, TitleStateMessage,
+    WireInputId, WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId, WireStreamTargetId,
 };
 
+use super::title::{
+    decode_title_field_names, decode_title_fields, decode_title_summaries,
+    parse_title_air_requirement, validate_title_name,
+};
 use super::value::{
     parse_canonical_input, parse_canonical_u64, parse_client_type, parse_durable_events,
     parse_field_issues, parse_input_ids, parse_input_statuses, parse_output_statuses,
@@ -86,6 +91,7 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             WireMessage::DiagnosticsResponse(decode_diagnostics_response(&mut fields)?)
         }
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
+        "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
         _ => return Err(CodecError::UnknownMessage(kind.to_owned())),
     };
     fields.finish()?;
@@ -403,12 +409,57 @@ fn decode_command_payload(
         "manual_commit" => CommandPayload::CommitManualTransition,
         "manual_cancel" => CommandPayload::CancelManualTransition,
         edit @ ("undo" | "redo" | "edit_lock") => decode_edit_command(fields, edit)?,
+        title @ ("title_fields" | "title_take" | "title_off_air") => {
+            decode_title_command(fields, title)?
+        }
         _ => {
             return Err(CodecError::InvalidField {
                 field: "payload",
                 value: payload_name,
             });
         }
+    })
+}
+
+/// Decodes the title commands: field save, take, and off-air.
+fn decode_title_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
+    let input = fields.canonical_input("input")?;
+    Ok(match name {
+        "title_fields" => CommandPayload::SetTitleFields {
+            input,
+            base_revision: fields.canonical_required("base_revision")?,
+            require: parse_title_air_requirement(fields.required("require")?)?,
+            fields: decode_title_fields(&fields.required("fields")?)?,
+        },
+        "title_take" => CommandPayload::TakeTitle {
+            input,
+            channel: decode_overlay_channel(fields)?,
+            base_revision: fields.canonical_required("base_revision")?,
+            fields: decode_title_fields(&fields.required("fields")?)?,
+        },
+        _ => CommandPayload::TitleOffAir { input },
+    })
+}
+
+fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecError> {
+    let name = fields.required("name")?;
+    validate_title_name(&name)?;
+    let values = decode_title_fields(&fields.required("fields")?)?;
+    let names = decode_title_field_names(&fields.required("field_names")?, values.len())?;
+    Ok(TitleStateMessage {
+        revision: fields.canonical_required("revision")?,
+        input: fields.canonical_input("input")?,
+        name,
+        field_revision: fields.canonical_required("field_revision")?,
+        fields: values
+            .into_iter()
+            .zip(names)
+            .map(|(update, name)| TitleFieldStatus {
+                field: update.field,
+                name,
+                value: update.value,
+            })
+            .collect(),
     })
 }
 
@@ -744,6 +795,10 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
     let revision = fields.parse_required("revision")?;
     let edit_locks = decode_edit_locks(fields, &inputs)?;
     let edit_history = decode_edit_history(fields, revision)?;
+    let titles = decode_title_summaries(
+        &fields.required("titles")?,
+        &inputs.iter().map(|input| input.input).collect::<Vec<_>>(),
+    )?;
     Ok(SnapshotMessage {
         engine: decode_identity(fields)?,
         revision,
@@ -769,6 +824,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         realized_overlays: decode_overlays(fields, "realized_overlays")?,
         edit_locks,
         edit_history,
+        titles,
     })
 }
 
@@ -1114,6 +1170,12 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "edit_lock_changed" => EventPayload::EditLockChanged {
             scope: decode_edit_lock_scope(fields)?,
             locked: fields.boolean("locked")?,
+        },
+        "title_changed" => EventPayload::TitleChanged {
+            input: fields.canonical_input("input")?,
+            field_revision: fields.canonical_required("field_revision")?,
+            fields: decode_title_fields(&fields.required("fields")?)?,
+            overlays: decode_overlays(fields, "overlays")?,
         },
         _ => {
             return Err(CodecError::InvalidField {

@@ -1159,6 +1159,13 @@ impl TcpSession {
                 })
             }
             WireMessage::Error(error) => Ok(SessionEvent::ServerError(error)),
+            // Title states complete a snapshot while connecting; one arriving
+            // afterwards is out of order and forces a fresh snapshot.
+            WireMessage::TitleState(state) => {
+                self.intake(WireMessage::TitleState(state))?;
+                self.transition_disconnect();
+                Err(TcpSessionError::UnexpectedMessage)
+            }
             WireMessage::Command(_)
             | WireMessage::Snapshot(_)
             | WireMessage::HandshakeRequest(_)

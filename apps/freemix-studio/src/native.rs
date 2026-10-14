@@ -2531,6 +2531,7 @@ mod tests {
             realized_overlays: OverlayStatus::empty_channels(),
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            titles: Vec::new(),
         }
     }
 

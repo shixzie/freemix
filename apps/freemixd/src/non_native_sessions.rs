@@ -923,6 +923,20 @@ impl Runtime<'_> {
         }
     }
 
+    /// Completes a queued snapshot with one `title_state` per title input,
+    /// in input order, before anything else reaches the peer.
+    fn complete_snapshot(&self, peer: &mut Peer) {
+        if matches!(peer.initial_sync.front(), Some(WireMessage::Snapshot(_))) {
+            peer.initial_sync.extend(
+                self.control
+                    .borrow()
+                    .title_states()
+                    .into_iter()
+                    .map(WireMessage::TitleState),
+            );
+        }
+    }
+
     fn handshake(
         &self,
         peer: &mut Peer,
@@ -1000,6 +1014,7 @@ impl Runtime<'_> {
             self.control.borrow_mut().unsubscribe(subscription.id());
             return Err(DispatchError::Peer);
         }
+        self.complete_snapshot(peer);
         peer.session = Some(handshake.session);
         peer.identity = Some(identity);
         peer.subscription = Some(subscription);

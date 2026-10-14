@@ -19,7 +19,7 @@ use fm_protocol::{
     DurableGap, EngineIdentity, EventMessage, HandshakeOutcome, HandshakeRequest,
     HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage, ProtocolVersion,
     ResumeCursor, Role, RuntimeEventMessage, RuntimeLifecycleEvent, ServerHello, ServerIdentity,
-    SnapshotMessage, StructuredError, WireMessage,
+    SnapshotMessage, StructuredError, TitleStateMessage, WireMessage,
 };
 use fm_types::ProjectId;
 use fm_ui_model::{
@@ -163,6 +163,8 @@ pub enum Intake {
     DuplicateResult,
     HeartbeatAcknowledged,
     ResyncRequested,
+    /// A `title_state` completed one title the snapshot announced.
+    TitleStateApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -478,7 +480,9 @@ impl Client {
             build: self.config.build.clone(),
             client_type: self.config.client_type,
             desired_role: self.config.desired_role,
-            resume_cursor: if self.force_snapshot {
+            // A snapshot whose titles never completed cannot be resumed:
+            // resumed events carry no title states.
+            resume_cursor: if self.force_snapshot || !self.titles_complete() {
                 None
             } else {
                 self.last_applied_cursor()
@@ -546,6 +550,10 @@ impl Client {
             WireMessage::DurableGap(gap) => {
                 self.apply_gap(&gap)?;
                 Ok(Intake::ResyncRequested)
+            }
+            WireMessage::TitleState(state) => {
+                self.apply_title_state(state)?;
+                Ok(Intake::TitleStateApplied)
             }
             WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
@@ -688,8 +696,56 @@ impl Client {
             self.config.project_id,
             snapshot,
         ))?;
-        self.finish_sync();
+        // Every title the snapshot announced is completed by the
+        // `title_state` records that follow it; until then the client keeps
+        // synchronizing.
+        if self.titles_complete() {
+            self.finish_sync();
+        }
         Ok(())
+    }
+
+    /// Completes one title the snapshot announced with its `title_state`.
+    ///
+    /// Title states arrive only while synchronizing from a snapshot, after
+    /// the snapshot and before any event. The last one finishes the sync.
+    ///
+    /// # Errors
+    ///
+    /// A title state in any other state, at another revision, or that does
+    /// not complete an announced title with the announced field revision
+    /// forces a fresh-snapshot reconnect ([`ClientError::ResyncRequired`]).
+    pub fn apply_title_state(&mut self, state: TitleStateMessage) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || self.model.apply_title_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.titles_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
+    fn titles_complete(&self) -> bool {
+        self.model
+            .state()
+            .is_none_or(fm_ui_model::ProjectState::titles_complete)
     }
 
     /// Applies exactly the next ordered event through [`ClientModel`].
@@ -704,6 +760,20 @@ impl Client {
                 target_revision,
             } => Some(target_revision),
             ConnectionState::Ready => None,
+            // An event before the snapshot's title states have all arrived
+            // breaks the snapshot's contiguity.
+            ConnectionState::Synchronizing {
+                mode: SyncMode::Snapshot,
+                target_revision,
+            } if !self.titles_complete()
+                && self
+                    .model
+                    .reconnect_cursor()
+                    .is_some_and(|cursor| cursor.revision.get() == target_revision) =>
+            {
+                return self
+                    .require_resync(target_revision.saturating_add(1), event.cursor.revision);
+            }
             _ => return Err(self.invalid_state("apply an event")),
         };
         let current = self
@@ -923,7 +993,10 @@ impl Client {
             | CommandPayload::RecordStop { .. }
             | CommandPayload::Undo { .. }
             | CommandPayload::Redo { .. }
-            | CommandPayload::SetEditLock { .. } => None,
+            | CommandPayload::SetEditLock { .. }
+            | CommandPayload::SetTitleFields { .. }
+            | CommandPayload::TakeTitle { .. }
+            | CommandPayload::TitleOffAir { .. } => None,
         };
         self.model
             .track_command(CommandId::new(command.id.clone()), optimistic)?;

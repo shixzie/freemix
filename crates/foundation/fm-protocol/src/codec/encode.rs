@@ -10,9 +10,14 @@ use crate::{
     ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, ResumeCursor,
     RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
     SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
-    StingerReadiness, StingerStatus, StreamStatusMessage, StructuredError, WireMessage,
+    StingerReadiness, StingerStatus, StreamStatusMessage, StructuredError, TitleFieldUpdate,
+    TitleStateMessage, WireMessage,
 };
 
+use super::title::{
+    encode_title_field_names, encode_title_fields, encode_title_summaries, title_air_requirement,
+    validate_title_name,
+};
 use super::value::{
     client_type, durable_events, escape_stream_failure, field_issues, input_ids, input_statuses,
     output_statuses, recording_statuses, role, runtime_domains, stream_realized_state,
@@ -60,6 +65,7 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             encode_diagnostics_response(&mut record, message)?;
         }
         WireMessage::Error(message) => encode_error_message(&mut record, message)?,
+        WireMessage::TitleState(message) => encode_title_state(&mut record, message)?,
     }
     record.finish()
 }
@@ -179,6 +185,9 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         payload @ (CommandPayload::AddInput { .. } | CommandPayload::RemoveInput { .. }) => {
             encode_input_catalogue_command(record, payload)?;
         }
+        payload @ (CommandPayload::SetTitleFields { .. }
+        | CommandPayload::TakeTitle { .. }
+        | CommandPayload::TitleOffAir { .. }) => encode_title_command(record, payload)?,
         payload @ CommandPayload::SetInputAudioStrip { .. } => {
             encode_input_audio_strip_command(record, payload)?;
         }
@@ -285,6 +294,65 @@ fn encode_input_catalogue_command(
         }
         _ => unreachable!("only input catalogue commands are delegated"),
     }
+}
+
+fn encode_title_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
+    match payload {
+        CommandPayload::SetTitleFields {
+            input,
+            base_revision,
+            require,
+            fields,
+        } => {
+            let fields = encode_title_fields(fields)?;
+            record.field("payload", "title_fields")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field("require", title_air_requirement(*require))?;
+            record.field_string("fields", fields)
+        }
+        CommandPayload::TakeTitle {
+            input,
+            channel,
+            base_revision,
+            fields,
+        } => {
+            let fields = encode_title_fields(fields)?;
+            record.field("payload", "title_take")?;
+            record.field("input", input)?;
+            record.field("channel", channel)?;
+            record.field("base_revision", base_revision)?;
+            record.field_string("fields", fields)
+        }
+        CommandPayload::TitleOffAir { input } => {
+            record.field("payload", "title_off_air")?;
+            record.field("input", input)
+        }
+        _ => unreachable!("only title commands are delegated"),
+    }
+}
+
+/// Encodes one `title_state` record: the title's name and complete fields,
+/// values in `fields` and their names positionally in `field_names`.
+fn encode_title_state(record: &mut Record, message: &TitleStateMessage) -> Result<(), CodecError> {
+    validate_title_name(&message.name)?;
+    let updates = message
+        .fields
+        .iter()
+        .map(|status| TitleFieldUpdate {
+            field: status.field,
+            value: status.value.clone(),
+        })
+        .collect::<Vec<_>>();
+    let fields = encode_title_fields(&updates)?;
+    let names = encode_title_field_names(message.fields.iter().map(|status| status.name.as_str()))?;
+    record.kind("title_state");
+    record.field("revision", message.revision)?;
+    record.field("input", message.input)?;
+    record.field_str("name", &message.name)?;
+    record.field("field_revision", message.field_revision)?;
+    record.field_string("fields", fields)?;
+    record.field_string("field_names", names)
 }
 
 fn encode_manual_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
@@ -609,7 +677,13 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     encode_overlays(record, "desired_overlays", &message.desired_overlays)?;
     encode_overlays(record, "realized_overlays", &message.realized_overlays)?;
     encode_edit_locks(record, &message.edit_locks, &message.inputs)?;
-    encode_edit_history(record, &message.edit_history, message.revision)
+    encode_edit_history(record, &message.edit_history, message.revision)?;
+    let inputs = message
+        .inputs
+        .iter()
+        .map(|input| input.input)
+        .collect::<Vec<_>>();
+    record.field_string("titles", encode_title_summaries(&message.titles, &inputs)?)
 }
 
 fn encode_overlays(
@@ -880,6 +954,19 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("event", "edit_lock_changed")?;
             encode_edit_lock_scope(record, *scope)?;
             record.field("locked", u8::from(*locked))?;
+        }
+        EventPayload::TitleChanged {
+            input,
+            field_revision,
+            fields,
+            overlays,
+        } => {
+            let fields = encode_title_fields(fields)?;
+            record.field("event", "title_changed")?;
+            record.field("input", input)?;
+            record.field("field_revision", field_revision)?;
+            record.field_string("fields", fields)?;
+            encode_overlays(record, "overlays", overlays)?;
         }
     }
     encode_edit_history(record, &message.edit_history, message.cursor.revision)

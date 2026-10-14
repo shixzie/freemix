@@ -4583,3 +4583,341 @@ fn a_non_reading_studio_peer_never_stalls_another_peer() {
     drop(studio);
     daemon.stop();
 }
+
+/// Reads the snapshot and the `title_state` records that complete it.
+fn title_sync(
+    client: &mut Client,
+) -> (
+    fm_protocol::SnapshotMessage,
+    Vec<fm_protocol::TitleStateMessage>,
+) {
+    let WireMessage::Snapshot(snapshot) = client.receive() else {
+        panic!("expected snapshot");
+    };
+    let states = snapshot
+        .titles
+        .iter()
+        .map(|_| match client.receive() {
+            WireMessage::TitleState(state) => state,
+            other => panic!("expected title_state right after the snapshot, got {other:?}"),
+        })
+        .collect();
+    (snapshot, states)
+}
+
+fn title_color(red: u8, green: u8, blue: u8) -> Vec<fm_protocol::TitleFieldUpdate> {
+    vec![fm_protocol::TitleFieldUpdate {
+        field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+        value: fm_protocol::TitleFieldValue::Color {
+            red,
+            green,
+            blue,
+            alpha: 255,
+        },
+    }]
+}
+
+fn assert_title_state(
+    state: &fm_protocol::TitleStateMessage,
+    revision: u64,
+    field_revision: u64,
+    color: (u8, u8, u8),
+) {
+    assert_eq!(
+        state,
+        &fm_protocol::TitleStateMessage {
+            revision,
+            input: input(4),
+            name: "Process title".into(),
+            field_revision,
+            fields: vec![fm_protocol::TitleFieldStatus {
+                field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                name: "Bar".into(),
+                value: fm_protocol::TitleFieldValue::Color {
+                    red: color.0,
+                    green: color.1,
+                    blue: color.2,
+                    alpha: 255,
+                },
+            }],
+        }
+    );
+}
+
+fn permission_denied(client: &mut Client, id: &str, payload: CommandPayload) {
+    client.send(&command(id, &format!("{id}-key"), payload));
+    assert!(
+        matches!(
+            client.next_result(),
+            CommandResult::Rejected { ref code, .. } if code == "permission_denied"
+        ),
+        "{id} must be refused for this role"
+    );
+}
+
+/// Protocol 2.24 titles end to end through the daemon: snapshots are
+/// completed by `title_state`, a field save is optimistic-concurrency
+/// checked, a take fades the title onto channel 2 of Program, the roles are
+/// enforced, and the field values and revision survive a kill (journal
+/// recovery) and a further restart (checkpointed manifest).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
+    use fm_protocol::{
+        MonitorFrameAssembler, MonitorImage, MonitorTap, OverlayTransitionKind,
+        TitleAirRequirement, TitleSummary, WireOverlayChannelId,
+    };
+
+    let directory = TestDirectory::new("title-commands");
+    let project_path = directory.project_path();
+    create_title_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    // The previous protocol is refused; the current one is 2.24.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 24));
+    let mut old = daemon.connect();
+    old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: ProtocolVersion::new(2, 23),
+        build: "process-test".into(),
+        client_type: ClientType::Integration,
+        desired_role: Role::Viewer,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        old.receive(),
+        WireMessage::HandshakeResponse(response)
+            if matches!(&response.outcome, HandshakeOutcome::Rejected { error } if error.code == "protocol_mismatch")
+    ));
+    drop(old);
+
+    let mut viewer = daemon.connect();
+    assert_eq!(
+        viewer.handshake_as(Role::Viewer, None).protocol,
+        ProtocolVersion::new(2, 24)
+    );
+    let (snapshot, states) = title_sync(&mut viewer);
+    assert_eq!(
+        snapshot.titles,
+        [TitleSummary {
+            input: input(4),
+            field_revision: 3,
+        }]
+    );
+    assert_title_state(&states[0], 0, 3, (230, 20, 140));
+
+    let mut graphics = daemon.connect();
+    graphics.handshake_as(Role::Graphics, None);
+    title_sync(&mut graphics);
+    graphics.send(&command(
+        "save",
+        "save-key",
+        CommandPayload::SetTitleFields {
+            input: input(4),
+            base_revision: 3,
+            require: TitleAirRequirement::OffAir,
+            fields: title_color(10, 200, 30),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut graphics, "save"), 1);
+    assert!(matches!(
+        durable_event_at(&mut graphics, 1).payload,
+        EventPayload::TitleChanged { field_revision: 4, ref fields, .. }
+            if *fields == title_color(10, 200, 30)
+    ));
+    // A save against the old field revision is a stale conflict.
+    graphics.send(&command(
+        "stale",
+        "stale-key",
+        CommandPayload::SetTitleFields {
+            input: input(4),
+            base_revision: 3,
+            require: TitleAirRequirement::OffAir,
+            fields: title_color(1, 1, 1),
+        },
+    ));
+    assert!(matches!(
+        graphics.next_result(),
+        CommandResult::Rejected { ref code, current_revision: 1, .. } if code != "permission_denied"
+    ));
+    let take = |fields| CommandPayload::TakeTitle {
+        input: input(4),
+        channel: WireOverlayChannelId::new(2).unwrap(),
+        base_revision: 4,
+        fields,
+    };
+    permission_denied(&mut graphics, "graphics-take", take(Vec::new()));
+    permission_denied(
+        &mut graphics,
+        "graphics-off",
+        CommandPayload::TitleOffAir { input: input(4) },
+    );
+    permission_denied(
+        &mut viewer,
+        "viewer-save",
+        CommandPayload::SetTitleFields {
+            input: input(4),
+            base_revision: 4,
+            require: TitleAirRequirement::OffAir,
+            fields: title_color(1, 1, 1),
+        },
+    );
+    permission_denied(&mut viewer, "viewer-take", take(Vec::new()));
+    // The simulated daemon serves two peers at a time.
+    drop(viewer);
+
+    // A Studio operator receives monitor frames.
+    let mut studio = daemon.connect();
+    studio
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    studio.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Operator,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        studio.receive(),
+        WireMessage::HandshakeResponse(_)
+    ));
+    let (_, states) = title_sync(&mut studio);
+    assert_title_state(&states[0], 1, 4, (10, 200, 30));
+
+    // An operator may not edit fields, even as part of a take.
+    permission_denied(
+        &mut studio,
+        "operator-take-fields",
+        take(title_color(1, 1, 1)),
+    );
+
+    studio.send(&command(
+        "fade",
+        "fade-key",
+        CommandPayload::ConfigureOverlayTransition {
+            channel: WireOverlayChannelId::new(2).unwrap(),
+            transition: OverlayTransitionKind::Fade,
+            duration_frames: 6,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut studio, "fade"), 2);
+    studio.send(&command("take", "take-key", take(Vec::new())));
+    assert_eq!(accepted_revision(&mut studio, "take"), 3);
+
+    let mut assembler = MonitorFrameAssembler::new();
+    let bar = (100, 50, 300, 150);
+    let saved = [10, 200, 30, 255];
+    let mut taken = false;
+    let mut realized = false;
+    let mut composited = false;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !(taken && realized && composited) {
+        assert!(
+            Instant::now() < deadline,
+            "take incomplete: event={taken} realized={realized} monitor={composited}"
+        );
+        match studio.receive() {
+            WireMessage::Event(event) if event.cursor.revision == 3 => {
+                let EventPayload::TitleChanged {
+                    input: changed,
+                    field_revision,
+                    overlays,
+                    ..
+                } = event.payload
+                else {
+                    panic!("a take publishes title_changed: {event:?}");
+                };
+                assert_eq!((changed, field_revision), (input(4), 4));
+                assert_eq!(overlays[1].source, Some(input(4)));
+                assert!(overlays[1].active);
+                assert_eq!(overlays[1].transition, OverlayTransitionKind::Fade);
+                taken = true;
+            }
+            WireMessage::RuntimeEvent(runtime) if runtime.revision == 3 => {
+                if let RuntimeLifecycleEvent::Realized { domain, .. } = &runtime.event {
+                    assert_eq!(domain, "switcher");
+                    realized = true;
+                }
+            }
+            WireMessage::MonitorFrame(part) if part.tap == MonitorTap::Program => {
+                if let Some(image) = assembler.push(&part).unwrap() {
+                    let image: MonitorImage = image;
+                    composited |= shows_rectangle(&image, bar, saved, [12, 34, 56, 255]);
+                }
+            }
+            _ => {}
+        }
+    }
+    // On air, a save that requires the title off air is refused.
+    graphics.send(&command(
+        "save-on-air",
+        "save-on-air-key",
+        CommandPayload::SetTitleFields {
+            input: input(4),
+            base_revision: 4,
+            require: TitleAirRequirement::OffAir,
+            fields: title_color(1, 1, 1),
+        },
+    ));
+    assert!(matches!(
+        graphics.next_result(),
+        CommandResult::Rejected { ref code, current_revision: 3, .. } if code != "permission_denied"
+    ));
+    drop(graphics);
+    let on_air = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(on_air.realized_overlays[1].source, Some(input(4)));
+    assert_eq!(on_air.realized_overlays[1].opacity, u8::MAX);
+
+    studio.send(&command(
+        "off",
+        "off-key",
+        CommandPayload::TitleOffAir { input: input(4) },
+    ));
+    assert_eq!(accepted_revision(&mut studio, "off"), 4);
+    let EventPayload::DesiredSwitcher { overlays, .. } = durable_event_at(&mut studio, 4).payload
+    else {
+        panic!("title_off_air publishes desired_switcher");
+    };
+    assert!(!overlays[1].active);
+    drop(studio);
+
+    let mut graphics = daemon.connect();
+    graphics.handshake_as(Role::Graphics, None);
+    title_sync(&mut graphics);
+    graphics.send(&command(
+        "save-again",
+        "save-again-key",
+        CommandPayload::SetTitleFields {
+            input: input(4),
+            base_revision: 4,
+            require: TitleAirRequirement::OffAir,
+            fields: title_color(5, 6, 7),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut graphics, "save-again"), 5);
+    drop(graphics);
+    daemon.stop();
+
+    // Journal recovery restores the values and field revision, and the
+    // recovered checkpoint keeps them across a further restart.
+    for _ in 0..2 {
+        let daemon = Daemon::start(&project_path);
+        let mut client = daemon.connect();
+        client.handshake_as(Role::Viewer, None);
+        let (snapshot, states) = title_sync(&mut client);
+        assert_eq!(snapshot.revision, 5);
+        assert_eq!(
+            snapshot.titles,
+            [TitleSummary {
+                input: input(4),
+                field_revision: 5,
+            }]
+        );
+        assert_eq!(states.len(), 1);
+        assert_title_state(&states[0], 5, 5, (5, 6, 7));
+        drop(client);
+        daemon.wait_success();
+    }
+}

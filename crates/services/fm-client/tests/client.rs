@@ -136,6 +136,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         realized_overlays: fm_protocol::OverlayStatus::empty_channels(),
         edit_locks: fm_protocol::EditLockStatus::default(),
         edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+        titles: Vec::new(),
     }
 }
 
@@ -1500,4 +1501,207 @@ fn input_catalogue_events_reduce_into_inputs_strips_and_tally() {
     );
     assert_eq!(view.input_audio_strips.len(), 2);
     assert_eq!(view.switcher.realized.program, input(2).to_domain());
+}
+
+mod titles {
+    use fm_protocol::{
+        TitleFieldStatus, TitleFieldUpdate, TitleFieldValue, TitleStateMessage, TitleSummary,
+        WireTitleFieldId,
+    };
+
+    use super::*;
+
+    fn field(value: u128) -> WireTitleFieldId {
+        WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn titled_snapshot(revision: u64) -> SnapshotMessage {
+        SnapshotMessage {
+            titles: vec![TitleSummary {
+                input: input(2),
+                field_revision: 3,
+            }],
+            ..snapshot(revision)
+        }
+    }
+
+    fn title_state(revision: u64, field_revision: u64) -> TitleStateMessage {
+        TitleStateMessage {
+            revision,
+            input: input(2),
+            name: "Lower third".into(),
+            field_revision,
+            fields: vec![TitleFieldStatus {
+                field: field(1),
+                name: "Name".into(),
+                value: TitleFieldValue::Text("Ana".into()),
+            }],
+        }
+    }
+
+    fn synchronizing_client() -> Client {
+        let mut client = Client::new(config(4)).unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client.accept_handshake(handshake(4, None)).unwrap();
+        client
+            .intake(WireMessage::Snapshot(titled_snapshot(4)))
+            .unwrap();
+        client
+    }
+
+    fn title_event(revision: u64, field_revision: u64, name: &str) -> EventMessage {
+        EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            cursor: EventCursor {
+                engine: engine(),
+                revision,
+            },
+            payload: EventPayload::TitleChanged {
+                input: input(2),
+                field_revision,
+                fields: vec![TitleFieldUpdate {
+                    field: field(1),
+                    value: TitleFieldValue::Text(name.into()),
+                }],
+                overlays: fm_protocol::OverlayStatus::empty_channels(),
+            },
+        }
+    }
+
+    #[test]
+    fn snapshot_waits_for_title_states_before_ready() {
+        let mut client = synchronizing_client();
+        assert!(matches!(
+            client.state(),
+            ConnectionState::Synchronizing {
+                mode: SyncMode::Snapshot,
+                ..
+            }
+        ));
+        assert!(!client.model().state().unwrap().titles_complete());
+
+        assert_eq!(
+            client
+                .intake(WireMessage::TitleState(title_state(4, 3)))
+                .unwrap(),
+            Intake::TitleStateApplied
+        );
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let title = client
+            .model()
+            .state()
+            .unwrap()
+            .title(input(2).to_domain())
+            .unwrap();
+        assert!(title.complete);
+        assert_eq!(title.name, "Lower third");
+        assert_eq!(title.field_revision, 3);
+
+        client.apply_event(title_event(5, 4, "Bea")).unwrap();
+        let title = client
+            .model()
+            .state()
+            .unwrap()
+            .title(input(2).to_domain())
+            .unwrap();
+        assert_eq!(title.field_revision, 4);
+        assert_eq!(title.fields[0].value, TitleFieldValue::Text("Bea".into()));
+    }
+
+    #[test]
+    fn mismatched_title_state_forces_a_fresh_snapshot() {
+        let mut client = synchronizing_client();
+        let error = client
+            .intake(WireMessage::TitleState(title_state(4, 2)))
+            .unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+        assert!(matches!(
+            client.state(),
+            ConnectionState::ResyncRequired { .. }
+        ));
+        client.start_connect().unwrap();
+        assert_eq!(client.transport_connected().unwrap().resume_cursor, None);
+    }
+
+    #[test]
+    fn event_before_title_states_forces_a_fresh_snapshot() {
+        let mut client = synchronizing_client();
+        let error = client.apply_event(title_event(5, 4, "Bea")).unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn title_state_after_ready_forces_a_fresh_snapshot() {
+        let mut client = synchronizing_client();
+        client
+            .intake(WireMessage::TitleState(title_state(4, 3)))
+            .unwrap();
+        let error = client
+            .intake(WireMessage::TitleState(title_state(4, 3)))
+            .unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn incomplete_titles_never_resume() {
+        let mut client = synchronizing_client();
+        let _ = client.transport_disconnected();
+        client.start_connect().unwrap();
+        assert_eq!(client.transport_connected().unwrap().resume_cursor, None);
+    }
+
+    #[test]
+    fn title_commands_have_no_optimistic_change() {
+        let mut client = synchronizing_client();
+        client
+            .intake(WireMessage::TitleState(title_state(4, 3)))
+            .unwrap();
+        let before = client.model().view().unwrap();
+        for (key, payload) in [
+            (
+                "fields",
+                CommandPayload::SetTitleFields {
+                    input: input(2),
+                    base_revision: 3,
+                    require: fm_protocol::TitleAirRequirement::OffAir,
+                    fields: Vec::new(),
+                },
+            ),
+            (
+                "take",
+                CommandPayload::TakeTitle {
+                    input: input(2),
+                    channel: fm_protocol::WireOverlayChannelId::new(1).unwrap(),
+                    base_revision: 3,
+                    fields: Vec::new(),
+                },
+            ),
+            ("off", CommandPayload::TitleOffAir { input: input(2) }),
+        ] {
+            client
+                .queue_command(payload, key.to_owned(), Some(4), None)
+                .unwrap();
+        }
+        assert_eq!(client.model().view().unwrap(), before);
+        assert_eq!(
+            client
+                .model()
+                .state()
+                .unwrap()
+                .title(input(2).to_domain())
+                .unwrap()
+                .field_revision,
+            3
+        );
+    }
 }

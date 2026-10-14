@@ -176,6 +176,7 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
         realized_overlays: OverlayStatus::empty_channels(),
         edit_locks: EditLockStatus::default(),
         edit_history: EditHistoryStatus::EMPTY,
+        titles: Vec::new(),
     })
 }
 
@@ -2490,7 +2491,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.23\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.24\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2499,7 +2500,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.23\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.24\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -2709,7 +2710,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     );
     let encoded = encode_line(&message).unwrap();
     assert!(encoded.ends_with(
-        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\n"
+        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\n"
     ));
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -2717,7 +2718,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     let encoded_unlocked = encode_line(&unlocked).unwrap();
     assert!(
         encoded_unlocked
-            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\n")
+            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\n")
     );
     assert_eq!(decode_line(&encoded_unlocked).unwrap(), unlocked);
 
@@ -2791,7 +2792,6 @@ fn catalogue_event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn protocol_2_23_input_catalogue_commands_are_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 23));
     let cases = [
         (
             CommandPayload::AddInput {
@@ -2825,7 +2825,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.23\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.24\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2835,7 +2835,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.23\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.24\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -2998,6 +2998,700 @@ fn input_catalogue_events_are_exact_and_strict() {
             decode_line(&format!("{prefix}{body}{history}")),
             Err(expected),
             "{body}"
+        );
+    }
+}
+
+/// Protocol 2.24 titles: field save, take, off-air, `title_changed`, snapshot
+/// summaries, and `title_state`.
+mod titles {
+    use super::*;
+    use fm_protocol::{
+        MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELD_NAMES_BYTES, MAX_TITLE_FIELDS,
+        MAX_TITLE_NAME_BYTES, MAX_TITLE_TEXT_CHARS, TitleAirRequirement, TitleFieldStatus,
+        TitleFieldUpdate, TitleFieldValue, TitleStateMessage, TitleSummary, WireTitleFieldId,
+    };
+
+    const PREFIX: &str = "command\tprotocol=2.24\tid=a\tidempotency_key=k";
+
+    fn field(value: u128) -> WireTitleFieldId {
+        WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn update(id: u128, value: TitleFieldValue) -> TitleFieldUpdate {
+        TitleFieldUpdate {
+            field: field(id),
+            value,
+        }
+    }
+
+    fn channel(number: u8) -> WireOverlayChannelId {
+        WireOverlayChannelId::new(number).unwrap()
+    }
+
+    /// One field of every type, with text that needs escaping.
+    fn sample_fields() -> Vec<TitleFieldUpdate> {
+        vec![
+            update(1, TitleFieldValue::Text("Ana, M: 50%".to_owned())),
+            update(2, TitleFieldValue::Number(-7)),
+            update(
+                3,
+                TitleFieldValue::Color {
+                    red: 255,
+                    green: 0,
+                    blue: 16,
+                    alpha: 128,
+                },
+            ),
+            update(
+                4,
+                TitleFieldValue::Image {
+                    asset_uri: "asset://logo.png".to_owned(),
+                },
+            ),
+        ]
+    }
+
+    const SAMPLE_FIELDS_WIRE: &str = "1%3At%3A11%3AAna%2C%20M%3A%2050%25%2C2%3An%3A-7%2C3%3Ac%3Aff001080%2C4%3Ai%3A16%3Aasset%3A%2F%2Flogo.png";
+
+    fn title_command(payload: CommandPayload) -> WireMessage {
+        WireMessage::Command(edit_command(payload))
+    }
+
+    #[test]
+    fn protocol_2_24_title_commands_are_exact() {
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 24));
+        let cases = [
+            (
+                CommandPayload::SetTitleFields {
+                    input: input(42),
+                    base_revision: 3,
+                    require: TitleAirRequirement::OffAir,
+                    fields: sample_fields(),
+                },
+                format!(
+                    "\tpayload=title_fields\tinput=42\tbase_revision=3\trequire=off_air\tfields={SAMPLE_FIELDS_WIRE}\n"
+                ),
+            ),
+            (
+                CommandPayload::SetTitleFields {
+                    input: input(42),
+                    base_revision: 0,
+                    require: TitleAirRequirement::OnAir,
+                    fields: vec![update(9, TitleFieldValue::Text(String::new()))],
+                },
+                "\tpayload=title_fields\tinput=42\tbase_revision=0\trequire=on_air\tfields=9%3At%3A0%3A\n"
+                    .to_owned(),
+            ),
+            (
+                CommandPayload::TakeTitle {
+                    input: input(42),
+                    channel: channel(2),
+                    base_revision: 5,
+                    fields: Vec::new(),
+                },
+                "\tpayload=title_take\tinput=42\tchannel=2\tbase_revision=5\tfields=\n".to_owned(),
+            ),
+            (
+                CommandPayload::TakeTitle {
+                    input: input(42),
+                    channel: channel(8),
+                    base_revision: 5,
+                    fields: sample_fields(),
+                },
+                format!(
+                    "\tpayload=title_take\tinput=42\tchannel=8\tbase_revision=5\tfields={SAMPLE_FIELDS_WIRE}\n"
+                ),
+            ),
+            (
+                CommandPayload::TitleOffAir { input: input(42) },
+                "\tpayload=title_off_air\tinput=42\n".to_owned(),
+            ),
+        ];
+        for (payload, tail) in cases {
+            let message = title_command(payload);
+            let encoded = encode_line(&message).unwrap();
+            assert_eq!(
+                encoded,
+                format!(
+                    "command\tprotocol=2.24\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                )
+            );
+            assert_eq!(decode_line(&encoded).unwrap(), message);
+        }
+    }
+
+    #[test]
+    fn title_values_round_trip_at_their_extremes() {
+        let fields = vec![
+            update(1, TitleFieldValue::Number(i64::MIN)),
+            update(2, TitleFieldValue::Number(i64::MAX)),
+            update(3, TitleFieldValue::Number(0)),
+            update(
+                4,
+                TitleFieldValue::Text("é,\u{1F600}:t:3:x,%2C\t\n".to_owned()),
+            ),
+            update(
+                u128::MAX,
+                TitleFieldValue::Image {
+                    asset_uri: " asset://a,b:c ".to_owned(),
+                },
+            ),
+        ];
+        let message = title_command(CommandPayload::SetTitleFields {
+            input: input(u128::MAX),
+            base_revision: u64::MAX,
+            require: TitleAirRequirement::OnAir,
+            fields,
+        });
+        let encoded = encode_line(&message).unwrap();
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn title_commands_reject_out_of_contract_records() {
+        let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
+            field,
+            value: value.to_owned(),
+        };
+        let fields = |value: &str| {
+            format!(
+                "\tpayload=title_fields\tinput=4\tbase_revision=0\trequire=off_air\tfields={value}"
+            )
+        };
+        for (tail, expected) in [
+            (
+                "\tpayload=title_fields\tinput=4\tbase_revision=0\tfields=".to_owned(),
+                CodecError::MissingField("require"),
+            ),
+            (
+                "\tpayload=title_fields\tinput=4\trequire=on_air\tfields=".to_owned(),
+                CodecError::MissingField("base_revision"),
+            ),
+            (
+                "\tpayload=title_fields\tinput=4\tbase_revision=0\trequire=on_air".to_owned(),
+                CodecError::MissingField("fields"),
+            ),
+            (
+                "\tpayload=title_fields\tinput=4\tbase_revision=0\trequire=live\tfields="
+                    .to_owned(),
+                invalid("require", "live"),
+            ),
+            (
+                "\tpayload=title_fields\tinput=4\tbase_revision=01\trequire=on_air\tfields="
+                    .to_owned(),
+                invalid("base_revision", "01"),
+            ),
+            (
+                "\tpayload=title_fields\tinput=04\tbase_revision=0\trequire=on_air\tfields="
+                    .to_owned(),
+                invalid("input", "04"),
+            ),
+            (
+                "\tpayload=title_take\tinput=4\tchannel=0\tbase_revision=0\tfields=".to_owned(),
+                invalid("channel", "0"),
+            ),
+            (
+                "\tpayload=title_take\tinput=4\tchannel=9\tbase_revision=0\tfields=".to_owned(),
+                invalid("channel", "9"),
+            ),
+            (
+                "\tpayload=title_take\tinput=4\tbase_revision=0\tfields=".to_owned(),
+                CodecError::MissingField("channel"),
+            ),
+            (
+                "\tpayload=title_off_air\tinput=4\tchannel=1".to_owned(),
+                CodecError::UnknownField("channel".to_owned()),
+            ),
+            (
+                "\tpayload=title_off_air".to_owned(),
+                CodecError::MissingField("input"),
+            ),
+            // Descending, duplicate, and zero ids.
+            (fields("2%3An%3A1%2C1%3An%3A1"), invalid("fields", "1")),
+            (fields("1%3An%3A1%2C1%3An%3A1"), invalid("fields", "1")),
+            (fields("0%3An%3A1"), invalid("fields", "0:n:1")),
+            (fields("01%3An%3A1"), invalid("fields", "01:n:1")),
+            // Non-canonical numbers and colors.
+            (fields("1%3An%3A%2B1"), invalid("fields", "1:n:+1")),
+            (fields("1%3An%3A01"), invalid("fields", "1:n:01")),
+            (fields("1%3An%3A-0"), invalid("fields", "1:n:-0")),
+            (fields("1%3An%3A"), invalid("fields", "1:n:")),
+            (
+                fields("1%3An%3A9223372036854775808"),
+                invalid("fields", "1:n:9223372036854775808"),
+            ),
+            (
+                fields("1%3Ac%3AFF001080"),
+                invalid("fields", "1:c:FF001080"),
+            ),
+            (fields("1%3Ac%3Aff0010"), invalid("fields", "1:c:ff0010")),
+            // Unknown tags, bad counts, and separators.
+            (fields("1%3Ax%3A1"), invalid("fields", "1:x:1")),
+            (fields("1%3At%3A3%3Aab"), invalid("fields", "1:t:3:ab")),
+            (fields("1%3At%3A1%3Aab"), invalid("fields", "1:t:1:ab")),
+            (fields("1%3At%3A01%3Aa"), invalid("fields", "1:t:01:a")),
+            (fields("1%3At%3Aa"), invalid("fields", "1:t:a")),
+            // A count that splits a multi-byte character.
+            (fields("1%3At%3A1%3A%C3%A9"), invalid("fields", "1:t:1:é")),
+            (fields("1%3An%3A1%2C"), invalid("fields", "1:n:1,")),
+            (fields("%2C1%3An%3A1"), invalid("fields", ",1:n:1")),
+            // Blank image URIs.
+            (fields("1%3Ai%3A0%3A"), invalid("fields", "1")),
+            (fields("1%3Ai%3A2%3A%20%20"), invalid("fields", "1")),
+        ] {
+            assert_eq!(
+                decode_line(&format!("{PREFIX}{tail}\n")),
+                Err(expected),
+                "{tail}"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn title_field_bounds_are_enforced_in_both_directions() {
+        let set = |fields: Vec<TitleFieldUpdate>| {
+            title_command(CommandPayload::SetTitleFields {
+                input: input(4),
+                base_revision: 0,
+                require: TitleAirRequirement::OffAir,
+                fields,
+            })
+        };
+        // Exactly at every bound: accepted and exact.
+        let longest = "é".repeat(MAX_TITLE_TEXT_CHARS);
+        let at_bounds = set(vec![
+            update(1, TitleFieldValue::Text(longest.clone())),
+            update(
+                2,
+                TitleFieldValue::Text("x".repeat(MAX_TITLE_CONTENT_BYTES - longest.len())),
+            ),
+        ]);
+        let encoded = encode_line(&at_bounds).unwrap();
+        assert_eq!(decode_line(&encoded).unwrap(), at_bounds);
+        let most = set((1..=MAX_TITLE_FIELDS as u128)
+            .map(|id| update(id, TitleFieldValue::Number(1)))
+            .collect());
+        assert_eq!(decode_line(&encode_line(&most).unwrap()).unwrap(), most);
+
+        // One past every bound: refused by the encoder and the decoder.
+        let too_long = set(vec![update(
+            1,
+            TitleFieldValue::Text("a".repeat(MAX_TITLE_TEXT_CHARS + 1)),
+        )]);
+        let too_large = set(vec![
+            update(1, TitleFieldValue::Text("a".repeat(4_000))),
+            update(2, TitleFieldValue::Text("a".repeat(4_000))),
+            update(3, TitleFieldValue::Text("a".repeat(4_000))),
+            update(
+                4,
+                TitleFieldValue::Image {
+                    asset_uri: "a".repeat(MAX_TITLE_CONTENT_BYTES - 12_000 + 1),
+                },
+            ),
+        ]);
+        let too_many = set((1..=MAX_TITLE_FIELDS as u128 + 1)
+            .map(|id| update(id, TitleFieldValue::Number(1)))
+            .collect());
+        let unordered = set(vec![
+            update(2, TitleFieldValue::Number(1)),
+            update(1, TitleFieldValue::Number(1)),
+        ]);
+        let blank = set(vec![update(
+            1,
+            TitleFieldValue::Image {
+                asset_uri: " ".to_owned(),
+            },
+        )]);
+        for (message, expected_field) in [
+            (too_long, "fields"),
+            (too_large, "fields"),
+            (unordered, "fields"),
+            (blank, "fields"),
+        ] {
+            assert!(
+                matches!(
+                    encode_line(&message),
+                    Err(CodecError::InvalidField { field, .. }) if field == expected_field
+                ),
+                "{message:?}"
+            );
+        }
+        assert_eq!(
+            encode_line(&too_many),
+            Err(CodecError::TooManyItems("fields"))
+        );
+
+        // The decoder refuses the same values handcrafted onto the wire.
+        let wire = |raw: &str| {
+            let mut escaped = String::new();
+            for byte in raw.bytes() {
+                if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+                    escaped.push(char::from(byte));
+                } else {
+                    write!(escaped, "%{byte:02X}").unwrap();
+                }
+            }
+            format!(
+                "{PREFIX}\tpayload=title_fields\tinput=4\tbase_revision=0\trequire=off_air\tfields={escaped}\n"
+            )
+        };
+        let text = "a".repeat(MAX_TITLE_TEXT_CHARS + 1);
+        assert_eq!(
+            decode_line(&wire(&format!("1:t:{}:{text}", text.len()))),
+            Err(CodecError::InvalidField {
+                field: "fields",
+                value: "1".to_owned(),
+            })
+        );
+        let chunk = "a".repeat(4_000);
+        let over = (1..=4)
+            .map(|id| format!("{id}:t:{}:{chunk}", chunk.len()))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            decode_line(&wire(&over)),
+            Err(CodecError::InvalidField {
+                field: "fields",
+                value: "16000 content bytes".to_owned(),
+            })
+        );
+        let many = (1..=MAX_TITLE_FIELDS + 1)
+            .map(|id| format!("{id}:n:1"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            decode_line(&wire(&many)),
+            Err(CodecError::TooManyItems("fields"))
+        );
+    }
+
+    fn overlays_with_title() -> Vec<OverlayStatus> {
+        let mut overlays = OverlayStatus::empty_channels();
+        overlays[1].source = Some(input(42));
+        overlays[1].active = true;
+        overlays[1].transition = OverlayTransitionKind::Fade;
+        overlays[1].duration_frames = 12;
+        overlays
+    }
+
+    #[test]
+    fn title_changed_event_is_exact() {
+        let message = WireMessage::Event(EventMessage {
+            cursor: cursor(),
+            payload: EventPayload::TitleChanged {
+                input: input(42),
+                field_revision: 6,
+                fields: sample_fields(),
+                overlays: overlays_with_title(),
+            },
+            edit_history: EditHistoryStatus::EMPTY,
+        });
+        let encoded = encode_line(&message).unwrap();
+        assert!(
+            encoded.starts_with(&format!(
+                "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842\tevent=title_changed\tinput=42\tfield_revision=6\tfields={SAMPLE_FIELDS_WIRE}\toverlays=1%3A0%3A0%3A0%3Acut%3A1"
+            )),
+            "{encoded}"
+        );
+        assert!(
+            encoded.contains("%3B2%3A42%3A1%3A0%3Afade%3A12%3A"),
+            "{encoded}"
+        );
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+
+        for (from, to, expected) in [
+            (
+                "\tfield_revision=6",
+                "\tfield_revision=06",
+                CodecError::InvalidField {
+                    field: "field_revision",
+                    value: "06".to_owned(),
+                },
+            ),
+            (
+                "\tfield_revision=6",
+                "",
+                CodecError::MissingField("field_revision"),
+            ),
+            (
+                "fields=1%3At%3A11",
+                "fields=1%3At%3A12",
+                CodecError::InvalidField {
+                    field: "fields",
+                    value: "1:t:12:Ana, M: 50%,2:n:-7,3:c:ff001080,4:i:16:asset://logo.png"
+                        .to_owned(),
+                },
+            ),
+        ] {
+            assert_eq!(
+                decode_line(&encoded.replace(from, to)),
+                Err(expected),
+                "{to}"
+            );
+        }
+        let no_overlays = encoded
+            .split('\t')
+            .filter(|field| !field.starts_with("overlays="))
+            .collect::<Vec<_>>()
+            .join("\t");
+        assert_eq!(
+            decode_line(&no_overlays),
+            Err(CodecError::MissingField("overlays"))
+        );
+    }
+
+    fn titled_snapshot(titles: Vec<TitleSummary>) -> WireMessage {
+        let WireMessage::Snapshot(mut snapshot) = snapshot(input_statuses(&[
+            (1, "Camera"),
+            (2, "Lower third"),
+            (3, "Score"),
+        ])) else {
+            unreachable!("the helper builds a snapshot");
+        };
+        snapshot.input_audio_strips = input_audio_strips(&[1, 2, 3]);
+        snapshot.titles = titles;
+        WireMessage::Snapshot(snapshot)
+    }
+
+    #[test]
+    fn snapshot_title_summaries_round_trip_and_are_strict() {
+        let message = titled_snapshot(vec![
+            TitleSummary {
+                input: input(2),
+                field_revision: 0,
+            },
+            TitleSummary {
+                input: input(3),
+                field_revision: 17,
+            },
+        ]);
+        let encoded = encode_line(&message).unwrap();
+        assert!(encoded.ends_with("\ttitles=2%3A0%2C3%3A17\n"), "{encoded}");
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+
+        for titles in [vec![(3, 1), (2, 1)], vec![(2, 1), (2, 1)], vec![(9, 1)]] {
+            let message = titled_snapshot(
+                titles
+                    .into_iter()
+                    .map(|(value, field_revision)| TitleSummary {
+                        input: input(value),
+                        field_revision,
+                    })
+                    .collect(),
+            );
+            assert!(matches!(
+                encode_line(&message),
+                Err(CodecError::InvalidField {
+                    field: "titles",
+                    ..
+                })
+            ));
+        }
+        for tampered in [
+            "titles=3%3A1%2C2%3A1",
+            "titles=2%3A1%2C2%3A1",
+            "titles=9%3A1",
+            "titles=02%3A1",
+            "titles=2%3A01",
+            "titles=2",
+            "titles=2%3A1%2C",
+        ] {
+            assert!(
+                matches!(
+                    decode_line(&encoded.replace("titles=2%3A0%2C3%3A17", tampered)),
+                    Err(CodecError::InvalidField {
+                        field: "titles",
+                        ..
+                    })
+                ),
+                "{tampered}"
+            );
+        }
+        assert_eq!(
+            decode_line(&encoded.replace("\ttitles=2%3A0%2C3%3A17", "")),
+            Err(CodecError::MissingField("titles"))
+        );
+    }
+
+    fn state(fields: Vec<TitleFieldStatus>) -> WireMessage {
+        WireMessage::TitleState(TitleStateMessage {
+            revision: 9,
+            input: input(2),
+            name: "Lower third".to_owned(),
+            field_revision: 4,
+            fields,
+        })
+    }
+
+    fn status(id: u128, name: &str, value: TitleFieldValue) -> TitleFieldStatus {
+        TitleFieldStatus {
+            field: field(id),
+            name: name.to_owned(),
+            value,
+        }
+    }
+
+    #[test]
+    fn title_state_is_exact_and_strict() {
+        let message = state(vec![
+            status(1, "Name, first", TitleFieldValue::Text("Ana".to_owned())),
+            status(2, "Score", TitleFieldValue::Number(3)),
+        ]);
+        let encoded = encode_line(&message).unwrap();
+        assert_eq!(
+            encoded,
+            "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\n"
+        );
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+        let empty = state(Vec::new());
+        let encoded_empty = encode_line(&empty).unwrap();
+        assert!(encoded_empty.ends_with("\tfields=\tfield_names=\n"));
+        assert_eq!(decode_line(&encoded_empty).unwrap(), empty);
+
+        let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
+            field,
+            value: value.to_owned(),
+        };
+        for (from, to, expected) in [
+            (
+                "field_names=11%3AName%2C%20first%2C5%3AScore",
+                "field_names=11%3AName%2C%20first",
+                invalid("field_names", "11:Name, first"),
+            ),
+            (
+                "field_names=11%3AName%2C%20first%2C5%3AScore",
+                "field_names=11%3AName%2C%20first%2C5%3AScore%2C1%3Ax",
+                invalid("field_names", "11:Name, first,5:Score,1:x"),
+            ),
+            (
+                "field_names=11%3AName%2C%20first%2C5%3AScore",
+                "field_names=11%3AName%2C%20first%2C1%3A%20",
+                invalid("field_names", " "),
+            ),
+            ("name=Lower%20third", "name=%20", invalid("name", " ")),
+            ("revision=9", "revision=09", invalid("revision", "09")),
+            ("input=2", "input=0", invalid("input", "0")),
+        ] {
+            assert_eq!(
+                decode_line(&encoded.replace(from, to)),
+                Err(expected),
+                "{to}"
+            );
+        }
+        assert_eq!(
+            decode_line(&encoded.replace("\tfield_names=11%3AName%2C%20first%2C5%3AScore", "")),
+            Err(CodecError::MissingField("field_names"))
+        );
+
+        // The encoder refuses names the decoder refuses.
+        let long_name = WireMessage::TitleState(TitleStateMessage {
+            name: "n".repeat(MAX_TITLE_NAME_BYTES + 1),
+            ..match state(Vec::new()) {
+                WireMessage::TitleState(message) => message,
+                _ => unreachable!(),
+            }
+        });
+        assert!(matches!(
+            encode_line(&long_name),
+            Err(CodecError::InvalidField { field: "name", .. })
+        ));
+        let blank_field = state(vec![status(1, "  ", TitleFieldValue::Number(0))]);
+        assert!(matches!(
+            encode_line(&blank_field),
+            Err(CodecError::InvalidField {
+                field: "field_names",
+                ..
+            })
+        ));
+        let names_over = state(
+            (1..=2)
+                .map(|id| {
+                    status(
+                        id,
+                        &"n".repeat(MAX_TITLE_FIELD_NAMES_BYTES / 2 + 1),
+                        TitleFieldValue::Number(0),
+                    )
+                })
+                .collect(),
+        );
+        assert!(matches!(
+            encode_line(&names_over),
+            Err(CodecError::InvalidField {
+                field: "field_names",
+                ..
+            })
+        ));
+    }
+
+    /// The largest title the bounds admit, with the costliest bytes the
+    /// record layer escapes, still fits one field value and one record in
+    /// every message that carries it.
+    #[test]
+    fn a_maximal_title_fits_every_record_that_carries_it() {
+        let per_field = MAX_TITLE_CONTENT_BYTES / MAX_TITLE_FIELDS;
+        let per_name = MAX_TITLE_FIELD_NAMES_BYTES / MAX_TITLE_FIELDS;
+        let ids = (0..MAX_TITLE_FIELDS as u128)
+            .map(|offset| u128::MAX - MAX_TITLE_FIELDS as u128 + 1 + offset);
+        let fields = ids
+            .clone()
+            .map(|id| update(id, TitleFieldValue::Text("%".repeat(per_field))))
+            .collect::<Vec<_>>();
+        let state = WireMessage::TitleState(TitleStateMessage {
+            revision: u64::MAX,
+            input: input(u128::MAX),
+            name: "%".repeat(MAX_TITLE_NAME_BYTES),
+            field_revision: u64::MAX,
+            fields: ids
+                .map(|id| {
+                    status(
+                        id,
+                        &",".repeat(per_name),
+                        TitleFieldValue::Text("%".repeat(per_field)),
+                    )
+                })
+                .collect(),
+        });
+        let changed = WireMessage::Event(EventMessage {
+            cursor: cursor(),
+            payload: EventPayload::TitleChanged {
+                input: input(u128::MAX),
+                field_revision: u64::MAX,
+                fields: fields.clone(),
+                overlays: overlays_with_title(),
+            },
+            edit_history: EditHistoryStatus::EMPTY,
+        });
+        let take = title_command(CommandPayload::TakeTitle {
+            input: input(u128::MAX),
+            channel: channel(8),
+            base_revision: u64::MAX,
+            fields: fields.clone(),
+        });
+        let set = title_command(CommandPayload::SetTitleFields {
+            input: input(u128::MAX),
+            base_revision: u64::MAX,
+            require: TitleAirRequirement::OnAir,
+            fields,
+        });
+        for message in [state, changed, take, set] {
+            let encoded = encode_line(&message).unwrap();
+            assert!(encoded.len() <= MAX_LINE_BYTES);
+            assert_eq!(decode_line(&encoded).unwrap(), message);
+        }
+    }
+
+    #[test]
+    fn title_state_is_a_distinct_record_kind() {
+        let message = state(vec![status(1, "Name", TitleFieldValue::Number(0))]);
+        let mut decoder = LineDecoder::new();
+        let encoded = encode_line(&message).unwrap();
+        assert_eq!(decoder.push(encoded.as_bytes()).unwrap(), vec![message]);
+        assert_eq!(
+            decode_line("title_status\trevision=1\n"),
+            Err(CodecError::UnknownMessage("title_status".to_owned()))
         );
     }
 }

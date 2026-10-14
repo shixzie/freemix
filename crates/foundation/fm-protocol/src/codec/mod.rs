@@ -1,5 +1,6 @@
 mod decode;
 mod encode;
+mod title;
 mod value;
 
 pub use decode::{LineDecoder, decode_line};

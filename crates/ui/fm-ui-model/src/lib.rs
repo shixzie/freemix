@@ -16,7 +16,8 @@ use fm_protocol::{
     FadeToBlackState, FieldIssue, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionStatus as ProtocolManualTransitionStatus, RecordingStatus, ResumeCursor,
     ServerHello, ServerIdentity, SnapshotMessage, StingerAudioPolicy, StingerMissingMediaFallback,
-    StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, WireRecorderSlot,
+    StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
+    TitleFieldUpdate, TitleStateMessage, WireRecorderSlot,
 };
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
@@ -168,6 +169,36 @@ pub struct OutputStatus {
     pub name: String,
 }
 
+/// One replicated title input.
+///
+/// A snapshot announces each title with only its field revision: `complete`
+/// is `false` and `name` and `fields` are empty until the session's
+/// `title_state` record for it is applied
+/// ([`ClientModel::apply_title_state`]). `fields` is then the complete value
+/// set in strictly ascending field order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleStatus {
+    pub input: InputId,
+    pub name: String,
+    pub field_revision: u64,
+    pub fields: Vec<TitleFieldStatus>,
+    pub complete: bool,
+}
+
+impl TitleStatus {
+    /// A title a snapshot announced, awaiting its `title_state`.
+    #[must_use]
+    pub const fn announced(input: InputId, field_revision: u64) -> Self {
+        Self {
+            input,
+            name: String::new(),
+            field_revision,
+            fields: Vec::new(),
+            complete: false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ActiveManualTransition {
     pub kind: ManualTransitionKind,
@@ -283,6 +314,8 @@ pub struct ProjectSnapshot {
     pub switcher: SwitcherState,
     pub edit_locks: EditLocks,
     pub edit_history: EditHistoryStatus,
+    /// Every title input, ascending by input, each incomplete.
+    pub titles: Vec<TitleStatus>,
 }
 
 impl ProjectSnapshot {
@@ -344,6 +377,11 @@ impl ProjectSnapshot {
             },
             edit_locks: EditLocks::from_protocol(message.edit_locks),
             edit_history: message.edit_history,
+            titles: message
+                .titles
+                .into_iter()
+                .map(|title| TitleStatus::announced(title.input.to_domain(), title.field_revision))
+                .collect(),
         }
     }
 }
@@ -393,6 +431,14 @@ pub enum DurableChange {
     EditLockChanged {
         target: EditLockTarget,
         locked: bool,
+    },
+    /// A title's complete values and field revision after a save or take,
+    /// with the complete desired overlay state.
+    TitleChanged {
+        input: InputId,
+        field_revision: u64,
+        fields: Vec<TitleFieldUpdate>,
+        overlays: Vec<OverlayStatus>,
     },
 }
 
@@ -468,6 +514,17 @@ impl DurableProjectEvent {
                 target: EditLockTarget::from_protocol(scope),
                 locked,
             },
+            EventPayload::TitleChanged {
+                input,
+                field_revision,
+                fields,
+                overlays,
+            } => DurableChange::TitleChanged {
+                input: input.to_domain(),
+                field_revision,
+                fields,
+                overlays: protocol_overlays(overlays),
+            },
         };
         Self {
             cursor: ProjectCursor {
@@ -534,9 +591,48 @@ pub struct ProjectState {
     switcher: SwitcherState,
     edit_locks: EditLocks,
     edit_history: EditHistoryStatus,
+    titles: Vec<TitleStatus>,
 }
 
 impl ProjectState {
+    /// Returns every replicated title input, ascending by input.
+    #[must_use]
+    pub fn titles(&self) -> &[TitleStatus] {
+        &self.titles
+    }
+
+    #[must_use]
+    pub fn title(&self, input: InputId) -> Option<&TitleStatus> {
+        self.titles.iter().find(|title| title.input == input)
+    }
+
+    /// Returns whether every title the snapshot announced has its values.
+    #[must_use]
+    pub fn titles_complete(&self) -> bool {
+        self.titles.iter().all(|title| title.complete)
+    }
+
+    /// Returns whether `input` is on air in the replicated desired state: on
+    /// desired Program, an endpoint of the desired manual transition, or the
+    /// source of a desired overlay that is shown or still fading.
+    ///
+    /// The server's air rule also spans the realized switcher, so a title
+    /// still fading out on air may be refused even after this turns false.
+    #[must_use]
+    pub fn title_on_air(&self, input: InputId) -> bool {
+        let manual = match self.switcher.desired_manual_transition {
+            ManualTransitionStatus::Active(transition) => {
+                transition.from == input || transition.to == input
+            }
+            ManualTransitionStatus::Inactive => false,
+        };
+        self.switcher.desired.program == input
+            || manual
+            || self.desired_overlays.iter().any(|overlay| {
+                overlay.source == Some(input) && (overlay.active || overlay.opacity > 0)
+            })
+    }
+
     /// Returns the replicated engaged edit padlocks.
     #[must_use]
     pub const fn edit_locks(&self) -> &EditLocks {
@@ -765,6 +861,7 @@ pub enum Action {
     },
     ReconcileCommand(CommandResult),
     ObserveServer(ServerHello),
+    ApplyTitleState(TitleStateMessage),
 }
 
 /// The effect produced by [`ClientModel::reduce`].
@@ -776,6 +873,7 @@ pub enum Reduction {
     CommandTracked,
     CommandReconciled(CommandReconciled),
     ServerObserved,
+    TitleStateApplied,
 }
 
 /// Validation or ordering failure that leaves authoritative state unchanged.
@@ -856,6 +954,18 @@ pub enum ModelError {
     InvalidEditLocks,
     /// A removed input is still on air or configured in the desired state.
     InputInUse(InputId),
+    /// Title summaries are not unique show inputs in ascending order.
+    InvalidTitles,
+    /// The input is not a replicated title.
+    UnknownTitle(InputId),
+    /// A `title_state` does not complete the snapshot's announced summary
+    /// at the applied revision.
+    TitleStateMismatch(InputId),
+    /// A title change arrived before the title's `title_state`.
+    TitleIncomplete(InputId),
+    /// A title change's fields are not the title's field set, or its field
+    /// revision went backwards.
+    InvalidTitleChange(InputId),
 }
 
 impl fmt::Display for ModelError {
@@ -948,20 +1058,50 @@ impl fmt::Display for ModelError {
             }
             Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
             Self::UnknownOutput(output) => write!(formatter, "unknown output {output}"),
-            Self::InvalidManualTransitionRouting => formatter
-                .write_str("manual transition endpoints do not match Program and Preview routing"),
             Self::DuplicateCommand(id) => write!(formatter, "command {id} is already pending"),
             Self::UnknownCommand(id) => write!(formatter, "command {id} is not pending"),
             Self::StateUnavailable => formatter.write_str("no project snapshot is installed"),
-            Self::InvalidEditLocks => formatter.write_str(
-                "locked inputs must be unique show inputs in ascending identifier order",
-            ),
-            Self::InputInUse(input) => write!(formatter, "removed input {input} is still in use"),
+            Self::InvalidManualTransitionRouting
+            | Self::InvalidEditLocks
+            | Self::InputInUse(_)
+            | Self::InvalidTitles
+            | Self::UnknownTitle(_)
+            | Self::TitleStateMismatch(_)
+            | Self::TitleIncomplete(_)
+            | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
         }
     }
 }
 
 impl std::error::Error for ModelError {}
+
+/// Formats the routing, edit-lock, input-catalogue and title errors.
+fn write_catalogue_message(error: &ModelError, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    match error {
+        ModelError::InvalidManualTransitionRouting => formatter
+            .write_str("manual transition endpoints do not match Program and Preview routing"),
+        ModelError::InvalidEditLocks => formatter
+            .write_str("locked inputs must be unique show inputs in ascending identifier order"),
+        ModelError::InputInUse(input) => {
+            write!(formatter, "removed input {input} is still in use")
+        }
+        ModelError::InvalidTitles => {
+            formatter.write_str("titles must be unique show inputs in ascending identifier order")
+        }
+        ModelError::UnknownTitle(input) => write!(formatter, "input {input} is not a title"),
+        ModelError::TitleStateMismatch(input) => write!(
+            formatter,
+            "title state for input {input} does not match the snapshot it follows"
+        ),
+        ModelError::TitleIncomplete(input) => {
+            write!(formatter, "title {input} changed before its state arrived")
+        }
+        ModelError::InvalidTitleChange(input) => {
+            write!(formatter, "title {input} change does not match its fields")
+        }
+        _ => Ok(()),
+    }
+}
 
 fn write_overlay_message(
     error: &ModelError,
@@ -1158,6 +1298,10 @@ impl ClientModel {
                 self.observe_server(&hello)?;
                 Ok(Reduction::ServerObserved)
             }
+            Action::ApplyTitleState(message) => {
+                self.apply_title_state(message)?;
+                Ok(Reduction::TitleStateApplied)
+            }
         }
     }
 
@@ -1277,6 +1421,7 @@ impl ClientModel {
             switcher: snapshot.switcher,
             edit_locks: snapshot.edit_locks,
             edit_history: snapshot.edit_history,
+            titles: snapshot.titles,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -1377,6 +1522,49 @@ impl ClientModel {
         Ok(EventApplied::Applied {
             reconciled_commands,
         })
+    }
+
+    /// Completes one title the installed snapshot announced.
+    ///
+    /// `message` must be at the applied revision (title states follow their
+    /// snapshot before any event) and name an announced, still incomplete
+    /// title with the announced field revision. Its fields must be strictly
+    /// ascending.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::TitleStateMismatch`] for any other mismatch; the model is
+    /// then unchanged and the caller must resynchronize.
+    pub fn apply_title_state(&mut self, message: TitleStateMessage) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.input.to_domain();
+        let mismatch = ModelError::TitleStateMismatch(input);
+        if Revision::new(message.revision) != revision
+            || !message
+                .fields
+                .windows(2)
+                .all(|pair| pair[0].field < pair[1].field)
+        {
+            return Err(mismatch);
+        }
+        let title = state
+            .titles
+            .iter_mut()
+            .find(|title| title.input == input)
+            .ok_or(mismatch.clone())?;
+        if title.complete || title.field_revision != message.field_revision {
+            return Err(mismatch);
+        }
+        title.name = message.name;
+        title.fields = message.fields;
+        title.complete = true;
+        Ok(())
     }
 
     /// Applies runtime routing for a known durable desired-state revision.
@@ -1690,6 +1878,17 @@ fn validate_snapshot_inputs(snapshot: &ProjectSnapshot) -> Result<(), ModelError
     {
         return Err(ModelError::InvalidEditLocks);
     }
+    if !snapshot
+        .titles
+        .windows(2)
+        .all(|pair| pair[0].input < pair[1].input)
+        || snapshot
+            .titles
+            .iter()
+            .any(|title| !inputs.contains(&title.input))
+    {
+        return Err(ModelError::InvalidTitles);
+    }
     validate_streams(&snapshot.streams)?;
     validate_recordings(&snapshot.recordings)?;
     validate_input_audio_strips(&snapshot.input_audio_strips, &inputs)?;
@@ -1836,6 +2035,38 @@ fn validate_input_audio_strips(
     Ok(())
 }
 
+/// Checks a `title_changed` against the complete replicated title: the same
+/// field ids in order, a field revision that never goes backwards, and valid
+/// desired overlays.
+fn validate_title_change(change: &DurableChange, state: &ProjectState) -> Result<(), ModelError> {
+    let DurableChange::TitleChanged {
+        input,
+        field_revision,
+        fields,
+        overlays,
+    } = change
+    else {
+        return Ok(());
+    };
+    let (input, field_revision) = (*input, *field_revision);
+    let title = state.title(input).ok_or(ModelError::UnknownTitle(input))?;
+    if !title.complete {
+        return Err(ModelError::TitleIncomplete(input));
+    }
+    if field_revision < title.field_revision
+        || fields.len() != title.fields.len()
+        || fields
+            .iter()
+            .zip(&title.fields)
+            .any(|(update, current)| update.field != current.field)
+    {
+        return Err(ModelError::InvalidTitleChange(input));
+    }
+    let input_set = state.inputs.iter().copied().collect();
+    let output_set = state.outputs.iter().map(|output| output.output).collect();
+    validate_overlays(overlays, &input_set, &output_set)
+}
+
 fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), ModelError> {
     let (selection, manual_transition, stingers, overlays, input_audio_strips) = match change {
         DurableChange::InputOrderChanged { inputs } => {
@@ -1869,6 +2100,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         DurableChange::InputAdded { .. } | DurableChange::InputRemoved { .. } => {
             return validate_input_catalogue_change(change, state);
         }
+        DurableChange::TitleChanged { .. } => return validate_title_change(change, state),
         DurableChange::DesiredSwitcher {
             selection,
             manual_transition,
@@ -2029,6 +2261,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
         .input_audio_strips
         .retain(|strip| strip.input != input);
     state.edit_locks.set(EditLockTarget::Input(input), false);
+    state.titles.retain(|title| title.input != input);
     // A settled-off overlay forgets a removed input it retained.
     for overlay in state
         .desired_overlays
@@ -2108,6 +2341,23 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             status.desired_active = active;
         }
         DurableChange::EditLockChanged { target, locked } => state.edit_locks.set(target, locked),
+        DurableChange::TitleChanged {
+            input,
+            field_revision,
+            fields,
+            overlays,
+        } => {
+            let title = state
+                .titles
+                .iter_mut()
+                .find(|title| title.input == input)
+                .expect("validated title change names a title");
+            title.field_revision = field_revision;
+            for (current, update) in title.fields.iter_mut().zip(fields) {
+                current.value = update.value;
+            }
+            state.desired_overlays = overlays;
+        }
     }
 }
 

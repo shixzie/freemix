@@ -106,10 +106,17 @@ pub fn execute(
     let role = match completion {
         CommandCompletion::Project | CommandCompletion::Padlock => Role::Graphics,
         CommandCompletion::Audio => Role::Audio,
-        CommandCompletion::Switcher => Role::Operator,
+        CommandCompletion::Switcher
+        | CommandCompletion::TitleTake {
+            edits_fields: false,
+        } => Role::Operator,
         // Undo and redo additionally require the class of the edit they
-        // revert, which the CLI cannot know before the daemon resolves it.
-        CommandCompletion::History => Role::Admin,
+        // revert, which the CLI cannot know before the daemon resolves it. A
+        // take that also edits fields needs both transition and project-edit
+        // authority, which only Admin holds.
+        CommandCompletion::History | CommandCompletion::TitleTake { edits_fields: true } => {
+            Role::Admin
+        }
     };
     let mut remote = Remote::connect(address, role)?;
     let key = match key {
@@ -128,6 +135,10 @@ enum CommandCompletion {
     /// the daemon resolves, so any project or switcher edit event completes it.
     History,
     Padlock,
+    /// A title take: completes on `title_changed` and switcher realization.
+    TitleTake {
+        edits_fields: bool,
+    },
 }
 
 impl CommandCompletion {
@@ -136,10 +147,14 @@ impl CommandCompletion {
             CommandPayload::RenameInput { .. }
             | CommandPayload::ReorderInputs { .. }
             | CommandPayload::AddInput { .. }
-            | CommandPayload::RemoveInput { .. } => Self::Project,
+            | CommandPayload::RemoveInput { .. }
+            | CommandPayload::SetTitleFields { .. } => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::Undo { .. } | CommandPayload::Redo { .. } => Self::History,
             CommandPayload::SetEditLock { .. } => Self::Padlock,
+            CommandPayload::TakeTitle { fields, .. } => Self::TitleTake {
+                edits_fields: !fields.is_empty(),
+            },
             _ => Self::Switcher,
         }
     }
@@ -148,7 +163,7 @@ impl CommandCompletion {
         match self {
             Self::Project | Self::Padlock => domain == "project",
             Self::Audio => domain == "audio",
-            Self::Switcher => domain == "switcher",
+            Self::Switcher | Self::TitleTake { .. } => domain == "switcher",
             Self::History => matches!(domain, "project" | "switcher"),
         }
     }
@@ -345,12 +360,20 @@ impl Remote {
                         EventPayload::EditLockChanged { .. } => {
                             completion == CommandCompletion::Padlock
                         }
+                        EventPayload::TitleChanged { .. } => matches!(
+                            completion,
+                            CommandCompletion::Project
+                                | CommandCompletion::History
+                                | CommandCompletion::TitleTake { .. }
+                        ),
                         EventPayload::DesiredSwitcher { .. }
                         | EventPayload::StingerSlotsChanged { .. }
                         | EventPayload::StreamsChanged { .. }
                         | EventPayload::RecordingChanged { .. } => !matches!(
                             completion,
-                            CommandCompletion::Project | CommandCompletion::Padlock
+                            CommandCompletion::Project
+                                | CommandCompletion::Padlock
+                                | CommandCompletion::TitleTake { .. }
                         ),
                     };
                     if matches_revision && !expected_event {
@@ -397,7 +420,7 @@ impl Remote {
             .ok_or_else(|| RemoteFailure("remote project cursor is unavailable".into()))?;
         let switcher = state.switcher();
         println!(
-            "project_id={} show={:?} revision={} frame=unavailable Program(desired={}, realized={}) Preview(desired={}, realized={}) TBar(desired={}, realized={}) FTB(desired={}, realized={}) AudioStrips={} Streams={} Recording=desired={} Overlays(desired={}, realized={}) Inputs={} Outputs={} EditLocks={} History={}",
+            "project_id={} show={:?} revision={} frame=unavailable Program(desired={}, realized={}) Preview(desired={}, realized={}) TBar(desired={}, realized={}) FTB(desired={}, realized={}) AudioStrips={} Streams={} Recording=desired={} Overlays(desired={}, realized={}) Inputs={} Outputs={} EditLocks={} History={} Titles={}",
             self.project_id,
             state.show_name(),
             cursor.revision,
@@ -418,6 +441,7 @@ impl Remote {
             format_output_roster(state),
             format_edit_locks(state.edit_locks()),
             format_edit_history(state.edit_history()),
+            format_titles(state.titles()),
         );
         if let Some(status) = &self.latest_stream_status {
             for sample in &status.samples {
@@ -536,6 +560,49 @@ fn format_edit_locks(locks: &fm_ui_model::EditLocks) -> String {
             .collect::<Vec<_>>()
             .join(","),
     )
+}
+
+fn format_titles(titles: &[fm_ui_model::TitleStatus]) -> String {
+    format!(
+        "[{}]",
+        titles
+            .iter()
+            .map(|title| {
+                format!(
+                    "{}:{:?}@{}{{{}}}",
+                    title.input,
+                    title.name,
+                    title.field_revision,
+                    title
+                        .fields
+                        .iter()
+                        .map(|field| format!(
+                            "{}:{:?}={}",
+                            field.field,
+                            field.name,
+                            format_title_value(&field.value)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+fn format_title_value(value: &fm_protocol::TitleFieldValue) -> String {
+    match value {
+        fm_protocol::TitleFieldValue::Text(text) => format!("{text:?}"),
+        fm_protocol::TitleFieldValue::Number(number) => number.to_string(),
+        fm_protocol::TitleFieldValue::Color {
+            red,
+            green,
+            blue,
+            alpha,
+        } => format!("#{red:02x}{green:02x}{blue:02x}{alpha:02x}"),
+        fm_protocol::TitleFieldValue::Image { asset_uri } => format!("image:{asset_uri:?}"),
+    }
 }
 
 fn format_edit_history(history: fm_protocol::EditHistoryStatus) -> String {

@@ -31,7 +31,8 @@ use fm_engine::{
     EngineCommandOutcome, EngineError, EngineEvent, EngineFadeToBlackState,
     EngineInputAudioStripState, EngineInputSource, EngineManualTransitionKind,
     EngineManualTransitionPosition, EngineManualTransitionState, EnginePrepareOutcome,
-    EngineSnapshot, FrameResult, PreparedEngineExecution, SnapshotError,
+    EngineSnapshot, EngineTitle, FrameResult, PreparedEngineExecution, SnapshotError,
+    TitleAirRequirement as EngineTitleAirRequirement,
 };
 use fm_protocol::{
     CommandMessage, CommandPayload, CommandResult, EditHistoryStatus, EditLockScope,
@@ -44,14 +45,26 @@ use fm_protocol::{
     RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
     StingerAudioPolicy as ProtocolStingerAudioPolicy,
     StingerMissingMediaFallback as ProtocolStingerFallback, StingerReadiness, StingerStatus,
-    StreamRealizedState, StreamStatus, WireInputId, WireMessage, WireOutputId,
+    StreamRealizedState, StreamStatus, TitleAirRequirement, TitleFieldStatus, TitleFieldUpdate,
+    TitleFieldValue, TitleStateMessage, TitleSummary, WireInputId, WireMessage, WireOutputId,
     WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    WireTitleFieldId,
 };
 use fm_switcher::{
     MissingMediaFallback, OverlayBorderPreset as SwitcherOverlayBorder, OverlayChannelId,
     OverlayChannelState, OverlayPositionPreset as SwitcherOverlayPosition,
     OverlayTransitionKind as SwitcherOverlayTransition, RecorderSlot, StingerAudioPolicy,
     StingerDescriptor, StingerPreloadState, StingerSlotId, StreamTargetId,
+};
+use fm_titles::{Color as TitleColor, FieldId, FieldValue, ImageSource};
+use fm_types::InputId;
+
+// The wire carries exactly the title values the engine holds, so the
+// protocol's bounds must be the title domain's bounds.
+const _: () = {
+    assert!(fm_protocol::MAX_TITLE_FIELDS == fm_titles::MAX_TITLE_FIELDS);
+    assert!(fm_protocol::MAX_TITLE_TEXT_CHARS == fm_titles::MAX_TITLE_TEXT_CHARS);
+    assert!(fm_protocol::MAX_TITLE_CONTENT_BYTES == fm_titles::MAX_TITLE_CONTENT_BYTES);
 };
 
 /// Target-free authorization called before an engine command is constructed or validated.
@@ -283,6 +296,21 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
             SwitcherOverlayTransition::Cut => 1,
             SwitcherOverlayTransition::Fade => overlay.duration_frames(),
         }
+    }
+
+    /// Returns the number of frames needed to take title `input` off air: the
+    /// staged transition of the overlay channel that showed it before this
+    /// command, or one frame when no channel showed it (a refusal).
+    #[must_use]
+    pub fn title_off_air_ticks(&self, input: InputId) -> u32 {
+        let channel = self
+            .control
+            .engine
+            .show()
+            .desired_switcher()
+            .overlay_channels_showing(input)
+            .next();
+        channel.map_or(1, |channel| self.overlay_transition_ticks(channel))
     }
 
     /// Atomically installs the staged decision and then applies control side effects.
@@ -623,6 +651,16 @@ impl<A: AuthorizationHook> ControlService<A> {
         &self.snapshot
     }
 
+    /// Returns one `title_state` per title in [`Self::snapshot`]'s title
+    /// order, at the current revision.
+    ///
+    /// A session writes these immediately after a snapshot, before any event,
+    /// so a client completes every title summary the snapshot announced.
+    #[must_use]
+    pub fn title_states(&self) -> Vec<TitleStateMessage> {
+        title_states(&self.engine)
+    }
+
     /// Returns the engine's next unrendered frame number (its frame cursor).
     #[must_use]
     pub const fn frame_cursor(&self) -> u64 {
@@ -778,19 +816,20 @@ impl<A: AuthorizationHook> ControlService<A> {
 
         // Undo and redo need EditProject and also the permission the edit
         // they would revert or reapply needed, so history never lets a role
-        // change configuration it could not change directly.
+        // change configuration it could not change directly. A title take
+        // that also saves field values edits project content as well as
+        // switching, so it needs EditProject on top of Transition.
         let history_target = history_target(&self.engine, &message.payload);
+        let additional_class = history_target
+            .as_ref()
+            .and_then(wire_edit_payload)
+            .map(|payload| command_class(&payload))
+            .or_else(|| additional_command_class(&message.payload));
         let authorization = self
             .authorizer
             .authorize(principal, command_class(&message.payload))
             .and_then(|()| {
-                history_target
-                    .as_ref()
-                    .and_then(wire_edit_payload)
-                    .map_or(Ok(()), |payload| {
-                        self.authorizer
-                            .authorize(principal, command_class(&payload))
-                    })
+                additional_class.map_or(Ok(()), |class| self.authorizer.authorize(principal, class))
             });
         if let Err(denial) = authorization {
             // A cached denial must never shadow a durable engine receipt.
@@ -1149,7 +1188,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::RenameInput { .. }
         | EngineCommand::AddInput { .. }
         | EngineCommand::RemoveInput { .. }
-        | EngineCommand::SetEditLock { .. } => "project",
+        | EngineCommand::SetEditLock { .. }
+        | EngineCommand::SetTitleFields { .. } => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         _ => "switcher",
     }
@@ -1164,6 +1204,11 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
 /// boundary, so anyone who may edit may also guard (or release) their edits.
 /// Roles remain the access-control mechanism; a Viewer or an Operator without
 /// `edit_project` can neither edit nor toggle the padlock.
+///
+/// Saving title fields edits project content, so it is `EditProject` (the
+/// Graphics role); taking a title on or off air switches, so it is
+/// `Transition`. A take that also carries field values additionally needs
+/// `EditProject` ([`additional_command_class`]).
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
         CommandPayload::ReorderInputs { .. }
@@ -1172,7 +1217,11 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::RemoveInput { .. }
         | CommandPayload::Undo { .. }
         | CommandPayload::Redo { .. }
-        | CommandPayload::SetEditLock { .. } => CommandClass::EditProject,
+        | CommandPayload::SetEditLock { .. }
+        | CommandPayload::SetTitleFields { .. } => CommandClass::EditProject,
+        CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
+            CommandClass::Transition
+        }
         CommandPayload::SetInputAudioStrip { .. } => CommandClass::ControlAudio,
         CommandPayload::SelectPreview { .. } => CommandClass::SelectPreview,
         CommandPayload::Cut
@@ -1201,6 +1250,20 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::StreamStop { .. }
         | CommandPayload::RecordStart { .. }
         | CommandPayload::RecordStop { .. } => CommandClass::Transition,
+    }
+}
+
+/// Returns the second class a command needs beyond [`command_class`], other
+/// than undo and redo (which need the class of the edit they resolve to).
+///
+/// A title take that carries field values saves content as it switches, so
+/// it also needs `EditProject`; an empty take only switches.
+const fn additional_command_class(payload: &CommandPayload) -> Option<CommandClass> {
+    match payload {
+        CommandPayload::TakeTitle { fields, .. } if !fields.is_empty() => {
+            Some(CommandClass::EditProject)
+        }
+        _ => None,
     }
 }
 
@@ -1294,7 +1357,143 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::Undo { .. }
         | CommandPayload::Redo { .. }
         | CommandPayload::SetEditLock { .. }) => edit_engine_command(payload),
+        payload @ (CommandPayload::SetTitleFields { .. }
+        | CommandPayload::TakeTitle { .. }
+        | CommandPayload::TitleOffAir { .. }) => title_engine_command(payload),
     }
+}
+
+/// Maps the title commands: field save, take, and off-air.
+fn title_engine_command(payload: &CommandPayload) -> EngineCommand {
+    match payload {
+        CommandPayload::SetTitleFields {
+            input,
+            base_revision,
+            require,
+            fields,
+        } => EngineCommand::SetTitleFields {
+            input: input.to_domain(),
+            base_revision: *base_revision,
+            require: match require {
+                TitleAirRequirement::OffAir => EngineTitleAirRequirement::OffAir,
+                TitleAirRequirement::OnAir => EngineTitleAirRequirement::OnAir,
+            },
+            fields: domain_title_fields(fields),
+        },
+        CommandPayload::TakeTitle {
+            input,
+            channel,
+            base_revision,
+            fields,
+        } => EngineCommand::TakeTitle {
+            input: input.to_domain(),
+            channel: domain_overlay_channel(*channel),
+            base_revision: *base_revision,
+            fields: domain_title_fields(fields),
+        },
+        CommandPayload::TitleOffAir { input } => EngineCommand::TitleOffAir {
+            input: input.to_domain(),
+        },
+        _ => unreachable!("only title commands are delegated"),
+    }
+}
+
+fn domain_title_fields(fields: &[TitleFieldUpdate]) -> Vec<(FieldId, FieldValue)> {
+    fields
+        .iter()
+        .map(|update| {
+            let value = match &update.value {
+                TitleFieldValue::Text(text) => FieldValue::Text(text.clone()),
+                TitleFieldValue::Number(number) => FieldValue::Number(*number),
+                TitleFieldValue::Color {
+                    red,
+                    green,
+                    blue,
+                    alpha,
+                } => FieldValue::Color(TitleColor::new(*red, *green, *blue, *alpha)),
+                TitleFieldValue::Image { asset_uri } => {
+                    FieldValue::Image(ImageSource::new(asset_uri.clone()))
+                }
+            };
+            (FieldId::new(update.field.get()), value)
+        })
+        .collect()
+}
+
+fn wire_title_value(value: &FieldValue) -> TitleFieldValue {
+    match value {
+        FieldValue::Text(text) => TitleFieldValue::Text(text.clone()),
+        FieldValue::Number(number) => TitleFieldValue::Number(*number),
+        FieldValue::Color(color) => TitleFieldValue::Color {
+            red: color.r,
+            green: color.g,
+            blue: color.b,
+            alpha: color.a,
+        },
+        FieldValue::Image(image) => TitleFieldValue::Image {
+            asset_uri: image.asset.clone(),
+        },
+    }
+}
+
+/// A title's complete values in strictly ascending field order.
+fn wire_title_fields(title: &EngineTitle) -> Vec<TitleFieldUpdate> {
+    title
+        .fields
+        .values()
+        .iter()
+        .map(|(field, value)| TitleFieldUpdate {
+            field: WireTitleFieldId::new(field.get()),
+            value: wire_title_value(value),
+        })
+        .collect()
+}
+
+/// The `title_changed` payload for `input` in the post-command `engine`.
+fn title_changed(engine: &Engine, input: InputId) -> EventPayload {
+    let title = engine
+        .show()
+        .title(input)
+        .expect("an accepted title command names a title input");
+    EventPayload::TitleChanged {
+        input: WireInputId::from_domain(input),
+        field_revision: title.fields.revision(),
+        fields: wire_title_fields(title),
+        overlays: protocol_overlays(engine.show().desired_switcher().overlays()),
+    }
+}
+
+/// One `title_state` per title input, ascending by input, at the engine's
+/// current revision.
+fn title_states(engine: &Engine) -> Vec<TitleStateMessage> {
+    let revision = engine.revision().get();
+    engine
+        .show()
+        .titles()
+        .iter()
+        .map(|(input, title)| TitleStateMessage {
+            revision,
+            input: WireInputId::from_domain(*input),
+            name: title.name.clone(),
+            field_revision: title.fields.revision(),
+            fields: title
+                .fields
+                .values()
+                .iter()
+                .map(|(field, value)| TitleFieldStatus {
+                    field: WireTitleFieldId::new(field.get()),
+                    name: title
+                        .fields
+                        .definitions()
+                        .iter()
+                        .find(|definition| definition.id == *field)
+                        .map(|definition| definition.name.clone())
+                        .expect("every title value has a definition"),
+                    value: wire_title_value(value),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// Maps the input catalogue commands: reorder, rename, add, and remove.
@@ -1732,6 +1931,25 @@ fn engine_submission(
 
 #[allow(clippy::too_many_lines)]
 fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> EventPayload {
+    // A field save and a title take both publish the title's complete values
+    // with the desired overlays. The engine reports a take as a desired
+    // switcher change (one event per command); its values and field revision
+    // are read back from the post-command show. A title off-air changes only
+    // the overlays and publishes `desired_switcher` exactly like
+    // `overlay_off`.
+    if let Some(input) = outcome
+        .events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EngineEvent::TitleFieldsChanged { input, .. }
+            | EngineEvent::DesiredSwitcherChanged(EngineCommand::TakeTitle { input, .. }) => {
+                Some(*input)
+            }
+            _ => None,
+        })
+    {
+        return title_changed(engine, input);
+    }
     if let Some((scope, locked)) = outcome.events.iter().find_map(|event| {
         let EngineEvent::EditLockChanged { scope, locked } = &event.payload else {
             return None;
@@ -1895,6 +2113,15 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
         realized_overlays: protocol_overlays(engine.realized_switcher().overlays()),
         edit_locks: protocol_edit_locks(engine),
         edit_history: protocol_edit_history(engine),
+        titles: engine
+            .show()
+            .titles()
+            .iter()
+            .map(|(input, title)| TitleSummary {
+                input: WireInputId::from_domain(*input),
+                field_revision: title.fields.revision(),
+            })
+            .collect(),
     };
     SnapshotRecord {
         cursor: EventCursor {
