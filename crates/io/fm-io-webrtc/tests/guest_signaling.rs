@@ -579,6 +579,74 @@ fn candidates_are_bounded_and_strict() {
 }
 
 #[test]
+fn numeric_fields_reject_signs_and_out_of_range_priorities() {
+    // `str::parse`/`from_str_radix` accept a leading `+`; SDP numbers do not.
+    let signed_octet = format!("sha-256 +A{}", ":00".repeat(31));
+    assert_eq!(
+        Fingerprint::parse(&signed_octet),
+        Err(SdpError::InvalidFingerprint)
+    );
+    for invalid in [
+        "candidate:7 1 udp 1 198.51.100.4 9 typ srflx raddr 0.0.0.0 rport +5",
+        "candidate:7 1 udp 1 198.51.100.4 9 typ host generation +0",
+        "candidate:7 1 udp 1 198.51.100.4 9 typ host network-cost +10",
+        // RFC 8445 §5.1.2.1 caps priorities at 2^31 - 1.
+        "candidate:7 1 udp 2147483648 198.51.100.4 9 typ host",
+        "candidate:7 1 udp 4294967295 198.51.100.4 9 typ host",
+    ] {
+        assert_eq!(
+            SdpCandidate::parse(invalid),
+            Err(SdpError::InvalidCandidate),
+            "{invalid}"
+        );
+    }
+    assert_eq!(
+        SdpCandidate::parse("candidate:7 1 udp 2147483647 198.51.100.4 9 typ host")
+            .unwrap()
+            .priority,
+        2_147_483_647
+    );
+    assert_eq!(
+        Sdp::parse(&BROWSER_OFFER.replacen(
+            "o=- 4611731400430051336 2",
+            "o=- +4611731400430051336 2",
+            1
+        )),
+        Err(SdpError::InvalidOrigin)
+    );
+    assert_eq!(
+        Sdp::parse(&BROWSER_OFFER.replacen(
+            "o=- 4611731400430051336 2",
+            "o=- 4611731400430051336 +2",
+            1
+        )),
+        Err(SdpError::InvalidOrigin)
+    );
+}
+
+#[test]
+fn overridden_session_level_ice_credentials_are_still_validated() {
+    let media_credentials = SESSION_LEVEL_OFFER.replacen(
+        "a=mid:0\r\n",
+        "a=mid:0\r\na=ice-ufrag:ffx1\r\na=ice-pwd:firefoxPassword0123456789\r\n",
+        1,
+    );
+    assert!(Sdp::parse(&media_credentials).is_ok());
+    assert_eq!(
+        Sdp::parse(&media_credentials.replacen(
+            "a=ice-pwd:firefoxPassword0123456789\r\n",
+            "a=ice-pwd:short\r\n",
+            1
+        )),
+        Err(SdpError::InvalidIcePwd)
+    );
+    assert_eq!(
+        Sdp::parse(&media_credentials.replacen("a=ice-ufrag:ffx1\r\n", "a=ice-ufrag:f!\r\n", 1)),
+        Err(SdpError::InvalidIceUfrag)
+    );
+}
+
+#[test]
 fn answers_negotiate_codecs_roles_and_directions_deterministically() {
     // H.264 High profile is not compatible with constrained baseline.
     let high_only = BROWSER_OFFER.replacen("profile-level-id=42e01f", "profile-level-id=640c1f", 1);

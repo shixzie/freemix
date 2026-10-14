@@ -39,6 +39,8 @@ const MAX_MID_BYTES: usize = 64;
 const MAX_FOUNDATION_BYTES: usize = 32;
 const MAX_HOSTNAME_BYTES: usize = 253;
 const MAX_CANDIDATE_TOKENS: usize = 24;
+/// RFC 8445 §5.1.2.1: priorities are in `1..=2^31 - 1`.
+const MAX_CANDIDATE_PRIORITY: u32 = (1 << 31) - 1;
 const FIRST_DYNAMIC_PAYLOAD_TYPE: u8 = 96;
 const LAST_PAYLOAD_TYPE: u8 = 127;
 
@@ -452,7 +454,7 @@ impl Fingerprint {
         let mut count = 0_usize;
         for octet in hex.split(':') {
             let slot = digest.get_mut(count).ok_or(SdpError::InvalidFingerprint)?;
-            if octet.len() != 2 {
+            if octet.len() != 2 || !octet.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 return Err(SdpError::InvalidFingerprint);
             }
             *slot = u8::from_str_radix(octet, 16).map_err(|_| SdpError::InvalidFingerprint)?;
@@ -764,7 +766,9 @@ impl SdpCandidate {
                 transport.to_ascii_lowercase(),
             ));
         }
-        let priority = parse_nonzero_u32(priority).ok_or(SdpError::InvalidCandidate)?;
+        let priority = parse_nonzero_u32(priority)
+            .filter(|priority| *priority <= MAX_CANDIDATE_PRIORITY)
+            .ok_or(SdpError::InvalidCandidate)?;
         validate_address(address)?;
         let port = parse_nonzero_u16(port).ok_or(SdpError::InvalidCandidate)?;
         let kind = match *kind {
@@ -792,11 +796,7 @@ impl SdpCandidate {
                     raddr = Some(value.to_owned());
                 }
                 "rport" => {
-                    rport = Some(
-                        value
-                            .parse::<u16>()
-                            .map_err(|_| SdpError::InvalidCandidate)?,
-                    );
+                    rport = Some(parse_decimal::<u16>(value).ok_or(SdpError::InvalidCandidate)?);
                 }
                 "ufrag" => {
                     if !is_ice_chars(value, 4, 256) {
@@ -805,9 +805,7 @@ impl SdpCandidate {
                     ufrag = Some(value.to_owned());
                 }
                 "generation" | "network-id" | "network-cost" => {
-                    value
-                        .parse::<u32>()
-                        .map_err(|_| SdpError::InvalidCandidate)?;
+                    parse_decimal::<u32>(value).ok_or(SdpError::InvalidCandidate)?;
                 }
                 other => return Err(SdpError::UnsupportedCandidateExtension(other.to_owned())),
             }
@@ -874,10 +872,8 @@ impl Origin {
         }
         Ok(Self {
             username: (*username).to_owned(),
-            session_id: session_id.parse().map_err(|_| SdpError::InvalidOrigin)?,
-            session_version: session_version
-                .parse()
-                .map_err(|_| SdpError::InvalidOrigin)?,
+            session_id: parse_decimal(session_id).ok_or(SdpError::InvalidOrigin)?,
+            session_version: parse_decimal(session_version).ok_or(SdpError::InvalidOrigin)?,
             address,
         })
     }
@@ -1556,10 +1552,18 @@ impl Parser {
                 }
                 self.session.bundle = Some(mids);
             }
+            // Validated here: a media-level value may override (and so
+            // never revalidate) the session-level one.
             ("ice-ufrag", Some(value)) => {
+                if !is_ice_chars(value, 4, 256) {
+                    return Err(SdpError::InvalidIceUfrag);
+                }
                 set_once(&mut self.session.ufrag, value.to_owned(), "ice-ufrag")?;
             }
             ("ice-pwd", Some(value)) => {
+                if !is_ice_chars(value, 22, 256) {
+                    return Err(SdpError::InvalidIcePwd);
+                }
                 set_once(&mut self.session.pwd, value.to_owned(), "ice-pwd")?;
             }
             ("fingerprint", Some(value)) => {
@@ -2017,6 +2021,14 @@ fn parse_nonzero_u32(text: &str) -> Option<u32> {
         return None;
     }
     text.parse::<u32>().ok().filter(|value| *value != 0)
+}
+
+/// Parses unsigned decimal digits only (`str::parse` also accepts a `+`).
+fn parse_decimal<T: core::str::FromStr>(text: &str) -> Option<T> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 fn parse_nonzero_u16(text: &str) -> Option<u16> {
