@@ -1698,6 +1698,23 @@ pending until licensed adapters pass.
 9. Validate storage prediction, retention, low-space behavior, and recovery.
 10. Certify Profile C.
 
+Current implementation boundary for items 1–5: `fm-replay` keeps an in-memory
+rolling segment catalog with deterministic overlap tie-breaks and gap
+reporting, per-camera source timelines with binary-search frame resolution,
+bounded observation counts, and pruning that keeps the cutoff instant
+resolvable. Event capture atomically verifies gap-free coverage and at least
+one frame for every angle before protecting those segments; removal releases
+the protection and detaches the event from every list. Last-N presets (5, 10,
+and 20 seconds) anchor at the live edge, and events, lists, folders, tags,
+names, and notes have explicit limits with typed errors. Replay channels switch
+event angles at the same timeline instant and resolve the exact source frame
+and segment, or the live edge. Remaining gaps: nothing is persisted or
+connected to `fm-record`, space reclamation and file deletion are
+caller-driven, frame resolution does not decode or present media, A/B
+playback has no real clock, per-event list overrides and controller mapping
+are absent, and no eight-camera storage profile is certified. `OR-012` and
+`OR-013` remain planned.
+
 Exit: Sports Show scenario passes on certified storage/hardware.
 
 ## 10. Phase 8 — professional hardware and advanced formats (ongoing, 16–24 weeks)
