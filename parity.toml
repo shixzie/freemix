@@ -207,7 +207,9 @@ id = "accept-au-001"
 state = "planned"
 [[tests]]
 id = "accept-au-002"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-audio/tests/bus_matrix.rs"]
+commands = ["cargo test -p fm-audio --test bus_matrix"]
 [[tests]]
 id = "accept-au-003"
 state = "planned"
