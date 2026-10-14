@@ -92,8 +92,9 @@ pub struct EngineFadeToBlackState {
 /// Whether a title field edit requires its title to be off air or on air.
 ///
 /// A title is on air while it is on Program, an endpoint of an automatic or
-/// manual transition, or the source of an overlay channel that is shown or
-/// still fading, in either the desired or the realized switcher. An overlay
+/// manual transition, the media of a Stinger transition in flight, or the
+/// source of an overlay channel that is shown or still fading, in either the
+/// desired or the realized switcher. An overlay
 /// fading out therefore keeps its title on air until the fade completes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TitleAirRequirement {

@@ -125,20 +125,28 @@ impl SwitcherState {
     }
 
     /// Returns the first reference that puts `input` on air, if any: Program,
-    /// an automatic or manual transition endpoint, or the source of an overlay
-    /// channel that is on air or fading.
+    /// an automatic or manual transition endpoint, the media of the Stinger
+    /// transition in flight, or the source of an overlay channel that is on
+    /// air or fading.
     ///
-    /// Unlike [`Self::input_usage`], Preview, overlay queues, and Stinger
-    /// media are not on air and are ignored.
+    /// Unlike [`Self::input_usage`], Preview, overlay queues, and the media of
+    /// a Stinger slot that is not playing are not on air and are ignored.
     #[must_use]
     pub fn on_air_usage(&self, input: InputId) -> Option<InputUsage> {
-        match self.input_usage_on_bus(input) {
-            Some(usage) => Some(usage),
-            None => self
-                .overlay_channels_showing(input)
-                .next()
-                .map(InputUsage::Overlay),
+        if let Some(usage) = self.input_usage_on_bus(input) {
+            return Some(usage);
         }
+        if let Some(TransitionKind::Stinger(slot)) = self.transition.map(TransitionState::kind)
+            && self
+                .stinger(slot)
+                .descriptor()
+                .is_some_and(|descriptor| descriptor.media_input == input)
+        {
+            return Some(InputUsage::Stinger(slot));
+        }
+        self.overlay_channels_showing(input)
+            .next()
+            .map(InputUsage::Overlay)
     }
 
     /// Returns, in channel order, the overlay channels whose source is
@@ -1128,6 +1136,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state.input_usage(input(5)), Some(InputUsage::Stinger(slot)));
+        assert_eq!(state.on_air_usage(input(5)), None);
+    }
+
+    #[test]
+    fn playing_stinger_media_is_on_air_until_the_transition_completes() {
+        let mut state = switcher();
+        let slot = StingerSlotId::new(1).unwrap();
+        state
+            .configure_stinger(
+                slot,
+                StingerDescriptor {
+                    media_input: input(5),
+                    preload: true,
+                    cut_point_frames: 1,
+                    audio_policy: StingerAudioPolicy::Muted,
+                    missing_media_fallback: MissingMediaFallback::Cut,
+                },
+            )
+            .unwrap();
+        let _ = state.preload_stinger(slot, true).unwrap();
+        state
+            .apply(SwitcherCommand::Transition {
+                kind: TransitionKind::Stinger(slot),
+                duration_frames: 3,
+            })
+            .unwrap();
+        assert_eq!(
+            state.on_air_usage(input(5)),
+            Some(InputUsage::Stinger(slot))
+        );
+        // Other media and other inputs stay off air.
+        assert_eq!(state.on_air_usage(input(6)), None);
+        for _ in 0..3 {
+            let _ = state.advance_frame_events();
+        }
+        assert!(state.transition().is_none());
         assert_eq!(state.on_air_usage(input(5)), None);
     }
 }

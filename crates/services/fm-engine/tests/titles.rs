@@ -960,6 +960,61 @@ fn a_title_in_a_transition_is_on_air() {
 }
 
 #[test]
+fn a_title_playing_as_stinger_media_is_on_air() {
+    let mut engine = engine();
+    let slot = fm_switcher::StingerSlotId::new(1).unwrap();
+    assert_accepted(&run(
+        &mut engine,
+        "stinger",
+        EngineCommand::ConfigureStinger {
+            slot,
+            descriptor: fm_switcher::StingerDescriptor {
+                media_input: input(TITLE),
+                preload: true,
+                cut_point_frames: 2,
+                audio_policy: fm_switcher::StingerAudioPolicy::Muted,
+                missing_media_fallback: fm_switcher::MissingMediaFallback::Cut,
+            },
+        },
+    ));
+    // A configured but idle Stinger does not put its media on air.
+    assert_accepted(&run(
+        &mut engine,
+        "idle-save",
+        save(0, vec![(field(NAME), text("Idle"))]),
+    ));
+    assert_accepted(&run(
+        &mut engine,
+        "play",
+        EngineCommand::Stinger {
+            slot,
+            duration_frames: 5,
+        },
+    ));
+    assert!(engine.realized_switcher().transition().is_some());
+    assert_refused(
+        &run(&mut engine, "save", save(1, Vec::new())),
+        TitleRejectionKind::OnAir,
+        RejectionCode::Conflict,
+        "input",
+    );
+    assert_refused(
+        &run(&mut engine, "take", take(1, 1, Vec::new())),
+        TitleRejectionKind::OnAir,
+        RejectionCode::Conflict,
+        "input",
+    );
+    assert_accepted(&run(
+        &mut engine,
+        "live",
+        update(1, vec![(field(NAME), text("Playing"))]),
+    ));
+    ticks(&mut engine, 5);
+    assert!(engine.realized_switcher().transition().is_none());
+    assert_accepted(&run(&mut engine, "after", save(2, Vec::new())));
+}
+
+#[test]
 fn replaying_a_title_command_returns_the_same_receipt() {
     let mut engine = engine();
     let command = save(0, vec![(field(NAME), text("Once"))]);
