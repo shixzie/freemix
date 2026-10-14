@@ -233,14 +233,12 @@ pub(crate) fn peak_readout(states: &[ChannelBallistics]) -> String {
 }
 
 /// Converts an `egui` frame time in seconds to whole milliseconds.
-pub(crate) fn frame_dt_ms(stable_dt_seconds: f32) -> u32 {
-    if !stable_dt_seconds.is_finite() || stable_dt_seconds <= 0.0 {
+pub(crate) fn frame_dt_ms(dt_seconds: f32) -> u32 {
+    if !dt_seconds.is_finite() || dt_seconds <= 0.0 {
         return 0;
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped
-    let ms = (stable_dt_seconds * 1_000.0)
-        .round()
-        .min(f32::from(u16::MAX)) as u32;
+    let ms = (dt_seconds * 1_000.0).round().min(f32::from(u16::MAX)) as u32;
     ms
 }
 

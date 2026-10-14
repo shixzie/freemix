@@ -62,7 +62,13 @@ pub(crate) fn bank_grid(
 }
 
 /// Returns the number of tile columns that fit the available width.
+///
+/// A width that is not finite (an unbounded layout) yields one column rather
+/// than looping forever.
 pub(crate) fn dynamic_columns(available_width: f32, spacing: f32) -> usize {
+    if !available_width.is_finite() {
+        return 1;
+    }
     let mut columns = 1;
     let mut occupied = MIN_TILE_WIDTH;
     while occupied + spacing + MIN_TILE_WIDTH <= available_width {
@@ -1145,6 +1151,14 @@ mod tests {
         assert_eq!(dynamic_columns(100.0, 8.0), 1);
         assert_eq!(dynamic_columns(MIN_TILE_WIDTH * 2.0 + 8.0, 8.0), 2);
         assert_eq!(dynamic_columns(MIN_TILE_WIDTH * 2.0 + 7.0, 8.0), 1);
+    }
+
+    #[test]
+    fn tile_grid_terminates_for_unbounded_or_nan_widths() {
+        // An infinite width used to loop forever adding columns.
+        assert_eq!(dynamic_columns(f32::INFINITY, 8.0), 1);
+        assert_eq!(dynamic_columns(f32::NAN, 8.0), 1);
+        assert_eq!(bank_grid(f32::INFINITY, 400.0, 4, 8.0).0, 1);
     }
 
     #[test]

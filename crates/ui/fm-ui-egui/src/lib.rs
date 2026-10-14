@@ -1010,6 +1010,11 @@ impl StudioShell {
         state: &StudioUiState,
         manual_transition_controls: ManualTransitionAvailability,
     ) -> Vec<StudioIntent> {
+        // A Help dialog is modal: Esc closes it and must not also cancel a
+        // live manual transition, nor may console keys act behind it.
+        if self.show_shortcuts || self.show_about {
+            return Vec::new();
+        }
         let inputs = state
             .view
             .as_ref()
@@ -1057,9 +1062,14 @@ impl StudioShell {
             }),
         );
         let mut intents = self.keyboard_intents(ui, state, manual_transition_controls);
-        let dt_ms = meter_ballistics::frame_dt_ms(ui.input(|input| input.stable_dt));
-        self.toasts.observe(state);
+        // Studio repaints on timers, so egui's `stable_dt` stays at its 1/60 s
+        // prediction however long a frame gap really is; toasts and meter
+        // ballistics age by the measured time since the previous frame.
+        let dt_ms = meter_ballistics::frame_dt_ms(ui.input(|input| input.unstable_dt));
+        // Age existing toasts before announcing new messages, so a message
+        // arriving after a long idle gap still gets its full lifetime.
         self.toasts.tick(dt_ms);
+        self.toasts.observe(state);
         let bar_frame = Frame::new()
             .fill(PANEL)
             .stroke(Stroke::new(1.0, BORDER))
@@ -3149,5 +3159,114 @@ mod tests {
         ));
         state.monitor_images[MonitorTap::Preview.index()] = None;
         let _output = run_frame(&context, &mut shell, &state);
+    }
+
+    fn run_timed_frame(
+        context: &egui::Context,
+        shell: &mut StudioShell,
+        state: &StudioUiState,
+        time: f64,
+        events: Vec<egui::Event>,
+    ) -> Vec<StudioIntent> {
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1600.0, 1000.0),
+            )),
+            time: Some(time),
+            events,
+            ..egui::RawInput::default()
+        });
+        let mut ui = egui::Ui::new(
+            context.clone(),
+            egui::Id::new("fm-ui-egui-timed-test"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(context.viewport_rect()),
+        );
+        let intents = shell.draw(&mut ui, state);
+        let _output = context.end_pass();
+        intents
+    }
+
+    #[test]
+    fn toasts_expire_by_wall_clock_time_between_frames() {
+        // Studio repaints on timers (`request_repaint_after`), so egui's
+        // `stable_dt` stays at its 1/60 s prediction however long the gap
+        // between frames really is. Toasts and meter ballistics must age by
+        // the real time between frames.
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready);
+        state.notice = Some("saved".to_owned());
+        let mut time = 10.0;
+        for _ in 0..3 {
+            run_timed_frame(&context, &mut shell, &state, time, Vec::new());
+            time += 0.1;
+        }
+        assert_eq!(shell.toasts.iter().count(), 1);
+        // Six seconds of 100 ms repaint ticks outlive the 5 s notice.
+        for _ in 0..60 {
+            run_timed_frame(&context, &mut shell, &state, time, Vec::new());
+            time += 0.1;
+        }
+        assert!(shell.toasts.is_empty(), "{:?}", shell.toasts);
+        // A message arriving after a long idle gap keeps its full lifetime.
+        state.notice = Some("rejected".to_owned());
+        run_timed_frame(&context, &mut shell, &state, time + 30.0, Vec::new());
+        assert_eq!(
+            shell
+                .toasts
+                .iter()
+                .map(|toast| toast.remaining_ms)
+                .collect::<Vec<_>>(),
+            [crate::toasts::NOTICE_TOAST_MS]
+        );
+    }
+
+    #[test]
+    fn console_keys_do_not_act_behind_an_open_help_dialog() {
+        // Esc closes the Help dialogs; it must not also cancel a live manual
+        // transition, and switching keys must not act on the hidden console.
+        let state = StudioUiState::new(StudioConnectionStatus::Ready);
+        let manual = ManualTransitionAvailability {
+            start: false,
+            alpha_fade_start_exposed: true,
+            active_controls: true,
+        };
+        let escape = || egui::Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let run = |shell: &StudioShell| {
+            // A fresh context per run, so each Esc is a new press.
+            let context = egui::Context::default();
+            context.begin_pass(egui::RawInput {
+                events: vec![escape()],
+                ..Default::default()
+            });
+            let mut ui = egui::Ui::new(
+                context.clone(),
+                egui::Id::new("studio-modal-keys"),
+                egui::UiBuilder::new()
+                    .layer_id(egui::LayerId::background())
+                    .max_rect(context.viewport_rect()),
+            );
+            let intents = shell.keyboard_intents(&mut ui, &state, manual);
+            let remaining = context.input(|input| input.events.len());
+            drop(ui);
+            let _ = context.end_pass();
+            (intents, remaining)
+        };
+        let mut shell = StudioShell::default();
+        assert_eq!(run(&shell), (vec![StudioIntent::CancelManualTransition], 0));
+        shell.show_shortcuts = true;
+        assert_eq!(run(&shell), (Vec::new(), 1));
+        shell.show_shortcuts = false;
+        shell.show_about = true;
+        assert_eq!(run(&shell), (Vec::new(), 1));
     }
 }

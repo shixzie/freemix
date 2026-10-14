@@ -278,14 +278,7 @@ impl StudioApp {
         let worker = self.worker.take().expect("worker handle was just checked");
         let failed = worker.join().is_err();
         if !self.shutdown_sent {
-            self.updates.take();
-            if failed {
-                self.state = StudioUiState::new(StudioConnectionStatus::Failed);
-                self.state.error = Some("Studio worker panicked".to_owned());
-            } else if self.state.connection_status != StudioConnectionStatus::Failed {
-                self.state = StudioUiState::new(StudioConnectionStatus::Failed);
-                self.state.error = Some("Studio worker stopped unexpectedly".to_owned());
-            }
+            reconcile_finished_worker(&mut self.state, &mut self.updates, failed);
         }
     }
 
@@ -380,6 +373,28 @@ impl Drop for StudioApp {
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
+    }
+}
+
+/// Settles the UI state once the worker thread has finished without a
+/// requested shutdown. The worker's last publication (such as a startup
+/// failure) can land between this frame's mailbox read and the finish check,
+/// so it is drained before the mailbox is dropped; otherwise its specific
+/// error would be replaced by a generic one.
+fn reconcile_finished_worker(
+    state: &mut StudioUiState,
+    updates: &mut Option<StateUpdates>,
+    panicked: bool,
+) {
+    if let Some(last) = updates.take().and_then(|updates| updates.try_recv()) {
+        *state = last;
+    }
+    if panicked {
+        *state = StudioUiState::new(StudioConnectionStatus::Failed);
+        state.error = Some("Studio worker panicked".to_owned());
+    } else if state.connection_status != StudioConnectionStatus::Failed {
+        *state = StudioUiState::new(StudioConnectionStatus::Failed);
+        state.error = Some("Studio worker stopped unexpectedly".to_owned());
     }
 }
 
@@ -2624,6 +2639,35 @@ mod tests {
         );
         drop(updates);
         assert!(!publisher.publish(StudioUiState::new(StudioConnectionStatus::Failed)));
+    }
+
+    #[test]
+    fn finished_worker_keeps_its_last_published_failure() {
+        // The worker publishes its startup failure and exits between the
+        // frame's mailbox read and the finish check: the specific error must
+        // survive instead of becoming "stopped unexpectedly".
+        let (publisher, updates) = state_mailbox(egui::Context::default());
+        let mut failed = StudioUiState::new(StudioConnectionStatus::Failed);
+        failed.error = Some("Studio startup failed: freemixd not found".to_owned());
+        assert!(publisher.publish(failed.clone()));
+        let mut state = StudioUiState::new(StudioConnectionStatus::Launching);
+        let mut updates = Some(updates);
+        reconcile_finished_worker(&mut state, &mut updates, false);
+        assert!(updates.is_none());
+        assert_eq!(state, failed);
+
+        // Without a final publication the exit is still reported.
+        let (_publisher, updates) = state_mailbox(egui::Context::default());
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready);
+        reconcile_finished_worker(&mut state, &mut Some(updates), false);
+        assert_eq!(state.connection_status, StudioConnectionStatus::Failed);
+        assert_eq!(
+            state.error.as_deref(),
+            Some("Studio worker stopped unexpectedly")
+        );
+        let mut state = failed.clone();
+        reconcile_finished_worker(&mut state, &mut None, true);
+        assert_eq!(state.error.as_deref(), Some("Studio worker panicked"));
     }
 
     #[test]

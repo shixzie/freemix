@@ -141,7 +141,9 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
     #[allow(clippy::cast_precision_loss)] // display only
     let mut value = bytes as f64 / 1_024.0;
     let mut unit = 0;
-    while value >= 1_024.0 && unit + 1 < UNITS.len() {
+    // Step up on the displayed (one-decimal) value, so 1023.96 KB reads
+    // `1.0 MB` rather than `1024.0 KB`.
+    while (value * 10.0).round() >= 10_240.0 && unit + 1 < UNITS.len() {
         value /= 1_024.0;
         unit += 1;
     }
@@ -531,5 +533,13 @@ mod tests {
         assert_eq!(format_bytes(5 * 1_024 * 1_024 * 1_024), "5.0 GB");
         assert_eq!(on_air_summary(0, 2, "SLOTS", "RECORDING"), "2 SLOTS");
         assert_eq!(on_air_summary(1, 2, "TARGETS", "LIVE"), "1 / 2 LIVE");
+    }
+
+    #[test]
+    fn byte_counts_carry_when_rounding_reaches_the_next_unit() {
+        // 1023.999 KB used to print as `1024.0 KB`.
+        assert_eq!(format_bytes(1_048_575), "1.0 MB");
+        assert_eq!(format_bytes(1_048_520), "1023.9 KB");
+        assert_eq!(format_bytes(u64::MAX), "16777216.0 TB");
     }
 }

@@ -134,6 +134,19 @@ pub(crate) fn format_gain(mdb: i32) -> String {
     }
 }
 
+/// Parses a typed gain in dB (`-6.5`, `+3 dB`, `-inf`) to milli-dB. Text that
+/// is not a number is refused: `NaN` would otherwise reach the entry as 0 dB.
+pub(crate) fn parse_gain(text: &str) -> Option<f64> {
+    text.trim()
+        .trim_end_matches("dB")
+        .trim_end_matches("db")
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|db| !db.is_nan())
+        .map(|db| db * 1000.0)
+}
+
 /// Converts a linear meter value in millionths of full scale to dBFS.
 pub(crate) fn meter_db(millionths: u32) -> f32 {
     if millionths == 0 {
@@ -193,6 +206,7 @@ pub(crate) fn parse_balance(text: &str) -> Option<f64> {
         .trim()
         .parse::<f64>()
         .ok()
+        .filter(|percent| !percent.is_nan())
         .map(|percent| sign * percent * 100.0)
 }
 
@@ -581,15 +595,7 @@ fn draw_input_strip(
                             #[allow(clippy::cast_possible_truncation)] // bounded range
                             format_gain(value as i32)
                         })
-                        .custom_parser(|text| {
-                            text.trim()
-                                .trim_end_matches("dB")
-                                .trim_end_matches("db")
-                                .trim()
-                                .parse::<f64>()
-                                .ok()
-                                .map(|db| db * 1000.0)
-                        }),
+                        .custom_parser(parse_gain),
                 )
                 .hint(
                     "Input gain in decibels (stored in one-thousandths of a dB)",
@@ -1284,6 +1290,21 @@ mod tests {
         assert_eq!(parse_balance(" r 40 "), Some(4_000.0));
         assert_eq!(parse_balance("-10"), Some(-1_000.0));
         assert_eq!(parse_balance("left"), None);
+    }
+
+    #[test]
+    fn typed_gain_and_balance_refuse_not_a_number() {
+        // `NaN` parses as an f64; the entries would store it as 0 (unity
+        // gain, centre balance) instead of refusing the text.
+        assert_eq!(parse_gain("-6.5 dB"), Some(-6_500.0));
+        assert_eq!(parse_gain(" +3db "), Some(3_000.0));
+        assert_eq!(parse_gain("-inf"), Some(f64::NEG_INFINITY));
+        assert_eq!(parse_gain("loud"), None);
+        assert_eq!(parse_gain("NaN"), None);
+        assert_eq!(parse_gain("nan dB"), None);
+        assert_eq!(parse_balance("NaN"), None);
+        assert_eq!(parse_balance("Lnan"), None);
+        assert_eq!(parse_balance("R inf"), Some(f64::INFINITY));
     }
 
     #[test]
