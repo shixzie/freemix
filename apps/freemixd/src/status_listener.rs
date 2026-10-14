@@ -18,6 +18,12 @@
 //! [`MAX_REQUEST_HEADERS`] headers, and a response no larger than the capped
 //! support bundle. Each phase carries its own deadline, which is what bounds
 //! how long [`StatusListener::shutdown`] can take to join.
+//!
+//! The support bundle also carries the latest operator-state section the
+//! control loop published, bounded to [`OPERATOR_STATE_MAX_BYTES`]. The cell
+//! is written at most once a second and copied out under one short lock, so a
+//! probe never queues behind rendering and the listener still owns no engine
+//! state.
 
 use std::{
     env,
@@ -25,7 +31,7 @@ use std::{
     io::{ErrorKind, Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
     },
@@ -62,6 +68,13 @@ const MAX_DRAIN_BYTES: usize = 16 * 1024;
 const BUNDLE_MAX_BYTES: usize = 32 * 1024;
 const EVENT_CAPACITY: usize = 8;
 const METRIC_CAPACITY: usize = 8;
+
+/// Operator-state section published by the control loop. The daemon renders
+/// within this bound; an oversized publish is truncated at a UTF-8 boundary
+/// and marked instead of being dropped or growing the cell. The bundle route's
+/// own [`BUNDLE_MAX_BYTES`] cap still applies on top.
+const OPERATOR_STATE_MAX_BYTES: usize = 4 * 1024;
+const OPERATOR_STATE_TRUNCATION_MARKER: &str = "\n[TRUNCATED]\n";
 
 /// Accept-thread sleep while it holds no socket. Matched to the control loop's
 /// own poll interval so a probe is never accepted later than the daemon's
@@ -101,7 +114,12 @@ const HEALTH_HEALTHY: u8 = 0;
 const HEALTH_UNHEALTHY: u8 = 1;
 const UNSET_MILLIS: u64 = u64::MAX;
 
-/// Lock-free daemon state shared with the status listener threads.
+/// Daemon state shared with the status listener threads.
+///
+/// Every probe field is atomic, so `/healthz` and `/readyz` are pure reads.
+/// The operator-state section is the one lock-guarded cell: the control loop
+/// writes it at most once a second and a bundle worker copies it out, and both
+/// sides hold the lock only for one bounded copy.
 pub(super) struct DaemonStatus {
     started: Instant,
     beat_millis: AtomicU64,
@@ -114,6 +132,9 @@ pub(super) struct DaemonStatus {
     rejected: AtomicU64,
     in_flight: AtomicUsize,
     live_workers: AtomicUsize,
+    /// Latest sanitized operator-state text, empty until the first publish.
+    /// Never larger than [`OPERATOR_STATE_MAX_BYTES`].
+    operator_state: Mutex<String>,
 }
 
 impl DaemonStatus {
@@ -132,6 +153,7 @@ impl DaemonStatus {
             rejected: AtomicU64::new(0),
             in_flight: AtomicUsize::new(0),
             live_workers: AtomicUsize::new(CONNECTION_WORKERS),
+            operator_state: Mutex::new(String::new()),
         })
     }
 
@@ -169,6 +191,44 @@ impl DaemonStatus {
         if readiness == READINESS_READY {
             self.stamp(&self.ready_millis);
         }
+    }
+
+    /// Publishes the latest sanitized operator-state section.
+    ///
+    /// The control loop calls this at most once a second, so the caller only
+    /// ever pays one bounded copy into the cell. Text longer than
+    /// [`OPERATOR_STATE_MAX_BYTES`] is truncated at a UTF-8 boundary and
+    /// marked rather than stored whole, so the cell can never grow past the
+    /// documented bound no matter what the caller publishes.
+    pub(super) fn publish_operator_state(&self, text: &str) {
+        let mut slot = self
+            .operator_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if text.len() <= OPERATOR_STATE_MAX_BYTES {
+            if slot.as_str() == text {
+                return;
+            }
+            slot.clear();
+            slot.push_str(text);
+            return;
+        }
+        let mut capped = String::with_capacity(OPERATOR_STATE_MAX_BYTES);
+        let prefix_bytes =
+            OPERATOR_STATE_MAX_BYTES.saturating_sub(OPERATOR_STATE_TRUNCATION_MARKER.len());
+        capped.push_str(utf8_prefix(text, prefix_bytes));
+        capped.push_str(OPERATOR_STATE_TRUNCATION_MARKER);
+        *slot = capped;
+    }
+
+    /// Copies the published operator state out of the cell, or `None` when the
+    /// control loop never published one.
+    pub(super) fn operator_state(&self) -> Option<Box<str>> {
+        let slot = self
+            .operator_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (!slot.is_empty()).then(|| slot.clone().into_boxed_str())
     }
 
     /// Latches the cooperative stop request.
@@ -750,7 +810,8 @@ fn serve_bundle(job: BundleJob, status: &DaemonStatus) {
         snapshot,
     } = job;
     if prepare(&mut stream).is_ok() {
-        let response = bundle_response(&snapshot);
+        let operator_state = status.operator_state();
+        let response = bundle_response(&snapshot, operator_state.as_deref());
         status.served.fetch_add(1, Ordering::AcqRel);
         write_response(&mut stream, &response);
         drain(&mut stream);
@@ -971,8 +1032,10 @@ fn ready_response(snapshot: &StatusSnapshot) -> Response {
 /// Renders the redacted support bundle from the snapshot alone.
 ///
 /// Nothing derived from paths, hostnames, device names, addresses, or tokens is
-/// ever placed into the bundle inputs.
-fn bundle_response(snapshot: &StatusSnapshot) -> Response {
+/// ever placed into the bundle inputs. The operator-state section arrives
+/// already sanitized by the control loop and is appended verbatim; the bundle
+/// never re-renders secrets.
+fn bundle_response(snapshot: &StatusSnapshot, operator_state: Option<&str>) -> Response {
     let mut health = HealthRegistry::new();
     health.update(
         HealthCheck::new(
@@ -1042,8 +1105,11 @@ fn bundle_response(snapshot: &StatusSnapshot) -> Response {
     // empty registry is built by inference rather than by name.
     #[allow(clippy::default_trait_access)]
     let capabilities = Default::default();
-    let export =
-        SupportBundle::new(&events, &metrics, &health, &capabilities).export(BUNDLE_MAX_BYTES);
+    let mut bundle = SupportBundle::new(&events, &metrics, &health, &capabilities);
+    if let Some(operator_state) = operator_state {
+        bundle = bundle.with_operator_state(operator_state);
+    }
+    let export = bundle.export(BUNDLE_MAX_BYTES);
     let mut body = format!(
         "FREEMIXD_STATUS\tv=1\tcheck=support-bundle\tstatus=ok\tbytes={}\tuncapped_bytes={}\ttruncated={}\n",
         export.text.len(),
@@ -1067,6 +1133,15 @@ const fn component_health(snapshot: &StatusSnapshot) -> ComponentHealth {
 /// Widens a bounded counter for metric storage without a precision-losing cast.
 fn approximate(value: u64) -> f64 {
     f64::from(u32::try_from(value).unwrap_or(u32::MAX))
+}
+
+/// The longest UTF-8 prefix of `value` no longer than `maximum_bytes`.
+fn utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
+    let mut end = maximum_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 struct Response {
@@ -1176,5 +1251,57 @@ impl Response {
                 "FREEMIXD_STATUS\tv=1\tcheck=admission\tstatus=busy\tlimit={CONNECTION_WORKERS}\n"
             ),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Renders the bundle body exactly as a request thread does.
+    fn bundle_body(status: &DaemonStatus) -> String {
+        let snapshot = status.snapshot();
+        let operator_state = status.operator_state();
+        bundle_response(&snapshot, operator_state.as_deref()).body
+    }
+
+    #[test]
+    fn support_bundle_includes_published_operator_state() {
+        let status = DaemonStatus::new();
+        let published = "streams=1\nstream target=7001 name=Destination 1 desired=true\nrecorders=desired=true,false\n";
+        status.publish_operator_state(published);
+
+        let body = bundle_body(&status);
+        assert!(body.contains("## Operator state"));
+        assert!(body.contains(published));
+    }
+
+    #[test]
+    fn oversized_operator_state_is_truncated_with_a_marker() {
+        let status = DaemonStatus::new();
+        // One ASCII byte first, then multi-byte characters, so the cap lands
+        // inside a character and the boundary back-off is exercised.
+        let oversized = format!("x{}", "€".repeat(OPERATOR_STATE_MAX_BYTES));
+        status.publish_operator_state(&oversized);
+
+        let stored = status.operator_state().expect("state was published");
+        assert!(stored.len() <= OPERATOR_STATE_MAX_BYTES);
+        assert!(stored.ends_with(OPERATOR_STATE_TRUNCATION_MARKER));
+        assert!(bundle_body(&status).contains("## Operator state"));
+    }
+
+    #[test]
+    fn unpublished_operator_state_renders_no_section() {
+        let status = DaemonStatus::new();
+        assert!(status.operator_state().is_none());
+        assert!(!bundle_body(&status).contains("## Operator state"));
+    }
+
+    #[test]
+    fn republishing_replaces_the_stored_state() {
+        let status = DaemonStatus::new();
+        status.publish_operator_state("streams=1\n");
+        status.publish_operator_state("streams=2\n");
+        assert_eq!(status.operator_state().as_deref(), Some("streams=2\n"));
     }
 }

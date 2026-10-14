@@ -1,8 +1,8 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     convert::Infallible,
     error::Error,
-    fmt,
+    fmt::{self, Write as _},
     io::Write,
     net::{SocketAddr, TcpListener},
     num::{NonZeroU32, NonZeroU128},
@@ -63,15 +63,15 @@ use fm_persistence::{
 use fm_protocol::{
     AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, InputAudioMeters, MAX_STREAM_LOCAL_SEGMENTS,
     MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, StreamLocalStatus,
-    StreamRealizedState, StreamStatusSample, WireInputId, WireStreamTargetId,
+    StreamRealizedState, StreamStatusSample, WireInputId,
 };
 use fm_protocol::{
     AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CapabilityReportSummary, CommandMessage,
     CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse, ErrorMessage,
     EventCursor, HandshakeOutcome as ProtocolHandshakeOutcome, HandshakeRequest, HandshakeResponse,
-    HeartbeatMessage, ProtocolVersion, ResumeCursor, RuntimeEventMessage, ServerHello,
-    ServerIdentity, StreamStatusMessage, StructuredError, WireMessage, choose_handshake_outcome,
-    encode_line,
+    HeartbeatMessage, ProtocolVersion, RecordingStatus, ResumeCursor, RuntimeEventMessage,
+    ServerHello, ServerIdentity, StreamStatus, StreamStatusMessage, StructuredError, WireMessage,
+    WireStreamTargetId, choose_handshake_outcome, encode_line,
 };
 #[cfg(test)]
 use fm_protocol::{CodecError, EventMessage, HeartbeatAcknowledgementMessage, LineDecoder};
@@ -224,6 +224,14 @@ const PROGRAM_STREAM_QUEUE_CAPACITY: usize = 4;
 /// crossing the low watermark can go unreported without adding per-frame I/O.
 #[cfg(feature = "native-media")]
 const DISK_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+/// Bound and cadence of the operator-state text the control loop publishes to
+/// the status listener. The listener applies its own 4 KiB cap as a backstop;
+/// rendering here first keeps the published section deterministic and marked.
+const OPERATOR_STATE_MAX_BYTES: usize = 4 * 1024;
+const OPERATOR_STATE_TRUNCATION_MARKER: &str = "\n[TRUNCATED]\n";
+/// The control loop polls every few milliseconds; one render per second is
+/// more than enough for a support surface and keeps the pass cheap.
+const OPERATOR_STATE_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(all(feature = "native-media", feature = "macos-program-surface"))]
 // Referenced by macos-program-surface code paths that are themselves inert off macOS.
 #[allow(dead_code)]
@@ -241,6 +249,14 @@ struct ProcessShutdown {
     /// daemon knows, recorded by [`Self::observe_service`] at every point that
     /// can move it.
     service: ServiceStatus,
+    /// Control handle for the bounded operator-state render, attached once the
+    /// control service exists and a status listener is configured. The render
+    /// never re-enters a borrow a caller already holds: `try_borrow` skips
+    /// that pass instead of panicking.
+    control: Option<SharedControl>,
+    /// When the operator state was last published; gates rendering to one
+    /// [`String`] per [`OPERATOR_STATE_PUBLISH_INTERVAL`].
+    operator_published_at: Cell<Option<Instant>>,
 }
 
 impl ProcessShutdown {
@@ -248,6 +264,38 @@ impl ProcessShutdown {
     fn observe_service(&mut self, service: ServiceStatus) {
         self.service = service;
         self.status.publish(service);
+    }
+
+    /// Attaches the control handle the operator-state render reads.
+    fn attach_control(&mut self, control: &SharedControl) {
+        self.control = Some(Rc::clone(control));
+    }
+
+    /// Publishes one bounded, sanitized operator-state snapshot.
+    ///
+    /// Called from the control loop on every pass and self-gated to one render
+    /// per [`OPERATOR_STATE_PUBLISH_INTERVAL`], so a pass that already holds a
+    /// mutable control borrow is simply skipped: the status listener is a
+    /// diagnostic surface and must never change how the control plane runs.
+    /// The render itself reads the engine's protocol snapshot and the native
+    /// daemon's realized state, then copies one bounded string into the
+    /// listener cell.
+    fn publish_operator_state(&self, native: Option<&NativeDaemon>) {
+        let Some(control) = self.control.as_ref() else {
+            return;
+        };
+        let now = Instant::now();
+        if self.operator_published_at.get().is_some_and(|last| {
+            now.saturating_duration_since(last) < OPERATOR_STATE_PUBLISH_INTERVAL
+        }) {
+            return;
+        }
+        let Ok(control) = control.try_borrow() else {
+            return;
+        };
+        self.operator_published_at.set(Some(now));
+        let text = operator_state_text(&control, native);
+        self.status.publish_operator_state(&text);
     }
 
     fn requested(&self) -> bool {
@@ -279,6 +327,8 @@ fn register_process_shutdown() -> AppResult<ProcessShutdown> {
         diagnostic_deadline: None,
         status: DaemonStatus::new(),
         service: ServiceStatus::new(),
+        control: None,
+        operator_published_at: Cell::new(None),
     })
 }
 
@@ -292,6 +342,8 @@ fn register_process_shutdown() -> AppResult<ProcessShutdown> {
         diagnostic_deadline: None,
         status: DaemonStatus::new(),
         service: ServiceStatus::new(),
+        control: None,
+        operator_published_at: Cell::new(None),
     })
 }
 
@@ -302,6 +354,8 @@ fn register_process_shutdown() -> AppResult<ProcessShutdown> {
         diagnostic_deadline: None,
         status: DaemonStatus::new(),
         service: ServiceStatus::new(),
+        control: None,
+        operator_published_at: Cell::new(None),
     })
 }
 
@@ -331,6 +385,9 @@ fn requested_daemon_shutdown(
         // poll interval instead of staying frozen at whatever startup wrote.
         process.status.beat();
         process.status.publish(process.service);
+        // One bounded render per second keeps the support bundle current
+        // without making a poll pass cost a formatting pass every 5 ms.
+        process.publish_operator_state(native);
     }
     let reason = if process.is_some_and(ProcessShutdown::requested) {
         Some(DaemonShutdownReason::ProcessSignal)
@@ -345,6 +402,147 @@ fn requested_daemon_shutdown(
         process.status.begin_draining();
     }
     reason
+}
+
+/// Renders the bounded operator-state section published to the status listener.
+///
+/// The section is line-oriented and fixed-order: the configured stream roster
+/// with desired state, both recorder slots' desired flags, and — when a native
+/// daemon runs — realized stream state, recorder configuration and activity,
+/// and the disk alert. Only target ids, operator-authored names, booleans,
+/// counts, and bounded labels are ever read, so URLs, stream keys, and
+/// filesystem paths cannot leak. An oversized render is truncated at a UTF-8
+/// boundary with an explicit marker.
+fn operator_state_text(control: &ControlService<Policy>, native: Option<&NativeDaemon>) -> String {
+    let snapshot = &control.snapshot().snapshot;
+    render_operator_state(&snapshot.streams, &snapshot.recordings, native)
+}
+
+/// Renders the operator-state lines from the engine's protocol snapshot and
+/// the native daemon's realized state, then applies the byte cap.
+fn render_operator_state(
+    streams: &[StreamStatus],
+    recordings: &[RecordingStatus],
+    native: Option<&NativeDaemon>,
+) -> String {
+    let mut output = String::new();
+    let _ = writeln!(output, "streams={}", streams.len());
+    for stream in streams {
+        let _ = write!(
+            output,
+            "stream target={} name={} desired={}",
+            stream.target,
+            operator_state_name(&stream.name),
+            stream.desired_running
+        );
+        if let Some(realized) = native_stream_realized(native, stream.target) {
+            let _ = write!(output, " realized={realized}");
+        }
+        output.push('\n');
+    }
+    let desired = |slot: usize| {
+        recordings
+            .get(slot)
+            .is_some_and(|status| status.desired_active)
+    };
+    let _ = write!(output, "recorders=desired={},{}", desired(0), desired(1));
+    #[cfg(feature = "native-media")]
+    if let Some(native) = native {
+        let _ = write!(
+            output,
+            " configured={},{} running={},{}",
+            native.record_program.is_some(),
+            native.record_program_2.is_some(),
+            native.recorders[0].is_running(),
+            native.recorders[1].is_running(),
+        );
+    }
+    #[cfg(not(feature = "native-media"))]
+    let _ = native;
+    output.push('\n');
+    #[cfg(feature = "native-media")]
+    if let Some(native) = native {
+        let _ = writeln!(
+            output,
+            "disk_alert={} free_bytes={}",
+            disk_alert_label(native.disk_free_bytes.map(|_| native.disk_alert.state())),
+            native.disk_free_bytes.unwrap_or(0)
+        );
+    }
+    cap_operator_state(output)
+}
+
+/// Replaces control characters in an operator-authored stream name so one name
+/// can never forge an extra line in the support bundle. The name itself is
+/// safe by construction: the engine inventory carries only the authored label,
+/// never a destination URL or key.
+fn operator_state_name(name: &str) -> String {
+    let mut sanitized = String::with_capacity(name.len());
+    for character in name.chars() {
+        if character.is_control() {
+            sanitized.push(' ');
+        } else {
+            sanitized.push(character);
+        }
+    }
+    sanitized
+}
+
+/// The realized state label of one stream target as the native daemon sees it,
+/// or `None` when no native daemon runs or the target has no sink.
+#[cfg(feature = "native-media")]
+fn native_stream_realized(
+    native: Option<&NativeDaemon>,
+    target: WireStreamTargetId,
+) -> Option<&'static str> {
+    let native = native?;
+    let target = SwitcherStreamTargetId::from_non_zero(target.get());
+    let stream = native
+        .streams
+        .iter()
+        .find(|stream| stream.target == target)?;
+    if stream.first_failure.is_some() {
+        return Some("failed");
+    }
+    Some(match native.output_set.state(stream.destination_id) {
+        None | Some(DestinationState::Stopped) => "stopped",
+        Some(DestinationState::Connecting | DestinationState::AwaitingRandomAccess) => "starting",
+        Some(DestinationState::Live) => "live",
+        Some(DestinationState::WaitingToReconnect { .. }) => "waiting_to_reconnect",
+        Some(DestinationState::Congested) => "congested",
+        Some(DestinationState::Failed) => "failed",
+    })
+}
+
+#[cfg(not(feature = "native-media"))]
+const fn native_stream_realized(
+    _native: Option<&NativeDaemon>,
+    _target: WireStreamTargetId,
+) -> Option<&'static str> {
+    None
+}
+
+/// Applies the operator-state byte cap, marking an overlong render instead of
+/// letting the status listener drop it.
+fn cap_operator_state(text: String) -> String {
+    if text.len() <= OPERATOR_STATE_MAX_BYTES {
+        return text;
+    }
+    let mut capped = String::with_capacity(OPERATOR_STATE_MAX_BYTES);
+    let prefix_bytes =
+        OPERATOR_STATE_MAX_BYTES.saturating_sub(OPERATOR_STATE_TRUNCATION_MARKER.len());
+    capped.push_str(utf8_prefix(&text, prefix_bytes));
+    capped.push_str(OPERATOR_STATE_TRUNCATION_MARKER);
+    capped
+}
+
+/// The longest UTF-8 prefix of `value` no longer than `maximum_bytes`.
+fn utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
+    let mut end = maximum_bytes.min(value.len());
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 #[cfg(feature = "native-media")]
@@ -7270,6 +7468,12 @@ fn serve_inner(
     let operator_status = status_listen
         .map(|address| StatusListener::bind(address, &process_shutdown.status))
         .transpose()?;
+    if operator_status.is_some() {
+        // Operator state is rendered only when a listener consumes it; the
+        // attach happens after the bind so a refused listener never leaves a
+        // half-wired publisher behind.
+        process_shutdown.attach_control(&control);
+    }
     // The HLS listener is a read-only view of the compiled `hls://` destination
     // directories. It is refused when no such destination is configured, and
     // its token is required before readiness is advertised, exactly like the
@@ -9589,7 +9793,7 @@ mod tests {
     };
     #[cfg(feature = "native-media")]
     use fm_model::{Rgba8 as ModelRgba8, Scene};
-    use fm_protocol::{ClientType, Role};
+    use fm_protocol::{ClientType, Role, StreamRealizedState};
     #[cfg(feature = "native-media")]
     use fm_types::SceneId;
     use fm_types::{
@@ -15062,6 +15266,71 @@ mod tests {
     /// The wire recorder slot for `number`, which tests only call with 1 or 2.
     fn wire_recorder(number: u8) -> fm_protocol::WireRecorderSlot {
         fm_protocol::WireRecorderSlot::new(number).expect("test recorder slots are 1 or 2")
+    }
+
+    #[test]
+    fn operator_state_text_lists_every_stream_and_both_recorder_flags() {
+        let control = test_control(&test_project_with_streams([true, false]));
+        let text = operator_state_text(&control, None);
+
+        assert!(text.starts_with("streams=2\n"));
+        assert!(text.contains(&format!(
+            "stream target={STREAM_TARGET_A} name=Destination 1 desired=true"
+        )));
+        assert!(text.contains(&format!(
+            "stream target={STREAM_TARGET_B} name=Destination 2 desired=false"
+        )));
+        assert!(text.contains("recorders=desired=false,false"));
+        for leaked in ["ingest.example.com", "unit-secret-key", "/live"] {
+            assert!(!text.contains(leaked), "operator state leaked {leaked}");
+        }
+    }
+
+    #[test]
+    fn operator_state_text_carries_both_desired_recorder_flags() {
+        let control = test_control(&test_project_with_recording([true, false]));
+        let text = operator_state_text(&control, None);
+        assert!(text.contains("recorders=desired=true,false"));
+
+        let control = test_control(&test_project_with_recording([false, true]));
+        let text = operator_state_text(&control, None);
+        assert!(text.contains("recorders=desired=false,true"));
+    }
+
+    #[test]
+    fn operator_state_text_truncates_over_the_cap_with_a_marker() {
+        let streams: Vec<StreamStatus> = (0..64)
+            .map(|index| StreamStatus {
+                target: WireStreamTargetId::new(NonZeroU128::new(10_000 + index).unwrap()),
+                name: "D".repeat(128),
+                desired_running: index % 2 == 0,
+                realized: StreamRealizedState::Stopped,
+                detail: None,
+            })
+            .collect();
+        let text = render_operator_state(&streams, &[], None);
+        assert!(text.len() <= OPERATOR_STATE_MAX_BYTES);
+        assert!(text.ends_with(OPERATOR_STATE_TRUNCATION_MARKER));
+    }
+
+    #[test]
+    fn operator_state_publishes_only_when_a_listener_is_attached() {
+        let control = Rc::new(RefCell::new(test_control(&test_project_with_streams([
+            true, false,
+        ]))));
+        let mut process = register_process_shutdown().unwrap();
+        process.publish_operator_state(None);
+        assert!(process.status.operator_state().is_none());
+
+        process.attach_control(&control);
+        process.publish_operator_state(None);
+        let published = process
+            .status
+            .operator_state()
+            .expect("operator state was published");
+        assert!(published.contains(&format!(
+            "stream target={STREAM_TARGET_A} name=Destination 1 desired=true"
+        )));
     }
 
     #[test]

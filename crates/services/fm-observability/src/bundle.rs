@@ -24,6 +24,7 @@ pub struct SupportBundle<'a> {
     health: &'a HealthRegistry,
     capabilities: &'a CapabilityRegistry,
     redactor: Redactor,
+    operator_state: Option<&'a str>,
 }
 
 impl<'a> SupportBundle<'a> {
@@ -40,12 +41,26 @@ impl<'a> SupportBundle<'a> {
             health,
             capabilities,
             redactor: Redactor,
+            operator_state: None,
         }
     }
 
     #[must_use]
     pub const fn with_redactor(mut self, redactor: Redactor) -> Self {
         self.redactor = redactor;
+        self
+    }
+
+    /// Appends the caller-sanitized operator-state section to the export.
+    ///
+    /// The text is rendered verbatim after the JSON-like document under one
+    /// `## Operator state` heading; the bundle neither re-renders nor redacts
+    /// it, so sanitization stays the caller's responsibility. The section is
+    /// still subject to [`Self::export`]'s byte cap, and its bytes count
+    /// toward [`BundleExport::uncapped_bytes`].
+    #[must_use]
+    pub const fn with_operator_state(mut self, text: &'a str) -> Self {
+        self.operator_state = Some(text);
         self
     }
 
@@ -84,6 +99,13 @@ impl<'a> SupportBundle<'a> {
         self.render_metrics(&mut output);
         self.render_events(&mut output);
         output.push_str("}\n");
+        if let Some(operator_state) = self.operator_state {
+            output.push_str("\n## Operator state\n");
+            output.push_str(operator_state);
+            if !operator_state.ends_with('\n') {
+                output.push('\n');
+            }
+        }
         output
     }
 
@@ -402,6 +424,51 @@ mod tests {
             if cap > TRUNCATION_MARKER.len() {
                 assert!(export.text.ends_with(TRUNCATION_MARKER));
             }
+        }
+    }
+
+    #[test]
+    fn support_bundle_without_operator_state_is_unchanged() {
+        let (events, metrics, health, capabilities) = fixture();
+        let export =
+            SupportBundle::new(&events, &metrics, &health, &capabilities).export(usize::MAX);
+
+        assert!(!export.truncated);
+        assert!(!export.text.contains("## Operator state"));
+        assert!(export.text.ends_with("}\n"));
+        assert_eq!(export.uncapped_bytes, export.text.len());
+    }
+
+    #[test]
+    fn support_bundle_appends_operator_state_and_counts_its_bytes() {
+        let (events, metrics, health, capabilities) = fixture();
+        let plain =
+            SupportBundle::new(&events, &metrics, &health, &capabilities).export(usize::MAX);
+        let operator_state = "streams=1\nstream target=7001 name=Destination 1 desired=true\n";
+        let export = SupportBundle::new(&events, &metrics, &health, &capabilities)
+            .with_operator_state(operator_state)
+            .export(usize::MAX);
+
+        assert!(!export.truncated);
+        assert!(export.text.contains("## Operator state"));
+        assert!(export.text.contains(operator_state));
+        assert!(export.text.ends_with('\n'));
+        assert_eq!(export.uncapped_bytes, export.text.len());
+        assert!(export.uncapped_bytes > plain.uncapped_bytes);
+    }
+
+    #[test]
+    fn support_bundle_truncates_operator_state_at_the_byte_cap() {
+        let (events, metrics, health, capabilities) = fixture();
+        let operator_state = "x".repeat(4 * 1024);
+        for cap in [TRUNCATION_MARKER.len(), 64, 257, 1_024] {
+            let export = SupportBundle::new(&events, &metrics, &health, &capabilities)
+                .with_operator_state(&operator_state)
+                .export(cap);
+            assert!(export.truncated);
+            assert!(export.text.len() <= cap);
+            assert!(export.text.ends_with(TRUNCATION_MARKER));
+            assert!(export.uncapped_bytes > cap);
         }
     }
 }
