@@ -1,13 +1,47 @@
-use fm_types::{BusId, InputId, SceneId};
+use std::collections::HashMap;
+use std::hash::Hash;
 
 use crate::{EntityRef, InputKind, Project, SourceRef, ValidationError, ValidationErrorKind};
 
+// A project decoded from `project.json` can chain thousands of entities, so
+// every search here is iterative and linear in the graph size: no recursion
+// per reference link and no rescan of the entity lists per visited node.
+
 pub(crate) fn mark_scene_cycles(project: &Project, errors: &mut Vec<ValidationError>) {
-    for scene in project.scenes() {
-        // Each search keeps every visited node: a node that was fully explored
-        // without reaching the target never will, and forgetting it would make
-        // shared descendants cost exponential time.
-        if reaches_scene(project, scene.id, scene.id, &mut Vec::new()) {
+    let scenes = project.scenes();
+    let scene_index = first_index(scenes.iter().map(|scene| scene.id));
+    let inputs = project.inputs();
+    let input_index = first_index(inputs.iter().map(|input| input.id));
+    // A scene's edges come from the first scene carrying its id, which is the
+    // scene any lookup by id resolves to.
+    let edges = scenes
+        .iter()
+        .enumerate()
+        .map(|(index, scene)| {
+            if scene_index.get(&scene.id) != Some(&index) {
+                return Vec::new();
+            }
+            scene
+                .layers
+                .iter()
+                .filter_map(|layer| match layer.source {
+                    SourceRef::Scene(next) => Some(next),
+                    SourceRef::Input(input) => {
+                        input_index
+                            .get(&input)
+                            .and_then(|&input| match inputs[input].kind {
+                                InputKind::Scene { scene_id, .. } => Some(scene_id),
+                                _ => None,
+                            })
+                    }
+                })
+                .filter_map(|next| scene_index.get(&next).copied())
+                .collect()
+        })
+        .collect::<Vec<_>>();
+    let on_cycle = nodes_on_cycles(&edges);
+    for scene in scenes {
+        if on_cycle[scene_index[&scene.id]] {
             errors.push(ValidationError {
                 entity: Some(EntityRef::Scene(scene.id)),
                 field: "layers.source",
@@ -17,43 +51,28 @@ pub(crate) fn mark_scene_cycles(project: &Project, errors: &mut Vec<ValidationEr
     }
 }
 
-fn reaches_scene(
-    project: &Project,
-    current: SceneId,
-    target: SceneId,
-    visited: &mut Vec<SceneId>,
-) -> bool {
-    if visited.contains(&current) {
-        return false;
-    }
-    visited.push(current);
-    project
-        .scenes()
-        .iter()
-        .find(|scene| scene.id == current)
-        .is_some_and(|scene| {
-            scene.layers.iter().any(|layer| {
-                let next = match layer.source {
-                    SourceRef::Scene(next) => Some(next),
-                    SourceRef::Input(input) => project
-                        .inputs()
-                        .iter()
-                        .find(|candidate| candidate.id == input)
-                        .and_then(|candidate| match candidate.kind {
-                            InputKind::Scene { scene_id, .. } => Some(scene_id),
-                            _ => None,
-                        }),
-                };
-                next.is_some_and(|next| {
-                    next == target || reaches_scene(project, next, target, visited)
-                })
-            })
-        })
-}
-
 pub(crate) fn mark_audio_input_cycles(project: &Project, errors: &mut Vec<ValidationError>) {
-    for input in project.inputs() {
-        if reaches_audio_input(project, input.id, input.id, &mut Vec::new()) {
+    let inputs = project.inputs();
+    let input_index = first_index(inputs.iter().map(|input| input.id));
+    let edges = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| {
+            if input_index.get(&input.id) != Some(&index) {
+                return Vec::new();
+            }
+            match input.kind {
+                InputKind::Scene {
+                    audio_source: Some(source),
+                    ..
+                } => input_index.get(&source).copied().into_iter().collect(),
+                _ => Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let on_cycle = nodes_on_cycles(&edges);
+    for input in inputs {
+        if on_cycle[input_index[&input.id]] {
             errors.push(ValidationError {
                 entity: Some(EntityRef::Input(input.id)),
                 field: "kind.scene.audio_source",
@@ -63,30 +82,25 @@ pub(crate) fn mark_audio_input_cycles(project: &Project, errors: &mut Vec<Valida
     }
 }
 
-fn reaches_audio_input(
-    project: &Project,
-    current: InputId,
-    target: InputId,
-    visited: &mut Vec<InputId>,
-) -> bool {
-    if visited.contains(&current) {
-        return false;
-    }
-    visited.push(current);
-    project
-        .inputs()
-        .iter()
-        .find(|input| input.id == current)
-        .and_then(|input| match input.kind {
-            InputKind::Scene { audio_source, .. } => audio_source,
-            _ => None,
-        })
-        .is_some_and(|next| next == target || reaches_audio_input(project, next, target, visited))
-}
-
 pub(crate) fn mark_bus_cycles(project: &Project, errors: &mut Vec<ValidationError>) {
-    for bus in project.audio_buses() {
-        if reaches_bus(project, bus.id, bus.id, &mut Vec::new()) {
+    let buses = project.audio_buses();
+    let bus_index = first_index(buses.iter().map(|bus| bus.id));
+    let edges = buses
+        .iter()
+        .enumerate()
+        .map(|(index, bus)| {
+            if bus_index.get(&bus.id) != Some(&index) {
+                return Vec::new();
+            }
+            bus.sends
+                .iter()
+                .filter_map(|send| bus_index.get(&send.destination).copied())
+                .collect()
+        })
+        .collect::<Vec<_>>();
+    let on_cycle = nodes_on_cycles(&edges);
+    for bus in buses {
+        if on_cycle[bus_index[&bus.id]] {
             errors.push(ValidationError {
                 entity: Some(EntityRef::AudioBus(bus.id)),
                 field: "sends.destination",
@@ -96,19 +110,92 @@ pub(crate) fn mark_bus_cycles(project: &Project, errors: &mut Vec<ValidationErro
     }
 }
 
-fn reaches_bus(project: &Project, current: BusId, target: BusId, visited: &mut Vec<BusId>) -> bool {
-    if visited.contains(&current) {
-        return false;
+/// Maps each id to the position of its first occurrence.
+fn first_index<Id: Copy + Eq + Hash>(ids: impl Iterator<Item = Id>) -> HashMap<Id, usize> {
+    let mut index = HashMap::new();
+    for (position, id) in ids.enumerate() {
+        index.entry(id).or_insert(position);
     }
-    visited.push(current);
-    project
-        .audio_buses()
-        .iter()
-        .find(|bus| bus.id == current)
-        .is_some_and(|bus| {
-            bus.sends.iter().any(|send| {
-                send.destination == target
-                    || reaches_bus(project, send.destination, target, visited)
-            })
-        })
+    index
+}
+
+/// Marks every node that can reach itself: a member of a strongly connected
+/// component with more than one node, or a node with an edge to itself.
+///
+/// Iterative Tarjan, so the cost is linear in nodes plus edges and the stack
+/// use is constant regardless of how long a reference chain is.
+fn nodes_on_cycles(edges: &[Vec<usize>]) -> Vec<bool> {
+    let count = edges.len();
+    let mut state = Tarjan {
+        order: vec![None; count],
+        low: vec![0; count],
+        on_stack: vec![false; count],
+        stack: Vec::new(),
+        next_order: 0,
+    };
+    let mut on_cycle = vec![false; count];
+    // Each frame is a node and the index of its next unexplored edge.
+    let mut work: Vec<(usize, usize)> = Vec::new();
+
+    for root in 0..count {
+        if state.order[root].is_some() {
+            continue;
+        }
+        state.visit(root);
+        work.push((root, 0));
+        while let Some(frame) = work.last_mut() {
+            let (node, edge) = *frame;
+            frame.1 += 1;
+            if let Some(&next) = edges[node].get(edge) {
+                if next == node {
+                    on_cycle[node] = true;
+                } else if let Some(next_order) = state.order[next] {
+                    if state.on_stack[next] {
+                        state.low[node] = state.low[node].min(next_order);
+                    }
+                } else {
+                    state.visit(next);
+                    work.push((next, 0));
+                }
+                continue;
+            }
+            work.pop();
+            if let Some(&(parent, _)) = work.last() {
+                state.low[parent] = state.low[parent].min(state.low[node]);
+            }
+            if Some(state.low[node]) == state.order[node] {
+                let start = state
+                    .stack
+                    .iter()
+                    .rposition(|&member| member == node)
+                    .expect("an unfinished node is on the component stack");
+                let component = state.stack.split_off(start);
+                for &member in &component {
+                    state.on_stack[member] = false;
+                    if component.len() > 1 {
+                        on_cycle[member] = true;
+                    }
+                }
+            }
+        }
+    }
+    on_cycle
+}
+
+struct Tarjan {
+    order: Vec<Option<usize>>,
+    low: Vec<usize>,
+    on_stack: Vec<bool>,
+    stack: Vec<usize>,
+    next_order: usize,
+}
+
+impl Tarjan {
+    fn visit(&mut self, node: usize) {
+        self.order[node] = Some(self.next_order);
+        self.low[node] = self.next_order;
+        self.next_order += 1;
+        self.stack.push(node);
+        self.on_stack[node] = true;
+    }
 }

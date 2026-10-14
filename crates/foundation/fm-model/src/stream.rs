@@ -727,6 +727,9 @@ pub enum StreamTargetError {
     /// `?` inside it would start another parameter or query and the URL could
     /// never be opened.
     InvalidSrtStreamId,
+    /// The endpoint does not satisfy the destination protocol's endpoint
+    /// rules, for example an RTMP `host/application` endpoint on SRT or HLS.
+    EndpointProtocolMismatch,
 }
 
 impl fmt::Display for StreamTargetError {
@@ -755,6 +758,8 @@ impl fmt::Display for StreamTargetError {
             Self::InvalidSrtStreamId => {
                 formatter.write_str("SRT stream id must not contain `&` or `?` query separators")
             }
+            Self::EndpointProtocolMismatch => formatter
+                .write_str("stream endpoint does not match the stream destination protocol"),
         }
     }
 }
@@ -796,7 +801,8 @@ impl StreamTarget {
     ///
     /// Returns [`StreamTargetError`] when the name is blank or oversized, the
     /// protocol/key pairing is wrong, an SRT key contains a `&` or `?` query
-    /// separator, or the composed URL would exceed what the sink accepts.
+    /// separator, the endpoint fails the protocol's endpoint rules, or the
+    /// composed URL would exceed what the sink accepts.
     pub fn new(
         id: StreamTargetId,
         name: String,
@@ -824,6 +830,7 @@ impl StreamTarget {
         {
             return Err(StreamTargetError::InvalidSrtStreamId);
         }
+        check_endpoint_protocol(protocol, &endpoint)?;
         if url_bytes(protocol, &endpoint, key.as_ref()) > Self::MAX_URL_BYTES {
             return Err(StreamTargetError::UrlTooLong);
         }
@@ -848,7 +855,9 @@ impl StreamTarget {
     /// # Errors
     ///
     /// Returns [`StreamTargetError::BackupNotAllowed`] for HLS, which has no
-    /// failover endpoint, and [`StreamTargetError::UrlTooLong`] when the
+    /// failover endpoint, [`StreamTargetError::EndpointProtocolMismatch`] when
+    /// the endpoint fails the protocol's endpoint rules, and
+    /// [`StreamTargetError::UrlTooLong`] when the
     /// composed backup URL would exceed what the sink accepts.
     pub fn with_backup_endpoint(
         mut self,
@@ -858,6 +867,7 @@ impl StreamTarget {
             if self.protocol == StreamProtocol::Hls {
                 return Err(StreamTargetError::BackupNotAllowed);
             }
+            check_endpoint_protocol(self.protocol, endpoint)?;
             if url_bytes(self.protocol, endpoint, self.key.as_ref()) > Self::MAX_URL_BYTES {
                 return Err(StreamTargetError::UrlTooLong);
             }
@@ -1101,6 +1111,17 @@ fn compose_url(protocol: StreamProtocol, endpoint: &StreamEndpoint, tail: Option
         (StreamProtocol::Hls, None) => format!("{}://{}", protocol.scheme(), endpoint.as_str()),
         _ => unreachable!("stream protocol and stream key presence are paired at construction"),
     }
+}
+
+/// A [`StreamEndpoint`] does not record which protocol's rules it was
+/// validated under, so a destination re-checks it against its own protocol.
+fn check_endpoint_protocol(
+    protocol: StreamProtocol,
+    endpoint: &StreamEndpoint,
+) -> Result<(), StreamTargetError> {
+    StreamEndpoint::parse_for(protocol, endpoint.as_str())
+        .map(drop)
+        .map_err(|_| StreamTargetError::EndpointProtocolMismatch)
 }
 
 fn url_bytes(

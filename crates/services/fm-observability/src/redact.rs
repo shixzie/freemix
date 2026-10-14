@@ -45,6 +45,7 @@ impl Redactor {
             "credential",
             "cookie",
             "privatekey",
+            "passphrase",
         ]
         .iter()
         .any(|secret| normalized.contains(secret))
@@ -52,7 +53,7 @@ impl Redactor {
 }
 
 fn redact_secrets(value: &str) -> String {
-    const NAMES: [&str; 16] = [
+    const NAMES: [&str; 18] = [
         "authorization",
         "password",
         "passwd",
@@ -69,6 +70,9 @@ fn redact_secrets(value: &str) -> String {
         "cookie",
         "token",
         "secret",
+        "passphrase",
+        // SRT carries the stream key as its `streamid` query value.
+        "streamid",
     ];
 
     let lower = value.to_ascii_lowercase();
@@ -109,7 +113,9 @@ fn redact_secrets(value: &str) -> String {
                 let end = if let Some(quote) = quote {
                     *byte == quote
                 } else if name == "cookie" {
-                    matches!(byte, b',' | b';' | b'\n' | b'\r')
+                    // A Cookie header joins every cookie with `; `, and each
+                    // one may be a session credential.
+                    matches!(byte, b',' | b'\n' | b'\r')
                 } else {
                     byte.is_ascii_whitespace() || matches!(byte, b'&' | b',' | b';' | b'"' | b'\'')
                 };
@@ -124,19 +130,7 @@ fn redact_secrets(value: &str) -> String {
         }
     }
 
-    for (start, _) in lower.match_indices("bearer ") {
-        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
-            continue;
-        }
-        let secret_start = start + "bearer ".len();
-        let secret_end = bytes[secret_start..]
-            .iter()
-            .position(|byte| byte.is_ascii_whitespace() || matches!(byte, b',' | b';' | b'"'))
-            .map_or(bytes.len(), |offset| secret_start + offset);
-        if secret_start < secret_end {
-            ranges.push((secret_start, secret_end, Redactor::SECRET_MARKER));
-        }
-    }
+    push_bearer_ranges(&lower, bytes, &mut ranges);
 
     // URL user-info (`scheme://user:password@host`) is always credential data.
     for (scheme, _) in value.match_indices("://") {
@@ -157,6 +151,30 @@ fn redact_secrets(value: &str) -> String {
     replace_ranges(value, ranges)
 }
 
+/// Covers the token after every standalone `Bearer` scheme word.
+fn push_bearer_ranges(lower: &str, bytes: &[u8], ranges: &mut Vec<(usize, usize, &str)>) {
+    for (start, _) in lower.match_indices("bearer ") {
+        if start > 0 && bytes[start - 1].is_ascii_alphanumeric() {
+            continue;
+        }
+        let mut secret_start = start + "bearer ".len();
+        // Padding between the scheme and the token is not the token's end.
+        while bytes
+            .get(secret_start)
+            .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+        {
+            secret_start += 1;
+        }
+        let secret_end = bytes[secret_start..]
+            .iter()
+            .position(|byte| byte.is_ascii_whitespace() || matches!(byte, b',' | b';' | b'"'))
+            .map_or(bytes.len(), |offset| secret_start + offset);
+        if secret_start < secret_end {
+            ranges.push((secret_start, secret_end, Redactor::SECRET_MARKER));
+        }
+    }
+}
+
 /// Length of a leading `Bearer `/`Basic `/`Digest ` style scheme word, so the
 /// credential that follows it is covered by the same redaction range.
 fn authorization_scheme_len(bytes: &[u8]) -> usize {
@@ -164,8 +182,12 @@ fn authorization_scheme_len(bytes: &[u8]) -> usize {
         .iter()
         .take_while(|byte| byte.is_ascii_alphabetic())
         .count();
-    if scheme > 0 && bytes.get(scheme) == Some(&b' ') {
-        scheme + 1
+    let padding = bytes[scheme..]
+        .iter()
+        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+        .count();
+    if scheme > 0 && padding > 0 {
+        scheme + padding
     } else {
         0
     }
@@ -369,10 +391,49 @@ mod tests {
     }
 
     #[test]
+    fn credentials_after_padded_authorization_schemes_are_redacted() {
+        for input in [
+            "Authorization: Bearer  pad-leak next",
+            "authorization=Basic\tpad-leak next",
+            "bearer   pad-leak next",
+        ] {
+            let redacted = Redactor.redact(input);
+            assert!(!redacted.contains("pad-leak"), "{redacted}");
+            assert!(redacted.ends_with(" next"), "{redacted}");
+        }
+    }
+
+    #[test]
     fn url_userinfo_with_unencoded_at_sign_is_fully_redacted() {
         let redacted = Redactor.redact("rtmp://user:p@ss@ingest.example/app");
         assert!(!redacted.contains("ss@"), "{redacted}");
         assert!(redacted.contains("ingest.example/app"), "{redacted}");
+    }
+
+    #[test]
+    fn every_cookie_in_a_cookie_header_is_redacted() {
+        let redacted = Redactor.redact("Cookie: theme=dark; session=sess-leak; id=id-leak\nnext");
+        for leaked in ["sess-leak", "id-leak"] {
+            assert!(!redacted.contains(leaked), "leaked {leaked}: {redacted}");
+        }
+        assert!(redacted.ends_with("\nnext"), "{redacted}");
+    }
+
+    #[test]
+    fn srt_stream_ids_and_passphrases_are_redacted() {
+        let redacted = Redactor.redact(
+            "srt://ingest.example:9000?streamid=sid-leak&passphrase=pass-leak&latency=120 \
+             SRT_PASSPHRASE=env-leak",
+        );
+        for leaked in ["sid-leak", "pass-leak", "env-leak"] {
+            assert!(!redacted.contains(leaked), "leaked {leaked}: {redacted}");
+        }
+        assert!(redacted.contains("latency=120"), "{redacted}");
+        assert!(Redactor.is_secret_name("srt.passphrase"));
+        assert_eq!(
+            Redactor.redact_field("passphrase", "12345"),
+            Redactor::SECRET_MARKER
+        );
     }
 
     #[test]

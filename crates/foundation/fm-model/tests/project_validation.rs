@@ -1294,6 +1294,55 @@ fn hls_destinations_author_a_local_directory_without_a_key_or_backup() {
 }
 
 #[test]
+fn stream_targets_refuse_endpoints_validated_for_another_protocol() {
+    let key = || Some(StreamKey::parse("sk-abcdef-012345").unwrap());
+    let rtmp = StreamEndpoint::parse("ingest.example/live").unwrap();
+    let srt = StreamEndpoint::parse_for(StreamProtocol::Srt, "ingest.example:9710").unwrap();
+    let hls = StreamEndpoint::parse_for(StreamProtocol::Hls, "/var/lib/freemix/live").unwrap();
+    for (protocol, endpoint, key) in [
+        // SRT names only host[:port]; an RTMP application path is refused.
+        (StreamProtocol::Srt, rtmp.clone(), key()),
+        // An HLS directory has no host, so RTMP would compose `rtmp:///...`.
+        (StreamProtocol::Rtmp, hls.clone(), key()),
+        // A bare SRT host has no application path to hold the RTMP key.
+        (StreamProtocol::Rtmps, srt.clone(), key()),
+        // HLS writes to an absolute local directory, not a remote host.
+        (StreamProtocol::Hls, rtmp.clone(), None),
+    ] {
+        assert_eq!(
+            StreamTarget::new(
+                stream_target_id(5),
+                "Mismatched".to_owned(),
+                protocol,
+                endpoint,
+                key,
+                output_id(1),
+            ),
+            Err(StreamTargetError::EndpointProtocolMismatch),
+            "{protocol} must refuse an endpoint validated for another protocol"
+        );
+    }
+
+    let target = StreamTarget::new(
+        stream_target_id(5),
+        "SRT".to_owned(),
+        StreamProtocol::Srt,
+        srt,
+        key(),
+        output_id(1),
+    )
+    .unwrap();
+    assert_eq!(
+        target.clone().with_backup_endpoint(Some(rtmp)),
+        Err(StreamTargetError::EndpointProtocolMismatch)
+    );
+    assert_eq!(
+        target.with_backup_endpoint(Some(hls)),
+        Err(StreamTargetError::EndpointProtocolMismatch)
+    );
+}
+
+#[test]
 fn remote_protocols_require_a_stream_key() {
     for (protocol, endpoint) in [
         (
@@ -2581,4 +2630,53 @@ fn acyclic_scene_and_bus_graphs_with_shared_descendants_validate_promptly() {
     }
 
     assert_eq!(project.validate(), Ok(()));
+}
+
+#[test]
+fn long_reference_chains_validate_without_deep_recursion() {
+    // A decoded project.json can chain thousands of scenes, scene-input audio
+    // sources, and bus sends. Cycle detection must neither recurse once per
+    // link (overflowing a small stack) nor rescan the graph per node.
+    const LENGTH: u128 = 4_096;
+    let mut project = Project::new(project_id(40), "Long chains", settings());
+    for index in 1..=LENGTH {
+        let next = index % LENGTH + 1;
+        project.add_scene(Scene {
+            id: scene_id(index),
+            name: format!("Scene {index}"),
+            background: Rgba8::OPAQUE_BLACK,
+            layers: vec![layer("Next", SourceRef::Scene(scene_id(next)))],
+        });
+        project.add_input(Input {
+            id: input_id(index),
+            name: format!("Scene input {index}"),
+            kind: InputKind::Scene {
+                scene_id: scene_id(index),
+                audio_source: Some(input_id(next)),
+            },
+            required_capabilities: Vec::new(),
+        });
+        project.add_audio_bus(AudioBus {
+            id: bus_id(index),
+            name: format!("Bus {index}"),
+            sends: vec![BusSend {
+                destination: bus_id(next),
+            }],
+        });
+    }
+
+    let cycles = std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            project
+                .validate()
+                .unwrap_err()
+                .into_iter()
+                .filter(|error| error.kind == ValidationErrorKind::Cycle)
+                .count()
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(cycles, 3 * usize::try_from(LENGTH).unwrap());
 }
