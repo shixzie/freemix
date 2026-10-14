@@ -3,6 +3,7 @@
 mod cpu;
 mod effects;
 mod fade_to_black;
+mod multiview;
 #[cfg(feature = "native-wgpu")]
 mod native;
 mod plan;
@@ -18,6 +19,12 @@ pub use effects::{ReferenceEffect, ReferenceEffectError, apply_reference_effect}
 pub use fade_to_black::{
     FadeToBlackPlan, FadeToBlackPlanError, FadeToBlackPosition, MAX_FADE_TO_BLACK_DENOMINATOR,
     execute_fade_to_black_cpu,
+};
+pub use multiview::{
+    ConfidenceMode, GridLayout, MAX_MULTIVIEW_CELLS, MAX_MULTIVIEW_COLUMNS,
+    MAX_MULTIVIEW_NAME_BYTES, MAX_MULTIVIEW_ROWS, MultiviewCell, MultiviewDefinition,
+    MultiviewError, MultiviewOverlays, MultiviewPlan, MultiviewSource, compile_multiview_scene,
+    plan_multiview,
 };
 #[cfg(feature = "native-wgpu")]
 pub use native::{
