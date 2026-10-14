@@ -29,7 +29,10 @@ const MAX_TEMP_ATTEMPTS: u32 = 64;
 /// (common for long-lived daemons restarted in containers) is skipped rather
 /// than reported as an error or deleted. The returned guard removes only the
 /// file this call created.
-fn create_temp_sibling(path: &Path, tag: &str) -> io::Result<(PathBuf, File, TempGuard)> {
+pub(crate) fn create_temp_sibling(
+    path: &Path,
+    tag: &str,
+) -> io::Result<(PathBuf, File, TempGuard)> {
     let mut attempts = 0;
     loop {
         let temp = temp_sibling(path, tag);

@@ -1460,8 +1460,10 @@ newest frame at or before `now - delay`, rounding fractional-frame delays up
 and never moving backwards; a one-hour 29.97 run at a five-frame delay selects
 every frame exactly, and 29.97/59.94 conversion works both ways. Startup holds
 black (or nothing) until filled, live delay changes apply immediately or slew
-at a bounded rate, timestamp jumps beyond the skew limit reset and re-anchor,
-and frame-count, byte, and duration bounds evict oldest-first and reject
+at a bounded rate, late or duplicate frames within the skew limit of the
+newest buffered frame are dropped and counted without clearing the buffer,
+flagged discontinuities and timestamp jumps beyond the skew limit reset and
+re-anchor, and frame-count, byte, and duration bounds evict oldest-first and reject
 oversized frames. The effective delay converts to audio samples, aligning with
 `fm-audio` `SampleDelay` within one sample at 48 kHz. Remaining gaps: no
 engine, input, command, protocol, persistence, or UI wiring; no loop, freeze

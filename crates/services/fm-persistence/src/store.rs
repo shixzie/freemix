@@ -1,13 +1,13 @@
 use std::{
     error::Error,
     fmt,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::{ProjectValidationError, StoredProject, json};
+use crate::{ProjectValidationError, StoredProject, fsutil, json};
 
 const MANIFEST_NAME: &str = "project.json";
 /// Maximum supported on-disk manifest size, in bytes (4 MiB).
@@ -74,18 +74,16 @@ impl ProjectStore {
             sync_directory(parent_directory(&self.root))?;
         }
 
-        let temp_path = self.temp_path();
-        let mut guard = TempGuard::new(temp_path.clone());
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-            .map_err(StoreError::Io)?;
+        // A leftover temporary manifest from an earlier process with this
+        // process id is skipped, never reported or deleted.
+        let manifest_path = self.manifest_path();
+        let (temp_path, mut file, mut guard) =
+            fsutil::create_temp_sibling(&manifest_path, "tmp").map_err(StoreError::Io)?;
         file.write_all(manifest.as_bytes())
             .map_err(StoreError::Io)?;
         file.sync_all().map_err(StoreError::Io)?;
         drop(file);
-        fs::rename(&temp_path, self.manifest_path()).map_err(StoreError::Io)?;
+        fs::rename(&temp_path, &manifest_path).map_err(StoreError::Io)?;
         guard.disarm();
         sync_directory(&self.root)?;
         Ok(())
@@ -100,14 +98,6 @@ impl ProjectStore {
     /// byte is read, including if the file grows while it is being loaded.
     pub fn load(&self) -> Result<StoredProject, StoreError> {
         read_manifest_file(&self.manifest_path())
-    }
-
-    fn temp_path(&self) -> PathBuf {
-        let sequence = next_temp_sequence();
-        self.root.join(format!(
-            ".{MANIFEST_NAME}.tmp-{}-{sequence}",
-            std::process::id()
-        ))
     }
 }
 

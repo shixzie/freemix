@@ -1994,4 +1994,58 @@ mod tests {
         let revisions: Vec<u64> = scan.batches().iter().map(MutationBatch::revision).collect();
         assert_eq!(revisions, vec![7]);
     }
+
+    /// Simulates temporary manifests left by a crashed earlier process that
+    /// had this process id, by occupying the next temporary names.
+    fn squat_next_manifest_temp_names(store: &ProjectStore) -> Vec<PathBuf> {
+        let next = crate::store::next_temp_sequence() + 1;
+        (next..next + 32)
+            .map(|sequence| {
+                let squatter = store.root().join(format!(
+                    ".project.json.tmp-{}-{sequence}",
+                    std::process::id()
+                ));
+                fs::write(&squatter, b"stale").unwrap();
+                squatter
+            })
+            .collect()
+    }
+
+    #[test]
+    fn manifest_saves_skip_and_keep_leftover_temporary_files() {
+        let bundle = TestBundle::new("save-squatted");
+        let store = bundle.store(1);
+        let squatters = squat_next_manifest_temp_names(&store);
+
+        store.save(&manifest(2)).unwrap();
+        assert_eq!(store.load().unwrap().position().revision, 2);
+        assert!(squatters.iter().all(|squatter| squatter.exists()));
+    }
+
+    #[test]
+    fn checkpoints_skip_and_keep_leftover_temporary_manifests() {
+        let bundle = TestBundle::new("checkpoint-squatted");
+        let store = bundle.store(1);
+        store
+            .append_batch(&MutationBatch::new(1, 1, 2, b"one".to_vec()))
+            .unwrap();
+        let squatters = squat_next_manifest_temp_names(&store);
+        store.checkpoint_and_compact(&manifest(2), 1).unwrap();
+        assert_eq!(store.load().unwrap().position().revision, 2);
+
+        let writer = store.open_journal_writer().unwrap();
+        writer
+            .append_batch(&MutationBatch::new(2, 2, 3, b"two".to_vec()))
+            .unwrap();
+        let more_squatters = squat_next_manifest_temp_names(&store);
+        writer.checkpoint_and_compact(&manifest(3), 2).unwrap();
+        drop(writer);
+        assert_eq!(store.load().unwrap().position().revision, 3);
+        assert!(
+            squatters
+                .iter()
+                .chain(&more_squatters)
+                .all(|squatter| squatter.exists())
+        );
+    }
 }

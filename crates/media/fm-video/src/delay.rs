@@ -54,12 +54,19 @@
 //!
 //! # Discontinuities
 //!
+//! A pushed frame whose source timestamp is equal to or earlier than the
+//! newest buffered frame's, but by no more than `max_skew`, is a late or
+//! duplicate frame: it is dropped and counted as `late_drops`, and the buffer,
+//! state, and rebase are untouched. A single stray frame therefore never
+//! blanks the output for the whole delay.
+//!
 //! A pushed frame is a discontinuity when it carries the discontinuity flag,
-//! its source timestamp does not increase, or its line timestamp is more than
-//! `max_skew` away from `now`. A discontinuity clears the buffer (counting
-//! unpresented frames as `discontinuity_drops`), returns
-//! the line to filling, and re-anchors the rebase so the new frame's line
-//! timestamp equals `now`.
+//! its source timestamp jumps backwards by more than `max_skew` from the
+//! newest buffered frame, or its line timestamp is more than `max_skew` away
+//! from `now` (which catches forward jumps). A discontinuity clears the buffer
+//! (counting unpresented frames as `discontinuity_drops`), returns the line to
+//! filling, and re-anchors the rebase so the new frame's line timestamp equals
+//! `now`.
 //!
 //! # Memory bounds
 //!
@@ -457,6 +464,10 @@ pub struct PushReport {
     pub discontinuity: bool,
     /// Unpresented frames evicted to stay within the memory bounds.
     pub capacity_drops: u64,
+    /// The frame was late or a duplicate (its timestamp is not newer than the
+    /// newest buffered frame, but within `max_skew` of it) and was dropped
+    /// without changing the line.
+    pub late_drop: bool,
 }
 
 /// Point-in-time line telemetry. Counters are cumulative since creation.
@@ -471,7 +482,10 @@ pub struct VideoDelayTelemetry {
     pub buffered: DelayDuration,
     /// `buffered / requested_delay`, capped at 1000 (1000 for a zero delay).
     pub fill_per_mille: u16,
+    /// Frames accepted into the buffer (late drops are not counted).
     pub frames_pushed: u64,
+    /// Late or duplicate frames dropped on push without a reset.
+    pub late_drops: u64,
     /// First presentations (fresh and early).
     pub frames_presented: u64,
     pub repeats: u64,
@@ -646,6 +660,9 @@ impl<H> VideoDelayLine<H> {
 
     /// Accepts one source frame at output time `now`.
     ///
+    /// A late or duplicate frame is dropped and reported as
+    /// [`PushReport::late_drop`]; see the module documentation.
+    ///
     /// # Errors
     ///
     /// Returns an error for a frame above the byte budget, a `now` earlier than
@@ -665,13 +682,30 @@ impl<H> VideoDelayLine<H> {
         self.check_now(now)?;
 
         let pts = frame.pts_nanos;
+        let max_skew = u128::from(self.config.max_skew.0);
+        // A frame at or slightly before the newest buffered frame is late or
+        // a duplicate: it carries nothing newer, so it is dropped rather than
+        // allowed to discard the whole buffer.
+        let late = !frame.discontinuity
+            && self.last_source_pts.is_some_and(|newest| {
+                pts <= newest && (i128::from(newest) - i128::from(pts)).unsigned_abs() <= max_skew
+            });
+        if late {
+            self.telemetry.late_drops += 1;
+            self.last_now = Some(now);
+            return Ok(PushReport {
+                late_drop: true,
+                ..PushReport::default()
+            });
+        }
         let line_with_current = pts.checked_add(self.rebase);
-        let skewed = line_with_current.is_none_or(|line| {
-            (i128::from(line) - i128::from(now)).unsigned_abs() > u128::from(self.config.max_skew.0)
-        });
+        let skewed = line_with_current
+            .is_none_or(|line| (i128::from(line) - i128::from(now)).unsigned_abs() > max_skew);
+        // Any remaining non-increasing timestamp is a backward jump beyond
+        // `max_skew`.
         let discontinuity = self.last_source_pts.is_some()
             && (frame.discontinuity
-                || self.last_source_pts.is_some_and(|previous| pts <= previous)
+                || self.last_source_pts.is_some_and(|newest| pts <= newest)
                 || skewed);
         let (rebase, line_pts) = if discontinuity || (self.last_source_pts.is_none() && skewed) {
             let rebase = i64::try_from(i128::from(now) - i128::from(pts))
@@ -692,7 +726,7 @@ impl<H> VideoDelayLine<H> {
         self.rebase = rebase;
         let mut report = PushReport {
             discontinuity,
-            capacity_drops: 0,
+            ..PushReport::default()
         };
         while !self.ring.is_empty()
             && (self.ring.len() >= self.config.max_frames

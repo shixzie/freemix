@@ -544,6 +544,55 @@ fn timestamp_jumps_reset_and_reanchor_the_line() {
 }
 
 #[test]
+fn late_and_duplicate_frames_are_dropped_without_resetting() {
+    const DELAY: u64 = 6;
+    let source = Source::new(NTSC_30);
+    let mut line = VideoDelayLine::new(config(64, usize::MAX), frames(DELAY, NTSC_30)).unwrap();
+    for k in 0..40 {
+        tick(&mut line, &source, k, 0);
+    }
+    let held = line.telemetry().frames_held;
+
+    // A repeat of the newest frame and a frame that arrives a few periods
+    // late are both within `max_skew` of the newest buffered frame.
+    let now = source.pts(39);
+    for (stray, payload) in [(39, 5_039), (36, 5_036)] {
+        let frame = DelayInputFrame::new(source.pts(stray), 33_366_667, 0, payload).unwrap();
+        let report = line.push(now, frame).unwrap();
+        assert!(report.late_drop, "frame {stray}");
+        assert!(!report.discontinuity, "frame {stray}");
+    }
+    let telemetry = line.telemetry();
+    assert_eq!(telemetry.late_drops, 2);
+    assert_eq!(telemetry.discontinuities, 0);
+    assert_eq!(telemetry.discontinuity_drops, 0);
+    assert_eq!(telemetry.frames_held, held);
+    assert_eq!(telemetry.state, DelayLineState::Running);
+
+    // The delayed output carries on without a black gap, and the strays are
+    // never presented.
+    for k in 40..60 {
+        assert_eq!(tick(&mut line, &source, k, 0), Some(k - DELAY), "frame {k}");
+    }
+
+    // A backward jump just beyond `max_skew` of the newest frame still resets.
+    let max_skew = i64::try_from(line.config().max_skew().as_nanos()).unwrap();
+    let now = source.pts(60);
+    let pts = source.pts(59) - max_skew - 1;
+    let report = line
+        .push(
+            now,
+            DelayInputFrame::new(pts, 33_366_667, 0, 7_000).unwrap(),
+        )
+        .unwrap();
+    assert!(report.discontinuity);
+    assert!(!report.late_drop);
+    assert_eq!(line.telemetry().late_drops, 2);
+    assert_eq!(line.telemetry().discontinuities, 1);
+    assert_eq!(line.state(), DelayLineState::Filling);
+}
+
+#[test]
 fn gaps_hold_the_last_frame_without_resetting() {
     let source = Source::new(NTSC_30);
     let mut line = VideoDelayLine::new(config(64, usize::MAX), frames(3, NTSC_30)).unwrap();
