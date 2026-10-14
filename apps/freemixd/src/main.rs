@@ -1670,11 +1670,9 @@ impl NativeRuntimeTelemetry {
         let mut retained_bytes = 0_u64;
         let mut observed = false;
         for recorder in recorders {
-            let telemetry = recorder.recorder.telemetry();
-            outstanding_pairs =
-                outstanding_pairs.saturating_add(saturating_u64(telemetry.outstanding_pairs));
-            retained_bytes =
-                retained_bytes.saturating_add(saturating_u64(telemetry.retained_bytes));
+            let (pairs, bytes) = recorder.pipeline_load();
+            outstanding_pairs = outstanding_pairs.saturating_add(pairs);
+            retained_bytes = retained_bytes.saturating_add(bytes);
             observed = true;
         }
         if !observed {
@@ -1834,10 +1832,29 @@ const fn disk_alert_label(state: Option<AlertState>) -> &'static str {
 struct NativeProgramRecorder {
     readback: NativeProgramReadback,
     format: RecordFormat,
-    recorder: Recorder,
+    sink: RecorderSink,
+    /// Pairs captured while the segment is still opening, or that the open
+    /// recorder has not accepted yet, in sequence order. Every newer pair
+    /// queues behind them, so the segment stays gap-free from its first
+    /// sequence; once the backlog drains the recorder is fed directly again.
+    backlog: std::collections::VecDeque<PairedFrame>,
+    /// Bytes retained by [`Self::backlog`].
+    backlog_bytes: usize,
+    /// Upper bound for [`Self::backlog_bytes`]: the recorder's own retained
+    /// byte budget, so an opening segment never holds more than a running one
+    /// may.
+    backlog_limit: usize,
     capture: RecorderCapturePolicy,
     finalization_clean: Option<bool>,
     startup_pair_timeout: Duration,
+    /// Mux-readiness deadline of a runtime `RecordStart` segment that has not
+    /// produced muxed output yet. The command's acknowledgement is held until
+    /// this clears, exactly like the former blocking barrier, but the daemon
+    /// loop keeps running meanwhile.
+    priming: Option<Instant>,
+    /// Whether the segment must reach mux readiness once it opens: runtime
+    /// starts do, rotations never did.
+    prime_on_open: bool,
     /// Parent directory of the open segment, sampled for free space when the
     /// final report is frozen.
     parent: PathBuf,
@@ -1850,6 +1867,56 @@ struct NativeProgramRecorder {
     /// Configured AAC audio bitrate for this segment; `None` keeps the encoder
     /// default. Reported in `FREEMIXD_RECORDER`.
     audio_bitrate_kbps: Option<u32>,
+}
+
+/// Where an open segment's pairs go.
+///
+/// A runtime start spawns `FFmpeg` and waits for it to connect, which takes
+/// from hundreds of milliseconds up to the recorder's connect timeout. That
+/// happens on a dedicated worker, never on the daemon loop: the segment is
+/// [`Self::Opening`] until the worker hands over the started [`Recorder`].
+#[cfg(feature = "native-media")]
+enum RecorderSink {
+    /// The worker is creating the segment file and starting `FFmpeg`.
+    Opening {
+        opened: mpsc::Receiver<Result<Recorder, String>>,
+        /// Failure-notice prefix if the open fails (`start` or `rotate`).
+        failure_label: &'static str,
+        /// A cancellation requested before the recorder existed; applied as
+        /// soon as it arrives.
+        cancel_requested: bool,
+    },
+    /// The recorder is running.
+    Open(Box<Recorder>),
+    /// The open failed; the failure was already reported and no segment
+    /// exists, so no `FREEMIXD_RECORDER` report is emitted.
+    Unopened,
+}
+
+/// Per-segment options for a segment opened off the daemon loop.
+#[cfg(feature = "native-media")]
+#[derive(Clone, Copy)]
+struct SegmentOpening {
+    wav: bool,
+    video_bitrate_kbps: Option<u32>,
+    audio_bitrate_kbps: Option<u32>,
+    /// 1-based recorder slot number.
+    slot: usize,
+    /// Failure-notice prefix if the open fails (`start` or `rotate`).
+    failure_label: &'static str,
+    /// Whether the acknowledgement-holding mux-readiness barrier applies.
+    prime_on_open: bool,
+}
+
+/// Progress of an opening segment, observed without blocking.
+#[cfg(feature = "native-media")]
+enum OpenPoll {
+    /// The segment is open (or was already).
+    Open,
+    /// The worker is still starting the recorder.
+    Pending,
+    /// The open failed; the slot must be released and this notice reported.
+    Failed(String),
 }
 
 #[cfg(feature = "native-media")]
@@ -1932,6 +1999,22 @@ fn recording_start_timecode(
 
 #[cfg(feature = "native-media")]
 impl NativeProgramRecorder {
+    /// The recording format of a segment opened at the stored position.
+    fn stored_format(stored: &StoredProject) -> AppResult<RecordFormat> {
+        let settings = stored.project().settings();
+        let dimensions = settings.video.dimensions;
+        Ok(RecordFormat::new(
+            dimensions.width(),
+            dimensions.height(),
+            settings.frame_rate,
+            settings.audio.sample_rate,
+            settings.audio.channels.clone(),
+            SequenceNumber::new(stored.position().frames_rendered),
+        )?)
+    }
+
+    /// Opens a segment synchronously. Used only for configured startup
+    /// recording, which completes before readiness is advertised.
     fn start(
         runtime: &NativeMediaRuntime,
         stored: &StoredProject,
@@ -1941,18 +2024,9 @@ impl NativeProgramRecorder {
         audio_bitrate_kbps: Option<u32>,
         slot: usize,
     ) -> AppResult<Self> {
-        let settings = stored.project().settings();
-        let dimensions = settings.video.dimensions;
-        let format = RecordFormat::new(
-            dimensions.width(),
-            dimensions.height(),
-            settings.frame_rate,
-            settings.audio.sample_rate,
-            settings.audio.channels.clone(),
-            SequenceNumber::new(stored.position().frames_rendered),
-        )?;
+        let format = Self::stored_format(stored)?;
         let timecode = recording_start_timecode(format.first_sequence().get(), format.frame_rate());
-        Self::start_with_format(
+        let (mut recorder, config) = Self::prepare(
             runtime,
             format,
             timecode,
@@ -1961,11 +2035,99 @@ impl NativeProgramRecorder {
             video_bitrate_kbps,
             audio_bitrate_kbps,
             slot,
+        )?;
+        recorder.sink = RecorderSink::Open(Box::new(start_record_output(path, |output| {
+            Ok(Recorder::start(output, config)?)
+        })?));
+        Ok(recorder)
+    }
+
+    /// Opens a segment for an accepted runtime `RecordStart` without blocking
+    /// the daemon loop: the segment file and `FFmpeg` start on a worker while
+    /// captured pairs queue in the backlog, and mux readiness is awaited once
+    /// the recorder arrives.
+    fn open(
+        runtime: &NativeMediaRuntime,
+        stored: &StoredProject,
+        path: &Path,
+        wav: bool,
+        video_bitrate_kbps: Option<u32>,
+        audio_bitrate_kbps: Option<u32>,
+        slot: usize,
+    ) -> AppResult<Self> {
+        let format = Self::stored_format(stored)?;
+        let timecode = recording_start_timecode(format.first_sequence().get(), format.frame_rate());
+        Self::open_with_format(
+            runtime,
+            format,
+            timecode,
+            path,
+            SegmentOpening {
+                wav,
+                video_bitrate_kbps,
+                audio_bitrate_kbps,
+                slot,
+                failure_label: "start",
+                prime_on_open: true,
+            },
         )
     }
 
+    /// Opens a segment on a worker; see [`Self::open`].
+    fn open_with_format(
+        runtime: &NativeMediaRuntime,
+        format: RecordFormat,
+        timecode: Option<fm_types::Timecode>,
+        path: &Path,
+        opening: SegmentOpening,
+    ) -> AppResult<Self> {
+        let (mut recorder, config) = Self::prepare(
+            runtime,
+            format,
+            timecode,
+            path,
+            opening.wav,
+            opening.video_bitrate_kbps,
+            opening.audio_bitrate_kbps,
+            opening.slot,
+        )?;
+        // The file is created here, so the next segment name derived while
+        // this one is still opening never collides with it; the parent sync
+        // and the FFmpeg start run on the worker.
+        let (output, parent) = create_record_file(path)?;
+        let (sender, opened) = mpsc::sync_channel(1);
+        let worker_path = path.to_path_buf();
+        let spawned = thread::Builder::new()
+            .name(format!("freemix-native-recording-open-{}", opening.slot))
+            .spawn(move || {
+                let started = sync_created_record_output(&parent)
+                    .and_then(|()| Ok(Recorder::start(output, config)?))
+                    .inspect_err(|_| {
+                        let _ = fs::remove_file(&worker_path);
+                    })
+                    .map_err(|error| error.to_string());
+                // The segment always waits for this hand-over before it is
+                // finalized, so the send only fails if the daemon is gone; the
+                // dropped recorder then stops itself.
+                let _ = sender.send(started);
+            });
+        if let Err(error) = spawned {
+            let _ = fs::remove_file(path);
+            return Err(error.into());
+        }
+        recorder.sink = RecorderSink::Opening {
+            opened,
+            failure_label: opening.failure_label,
+            cancel_requested: false,
+        };
+        recorder.prime_on_open = opening.prime_on_open;
+        Ok(recorder)
+    }
+
+    /// Everything a segment needs except its started recorder: the program
+    /// readback, the recorder configuration, and the report metadata.
     #[allow(clippy::too_many_arguments)]
-    fn start_with_format(
+    fn prepare(
         runtime: &NativeMediaRuntime,
         format: RecordFormat,
         timecode: Option<fm_types::Timecode>,
@@ -1974,7 +2136,7 @@ impl NativeProgramRecorder {
         video_bitrate_kbps: Option<u32>,
         audio_bitrate_kbps: Option<u32>,
         slot: usize,
-    ) -> AppResult<Self> {
+    ) -> AppResult<(Self, RecordConfig)> {
         let dimensions = format.dimensions();
         let readback = runtime.create_program_readback_blocking(
             NonZeroU32::new(dimensions.width()).expect("project width is nonzero"),
@@ -1993,26 +2155,170 @@ impl NativeProgramRecorder {
             .connect_timeout
             .checked_add(config.limits.no_progress_timeout)
             .ok_or_else(|| AppFailure("Program recorder startup timeout overflow".into()))?;
-        let recorder = start_record_output(path, |output| Ok(Recorder::start(output, config)?))?;
-        Ok(Self {
-            readback,
-            format,
-            recorder,
-            capture: RecorderCapturePolicy::default(),
-            finalization_clean: None,
-            startup_pair_timeout,
-            parent,
-            slot,
-            video_bitrate_kbps,
-            audio_bitrate_kbps,
-        })
+        let backlog_limit = config.limits.max_retained_bytes;
+        Ok((
+            Self {
+                readback,
+                format,
+                sink: RecorderSink::Unopened,
+                backlog: std::collections::VecDeque::new(),
+                backlog_bytes: 0,
+                backlog_limit,
+                capture: RecorderCapturePolicy::default(),
+                finalization_clean: None,
+                startup_pair_timeout,
+                priming: None,
+                prime_on_open: false,
+                parent,
+                slot,
+                video_bitrate_kbps,
+                audio_bitrate_kbps,
+            },
+            config,
+        ))
+    }
+
+    /// The running recorder, once the segment is open.
+    fn recorder(&self) -> Option<&Recorder> {
+        match &self.sink {
+            RecorderSink::Open(recorder) => Some(recorder.as_ref()),
+            RecorderSink::Opening { .. } | RecorderSink::Unopened => None,
+        }
+    }
+
+    /// Whether this segment is still being realized: opening, or open but
+    /// not yet confirmed mux-ready. A `RecordStart` acknowledgement waits for
+    /// this to clear.
+    fn is_settling(&self) -> bool {
+        matches!(self.sink, RecorderSink::Opening { .. }) || self.priming.is_some()
+    }
+
+    /// Observes an opening segment without blocking.
+    fn poll_open(&mut self) -> OpenPoll {
+        let RecorderSink::Opening { opened, .. } = &self.sink else {
+            return OpenPoll::Open;
+        };
+        let received = match opened.try_recv() {
+            Ok(received) => received,
+            Err(mpsc::TryRecvError::Empty) => return OpenPoll::Pending,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err("recorder open worker exited without a result".to_owned())
+            }
+        };
+        self.finish_open(received)
+    }
+
+    /// Waits for an opening segment. Only finalization paths call this: a
+    /// detached finalizer, or shutdown.
+    fn wait_open(&mut self) -> OpenPoll {
+        let RecorderSink::Opening { opened, .. } = &self.sink else {
+            return OpenPoll::Open;
+        };
+        let received = opened
+            .recv()
+            .unwrap_or_else(|_| Err("recorder open worker exited without a result".to_owned()));
+        self.finish_open(received)
+    }
+
+    fn finish_open(&mut self, received: Result<Recorder, String>) -> OpenPoll {
+        let RecorderSink::Opening {
+            failure_label,
+            cancel_requested,
+            ..
+        } = &self.sink
+        else {
+            return OpenPoll::Open;
+        };
+        let (failure_label, cancel_requested) = (*failure_label, *cancel_requested);
+        match received {
+            Ok(mut recorder) => {
+                if cancel_requested {
+                    recorder.request_cancel();
+                } else if self.prime_on_open {
+                    // The barrier budget starts when the recorder exists,
+                    // exactly as it did when the start blocked.
+                    self.priming = Some(
+                        Instant::now()
+                            .checked_add(self.startup_pair_timeout)
+                            .unwrap_or_else(Instant::now),
+                    );
+                }
+                self.sink = RecorderSink::Open(Box::new(recorder));
+                self.pump_backlog();
+                OpenPoll::Open
+            }
+            Err(error) => {
+                self.sink = RecorderSink::Unopened;
+                self.clear_backlog();
+                OpenPoll::Failed(format!("{failure_label}:{error}"))
+            }
+        }
+    }
+
+    fn clear_backlog(&mut self) {
+        self.backlog.clear();
+        self.backlog_bytes = 0;
+    }
+
+    /// Hands backlog pairs to the open recorder, oldest first, until it has
+    /// no room for more. A full queue is not a failure here: the backlog keeps
+    /// the pair and retries on the next pass.
+    fn pump_backlog(&mut self) {
+        let failure = {
+            let RecorderSink::Open(recorder) = &mut self.sink else {
+                return;
+            };
+            let mut failure = None;
+            while let Some(pair) = self.backlog.pop_front() {
+                let bytes = pair.retained_bytes();
+                match recorder.enqueue(pair) {
+                    Ok(()) => self.backlog_bytes = self.backlog_bytes.saturating_sub(bytes),
+                    Err(error)
+                        if matches!(
+                            error.reason,
+                            EnqueueRejection::QueueFull | EnqueueRejection::RetainedByteLimit
+                        ) =>
+                    {
+                        self.backlog.push_front(error.into_frame());
+                        break;
+                    }
+                    Err(error) => {
+                        let app_capture_failure =
+                            !matches!(&error.reason, EnqueueRejection::Failed(_));
+                        failure =
+                            Some((format!("enqueue:{:?}", error.reason), app_capture_failure));
+                        break;
+                    }
+                }
+            }
+            failure
+        };
+        if let Some((failure, app_capture_failure)) = failure {
+            self.fail(failure, app_capture_failure);
+        }
+    }
+
+    /// Outstanding pairs and retained bytes across the recorder and the
+    /// backlog, for whole-run telemetry.
+    fn pipeline_load(&self) -> (u64, u64) {
+        let (pairs, bytes) = self.recorder().map_or((0, 0), |recorder| {
+            let telemetry = recorder.telemetry();
+            (telemetry.outstanding_pairs, telemetry.retained_bytes)
+        });
+        (
+            saturating_u64(pairs).saturating_add(saturating_u64(self.backlog.len())),
+            saturating_u64(bytes).saturating_add(saturating_u64(self.backlog_bytes)),
+        )
     }
 
     fn should_rotate(&self, segment_seconds: Option<NonZeroU32>) -> bool {
         self.capture.active()
+            && self.backlog.is_empty()
             && segment_seconds.is_some_and(|seconds| {
-                self.recorder.telemetry().accepted_pairs
-                    >= segment_frame_limit(seconds, self.format.frame_rate())
+                self.recorder().is_some_and(|recorder| {
+                    recorder.telemetry().accepted_pairs
+                        >= segment_frame_limit(seconds, self.format.frame_rate())
+                })
             })
     }
 
@@ -2025,8 +2331,9 @@ impl NativeProgramRecorder {
         if !self.capture.active() {
             return;
         }
-        let telemetry = self.recorder.telemetry();
-        if telemetry.state == RecorderState::Failed {
+        if let Some(telemetry) = self.recorder().map(Recorder::telemetry)
+            && telemetry.state == RecorderState::Failed
+        {
             self.fail(format!("backend:{:?}", telemetry.failure), false);
             return;
         }
@@ -2058,10 +2365,25 @@ impl NativeProgramRecorder {
                 return;
             }
         };
-        if let Err(error) = self.recorder.enqueue(pair) {
-            let app_capture_failure = !matches!(&error.reason, EnqueueRejection::Failed(_));
-            self.fail(format!("enqueue:{:?}", error.reason), app_capture_failure);
+        if self.backlog.is_empty()
+            && let RecorderSink::Open(recorder) = &mut self.sink
+        {
+            if let Err(error) = recorder.enqueue(pair) {
+                let app_capture_failure = !matches!(&error.reason, EnqueueRejection::Failed(_));
+                self.fail(format!("enqueue:{:?}", error.reason), app_capture_failure);
+            }
+            return;
         }
+        // The segment is still opening, or older pairs are still waiting:
+        // queue behind them so the segment stays in sequence order.
+        let bytes = pair.retained_bytes();
+        if self.backlog_bytes.saturating_add(bytes) > self.backlog_limit {
+            self.fail("enqueue:open_backlog_full".to_owned(), true);
+            return;
+        }
+        self.backlog_bytes += bytes;
+        self.backlog.push_back(pair);
+        self.pump_backlog();
     }
 
     fn fail(&mut self, failure: String, app_capture_failure: bool) {
@@ -2070,18 +2392,37 @@ impl NativeProgramRecorder {
         {
             let notice = recorder_failure_notice(self.slot, failure, app_capture_failure);
             eprintln!("{notice}");
-            self.recorder.request_cancel();
+            self.cancel_sink();
+        }
+    }
+
+    /// Cancels whatever sink exists now, or the one still opening as soon as
+    /// it arrives, and discards the backlog.
+    fn cancel_sink(&mut self) {
+        self.clear_backlog();
+        match &mut self.sink {
+            RecorderSink::Open(recorder) => recorder.request_cancel(),
+            RecorderSink::Opening {
+                cancel_requested, ..
+            } => *cancel_requested = true,
+            RecorderSink::Unopened => {}
         }
     }
 
     fn startup_decision(&self) -> AppResult<StartupPairDecision> {
-        let telemetry = self.recorder.telemetry();
-        let decision = startup_pair_decision(
-            telemetry.state,
-            telemetry.completed_pairs,
-            telemetry.output_bytes,
-            telemetry.failure.is_some() || self.capture.first_failure.is_some(),
-        );
+        let decision = match self.recorder() {
+            Some(recorder) => {
+                let telemetry = recorder.telemetry();
+                startup_pair_decision(
+                    telemetry.state,
+                    telemetry.completed_pairs,
+                    telemetry.output_bytes,
+                    telemetry.failure.is_some() || self.capture.first_failure.is_some(),
+                )
+            }
+            None if self.capture.first_failure.is_some() => StartupPairDecision::Failed,
+            None => StartupPairDecision::Pending,
+        };
         if decision != StartupPairDecision::Failed {
             return Ok(decision);
         }
@@ -2089,7 +2430,11 @@ impl NativeProgramRecorder {
             .capture
             .first_failure
             .clone()
-            .or_else(|| telemetry.failure.map(|failure| format!("{failure:?}")))
+            .or_else(|| {
+                self.recorder()
+                    .and_then(|recorder| recorder.telemetry().failure)
+                    .map(|failure| format!("{failure:?}"))
+            })
             .unwrap_or_else(|| "unknown".to_owned());
         Err(AppFailure(format!(
             "Program recorder failed before readiness: {}",
@@ -2107,7 +2452,25 @@ impl NativeProgramRecorder {
     /// child is asked to terminate within the kill budget.
     fn request_cancel(&mut self) {
         if self.finalization_clean.is_none() {
-            self.recorder.request_cancel();
+            self.cancel_sink();
+        }
+    }
+
+    /// Feeds every backlog pair to the recorder before it is stopped, so a
+    /// segment stopped right after it opened still holds every frame it
+    /// accepted. Bounded by the recorder's own stop budget.
+    fn drain_backlog_for_stop(&mut self) {
+        let deadline = Instant::now().checked_add(PROGRAM_RECORDER_STOP_TIMEOUT);
+        loop {
+            self.pump_backlog();
+            if self.backlog.is_empty() || self.recorder().is_none() {
+                return;
+            }
+            if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+                self.fail("enqueue:QueueFull".to_owned(), true);
+                return;
+            }
+            thread::sleep(NATIVE_IO_POLL_INTERVAL);
         }
     }
 
@@ -2119,7 +2482,17 @@ impl NativeProgramRecorder {
                 Err(AppFailure("Program recording did not finalize cleanly".into()).into())
             };
         }
-        let report = self.recorder.stop();
+        if let OpenPoll::Failed(failure) = self.wait_open() {
+            eprintln!("{}", recorder_failure_notice(self.slot, &failure, false));
+        }
+        self.drain_backlog_for_stop();
+        let RecorderSink::Open(recorder) = &mut self.sink else {
+            // The segment never opened: its failure was already reported and
+            // there is no file to report on.
+            self.finalization_clean = Some(false);
+            return Err(AppFailure("Program recording did not finalize cleanly".into()).into());
+        };
+        let report = recorder.stop();
         let duration_ms =
             recorded_duration_ms(report.telemetry.completed_pairs, self.format.frame_rate());
         let free_bytes = disk::available_bytes(&self.parent).unwrap_or(0);
@@ -2232,6 +2605,12 @@ impl ProgramRecording {
     /// Whether this slot currently owns an open segment.
     fn is_running(&self) -> bool {
         matches!(self, Self::Running(_))
+    }
+
+    /// Whether this slot's segment is still opening or awaiting mux
+    /// readiness.
+    fn is_settling(&self) -> bool {
+        matches!(self, Self::Running(recorder) if recorder.is_settling())
     }
 }
 
@@ -4194,9 +4573,10 @@ impl NativeDaemon {
     /// Returns `Ok(true)` when the slot is ready or was never started,
     /// `Ok(false)` when a requested shutdown interrupted the barrier, and an
     /// error when the slot failed or exhausted its deadline. Every failure
-    /// latches only the addressed slot; the caller decides whether that fails
-    /// startup (configured startup, fail-closed) or only the slot (runtime
-    /// `RecordStart`).
+    /// latches only the addressed slot. Only configured startup recording,
+    /// which is fail-closed and completes before readiness, blocks on this;
+    /// a runtime `RecordStart` is primed by [`Self::advance_recordings`]
+    /// without stalling the daemon loop.
     fn prime_recorder(
         &mut self,
         slot: usize,
@@ -4577,29 +4957,28 @@ impl NativeDaemon {
     /// Schedules recording realization for an accepted RecordStart/RecordStop
     /// addressed to one recorder slot.
     ///
-    /// A start opens the next segment of the addressed configured slot
-    /// immediately and holds the session until the same bounded prime barrier
-    /// used at startup confirms mux readiness; durability and the engine
-    /// commit have already settled, so a client is merely delayed, never
-    /// acknowledged for unrealized state. The addressed slot is realized
-    /// independently of the other: a failure latches only that slot's attempt
-    /// unavailable and reports its own sanitized notice without aborting the
-    /// show or the other slot.
+    /// A start begins opening the next segment of the addressed configured
+    /// slot without blocking: the segment file and `FFmpeg` start on a worker,
+    /// and [`Self::advance_recordings`] then awaits the same bounded mux
+    /// readiness barrier used at startup while the daemon loop keeps
+    /// realizing frames and serving every session. The session loop holds the
+    /// command's acknowledgement until [`Self::recording_settling`] clears, so
+    /// durability and the engine commit have already settled and a client is
+    /// merely delayed, never acknowledged for unrealized state. The addressed
+    /// slot is realized independently of the other: a failure latches only
+    /// that slot's attempt unavailable and reports its own sanitized notice
+    /// without aborting the show or the other slot.
     ///
     /// A stop retires only the addressed slot's open segment off the hot path:
     /// the slot drops to [`ProgramRecording::Off`] at once and finalization
     /// runs on a dedicated worker, exactly like stinger retirement, with
     /// shutdown joining within the recorder's own stop budget. The other
     /// slot's segment keeps running.
-    #[allow(clippy::too_many_arguments)]
     fn observe_recording_command(
         &mut self,
         command: &CommandMessage,
         result: &CommandResult,
         stored: &StoredProject,
-        control: &mut ControlService<Policy>,
-        server: &ServerIdentity,
-        process_shutdown: Option<&ProcessShutdown>,
     ) {
         let Some((active, slot)) = recording_command_slot(&command.payload) else {
             return;
@@ -4609,28 +4988,76 @@ impl NativeDaemon {
         }
         self.reap_finished_recording_finalizers();
         if active {
-            self.open_pending_recording(slot, stored, control, server, process_shutdown);
+            self.open_pending_recording(slot, stored);
         } else {
-            self.retire_running_recording(slot);
+            self.retire_running_recording(slot, None);
         }
     }
 
-    /// Opens one slot's next segment after an accepted `RecordStart`.
+    /// Whether `slot`'s segment is still opening or awaiting mux readiness;
+    /// an accepted `RecordStart` for it is not acknowledged until this clears.
+    fn recording_settling(&self, slot: usize) -> bool {
+        self.recorders
+            .get(slot)
+            .is_some_and(ProgramRecording::is_settling)
+    }
+
+    /// Advances every opening or priming segment without blocking: adopts a
+    /// recorder the open worker handed over, feeds it the backlog, and
+    /// settles the mux-readiness barrier. Called on every daemon loop pass.
+    ///
+    /// A failed open releases the slot with its `start`/`rotate` notice; a
+    /// failed or timed-out barrier cancels the segment and finalizes it off
+    /// the loop, reporting `startup:` exactly as the blocking barrier did.
+    fn advance_recordings(&mut self) {
+        for slot in 0..RECORDER_SLOTS {
+            let ProgramRecording::Running(recorder) = &mut self.recorders[slot] else {
+                continue;
+            };
+            if let OpenPoll::Failed(failure) = recorder.poll_open() {
+                self.recorders[slot] = ProgramRecording::Off;
+                eprintln!("{}", recorder_failure_notice(slot + 1, &failure, false));
+                continue;
+            }
+            recorder.pump_backlog();
+            let Some(deadline) = recorder.priming else {
+                continue;
+            };
+            let failure = match recorder.startup_decision() {
+                Ok(StartupPairDecision::Ready) => {
+                    recorder.priming = None;
+                    continue;
+                }
+                Ok(StartupPairDecision::Pending) if Instant::now() < deadline => continue,
+                Ok(StartupPairDecision::Pending) => recorder.fail_startup_timeout(),
+                Ok(StartupPairDecision::Failed) => {
+                    unreachable!("failure is returned as an error")
+                }
+                Err(error) => error,
+            };
+            // The barrier failed; latch this slot's attempt unavailable. The
+            // failure notice was already emitted by the capture policy or the
+            // timeout helper; cancel and report the partial segment.
+            recorder.priming = None;
+            recorder.request_cancel();
+            self.retire_running_recording(
+                slot,
+                Some(recorder_failure_notice(
+                    slot + 1,
+                    &format!("startup:{failure}"),
+                    false,
+                )),
+            );
+        }
+    }
+
+    /// Begins opening one slot's next segment after an accepted `RecordStart`.
     ///
     /// An unconfigured slot derives nothing and stays untouched. Every failure
-    /// here latches only THIS slot's attempt unavailable and reports a
-    /// sanitized notice naming the slot; the show and the other slot keep
-    /// running, exactly like stream sink failures. Engine errors surfaced by
-    /// the prime barrier are treated the same way: if the engine is genuinely
-    /// broken, the next frame realization fails loudly on its own.
-    fn open_pending_recording(
-        &mut self,
-        slot: usize,
-        stored: &StoredProject,
-        control: &mut ControlService<Policy>,
-        server: &ServerIdentity,
-        process_shutdown: Option<&ProcessShutdown>,
-    ) {
+    /// latches only THIS slot's attempt unavailable and reports a sanitized
+    /// notice naming the slot; the show and the other slot keep running,
+    /// exactly like stream sink failures.
+    fn open_pending_recording(&mut self, slot: usize, stored: &StoredProject) {
         if self.recorders[slot].is_running() {
             return;
         }
@@ -4650,39 +5077,34 @@ impl NativeDaemon {
                 return;
             }
         };
-        if let Err(error) = self.start_recorder(slot, stored, &segment) {
-            self.recorders[slot] = ProgramRecording::Off;
-            eprintln!(
-                "{}",
-                recorder_failure_notice(slot + 1, &format!("start:{error}"), false)
-            );
-            return;
-        }
-        match self.prime_recorder(slot, control, server, process_shutdown) {
-            Ok(true | false) => {}
+        let opened = next_record_segment_path(&segment, Path::exists).and_then(|segment| {
+            NativeProgramRecorder::open(
+                &self.runtime,
+                stored,
+                &segment,
+                self.record_wav,
+                self.record_bitrates[slot],
+                self.record_audio_bitrates[slot],
+                slot + 1,
+            )
+        });
+        match opened {
+            Ok(recorder) => self.recorders[slot] = ProgramRecording::Running(Box::new(recorder)),
             Err(error) => {
-                // The barrier failed; latch this slot's attempt unavailable.
-                // The failure notice was already emitted by the capture policy
-                // or the timeout helper; cancel and report the partial segment.
-                let ProgramRecording::Running(mut recorder) =
-                    std::mem::replace(&mut self.recorders[slot], ProgramRecording::Off)
-                else {
-                    return;
-                };
-                recorder.request_cancel();
-                let _ = recorder.stop_and_report();
+                self.recorders[slot] = ProgramRecording::Off;
                 eprintln!(
                     "{}",
-                    recorder_failure_notice(slot + 1, &format!("startup:{error}"), false)
+                    recorder_failure_notice(slot + 1, &format!("start:{error}"), false)
                 );
             }
         }
     }
 
     /// Retires one slot's open segment off the render path after an accepted
-    /// `RecordStop`. The worker drains the sink cleanly (no cancellation), so
-    /// the finalized file keeps its full `FREEMIXD_RECORDER` report.
-    fn retire_running_recording(&mut self, slot: usize) {
+    /// `RecordStop`, a failed readiness barrier, or a rotation. The worker
+    /// drains the sink cleanly unless it was cancelled, so the finalized file
+    /// keeps its full `FREEMIXD_RECORDER` report; `notice` follows that report.
+    fn retire_running_recording(&mut self, slot: usize, notice: Option<String>) {
         let ProgramRecording::Running(recorder) =
             std::mem::replace(&mut self.recorders[slot], ProgramRecording::Off)
         else {
@@ -4694,6 +5116,7 @@ impl NativeDaemon {
         let (handoff_sender, handoff_receiver) =
             mpsc::sync_channel::<Box<NativeProgramRecorder>>(1);
         let (done_sender, done) = mpsc::sync_channel(1);
+        let worker_notice = notice.clone();
         let spawned = thread::Builder::new()
             .name(format!("freemix-native-recording-finalizer-{}", slot + 1))
             .spawn(move || {
@@ -4701,6 +5124,9 @@ impl NativeDaemon {
                     return;
                 };
                 let clean = recorder.stop_and_report().is_ok();
+                if let Some(notice) = worker_notice {
+                    eprintln!("{notice}");
+                }
                 let _ = done_sender.send(clean);
             });
         match spawned {
@@ -4718,6 +5144,9 @@ impl NativeDaemon {
                     recorder_failure_notice(slot + 1, &format!("finalize:{error}"), false)
                 );
                 let _ = recorder.stop_and_report();
+                if let Some(notice) = notice {
+                    eprintln!("{notice}");
+                }
             }
         }
     }
@@ -4748,25 +5177,31 @@ impl NativeDaemon {
     }
 
     fn rotate_running_recording(&mut self, slot: usize, sequence: SequenceNumber) {
-        let next_format = match &self.recorders[slot] {
+        let (next_format, still_priming) = match &self.recorders[slot] {
             ProgramRecording::Running(recorder)
                 if recorder
                     .should_rotate(slot_segment_seconds(self.record_segment_seconds, slot)) =>
             {
+                // A segment rotated before it confirmed mux readiness hands
+                // the pending barrier to its successor, so the held start
+                // acknowledgement still waits for realized output.
                 let old = &recorder.format;
-                RecordFormat::new(
-                    old.dimensions().width(),
-                    old.dimensions().height(),
-                    old.frame_rate(),
-                    old.sample_rate(),
-                    old.channel_layout().clone(),
-                    sequence,
+                (
+                    RecordFormat::new(
+                        old.dimensions().width(),
+                        old.dimensions().height(),
+                        old.frame_rate(),
+                        old.sample_rate(),
+                        old.channel_layout().clone(),
+                        sequence,
+                    ),
+                    recorder.priming.is_some(),
                 )
             }
             ProgramRecording::Running(_) | ProgramRecording::Off => return,
         };
         self.reap_finished_recording_finalizers();
-        self.retire_running_recording(slot);
+        self.retire_running_recording(slot, None);
         let rotated = next_format.map_err(Into::into).and_then(|format| {
             let timecode = recording_start_timecode(sequence.get(), format.frame_rate());
             let segment = next_slot_segment_path(
@@ -4776,15 +5211,22 @@ impl NativeDaemon {
                 Path::exists,
             )?
             .ok_or_else(|| AppFailure("rotating recorder slot has no configured output".into()))?;
-            NativeProgramRecorder::start_with_format(
+            // The next segment opens off the render path; the frame captured
+            // right after this rotation waits in its backlog until FFmpeg is
+            // connected, so no frame is dropped between segments.
+            NativeProgramRecorder::open_with_format(
                 &self.runtime,
                 format,
                 timecode,
                 &segment,
-                self.record_wav,
-                self.record_bitrates[slot],
-                self.record_audio_bitrates[slot],
-                slot + 1,
+                SegmentOpening {
+                    wav: self.record_wav,
+                    video_bitrate_kbps: self.record_bitrates[slot],
+                    audio_bitrate_kbps: self.record_audio_bitrates[slot],
+                    slot: slot + 1,
+                    failure_label: "rotate",
+                    prime_on_open: still_priming,
+                },
             )
         });
         match rotated {
@@ -5593,6 +6035,14 @@ impl NativeDaemon {
         false
     }
 
+    #[allow(clippy::unused_self)]
+    fn recording_settling(&self, _slot: usize) -> bool {
+        false
+    }
+
+    #[allow(clippy::unused_self)]
+    fn advance_recordings(&mut self) {}
+
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     fn start_and_prime_configured_recorders(
         &mut self,
@@ -6110,6 +6560,27 @@ fn start_record_output<T>(path: &Path, start: impl FnOnce(File) -> AppResult<T>)
 
 #[cfg(feature = "native-media")]
 fn create_record_output(path: &Path) -> AppResult<File> {
+    let (file, parent) = create_record_file(path)?;
+    sync_created_record_output(&parent)?;
+    Ok(file)
+}
+
+/// Makes a freshly created segment's directory entry durable.
+#[cfg(feature = "native-media")]
+fn sync_created_record_output(parent: &Path) -> AppResult<()> {
+    sync_record_parent(parent).map_err(|error| {
+        AppFailure(format!(
+            "recording output parent synchronization failed: {:?}",
+            error.kind()
+        ))
+        .into()
+    })
+}
+
+/// Creates a segment file exclusively and returns it with its canonical
+/// parent, whose entry is not yet synchronized.
+#[cfg(feature = "native-media")]
+fn create_record_file(path: &Path) -> AppResult<(File, PathBuf)> {
     let file_name = path
         .file_name()
         .filter(|name| !name.is_empty())
@@ -6148,13 +6619,7 @@ fn create_record_output(path: &Path) -> AppResult<File> {
                 error.kind()
             ))
         })?;
-    sync_record_parent(&parent).map_err(|error| {
-        AppFailure(format!(
-            "recording output parent synchronization failed: {:?}",
-            error.kind()
-        ))
-    })?;
-    Ok(file)
+    Ok((file, parent))
 }
 
 #[cfg(all(feature = "native-media", unix))]
@@ -8695,17 +9160,12 @@ fn execute_admitted_command(
             // Live sink changes and recording segments are realized by the
             // native runtime right here, after durability and the engine
             // commit have settled but before the acknowledgement is queued.
+            // A recording start only begins here; the session loop holds its
+            // acknowledgement until the segment is mux-ready.
             #[cfg(feature = "native-media")]
             native.observe_stream_command(command, &execution.submission.output.result);
             #[cfg(feature = "native-media")]
-            native.observe_recording_command(
-                command,
-                &execution.submission.output.result,
-                durable,
-                &mut control,
-                server,
-                process_shutdown,
-            );
+            native.observe_recording_command(command, &execution.submission.output.result, durable);
             execution
         } else {
             execute_durable_command(

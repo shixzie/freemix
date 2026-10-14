@@ -15,9 +15,10 @@ use fm_auth::Principal;
 use fm_control::{LiveEvent, Subscription};
 use fm_persistence::StoredProject;
 use fm_protocol::{
-    AudioMetersMessage, ClientType, ErrorMessage, HandshakeOutcome as ProtocolHandshakeOutcome,
-    HandshakeResponse, HeartbeatAcknowledgementMessage, LineDecoder, MonitorTap, ServerIdentity,
-    StreamStatusMessage, StructuredError, WireMessage, encode_line,
+    AudioMetersMessage, ClientType, CommandPayload, CommandResult, ErrorMessage,
+    HandshakeOutcome as ProtocolHandshakeOutcome, HandshakeResponse,
+    HeartbeatAcknowledgementMessage, LineDecoder, MonitorTap, ServerIdentity, StreamStatusMessage,
+    StructuredError, WireMessage, encode_line,
 };
 use fm_server::{Server, Session, SyncPayload};
 
@@ -116,6 +117,18 @@ struct Peer {
     stream_status: bool,
     monitor_frames: bool,
     lossy: LossyRecords,
+    /// An accepted `RecordStart` acknowledgement held until the native
+    /// runtime has realized its segment. While it is held the peer's later
+    /// messages and live events wait behind it, so the peer observes exactly
+    /// the order it did when the start blocked the daemon; every other peer,
+    /// and this peer's lossy side channels, keep being served.
+    held_result: Option<HeldResult>,
+}
+
+/// A command result waiting for a recorder slot to finish realizing.
+struct HeldResult {
+    result: CommandResult,
+    slot: usize,
 }
 
 /// One independent latest-wins side-channel slot.
@@ -228,6 +241,7 @@ impl Peer {
             stream_status: false,
             monitor_frames: false,
             lossy: LossyRecords::default(),
+            held_result: None,
         })
     }
 
@@ -478,7 +492,7 @@ pub(super) fn run(
 
         let mut live_budget = vec![LIVE_EVENTS_PER_PASS; peers.len()];
         for index in 0..peers.len() {
-            if close[index] {
+            if close[index] || peers[index].held_result.is_some() {
                 continue;
             }
             let message = match peers[index].phase {
@@ -505,6 +519,10 @@ pub(super) fn run(
                 shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
                 return Err(error);
             }
+            native.advance_recordings();
+            release_held_results(&mut peers, &mut close, |slot| {
+                native.recording_settling(slot)
+            });
             if let Some(meters) = native.take_audio_meters() {
                 publish_audio_meters(&mut peers, meters);
             }
@@ -558,7 +576,10 @@ pub(super) fn run(
             {
                 peer.phase = Phase::Active;
             }
-            if peer.phase == Phase::Closing && peer.outbound.is_empty() {
+            if peer.phase == Phase::Closing
+                && peer.outbound.is_empty()
+                && peer.held_result.is_none()
+            {
                 close[index] = true;
             }
         }
@@ -579,6 +600,45 @@ pub(super) fn run(
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
         thread::sleep(CLIENT_READ_POLL_INTERVAL);
+    }
+}
+
+/// Queues every held acknowledgement whose recorder slot is no longer
+/// settling. A peer that cannot take its result is closed, exactly as if the
+/// result had been queued when the command ran.
+fn release_held_results(
+    peers: &mut [Peer],
+    close: &mut [bool],
+    mut settling: impl FnMut(usize) -> bool,
+) {
+    for (index, peer) in peers.iter_mut().enumerate() {
+        let Some(held) = peer.held_result.as_ref() else {
+            continue;
+        };
+        if settling(held.slot) {
+            continue;
+        }
+        let held = peer.held_result.take().expect("checked above");
+        if peer
+            .queue(
+                &WireMessage::CommandResult(held.result),
+                Accounting::Session,
+            )
+            .is_err()
+        {
+            close[index] = true;
+        }
+    }
+}
+
+/// The recorder slot an accepted command's acknowledgement may have to wait
+/// for: only a `RecordStart` realizes anything before it is acknowledged.
+fn recording_start_slot(command: &CommandPayload, result: &CommandResult) -> Option<usize> {
+    match (command, result) {
+        (CommandPayload::RecordStart { recorder }, CommandResult::Accepted { .. }) => {
+            Some(usize::from(recorder.get()) - 1)
+        }
+        _ => None,
     }
 }
 
@@ -633,7 +693,7 @@ fn read_peer(peer: &mut Peer) -> bool {
 /// before the close is dispatched and answered, then the peer closes once its
 /// queued answers are written. Returns whether the peer closes now.
 fn finish_after_read_close(peer: &mut Peer) -> bool {
-    if !peer.inbound.is_empty() || peer.phase == Phase::Syncing {
+    if !peer.inbound.is_empty() || peer.phase == Phase::Syncing || peer.held_result.is_some() {
         return false;
     }
     if peer.phase == Phase::AwaitHandshake || peer.outbound.is_empty() {
@@ -679,6 +739,7 @@ impl Runtime<'_> {
         if peer.phase == Phase::AwaitHandshake {
             return self.handshake(peer, message, durable);
         }
+        let mut native = native;
         match message {
             WireMessage::Command(command) => {
                 let delivery = execute_session_command(
@@ -691,7 +752,7 @@ impl Runtime<'_> {
                         .as_ref()
                         .expect("active peers have identities"),
                     &command,
-                    native,
+                    native.as_deref_mut(),
                     Some(self.process_shutdown),
                 )
                 .map_err(|error| {
@@ -702,6 +763,14 @@ impl Runtime<'_> {
                     }
                 })?;
                 let CommandDelivery { result, .. } = delivery;
+                if let Some(slot) = recording_start_slot(&command.payload, &result)
+                    && native
+                        .as_deref()
+                        .is_some_and(|native| native.recording_settling(slot))
+                {
+                    peer.held_result = Some(HeldResult { result, slot });
+                    return Ok(());
+                }
                 peer.queue(&WireMessage::CommandResult(result), Accounting::Session)?;
                 Ok(())
             }
@@ -888,7 +957,8 @@ fn make_retryable(response: &mut HandshakeResponse) {
 
 fn drain_live(peers: &mut [Peer], close: &mut [bool], budgets: &mut [usize]) {
     for (index, peer) in peers.iter_mut().enumerate() {
-        if close[index] || peer.phase != Phase::Active {
+        // A held acknowledgement precedes the events its command published.
+        if close[index] || peer.phase != Phase::Active || peer.held_result.is_some() {
             continue;
         }
         while budgets[index] > 0 && peer.outbound.len() < OUTBOUND_CAPACITY {
@@ -1128,6 +1198,10 @@ fn shutdown_for_reason(
     peers: &mut Vec<Peer>,
     control: &SharedControl,
 ) -> DaemonShutdownReason {
+    // Shutdown stops waiting for realization: a held acknowledgement is owed
+    // to its peer exactly like any other queued result.
+    let mut close = vec![false; peers.len()];
+    release_held_results(peers, &mut close, |_| false);
     match reason {
         DaemonShutdownReason::ProcessSignal => {
             let queue = if peers
