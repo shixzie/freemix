@@ -2024,6 +2024,23 @@ transport, or raw HID parsing; nothing is wired into `freemixd`, Studio, or
 persistence; there is no learn UI; and NRPN/RPN, MIDI 2.0, and GPIO or
 network tally adapters are absent. `RC-005` and `RC-006` remain planned.
 
+Current implementation boundary for item 8 fader feedback (`AU-009`):
+`fm-automation` adds a bounded per-control `ControlCoalescer` that keeps the
+latest absolute value, sums relative deltas, preserves button edges in order,
+pairs same-tick 14-bit MSB/LSB updates, and refuses rather than drops new
+controls when full; coalesced ticks feed the existing soft-takeover pickup.
+`FeedbackRouter` now schedules outbound feedback per tick with per-device
+budgets, round-robin fairness, per-binding minimum intervals, touch
+suppression with a forced resync on release, and acknowledged-level echo
+suppression. `fm-audio` adds a `GainSmoother` whose per-sample linear ramps
+have a guaranteed step bound and land bit-exactly on target across block
+splits and retargets. Remaining gaps: no daemon, Studio, CLI, or real-time
+mixer wiring; cross-tick 14-bit glitches are only smoothed, not held; ramps are
+linear in gain with no fader taper; and there is no release-settle hold,
+per-device byte-rate limit, end-to-end device-to-audio test, or motor-fader
+hardware evidence. `AU-009` remains planned.
+
+
 Current implementation boundary for item 9: `fm-ptz` encodes and parses VISCA
 commands, inquiries, and replies for pan/tilt, zoom, focus, presets, and
 system control with explicit range errors, translates each PTZ intent into a
