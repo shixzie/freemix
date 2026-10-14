@@ -11,6 +11,9 @@ mod disk_health;
 mod event;
 mod highlight;
 mod multiview;
+mod music;
+mod record_export;
+mod reel;
 mod resolve;
 mod source;
 mod storage;
@@ -41,6 +44,21 @@ pub use highlight::{
 pub use multiview::{
     MAX_MULTIVIEW_ANGLES, MAX_MULTIVIEW_TILES, MultiviewError, MultiviewLayout, MultiviewPlan,
     MultiviewTile, QUAD_VIEW_ANGLES, TileMode, TileSource,
+};
+pub use music::{
+    BedEntry, BedGain, BedRepeat, BedVoice, DuckingSpec, GainPoint, MAX_BED_ENTRIES,
+    MAX_BED_SAMPLE_RATE, MAX_DUCK_INTERVALS, MAX_MUSIC_TRACKS, MIN_BED_SAMPLE_RATE, MusicBedError,
+    MusicBedPlan, MusicBedSpec, MusicTrack,
+};
+pub use record_export::{
+    ExportChunk, MAX_EXPORT_CHUNK_FRAMES, MAX_RECORD_EXPORT_JOBS, MAX_SEGMENTS_PER_EXPORT,
+    RecordExportError, RecordExportFailure, RecordExportJob, RecordExportProgress,
+    RecordExportQueue, RecordExportState,
+};
+pub use reel::{
+    CompiledClip, CompiledReel, HighlightReel, MAX_RATIONAL_TERM, MAX_REEL_CLIPS, MAX_REEL_FPS,
+    MAX_REEL_FRAMES, MAX_REEL_SPEED_RATIO, MAX_TRANSITION_FRAMES, MixWeight, ReelClipSpec,
+    ReelError, ReelFrame, ReelFrameRate, ReelLayer, ReelLayerPlan, ReelSpeed, ReelTransition,
 };
 pub use resolve::{
     AngleSpan, CapturedEvent, ChannelFrame, FrameSpan, LastNPreset, SegmentCoverage,
