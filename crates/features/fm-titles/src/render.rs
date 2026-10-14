@@ -49,10 +49,11 @@
 //! the whole frame meaningless is a [`RenderError`].
 
 use crate::{
-    Alignment, AssetCatalog, Bounds, Color, Element, ElementId, ElementKind, FieldId, FieldValue,
-    FontFace, HorizontalAlignment, ImageFilter, ImageFit, TickerSpec, TitleScene,
-    VerticalAlignment,
+    Alignment, AssetCatalog, Bounds, Color, Crawl, CrawlMode, Element, ElementId, ElementKind,
+    FieldId, FieldValue, FontFace, HorizontalAlignment, ImageFilter, ImageFit, MissingFont,
+    TickerSpec, TitleScene, VerticalAlignment,
     animation::evaluate_tracks,
+    crawl::{MAX_CRAWL_VISIBLE_SEGMENTS, layout_segment},
     evaluate_clock, evaluate_ticker_position,
     font::ScaledFace,
     image,
@@ -103,6 +104,9 @@ pub enum Degradation {
     /// The frame's [`MAX_GLYPHS_PER_FRAME`] budget ran out. The element's
     /// remaining glyphs were not rasterized.
     GlyphBudgetExhausted { maximum: usize },
+    /// A crawl had more than this many segments inside its viewport; the
+    /// trailing ones were not drawn.
+    CrawlSegmentsCapped { maximum: usize },
 }
 
 /// One element that could not be drawn in full, and why.
@@ -123,6 +127,11 @@ impl fmt::Display for DegradedElement {
             Degradation::GlyphBudgetExhausted { maximum } => write!(
                 formatter,
                 "element {} lost glyphs to the {maximum} glyph frame budget",
+                self.element
+            ),
+            Degradation::CrawlSegmentsCapped { maximum } => write!(
+                formatter,
+                "crawl {} drew only its first {maximum} visible segments",
                 self.element
             ),
         }
@@ -167,6 +176,12 @@ pub enum RenderError {
         width: u32,
         height: u32,
     },
+    /// A crawl was asked for a frame before its last accepted item update.
+    CrawlFrameRegressed {
+        element: ElementId,
+        frame: u64,
+        last_frame: u64,
+    },
 }
 
 impl fmt::Display for RenderError {
@@ -198,6 +213,14 @@ impl fmt::Display for RenderError {
                 formatter,
                 "element {element} has a glyph rasterizing to {width}x{height} pixels"
             ),
+            Self::CrawlFrameRegressed {
+                element,
+                frame,
+                last_frame,
+            } => write!(
+                formatter,
+                "crawl {element} frame {frame} precedes its last update frame {last_frame}"
+            ),
         }
     }
 }
@@ -212,6 +235,13 @@ impl From<FrameError> for RenderError {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReferenceRenderer;
+
+/// A live [`Crawl`] drawn over a scene at one engine frame index.
+#[derive(Clone, Copy, Debug)]
+pub struct CrawlLayer<'a> {
+    pub crawl: &'a Crawl,
+    pub frame: u64,
+}
 
 impl ReferenceRenderer {
     /// Renders a premultiplied RGBA8 frame in deterministic z/index order.
@@ -238,6 +268,33 @@ impl ReferenceRenderer {
         scene: &TitleScene,
         scene_time_ms: u64,
         assets: &AssetCatalog,
+    ) -> Result<RenderOutput, RenderError> {
+        self.render_with_crawls(scene, scene_time_ms, assets, &[])
+    }
+
+    /// Renders like [`Self::render`], then draws each crawl layer on top of
+    /// every scene element, in slice order.
+    ///
+    /// Each crawl paints its optional background over its viewport and then
+    /// the items and separators [`Crawl::view`] reports for the layer's frame,
+    /// clipped to the viewport: a crawl item's pen starts at
+    /// `bounds.x + segment.offset` and is vertically aligned like a text
+    /// element; a roll item's line box starts at `bounds.y + segment.offset`
+    /// and each wrapped line is horizontally aligned. A crawl whose font is
+    /// absent is listed in [`RenderReport::missing_fonts`] and draws only its
+    /// background.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::render`], or
+    /// [`RenderError::CrawlFrameRegressed`] when a layer's frame precedes its
+    /// crawl's last accepted update.
+    pub fn render_with_crawls(
+        self,
+        scene: &TitleScene,
+        scene_time_ms: u64,
+        assets: &AssetCatalog,
+        crawls: &[CrawlLayer<'_>],
     ) -> Result<RenderOutput, RenderError> {
         if scene.width() > MAX_OUTPUT_WIDTH || scene.height() > MAX_OUTPUT_HEIGHT {
             return Err(RenderError::OutputTooLarge {
@@ -288,7 +345,16 @@ impl ReferenceRenderer {
             }
         }
 
-        let validation = validate_scene(scene, assets);
+        let mut validation = validate_scene(scene, assets);
+        for layer in crawls {
+            draw_crawl(
+                &mut canvas,
+                *layer,
+                assets,
+                &mut state,
+                &mut validation.missing_fonts,
+            )?;
+        }
         Ok(RenderOutput {
             frame: ImageFrame::new(scene.width(), scene.height(), stride, pixels)?,
             report: RenderReport {
@@ -541,7 +607,7 @@ impl TextPaint<'_> {
                 laid.width_px,
             )),
         };
-        self.paint_lines(canvas, &scaled, &laid, forced_x, state)
+        self.paint_lines(canvas, &scaled, &laid, (forced_x, None), state)
     }
 
     fn paint_lines(
@@ -549,16 +615,15 @@ impl TextPaint<'_> {
         canvas: &mut Canvas<'_>,
         scaled: &ScaledFace<'_>,
         laid: &LaidText,
-        forced_x: Option<i64>,
+        forced: (Option<i64>, Option<i64>),
         state: &mut FrameState,
     ) -> Result<(), RenderError> {
+        let (forced_x, forced_top) = forced;
         let count = i64::try_from(laid.lines.len()).unwrap_or(i64::MAX);
         let block_height = laid.line_height_px.saturating_mul(count);
-        let top = i64::from(self.bounds.y).saturating_add(aligned_offset(
-            self.bounds.height,
-            block_height,
-            self.alignment.vertical,
-        ));
+        let top = i64::from(self.bounds.y).saturating_add(forced_top.unwrap_or_else(|| {
+            aligned_offset(self.bounds.height, block_height, self.alignment.vertical)
+        }));
         let margin = self.cull_margin();
         for (index, line) in laid.lines.iter().enumerate() {
             let offset = laid
@@ -682,6 +747,77 @@ impl TextPaint<'_> {
         });
         Ok(true)
     }
+}
+
+/// Draws one crawl layer; see [`ReferenceRenderer::render_with_crawls`].
+fn draw_crawl(
+    canvas: &mut Canvas<'_>,
+    layer: CrawlLayer<'_>,
+    assets: &AssetCatalog,
+    state: &mut FrameState,
+    missing_fonts: &mut Vec<MissingFont>,
+) -> Result<(), RenderError> {
+    let crawl = layer.crawl;
+    let config = crawl.config();
+    let view = crawl
+        .view(layer.frame)
+        .map_err(|_| RenderError::CrawlFrameRegressed {
+            element: crawl.id(),
+            frame: layer.frame,
+            last_frame: crawl.last_frame(),
+        })?;
+    if let Some(background) = config.background {
+        canvas.rect(config.bounds, background, config.opacity);
+    }
+    // `Crawl::new` refuses oversized fonts, so this only guards the cast.
+    let size_px = config.font.size_px.clamp(1, MAX_FONT_SIZE_PX);
+    let Some(face) = assets.font(&config.font.family) else {
+        missing_fonts.push(MissingFont {
+            element: crawl.id(),
+            family: config.font.family.clone(),
+        });
+        return Ok(());
+    };
+    let Some(region) = canvas.region(config.bounds) else {
+        return Ok(());
+    };
+    let paint = TextPaint {
+        element: crawl.id(),
+        bounds: config.bounds,
+        region,
+        color: config.fill,
+        opacity: config.opacity,
+        alignment: config.alignment,
+        face,
+        size_px,
+    };
+    let scaled = face.scaled(size_px);
+    for segment in &view.segments {
+        if state.glyphs == 0 {
+            state.degrade(
+                crawl.id(),
+                Degradation::GlyphBudgetExhausted {
+                    maximum: MAX_GLYPHS_PER_FRAME,
+                },
+            );
+            break;
+        }
+        let laid = layout_segment(&scaled, config.mode, config.bounds.width, segment.text);
+        let forced = match config.mode {
+            CrawlMode::Crawl => (Some(segment.offset), None),
+            CrawlMode::Roll => (None, Some(segment.offset)),
+        };
+        paint.paint_lines(canvas, &scaled, &laid, forced, state)?;
+    }
+    if view.truncated {
+        state.degrade(
+            crawl.id(),
+            Degradation::CrawlSegmentsCapped {
+                maximum: MAX_CRAWL_VISIBLE_SEGMENTS,
+            },
+        );
+    }
+    Ok(())
 }
 
 /// How a decoded image is fitted, aligned, and filtered inside its bounds.

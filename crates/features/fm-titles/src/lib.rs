@@ -23,6 +23,13 @@
 //!   element and is listed in [`RenderReport::degraded`] so the rest of the
 //!   frame still goes to air; only a whole-frame cap is a [`RenderError`]. The
 //!   catalog likewise caps image asset count and decoded frame bytes.
+//! * Ticker crawl/roll: a live [`Crawl`] moves at an exact rational speed
+//!   against an engine frame index, wraps seamlessly with a separator, splices
+//!   live item updates in at the next item boundary, and draws over a scene via
+//!   [`ReferenceRenderer::render_with_crawls`].
+//! * Scoreboards: a typed [`Scoreboard`] with bounded/saturating score and
+//!   period actions, a frame-exact [`GameClock`] with a once-only expiry event,
+//!   external key/value mapping, and atomic publication onto template fields.
 //!
 //! # What is still missing
 //!
@@ -36,16 +43,23 @@
 //!   in the project schema instantiates these scenes yet.
 
 mod animation;
+mod crawl;
 mod font;
 mod id;
 mod image;
 mod model;
 mod render;
 mod runtime;
+mod scoreboard;
 mod text;
 mod validation;
 
 pub use animation::{AnimatedProperty, AnimationTrack, Interpolation, Keyframe};
+pub use crawl::{
+    Crawl, CrawlConfig, CrawlError, CrawlMeasure, CrawlMode, CrawlSchedule, CrawlSegment,
+    CrawlSegmentKind, CrawlSpeed, CrawlView, FontCrawlMeasure, MAX_CRAWL_EPOCHS, MAX_CRAWL_GAP_PX,
+    MAX_CRAWL_ITEM_CHARS, MAX_CRAWL_ITEMS, MAX_CRAWL_SEPARATOR_CHARS, MAX_CRAWL_VISIBLE_SEGMENTS,
+};
 pub use font::{FontError, FontFace, MAX_FONT_BYTES};
 pub use id::{ElementId, FieldId, TemplateId, TitleId};
 pub use model::{
@@ -54,7 +68,7 @@ pub use model::{
     TitleScene, TitleTemplate, UpdateError, VerticalAlignment,
 };
 pub use render::{
-    Degradation, DegradedElement, MAX_FONT_SIZE_PX, MAX_GLYPH_RASTER_DIMENSION,
+    CrawlLayer, Degradation, DegradedElement, MAX_FONT_SIZE_PX, MAX_GLYPH_RASTER_DIMENSION,
     MAX_GLYPH_RASTER_PIXELS, MAX_GLYPHS_PER_ELEMENT, MAX_GLYPHS_PER_FRAME, MAX_OUTPUT_HEIGHT,
     MAX_OUTPUT_WIDTH, REFERENCE_RENDERER_LIMITATIONS, ReferenceRenderer, RenderError, RenderOutput,
     RenderReport,
@@ -62,6 +76,12 @@ pub use render::{
 pub use runtime::{
     ClockDirection, ClockFormat, ClockSpec, TickerDirection, TickerSpec, evaluate_clock,
     evaluate_ticker_position,
+};
+pub use scoreboard::{
+    GameClock, GameClockConfig, MAX_GAME_CLOCK_MS, MAX_SCOREBOARD_ACTIONS,
+    MAX_SCOREBOARD_TEXT_CHARS, Player, Scoreboard, ScoreboardAction, ScoreboardBinding,
+    ScoreboardError, ScoreboardEvent, ScoreboardOutcome, ScoreboardRules, TeamSide, TeamState,
+    actions_from_external,
 };
 pub use validation::{
     AssetCatalog, ImageAssetError, MAX_IMAGE_ASSET_BYTES, MAX_IMAGE_ASSETS, MissingFont,
