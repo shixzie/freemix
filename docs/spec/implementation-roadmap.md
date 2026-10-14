@@ -1401,12 +1401,20 @@ value keeps the encoder defaults and the previous byte-identical argv. Every
 segment also embeds a non-drop-frame start timecode derived from its absolute
 first frame index and the project's nominal frame rate (`-timecode`), so each
 segment, including every automatically rotated one, carries its own timeline
-position. Studio exposes a compact permission-gated `RECORDING` panel: it
-shows the replicated desired flag, offers exactly one Start or Stop action
-behind the Ready, view, and transition-permission gates, disables it while an
-earlier record intent is unresolved, and dispatches the field-free protocol
-record commands through the existing worker FIFO. That panel follows the one
-shared desired flag, so it is not per-slot control.
+position. Protocol 2.20 makes recording control per slot: `record_start` and
+`record_stop` address one of the two recorder slots, every acceptance emits one
+durable `recording_changed { recorder, active }` event carrying that slot's
+resulting flag, and snapshots carry the fixed two-slot `recordings` roster;
+schema 23 persists one desired flag per slot. An accepted command opens or
+drains only the addressed slot, startup reconciliation starts each configured
+slot whose restored flag is true, and one slot's start, prime, or finalization
+failure latches and reports only that slot. The CLI takes `--recorder 1|2`
+(default 1) on local and remote record commands and prints both flags, and
+Studio renders a two-row permission-gated `RECORDING` panel — one row per slot,
+each showing that slot's replicated desired flag with exactly one Start or Stop
+action behind the Ready, view, and transition-permission gates, disabled only
+while that slot's own record intent is unresolved, and dispatched through the
+existing worker FIFO as the slot-qualified protocol commands.
 
 Program segments also rotate automatically at exact frame boundaries.
 `--record-segment-seconds <1..=86400>` makes every configured slot close its
@@ -1422,18 +1430,17 @@ report off the render path. A rotation that cannot derive or open its next
 segment latches only that slot and reports a sanitized `rotate:` notice while
 the show and the other slot continue.
 
-The two slots are not independently controllable and still share the project
-encoding format and Master audio: both follow the one engine desired flag, and
-there is no per-recorder codec choice, resolution scaling, audio-map, or
-bus/channel selection, no frame- or byte-based segment policy in the daemon
-(each slot carries its own duration rule through `--record-segment-seconds`
-and `--record-segment-seconds-2`, while frames/bytes policies live in the
-unwired `fm-record` spool), no multiple-track or metadata handling, and no
-protocol or client representation of a recorder roster. That independent
-control, the codec/resolution/audio-map configuration, and `AU-010` bus
-selection remain planned; `AU-010` still depends on the planned
-`AU-002`/`AU-003`, so `OR-001`, `OR-002`, and `AU-010` are unchanged and item 4
-remains incomplete.
+The two slots are independently controllable but still share the project
+encoding format and Master audio: there is no per-recorder codec choice,
+resolution scaling, audio-map, or bus/channel selection, no frame- or
+byte-based segment policy in the daemon (each slot carries its own duration
+rule through `--record-segment-seconds` and `--record-segment-seconds-2`, while
+frames/bytes policies live in the unwired `fm-record` spool), no
+multiple-track or metadata handling, and no authored recorder roster beyond the
+fixed two slots — no names, add/remove, or per-slot startup policy. The
+codec/resolution/audio-map configuration and `AU-010` bus selection remain
+planned; `AU-010` still depends on the planned `AU-002`/`AU-003`, so `OR-001`,
+`OR-002`, and `AU-010` are unchanged and item 4 remains incomplete.
 
 Current implementation boundary for item 5: `fm-record`'s crash-safe packet
 spool now carries ISO/MultiCorder tap and timecode manifest metadata plus
