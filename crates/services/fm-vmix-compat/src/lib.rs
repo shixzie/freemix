@@ -13,6 +13,16 @@ use std::{error::Error, fmt, fmt::Write as _, num::NonZeroU128};
 
 use fm_protocol::{CommandPayload, WireInputId};
 
+mod tcp;
+mod xpath;
+
+pub use tcp::{
+    MAX_TCP_MESSAGE_BYTES, MAX_TCP_SESSIONS, SubscriptionTopic, TcpEvent, TcpHub, TcpReply,
+    TcpRequest, TcpRequestError, TcpSession, TcpSessionError, TcpSessionId, parse_tcp_request,
+    xml_response,
+};
+pub use xpath::{MAX_XPATH_BYTES, MAX_XPATH_PREDICATES, MAX_XPATH_STEPS, XPathError};
+
 /// Maximum encoded HTTP query length accepted by [`parse_http_query`].
 pub const MAX_HTTP_QUERY_BYTES: usize = 8 * 1024;
 /// Maximum TCP line length, excluding an optional trailing CRLF.
@@ -450,8 +460,8 @@ pub fn parse_http_query(query: &str, state: &CompatState) -> Result<Translation,
 /// Parses and translates one vMix TCP `FUNCTION` line.
 ///
 /// The caller may include one trailing CRLF. Embedded line endings and TCP
-/// command names other than `FUNCTION` are rejected; state/TALLY request routing
-/// belongs to the surrounding transport service.
+/// command names other than `FUNCTION` are rejected; use [`TcpSession`] for the
+/// full persistent TCP command set (`TALLY`, `XML`, `XMLTEXT`, `SUBSCRIBE`, ...).
 ///
 /// # Errors
 ///
@@ -468,6 +478,14 @@ pub fn parse_tcp_line(line: &str, state: &CompatState) -> Result<Translation, Pa
         .strip_prefix("FUNCTION ")
         .ok_or(ParseError::Malformed("expected FUNCTION command"))?;
     let (function, query) = body.split_once(' ').unwrap_or((body, ""));
+    translate_function(function, query, state)
+}
+
+fn translate_function(
+    function: &str,
+    query: &str,
+    state: &CompatState,
+) -> Result<Translation, ParseError> {
     if function.is_empty() {
         return Err(ParseError::MissingFunction);
     }
