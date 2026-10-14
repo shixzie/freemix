@@ -10,12 +10,12 @@ use fm_model::{
     MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project, ProjectSettings,
     RECORDER_SLOT_COUNT, REDACTED_STREAM_KEY, RecorderSlot, RecorderSlotError, RectMask,
     RemoveAudioBusError, RemoveInputError, RemoveOutputError, RemoveSceneError, RenameSceneError,
-    RestartPolicy, Rgba8, Rotation, Scene, SceneLayerError, SetStingerError, SimulatedAudio,
-    SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy,
-    StingerConfig, StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint,
-    StreamEndpointError, StreamKey, StreamKeyError, StreamLadder, StreamLadderError,
-    StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetError, StreamTargetId,
-    StreamVideoBitrateError, ValidationError, ValidationErrorKind,
+    ReplaceInputError, RestartPolicy, Rgba8, Rotation, Scene, SceneLayerError, SetStingerError,
+    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
+    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
+    StreamEndpoint, StreamEndpointError, StreamKey, StreamKeyError, StreamLadder,
+    StreamLadderError, StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetError,
+    StreamTargetId, StreamVideoBitrateError, ValidationError, ValidationErrorKind,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, MAX_INPUT_NAME_BYTES,
@@ -109,6 +109,51 @@ fn valid_project() -> Project {
         required_capabilities: vec!["gpu.compositor.wgpu".into()],
     });
     project
+}
+
+#[test]
+fn input_source_replacement_refuses_missing_scenes_and_scene_cycles() {
+    let mut project = valid_project();
+    let before = project.clone();
+
+    assert_eq!(
+        project.replace_input_source(
+            input_id(1),
+            InputKind::Scene {
+                scene_id: scene_id(9),
+                audio_source: None,
+            },
+            Vec::new(),
+        ),
+        Err(ReplaceInputError::MissingScene(scene_id(9)))
+    );
+    assert_eq!(project, before);
+
+    // Scene 1's layer references input 1, so pointing input 1 back at scene 1
+    // would make the graph reach itself.
+    assert_eq!(
+        project.replace_input_source(
+            input_id(1),
+            InputKind::Scene {
+                scene_id: scene_id(1),
+                audio_source: None,
+            },
+            Vec::new(),
+        ),
+        Err(ReplaceInputError::SourceCycle)
+    );
+    assert_eq!(project, before);
+
+    project
+        .replace_input_source(
+            input_id(1),
+            InputKind::Media {
+                asset_uri: "asset://clip.mp4".into(),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    assert_ne!(project, before);
 }
 
 #[test]

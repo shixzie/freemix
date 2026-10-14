@@ -6736,7 +6736,18 @@ fn local_input_replace_scene_preserves_identity_and_rejects_cycle() {
     let journal_before = journal_bytes(&store);
     assert_failure_contains(
         &invoke_bounded(&["input-replace-scene", path, "2", "8"]),
-        "domain project failed validation",
+        "input source would create a cycle",
+    );
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest_before
+    );
+    assert_eq!(journal_bytes(&store), journal_before);
+
+    // A scene source that does not exist is refused specifically too.
+    assert_failure_contains(
+        &invoke_bounded(&["input-replace-scene", path, "2", "99"]),
+        "unknown scene 99",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),

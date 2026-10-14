@@ -241,6 +241,10 @@ impl std::error::Error for AddSceneInputError {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplaceInputError {
     UnknownInput(InputId),
+    /// A scene source names a scene that does not exist.
+    MissingScene(SceneId),
+    /// The replacement would make the input's scene graph reach itself.
+    SourceCycle,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -468,6 +472,8 @@ impl std::fmt::Display for ReplaceInputError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
+            Self::MissingScene(scene) => write!(formatter, "unknown scene {scene}"),
+            Self::SourceCycle => formatter.write_str("input source would create a cycle"),
         }
     }
 }
@@ -929,20 +935,39 @@ impl Project {
     /// # Errors
     ///
     /// Returns [`ReplaceInputError::UnknownInput`] when the input does not
-    /// exist.
+    /// exist, [`ReplaceInputError::MissingScene`] when a scene source names a
+    /// scene that does not exist, and [`ReplaceInputError::SourceCycle`] when
+    /// the replacement would make the input's scene graph reach itself.
     pub fn replace_input_source(
         &mut self,
         input: InputId,
         kind: InputKind,
         required_capabilities: Vec<String>,
     ) -> Result<(), ReplaceInputError> {
-        let candidate = self
+        let index = self
             .inputs
-            .iter_mut()
-            .find(|candidate| candidate.id == input)
+            .iter()
+            .position(|candidate| candidate.id == input)
             .ok_or(ReplaceInputError::UnknownInput(input))?;
-        candidate.kind = kind;
-        candidate.required_capabilities = required_capabilities;
+        if let InputKind::Scene { scene_id, .. } = kind
+            && !self.scenes.iter().any(|scene| scene.id == scene_id)
+        {
+            return Err(ReplaceInputError::MissingScene(scene_id));
+        }
+        let mut candidate = self.clone();
+        candidate.inputs[index].kind = kind;
+        candidate.inputs[index].required_capabilities = required_capabilities;
+        if candidate.validate().is_err_and(|errors| {
+            errors.iter().any(|error| {
+                matches!(
+                    error.kind,
+                    ValidationErrorKind::SelfReference | ValidationErrorKind::Cycle
+                )
+            })
+        }) {
+            return Err(ReplaceInputError::SourceCycle);
+        }
+        *self = candidate;
         Ok(())
     }
 
