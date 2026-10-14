@@ -951,9 +951,13 @@ fn validate_idle_restore(
         }
     }
 
-    if restore_state.revision.get() != accepted_commands
-        || restore_state.event_sequence.get() != accepted_commands
-        || restore_state.runtime_generation.get() != accepted_commands
+    // Every accepted command advances all three counters together, so they
+    // must agree. Persisted receipts are a bounded retention window over the
+    // accepted commands, so they may cover fewer commands than the counters
+    // record, but never more.
+    if accepted_commands > restore_state.revision.get()
+        || restore_state.event_sequence.get() != restore_state.revision.get()
+        || restore_state.runtime_generation.get() != restore_state.revision.get()
     {
         return Err(SnapshotError::CounterMismatch {
             accepted_commands,

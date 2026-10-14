@@ -107,7 +107,7 @@ impl fmt::Display for SnapshotError {
                 runtime_generation,
             } => write!(
                 formatter,
-                "persisted counters must equal the {accepted_commands} accepted commands (revision {revision}, event sequence {event_sequence}, runtime generation {runtime_generation})"
+                "persisted counters must agree and cover the {accepted_commands} accepted receipts (revision {revision}, event sequence {event_sequence}, runtime generation {runtime_generation})"
             ),
         }
     }

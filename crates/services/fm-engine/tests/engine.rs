@@ -2210,7 +2210,7 @@ fn persisted_restore_rejects_an_unrealized_accepted_receipt() {
 }
 
 #[test]
-fn persisted_restore_requires_counters_to_equal_accepted_receipts() {
+fn persisted_restore_requires_counters_to_agree_and_cover_accepted_receipts() {
     let mut original = engine();
     original
         .execute(
@@ -2254,6 +2254,64 @@ fn persisted_restore_requires_counters_to_equal_accepted_receipts() {
             accepted_commands: 1,
             revision: 1,
             event_sequence: 1,
+            runtime_generation: 0,
+        }
+    );
+}
+
+#[test]
+fn persisted_restore_accepts_a_bounded_suffix_of_receipts() {
+    let mut original = engine();
+    original
+        .execute(envelope("first", EngineCommand::SelectPreview(input(3))), 0)
+        .unwrap();
+    original.tick().unwrap();
+    original
+        .execute(
+            envelope("second", EngineCommand::SelectPreview(input(2))),
+            0,
+        )
+        .unwrap();
+    original.tick().unwrap();
+    let snapshot = original.snapshot().unwrap();
+    let mut state = restore_state(&snapshot);
+    state.receipts.retain(|(key, _)| key.as_str() == "second");
+
+    let mut restored =
+        restore_persisted(&snapshot, snapshot.realized_switcher().clone(), state).unwrap();
+    assert_eq!(restored.revision(), Revision::new(2));
+    assert_eq!(restored.snapshot().unwrap().receipts().len(), 1);
+    let replay = restored
+        .execute(
+            envelope("second", EngineCommand::SelectPreview(input(2))),
+            0,
+        )
+        .unwrap();
+    assert!(replay.replayed);
+}
+
+#[test]
+fn persisted_restore_rejects_more_accepted_receipts_than_revisions() {
+    let mut original = engine();
+    original
+        .execute(
+            envelope("accepted", EngineCommand::SelectPreview(input(3))),
+            0,
+        )
+        .unwrap();
+    original.tick().unwrap();
+    let snapshot = original.snapshot().unwrap();
+    let mut state = restore_state(&snapshot);
+    state.revision = Revision::new(0);
+    state.event_sequence = EventSequence::new(0);
+    state.runtime_generation = RuntimeGeneration::new(0);
+
+    assert_eq!(
+        restore_persisted(&snapshot, snapshot.realized_switcher().clone(), state).unwrap_err(),
+        SnapshotError::CounterMismatch {
+            accepted_commands: 1,
+            revision: 0,
+            event_sequence: 0,
             runtime_generation: 0,
         }
     );
