@@ -72,7 +72,9 @@ id = "accept-in-020"
 state = "planned"
 [[tests]]
 id = "accept-in-021"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-virtual-set/tests/camera_moves_and_stack.rs"]
+commands = ["cargo test -p fm-virtual-set --test camera_moves_and_stack"]
 [[tests]]
 id = "accept-in-022"
 state = "planned"
