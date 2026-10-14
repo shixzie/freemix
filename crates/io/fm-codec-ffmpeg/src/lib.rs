@@ -30,6 +30,7 @@ mod error;
 mod probe;
 mod process;
 pub mod record;
+mod record_sink;
 pub mod stream;
 
 use std::ffi::{OsStr, OsString};

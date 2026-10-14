@@ -24,8 +24,8 @@ use std::num::NonZeroU64;
 use crate::{
     fmp4::{Fmp4Splitter, Fmp4Unit, SplitError},
     session::{
-        FailureDecision, FailureOp, RecordingSession, SegmentSink, SegmentStorage, SessionError,
-        SessionSnapshot,
+        FailureDecision, FailureOp, RecordingSession, SegmentEntry, SegmentSink, SegmentStorage,
+        SessionError, SessionSnapshot,
     },
 };
 
@@ -106,6 +106,21 @@ impl From<SessionError> for WriterError {
     fn from(error: SessionError) -> Self {
         Self::Session(error)
     }
+}
+
+/// Everything [`ResilientFmp4Writer::finish_report`] observed while ending a
+/// stream, including the stopped session when the stream itself ended badly.
+#[derive(Debug)]
+pub struct WriterFinish {
+    pub stats: WriterStats,
+    /// Final manifest segment entries.
+    pub segments: Vec<SegmentEntry>,
+    /// The stopped session, or why it could not be stopped.
+    pub snapshot: Result<SessionSnapshot, SessionError>,
+    /// Bytes of an incomplete trailing unit that never reached a segment.
+    pub discarded_bytes: u64,
+    /// The first placement failure, else the stream-end failure.
+    pub error: Option<WriterError>,
 }
 
 #[derive(Debug)]
@@ -201,6 +216,41 @@ impl<S: SegmentStorage> ResilientFmp4Writer<S> {
         let snapshot = self.session.stop()?;
         ended?;
         Ok(snapshot)
+    }
+
+    /// Like [`Self::finish`], but always closes the last segment and stops the
+    /// session, and reports the outcome instead of returning early: a stream
+    /// that ended inside a fragment (a killed muxer) still leaves a stopped
+    /// session whose segments all end on fragment boundaries.
+    #[must_use]
+    pub fn finish_report(mut self) -> WriterFinish {
+        let ended = self.splitter.finish(&mut self.units);
+        let discarded_bytes = match &ended {
+            Err(SplitError::Truncated { buffered }) => *buffered as u64,
+            _ => 0,
+        };
+        let mut placed = self.drain_units();
+        if placed.is_ok()
+            && self.current.is_none()
+            && self.init.is_some()
+            && self.stats.fragments_written == 0
+        {
+            placed = self.ensure_segment();
+        }
+        self.close_current();
+        let stats = self.stats;
+        let segments = self.session.manifest().segments.clone();
+        let snapshot = self.session.stop();
+        let error = placed
+            .err()
+            .or_else(|| ended.err().map(WriterError::Stream));
+        WriterFinish {
+            stats,
+            segments,
+            snapshot,
+            discarded_bytes,
+            error,
+        }
     }
 
     fn drain_units(&mut self) -> Result<(), WriterError> {

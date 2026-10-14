@@ -24,7 +24,7 @@ use std::thread;
 use std::{collections::VecDeque, net::TcpStream};
 
 #[cfg(feature = "native-media")]
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 #[cfg(feature = "native-media")]
 use std::sync::mpsc;
 #[cfg(all(feature = "native-media", target_os = "macos"))]
@@ -103,6 +103,8 @@ mod non_native_sessions;
 mod preflight;
 #[cfg(feature = "macos-program-surface")]
 mod program_surface;
+#[cfg(feature = "native-media")]
+mod recording_session;
 mod scene_render;
 mod status_listener;
 #[cfg(feature = "native-media")]
@@ -605,6 +607,9 @@ struct NativeDaemon {
     /// `--record-audio-bitrate-kbps-2` is slot 1). `None` keeps that slot's
     /// encoder default.
     record_audio_bitrates: [Option<u32>; RECORDER_SLOTS],
+    /// Optional `--record-fallback-dir` plus the segment names still being
+    /// started off the loop; every slot's name derivation consults it.
+    segment_names: recording_session::SegmentNames,
     /// Hysteretic free-space alert for the configured program outputs.
     disk_alert: disk::DiskSpaceAlert,
     /// Latest successfully sampled free bytes across the configured outputs:
@@ -1869,6 +1874,54 @@ struct NativeProgramRecorder {
     /// Configured AAC audio bitrate for this segment; `None` keeps the encoder
     /// default. Reported in `FREEMIXD_RECORDER`.
     audio_bitrate_kbps: Option<u32>,
+    /// Estimated recording bitrate, for the free-space preflight.
+    bitrate_bits_per_second: u64,
+    /// The crash-safe session the open recorder writes into; reported in
+    /// `FREEMIXD_RECORDER_SESSION` and watched for failovers.
+    session: Option<RecorderSession>,
+}
+
+/// The fault-tolerant session behind one open segment.
+#[cfg(feature = "native-media")]
+struct RecorderSession {
+    name: String,
+    status: fm_codec_ffmpeg::record::ResilientOutputStatus,
+    failover: recording_session::FailoverWatch,
+}
+
+/// A started recorder and the session it writes into.
+#[cfg(feature = "native-media")]
+struct OpenedRecorder {
+    recorder: Recorder,
+    session: RecorderSession,
+}
+
+/// Starts a planned session and a recorder writing into it.
+///
+/// Runs on the open worker for runtime starts and rotations, and inline for
+/// configured startup recording. A refused recorder start removes the
+/// session's manifests again when no segment was written, so the refused
+/// name is reused by the next start exactly like the former refused file.
+#[cfg(feature = "native-media")]
+fn start_session_recorder(
+    planned: recording_session::PlannedSession,
+    config: RecordConfig,
+) -> Result<OpenedRecorder, String> {
+    let (output, status, session) = recording_session::open(planned)?;
+    match Recorder::start_with_sink(Box::new(output), config) {
+        Ok(recorder) => Ok(OpenedRecorder {
+            recorder,
+            session: RecorderSession {
+                name: session.name().to_owned(),
+                status,
+                failover: recording_session::FailoverWatch::default(),
+            },
+        }),
+        Err(error) => {
+            recording_session::discard_unused(&session, &status);
+            Err(error.to_string())
+        }
+    }
 }
 
 /// Where an open segment's pairs go.
@@ -1879,9 +1932,9 @@ struct NativeProgramRecorder {
 /// [`Self::Opening`] until the worker hands over the started [`Recorder`].
 #[cfg(feature = "native-media")]
 enum RecorderSink {
-    /// The worker is creating the segment file and starting `FFmpeg`.
+    /// The worker is starting the segment's session and `FFmpeg`.
     Opening {
-        opened: mpsc::Receiver<Result<Recorder, String>>,
+        opened: mpsc::Receiver<Result<OpenedRecorder, String>>,
         /// Failure-notice prefix if the open fails (`start` or `rotate`).
         failure_label: &'static str,
         /// A cancellation requested before the recorder existed; applied as
@@ -2017,10 +2070,12 @@ impl NativeProgramRecorder {
 
     /// Opens a segment synchronously. Used only for configured startup
     /// recording, which completes before readiness is advertised.
+    #[allow(clippy::too_many_arguments)]
     fn start(
         runtime: &NativeMediaRuntime,
         stored: &StoredProject,
         path: &Path,
+        names: &recording_session::SegmentNames,
         wav: bool,
         video_bitrate_kbps: Option<u32>,
         audio_bitrate_kbps: Option<u32>,
@@ -2038,20 +2093,42 @@ impl NativeProgramRecorder {
             audio_bitrate_kbps,
             slot,
         )?;
-        recorder.sink = RecorderSink::Open(Box::new(start_record_output(path, |output| {
-            Ok(Recorder::start(output, config)?)
-        })?));
+        let planned = recorder.plan_session(path, names)?;
+        let opened = start_session_recorder(planned, config).map_err(AppFailure)?;
+        recorder.sink = RecorderSink::Open(Box::new(opened.recorder));
+        recorder.session = Some(opened.session);
         Ok(recorder)
+    }
+
+    /// Plans this segment's crash-safe session on the daemon loop. The name
+    /// is reserved until the session's manifest exists, so the next segment
+    /// name derived while this one is still opening never collides with it.
+    fn plan_session(
+        &self,
+        path: &Path,
+        names: &recording_session::SegmentNames,
+    ) -> AppResult<recording_session::PlannedSession> {
+        let parent = record_output_parent(path)?;
+        recording_session::plan(
+            path,
+            &parent,
+            names,
+            self.slot,
+            self.bitrate_bits_per_second,
+        )
+        .map_err(|error| AppFailure(error).into())
     }
 
     /// Opens a segment for an accepted runtime `RecordStart` without blocking
     /// the daemon loop: the segment file and `FFmpeg` start on a worker while
     /// captured pairs queue in the backlog, and mux readiness is awaited once
     /// the recorder arrives.
+    #[allow(clippy::too_many_arguments)]
     fn open(
         runtime: &NativeMediaRuntime,
         stored: &StoredProject,
         path: &Path,
+        names: &recording_session::SegmentNames,
         wav: bool,
         video_bitrate_kbps: Option<u32>,
         audio_bitrate_kbps: Option<u32>,
@@ -2064,6 +2141,7 @@ impl NativeProgramRecorder {
             format,
             timecode,
             path,
+            names,
             SegmentOpening {
                 wav,
                 video_bitrate_kbps,
@@ -2081,6 +2159,7 @@ impl NativeProgramRecorder {
         format: RecordFormat,
         timecode: Option<fm_types::Timecode>,
         path: &Path,
+        names: &recording_session::SegmentNames,
         opening: SegmentOpening,
     ) -> AppResult<Self> {
         let (mut recorder, config) = Self::prepare(
@@ -2093,30 +2172,22 @@ impl NativeProgramRecorder {
             opening.audio_bitrate_kbps,
             opening.slot,
         )?;
-        // The file is created here, so the next segment name derived while
-        // this one is still opening never collides with it; the parent sync
-        // and the FFmpeg start run on the worker.
-        let (output, parent) = create_record_file(path)?;
+        // The session is planned and its name reserved here, so the next
+        // segment name derived while this one is still opening never collides
+        // with it; the free-space preflight, the session manifest, and the
+        // FFmpeg start run on the worker.
+        let planned = recorder.plan_session(path, names)?;
         let (sender, opened) = mpsc::sync_channel(1);
-        let worker_path = path.to_path_buf();
         let spawned = thread::Builder::new()
             .name(format!("freemix-native-recording-open-{}", opening.slot))
             .spawn(move || {
-                let started = sync_created_record_output(&parent)
-                    .and_then(|()| Ok(Recorder::start(output, config)?))
-                    .inspect_err(|_| {
-                        let _ = fs::remove_file(&worker_path);
-                    })
-                    .map_err(|error| error.to_string());
+                let started = start_session_recorder(planned, config);
                 // The segment always waits for this hand-over before it is
                 // finalized, so the send only fails if the daemon is gone; the
                 // dropped recorder then stops itself.
                 let _ = sender.send(started);
             });
-        if let Err(error) = spawned {
-            let _ = fs::remove_file(path);
-            return Err(error.into());
-        }
+        spawned?;
         recorder.sink = RecorderSink::Opening {
             opened,
             failure_label: opening.failure_label,
@@ -2158,6 +2229,14 @@ impl NativeProgramRecorder {
             .checked_add(config.limits.no_progress_timeout)
             .ok_or_else(|| AppFailure("Program recorder startup timeout overflow".into()))?;
         let backlog_limit = config.limits.max_retained_bytes;
+        let bitrate_bits_per_second = recording_session::estimated_bitrate(
+            dimensions.width(),
+            dimensions.height(),
+            format.frame_rate(),
+            format.channel_layout().channels().len(),
+            video_bitrate_kbps,
+            audio_bitrate_kbps,
+        );
         Ok((
             Self {
                 readback,
@@ -2175,6 +2254,8 @@ impl NativeProgramRecorder {
                 slot,
                 video_bitrate_kbps,
                 audio_bitrate_kbps,
+                bitrate_bits_per_second,
+                session: None,
             },
             config,
         ))
@@ -2222,7 +2303,7 @@ impl NativeProgramRecorder {
         self.finish_open(received)
     }
 
-    fn finish_open(&mut self, received: Result<Recorder, String>) -> OpenPoll {
+    fn finish_open(&mut self, received: Result<OpenedRecorder, String>) -> OpenPoll {
         let RecorderSink::Opening {
             failure_label,
             cancel_requested,
@@ -2233,7 +2314,11 @@ impl NativeProgramRecorder {
         };
         let (failure_label, cancel_requested) = (*failure_label, *cancel_requested);
         match received {
-            Ok(mut recorder) => {
+            Ok(OpenedRecorder {
+                mut recorder,
+                session,
+            }) => {
+                self.session = Some(session);
                 if cancel_requested {
                     recorder.request_cancel();
                 } else if self.prime_on_open {
@@ -2254,6 +2339,20 @@ impl NativeProgramRecorder {
                 self.clear_backlog();
                 OpenPoll::Failed(format!("{failure_label}:{error}"))
             }
+        }
+    }
+
+    /// Reports a directory the session just failed over from. The session
+    /// keeps recording on the next usable directory, so this is a notice, not
+    /// a recorder failure.
+    fn report_failover(&mut self) {
+        if let Some(session) = &mut self.session
+            && let Some(record) =
+                session
+                    .failover
+                    .observe(self.slot, &session.name, &session.status.get())
+        {
+            eprintln!("{record}");
         }
     }
 
@@ -2495,6 +2594,8 @@ impl NativeProgramRecorder {
             return Err(AppFailure("Program recording did not finalize cleanly".into()).into());
         };
         let report = recorder.stop();
+        // A fragment muxed while the recorder drained may have failed over.
+        self.report_failover();
         let duration_ms =
             recorded_duration_ms(report.telemetry.completed_pairs, self.format.frame_rate());
         let free_bytes = disk::available_bytes(&self.parent).unwrap_or(0);
@@ -2524,6 +2625,12 @@ impl NativeProgramRecorder {
                 self.audio_bitrate_kbps,
             )
         );
+        if let Some(session) = &self.session {
+            eprintln!(
+                "{}",
+                recording_session::session_report(self.slot, &session.name, &session.status.get())
+            );
+        }
         let complete = report.telemetry.state == RecorderState::Stopped
             && report.outcome == StopOutcome::Clean
             && report.output == OutputFinalization::Synced
@@ -4290,6 +4397,7 @@ impl NativeDaemon {
             record_segment_seconds: [None; RECORDER_SLOTS],
             record_bitrates: [None, None],
             record_audio_bitrates: [None, None],
+            segment_names: recording_session::SegmentNames::default(),
             disk_alert: disk::DiskSpaceAlert::new(),
             disk_free_bytes: None,
             disk_sampled_at: None,
@@ -4344,17 +4452,54 @@ impl NativeDaemon {
         stored: &StoredProject,
         path: &Path,
     ) -> AppResult<()> {
-        let segment = next_record_segment_path(path, Path::exists)?;
+        let names = self.segment_names.clone();
+        let segment = next_record_segment_path(path, |candidate| names.taken(candidate))?;
         self.recorders[slot] = ProgramRecording::Running(Box::new(NativeProgramRecorder::start(
             &self.runtime,
             stored,
             &segment,
+            &names,
             self.record_wav,
             self.record_bitrates[slot],
             self.record_audio_bitrates[slot],
             slot + 1,
         )?));
         Ok(())
+    }
+
+    /// Records the optional `--record-fallback-dir`: every slot's sessions
+    /// fail over to it, and its files count when deriving segment names.
+    fn configure_record_fallback(&mut self, fallback: Option<PathBuf>) {
+        self.segment_names = recording_session::SegmentNames::new(fallback);
+    }
+
+    /// Repairs every recording session of the configured slots that a crash
+    /// left open, reporting each one on stderr as `FREEMIXD_RECORDING_RECOVERY`.
+    ///
+    /// Runs once at startup, after the recording configuration is known and
+    /// before any recorder starts, so a recovered session's name is never
+    /// reused and its torn segment is repaired before anything records next to
+    /// it. Recovery never refuses startup: a session that cannot be recovered
+    /// is reported and keeps its name.
+    fn recover_recording_sessions(&self) {
+        let outputs = [
+            self.record_program.as_deref(),
+            self.record_program_2.as_deref(),
+        ];
+        let scopes = outputs
+            .into_iter()
+            .enumerate()
+            .filter_map(|(slot, output)| {
+                output.map(|output| recording_session::RecoveryScope {
+                    slot: slot + 1,
+                    output,
+                })
+            })
+            .collect::<Vec<_>>();
+        for record in recording_session::recover_interrupted(&scopes, self.segment_names.fallback())
+        {
+            eprintln!("{record}");
+        }
     }
 
     /// Records the configured output paths and optional project output
@@ -5051,6 +5196,7 @@ impl NativeDaemon {
                 continue;
             }
             recorder.pump_backlog();
+            recorder.report_failover();
             let Some(deadline) = recorder.priming else {
                 continue;
             };
@@ -5092,11 +5238,12 @@ impl NativeDaemon {
         if self.recorders[slot].is_running() {
             return;
         }
+        let names = self.segment_names.clone();
         let segment = match next_slot_segment_path(
             slot,
             self.record_program.as_deref(),
             self.record_program_2.as_deref(),
-            Path::exists,
+            |candidate| names.taken(candidate),
         ) {
             Ok(Some(segment)) => segment,
             Ok(None) => return,
@@ -5108,17 +5255,19 @@ impl NativeDaemon {
                 return;
             }
         };
-        let opened = next_record_segment_path(&segment, Path::exists).and_then(|segment| {
-            NativeProgramRecorder::open(
-                &self.runtime,
-                stored,
-                &segment,
-                self.record_wav,
-                self.record_bitrates[slot],
-                self.record_audio_bitrates[slot],
-                slot + 1,
-            )
-        });
+        let opened = next_record_segment_path(&segment, |candidate| names.taken(candidate))
+            .and_then(|segment| {
+                NativeProgramRecorder::open(
+                    &self.runtime,
+                    stored,
+                    &segment,
+                    &names,
+                    self.record_wav,
+                    self.record_bitrates[slot],
+                    self.record_audio_bitrates[slot],
+                    slot + 1,
+                )
+            });
         match opened {
             Ok(recorder) => self.recorders[slot] = ProgramRecording::Running(Box::new(recorder)),
             Err(error) => {
@@ -5235,11 +5384,12 @@ impl NativeDaemon {
         self.retire_running_recording(slot, None);
         let rotated = next_format.map_err(Into::into).and_then(|format| {
             let timecode = recording_start_timecode(sequence.get(), format.frame_rate());
+            let names = &self.segment_names;
             let segment = next_slot_segment_path(
                 slot,
                 self.record_program.as_deref(),
                 self.record_program_2.as_deref(),
-                Path::exists,
+                |candidate| names.taken(candidate),
             )?
             .ok_or_else(|| AppFailure("rotating recorder slot has no configured output".into()))?;
             // The next segment opens off the render path; the frame captured
@@ -5250,6 +5400,7 @@ impl NativeDaemon {
                 format,
                 timecode,
                 &segment,
+                names,
                 SegmentOpening {
                     wav: self.record_wav,
                     video_bitrate_kbps: self.record_bitrates[slot],
@@ -6106,6 +6257,12 @@ impl NativeDaemon {
         false
     }
 
+    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    fn configure_record_fallback(&mut self, _fallback: Option<PathBuf>) {}
+
+    #[allow(clippy::unused_self)]
+    fn recover_recording_sessions(&self) {}
+
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     fn finalize_recorder(&mut self) -> AppResult<()> {
         Ok(())
@@ -6582,44 +6739,14 @@ fn native_clock_domain() -> MediaClockDomainId {
     MediaClockDomainId::new(NonZeroU128::new(1).expect("one is nonzero"))
 }
 
-/// Creates the segment file at `path` and hands it to `start`.
+/// Validates a segment path and returns its canonical parent directory.
 ///
-/// A start that fails after the file exists removes it again, so a refused
-/// recorder start leaves no empty segment behind to push the next start onto a
-/// later ordinal.
+/// The segment must name a final `.mp4` file whose parent is an existing
+/// directory. The session creates the file itself, exclusively: an existing
+/// file, directory, or symlink at the path is never overwritten.
 #[cfg(feature = "native-media")]
-fn start_record_output<T>(path: &Path, start: impl FnOnce(File) -> AppResult<T>) -> AppResult<T> {
-    let output = create_record_output(path)?;
-    start(output).inspect_err(|_| {
-        let _ = fs::remove_file(path);
-    })
-}
-
-#[cfg(feature = "native-media")]
-fn create_record_output(path: &Path) -> AppResult<File> {
-    let (file, parent) = create_record_file(path)?;
-    sync_created_record_output(&parent)?;
-    Ok(file)
-}
-
-/// Makes a freshly created segment's directory entry durable.
-#[cfg(feature = "native-media")]
-fn sync_created_record_output(parent: &Path) -> AppResult<()> {
-    sync_record_parent(parent).map_err(|error| {
-        AppFailure(format!(
-            "recording output parent synchronization failed: {:?}",
-            error.kind()
-        ))
-        .into()
-    })
-}
-
-/// Creates a segment file exclusively and returns it with its canonical
-/// parent, whose entry is not yet synchronized.
-#[cfg(feature = "native-media")]
-fn create_record_file(path: &Path) -> AppResult<(File, PathBuf)> {
-    let file_name = path
-        .file_name()
+fn record_output_parent(path: &Path) -> AppResult<PathBuf> {
+    path.file_name()
         .filter(|name| !name.is_empty())
         .ok_or_else(|| AppFailure("recording output must name a final .mp4 file".into()))?;
     if path.extension().and_then(|extension| extension.to_str()) != Some("mp4") {
@@ -6627,10 +6754,7 @@ fn create_record_file(path: &Path) -> AppResult<(File, PathBuf)> {
             AppFailure("recording output must have the final extension `.mp4`".into()).into(),
         );
     }
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
+    let parent = recording_parent(path);
     let parent = fs::canonicalize(parent).map_err(|error| {
         AppFailure(format!(
             "recording output parent is not an existing canonical directory: {:?}",
@@ -6643,37 +6767,7 @@ fn create_record_file(path: &Path) -> AppResult<(File, PathBuf)> {
         )
         .into());
     }
-    // `create_new` protects the final component. A hostile concurrent parent
-    // replacement needs a future platform file-capability API, not unsafe path walking here.
-    let output = parent.join(file_name);
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(output)
-        .map_err(|error| {
-            AppFailure(format!(
-                "recording output cannot be created without overwrite: {:?}",
-                error.kind()
-            ))
-        })?;
-    Ok((file, parent))
-}
-
-#[cfg(all(feature = "native-media", unix))]
-fn sync_record_parent(parent: &Path) -> std::io::Result<()> {
-    File::open(parent)?.sync_all()
-}
-
-#[cfg(all(feature = "native-media", windows))]
-fn sync_record_parent(parent: &Path) -> std::io::Result<()> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(parent)?
-        .sync_all()
+    Ok(parent)
 }
 
 #[cfg(feature = "native-media")]
@@ -6814,6 +6908,7 @@ enum Command {
         record_bitrate_kbps_2: Option<u32>,
         record_audio_bitrate_kbps: Option<u32>,
         record_audio_bitrate_kbps_2: Option<u32>,
+        record_fallback_dir: Option<PathBuf>,
         diagnostic_stop_after: Option<Duration>,
         recover_to_checkpoint: bool,
     },
@@ -6870,6 +6965,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut record_bitrate_kbps_2 = None;
             let mut record_audio_bitrate_kbps = None;
             let mut record_audio_bitrate_kbps_2 = None;
+            let mut record_fallback_dir: Option<PathBuf> = None;
             let mut diagnostic_stop_after = None;
             let mut recover_to_checkpoint = false;
             while let Some(option) = arguments.next() {
@@ -6891,6 +6987,20 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         return Err(AppFailure("missing value for --record-output".into()).into());
                     }
                     record_output = Some(parse_record_output_id("--record-output", value)?);
+                    continue;
+                }
+                if let Some(value) = option.strip_prefix("--record-fallback-dir=") {
+                    if record_fallback_dir.is_some() {
+                        return Err(
+                            AppFailure("duplicate option `--record-fallback-dir`".into()).into(),
+                        );
+                    }
+                    if value.is_empty() {
+                        return Err(
+                            AppFailure("missing value for --record-fallback-dir".into()).into()
+                        );
+                    }
+                    record_fallback_dir = Some(PathBuf::from(value));
                     continue;
                 }
                 if let Some(value) = option.strip_prefix("--record-program-2=") {
@@ -7232,6 +7342,20 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                         record_output_2 =
                             Some(parse_record_output_id("--record-output-2", &value)?);
                     }
+                    "--record-fallback-dir" if record_fallback_dir.is_some() => {
+                        return Err(
+                            AppFailure("duplicate option `--record-fallback-dir`".into()).into(),
+                        );
+                    }
+                    "--record-fallback-dir" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure("missing value for --record-fallback-dir".into())
+                            })?;
+                        record_fallback_dir = Some(PathBuf::from(value));
+                    }
                     "--record-wav" if record_wav => {
                         return Err(AppFailure("duplicate option `--record-wav`".into()).into());
                     }
@@ -7420,6 +7544,21 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 )
                 .into());
             }
+            if record_fallback_dir.is_some()
+                && record_program.is_none()
+                && record_program_2.is_none()
+            {
+                return Err(AppFailure(
+                    "--record-fallback-dir requires --record-program or --record-program-2".into(),
+                )
+                .into());
+            }
+            if record_fallback_dir.is_some() && fullscreen_program {
+                return Err(AppFailure(
+                    "--record-fallback-dir currently supports headless native mode only".into(),
+                )
+                .into());
+            }
             if record_segment_seconds[0].is_some() && record_program.is_none() {
                 return Err(AppFailure(
                     "--record-segment-seconds requires --record-program".into(),
@@ -7523,6 +7662,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 record_bitrate_kbps_2,
                 record_audio_bitrate_kbps,
                 record_audio_bitrate_kbps_2,
+                record_fallback_dir,
                 diagnostic_stop_after,
                 recover_to_checkpoint,
             })
@@ -7673,6 +7813,7 @@ fn run(command: Command) -> AppResult<()> {
             record_bitrate_kbps_2,
             record_audio_bitrate_kbps,
             record_audio_bitrate_kbps_2,
+            record_fallback_dir,
             diagnostic_stop_after,
             recover_to_checkpoint,
         } => {
@@ -7719,6 +7860,7 @@ fn run(command: Command) -> AppResult<()> {
                     record_bitrate_kbps_2,
                     record_audio_bitrate_kbps,
                     record_audio_bitrate_kbps_2,
+                    record_fallback_dir,
                     diagnostic_stop_after,
                     recover_to_checkpoint,
                 )
@@ -7871,6 +8013,8 @@ fn serve_program_worker(
         record_bitrate_kbps_2,
         record_audio_bitrate_kbps,
         record_audio_bitrate_kbps_2,
+        // `--record-fallback-dir` is refused with `--fullscreen-program`.
+        None,
         None,
         // `--recover-to-checkpoint` is refused with `--fullscreen-program`.
         false,
@@ -7955,6 +8099,48 @@ fn preflight_recording_outputs<'a>(
     Ok(())
 }
 
+/// Checks every configured recording output and the optional fallback
+/// directory against the crash-safe session contract before any recorder
+/// exists: each output stem must yield valid session names, and the fallback
+/// must not be an output's own directory.
+///
+/// # Errors
+///
+/// Returns an [`AppFailure`] naming the flag; it never renders a path.
+#[cfg_attr(
+    not(feature = "native-media"),
+    allow(clippy::unnecessary_wraps, clippy::needless_pass_by_value)
+)]
+fn validate_recording_sessions<'a>(
+    outputs: impl IntoIterator<Item = (&'static str, Option<&'a Path>)>,
+    fallback: Option<&Path>,
+) -> AppResult<()> {
+    #[cfg(feature = "native-media")]
+    for (flag, path) in outputs {
+        let Some(path) = path else {
+            continue;
+        };
+        recording_session::validate_output_stem(path)
+            .map_err(|reason| AppFailure(format!("{flag} {reason}")))?;
+        if let Some(fallback) = fallback
+            && let (Ok(parent), Ok(fallback)) = (
+                fs::canonicalize(recording_parent(path)),
+                fs::canonicalize(fallback),
+            )
+            && parent == fallback
+        {
+            return Err(AppFailure(format!(
+                "--record-fallback-dir must differ from the {flag} output directory"
+            ))
+            .into());
+        }
+    }
+    // Recording requires native media; without it nothing is configured.
+    #[cfg(not(feature = "native-media"))]
+    let _ = (outputs, fallback);
+    Ok(())
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     clippy::too_many_lines,
@@ -7975,6 +8161,7 @@ fn serve_inner(
     record_bitrate_kbps_2: Option<u32>,
     record_audio_bitrate_kbps: Option<u32>,
     record_audio_bitrate_kbps_2: Option<u32>,
+    record_fallback_dir: Option<PathBuf>,
     diagnostic_stop_after: Option<Duration>,
     recover_to_checkpoint: bool,
 ) -> AppResult<()> {
@@ -8083,6 +8270,13 @@ fn serve_inner(
             ("--record-program", record_program.as_deref()),
             ("--record-program-2", record_program_2.as_deref()),
         ])?;
+        validate_recording_sessions(
+            [
+                ("--record-program", record_program.as_deref()),
+                ("--record-program-2", record_program_2.as_deref()),
+            ],
+            record_fallback_dir.as_deref(),
+        )?;
         let native = native.as_mut().expect("recording requires native state");
         native.configure_recordings(
             record_program.clone(),
@@ -8096,6 +8290,10 @@ fn serve_inner(
             record_bitrate_kbps_2,
             record_audio_bitrate_kbps_2,
         );
+        native.configure_record_fallback(record_fallback_dir);
+        // A crash may have left sessions of these slots open: repair them
+        // before anything records next to them or derives a name from them.
+        native.recover_recording_sessions();
         // Startup reconciliation is deliberate: each configured recorder only
         // auto-starts when its own restored desired flag says so, so a slot
         // whose flag is false stays closed even when the other is recording.
@@ -10912,13 +11110,14 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
 --record-wav additionally writes a linear-PCM WAV sidecar for each segment of every configured recorder, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
 --record-segment-seconds and --record-segment-seconds-2 rotate the active --record-program and --record-program-2 slot respectively to its next <stem>-<NNN>.mp4 segment on a frame boundary after at least the configured number of seconds; each accepts <option> <value> or <option>=<value> and requires its own recorder, and a slot without its own duration never rotates automatically.\n\
 --record-bitrate-kbps and --record-bitrate-kbps-2 set each slot's libx264 video bitrate in kbps (1000..=100000), and --record-audio-bitrate-kbps and --record-audio-bitrate-kbps-2 set its AAC audio bitrate in kbps (8..=1024); each accepts <option> <value> or <option>=<value>, applies only to its own --record-program/--record-program-2 slot, and leaves that slot's encoder defaults untouched when unset.\n\
+Every program segment is a crash-safe recording session with a <stem>.fmsession manifest beside it, so output stems must be 1 to 60 ASCII letters, digits, `-`, `_`, or `.`. A write or sync failure re-homes the fragment in flight into <stem>-<NNNN>.mp4 on the same directory, or, when that directory is full, read-only, missing, or forbidden, on --record-fallback-dir (accepts <option> <value> or <option>=<value>, applies to every slot, must differ from each output directory, and is unavailable with --fullscreen-program); the recording continues instead of failing. Startup recovers every session of the configured slots that a crash left open, cutting torn segments back to their last complete fragment, before anything records. FREEMIXD_RECORDER_SPACE reports each segment's free-space preflight (a start is refused only when every measured directory is exhausted), FREEMIXD_RECORDER_FAILOVER each failover, FREEMIXD_RECORDER_SESSION each finished session, and FREEMIXD_RECORDING_RECOVERY what each recovery kept and lost.\n\
 Configured network stream endpoints are probed once at startup and reported as FREEMIXD_PREFLIGHT; the probe is bounded and never blocks or refuses startup, and it is a reachability check rather than a bandwidth or health guarantee.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
 macOS fullscreen display selection is a zero-based index ordered by physical position, then stable descriptive fields.\n\
@@ -11548,6 +11747,7 @@ mod tests {
                 record_bitrate_kbps_2: None,
                 record_audio_bitrate_kbps: None,
                 record_audio_bitrate_kbps_2: None,
+                record_fallback_dir: None,
                 diagnostic_stop_after: None,
                 recover_to_checkpoint: false,
             }
@@ -12830,6 +13030,136 @@ mod tests {
                     && record_audio_bitrate_kbps_2 == audio_2
             ));
         }
+    }
+
+    #[test]
+    fn parses_and_validates_the_record_fallback_directory() {
+        for flag in [
+            &["--record-fallback-dir", "spare"][..],
+            &["--record-fallback-dir=spare"][..],
+        ] {
+            let mut arguments = vec![
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program",
+                "capture.mp4",
+            ];
+            arguments.extend_from_slice(flag);
+            assert!(matches!(
+                parse_args(strings(&arguments)).unwrap(),
+                Command::Serve {
+                    record_fallback_dir: Some(directory),
+                    ..
+                } if directory == Path::new("spare")
+            ));
+        }
+        assert!(matches!(
+            parse_args(strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--record-program-2",
+                "backup.mp4",
+                "--record-fallback-dir",
+                "spare",
+            ]))
+            .unwrap(),
+            Command::Serve {
+                record_fallback_dir: Some(_),
+                ..
+            }
+        ));
+        for (arguments, expected) in [
+            (
+                strings(&["serve", "show.freemix", "--record-fallback-dir", "spare"]),
+                "--record-fallback-dir requires --record-program or --record-program-2",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-fallback-dir",
+                ]),
+                "missing value for --record-fallback-dir",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-fallback-dir=",
+                ]),
+                "missing value for --record-fallback-dir",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-fallback-dir",
+                    "a",
+                    "--record-fallback-dir=b",
+                ]),
+                "duplicate option `--record-fallback-dir`",
+            ),
+            (
+                strings(&[
+                    "serve",
+                    "show.freemix",
+                    "--native-media",
+                    "--fullscreen-program",
+                    "--record-program",
+                    "capture.mp4",
+                    "--record-fallback-dir",
+                    "spare",
+                ]),
+                "--record-fallback-dir currently supports headless native mode only",
+            ),
+        ] {
+            let error = parse_args(arguments).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn recording_sessions_refuse_invalid_stems_and_a_fallback_in_the_output_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("capture.mp4");
+        validate_recording_sessions([("--record-program", Some(output.as_path()))], None).unwrap();
+        let spaced = directory.path().join("my show.mp4");
+        let error =
+            validate_recording_sessions([("--record-program-2", Some(spaced.as_path()))], None)
+                .unwrap_err()
+                .to_string();
+        assert!(
+            error.starts_with("--record-program-2 output stem must be"),
+            "{error}"
+        );
+        let error = validate_recording_sessions(
+            [("--record-program", Some(output.as_path()))],
+            Some(directory.path()),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error,
+            "--record-fallback-dir must differ from the --record-program output directory"
+        );
+        assert!(!error.contains(&*directory.path().to_string_lossy()));
+        validate_recording_sessions(
+            [("--record-program", Some(output.as_path()))],
+            Some(&directory.path().join("spare")),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -14317,13 +14647,13 @@ mod tests {
     fn recording_output_requires_mp4_and_existing_directory_parent() {
         let directory = tempfile::tempdir().unwrap();
         assert!(
-            create_record_output(&directory.path().join("capture.mov"))
+            record_output_parent(&directory.path().join("capture.mov"))
                 .unwrap_err()
                 .to_string()
                 .contains("final extension `.mp4`")
         );
         assert!(
-            create_record_output(&directory.path().join("missing/capture.mp4"))
+            record_output_parent(&directory.path().join("missing/capture.mp4"))
                 .unwrap_err()
                 .to_string()
                 .contains("existing canonical directory")
@@ -14331,19 +14661,33 @@ mod tests {
         let not_directory = directory.path().join("parent-file");
         fs::write(&not_directory, b"parent").unwrap();
         assert!(
-            create_record_output(&not_directory.join("capture.mp4"))
+            record_output_parent(&not_directory.join("capture.mp4"))
                 .unwrap_err()
                 .to_string()
                 .contains("existing canonical directory")
         );
+        assert_eq!(
+            record_output_parent(&directory.path().join("capture.mp4")).unwrap(),
+            fs::canonicalize(directory.path()).unwrap()
+        );
     }
 
-    /// A recorder that refuses to start after its segment file was created
-    /// must not leave that empty file behind: here a stale WAV sidecar makes
-    /// the real recorder refuse with `AlreadyExists`.
+    #[cfg(feature = "native-media")]
+    fn planned_session(
+        path: &Path,
+        names: &recording_session::SegmentNames,
+    ) -> recording_session::PlannedSession {
+        let parent = record_output_parent(path).unwrap();
+        recording_session::plan(path, &parent, names, 1, 1_000_000).unwrap()
+    }
+
+    /// A recorder that refuses to start after its session was created must
+    /// not leave the session behind: here a stale WAV sidecar makes the real
+    /// recorder refuse with `AlreadyExists`, and the next start may reuse the
+    /// same name.
     #[cfg(feature = "native-media")]
     #[test]
-    fn refused_recorder_start_removes_the_created_segment() {
+    fn refused_recorder_start_removes_the_created_session() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("show.mp4");
         let wav = record_wav_path(&path);
@@ -14360,13 +14704,19 @@ mod tests {
             .unwrap(),
         );
         config.wav = Some(wav.clone());
+        let names = recording_session::SegmentNames::new(None);
 
-        let error = start_record_output(&path, |output| Ok(Recorder::start(output, config)?))
-            .err()
-            .expect("a stale sidecar refuses the recorder start");
+        let Err(error) = start_session_recorder(planned_session(&path, &names), config) else {
+            panic!("a stale sidecar refuses the recorder start");
+        };
 
-        assert!(error.to_string().contains("AlreadyExists"), "{error}");
+        assert!(error.contains("AlreadyExists"), "{error}");
         assert!(!path.exists(), "the refused start left its segment behind");
+        assert!(
+            !directory.path().join("show.fmsession").exists(),
+            "the refused start left its session manifest behind"
+        );
+        assert!(!names.taken(&path), "the refused name is free again");
         assert_eq!(fs::read(wav).unwrap(), b"stale");
     }
 
@@ -14374,15 +14724,51 @@ mod tests {
     #[test]
     fn recording_output_is_exclusive_and_never_overwrites() {
         let directory = tempfile::tempdir().unwrap();
+        let names = recording_session::SegmentNames::new(None);
         let path = directory.path().join("capture.mp4");
-        drop(create_record_output(&path).unwrap());
         fs::write(&path, b"keep-me").unwrap();
-        assert!(create_record_output(&path).is_err());
-        assert_eq!(fs::read(path).unwrap(), b"keep-me");
+        // Name derivation skips an existing file...
+        assert!(names.taken(&path));
+        assert_eq!(
+            next_record_segment_path(&path, |candidate| names.taken(candidate)).unwrap(),
+            directory.path().join("capture-002.mp4")
+        );
+        // ...and a session forced onto it never overwrites: segment creation
+        // is exclusive, so the session moves on to its next segment name.
+        let (output, status, config) =
+            recording_session::open(planned_session(&path, &names)).unwrap();
+        drop(output);
+        assert_eq!(status.get().segments.len(), 0);
+        let second = fm_record::RecordingSession::start(
+            config.clone(),
+            fm_record::FileStorage::new(fm_record::UnknownSpace),
+        );
+        assert!(
+            matches!(
+                second,
+                Err(fm_record::SessionError::ManifestExists { root: 0 })
+            ),
+            "a second session of the same name is refused while its manifest exists"
+        );
+        recording_session::discard_unused(&config, &status);
+        let mut session = fm_record::RecordingSession::start(
+            config,
+            fm_record::FileStorage::new(fm_record::UnknownSpace),
+        )
+        .unwrap();
+        let opened = session.open_segment().unwrap();
+        assert_eq!(opened.index, 2);
+        assert_eq!(
+            opened.path,
+            fs::canonicalize(directory.path())
+                .unwrap()
+                .join("capture-0002.mp4")
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"keep-me");
 
         let occupied_directory = directory.path().join("occupied.mp4");
         fs::create_dir(&occupied_directory).unwrap();
-        assert!(create_record_output(&occupied_directory).is_err());
+        assert!(names.taken(&occupied_directory));
     }
 
     #[cfg(all(feature = "native-media", unix))]
@@ -14395,19 +14781,42 @@ mod tests {
         fs::write(&target, b"keep-me").unwrap();
         let output = directory.path().join("capture.mp4");
         symlink(&target, &output).unwrap();
-        assert!(create_record_output(&output).is_err());
+        let names = recording_session::SegmentNames::new(None);
+        assert!(names.taken(&output));
+        let (sink, status, config) =
+            recording_session::open(planned_session(&output, &names)).unwrap();
+        drop(sink);
+        recording_session::discard_unused(&config, &status);
+        let mut session = fm_record::RecordingSession::start(
+            config,
+            fm_record::FileStorage::new(fm_record::UnknownSpace),
+        )
+        .unwrap();
+        let opened = session.open_segment().unwrap();
+        assert_ne!(
+            opened.path.file_name(),
+            output.file_name(),
+            "the symlinked name is never opened"
+        );
         assert_eq!(fs::read(target).unwrap(), b"keep-me");
     }
 
     #[cfg(feature = "native-media")]
     #[test]
-    fn recording_path_policy_protects_final_component_not_hostile_parent_replacement() {
+    fn a_started_session_reserves_its_name_until_its_manifest_exists() {
         let directory = tempfile::tempdir().unwrap();
+        let names = recording_session::SegmentNames::new(None);
         let path = directory.path().join("capture.mp4");
-        drop(create_record_output(&path).unwrap());
-        assert!(create_record_output(&path).is_err());
-        // Concurrent hostile replacement of the canonical parent is outside
-        // this path-based API boundary and requires platform file capabilities.
+        let planned = planned_session(&path, &names);
+        assert!(names.taken(&path), "planning reserves the name");
+        assert_eq!(
+            next_record_segment_path(&path, |candidate| names.taken(candidate)).unwrap(),
+            directory.path().join("capture-002.mp4")
+        );
+        let (sink, _, _) = recording_session::open(planned).unwrap();
+        assert!(names.taken(&path), "the manifest keeps the name taken");
+        drop(sink);
+        assert!(names.taken(&path), "a stopped session keeps its name");
     }
 
     #[test]

@@ -505,3 +505,350 @@ fn idle_safe_stop_has_no_second_input_timeout() {
     assert_eq!(report.telemetry.completed_pairs, 0);
     assert_eq!(report.telemetry.failure, None);
 }
+
+// ---------------------------------------------------------------------------
+// Fault-tolerant output through `ResilientOutput`
+// ---------------------------------------------------------------------------
+
+mod resilient {
+    use std::fs::{self, File, OpenOptions};
+    use std::io::{self, Write};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use fm_codec_ffmpeg::record::{
+        CleanupStatus, EnqueueRejection, OutputFinalization, RecordConfig, RecordFormat, Recorder,
+        ResilientOutput, ResilientOutputStatus, StopOutcome,
+    };
+    use fm_record::{
+        FailureKind, FailureOp, FileStorage, RecordingSession, ResilientWriterConfig, SegmentSink,
+        SegmentState, SegmentStorage, SessionConfig, SessionState, SpaceProbe, UnknownSpace,
+    };
+    use tempfile::tempdir;
+
+    use super::{FRAME_COUNT, count, format, frame, probe, tools_available};
+
+    /// Enqueues frames `range` and waits until each was accepted.
+    fn enqueue_range(recorder: &mut Recorder, format: &RecordFormat, range: std::ops::Range<u64>) {
+        for offset in range {
+            let mut pending = frame(format, offset);
+            loop {
+                match recorder.enqueue(pending) {
+                    Ok(()) => break,
+                    Err(error) if error.reason == EnqueueRejection::QueueFull => {
+                        pending = error.into_frame();
+                        thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!(
+                        "unexpected enqueue rejection: {:?}; telemetry: {:?}",
+                        error.reason,
+                        recorder.telemetry()
+                    ),
+                }
+            }
+        }
+    }
+
+    fn wait_for(
+        status: &ResilientOutputStatus,
+        what: &str,
+        done: impl Fn(&ResilientOutputStatus) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done(status) {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}: {:?}",
+                status.get()
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Video frames that decode from one segment, after a full decode pass.
+    fn decoded_video_frames(path: &Path) -> u64 {
+        let decode = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(path)
+            .args(["-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            decode.status.success() && decode.stderr.is_empty(),
+            "{} does not decode cleanly: {}",
+            path.display(),
+            String::from_utf8_lossy(&decode.stderr)
+        );
+        let probe = probe(path);
+        let video = probe["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|stream| stream["codec_type"] == "video")
+            .unwrap_or_else(|| panic!("{} has no video stream", path.display()));
+        count(video, "nb_read_frames")
+    }
+
+    fn segment_paths(config: &SessionConfig, status: &ResilientOutputStatus) -> Vec<PathBuf> {
+        status
+            .get()
+            .segments
+            .iter()
+            .filter(|entry| {
+                matches!(entry.state, SegmentState::Closed | SegmentState::Failed)
+                    && entry.bytes > 0
+            })
+            .map(|entry| config.segment_path(entry.root, entry.index).unwrap())
+            .collect()
+    }
+
+    /// Segment storage whose primary root runs out of space part-way through
+    /// its `fail_on_write`-th write, exactly like a filling disk: half of the
+    /// bytes land, then `ENOSPC`.
+    struct FillingPrimary {
+        primary: PathBuf,
+        fail_on_write: u32,
+        writes: Arc<AtomicU32>,
+    }
+
+    struct FillingSink {
+        file: File,
+        fails: Option<(u32, Arc<AtomicU32>)>,
+    }
+
+    impl SpaceProbe for FillingPrimary {
+        fn available_bytes(&mut self, _directory: &Path) -> io::Result<u64> {
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+    }
+
+    impl SegmentStorage for FillingPrimary {
+        type Sink = FillingSink;
+
+        fn create_segment(&mut self, path: &Path) -> io::Result<FillingSink> {
+            let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+            let on_primary = path.parent() == Some(self.primary.as_path());
+            Ok(FillingSink {
+                file,
+                fails: on_primary.then(|| (self.fail_on_write, Arc::clone(&self.writes))),
+            })
+        }
+    }
+
+    impl SegmentSink for FillingSink {
+        fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+            if let Some((fail_on, writes)) = &self.fails
+                && writes.fetch_add(1, Ordering::SeqCst) + 1 >= *fail_on
+            {
+                Write::write_all(&mut self.file, &bytes[..bytes.len() / 2])?;
+                return Err(io::Error::from_raw_os_error(28));
+            }
+            Write::write_all(&mut self.file, bytes)
+        }
+
+        fn sync_data(&mut self) -> io::Result<()> {
+            self.file.sync_data()
+        }
+
+        fn truncate(&mut self, length: u64) -> io::Result<()> {
+            SegmentSink::truncate(&mut self.file, length)
+        }
+    }
+
+    #[test]
+    fn a_primary_that_fills_mid_fragment_fails_over_without_losing_a_frame() {
+        if !tools_available() {
+            return;
+        }
+        let directory = tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        let fallback = directory.path().join("fallback");
+        let config = SessionConfig::new("filling", &primary)
+            .unwrap()
+            .with_fallback(&fallback)
+            .unwrap()
+            .with_bare_first_segment();
+        let writes = Arc::new(AtomicU32::new(0));
+        let storage = FillingPrimary {
+            primary: primary.clone(),
+            // Write 1 is the init segment and write 2 the first fragment; the
+            // disk fills while the second fragment is being written.
+            fail_on_write: 3,
+            writes: Arc::clone(&writes),
+        };
+        let session = RecordingSession::start(config.clone(), storage).unwrap();
+        let output = ResilientOutput::new(session, ResilientWriterConfig::default());
+        let status = output.status();
+        let format = format();
+        let mut recorder =
+            Recorder::start_with_sink(Box::new(output), RecordConfig::new(format.clone())).unwrap();
+        enqueue_range(&mut recorder, &format, 0..FRAME_COUNT);
+        let report = recorder.stop();
+        assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+        assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");
+        assert_eq!(report.cleanup, CleanupStatus::Complete, "{report:?}");
+        assert_eq!(report.telemetry.failure, None, "{report:?}");
+
+        let state = status.get();
+        assert!(state.finished);
+        assert_eq!(state.error, None);
+        assert_eq!(state.stats.failovers, 1, "{state:?}");
+        assert_eq!(state.stats.fragments_rewritten, 1, "{state:?}");
+        assert_eq!(state.snapshot.state, SessionState::Stopped);
+        assert_eq!(state.snapshot.disabled_roots, [0]);
+        assert_eq!(state.snapshot.active_root, 1);
+        let full = state
+            .snapshot
+            .errors
+            .iter()
+            .find(|error| error.op == FailureOp::Write)
+            .expect("the full disk is recorded");
+        assert_eq!((full.root, full.kind), (0, FailureKind::StorageFull));
+
+        // The primary keeps its init plus first fragment, truncated back to
+        // the fragment boundary; everything after lives in the fallback.
+        let segments = segment_paths(&config, &status);
+        assert_eq!(
+            segments,
+            [
+                primary.join("filling.mp4"),
+                fallback.join("filling-0002.mp4")
+            ],
+            "{state:?}"
+        );
+        let frames: u64 = segments.iter().map(|path| decoded_video_frames(path)).sum();
+        assert_eq!(frames, FRAME_COUNT, "every frame survives the failover");
+    }
+
+    #[test]
+    fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
+        if !tools_available() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let directory = tempdir().unwrap();
+            let primary = directory.path().join("primary");
+            let fallback = directory.path().join("fallback");
+            let config = SessionConfig::new("chmod", &primary)
+                .unwrap()
+                .with_fallback(&fallback)
+                .unwrap()
+                .with_bare_first_segment();
+            let session =
+                RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
+            // One fragment per segment, so the next segment is created while
+            // the primary is unwritable.
+            let writer_config = ResilientWriterConfig {
+                max_segment_fragments: std::num::NonZeroU64::new(1),
+                ..ResilientWriterConfig::default()
+            };
+            let output = ResilientOutput::new(session, writer_config);
+            let status = output.status();
+            let format = format();
+            let mut recorder =
+                Recorder::start_with_sink(Box::new(output), RecordConfig::new(format.clone()))
+                    .unwrap();
+            // The encoder's lookahead holds about a second of frames, so the
+            // first one-second fragment is muxed once frame ~75 is encoded.
+            let frames_total: u64 = 150;
+            enqueue_range(&mut recorder, &format, 0..75);
+            wait_for(&status, "the first fragment", |status| {
+                status.get().stats.fragments_written >= 1
+            });
+            fs::set_permissions(&primary, fs::Permissions::from_mode(0o555)).unwrap();
+            if OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(primary.join("probe"))
+                .is_ok()
+            {
+                // Running as root: permissions do not bind; nothing to prove.
+                fs::set_permissions(&primary, fs::Permissions::from_mode(0o755)).unwrap();
+                drop(recorder.cancel());
+                eprintln!("skipping: directory permissions do not bind for this user");
+                return;
+            }
+            enqueue_range(&mut recorder, &format, 75..frames_total);
+            let report = recorder.stop();
+            fs::set_permissions(&primary, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+            assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");
+            assert_eq!(report.telemetry.failure, None, "{report:?}");
+
+            let state = status.get();
+            assert_eq!(state.error, None, "{state:?}");
+            assert_eq!(state.snapshot.disabled_roots, [0], "{state:?}");
+            assert_eq!(state.snapshot.active_root, 1, "{state:?}");
+            assert!(state.snapshot.errors.iter().any(|error| error.root == 0
+                && error.op == FailureOp::CreateSegment
+                && error.kind == FailureKind::PermissionDenied));
+            // Primary segments first, then only fallback segments.
+            let segments = segment_paths(&config, &status);
+            let on_primary = segments
+                .iter()
+                .take_while(|path| path.starts_with(&primary))
+                .count();
+            assert!(on_primary >= 1, "{segments:?}");
+            assert!(
+                segments.len() > on_primary
+                    && segments[on_primary..]
+                        .iter()
+                        .all(|path| path.starts_with(&fallback)),
+                "{segments:?}"
+            );
+            let frames: u64 = segments.iter().map(|path| decoded_video_frames(path)).sum();
+            assert_eq!(frames, frames_total, "every frame survives the failover");
+            // The fallback manifest is current and closed.
+            let manifest = fm_record::SessionManifest::parse(
+                &fs::read_to_string(fallback.join("chmod.fmsession")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest.state, SessionState::Stopped);
+        }
+    }
+
+    #[test]
+    fn a_killed_muxer_leaves_a_stopped_session_of_whole_fragments() {
+        if !tools_available() {
+            return;
+        }
+        let directory = tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        let config = SessionConfig::new("killed", &primary)
+            .unwrap()
+            .with_bare_first_segment();
+        let session =
+            RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
+        let output = ResilientOutput::new(session, ResilientWriterConfig::default());
+        let status = output.status();
+        let format = format();
+        let mut recorder =
+            Recorder::start_with_sink(Box::new(output), RecordConfig::new(format.clone())).unwrap();
+        enqueue_range(&mut recorder, &format, 0..FRAME_COUNT);
+        wait_for(&status, "a fragment", |status| {
+            status.get().stats.fragments_written >= 1
+        });
+        let report = recorder.cancel();
+        assert_eq!(report.outcome, StopOutcome::Killed, "{report:?}");
+        // The session closes cleanly even though the stream was cut.
+        assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");
+        let state = status.get();
+        assert!(state.finished);
+        assert_eq!(state.error, None, "{state:?}");
+        assert_eq!(state.snapshot.state, SessionState::Stopped);
+        let path = primary.join("killed.mp4");
+        assert_eq!(
+            fm_record::scan_fmp4_file(&path).unwrap().integrity,
+            fm_record::Fmp4Integrity::Complete,
+            "only whole fragments reach the segment"
+        );
+        assert!(decoded_video_frames(&path) >= 30);
+    }
+}

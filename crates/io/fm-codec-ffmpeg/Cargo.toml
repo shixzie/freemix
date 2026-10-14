@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 fm-frame = { path = "../../media/fm-frame" }
+fm-record = { path = "../../media/fm-record" }
 fm-types = { path = "../../foundation/fm-types" }
 getrandom = "0.3"
 serde_json = "1.0"

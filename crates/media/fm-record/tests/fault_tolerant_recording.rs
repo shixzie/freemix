@@ -722,6 +722,89 @@ fn rotating_session_writes_playable_segments_and_a_closed_manifest() {
 }
 
 #[test]
+fn finish_report_stops_the_session_when_the_stream_ends_inside_a_fragment() {
+    let temp = TempDirectory::new();
+    let config = SessionConfig::new("killed", temp.join("primary"))
+        .unwrap()
+        .with_bare_first_segment();
+    let session = RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
+    let mut writer = ResilientFmp4Writer::new(session, writer_config(None));
+    let (bytes, boundaries) = stream(3);
+    // A killed muxer: the stream stops 10 bytes into the fourth unit's tail.
+    let cut = usize::try_from(boundaries[2]).unwrap() + 10;
+    writer.push(&bytes[..cut]).unwrap();
+    let finish = writer.finish_report();
+    assert!(
+        matches!(
+            finish.error,
+            Some(WriterError::Stream(SplitError::Truncated { buffered: 10 }))
+        ),
+        "{:?}",
+        finish.error
+    );
+    assert_eq!(finish.discarded_bytes, 10);
+    assert_eq!(finish.stats.fragments_written, 2);
+    let snapshot = finish.snapshot.unwrap();
+    assert_eq!(snapshot.state, SessionState::Stopped);
+    assert_eq!(finish.segments.len(), 1);
+    assert_eq!(finish.segments[0].state, SegmentState::Closed);
+    assert_eq!(finish.segments[0].bytes, boundaries[2]);
+
+    // Segment 1 carries the bare session name and needs no repair.
+    let path = temp.join("primary/killed.mp4");
+    assert_eq!(config.segment_path(0, 1).unwrap(), path);
+    assert_eq!(
+        scan_fmp4_file(&path).unwrap().integrity,
+        Fmp4Integrity::Complete
+    );
+    let manifest = read_manifest(&temp.join("primary/killed.fmsession"));
+    assert_eq!(manifest.state, SessionState::Stopped);
+}
+
+#[test]
+fn bare_first_segment_recovery_repairs_the_operator_named_file() {
+    let temp = TempDirectory::new();
+    let (primary, fallback) = (temp.join("primary"), temp.join("fallback"));
+    let config = SessionConfig::new("program", &primary)
+        .unwrap()
+        .with_fallback(&fallback)
+        .unwrap()
+        .with_bare_first_segment();
+    let mut session =
+        RecordingSession::start(config.clone(), FileStorage::new(UnknownSpace)).unwrap();
+    let opened = session.open_segment().unwrap();
+    assert_eq!(opened.path, primary.join("program.mp4"));
+    let (bytes, boundaries) = stream(3);
+    let mut sink = opened.sink;
+    // Crash: a torn third fragment and no close.
+    Write::write_all(
+        &mut sink,
+        &bytes[..usize::try_from(boundaries[3]).unwrap() - 7],
+    )
+    .unwrap();
+    drop(sink);
+    drop(session);
+
+    let recovery = recover_session(&config).unwrap();
+    assert_eq!(recovery.previous_state(), Some(SessionState::Recording));
+    assert_eq!(recovery.segments.len(), 1);
+    assert!(
+        matches!(
+            recovery.segments[0].outcome,
+            SegmentOutcome::Repaired { .. }
+        ),
+        "{:?}",
+        recovery.segments[0].outcome
+    );
+    assert_eq!(recovery.kept_bytes(), boundaries[2]);
+    assert_eq!(
+        fs::metadata(primary.join("program.mp4")).unwrap().len(),
+        boundaries[2]
+    );
+    assert_eq!(recovery.rewritten_roots, [0, 1]);
+}
+
+#[test]
 fn disk_full_mid_fragment_fails_over_without_losing_media() {
     let temp = TempDirectory::new();
     let (primary, fallback) = (temp.join("primary"), temp.join("fallback"));

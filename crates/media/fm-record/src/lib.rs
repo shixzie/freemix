@@ -36,7 +36,9 @@ pub use iso::{
     ISO_MANIFEST_NAME, IsoManifestEntry, IsoManifestError, IsoTapConfig, IsoTapError,
     IsoTapSession, IsoTapSnapshot, MAX_ISO_TAPS, parse_iso_manifest, render_iso_manifest_entries,
 };
-pub use resilient::{ResilientFmp4Writer, ResilientWriterConfig, WriterError, WriterStats};
+pub use resilient::{
+    ResilientFmp4Writer, ResilientWriterConfig, WriterError, WriterFinish, WriterStats,
+};
 pub use session::{
     FailureDecision, FailureKind, FailureOp, FileStorage, MAX_SESSION_ERRORS,
     MAX_SESSION_NAME_BYTES, MAX_SESSION_ROOTS, MAX_SESSION_SEGMENTS, ManifestRead, OpenSegment,

@@ -1227,6 +1227,7 @@ name = "fm-codec-ffmpeg"
 version = "0.1.0"
 dependencies = [
  "fm-frame",
+ "fm-record",
  "fm-types",
  "getrandom 0.3.4",
  "serde_json",
@@ -1742,6 +1743,7 @@ dependencies = [
  "fm-observability",
  "fm-persistence",
  "fm-protocol",
+ "fm-record",
  "fm-scheduler",
  "fm-server",
  "fm-sim",

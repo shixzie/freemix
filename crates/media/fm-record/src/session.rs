@@ -60,6 +60,7 @@ pub struct SessionConfig {
     max_errors: usize,
     attempts_per_root: u32,
     min_free_bytes: u64,
+    bare_first_segment: bool,
 }
 
 impl SessionConfig {
@@ -88,6 +89,7 @@ impl SessionConfig {
             max_errors: 32,
             attempts_per_root: 3,
             min_free_bytes: 0,
+            bare_first_segment: false,
         })
     }
 
@@ -154,6 +156,16 @@ impl SessionConfig {
         self
     }
 
+    /// Names segment 1 `<name>.mp4` instead of `<name>-0001.mp4`, so a
+    /// session that never fails over or rotates leaves exactly the file the
+    /// operator named. Later segments keep the four-digit form. Recovery must
+    /// use the same setting to find segment 1.
+    #[must_use]
+    pub fn with_bare_first_segment(mut self) -> Self {
+        self.bare_first_segment = true;
+        self
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -169,9 +181,13 @@ impl SessionConfig {
         self.max_segments
     }
 
-    /// File name of segment `index`: `<name>-NNNN.mp4`.
+    /// File name of segment `index`: `<name>-NNNN.mp4`, or `<name>.mp4` for
+    /// segment 1 with [`Self::with_bare_first_segment`].
     #[must_use]
     pub fn segment_file_name(&self, index: u32) -> String {
+        if self.bare_first_segment && index == 1 {
+            return format!("{}.{SESSION_SEGMENT_EXTENSION}", self.name);
+        }
         format!("{}-{index:04}.{SESSION_SEGMENT_EXTENSION}", self.name)
     }
 
@@ -190,15 +206,19 @@ impl SessionConfig {
     }
 
     fn parse_segment_file_name(&self, file_name: &str) -> Option<u32> {
-        let digits = file_name
-            .strip_prefix(self.name.as_str())?
+        let rest = file_name.strip_prefix(self.name.as_str())?;
+        if self.bare_first_segment && rest == format!(".{SESSION_SEGMENT_EXTENSION}") {
+            return Some(1);
+        }
+        let digits = rest
             .strip_prefix('-')?
             .strip_suffix(SESSION_SEGMENT_EXTENSION)?
             .strip_suffix('.')?;
         if digits.len() != 4 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
         }
-        digits.parse().ok().filter(|index| *index >= 1)
+        let minimum = if self.bare_first_segment { 2 } else { 1 };
+        digits.parse().ok().filter(|index| *index >= minimum)
     }
 }
 
@@ -1649,6 +1669,39 @@ mod tests {
         ] {
             assert_eq!(full.parse_segment_file_name(other), None, "{other}");
         }
+    }
+
+    #[test]
+    fn bare_first_segment_names_segment_one_after_the_session() {
+        let config = SessionConfig::new("program-002", "a")
+            .unwrap()
+            .with_bare_first_segment();
+        assert_eq!(config.segment_file_name(1), "program-002.mp4");
+        assert_eq!(config.segment_file_name(2), "program-002-0002.mp4");
+        assert_eq!(config.parse_segment_file_name("program-002.mp4"), Some(1));
+        assert_eq!(
+            config.parse_segment_file_name("program-002-0002.mp4"),
+            Some(2)
+        );
+        // Segment 1 has exactly one name, and a sibling session's bare file
+        // never parses as one of this session's segments.
+        for other in [
+            "program-002-0001.mp4",
+            "program-002.mkv",
+            "program-0020.mp4",
+            "program.mp4",
+        ] {
+            assert_eq!(config.parse_segment_file_name(other), None, "{other}");
+        }
+        let plain = SessionConfig::new("program", "a").unwrap();
+        assert_eq!(plain.parse_segment_file_name("program.mp4"), None);
+        assert_eq!(
+            plain
+                .with_bare_first_segment()
+                .parse_segment_file_name("program-002.mp4"),
+            None,
+            "a three-digit sibling session is not a segment"
+        );
     }
 
     #[test]

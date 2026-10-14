@@ -18,6 +18,7 @@ native-media = [
     "dep:fm-io-api",
     "dep:fm-io-macos",
     "dep:fm-io-network",
+    "dep:fm-record",
     "dep:fm-scheduler",
     "fm-color/native-wgpu",
     "fm-compositor/native-wgpu",
@@ -43,6 +44,7 @@ fm-scheduler = { path = "../../crates/media/fm-scheduler", optional = true }
 fm-sim = { path = "../../crates/media/fm-sim" }
 fm-model = { path = "../../crates/foundation/fm-model" }
 fm-persistence = { path = "../../crates/services/fm-persistence" }
+fm-record = { path = "../../crates/media/fm-record", optional = true }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
 fm-server = { path = "../../crates/services/fm-server" }
 fm-switcher = { path = "../../crates/features/fm-switcher" }

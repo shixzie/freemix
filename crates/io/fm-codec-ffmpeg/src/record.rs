@@ -33,6 +33,10 @@ use fm_types::{Channel, ChannelLayout, FrameRate, SampleRate, Timecode, VideoDim
 
 use crate::{Executable, UnavailableReason};
 
+pub use crate::record_sink::{
+    RecordSink, ResilientOutput, ResilientOutputState, ResilientOutputStatus,
+};
+
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const MAX_HTTP_HEADER_BYTES: usize = 8 * 1024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
@@ -1188,13 +1192,39 @@ impl Recorder {
     ///
     /// Returns a typed path-free error. [`StartError::cleanup`] explicitly says
     /// whether fallback output finalization or child reaping may continue.
-    #[allow(clippy::too_many_lines)]
     pub fn start(output: File, config: RecordConfig) -> Result<Self, StartError> {
+        Self::start_output(PendingOutput::File(output), config)
+    }
+
+    /// Like [`Self::start`], but copies the muxed fragmented MP4 stream into
+    /// `sink` instead of a file. Use a [`ResilientOutput`] for a
+    /// fault-tolerant, multi-directory, crash-recoverable recording session.
+    ///
+    /// The sink receives nothing before `FFmpeg` produces output, and
+    /// [`RecordSink::finish`] runs exactly once when the output ends. A start
+    /// that fails before the output worker exists drops the sink.
+    ///
+    /// # Errors
+    ///
+    /// The same typed startup failures as [`Self::start`], except the
+    /// empty-file checks, which a sink does not need.
+    pub fn start_with_sink(
+        sink: Box<dyn RecordSink>,
+        config: RecordConfig,
+    ) -> Result<Self, StartError> {
+        Self::start_output(PendingOutput::Sink(sink), config)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn start_output(output: PendingOutput, config: RecordConfig) -> Result<Self, StartError> {
         validate_limits(&config.format, config.limits)
             .map_err(|error| StartError::complete(StartErrorKind::InvalidLimits(error)))?;
         validate_bitrates(&config)?;
         let executable = recorder_executable(config.ffmpeg)?;
-        let output = prepare_output(output)?;
+        let output: Box<dyn RecordSink> = match output {
+            PendingOutput::File(file) => Box::new(prepare_output(file)?),
+            PendingOutput::Sink(sink) => sink,
+        };
         prepare_wav(config.wav.as_deref())?;
         // Every later startup failure removes the sidecar created above, so
         // a retry is not refused as `AlreadyExists`.
@@ -1784,6 +1814,12 @@ impl Drop for Recorder {
     }
 }
 
+/// Output handed to [`Recorder::start_output`].
+enum PendingOutput {
+    File(File),
+    Sink(Box<dyn RecordSink>),
+}
+
 fn prepare_output(mut output: File) -> Result<File, StartError> {
     let bytes = output
         .metadata()
@@ -2184,7 +2220,7 @@ fn spawn_dispatcher(
 
 fn spawn_output(
     mut stdout: impl Read + Send + 'static,
-    mut output: File,
+    mut output: impl RecordSink + 'static,
     shared: Arc<Shared>,
 ) -> io::Result<JoinHandle<OutputResult>> {
     thread::Builder::new()
@@ -2217,7 +2253,7 @@ fn spawn_output(
                 finalization_error = Some(error.kind());
                 shared.fail(RecordFailure::OutputFlush(error.kind()));
             }
-            if let Err(error) = output.sync_all() {
+            if let Err(error) = output.finish() {
                 finalization_error.get_or_insert(error.kind());
                 shared.fail(RecordFailure::OutputSync(error.kind()));
             }
@@ -3678,6 +3714,186 @@ mod tests {
         .unwrap();
         let snapshot = shared.snapshot();
         assert!(snapshot.failure.is_none(), "{:?}", snapshot.failure);
+    }
+
+    #[test]
+    fn output_worker_drives_a_sink_and_finishes_it_exactly_once() {
+        #[derive(Default)]
+        struct Calls {
+            written: Vec<u8>,
+            writes: usize,
+            flushes: usize,
+            finishes: usize,
+        }
+
+        struct Recording {
+            calls: Arc<Mutex<Calls>>,
+            fail_after: usize,
+        }
+
+        impl RecordSink for Recording {
+            fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+                let mut calls = self.calls.lock().unwrap();
+                calls.writes += 1;
+                if calls.writes > self.fail_after {
+                    return Err(io::Error::from(io::ErrorKind::StorageFull));
+                }
+                calls.written.extend_from_slice(bytes);
+                Ok(())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                self.calls.lock().unwrap().flushes += 1;
+                Ok(())
+            }
+
+            fn finish(&mut self) -> io::Result<()> {
+                self.calls.lock().unwrap().finishes += 1;
+                Ok(())
+            }
+        }
+
+        struct Chunks(VecDeque<Vec<u8>>);
+
+        impl Read for Chunks {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let Some(chunk) = self.0.pop_front() else {
+                    return Ok(0);
+                };
+                buffer[..chunk.len()].copy_from_slice(&chunk);
+                Ok(chunk.len())
+            }
+        }
+
+        let format = format();
+        let chunks = || {
+            Chunks(VecDeque::from([
+                b"ab".to_vec(),
+                b"cd".to_vec(),
+                b"ef".to_vec(),
+            ]))
+        };
+
+        let shared = Arc::new(Shared::new(&format, 64, [String::new(), String::new()]));
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let sink: Box<dyn RecordSink> = Box::new(Recording {
+            calls: Arc::clone(&calls),
+            fail_after: usize::MAX,
+        });
+        let result = spawn_output(chunks(), sink, Arc::clone(&shared))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(result.finalization, OutputFinalization::Synced);
+        assert_eq!(shared.snapshot().output_bytes, 6);
+        assert!(shared.snapshot().failure.is_none());
+        let seen = calls.lock().unwrap();
+        assert_eq!(
+            (
+                seen.written.as_slice(),
+                seen.writes,
+                seen.flushes,
+                seen.finishes
+            ),
+            (&b"abcdef"[..], 3, 1, 1)
+        );
+        drop(seen);
+
+        // A failed write is sticky: no later chunk reaches the sink, and the
+        // sink is still finished once so it can close its session.
+        let shared = Arc::new(Shared::new(&format, 64, [String::new(), String::new()]));
+        let calls = Arc::new(Mutex::new(Calls::default()));
+        let result = spawn_output(
+            chunks(),
+            Recording {
+                calls: Arc::clone(&calls),
+                fail_after: 1,
+            },
+            Arc::clone(&shared),
+        )
+        .unwrap()
+        .join()
+        .unwrap();
+        assert_eq!(
+            result.finalization,
+            OutputFinalization::Failed(io::ErrorKind::StorageFull)
+        );
+        assert_eq!(
+            shared.snapshot().failure,
+            Some(RecordFailure::OutputWrite(io::ErrorKind::StorageFull))
+        );
+        let seen = calls.lock().unwrap();
+        assert_eq!(
+            (seen.written.as_slice(), seen.writes, seen.finishes),
+            (&b"ab"[..], 2, 1)
+        );
+    }
+
+    #[test]
+    fn resilient_output_refuses_a_non_fragmented_stream_and_closes_its_session() {
+        use fm_record::{
+            FileStorage, RecordingSession, ResilientWriterConfig, SessionConfig, SessionManifest,
+            SessionState, UnknownSpace,
+        };
+
+        let format = format();
+        let directory = tempdir().unwrap();
+        let config = SessionConfig::new("garbage", directory.path())
+            .unwrap()
+            .with_bare_first_segment();
+        let session = RecordingSession::start(config, FileStorage::new(UnknownSpace)).unwrap();
+        let output = ResilientOutput::new(session, ResilientWriterConfig::default());
+        let status = output.status();
+        let shared = Arc::new(Shared::new(&format, 64, [String::new(), String::new()]));
+        // A box header that is not `ftyp`: not a relocatable fragmented MP4.
+        let mut garbage = vec![0, 0, 0, 16];
+        garbage.extend_from_slice(b"mdat");
+        garbage.extend_from_slice(&[0; 8]);
+        let result = spawn_output(io::Cursor::new(garbage), output, Arc::clone(&shared))
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            shared.snapshot().failure,
+            Some(RecordFailure::OutputWrite(io::ErrorKind::InvalidData))
+        );
+        assert_eq!(
+            result.finalization,
+            OutputFinalization::Failed(io::ErrorKind::InvalidData)
+        );
+        let state = status.get();
+        assert!(state.finished);
+        assert!(state.error.is_some(), "{state:?}");
+        assert!(state.segments.is_empty(), "nothing playable was written");
+        assert!(!directory.path().join("garbage.mp4").exists());
+        let manifest = SessionManifest::parse(
+            &fs::read_to_string(directory.path().join("garbage.fmsession")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.state, SessionState::Stopped);
+    }
+
+    #[test]
+    fn a_dropped_resilient_output_still_closes_its_session() {
+        use fm_record::{
+            FileStorage, RecordingSession, ResilientWriterConfig, SessionConfig, SessionManifest,
+            SessionState, UnknownSpace,
+        };
+
+        let directory = tempdir().unwrap();
+        let config = SessionConfig::new("unused", directory.path()).unwrap();
+        let session = RecordingSession::start(config, FileStorage::new(UnknownSpace)).unwrap();
+        let output = ResilientOutput::new(session, ResilientWriterConfig::default());
+        let status = output.status();
+        assert!(!status.get().finished);
+        drop(output);
+        assert!(status.get().finished);
+        assert_eq!(status.get().snapshot.state, SessionState::Stopped);
+        let manifest = SessionManifest::parse(
+            &fs::read_to_string(directory.path().join("unused.fmsession")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.state, SessionState::Stopped);
     }
 
     #[test]
