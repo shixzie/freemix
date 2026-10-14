@@ -602,15 +602,17 @@ pub(super) fn run(
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
-        if native.is_none()
-            && let Err(error) = runtime.playlist_clock.borrow_mut().poll(
-                control,
-                store,
-                durable,
-                authority,
-                Instant::now(),
-            )
-        {
+        // The playlist clock runs before the native frame is realized, so a
+        // boundary that is the pacer's next frame is cut by its advance.
+        if let Err(error) = runtime.playlist_clock.borrow_mut().poll(
+            control,
+            store,
+            durable,
+            authority,
+            native.as_deref_mut(),
+            Some(process_shutdown),
+            Instant::now(),
+        ) {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
@@ -828,7 +830,7 @@ struct Runtime<'a> {
     control: &'a SharedControl,
     store: &'a dyn DurableStore,
     process_shutdown: &'a ProcessShutdown,
-    /// The simulated playlist clock; snapshots read its wall-clock frame.
+    /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
 }
 
@@ -942,7 +944,8 @@ impl Runtime<'_> {
     /// in input order, then the `playlist_state` it announced, before
     /// anything else reaches the peer. The playlist state's frame is the
     /// clock's wall-clock frame: the simulated engine renders only while it
-    /// executes commands, so its cursor lags wall time mid-entry.
+    /// executes commands, so its cursor lags wall time mid-entry. The native
+    /// pacer realizes every frame, so there it is the engine cursor itself.
     fn complete_snapshot(&self, peer: &mut Peer) {
         if matches!(peer.initial_sync.front(), Some(WireMessage::Snapshot(_))) {
             let control = self.control.borrow();

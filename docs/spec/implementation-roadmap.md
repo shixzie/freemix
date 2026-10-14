@@ -2153,6 +2153,17 @@ and transition permissions), the clock's `playlist_advance`, and the
 `playlist_changed` event that `fm-ui-model` reduces; and simulated `freemixd`
 journals the clock's advances as wall time reaches each boundary, so replay and
 restart reproduce the exact frames (`freemix-cli remote-playlist` drives it).
+Native-media `freemixd` runs the same clock from its frame pacer: once a
+boundary is the next frame the pacer realizes, the session loop submits the
+journaled advance (one comparison per loop pass, nothing on the frame path),
+which realizes that frame and the entry's transition through the native
+renderer, so Program cuts on exactly the scheduled frame; playlist start,
+stop, pause, resume, next, previous, and jump are accepted there too. Journal
+replay ticks idle frames up to where each recorded command began, so the
+idle frames the native pacer realizes between commands no longer make
+recovery refuse a native journal, and a playlist playing at a SIGKILL
+resumes on restart from the last journaled frame (`native_playlist`
+covers both under lavapipe).
 Protocol 2.26 completes snapshots with the playlist: a snapshot carries the
 show's `frame_rate` and announces with `playlist=1` a `playlist_state` record
 (revision, frame, loop mode, entries, run state) that follows its title
@@ -2163,9 +2174,14 @@ down, offers Start/Stop/Pause-Resume/Previous/Next and a per-row jump or
 start-from key under the transition permission, and edits the list (add,
 remove, reorder, enable/skip, duration, transition, loop mode) under
 `edit_project` while the playlist is stopped or finished.
-Remaining gaps: the native-media daemon refuses playlist control (no native
-playlist clock); simulated pacing anchors to the wall clock when a boundary
-becomes pending, so it is approximate across commands and the catch-up frames
+Remaining gaps: native frames realized without a clock pass (a client
+transition command's own frames, or the recorder startup barrier) can carry a
+boundary past its frame, so that entry's Program cut lands on the next frame
+instead (its scheduled start, and so every later boundary, is kept); after a
+SIGKILL a native daemon resumes from the end of its last journaled command,
+because the idle frames realized after it are recorded nowhere (a graceful
+stop checkpoints them); simulated pacing anchors to the wall clock when a
+boundary becomes pending, so it is approximate across commands and the catch-up frames
 render synchronously, and controls such as Pause or Next execute at the
 lagging frame cursor, so Studio's countdown is approximate on the simulated
 daemon; fixed durations only, with no media

@@ -283,9 +283,16 @@ Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
   journals the advance under the key `playlist-clock-<revision>-<frame>` when
   wall time reaches the boundary, and renders the frames up to it and
   through the entry's transition, so journal replay reproduces the exact
-  frames. After a refusal it retries only once another command changed the
-  revision. A native-media daemon refuses playlist control with
-  `unavailable`; it still accepts `playlist_set`.
+  frames. A native-media daemon's clock is its frame pacer: it journals the
+  advance under the same key when the boundary is the next frame the pacer
+  realizes (or, when frames passed the boundary without a clock pass, on the
+  next frame) and realizes that frame and the entry's transition through
+  the native renderer, so Program cuts on exactly the boundary frame. The
+  native pacer also realizes idle frames between commands, so journal replay
+  ticks the engine idle up to the frame each recorded command began at (its
+  recorded end frame minus the frames it realizes) before re-executing it.
+  After a refusal either clock retries only once another command changed the
+  revision. Both runtimes accept `playlist_set` and every playlist control.
 - Every accepted playlist command publishes `event=playlist_changed` with
   `frame` (its target frame), `loop`, the complete `entries`, `state`
   (`stopped`, `armed:<start frame>:<from|->`,

@@ -8694,6 +8694,9 @@ fn abandon_to_checkpoint(
 /// an engine restored from the manifest, recording nothing and publishing to
 /// nobody.
 ///
+/// Frames a native daemon realized between two commands are ticked idle
+/// before the later one (see [`replay_idle_frames`]).
+///
 /// Every batch must land on exactly the position it recorded — not just its
 /// revision. A refused command advances no revision and a frame that elapsed
 /// between two commands advances no revision either, so the revision alone
@@ -8729,6 +8732,7 @@ fn replay_journal(
             ))
             .into());
         }
+        replay_idle_frames(&mut control, &principal, &server, &recorded)?;
         execute_durable_command(
             &mut control,
             &ReplayedMutations,
@@ -8750,6 +8754,52 @@ fn replay_journal(
         }
     }
     Ok(durable)
+}
+
+/// Realizes the idle frames the daemon rendered before `recorded` executed.
+///
+/// The native media runtime's pacer realizes a frame on every deadline, also
+/// between commands, so a command can begin at a later frame cursor than the
+/// previous command's own ticks leave a replay at. Those frames carry no
+/// command, so the journal records only where each command ended; the frame
+/// it began at is that end minus the frames the command itself realizes.
+/// Replay ticks the engine idle up to there, exactly as the pacer did. A
+/// simulated daemon renders no idle frames, so this ticks nothing for its
+/// journal.
+///
+/// The clock's `playlist_advance` is accepted only for the playlist's
+/// pending boundary, or for the next frame once that boundary has passed: a
+/// native advance issued late (the boundary passed while frames were realized
+/// without a clock pass, e.g. across a restart) names the frame it ran on, so
+/// replay first ticks idle up to that frame.
+///
+/// A replay that still lands elsewhere is reported by the position check.
+fn replay_idle_frames(
+    control: &mut ControlService<Policy>,
+    principal: &Principal,
+    server: &ServerIdentity,
+    recorded: &journal::RecordedMutation,
+) -> AppResult<()> {
+    if let CommandPayload::PlaylistAdvance { frame } = recorded.command.payload {
+        while control.frame_cursor() < frame && control.playlist_advance_frame() != Some(frame) {
+            control.tick(server)?;
+        }
+    }
+    let ticks = match control.prepare_submit(
+        principal,
+        recorded.command.clone(),
+        recorded.submitted_at_millis,
+    )? {
+        PrepareSubmitOutcome::Prepared(prepared) if prepared.submission().is_accepted() => {
+            command_ticks(&recorded.command, &prepared)
+        }
+        PrepareSubmitOutcome::Prepared(_) | PrepareSubmitOutcome::Replayed(_) => return Ok(()),
+    };
+    let began = recorded.position.frames_rendered.saturating_sub(ticks);
+    while control.frame_cursor() < began {
+        control.tick(server)?;
+    }
+    Ok(())
 }
 
 /// Maps one validated model recorder slot onto the switcher's slot domain.
@@ -9562,21 +9612,53 @@ fn execute_admitted_command(
     native: Option<&mut NativeDaemon>,
     process_shutdown: Option<&ProcessShutdown>,
 ) -> AppResult<CommandDelivery> {
+    let refusal = playlist_clock::playlist_command_refusal(
+        command,
+        control.borrow().diagnostics().current_revision,
+    );
+    if let Some(result) = refusal {
+        return Ok(CommandDelivery {
+            result,
+            #[cfg(test)]
+            events: Vec::new(),
+            #[cfg(test)]
+            runtime_events: Vec::new(),
+        });
+    }
+    execute_authority_command(
+        control,
+        store,
+        durable,
+        principal,
+        server,
+        command,
+        now,
+        native,
+        process_shutdown,
+    )
+}
+
+/// Executes one command a client may send, or one the daemon itself issues
+/// (the playlist clock's `playlist_advance`), through the simulated or native
+/// realization path.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::used_underscore_binding
+)]
+fn execute_authority_command(
+    control: &SharedControl,
+    store: &dyn DurableStore,
+    durable: &mut StoredProject,
+    principal: &Principal,
+    server: &ServerIdentity,
+    command: &CommandMessage,
+    now: u64,
+    native: Option<&mut NativeDaemon>,
+    process_shutdown: Option<&ProcessShutdown>,
+) -> AppResult<CommandDelivery> {
     let execution = {
         let mut control = control.borrow_mut();
-        if let Some(result) = playlist_clock::playlist_command_refusal(
-            command,
-            native.is_some(),
-            control.diagnostics().current_revision,
-        ) {
-            return Ok(CommandDelivery {
-                result,
-                #[cfg(test)]
-                events: Vec::new(),
-                #[cfg(test)]
-                runtime_events: Vec::new(),
-            });
-        }
         if let Some(native) = native {
             if matches!(
                 command.payload,
@@ -17895,6 +17977,406 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Executes `command` as the native daemon does, realizing each of its
+    /// frames one pacer frame at a time and noting the Program input of each.
+    fn native_paced_command(
+        control: &mut ControlService<Policy>,
+        store: &dyn DurableStore,
+        durable: &mut StoredProject,
+        server: &ServerIdentity,
+        command: &CommandMessage,
+        realized: &mut Vec<(u64, InputId, Option<InputId>)>,
+    ) -> CommandResult {
+        execute_durable_command_with_ticks(
+            control,
+            store,
+            durable,
+            &operator(),
+            server,
+            command,
+            0,
+            |control, server| {
+                let outcome = control.tick(server)?;
+                realized.push((
+                    outcome.frame.frame.get(),
+                    outcome.frame.program.primary,
+                    outcome.frame.program.secondary,
+                ));
+                Ok(outcome.runtime_events)
+            },
+        )
+        .unwrap()
+        .submission
+        .output
+        .result
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn playlist_clock_cuts_program_on_scheduled_frames_under_native_pacing() {
+        use fm_protocol::{
+            PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistStart,
+            PlaylistTransitionKind,
+        };
+        use journal::DurableJournal;
+        use playlist_clock::{Pacing, PlaylistClock, advance_command};
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("native-playlist.freemix")).unwrap();
+        let manifest = test_project();
+        store.save(&manifest).unwrap();
+        let mut control = test_control(&manifest);
+        let server = test_server(&control);
+        let mut durable = manifest.clone();
+        let mut realized = Vec::new();
+        let mut clock = PlaylistClock::default();
+        let start_frame;
+        let mut advances = Vec::new();
+        {
+            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            let entries = vec![
+                PlaylistEntrySpec {
+                    id: 1,
+                    input: fm_protocol::WireInputId::from_domain(test_input_id(2)),
+                    duration_frames: 10,
+                    transition: PlaylistTransitionKind::Cut,
+                    transition_frames: 0,
+                    enabled: true,
+                },
+                PlaylistEntrySpec {
+                    id: 2,
+                    input: fm_protocol::WireInputId::from_domain(test_input_id(1)),
+                    duration_frames: 10,
+                    transition: PlaylistTransitionKind::Fade,
+                    transition_frames: 5,
+                    enabled: true,
+                },
+            ];
+            let set = native_paced_command(
+                &mut control,
+                &journal,
+                &mut durable,
+                &server,
+                &test_command(
+                    "set",
+                    "set-key",
+                    CommandPayload::SetPlaylist {
+                        loop_mode: PlaylistLoopMode::Off,
+                        entries,
+                    },
+                ),
+                &mut realized,
+            );
+            assert!(matches!(set, CommandResult::Accepted { .. }), "{set:?}");
+            // The native pacer realizes idle frames between commands; nothing
+            // is pending, so the clock stays quiet.
+            for _ in 0..3 {
+                assert_eq!(clock.due(&control, Pacing::Engine), None);
+                let frame = control.tick(&server).unwrap().frame;
+                realized.push((
+                    frame.frame.get(),
+                    frame.program.primary,
+                    frame.program.secondary,
+                ));
+            }
+            let start = native_paced_command(
+                &mut control,
+                &journal,
+                &mut durable,
+                &server,
+                &test_command(
+                    "start",
+                    "start-key",
+                    CommandPayload::PlaylistControl {
+                        operation: PlaylistOperation::Start {
+                            at: PlaylistStart::AfterFrames(10),
+                            from: None,
+                        },
+                    },
+                ),
+                &mut realized,
+            );
+            assert!(matches!(start, CommandResult::Accepted { .. }), "{start:?}");
+            start_frame = control
+                .playlist_advance_frame()
+                .expect("the start is armed");
+            assert!(start_frame > control.frame_cursor());
+
+            // One pass per pacer frame: the clock submits the advance only
+            // when its boundary is the next frame to realize, else the
+            // pacer realizes an idle frame.
+            while control.frame_cursor() < start_frame + 40 {
+                if let Some((frame, revision)) = clock.due(&control, Pacing::Engine) {
+                    assert_eq!(frame, control.frame_cursor(), "never early, never late");
+                    let result = native_paced_command(
+                        &mut control,
+                        &journal,
+                        &mut durable,
+                        &server,
+                        &advance_command(frame, revision),
+                        &mut realized,
+                    );
+                    clock.observe(frame, revision, &result);
+                    assert!(
+                        matches!(result, CommandResult::Accepted { .. }),
+                        "{result:?}"
+                    );
+                    advances.push(frame);
+                } else {
+                    let frame = control.tick(&server).unwrap().frame;
+                    realized.push((
+                        frame.frame.get(),
+                        frame.program.primary,
+                        frame.program.secondary,
+                    ));
+                }
+            }
+        }
+        assert_eq!(
+            advances,
+            [start_frame, start_frame + 10, start_frame + 20],
+            "entry 1 airs, entry 2 airs, the playlist finishes"
+        );
+        // Frames are realized once each, in order, with no gap.
+        assert!(realized.windows(2).all(|pair| pair[1].0 == pair[0].0 + 1));
+        let program_at = |frame: u64| {
+            realized
+                .iter()
+                .find(|(realized, ..)| *realized == frame)
+                .map(|&(_, primary, secondary)| (primary, secondary))
+                .unwrap()
+        };
+        let (one, two) = (test_input_id(1), test_input_id(2));
+        assert_eq!(program_at(start_frame - 1), (one, None));
+        // Entry 1 cuts input 2 to Program on exactly its frame.
+        assert_eq!(program_at(start_frame), (two, None));
+        assert_eq!(program_at(start_frame + 9), (two, None));
+        // Entry 2 fades input 1 in from its frame over five frames.
+        assert_eq!(program_at(start_frame + 10).1, Some(one));
+        assert_eq!(program_at(start_frame + 15), (one, None));
+        assert_eq!(program_at(start_frame + 30), (one, None));
+        assert_eq!(clock.due(&control, Pacing::Engine), None);
+        assert!(matches!(
+            control.playlist_state().unwrap().state,
+            fm_protocol::PlaylistRunState::Finished { last: Some(2) }
+        ));
+
+        // The journal holds the clock's advances, so replay alone reproduces
+        // the playlist and Program routing the operator saw.
+        let scan = store.scan_journal().unwrap();
+        assert_eq!(scan.batches().len(), 5);
+        let replayed = replay_journal(&manifest, &TitleTemplates::new(), scan.batches()).unwrap();
+        assert_eq!(replayed.project().playlist(), durable.project().playlist());
+        assert_eq!(replayed.runtime_routing(), durable.runtime_routing());
+        assert_eq!(replayed.position(), durable.position());
+    }
+
+    #[test]
+    fn a_late_native_playlist_advance_replays_on_the_frame_it_ran() {
+        use fm_protocol::{
+            PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistStart,
+            PlaylistTransitionKind,
+        };
+        use journal::DurableJournal;
+        use playlist_clock::{Pacing, PlaylistClock, advance_command};
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("late-playlist.freemix")).unwrap();
+        let manifest = test_project();
+        store.save(&manifest).unwrap();
+        let mut control = test_control(&manifest);
+        let server = test_server(&control);
+        let mut durable = manifest.clone();
+        let mut realized = Vec::new();
+        let late_frame;
+        {
+            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            for (id, payload) in [
+                (
+                    "set",
+                    CommandPayload::SetPlaylist {
+                        loop_mode: PlaylistLoopMode::Off,
+                        entries: vec![PlaylistEntrySpec {
+                            id: 1,
+                            input: fm_protocol::WireInputId::from_domain(test_input_id(2)),
+                            duration_frames: 50,
+                            transition: PlaylistTransitionKind::Cut,
+                            transition_frames: 0,
+                            enabled: true,
+                        }],
+                    },
+                ),
+                (
+                    "start",
+                    CommandPayload::PlaylistControl {
+                        operation: PlaylistOperation::Start {
+                            at: PlaylistStart::AfterFrames(5),
+                            from: None,
+                        },
+                    },
+                ),
+            ] {
+                let result = native_paced_command(
+                    &mut control,
+                    &journal,
+                    &mut durable,
+                    &server,
+                    &test_command(id, &format!("{id}-key"), payload),
+                    &mut realized,
+                );
+                assert!(
+                    matches!(result, CommandResult::Accepted { .. }),
+                    "{result:?}"
+                );
+            }
+            let due = control.playlist_advance_frame().unwrap();
+            // The pacer realizes frames past the boundary without a clock
+            // pass (as the recorder startup barrier does), so the advance
+            // runs on the next frame instead.
+            while control.frame_cursor() < due + 7 {
+                control.tick(&server).unwrap();
+            }
+            let mut clock = PlaylistClock::default();
+            let (frame, revision) = clock.due(&control, Pacing::Engine).unwrap();
+            assert_eq!(frame, due + 7);
+            late_frame = frame;
+            let result = native_paced_command(
+                &mut control,
+                &journal,
+                &mut durable,
+                &server,
+                &advance_command(frame, revision),
+                &mut realized,
+            );
+            assert!(
+                matches!(result, CommandResult::Accepted { .. }),
+                "{result:?}"
+            );
+        }
+        // The entry keeps its scheduled start, so later boundaries do not
+        // shift; only its cut lands late.
+        assert!(matches!(
+            control.playlist_state().unwrap().state,
+            fm_protocol::PlaylistRunState::Playing { entry: 1, started_frame, .. }
+                if started_frame == late_frame - 7
+        ));
+        assert_eq!(realized.last().unwrap().0, late_frame);
+        assert_eq!(realized.last().unwrap().1, test_input_id(2));
+        let scan = store.scan_journal().unwrap();
+        let replayed = replay_journal(&manifest, &TitleTemplates::new(), scan.batches()).unwrap();
+        assert_eq!(replayed.position(), durable.position());
+        assert_eq!(replayed.project().playlist(), durable.project().playlist());
+    }
+
+    #[test]
+    fn playlist_clock_does_not_retry_a_refused_advance_at_the_same_revision() {
+        use fm_protocol::{
+            PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistStart,
+            PlaylistTransitionKind,
+        };
+        use playlist_clock::{Pacing, PlaylistClock};
+
+        let mut control = test_control(&test_project());
+        let principal = operator();
+        let set = control
+            .submit(
+                &principal,
+                test_command(
+                    "set",
+                    "set-key",
+                    CommandPayload::SetPlaylist {
+                        loop_mode: PlaylistLoopMode::Off,
+                        entries: vec![PlaylistEntrySpec {
+                            id: 1,
+                            input: fm_protocol::WireInputId::from_domain(test_input_id(2)),
+                            duration_frames: 10,
+                            transition: PlaylistTransitionKind::Cut,
+                            transition_frames: 0,
+                            enabled: true,
+                        }],
+                    },
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(set.is_accepted());
+        let mut clock = PlaylistClock::default();
+        // Nothing pending: under native pacing no wall-clock anchor exists,
+        // so snapshots report the engine cursor itself.
+        assert_eq!(clock.due(&control, Pacing::Engine), None);
+        let rate = FrameRate::new(25, 1).unwrap();
+        let start = control
+            .submit(
+                &principal,
+                test_command(
+                    "start",
+                    "start-key",
+                    CommandPayload::PlaylistControl {
+                        operation: PlaylistOperation::Start {
+                            at: PlaylistStart::Now,
+                            from: None,
+                        },
+                    },
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(start.is_accepted());
+        let server = test_server(&control);
+        control.tick(&server).unwrap();
+        let due_frame = control.playlist_advance_frame().unwrap();
+        while control.frame_cursor() < due_frame {
+            assert_eq!(clock.due(&control, Pacing::Engine), None, "not yet due");
+            control.tick(&server).unwrap();
+        }
+        let (frame, revision) = clock.due(&control, Pacing::Engine).unwrap();
+        assert_eq!(frame, due_frame);
+        assert_eq!(
+            clock.observed_frame(control.frame_cursor(), rate, Instant::now()),
+            control.frame_cursor()
+        );
+        clock.observe(
+            frame,
+            revision,
+            &CommandResult::Rejected {
+                id: "advance".into(),
+                code: "conflict".into(),
+                message: "refused".into(),
+                fields: Vec::new(),
+                current_revision: revision,
+                retryable: false,
+            },
+        );
+        assert_eq!(clock.due(&control, Pacing::Engine), None);
+        // Another accepted command changes the revision, so the clock tries
+        // again; Stop, Pause and Set are accepted on native daemons too.
+        let stop = test_command(
+            "stop",
+            "stop-key",
+            CommandPayload::PlaylistControl {
+                operation: PlaylistOperation::Stop,
+            },
+        );
+        assert_eq!(
+            playlist_clock::playlist_command_refusal(&stop, revision),
+            None
+        );
+        assert!(control.submit(&principal, stop, 0).unwrap().is_accepted());
+        assert_eq!(clock.due(&control, Pacing::Engine), None, "stopped");
+        assert!(
+            playlist_clock::playlist_command_refusal(
+                &test_command(
+                    "client",
+                    "client-key",
+                    CommandPayload::PlaylistAdvance { frame }
+                ),
+                revision,
+            )
+            .is_some(),
+            "only the clock advances the playlist"
+        );
     }
 
     #[test]
