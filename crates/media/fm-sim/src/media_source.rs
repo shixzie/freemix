@@ -193,7 +193,9 @@ impl SimulatedTimedVideoSource {
     ///
     /// # Errors
     ///
-    /// Returns a typed error if timeline, payload, or metadata construction fails.
+    /// Returns a typed error if timeline, payload, or metadata construction
+    /// fails. A failed call leaves the source unchanged, so the same sequence
+    /// number is attempted again by the next call.
     pub fn next_event(&mut self) -> Result<SourceEvent<CpuVideoFrame>, MediaSourceError> {
         let sequence = self.sequence;
         let timing = frame_timing(
@@ -202,16 +204,15 @@ impl SimulatedTimedVideoSource {
             self.clock_domain,
             scheduled_flags(&self.faults, sequence, self.recovering),
         )?;
-        self.sequence = self
-            .sequence
+        let next_sequence = sequence
             .checked_add(1)
             .ok_or(MediaSourceError::TimelineOverflow)?;
 
         if self.faults.is_signal_lost(sequence) {
+            self.sequence = next_sequence;
             self.recovering = true;
             return Ok(SourceEvent::SignalLost { timing });
         }
-        self.recovering = false;
 
         let image = match self.pattern {
             SourcePattern::Bars => vertical_color_bars(self.width, self.height, sequence)?,
@@ -222,6 +223,8 @@ impl SimulatedTimedVideoSource {
         let plane = CpuVideoPlane::new(image.stride(), image.pixels().to_vec())?;
         let payload = CpuVideoPayload::new(PixelFormat::Rgba8, dimensions, vec![plane])?;
         let frame = CpuVideoFrame::new(timing, payload).with_metadata(simulated_video_metadata())?;
+        self.sequence = next_sequence;
+        self.recovering = false;
         Ok(SourceEvent::Frame(frame))
     }
 
@@ -559,4 +562,34 @@ fn fnv_bytes(bytes_hash: u64, bytes: impl IntoIterator<Item = u8>) -> u64 {
     bytes.into_iter().fold(bytes_hash, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_video_frame_build_does_not_consume_the_sequence() {
+        let mut source = SimulatedTimedVideoSource::new(
+            4,
+            2,
+            FrameRate::new(30, 1).unwrap(),
+            ClockDomainId::new(core::num::NonZeroU128::new(1).unwrap()),
+            SourcePattern::Bars,
+        )
+        .unwrap();
+        source.set_faults(FaultSchedule::default().signal_loss_at(0));
+        assert!(source.next_event().unwrap().is_signal_lost());
+
+        // Force the image build to fail after timing succeeded.
+        source.width = 0;
+        assert!(source.next_event().is_err());
+        assert_eq!(source.sequence(), SequenceNumber::new(1));
+
+        source.width = 4;
+        let frame = source.next_frame().unwrap().unwrap();
+        assert_eq!(frame.timing().sequence(), SequenceNumber::new(1));
+        assert!(frame.timing().flags().contains(MediaFlags::DISCONTINUITY));
+        assert_eq!(source.sequence(), SequenceNumber::new(2));
+    }
 }

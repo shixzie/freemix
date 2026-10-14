@@ -120,6 +120,7 @@ pub enum ArgsError {
     InvalidNumber { field: &'static str, value: String },
     InvalidConfig(ConfigError),
     UnknownArgument(String),
+    DuplicateOption(&'static str),
 }
 
 impl fmt::Display for ArgsError {
@@ -131,6 +132,7 @@ impl fmt::Display for ArgsError {
             }
             Self::InvalidConfig(error) => error.fmt(formatter),
             Self::UnknownArgument(argument) => write!(formatter, "unknown argument `{argument}`"),
+            Self::DuplicateOption(option) => write!(formatter, "duplicate option `{option}`"),
         }
     }
 }
@@ -141,34 +143,53 @@ impl std::error::Error for ArgsError {}
 ///
 /// # Errors
 ///
-/// Returns [`ArgsError`] for unknown arguments, missing or non-numeric option
-/// values, and values outside the [`Config`] bounds.
+/// Returns [`ArgsError`] for unknown or repeated arguments, missing or
+/// non-numeric option values, and values outside the [`Config`] bounds.
 pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<CliAction, ArgsError> {
     let mut arguments = arguments.into_iter();
-    let mut block_frames = Config::default().block_frames;
-    let mut channels = Config::default().channels;
-    let mut deadline_us = Config::default().deadline_us;
+    let mut block_frames = None;
+    let mut channels = None;
+    let mut deadline_us = None;
 
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "-h" | "--help" => return Ok(CliAction::Help),
             "-V" | "--version" => return Ok(CliAction::Version),
-            "--block-frames" => {
-                block_frames = parse_number(arguments.next(), "block frames", "--block-frames")?;
-            }
-            "--channels" => {
-                channels = parse_number(arguments.next(), "channels", "--channels")?;
-            }
-            "--deadline-us" => {
-                deadline_us = parse_number(arguments.next(), "deadline", "--deadline-us")?;
-            }
+            "--block-frames" => set_once(
+                &mut block_frames,
+                parse_number(arguments.next(), "block frames", "--block-frames")?,
+                "--block-frames",
+            )?,
+            "--channels" => set_once(
+                &mut channels,
+                parse_number(arguments.next(), "channels", "--channels")?,
+                "--channels",
+            )?,
+            "--deadline-us" => set_once(
+                &mut deadline_us,
+                parse_number(arguments.next(), "deadline", "--deadline-us")?,
+                "--deadline-us",
+            )?,
             _ => return Err(ArgsError::UnknownArgument(argument)),
         }
     }
 
-    Config::new(block_frames, channels, deadline_us)
-        .map(CliAction::Run)
-        .map_err(ArgsError::InvalidConfig)
+    let defaults = Config::default();
+    Config::new(
+        block_frames.unwrap_or(defaults.block_frames),
+        channels.unwrap_or(defaults.channels),
+        deadline_us.unwrap_or(defaults.deadline_us),
+    )
+    .map(CliAction::Run)
+    .map_err(ArgsError::InvalidConfig)
+}
+
+fn set_once<T>(slot: &mut Option<T>, value: T, option: &'static str) -> Result<(), ArgsError> {
+    if slot.is_some() {
+        return Err(ArgsError::DuplicateOption(option));
+    }
+    *slot = Some(value);
+    Ok(())
 }
 
 fn parse_number<T: std::str::FromStr>(
@@ -640,6 +661,27 @@ mod tests {
         .unwrap();
         assert_eq!(action, CliAction::Run(Config::new(512, 8, 2_000).unwrap()));
         assert!(parse_args(["--channels".to_owned(), "0".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn cli_rejects_duplicate_options() {
+        for option in ["--block-frames", "--channels", "--deadline-us"] {
+            let value = if option == "--deadline-us" {
+                "2000"
+            } else {
+                "32"
+            };
+            assert_eq!(
+                parse_args([
+                    option.to_owned(),
+                    value.to_owned(),
+                    option.to_owned(),
+                    value.to_owned(),
+                ]),
+                Err(ArgsError::DuplicateOption(option)),
+                "{option}"
+            );
+        }
     }
 
     #[test]

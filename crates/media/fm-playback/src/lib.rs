@@ -26,8 +26,9 @@ pub use list::{
     MAX_LIST_ITEMS, MAX_PENDING_LIST_GO, MediaList,
 };
 pub use playlist::{
-    CancelGoOutcome, EndAction, GoError, GoScheduleOutcome, GoStatus, PlayerError, Playlist,
-    PlaylistEntry, PlaylistError, PlaylistPlayer, ProgrammedGo,
+    CancelGoOutcome, EndAction, GoError, GoScheduleOutcome, GoStatus, MAX_PENDING_PLAYLIST_GO,
+    MAX_PLAYLIST_GO_RECORDS, PlayerError, Playlist, PlaylistEntry, PlaylistError, PlaylistPlayer,
+    ProgrammedGo,
 };
 pub use slideshow::{
     CropRect, DEFAULT_LARGE_SET_THRESHOLD, FULL_MIX_BASIS_POINTS, KenBurns, MAX_SLIDE_BROWSER_PAGE,

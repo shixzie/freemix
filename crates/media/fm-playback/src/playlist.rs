@@ -5,6 +5,14 @@ use crate::{
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Maximum number of pending programmed GO commands per playlist player.
+pub const MAX_PENDING_PLAYLIST_GO: usize = 1024;
+/// Maximum number of retained GO records (pending plus terminal) per player.
+///
+/// Terminal records are retained so repeated submissions stay idempotent; use
+/// [`PlaylistPlayer::prune_go_history`] to release them explicitly.
+pub const MAX_PLAYLIST_GO_RECORDS: usize = 4096;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EndAction {
     Stop,
@@ -222,6 +230,12 @@ pub enum GoError {
         previous: ScheduleCoordinate,
         requested: ScheduleCoordinate,
     },
+    TooManyPending {
+        max: usize,
+    },
+    TooManyRecords {
+        max: usize,
+    },
     Playlist(PlaylistError),
 }
 
@@ -245,6 +259,18 @@ impl fmt::Display for GoError {
                 formatter,
                 "coordinate {requested} precedes previously applied coordinate {previous}"
             ),
+            Self::TooManyPending { max } => {
+                write!(
+                    formatter,
+                    "at most {max} programmed GO commands may be pending"
+                )
+            }
+            Self::TooManyRecords { max } => {
+                write!(
+                    formatter,
+                    "at most {max} programmed GO records may be retained"
+                )
+            }
             Self::Playlist(error) => error.fmt(formatter),
         }
     }
@@ -333,8 +359,9 @@ impl<F: Clone> PlaylistPlayer<F> {
     ///
     /// # Errors
     ///
-    /// Returns an error for an unknown entry, conflicting ID reuse, or a new
-    /// command targeting an already applied coordinate.
+    /// Returns an error for an unknown entry, conflicting ID reuse, a new
+    /// command targeting an already applied coordinate, or exhausted bounds
+    /// ([`MAX_PENDING_PLAYLIST_GO`], [`MAX_PLAYLIST_GO_RECORDS`]).
     pub fn schedule_go(&mut self, command: ProgrammedGo) -> Result<GoScheduleOutcome, GoError> {
         if self.playlist.entry(command.entry).is_none() {
             return Err(PlaylistError::MissingEntry(command.entry).into());
@@ -351,6 +378,16 @@ impl<F: Clone> PlaylistPlayer<F> {
             .is_some_and(|coordinate| command.coordinate <= coordinate)
         {
             return Err(GoError::CoordinateElapsed(command.coordinate));
+        }
+        if self.pending_go.len() >= MAX_PENDING_PLAYLIST_GO {
+            return Err(GoError::TooManyPending {
+                max: MAX_PENDING_PLAYLIST_GO,
+            });
+        }
+        if self.go_records.len() >= MAX_PLAYLIST_GO_RECORDS {
+            return Err(GoError::TooManyRecords {
+                max: MAX_PLAYLIST_GO_RECORDS,
+            });
         }
         self.pending_go.insert((command.coordinate, command.id));
         self.go_records.insert(
@@ -384,6 +421,22 @@ impl<F: Clone> PlaylistPlayer<F> {
     #[must_use]
     pub fn go_status(&self, id: GoId) -> Option<GoStatus> {
         self.go_records.get(&id).map(|record| record.status)
+    }
+
+    #[must_use]
+    pub fn pending_go_count(&self) -> usize {
+        self.pending_go.len()
+    }
+
+    /// Forgets terminal (cancelled or executed) GO records whose coordinate is
+    /// at or before `through`, returning how many were released. Released IDs
+    /// may be reused afterwards.
+    pub fn prune_go_history(&mut self, through: ScheduleCoordinate) -> usize {
+        let before = self.go_records.len();
+        self.go_records.retain(|_, record| {
+            record.status == GoStatus::Pending || record.command.coordinate > through
+        });
+        before - self.go_records.len()
     }
 
     /// Applies all due commands ordered by coordinate and then stable GO ID.

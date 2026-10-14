@@ -588,6 +588,7 @@ impl FromStr for ControlCommand {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlParseError {
     Empty,
+    InvalidUtf8,
     Unknown(String),
 }
 
@@ -595,6 +596,7 @@ impl fmt::Display for ControlParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => formatter.write_str("empty control command"),
+            Self::InvalidUtf8 => formatter.write_str("control command is not valid UTF-8"),
             Self::Unknown(command) => write!(formatter, "unknown control command `{command}`"),
         }
     }
@@ -604,18 +606,43 @@ impl std::error::Error for ControlParseError {}
 
 /// Runs the newline-delimited control protocol until shutdown or end of input.
 ///
+/// Malformed lines, including lines that are not valid UTF-8, are answered
+/// with an `error` reply and the loop continues. A fatal failure after the
+/// host became ready (an oversized control line, stream I/O, or a lifecycle
+/// transition error) moves the lifecycle to [`LifecycleState::Failed`] before
+/// the error is returned.
+///
 /// # Errors
 ///
-/// Returns [`RunError`] if stream I/O fails or the supplied lifecycle cannot transition.
+/// Returns [`RunError`] if stream I/O fails, a control line exceeds
+/// [`MAX_CONTROL_LINE_BYTES`], or the supplied lifecycle cannot transition.
 pub fn run_control_loop(
-    mut input: impl BufRead,
-    mut output: impl Write,
+    input: impl BufRead,
+    output: impl Write,
     lifecycle: &mut Lifecycle,
 ) -> Result<(), RunError> {
     lifecycle
         .transition(LifecycleState::Ready)
         .map_err(RunError::Lifecycle)?;
+    let result = serve_control_lines(input, output, lifecycle);
+    if result.is_err()
+        && matches!(
+            lifecycle.state(),
+            LifecycleState::Ready | LifecycleState::ShuttingDown
+        )
+    {
+        lifecycle
+            .transition(LifecycleState::Failed)
+            .map_err(RunError::Lifecycle)?;
+    }
+    result
+}
 
+fn serve_control_lines(
+    mut input: impl BufRead,
+    mut output: impl Write,
+    lifecycle: &mut Lifecycle,
+) -> Result<(), RunError> {
     let mut line = Vec::with_capacity(MAX_CONTROL_LINE_BYTES);
     loop {
         if !read_control_line(&mut input, &mut line)? {
@@ -628,10 +655,13 @@ pub fn run_control_loop(
             return Ok(());
         }
 
-        let command_line = std::str::from_utf8(&line)
-            .map_err(|error| RunError::Io(io::Error::new(io::ErrorKind::InvalidData, error)))?
-            .trim_end_matches(['\r', '\n']);
-        match command_line.parse::<ControlCommand>() {
+        let command = std::str::from_utf8(&line)
+            .map_err(|_| ControlParseError::InvalidUtf8)
+            .and_then(|text| {
+                text.trim_end_matches(['\r', '\n'])
+                    .parse::<ControlCommand>()
+            });
+        match command {
             Ok(ControlCommand::Ping) => writeln!(output, "pong").map_err(RunError::Io)?,
             Ok(ControlCommand::Status) => {
                 writeln!(output, "status {}", lifecycle.state()).map_err(RunError::Io)?;
@@ -936,6 +966,42 @@ mod tests {
             Err(RunError::ControlLineTooLong)
         ));
         assert_eq!(output, [] as [u8; 0]);
+        assert_eq!(lifecycle.state(), LifecycleState::Failed);
+    }
+
+    #[test]
+    fn control_loop_answers_non_utf8_line_and_continues() {
+        let input = Cursor::new(b"\xff\xfe\nping\nshutdown\n".to_vec());
+        let mut output = Vec::new();
+        let mut lifecycle = Lifecycle::new();
+
+        run_control_loop(input, &mut output, &mut lifecycle).unwrap();
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "error control command is not valid UTF-8\npong\nshutting-down\n"
+        );
+        assert_eq!(lifecycle.state(), LifecycleState::Stopped);
+    }
+
+    #[test]
+    fn control_loop_io_failure_marks_lifecycle_failed() {
+        struct BrokenOutput;
+        impl Write for BrokenOutput {
+            fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut lifecycle = Lifecycle::new();
+
+        assert!(matches!(
+            run_control_loop(Cursor::new(b"ping\n"), BrokenOutput, &mut lifecycle),
+            Err(RunError::Io(_))
+        ));
+        assert_eq!(lifecycle.state(), LifecycleState::Failed);
     }
 
     #[test]

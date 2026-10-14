@@ -202,6 +202,70 @@ fn programmed_go_is_ordered_cancellable_and_idempotent() {
 }
 
 #[test]
+fn playlist_programmed_go_pending_and_records_are_bounded() {
+    let first = PlaylistEntryId::new(1);
+    let mut player = two_entry_player(EndAction::Stop);
+    let go = |id: u128, coordinate: u64| ProgrammedGo {
+        id: GoId::new(id),
+        coordinate: ScheduleCoordinate::new(coordinate),
+        entry: first,
+    };
+    let pending = u128::try_from(MAX_PENDING_PLAYLIST_GO).unwrap();
+    for id in 0..pending {
+        player.schedule_go(go(id, 1)).unwrap();
+    }
+    assert_eq!(player.pending_go_count(), MAX_PENDING_PLAYLIST_GO);
+    assert_eq!(
+        player.schedule_go(go(pending, 1)),
+        Err(GoError::TooManyPending {
+            max: MAX_PENDING_PLAYLIST_GO
+        })
+    );
+
+    // Executed records stay retained for idempotency until pruned, so the
+    // record bound trips once terminal history fills up.
+    let mut next_id = pending;
+    let mut coordinate = 1;
+    while next_id < u128::try_from(MAX_PLAYLIST_GO_RECORDS).unwrap() {
+        player
+            .apply_scheduled(ScheduleCoordinate::new(coordinate))
+            .unwrap();
+        coordinate += 1;
+        while player.pending_go_count() < MAX_PENDING_PLAYLIST_GO
+            && next_id < u128::try_from(MAX_PLAYLIST_GO_RECORDS).unwrap()
+        {
+            player.schedule_go(go(next_id, coordinate)).unwrap();
+            next_id += 1;
+        }
+    }
+    player
+        .apply_scheduled(ScheduleCoordinate::new(coordinate))
+        .unwrap();
+    assert_eq!(player.pending_go_count(), 0);
+    assert_eq!(
+        player.schedule_go(go(next_id, coordinate + 1)),
+        Err(GoError::TooManyRecords {
+            max: MAX_PLAYLIST_GO_RECORDS
+        })
+    );
+    // Retained history still answers idempotent retries.
+    assert_eq!(
+        player.schedule_go(go(0, 1)).unwrap(),
+        GoScheduleOutcome::Unchanged(GoStatus::Executed)
+    );
+
+    assert_eq!(
+        player.prune_go_history(ScheduleCoordinate::new(coordinate)),
+        MAX_PLAYLIST_GO_RECORDS
+    );
+    assert_eq!(player.go_status(GoId::new(0)), None);
+    assert_eq!(
+        player.schedule_go(go(next_id, coordinate + 1)).unwrap(),
+        GoScheduleOutcome::Scheduled
+    );
+}
+
+#[test]
 fn missing_fixture_frame_does_not_advance_cursor() {
     let clip = FixtureClip::from_slots(ClipId::new(1), vec![Some(1_u8), None]).unwrap();
     let mut transport = Transport::new(clip.into());

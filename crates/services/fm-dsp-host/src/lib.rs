@@ -192,9 +192,19 @@ impl PluginScanner {
     }
 
     /// Marks the active scan as failed and clears partial metadata.
-    pub fn fail_scan(&mut self, error: ScanError) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScanError::NotScanning`] without touching the catalog when no
+    /// scan is active, so a completed catalog cannot be wiped by a stale
+    /// failure report.
+    pub fn fail_scan(&mut self, error: ScanError) -> Result<(), ScanError> {
+        if self.state != ScanState::Scanning {
+            return Err(ScanError::NotScanning);
+        }
         self.metadata.clear();
         self.state = ScanState::Failed(error);
+        Ok(())
     }
 
     #[must_use]
@@ -307,7 +317,14 @@ pub enum ConfigError {
     EmptyChain,
     TooManyPlugins(usize),
     DuplicatePlugin(PluginId),
-    Plugin { id: PluginId, error: PluginError },
+    /// The plugin at `index` panicked while reporting its metadata.
+    PluginMetadataPanicked {
+        index: usize,
+    },
+    Plugin {
+        id: PluginId,
+        error: PluginError,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -334,6 +351,12 @@ impl fmt::Display for ConfigError {
                 "DSP chain contains {count} plugins; maximum is {MAX_CHAIN_PLUGINS}"
             ),
             Self::DuplicatePlugin(id) => write!(formatter, "duplicate plugin instance {id}"),
+            Self::PluginMetadataPanicked { index } => {
+                write!(
+                    formatter,
+                    "plugin at chain index {index} panicked reporting metadata"
+                )
+            }
             Self::Plugin { id, error } => {
                 write!(formatter, "plugin {id} could not be configured: {error}")
             }
@@ -437,6 +460,9 @@ pub struct PluginStatus {
 
 struct PluginNode {
     plugin: Box<dyn DspPlugin>,
+    /// Identity captured once at configuration so later state checks never
+    /// call back into (possibly crashed) plugin code just to learn it.
+    metadata: PluginMetadata,
     status: PluginStatus,
     manually_bypassed: bool,
 }
@@ -620,6 +646,11 @@ pub enum StateError {
         id: PluginId,
         error: PluginError,
     },
+    /// The plugin panicked during a state call and is now quarantined as
+    /// [`PluginHealth::Crashed`].
+    PluginCrashed {
+        id: PluginId,
+    },
 }
 
 impl fmt::Display for StateError {
@@ -646,6 +677,9 @@ impl fmt::Display for StateError {
             ),
             Self::InvalidPluginState { id, error } => {
                 write!(formatter, "invalid state for plugin {id}: {error}")
+            }
+            Self::PluginCrashed { id } => {
+                write!(formatter, "plugin {id} crashed during a state operation")
             }
         }
     }
@@ -679,7 +713,9 @@ impl DspHost {
     /// # Errors
     ///
     /// Returns an error for an invalid host format or policy, an empty,
-    /// duplicate, or oversized chain, or a plugin configuration failure.
+    /// duplicate, or oversized chain, or a plugin configuration failure. A
+    /// plugin panic while reporting metadata or configuring is caught and
+    /// reported as an error ([`PluginError::Crashed`] for `configure`).
     pub fn configure(
         chain_id: ChainId,
         config: HostConfig,
@@ -692,24 +728,32 @@ impl DspHost {
         if plugins.len() > MAX_CHAIN_PLUGINS {
             return Err(ConfigError::TooManyPlugins(plugins.len()));
         }
+        let mut identities: Vec<PluginMetadata> = Vec::with_capacity(plugins.len());
         for (index, plugin) in plugins.iter().enumerate() {
-            let id = plugin.metadata().id;
-            if plugins[..index]
-                .iter()
-                .any(|prior| prior.metadata().id == id)
-            {
-                return Err(ConfigError::DuplicatePlugin(id));
+            let metadata = catch_unwind(AssertUnwindSafe(|| plugin.metadata()))
+                .map_err(|_| ConfigError::PluginMetadataPanicked { index })?;
+            if identities.iter().any(|prior| prior.id == metadata.id) {
+                return Err(ConfigError::DuplicatePlugin(metadata.id));
             }
+            identities.push(metadata);
         }
 
         let mut nodes = Vec::with_capacity(plugins.len());
-        for mut plugin in plugins {
-            let id = plugin.metadata().id;
-            plugin
-                .configure(config.format)
-                .map_err(|error| ConfigError::Plugin { id, error })?;
+        for (mut plugin, metadata) in plugins.into_iter().zip(identities) {
+            let id = metadata.id;
+            match catch_unwind(AssertUnwindSafe(|| plugin.configure(config.format))) {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => return Err(ConfigError::Plugin { id, error }),
+                Err(_) => {
+                    return Err(ConfigError::Plugin {
+                        id,
+                        error: PluginError::Crashed,
+                    });
+                }
+            }
             nodes.push(PluginNode {
                 plugin,
+                metadata,
                 status: PluginStatus {
                     id,
                     health: PluginHealth::Active,
@@ -858,7 +902,12 @@ impl DspHost {
                 continue;
             }
             self.scratch.copy_from_slice(&self.ring[write].wet);
-            let cost = node.plugin.processing_cost();
+            let Ok(cost) = catch_unwind(AssertUnwindSafe(|| node.plugin.processing_cost())) else {
+                node.status.health = PluginHealth::Crashed;
+                node.status.substitutions = node.status.substitutions.saturating_add(1);
+                substitutions = substitutions.saturating_add(1);
+                continue;
+            };
             elapsed = elapsed.saturating_add(cost);
             if budget_used.saturating_add(cost) > self.config.deadline {
                 self.ring[write].wet.copy_from_slice(&self.scratch);
@@ -951,36 +1000,45 @@ impl DspHost {
     }
 
     /// Saves plugin parameters and host bypass controls.
-    #[must_use]
-    pub fn save_state(&self) -> SavedHostState {
-        SavedHostState {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StateError::PluginCrashed`] when a plugin panics while saving;
+    /// that plugin is quarantined as [`PluginHealth::Crashed`].
+    pub fn save_state(&mut self) -> Result<SavedHostState, StateError> {
+        let mut plugins = Vec::with_capacity(self.plugins.len());
+        for node in &mut self.plugins {
+            let Ok(payload) = catch_unwind(AssertUnwindSafe(|| node.plugin.save_state())) else {
+                node.status.health = PluginHealth::Crashed;
+                return Err(StateError::PluginCrashed {
+                    id: node.metadata.id,
+                });
+            };
+            plugins.push(SavedPluginState {
+                id: node.metadata.id,
+                version: node.metadata.version,
+                manually_bypassed: node.manually_bypassed,
+                payload,
+            });
+        }
+        Ok(SavedHostState {
             chain_id: self.chain_id,
             format: self.config.format,
             manual_bypass: self.manual_bypass,
-            plugins: self
-                .plugins
-                .iter()
-                .map(|node| {
-                    let metadata = node.plugin.metadata();
-                    SavedPluginState {
-                        id: metadata.id,
-                        version: metadata.version,
-                        manually_bypassed: node.manually_bypassed,
-                        payload: node.plugin.save_state(),
-                    }
-                })
-                .collect(),
-        }
+            plugins,
+        })
     }
 
     /// Validates and restores a saved chain state.
     ///
     /// Identity, order, versions, and every payload are validated before any
-    /// plugin or host state is changed.
+    /// plugin or host state is changed. The one exception is a plugin that
+    /// panics during validation or restore: it is quarantined as
+    /// [`PluginHealth::Crashed`] and [`StateError::PluginCrashed`] is returned.
     ///
     /// # Errors
     ///
-    /// Returns a typed mismatch or invalid plugin-state error.
+    /// Returns a typed mismatch, invalid plugin-state, or plugin-crash error.
     pub fn restore_state(&mut self, state: &SavedHostState) -> Result<(), StateError> {
         if state.chain_id != self.chain_id {
             return Err(StateError::ChainMismatch {
@@ -997,8 +1055,8 @@ impl DspHost {
                 actual: state.plugins.len(),
             });
         }
-        for (index, (saved, node)) in state.plugins.iter().zip(&self.plugins).enumerate() {
-            let metadata = node.plugin.metadata();
+        for (index, (saved, node)) in state.plugins.iter().zip(&mut self.plugins).enumerate() {
+            let metadata = node.metadata;
             if saved.id != metadata.id {
                 return Err(StateError::PluginMismatch {
                     index,
@@ -1013,21 +1071,17 @@ impl DspHost {
                     current: metadata.version,
                 });
             }
-            node.plugin
-                .validate_state(&saved.payload)
-                .map_err(|error| StateError::InvalidPluginState {
-                    id: metadata.id,
-                    error,
-                })?;
+            let validated = catch_unwind(AssertUnwindSafe(|| {
+                node.plugin.validate_state(&saved.payload)
+            }));
+            Self::isolate_state_call(node, validated)?;
         }
 
         for (saved, node) in state.plugins.iter().zip(&mut self.plugins) {
-            node.plugin.restore_state(&saved.payload).map_err(|error| {
-                StateError::InvalidPluginState {
-                    id: saved.id,
-                    error,
-                }
-            })?;
+            let restored = catch_unwind(AssertUnwindSafe(|| {
+                node.plugin.restore_state(&saved.payload)
+            }));
+            Self::isolate_state_call(node, restored)?;
             node.manually_bypassed = saved.manually_bypassed;
             node.status.health = PluginHealth::Active;
             node.status.substitutions = 0;
@@ -1041,6 +1095,22 @@ impl DspHost {
         );
         self.flush_pipeline();
         Ok(())
+    }
+
+    /// Maps a caught plugin state call: a panic quarantines the plugin.
+    fn isolate_state_call(
+        node: &mut PluginNode,
+        result: std::thread::Result<Result<(), PluginError>>,
+    ) -> Result<(), StateError> {
+        let id = node.metadata.id;
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(StateError::InvalidPluginState { id, error }),
+            Err(_) => {
+                node.status.health = PluginHealth::Crashed;
+                Err(StateError::PluginCrashed { id })
+            }
+        }
     }
 
     fn update_ramp_target(&mut self) {
@@ -1443,6 +1513,40 @@ mod tests {
     }
 
     #[test]
+    fn fail_scan_only_ends_an_active_scan() {
+        let mut scanner = PluginScanner::new(2).unwrap();
+        assert_eq!(
+            scanner.fail_scan(ScanError::InvalidCapacity),
+            Err(ScanError::NotScanning)
+        );
+        assert_eq!(scanner.state(), ScanState::Idle);
+
+        scanner.begin_scan();
+        scanner
+            .record(FakeGainPlugin::new(id(1), 1.0).unwrap().metadata())
+            .unwrap();
+        scanner.finish_scan().unwrap();
+        let ready = scanner.state();
+        assert_eq!(
+            scanner.fail_scan(ScanError::InvalidCapacity),
+            Err(ScanError::NotScanning)
+        );
+        assert_eq!(scanner.state(), ready);
+        assert_eq!(scanner.metadata().len(), 1);
+
+        scanner.begin_scan();
+        scanner
+            .record(FakeGainPlugin::new(id(1), 1.0).unwrap().metadata())
+            .unwrap();
+        scanner.fail_scan(ScanError::InvalidCapacity).unwrap();
+        assert_eq!(
+            scanner.state(),
+            ScanState::Failed(ScanError::InvalidCapacity)
+        );
+        assert_eq!(scanner.metadata(), &[] as &[PluginMetadata]);
+    }
+
+    #[test]
     fn chain_order_is_exact() {
         let mut host =
             DspHost::configure(ChainId::new(7), config(2), vec![gain(1, 2.0), gain(2, 3.0)])
@@ -1611,6 +1715,171 @@ mod tests {
         );
     }
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PanicAt {
+        Metadata,
+        Configure,
+        Cost,
+        Save,
+        Validate,
+        Restore,
+    }
+
+    /// Delegates to a gain plugin but panics in one selected trait method.
+    struct PanickingPlugin {
+        inner: FakeGainPlugin,
+        at: PanicAt,
+    }
+
+    impl PanickingPlugin {
+        fn boxed(id_value: u64, at: PanicAt) -> Box<dyn DspPlugin> {
+            Box::new(Self {
+                inner: FakeGainPlugin::new(id(id_value), 2.0).unwrap(),
+                at,
+            })
+        }
+
+        fn trip(&self, at: PanicAt) {
+            assert!(self.at != at, "injected plugin panic in {at:?}");
+        }
+    }
+
+    impl DspPlugin for PanickingPlugin {
+        fn metadata(&self) -> PluginMetadata {
+            self.trip(PanicAt::Metadata);
+            self.inner.metadata()
+        }
+
+        fn configure(&mut self, format: BlockFormat) -> Result<(), PluginError> {
+            self.trip(PanicAt::Configure);
+            self.inner.configure(format)
+        }
+
+        fn processing_cost(&self) -> Duration {
+            self.trip(PanicAt::Cost);
+            Duration::ZERO
+        }
+
+        fn process(&mut self, block: &mut [f32]) -> Result<(), PluginError> {
+            self.inner.process(block)
+        }
+
+        fn save_state(&self) -> Vec<u8> {
+            self.trip(PanicAt::Save);
+            self.inner.save_state()
+        }
+
+        fn validate_state(&self, state: &[u8]) -> Result<(), PluginError> {
+            self.trip(PanicAt::Validate);
+            self.inner.validate_state(state)
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), PluginError> {
+            self.trip(PanicAt::Restore);
+            self.inner.restore_state(state)
+        }
+    }
+
+    #[test]
+    fn configure_isolates_plugin_metadata_and_configure_panics() {
+        assert!(matches!(
+            DspHost::configure(
+                ChainId::new(1),
+                config(2),
+                vec![gain(1, 1.0), PanickingPlugin::boxed(2, PanicAt::Metadata)],
+            ),
+            Err(ConfigError::PluginMetadataPanicked { index: 1 })
+        ));
+        assert!(matches!(
+            DspHost::configure(
+                ChainId::new(1),
+                config(2),
+                vec![PanickingPlugin::boxed(2, PanicAt::Configure)],
+            ),
+            Err(ConfigError::Plugin {
+                error: PluginError::Crashed,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn processing_cost_panic_is_isolated_like_a_crash() {
+        let mut host = DspHost::configure(
+            ChainId::new(1),
+            config(2),
+            vec![PanickingPlugin::boxed(1, PanicAt::Cost), gain(2, 3.0)],
+        )
+        .unwrap();
+        assert_eq!(
+            host.process_block(&[1.0, 2.0])
+                .unwrap()
+                .report
+                .substitutions,
+            1
+        );
+        assert_eq!(
+            host.plugin_status(id(1)).unwrap().health,
+            PluginHealth::Crashed
+        );
+        assert_eq!(
+            host.process_block(&[0.0, 0.0]).unwrap().samples,
+            &[3.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn state_call_panics_are_isolated_and_quarantine_the_plugin() {
+        // Metadata is cached at configure, so later identity checks do not
+        // re-enter the plugin.
+        let mut saving = DspHost::configure(
+            ChainId::new(1),
+            config(2),
+            vec![gain(1, 1.0), PanickingPlugin::boxed(2, PanicAt::Save)],
+        )
+        .unwrap();
+        assert_eq!(
+            saving.save_state(),
+            Err(StateError::PluginCrashed { id: id(2) })
+        );
+        assert_eq!(
+            saving.plugin_status(id(2)).unwrap().health,
+            PluginHealth::Crashed
+        );
+
+        let saved =
+            DspHost::configure(ChainId::new(1), config(2), vec![gain(1, 1.0), gain(2, 2.0)])
+                .unwrap()
+                .save_state()
+                .unwrap();
+        for (at, restored_first) in [(PanicAt::Validate, false), (PanicAt::Restore, true)] {
+            let mut host = DspHost::configure(
+                ChainId::new(1),
+                config(2),
+                vec![gain(1, 5.0), PanickingPlugin::boxed(2, at)],
+            )
+            .unwrap();
+            assert_eq!(
+                host.restore_state(&saved),
+                Err(StateError::PluginCrashed { id: id(2) }),
+                "{at:?}"
+            );
+            assert_eq!(
+                host.plugin_status(id(2)).unwrap().health,
+                PluginHealth::Crashed,
+                "{at:?}"
+            );
+            // Validation panics abort before any plugin is restored.
+            host.process_block(&[1.0, 1.0]).unwrap();
+            let expected = if restored_first { 1.0 } else { 5.0 };
+            assert_eq!(
+                host.process_block(&[0.0, 0.0]).unwrap().samples,
+                &[expected, expected],
+                "{at:?}"
+            );
+        }
+    }
+
     #[test]
     fn bypass_ramps_are_linear_and_click_free_in_both_directions() {
         let mut host = DspHost::configure(ChainId::new(1), config(4), vec![gain(1, 2.0)]).unwrap();
@@ -1656,7 +1925,7 @@ mod tests {
         .unwrap();
         source.set_plugin_bypass(id(2), true).unwrap();
         source.set_bypass(true);
-        let saved = source.save_state();
+        let saved = source.save_state().unwrap();
 
         let mut restored = DspHost::configure(
             ChainId::new(9),
@@ -1677,7 +1946,7 @@ mod tests {
             &[2.0, 2.0]
         );
 
-        let before = restored.save_state();
+        let before = restored.save_state().unwrap();
         let mut incompatible = saved;
         incompatible.plugins[0].version = 99;
         assert_eq!(
@@ -1688,7 +1957,7 @@ mod tests {
                 current: 1
             })
         );
-        assert_eq!(restored.save_state(), before);
+        assert_eq!(restored.save_state().unwrap(), before);
     }
 
     #[test]
