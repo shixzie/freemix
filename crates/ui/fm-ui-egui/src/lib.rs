@@ -29,6 +29,7 @@ use fm_ui_model::i18n::{Locale, Msg};
 use fm_ui_model::title_editor::{TitleAccess, TitleCommand};
 use fm_ui_model::{ClientView, ManualTransitionStatus, ProjectState, StreamStatus, SwitcherState};
 
+pub mod animation_timeline;
 mod chrome;
 mod connection_overlay;
 mod edit_history;

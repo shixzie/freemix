@@ -1585,6 +1585,7 @@ name = "fm-ui-egui"
 version = "0.1.0"
 dependencies = [
  "egui",
+ "fm-animation",
  "fm-protocol",
  "fm-types",
  "fm-ui-model",
