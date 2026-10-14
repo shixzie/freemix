@@ -952,12 +952,13 @@ impl StudioShell {
             .inner_margin(Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.label(RichText::new("RECORDING").small().strong().color(AMBER));
-                for slot in 1..=RECORDER_SLOT_COUNT {
-                    let recorder = WireRecorderSlot::new(
-                        u8::try_from(slot).expect("two recorder slots fit u8"),
-                    )
-                    .expect("panel renders only the two recorder slots");
-                    let desired = state.recording_desired[slot - 1];
+                for (index, desired) in state.recording_desired.iter().copied().enumerate() {
+                    let Some(recorder) =
+                        u8::try_from(index + 1).ok().and_then(WireRecorderSlot::new)
+                    else {
+                        continue;
+                    };
+                    let slot = index + 1;
                     let requested = if desired {
                         RecordingAction::Stop(recorder)
                     } else {
@@ -976,7 +977,7 @@ impl StudioShell {
                                 .strong()
                                 .color(if desired { PROGRAM } else { MUTED }),
                         );
-                        if state.recording_pending[slot - 1] {
+                        if state.recording_pending[index] {
                             ui.label(RichText::new("PENDING").small().color(AMBER));
                         }
                         let (label, fill) = match requested {

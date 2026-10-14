@@ -1,8 +1,8 @@
 use fm_types::{BusId, InputId, MAX_INPUT_NAME_BYTES, OutputId, SceneId};
 
 use crate::{
-    InputKind, MAX_STREAM_TARGET_NAME_BYTES, Project, ProjectSettings, RestartPolicy,
-    SimulatedAudio, SourceRef, StreamTargetId,
+    InputKind, Layer, LayerEffect, MAX_STREAM_TARGET_NAME_BYTES, Project, ProjectSettings,
+    RestartPolicy, SimulatedAudio, SourceRef, StreamTargetId,
     cycles::{mark_audio_input_cycles, mark_bus_cycles, mark_scene_cycles},
 };
 
@@ -402,6 +402,10 @@ fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
                     kind: ValidationErrorKind::OutOfRange,
                 });
             }
+            // Unknown effect names are deliberately valid here: the model
+            // preserves them and only execution rejects an unrecognized
+            // descriptor. The bounds themselves match the compositor plan.
+            validate_layer_effects(layer, entity, errors);
             match layer.source {
                 SourceRef::Input(id) if !project.inputs().iter().any(|input| input.id == id) => {
                     errors.push(ValidationError {
@@ -425,6 +429,30 @@ fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
                 SourceRef::Input(_) | SourceRef::Scene(_) => {}
             }
         }
+    }
+}
+
+/// Records one out-of-range error when a layer's effect descriptors breach
+/// the compositor bounds.
+///
+/// Unknown effect names are deliberately accepted: the model preserves them
+/// and only execution rejects an unrecognized descriptor.
+fn validate_layer_effects(
+    layer: &Layer,
+    entity: Option<EntityRef>,
+    errors: &mut Vec<ValidationError>,
+) {
+    if layer.effects.len() > LayerEffect::MAX_EFFECTS_PER_LAYER
+        || layer
+            .effects
+            .iter()
+            .any(|effect| effect.validate().is_err())
+    {
+        errors.push(ValidationError {
+            entity,
+            field: "layers.effects",
+            kind: ValidationErrorKind::OutOfRange,
+        });
     }
 }
 

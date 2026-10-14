@@ -100,8 +100,16 @@ pub(crate) fn run(request: RunRequest<'_>) -> Result<RunOutput, Error> {
                 kind: error.kind(),
             })?;
         }
-        if let (Some(status), Some(stdout), Some(stderr)) = (status, stdout.take(), stderr.take()) {
-            return finish(status, stdout, &stderr, &request);
+        // All three must be present before any is consumed: `stdout.take()`
+        // and `stderr.take()` in a failed pattern would drop a drained stream
+        // that has no second delivery, turning a fast child into a timeout.
+        if let (Some(observed_status), Some(_), Some(_)) =
+            (status, stdout.as_ref(), stderr.as_ref())
+        {
+            let (Some(stdout), Some(stderr)) = (stdout.take(), stderr.take()) else {
+                unreachable!("presence was checked before taking")
+            };
+            return finish(observed_status, stdout, &stderr, &request);
         }
         if Instant::now() >= deadline {
             terminate(&mut child, request.kill_timeout);
@@ -210,9 +218,13 @@ fn drain_bounded(reader: &mut impl Read, maximum: usize) -> Result<Vec<u8>, Drai
     let mut output = Vec::with_capacity(maximum.min(8 * 1024));
     let mut buffer = [0_u8; 8 * 1024];
     loop {
-        let count = reader
-            .read(&mut buffer)
-            .map_err(|error| DrainError::Io(error.kind()))?;
+        let count = match reader.read(&mut buffer) {
+            Ok(count) => count,
+            // An interrupted read is retried, matching the adapter's stream
+            // writer: a signal must not fail a bounded drain.
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(DrainError::Io(error.kind())),
+        };
         if count == 0 {
             return Ok(output);
         }

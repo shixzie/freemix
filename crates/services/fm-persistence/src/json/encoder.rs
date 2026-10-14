@@ -491,9 +491,25 @@ fn write_scenes(output: &mut String, project: &fm_model::Project) {
             } else {
                 output.push_str("null");
             }
+            output.push_str(",\n            \"effects\": [");
+            for (effect_index, effect) in layer.effects.iter().enumerate() {
+                if effect_index != 0 {
+                    output.push_str(", ");
+                }
+                output.push_str("{\"name\": \"");
+                escape_string(output, &effect.name);
+                output.push_str("\", \"parameters\": [");
+                for (parameter_index, parameter) in effect.parameters.iter().enumerate() {
+                    if parameter_index != 0 {
+                        output.push_str(", ");
+                    }
+                    write!(output, "{parameter}").expect("writing to a string cannot fail");
+                }
+                output.push_str("]}");
+            }
             write!(
                 output,
-                ",\n            \"opacity\": {},\n            \"z_order\": {}\n          }}",
+                "],\n            \"opacity\": {},\n            \"z_order\": {}\n          }}",
                 layer.opacity, layer.z_order,
             )
             .expect("writing to a string cannot fail");

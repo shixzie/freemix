@@ -2,7 +2,7 @@ use core::fmt;
 use std::collections::BTreeMap;
 
 use fm_compositor::{
-    CompositionPlan, CpuExecutionError, CpuSourceFrame, OutputTarget, PlanError, RectMask,
+    CompositionPlan, CpuExecutionError, CpuSourceFrame, Effect, OutputTarget, PlanError, RectMask,
     Rotation, Scene, SceneError, SourceId, SourceLayer, Transform, compile_scene, execute_cpu,
 };
 use fm_model::{Input, InputKind, Project, SimulatedVideo, SourceRef};
@@ -249,6 +249,9 @@ fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
         result = result.with_mask(
             RectMask::new(mask.x, mask.y, mask.width, mask.height).inverted(mask.invert),
         );
+    }
+    for effect in &layer.effects {
+        result = result.with_effect(Effect::new(effect.name.clone(), effect.parameters.clone()));
     }
     result
 }

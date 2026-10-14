@@ -904,8 +904,8 @@ fn budget_sink(unproven: bool, cycles: usize) -> FakeSink {
         write_results.push_back(Err(failure()));
     }
     FakeSink {
-        unproven,
         write_results,
+        unproven,
         ..FakeSink::default()
     }
 }

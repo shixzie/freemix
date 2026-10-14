@@ -12,7 +12,7 @@ use fm_frame::{AudioBlock, Channel, ClockDomainId, CpuVideoFrame};
 use tempfile::tempdir;
 
 /// Generous by design: these acceptance tests run on loaded CI hosts and
-/// against real FFmpeg processes, and a starved tool is not a product failure.
+/// against real `FFmpeg` processes, and a starved tool is not a product failure.
 /// The production deadlines stay covered by the process-shim unit tests.
 const PROCESS_TIMEOUT: Duration = Duration::from_mins(1);
 static FFMPEG_TEST_LOCK: Mutex<()> = Mutex::new(());

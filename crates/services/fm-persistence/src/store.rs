@@ -152,6 +152,7 @@ pub(crate) fn sync_directory(path: &Path) -> Result<(), StoreError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // the fallible signature is shared with the Unix fsync
 pub(crate) fn sync_directory(_path: &Path) -> Result<(), StoreError> {
     Ok(())
 }

@@ -129,6 +129,8 @@ use fm_frame::{
     AudioBlock, ClockDomainId as MediaClockDomainId, CodecId, MediaTimestamp, MediaTiming,
     NormalizedDuration, NormalizedTimestamp, OriginalTimestamp, SequenceNumber, TimeBase,
 };
+#[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+use fm_gpu::NativeSurface;
 #[cfg(feature = "native-media")]
 use fm_gpu::{NativeBackend, NativeContext, NativeTexture};
 #[cfg(all(feature = "native-media", target_os = "macos"))]
@@ -546,6 +548,7 @@ fn utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
 }
 
 #[cfg(feature = "native-media")]
+#[allow(clippy::struct_excessive_bools)] // each bool is a distinct native-mode operator or media option
 struct NativeDaemon {
     pacer: FramePacer,
     pacer_start_offset: Duration,
@@ -1944,6 +1947,7 @@ impl NativeProgramRecorder {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_with_format(
         runtime: &NativeMediaRuntime,
         format: RecordFormat,
@@ -2351,7 +2355,7 @@ fn next_slot_segment_path(
 /// automatically, even when the other slot is configured to rotate.
 #[cfg(feature = "native-media")]
 fn slot_segment_seconds(
-    segment_seconds: &[Option<NonZeroU32>; RECORDER_SLOTS],
+    segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
     slot: usize,
 ) -> Option<NonZeroU32> {
     segment_seconds[slot]
@@ -3103,7 +3107,7 @@ impl NativeProgramStream {
             sink_config.limits.kill_timeout = PROGRAM_STREAM_KILL_TIMEOUT;
             sink_config.encoder = stream_encoder_settings(split.target.video_bitrate_kbps());
             sink_config.stream_key = split.stream_key;
-            sink_config.ladder = stream_ladder(&split.target);
+            sink_config.ladder = stream_ladder(split.target);
             output_set
                 .add_destination(
                     DestinationConfig::new(
@@ -3756,6 +3760,7 @@ impl NativeDaemon {
         Self::start_with_optional_context(store, stored, None, camera_helper)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn start_with_optional_context(
         store: &ProjectStore,
         stored: &StoredProject,
@@ -4388,7 +4393,7 @@ impl NativeDaemon {
     /// latches every active member of that group; a refused route degrades
     /// only its own target's counters. Takes the stream pieces separately so
     /// the caller can hold immutable borrows of other daemon fields.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     fn capture_streams(
         streams: &mut [NativeProgramStream],
         stream_groups: &mut [StreamRenditionGroup],
@@ -4707,7 +4712,7 @@ impl NativeDaemon {
         let next_format = match &self.recorders[slot] {
             ProgramRecording::Running(recorder)
                 if recorder
-                    .should_rotate(slot_segment_seconds(&self.record_segment_seconds, slot)) =>
+                    .should_rotate(slot_segment_seconds(self.record_segment_seconds, slot)) =>
             {
                 let old = &recorder.format;
                 RecordFormat::new(
@@ -4837,6 +4842,7 @@ impl NativeDaemon {
         Ok(audio_covered && video_covered && stinger_covered)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn realize_one(
         &mut self,
         control: &mut ControlService<Policy>,
@@ -11072,6 +11078,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn rejects_invalid_record_output_options_and_values() {
         for (arguments, expected) in [
             (
@@ -11339,6 +11346,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn rejects_invalid_record_segment_seconds_options_and_values() {
         for (arguments, expected) in [
             (
@@ -11534,16 +11542,16 @@ mod tests {
         let first_only: [Option<NonZeroU32>; RECORDER_SLOTS] =
             [Some(NonZeroU32::new(10).unwrap()), None];
         assert_eq!(
-            slot_segment_seconds(&first_only, 0).map(NonZeroU32::get),
+            slot_segment_seconds(first_only, 0).map(NonZeroU32::get),
             Some(10)
         );
-        assert_eq!(slot_segment_seconds(&first_only, 1), None);
+        assert_eq!(slot_segment_seconds(first_only, 1), None);
 
         let second_only: [Option<NonZeroU32>; RECORDER_SLOTS] =
             [None, Some(NonZeroU32::new(86_400).unwrap())];
-        assert_eq!(slot_segment_seconds(&second_only, 0), None);
+        assert_eq!(slot_segment_seconds(second_only, 0), None);
         assert_eq!(
-            slot_segment_seconds(&second_only, 1).map(NonZeroU32::get),
+            slot_segment_seconds(second_only, 1).map(NonZeroU32::get),
             Some(86_400)
         );
     }
@@ -12673,10 +12681,16 @@ mod tests {
 
         configure_client_socket(&server_stream).unwrap();
 
-        let read_timeout = server_stream.read_timeout().unwrap();
-        let write_timeout = server_stream.write_timeout().unwrap();
-        assert_eq!(read_timeout, Some(CLIENT_READ_POLL_INTERVAL));
-        assert_eq!(write_timeout, Some(CLIENT_WRITE_TIMEOUT));
+        // The kernel may round a socket timeout up to its timer granularity
+        // (jiffies on Linux, for example 4 ms ticks), so each configured value
+        // is bounded by the request plus one coarse tick rather than compared
+        // exactly.
+        let read_timeout = server_stream.read_timeout().unwrap().unwrap();
+        assert!(read_timeout >= CLIENT_READ_POLL_INTERVAL);
+        assert!(read_timeout <= CLIENT_READ_POLL_INTERVAL + Duration::from_millis(10));
+        let write_timeout = server_stream.write_timeout().unwrap().unwrap();
+        assert!(write_timeout >= CLIENT_WRITE_TIMEOUT);
+        assert!(write_timeout <= CLIENT_WRITE_TIMEOUT + Duration::from_millis(10));
     }
 
     #[test]

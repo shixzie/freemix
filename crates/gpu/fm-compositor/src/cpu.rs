@@ -9,7 +9,10 @@ use fm_video::{
     compose_layers, crop, draw_inset_rect_border, premultiply_alpha, transform_nearest,
 };
 
-use crate::{AlphaMode, CompositionPlan, Effect, Key, RectMask, SourceId};
+use crate::{
+    AlphaMode, CompositionPlan, Effect, Key, RectMask, ReferenceEffect, ReferenceEffectError,
+    SourceId, apply_reference_effect,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct CpuSourceFrame<'a> {
@@ -32,6 +35,12 @@ pub enum CpuExecutionError {
         layer: usize,
         effect: usize,
         name: String,
+    },
+    InvalidEffect {
+        layer: usize,
+        effect: usize,
+        name: String,
+        reason: String,
     },
     UnsupportedPixelFormat(PixelFormat),
     MissingPlane,
@@ -57,6 +66,15 @@ impl fmt::Display for CpuExecutionError {
             } => write!(
                 formatter,
                 "layer {layer} effect {effect} ({name}) is unsupported by the CPU reference backend"
+            ),
+            Self::InvalidEffect {
+                layer,
+                effect,
+                name,
+                reason,
+            } => write!(
+                formatter,
+                "layer {layer} effect {effect} ({name}) has invalid parameters: {reason}"
             ),
             Self::UnsupportedPixelFormat(format) => {
                 write!(
@@ -161,7 +179,7 @@ pub fn execute_cpu(
         };
         frame = apply_key_and_mask(&frame, layer.key(), layer.mask(), layer.alpha_mode())?;
         for (effect_index, effect) in layer.effects().iter().enumerate() {
-            apply_effect(plan_index, effect_index, effect)?;
+            frame = apply_effect(plan_index, effect_index, effect, &frame)?;
         }
         if layer.alpha_mode() == AlphaMode::Straight {
             frame = premultiply_alpha(&frame)?;
@@ -308,15 +326,26 @@ fn apply_effect(
     layer: usize,
     effect_index: usize,
     effect: &Effect,
-) -> Result<(), CpuExecutionError> {
+    frame: &ImageFrame,
+) -> Result<ImageFrame, CpuExecutionError> {
     if effect.name() == "passthrough" && effect.parameters().is_empty() {
-        Ok(())
-    } else {
-        Err(CpuExecutionError::UnsupportedEffect {
+        return Ok(frame.clone());
+    }
+    match ReferenceEffect::from_descriptor(effect) {
+        Ok(reference) => Ok(apply_reference_effect(frame, reference)?),
+        Err(ReferenceEffectError::UnknownEffect { .. }) => {
+            Err(CpuExecutionError::UnsupportedEffect {
+                layer,
+                effect: effect_index,
+                name: effect.name().to_owned(),
+            })
+        }
+        Err(error) => Err(CpuExecutionError::InvalidEffect {
             layer,
             effect: effect_index,
             name: effect.name().to_owned(),
-        })
+            reason: error.to_string(),
+        }),
     }
 }
 

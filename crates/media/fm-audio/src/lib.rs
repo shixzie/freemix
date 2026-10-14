@@ -11,6 +11,7 @@ use fm_types::{AudioFormat, ChannelLayout, FrameRate, InputId, SampleFormat, Sam
 
 mod channel_mapping;
 mod clock_recalibration;
+mod dsp;
 mod sample_delay;
 mod synchronizer;
 
@@ -21,6 +22,10 @@ pub use channel_mapping::{
 pub use clock_recalibration::{
     ClockRecalibrationError, ClockRecalibrationPolicy, ClockRecalibrationTelemetry,
     ClockRecalibrationUpdate, MAX_CLOCK_DRIFT_PPM, MAX_CLOCK_RECALIBRATION_OBSERVATIONS,
+};
+pub use dsp::{
+    Biquad, BiquadCoefficients, BiquadKind, BiquadSettings, Compressor, DspError, DspMeter,
+    DspMeterReading, Gate, Limiter, MAX_EQ_BANDS, ParametricEq, Polarity, StripDsp,
 };
 pub use sample_delay::{
     MAX_SAMPLE_DELAY_BYTES, MAX_SAMPLE_DELAY_SAMPLES, SampleDelay, SampleDelayError,

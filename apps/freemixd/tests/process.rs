@@ -14,9 +14,10 @@ use std::{
 };
 
 use fm_client::{
-    Client as ProtocolClient, ClientConfig, ClientError, ConnectionState, DisconnectCause, Intake,
-    Outbound, SessionEvent, TcpSession,
+    Client as ProtocolClient, ClientConfig, ClientError, ConnectionState, Intake, Outbound,
 };
+#[cfg(unix)]
+use fm_client::{DisconnectCause, SessionEvent, TcpSession};
 use fm_model::{
     AudioBus, Input, InputAudioStripState, InputGainMilliDb, InputKind, Layer, LayerGeometry,
     MainMix, Output, Project, ProjectSettings, RecorderSlot, RectMask, RestartPolicy, Rgba8,
@@ -105,6 +106,7 @@ impl Daemon {
         }
     }
 
+    #[cfg(unix)]
     fn start_web(project: &Path, token: &str) -> (Self, SocketAddr) {
         let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
             .arg("serve")
@@ -2962,6 +2964,7 @@ fn create_stream_project(path: &Path) {
             geometry: LayerGeometry::new(0, 0, 16, 16, Rotation::Deg0),
             crop: None,
             mask: None,
+            effects: Vec::new(),
             opacity: u8::MAX,
             z_order: 0,
         }],
@@ -3076,6 +3079,7 @@ fn canonical_project() -> Project {
             geometry: LayerGeometry::new(0, 0, 1_280, 720, Rotation::Deg0),
             crop: None,
             mask: Some(RectMask::new(100, 50, 1_000, 600).inverted(true)),
+            effects: Vec::new(),
             opacity: u8::MAX,
             z_order: 0,
         }],

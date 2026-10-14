@@ -11,6 +11,7 @@ mod intent;
 mod macros;
 mod schedule;
 mod shortcut;
+mod template;
 mod trigger;
 
 pub use condition::{Condition, ConditionContext, Predicate, Value};
@@ -32,6 +33,12 @@ pub use schedule::{ScheduleError, ScheduleFire, ScheduleId, ScheduleKind, Schedu
 pub use shortcut::{
     Chord, ChordError, ConflictKind, KeyStroke, Modifiers, Shortcut, ShortcutConflict,
     ShortcutError, ShortcutRegistry, ShortcutScope,
+};
+pub use template::{
+    InputSelector, MAX_PROFILE_LINE_BYTES, MAX_STREAM_NAME_BYTES, MAX_TEMPLATE_NAME_BYTES,
+    MAX_TEMPLATES, SHORTCUT_PROFILE_MAGIC, SHORTCUT_PROFILE_VERSION, ShortcutProfileCodec,
+    ShortcutProfileError, ShortcutTemplate, ShortcutTemplateRegistry, TemplateError, TemplatePress,
+    TemplateRegistryError, TemplateTarget, parse_shortcut_profile, render_shortcut_profile,
 };
 pub use trigger::{
     AutomationEvent, EventFilter, Trigger, TriggerEngine, TriggerError, TriggerFire,

@@ -40,8 +40,6 @@ use std::time::SystemTime;
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
-#[cfg(windows)]
-use std::os::windows::fs::MetadataExt;
 
 pub use audio_index::AudioMetadataIndexTelemetry;
 pub use config::{Config, Executable, Limits};
@@ -95,9 +93,7 @@ struct SourceFingerprint {
     change_time_seconds: i64,
     #[cfg(unix)]
     change_time_nanoseconds: i64,
-    #[cfg(windows)]
     volume_serial_number: Option<u32>,
-    #[cfg(windows)]
     file_index: Option<u64>,
 }
 
@@ -308,10 +304,11 @@ fn fingerprint(path: &Path, maximum: u64) -> Result<SourceFingerprint, Error> {
             maximum,
         });
     }
-    source_fingerprint(&metadata)
+    source_fingerprint(path, &metadata)
 }
 
-fn source_fingerprint(metadata: &Metadata) -> Result<SourceFingerprint, Error> {
+fn source_fingerprint(path: &Path, metadata: &Metadata) -> Result<SourceFingerprint, Error> {
+    let (volume_serial_number, file_index) = platform_file_identity(path);
     Ok(SourceFingerprint {
         size: metadata.len(),
         modified: metadata.modified().map_err(|error| map_input_io(&error))?,
@@ -323,11 +320,37 @@ fn source_fingerprint(metadata: &Metadata) -> Result<SourceFingerprint, Error> {
         change_time_seconds: metadata.ctime(),
         #[cfg(unix)]
         change_time_nanoseconds: metadata.ctime_nsec(),
-        #[cfg(windows)]
-        volume_serial_number: metadata.volume_serial_number(),
-        #[cfg(windows)]
-        file_index: metadata.file_index(),
+        volume_serial_number,
+        file_index,
     })
+}
+
+/// Reads one Windows path's stable volume serial number and file index.
+///
+/// The standard library exposes these only behind the unstable
+/// `windows_by_handle` feature, so this uses the safe `winapi-util` wrapper of
+/// `GetFileInformationByHandle`. A path that cannot be reopened, or an
+/// identity the API cannot report, records no identity, matching the optional
+/// fingerprint fields; size and modified time always remain.
+#[cfg(windows)]
+fn platform_file_identity(path: &Path) -> (Option<u32>, Option<u64>) {
+    let Ok(file) = std::fs::File::open(path) else {
+        return (None, None);
+    };
+    let Ok(information) = winapi_util::file::information(file) else {
+        return (None, None);
+    };
+    (
+        u32::try_from(information.volume_serial_number()).ok(),
+        Some(information.file_index()),
+    )
+}
+
+/// Non-Windows platforms carry no volume serial number or file index; the
+/// device, inode, and change time already identify the file.
+#[cfg(not(windows))]
+const fn platform_file_identity(_path: &Path) -> (Option<u32>, Option<u64>) {
+    (None, None)
 }
 
 fn parse_version(tool: Tool, bytes: &[u8]) -> Option<String> {
@@ -415,6 +438,21 @@ mod tests {
         fs::remove_file(&path).unwrap();
         fs::write(&path, b"other").unwrap();
         assert_eq!(adapter.check_source(&source), Err(Error::SourceChanged));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_source_identity_reports_a_stable_volume_and_file_index() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("source.nut");
+        fs::write(&path, b"media").unwrap();
+        let (volume_serial_number, file_index) = platform_file_identity(&path);
+        assert!(volume_serial_number.is_some());
+        assert!(file_index.is_some());
+        assert_eq!(
+            fingerprint(&path, u64::MAX).unwrap(),
+            fingerprint(&path, u64::MAX).unwrap()
+        );
     }
 
     #[test]

@@ -19,11 +19,12 @@ use fm_engine::{
 };
 use fm_model::{
     AudioBus, CropRect, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
-    InputGainMilliDb, InputKind, Layer, LayerGeometry, MainMix, Project, ProjectSettings,
-    RecorderSlot as ModelRecorderSlot, RectMask, Rgba8 as ModelRgba8, Rotation, SimulatedAudio,
-    SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
-    StingerAudioPolicy as ModelStingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
-    StingerSlotNumber, StreamEndpoint, StreamKey, StreamProtocol, StreamTarget, StreamTargetId,
+    InputGainMilliDb, InputKind, Layer, LayerEffect, LayerGeometry, MainMix, Project,
+    ProjectSettings, RecorderSlot as ModelRecorderSlot, RectMask, Rgba8 as ModelRgba8, Rotation,
+    SceneLayerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    StartupPolicy, StingerAudioPolicy as ModelStingerAudioPolicy, StingerConfig,
+    StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamProtocol,
+    StreamTarget, StreamTargetId,
 };
 use fm_persistence::validate_asset_uri;
 use fm_persistence::{
@@ -397,6 +398,47 @@ pub fn run(command: Command) -> AppResult<()> {
         )?,
         Command::SceneLayerMaskClear { path, scene, index } => {
             set_scene_layer_mask(&path, scene_id(scene)?, index, None)?;
+        }
+        Command::SceneLayerEffectAdd {
+            path,
+            scene,
+            index,
+            name,
+            parameters,
+        } => {
+            add_scene_layer_effect(
+                &path,
+                scene_id(scene)?,
+                index,
+                LayerEffect::new(name, parameters),
+            )?;
+        }
+        Command::SceneLayerEffectSet {
+            path,
+            scene,
+            index,
+            effect_index,
+            name,
+            parameters,
+        } => {
+            set_scene_layer_effect(
+                &path,
+                scene_id(scene)?,
+                index,
+                effect_index,
+                LayerEffect::new(name, parameters),
+            )?;
+        }
+        Command::SceneLayerEffectRemove {
+            path,
+            scene,
+            index,
+            effect_index,
+        } => {
+            remove_scene_layer_effect(&path, scene_id(scene)?, index, effect_index)?;
+        }
+        Command::SceneLayerEffectClear { path, scene, index } => {
+            set_scene_layer_effects(&path, scene_id(scene)?, index, Vec::new())?;
         }
         Command::InputRemove { path, input } => remove_input(&path, input_id(input)?)?,
         Command::InputDuplicate {
@@ -2102,6 +2144,7 @@ fn add_scene_layer(
                     ),
                     crop: None,
                     mask: None,
+                    effects: Vec::new(),
                     opacity: u8::MAX,
                     z_order,
                 },
@@ -2382,6 +2425,92 @@ fn set_scene_layer_mask(
     store.save(&configured)?;
     print_status(&load_engine(path)?);
     Ok(())
+}
+
+fn set_scene_layer_effects(
+    path: &Path,
+    scene: SceneId,
+    index: usize,
+    effects: Vec<LayerEffect>,
+) -> AppResult<()> {
+    update_project(path, |project| {
+        project
+            .set_scene_layer_effects(scene, index, effects)
+            .map_err(Into::into)
+    })
+}
+
+fn add_scene_layer_effect(
+    path: &Path,
+    scene: SceneId,
+    index: usize,
+    effect: LayerEffect,
+) -> AppResult<()> {
+    update_project(path, |project| {
+        project
+            .add_scene_layer_effect(scene, index, effect)
+            .map_err(Into::into)
+    })
+}
+
+fn set_scene_layer_effect(
+    path: &Path,
+    scene: SceneId,
+    index: usize,
+    effect_index: usize,
+    effect: LayerEffect,
+) -> AppResult<()> {
+    update_project(path, |project| {
+        let mut effects = scene_layer_effects(project, scene, index)?;
+        let length = effects.len();
+        let target =
+            effects
+                .get_mut(effect_index)
+                .ok_or(SceneLayerError::EffectIndexOutOfRange {
+                    scene,
+                    index,
+                    effect_index,
+                    length,
+                })?;
+        *target = effect;
+        project
+            .set_scene_layer_effects(scene, index, effects)
+            .map_err(Into::into)
+    })
+}
+
+fn remove_scene_layer_effect(
+    path: &Path,
+    scene: SceneId,
+    index: usize,
+    effect_index: usize,
+) -> AppResult<()> {
+    update_project(path, |project| {
+        project
+            .remove_scene_layer_effect(scene, index, effect_index)
+            .map_err(Into::into)
+    })
+}
+
+fn scene_layer_effects(
+    project: &Project,
+    scene: SceneId,
+    index: usize,
+) -> AppResult<Vec<LayerEffect>> {
+    let scene_model = project
+        .scenes()
+        .iter()
+        .find(|candidate| candidate.id == scene)
+        .ok_or(SceneLayerError::UnknownScene(scene))?;
+    let layer = scene_model
+        .layers
+        .get(index)
+        .ok_or(SceneLayerError::LayerIndexOutOfRange {
+            scene,
+            index,
+            length: scene_model.layers.len(),
+        })?;
+    Ok(layer.effects.clone())
 }
 
 fn remove_input(path: &Path, input: InputId) -> AppResult<()> {
@@ -3408,7 +3537,53 @@ fn print_scenes(project: &Project) {
             background.alpha,
             scene.layers.len(),
         );
+        for (index, layer) in scene.layers.iter().enumerate() {
+            println!(
+                "  layer index={index} name={:?} mask={} effects={}",
+                layer.name,
+                format_layer_mask(layer.mask),
+                format_layer_effects(&layer.effects),
+            );
+        }
     }
+}
+
+/// Renders one layer's optional rectangular mask, or `none`.
+fn format_layer_mask(mask: Option<RectMask>) -> String {
+    mask.map_or_else(
+        || "none".to_owned(),
+        |mask| {
+            format!(
+                "{}x{}@{},{}:{}",
+                mask.width,
+                mask.height,
+                mask.x,
+                mask.y,
+                if mask.invert { "inverted" } else { "normal" },
+            )
+        },
+    )
+}
+
+/// Renders one layer's ordered effects as `name(parameter,...)` entries joined
+/// by `;`, or `none` when the layer carries no effects.
+fn format_layer_effects(effects: &[LayerEffect]) -> String {
+    if effects.is_empty() {
+        return "none".to_owned();
+    }
+    effects
+        .iter()
+        .map(|effect| {
+            let parameters = effect
+                .parameters
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{}({parameters})", effect.name)
+        })
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 const fn input_kind_name(kind: &InputKind) -> &'static str {
@@ -3620,6 +3795,10 @@ Usage:
   freemix-cli scene-layer-crop-clear <show.freemix> <scene-id> <zero-based-layer-index>
   freemix-cli scene-layer-mask <show.freemix> <scene-id> <zero-based-layer-index> <x> <y> <width> <height> <normal|inverted>
   freemix-cli scene-layer-mask-clear <show.freemix> <scene-id> <zero-based-layer-index>
+  freemix-cli scene-layer-effect-add <show.freemix> <scene-id> <zero-based-layer-index> <name> [<i32-parameter>...]
+  freemix-cli scene-layer-effect-set <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index> <name> [<i32-parameter>...]
+  freemix-cli scene-layer-effect-remove <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index>
+  freemix-cli scene-layer-effect-clear <show.freemix> <scene-id> <zero-based-layer-index>
   freemix-cli project-rename <show.freemix> <name>
   freemix-cli input-remove <show.freemix> <input-id>
   freemix-cli input-duplicate <show.freemix> <source-input-id> <new-nonzero-input-id> <new-name>

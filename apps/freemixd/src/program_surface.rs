@@ -663,6 +663,7 @@ enum UserEvent {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::struct_excessive_bools)] // each bool is a distinct persisted output or recorder option
 struct ProgramApp {
     project: PathBuf,
     listen: SocketAddr,
@@ -874,6 +875,7 @@ impl ProgramApp {
 
 #[cfg(target_os = "macos")]
 impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
+    #[allow(clippy::too_many_lines)]
     fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
         if self.window.is_some() {
             return;

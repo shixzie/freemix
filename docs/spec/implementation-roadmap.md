@@ -139,7 +139,7 @@ half-open post-crop source space, with exact CPU-oracle coverage and ignored
 native Metal readback coverage that remains opt-in and is not claimed without
 an adapter. The current schema persists each scene background and each layer's explicit
 input/scene source, geometry, crop, optional hard-edged rectangular mask,
-opacity, and z-order. Mask
+opacity, z-order, and ordered reference-effect stack. Mask
 bounds are validated against the effective
 post-crop source dimensions before native planning; inversion does not change
 planner capacity or transient-resource accounting.
@@ -549,7 +549,68 @@ bounded loopback OSC action contract, including zero-argument manual commit and
 cancel and automatic AlphaFade, Slide, Zoom, and Wipe actions, with the same
 current view, permission, and manual-transition gates;
 malformed, rejected, and overflow counts are visible to
-the operator. RC-004 remains planned.
+the operator. `fm-automation` now also carries a bounded shortcut template layer
+beside the existing chords, scopes, and conflict detection. Each template pairs
+its id, name, scope, chord, and delivery intent with a dynamic target that
+resolves a 1-based roster slot, an explicit full-width input identity, or a
+caller-supplied value inside a validated range at press time. The template
+registry reuses the exact/prefix conflict and local-over-global resolution rules,
+press results are deterministic and never mutate the registry, and a versioned
+tab-separated profile with a caller-supplied command codec round-trips every
+field exactly while rejecting malformed, duplicated, or oversized documents
+wholesale. This is model and import/export groundwork only: no durable shortcut
+state, binding editor, shortcut wire payload, runtime dispatch, default key map,
+or resolved engine binding exists in the project schema, protocol, engine,
+Studio, or Web, so RC-004 remains planned.
+
+Current implementation boundary for item 8: `fm-scopes` now provides a bounded
+reference color-monitoring session on top of its scope math: an exact
+monitoring point (program, preview, or a full-width input ID), a bounded ordered
+waveform/parade/vectorscope/histogram selection, a validated integer video/scope
+split layout, a 1–3,600-frame analysis cadence that skips non-cadence frames
+without touching them, an exhaustive false-color luma band map, and
+deterministic reports that reuse the existing reference scope functions.
+`fm-compositor` now executes a typed reference effect set on its CPU oracle:
+white/black levels, brightness/contrast, BT.601 saturation, per-mille unsharp
+sharpen, and horizontal/vertical flip. Each effect validates its parameter
+schema, leaves alpha untouched, runs in declared order after key/mask and before
+premultiplication and transform, and documents exact integer rounding; known
+names with bad parameters report a distinct invalid-effect error while unknown
+names still fail as unsupported, and the native backend still rejects every
+non-passthrough effect. Effects are now authored and persisted: schema 24
+carries an ordered, bounded stack on every scene layer, the CLI authors it
+next-open only through effect add/set/remove/clear and prints it in scene
+status, and both the offline PPM renderer and the native project planner map
+the persisted stack into compositor descriptors in order. Remaining gaps: no
+live or protocol effect mutation, no Studio/Web effect surface, no GPU/WGSL
+effect execution, no deinterlace, and no `fm-color` grading integration. The
+scope session is still unsurfaced: no scope renderer, monitoring-point frame
+tap, overlay, telemetry, or scope persistence exists. Item 8 therefore remains
+incomplete, and `SW-007`/`SW-010` remain planned.
+
+Current implementation boundary for item 7: `fm-compositor` now carries a
+bounded reference multiview layout. A validated definition selects program,
+preview, or full-width input cells into a 1x1 through 4x4 grid with a
+confidence mode (none, inputs-only, or one selected input) and label, tally,
+clock, and audio-meter placement intent. Planning uses exact integer division
+with deterministic leftmost/topmost remainder allocation, emits row-major
+half-open cells that tile the canvas without gaps or overlaps, and hit-tests a
+pixel back to its cell for click-to-preview. The compiler resolves every cell to
+a compositor source and builds an ordinary operator scene with one
+inset-bordered layer per cell, so the existing CPU and native scene paths
+rasterize the tiles; unresolved cells are rejected instead of silently skipped.
+This is a definition and planning model, not the product: labels, tally, clocks,
+and meters are non-rasterized intent, and the Mix selector, a second independent
+multiview, selection persistence, protocol or wire state, daemon multiview
+outputs, confidence-mode behavior, and click/touch dispatch to the engine all
+remain absent, so item 7 and `SW-011` remain planned.
+`fm-compositor` also generates exact integer safe-area guides: centered 93%
+action and 90% title presets, an SMPTE preset that emits both, and
+caller-positioned custom guides in basis points, all with documented truncating
+geometry, half-open bounds, a sixteen-guide plan bound, and operator-only
+rasterization. Aspect-ratio guide sets, explicit non-operator routing,
+persistence, wire state, and an operator UI for choosing guides remain absent,
+so `SW-014` remains planned.
 
 Current implementation boundary for item 6: the switcher and engine now own
 eight independently addressed overlay channels with a retained source, exact
@@ -627,10 +688,18 @@ ramps and next-sample mute/solo/follow-video/delay changes, before checkpointing
 canonical project. The local and remote CLI expose the command, exact status,
 and input labels; Studio renders persisted names with Ready- and
 permission-gated per-input controls; Web exposes the equivalent
-transport-free semantic controls. Device audio and clocks, drift correction,
-channel mapping, native EQ/gate/compressor/limiter, meters, and hardware
-acceptance remain. This is still a partial item 3 slice and does not
-complete or change the status of any `AU-*` parity row.
+transport-free semantic controls. Device audio and device clocks, device-level
+drift correction and channel-mapping realization, meter/UI delivery, and
+hardware acceptance remain. `fm-audio` separately provides the `AU-005`
+reference DSP chain: exact polarity, an RBJ high-pass plus up to four peaking EQ
+bands, a soft-knee compressor with makeup gain, an instant-attack ceiling
+limiter, a hold/attack/release downward gate, and a peak/RMS window meter,
+composed per channel by a preallocated `StripDsp` that processes planar
+`AudioBlock`s in place without steady-state allocation and rejects mismatched
+formats or non-finite samples before mutating state. No persisted strip DSP
+state, protocol command, daemon mixer realization, Studio/Web surface, or
+hardware acceptance consumes those primitives yet. This is still a partial item
+3 slice and does not complete or change the status of any `AU-*` parity row.
 
 Current implementation boundary for item 1: `fm-io-macos` is the first native
 platform leaf. An isolated Swift helper uses `AVFoundation` to enumerate camera
@@ -1456,11 +1525,21 @@ record before validating and repairing torn tails. `RecorderConfig.tap`
 `Timecode`, all stored in the CRC-protected `manifest.fmr` start record and
 restored across restart; unknown timecode sources, invalid timecodes, zero
 input ids, and truncated or checksum-corrupt records are refused
-transactionally. This is spool metadata only: no daemon path selects per-input
-taps, writes an editing-format timecode manifest, records several inputs
-simultaneously, or exposes tap or timecode state on the wire, and per-camera
-storage roots, ISO/MultiCorder graph taps, and `OR-004` acceptance remain
-planned, so item 5 remains incomplete.
+transactionally. The crate now also provides `IsoTapSession`, a bounded
+orchestration layer that starts up to eight selected raw input feeds as
+independent crash-safe recorders under one session root: recorder and
+video-input identity are unique and bounded per tap, an optional audio input
+maps embedded audio, each tap resolves a shared-master or source-original start
+timecode, the whole roster is validated before any file exists, and a later
+start or manifest failure rolls already-started taps back. The session writes a
+deterministic bounded `iso-manifest.txt` carrying the ordered roster, resolved
+timecodes, and per-tap segment and queue bounds, and parses it back exactly
+while rejecting malformed, duplicated, or out-of-bounds documents wholesale.
+This is still a reference orchestration and manifest layer, not daemon
+integration: no daemon path selects per-input taps, no editing-format
+(EDL/XML-class) interchange is written, no graph tap or per-camera storage root
+exists, no wire, Studio, or Web projection exposes tap or timecode state, and no
+hardware or cross-platform acceptance exists, so item 5 remains incomplete.
 
 Current implementation boundary for item 7: native `freemixd` can expose a
 bounded loopback operator status listener (`--status-listen`, guarded by
@@ -1554,6 +1633,27 @@ independently with tested recovery.
 10. Add telestrator and web monitor.
 11. Add project append, bundle, relink, import/export, templates, undo/lock.
 The current persistence slice only audits stored media asset references; all item 11 mutation workflows remain planned.
+
+Current implementation boundary for item 1: `fm-titles` provides dependent,
+bounded title scenes and a deterministic CPU renderer. Templates carry typed
+text, number, color, and image fields with optimistic scene updates; elements
+support text, rectangles, images, clocks, and tickers with style, alignment,
+z-order, visibility, and keyframe animation tracks. Structural validation
+checks field types, element bounds, and referenced assets. Text is real glyph
+rasterization from caller-supplied font bytes through `ab_glyph` with kerned
+advances, greedy word wrapping, horizontal and vertical alignment,
+anti-aliased premultiplied RGBA8 coverage, and frame/box clipping. Image
+elements now render caller-supplied decoded RGBA8 frames with bounded
+nearest-neighbor stretch-to-bounds scaling, clipping, and premultiplied
+source-over including element opacity; unknown or name-only assets keep the
+placeholder path and are reported. All work is capped by output size, font
+size, characters, lines, glyphs, and canvas pixels, and per-element degradation
+is reported instead of failing the frame. Remaining gaps: no grapheme-level
+shaping or bidi, no file decode/orientation/color-profile handling, no fit
+modes or filtering, no GPU rasterization, no title designer or live field
+editor, no project-schema instantiation, and no animation/ticker integration
+with real data sources. Item 1 therefore remains incomplete and `GX-001`
+remains planned.
 
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 

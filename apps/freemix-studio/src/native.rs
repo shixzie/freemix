@@ -2273,6 +2273,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[allow(clippy::needless_pass_by_value)] // ownership moves into the spawned server thread
     fn serve_worker_recovery(listener: TcpListener) {
         let mut first = HeartbeatPeer::accept(&listener);
@@ -2367,6 +2368,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn receive_meter_state(updates: &StateUpdates) {
         loop {
             updates

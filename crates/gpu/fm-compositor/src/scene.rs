@@ -125,6 +125,23 @@ impl RectMask {
     }
 }
 
+/// Chroma key parameters with exact integer semantics.
+///
+/// `color.rgb` is the key color and `color.a` is ignored. A pixel's distance is
+/// the maximum absolute per-channel difference
+/// `max(|r - color.r|, |g - color.g|, |b - color.b|)`. The key alpha is `0`
+/// while `distance <= tolerance`; otherwise it is `255` when `softness == 0`
+/// or `distance - tolerance >= softness`, and otherwise
+/// `((distance - tolerance) * 255 + softness / 2) / softness` with truncating
+/// integer division, which rounds the ramp to the nearest integer with exact
+/// halfway values rounded up.
+///
+/// When `spill > 0` and the key alpha is below `255`, the dominant channel of
+/// the key color is pulled toward the maximum of the other two source-pixel
+/// channels: `amount = (spill * (255 - key_alpha) + 127) / 255`, then
+/// `channel = (channel * (255 - amount) + neutral * amount + 127) / 255`.
+/// Dominance is green when `g >= r && g >= b`, blue when `b >= r`, and red
+/// otherwise; `spill == 0` disables suppression entirely.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ChromaKey {
     pub color: Rgba8,
@@ -145,6 +162,16 @@ impl ChromaKey {
     }
 }
 
+/// Luma key parameters with exact integer semantics.
+///
+/// Luma uses the fixed-point BT.709 full-range weights,
+/// `luma = (54 * r + 183 * g + 19 * b + 128) / 256` with truncating integer
+/// division. The key alpha follows the same ramp as [`ChromaKey`]: `0` while
+/// `luma <= threshold`; otherwise it is `255` when `softness == 0` or
+/// `luma - threshold >= softness`, and otherwise
+/// `((luma - threshold) * 255 + softness / 2) / softness`, rounding to the
+/// nearest integer with exact halfway values rounded up. `invert` returns
+/// `255 - alpha` instead of `alpha`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LumaKey {
     pub threshold: u8,
@@ -163,14 +190,24 @@ impl LumaKey {
     }
 }
 
+/// A per-layer key stage applied after crop and before the effect chain.
+///
+/// The chroma or luma key alpha is multiplied with the alpha of a rectangular
+/// mask when one is present, as `(key_alpha * mask_alpha + 127) / 255`. With
+/// straight alpha only the resulting alpha is scaled and premultiplication
+/// happens after the effects; with premultiplied alpha all four channels are
+/// scaled immediately. See [`ChromaKey`] and [`LumaKey`] for the per-pixel
+/// formulas.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Key {
     Chroma(ChromaKey),
     Luma(LumaKey),
 }
 
-/// Backend-neutral effect descriptor. The reference executor only accepts the
-/// named `passthrough` effect; production backends can bind other descriptors.
+/// Backend-neutral effect descriptor. The CPU reference executor applies the
+/// parameterless `passthrough` effect as a no-op and executes the documented
+/// typed reference effects; the native backend currently rejects every
+/// non-`passthrough` descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Effect {
     name: String,

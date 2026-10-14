@@ -1,9 +1,16 @@
 //! Deterministic, bounded CPU reference implementations of video scopes.
 
+mod monitor;
+
 use core::fmt;
 
 pub use fm_video::{ColorMatrix, ColorRange};
 use fm_video::{ImageFrame, Rgba8, Yuv8, rgb_to_yuv};
+pub use monitor::{
+    FalseColorBand, FalseColorCounts, MAX_CADENCE_FRAMES, MAX_MONITOR_SCOPES, MIN_CADENCE_FRAMES,
+    MonitorError, MonitorScopeKind, MonitorScopeSelection, MonitoringPoint, ScopeMonitor,
+    ScopeMonitorConfig, ScopeMonitorReport, ScopeSplitView, SplitOrientation, false_color_band,
+};
 
 /// Maximum number of horizontal buckets in a waveform or parade.
 pub const MAX_HORIZONTAL_BINS: usize = 4_096;

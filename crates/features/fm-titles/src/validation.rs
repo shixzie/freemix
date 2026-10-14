@@ -2,19 +2,75 @@ use crate::{
     AnimatedProperty, Element, ElementId, ElementKind, FieldId, FieldType, FieldValue, FontError,
     FontFace, TitleScene, TitleTemplate,
 };
+use core::fmt;
+use fm_video::ImageFrame;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+/// Maximum number of image assets [`AssetCatalog::with_decoded_image`] will
+/// register in one catalog.
+///
+/// Name-only registrations made with [`AssetCatalog::with_image`] are cheap
+/// strings and are not capped; this cap bounds decoded pixel memory together
+/// with [`MAX_IMAGE_ASSET_BYTES`]. A rejected registration loses the catalog
+/// because the builder consumes it - see [`AssetCatalog::with_decoded_image`].
+pub const MAX_IMAGE_ASSETS: usize = 64;
+
+/// Maximum decoded pixel buffer accepted for one image asset, in bytes,
+/// measured as `frame.pixels().len()` (stride padding included).
+pub const MAX_IMAGE_ASSET_BYTES: usize = 16 * 1024 * 1024;
+
+/// Reasons a decoded image is refused by [`AssetCatalog::with_decoded_image`].
+///
+/// Every message is bounded: it names the limit and the measured size, never
+/// the asset name or any pixel data.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImageAssetError {
+    /// The asset name was empty or only whitespace.
+    EmptyName,
+    /// The catalog already holds [`MAX_IMAGE_ASSETS`] assets and this is a new
+    /// name. Replacing an existing name is always allowed.
+    TooManyAssets { maximum: usize },
+    /// The decoded frame's pixel buffer exceeds [`MAX_IMAGE_ASSET_BYTES`].
+    FrameTooLarge { bytes: usize, maximum: usize },
+}
+
+impl fmt::Display for ImageAssetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyName => formatter.write_str("image asset name is empty"),
+            Self::TooManyAssets { maximum } => write!(
+                formatter,
+                "catalog already holds the maximum {maximum} image assets"
+            ),
+            Self::FrameTooLarge { bytes, maximum } => write!(
+                formatter,
+                "image asset buffer is {bytes} bytes, maximum is {maximum}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ImageAssetError {}
+
 /// Assets a scene may reference: parsed font faces keyed by family name, and
-/// image asset names.
+/// image assets keyed by asset name.
 ///
 /// Fonts are owned bytes the caller loaded from a project asset. There is no
 /// system font discovery and no fallback chain: a family that is not in the
 /// catalog simply does not render, and is reported as missing.
-#[derive(Clone, Debug, Default)]
+///
+/// Images are caller-decoded premultiplied RGBA8 frames. An asset name may be
+/// registered without pixels ([`Self::with_image`]); such a name exists for
+/// validation and missing-asset reporting but renders the placeholder.
+/// Registration never decodes a file: this crate has no image codec.
+#[derive(Clone, Default)]
 pub struct AssetCatalog {
     fonts: BTreeMap<String, Arc<FontFace>>,
-    images: BTreeSet<String>,
+    /// `None` is a name-only registration. Optional frames are behind `Arc` so
+    /// cloning the catalog shares pixels instead of copying up to
+    /// [`MAX_IMAGE_ASSETS`] x [`MAX_IMAGE_ASSET_BYTES`].
+    images: BTreeMap<String, Option<Arc<ImageFrame>>>,
 }
 
 impl AssetCatalog {
@@ -22,7 +78,7 @@ impl AssetCatalog {
     pub const fn new() -> Self {
         Self {
             fonts: BTreeMap::new(),
-            images: BTreeSet::new(),
+            images: BTreeMap::new(),
         }
     }
 
@@ -48,10 +104,59 @@ impl AssetCatalog {
         Ok(self.with_font(family, face))
     }
 
+    /// Registers an asset name that has no decoded pixels yet.
+    ///
+    /// A name-only asset counts as registered: [`Self::has_image`] is true, the
+    /// missing-asset report stays empty for it, and rendering falls back to the
+    /// image placeholder. Calling this for a name that already has decoded
+    /// pixels leaves those pixels in place; it never downgrades an entry.
+    ///
+    /// This infallible builder does not enforce [`MAX_IMAGE_ASSETS`], which
+    /// exists to bound decoded pixel memory rather than name strings; the cap
+    /// is enforced by [`Self::with_decoded_image`].
     #[must_use]
     pub fn with_image(mut self, asset: impl Into<String>) -> Self {
-        self.images.insert(asset.into());
+        self.images.entry(asset.into()).or_default();
         self
+    }
+
+    /// Registers a caller-decoded premultiplied RGBA8 frame under an asset name,
+    /// replacing any earlier name-only or decoded entry of the same name.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a name that is empty or only whitespace, a frame whose
+    /// `pixels().len()` exceeds [`MAX_IMAGE_ASSET_BYTES`], and a **new** name
+    /// when the catalog already holds [`MAX_IMAGE_ASSETS`] assets. Replacing an
+    /// existing name always succeeds and does not grow the count, so the number
+    /// of registered assets never exceeds the cap through this builder.
+    ///
+    /// Because the builder consumes `self`, a rejection loses the catalog: the
+    /// caller never observes a partially updated state and cannot accidentally
+    /// render against a catalog that silently dropped the frame.
+    pub fn with_decoded_image(
+        mut self,
+        asset: impl Into<String>,
+        frame: ImageFrame,
+    ) -> Result<Self, ImageAssetError> {
+        let asset = asset.into();
+        if asset.trim().is_empty() {
+            return Err(ImageAssetError::EmptyName);
+        }
+        let bytes = frame.pixels().len();
+        if bytes > MAX_IMAGE_ASSET_BYTES {
+            return Err(ImageAssetError::FrameTooLarge {
+                bytes,
+                maximum: MAX_IMAGE_ASSET_BYTES,
+            });
+        }
+        if !self.images.contains_key(&asset) && self.images.len() >= MAX_IMAGE_ASSETS {
+            return Err(ImageAssetError::TooManyAssets {
+                maximum: MAX_IMAGE_ASSETS,
+            });
+        }
+        self.images.insert(asset, Some(Arc::new(frame)));
+        Ok(self)
     }
 
     #[must_use]
@@ -64,9 +169,31 @@ impl AssetCatalog {
         self.fonts.get(family).map(AsRef::as_ref)
     }
 
+    /// Whether an asset name is registered, with or without decoded pixels.
     #[must_use]
     pub fn has_image(&self, asset: &str) -> bool {
-        self.images.contains(asset)
+        self.images.contains_key(asset)
+    }
+
+    /// The decoded pixels registered for an asset name, if any.
+    ///
+    /// `None` for an unknown name and for a name-only registration.
+    #[must_use]
+    pub fn image(&self, asset: &str) -> Option<&ImageFrame> {
+        self.images.get(asset)?.as_deref()
+    }
+}
+
+/// Names only: derived `Debug` would print every decoded pixel buffer, up to
+/// [`MAX_IMAGE_ASSETS`] x [`MAX_IMAGE_ASSET_BYTES`] bytes of numbers in one log
+/// line.
+impl fmt::Debug for AssetCatalog {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AssetCatalog")
+            .field("fonts", &self.fonts.keys().collect::<Vec<_>>())
+            .field("images", &self.images.keys().collect::<Vec<_>>())
+            .finish()
     }
 }
 
@@ -234,7 +361,7 @@ fn validate_element(
             &[FieldType::Text, FieldType::Number],
             "text or number",
         ),
-        ElementKind::ImagePlaceholder { field } => require_field(
+        ElementKind::Image { field } => require_field(
             errors,
             fields,
             element.id,
@@ -340,7 +467,7 @@ fn missing_assets(
                 fonts.push(missing);
             }
         }
-        if let ElementKind::ImagePlaceholder { field } = element.kind
+        if let ElementKind::Image { field } = element.kind
             && let Some(FieldValue::Image(image)) = values.get(&field)
             && !assets.has_image(&image.asset)
         {

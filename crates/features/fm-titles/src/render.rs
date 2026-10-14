@@ -4,7 +4,10 @@
 //! premultiplied RGBA8 [`ImageFrame`]. Text is real font rasterization: glyph
 //! outlines come from a caller-supplied font through `ab_glyph`, with kerned
 //! advances, ascent-correct baselines, word wrapping, and anti-aliased
-//! coverage composited source-over into the frame.
+//! coverage composited source-over into the frame. Image elements draw
+//! caller-decoded premultiplied RGBA8 frames stretched to their bounds with
+//! nearest-neighbor sampling, clipped to the element box and the frame edge;
+//! an asset without decoded pixels keeps the placeholder.
 //!
 //! # Determinism
 //!
@@ -45,8 +48,8 @@
 //! the whole frame meaningless is a [`RenderError`].
 
 use crate::{
-    Alignment, AssetCatalog, Bounds, Color, Element, ElementId, ElementKind, FieldValue, FontFace,
-    HorizontalAlignment, TickerSpec, TitleScene, VerticalAlignment,
+    Alignment, AssetCatalog, Bounds, Color, Element, ElementId, ElementKind, FieldId, FieldValue,
+    FontFace, HorizontalAlignment, TickerSpec, TitleScene, VerticalAlignment,
     animation::evaluate_tracks,
     evaluate_clock, evaluate_ticker_position,
     font::ScaledFace,
@@ -55,7 +58,7 @@ use crate::{
 };
 use ab_glyph::{Font, Glyph, GlyphId, OutlinedGlyph, ScaleFont, point};
 use core::fmt;
-use fm_video::{FrameError, ImageFrame};
+use fm_video::{FrameError, ImageFrame, Rgba8};
 
 /// Maximum rendered frame width.
 pub const MAX_OUTPUT_WIDTH: u32 = 8_192;
@@ -80,7 +83,7 @@ const CULL_MARGIN_FACTOR: i64 = 16;
 
 pub const REFERENCE_RENDERER_LIMITATIONS: &[&str] = &[
     "text is laid out in codepoint order: no bidi, no complex-script shaping, no ligatures or other OpenType features",
-    "image elements render placeholders; image assets are reported but never decoded",
+    "image elements stretch decoded frames to the element bounds with nearest-neighbor sampling and floor-mapped source coordinates: no fit modes, filtering, color profile handling, orientation, or animated image integration",
     "rasterization is CPU-only and layout/animation use integer arithmetic without production GPU effects",
 ];
 
@@ -213,10 +216,13 @@ impl ReferenceRenderer {
     /// Elements whose font family is absent from `assets` draw their
     /// background but no text, and are listed in
     /// [`RenderReport::missing_fonts`]; a missing asset degrades one element
-    /// instead of failing the frame. An element that reaches the per-element
-    /// character cap or exhausts the frame glyph budget is likewise drawn as
-    /// far as it can be and listed in [`RenderReport::degraded`]: one over-long
-    /// field must not take the whole frame off air.
+    /// instead of failing the frame. An image element draws the decoded frame
+    /// registered for its field's asset, stretched to the element bounds; an
+    /// asset with no decoded pixels keeps the placeholder. An element that
+    /// reaches the per-element character cap or exhausts the frame glyph budget
+    /// is likewise drawn as far as it can be and listed in
+    /// [`RenderReport::degraded`]: one over-long field must not take the whole
+    /// frame off air.
     ///
     /// # Errors
     ///
@@ -348,17 +354,15 @@ fn draw_element(
             canvas.rect(evaluated.bounds, fill, evaluated.opacity);
             return Ok(());
         }
-        ElementKind::ImagePlaceholder { .. } => {
-            draw_placeholder(
-                canvas,
-                evaluated.bounds,
-                element
-                    .style
-                    .background
-                    .unwrap_or(Color::new(64, 64, 64, 255)),
+        ElementKind::Image { field } => {
+            ImagePaint {
+                element,
+                bounds: evaluated.bounds,
+                field,
                 fill,
-                evaluated.opacity,
-            );
+                opacity: evaluated.opacity,
+            }
+            .paint(canvas, scene, assets);
             return Ok(());
         }
         ElementKind::Text { .. } | ElementKind::Clock(_) | ElementKind::Ticker(_) => {}
@@ -420,7 +424,48 @@ fn draw_element(
             };
             paint.paint(canvas, &text, TextFlow::Ticker { spec, time_ms }, state)
         }
-        ElementKind::Rectangle | ElementKind::ImagePlaceholder { .. } => Ok(()),
+        ElementKind::Rectangle | ElementKind::Image { .. } => Ok(()),
+    }
+}
+
+/// What an image element draws and where.
+///
+/// Decoded pixels replace the placeholder wholesale: a decoded frame is drawn
+/// stretched to the element bounds, while the placeholder stays for a
+/// name-only asset, an unknown asset (reported as missing by `validate_scene`),
+/// or a field that is absent or of another type. `style.background` is part of
+/// the placeholder drawing and is not painted under decoded pixels.
+struct ImagePaint<'a> {
+    element: &'a Element,
+    bounds: Bounds,
+    field: FieldId,
+    fill: Color,
+    opacity: u8,
+}
+
+impl ImagePaint<'_> {
+    fn paint(&self, canvas: &mut Canvas<'_>, scene: &TitleScene, assets: &AssetCatalog) {
+        let decoded = scene
+            .field_value(self.field)
+            .and_then(|value| match value {
+                FieldValue::Image(image) => Some(image.asset.as_str()),
+                _ => None,
+            })
+            .and_then(|asset| assets.image(asset));
+        if let Some(frame) = decoded {
+            canvas.image(self.bounds, frame, self.opacity);
+        } else {
+            draw_placeholder(
+                canvas,
+                self.bounds,
+                self.element
+                    .style
+                    .background
+                    .unwrap_or(Color::new(64, 64, 64, 255)),
+                self.fill,
+                self.opacity,
+            );
+        }
     }
 }
 
@@ -703,6 +748,83 @@ impl Canvas<'_> {
             for x in region.x0..region.x1 {
                 self.blend_pixel(x, y, color, opacity);
             }
+        }
+    }
+
+    /// Draws a decoded premultiplied RGBA8 frame stretched to `bounds` with
+    /// deterministic nearest-neighbor sampling, clipped to this canvas.
+    ///
+    /// Destination pixel `(x, y)` inside `bounds` samples source pixel
+    /// `(dx * source_width / bounds_width, dy * source_height / bounds_height)`
+    /// where `dx` and `dy` are the offsets from `bounds` and the divisions
+    /// floor, matching `fm_video::transform_nearest`. The sampled pixel is
+    /// scaled by `opacity` and composited source-over by
+    /// [`Self::blend_premultiplied`].
+    ///
+    /// Only the intersection of `bounds` and the canvas is iterated, and each
+    /// destination pixel samples exactly one source pixel: work is bounded by
+    /// the canvas, never by the decoded frame's size or the element's declared
+    /// extent. A source far larger than the canvas is therefore sampled, not
+    /// rasterized wholesale.
+    fn image(&mut self, bounds: Bounds, frame: &ImageFrame, opacity: u8) {
+        let Some(region) = self.region(bounds) else {
+            return;
+        };
+        // `region` is non-empty only when `bounds` is non-empty, so neither
+        // divisor can be zero.
+        let width = u64::from(bounds.width);
+        let height = u64::from(bounds.height);
+        for y in region.y0..region.y1 {
+            let local_y = i64::from(y) - i64::from(bounds.y);
+            let Ok(local_y) = u64::try_from(local_y) else {
+                continue;
+            };
+            let source_y = local_y * u64::from(frame.height()) / height;
+            let source_y = u32::try_from(source_y).unwrap_or(frame.height() - 1);
+            for x in region.x0..region.x1 {
+                let local_x = i64::from(x) - i64::from(bounds.x);
+                let Ok(local_x) = u64::try_from(local_x) else {
+                    continue;
+                };
+                let source_x = local_x * u64::from(frame.width()) / width;
+                let source_x = u32::try_from(source_x).unwrap_or(frame.width() - 1);
+                let Some(pixel) = frame.pixel(source_x, source_y) else {
+                    continue;
+                };
+                self.blend_premultiplied(x, y, pixel, opacity);
+            }
+        }
+    }
+
+    /// Source-over composite of one already-premultiplied RGBA8 source pixel
+    /// scaled by `opacity`.
+    ///
+    /// Every channel, alpha included, is scaled by `opacity` with
+    /// [`multiply_u8`] - for a premultiplied source this is exactly scaling the
+    /// pixel's coverage, whereas re-multiplying by the derived alpha would
+    /// apply alpha twice. The scaled source is then blended per channel as
+    /// `destination = source_scaled + round(destination * (255 - source_alpha) / 255)`
+    /// with saturating addition.
+    fn blend_premultiplied(&mut self, x: u32, y: u32, pixel: Rgba8, opacity: u8) {
+        let Some(offset) = pixel_offset(self.width, x, y) else {
+            return;
+        };
+        let Some(destination) = offset
+            .checked_add(4)
+            .and_then(|end| self.pixels.get_mut(offset..end))
+        else {
+            return;
+        };
+        let alpha = multiply_u8(pixel.a, opacity);
+        let source = [
+            multiply_u8(pixel.r, opacity),
+            multiply_u8(pixel.g, opacity),
+            multiply_u8(pixel.b, opacity),
+            alpha,
+        ];
+        let inverse = u8::MAX - alpha;
+        for (channel, value) in destination.iter_mut().zip(source) {
+            *channel = value.saturating_add(multiply_u8(*channel, inverse));
         }
     }
 
