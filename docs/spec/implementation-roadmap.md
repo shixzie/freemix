@@ -1942,6 +1942,20 @@ dispatches, or persists bindings and macros; macro permissions are not
 enforced; scripts have no loops or arithmetic and cannot recall dispatched
 commands on cancellation. `IN-027` and `RC-010` remain planned.
 
+Current implementation boundary for item 6 production clocks: `fm-clock`
+provides deterministic count-up and countdown timers driven by caller-supplied
+monotonic readings, with stop-or-overrun expiry delivered once at the exact
+nanosecond, all-or-nothing typed commands, and drift-free pause cycles. It
+formats broadcast presets including `HH:MM:SS:FF` at fractional frame rates,
+resolves time of day through fixed offsets or POSIX `TZ` rules with exact DST
+transitions, reports media remaining time with mark-in/out, accumulates
+stream/record/replay session timers, and exposes a bounded named-clock registry
+whose readings flatten into title binding values. Remaining gaps: no engine,
+daemon, protocol, CLI, UI, persistence, or `fm-titles` wiring; no IANA tz
+database, leap seconds, drop-frame timecode, playback-speed-aware media
+remaining, playlist remaining time, or locale formats. `SW-013` remains planned.
+
+
 Current implementation boundary for item 8: `fm-automation` provides a
 bounded MIDI 1.0 stream parser (running status, interleaved real-time bytes,
 bounded SysEx capture, 14-bit controller pairs, pitch bend) and an OSC 1.0
