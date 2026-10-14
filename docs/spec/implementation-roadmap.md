@@ -1705,6 +1705,21 @@ no camera adapter or hardware validation, presets are not yet switchable
 virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic,
 NDI, or digital PTZ. `IN-028` remains planned.
 
+Current implementation boundary for item 6: `fm-automation` provides a typed
+per-input trigger catalog (transition and overlay in/out, completion,
+countdown and playback-time thresholds, call state, active speaker, and replay
+completion) that edge-detects changes between caller-supplied observations,
+fires forward threshold crossings once, resets on flagged discontinuities, and
+schedules bounded ordered actions atomically. A macro script engine installs
+macro batches atomically with call-cycle, depth, and size checks and runs
+commands, atomic multi-command transactions, waits, timed conditions, if/else,
+calls, and variables on a per-run logical clock with preconditions, bounded
+concurrency and step budgets, cancellation, and a bounded log. Remaining gaps:
+nothing in the engine, daemon, or protocol produces observations, executes
+dispatches, or persists bindings and macros; macro permissions are not
+enforced; scripts have no loops or arithmetic and cannot recall dispatched
+commands on cancellation. `IN-027` and `RC-010` remain planned.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)
