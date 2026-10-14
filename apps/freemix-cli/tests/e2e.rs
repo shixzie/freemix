@@ -6247,6 +6247,14 @@ fn local_scene_layer_effects_author_render_and_clear_exactly() {
     }
 
     apply!(&["new", path]);
+    // Scene renders compose at the project size before scaling to the output.
+    // The effect math is resolution-independent, so a 4x4 project keeps each
+    // 4x4 render a 1:1 composition instead of a full 1920x1080 debug-build
+    // composite per render.
+    let mut source = manifest(&project);
+    replace_once(&mut source, "\"width\": 1920,", "\"width\": 4,");
+    replace_once(&mut source, "\"height\": 1080,", "\"height\": 4,");
+    fs::write(project.join("project.json"), source).unwrap();
     // A dark-gray source proves the exact effect math: `levels 0 128` maps 64
     // to exactly 128, so the rendered pixel is mid-gray rather than the source.
     apply!(&["input-replace-solid", path, "1", "64", "64", "64", "255"]);
