@@ -40,6 +40,8 @@ const MIN_FADER_HEIGHT: f32 = 120.0;
 const MAX_FADER_HEIGHT: f32 = 620.0;
 /// Vertical space a strip needs besides its fader and meters.
 const STRIP_CHROME_HEIGHT: f32 = 224.0;
+/// Height of the gain, balance, and delay entry rows inside the chrome.
+const ENTRY_ROWS_HEIGHT: f32 = 72.0;
 /// Fixed height of the strip name plate (two lines of name).
 const NAME_PLATE_HEIGHT: f32 = 30.0;
 /// Height of the peak-hold readout above the meter.
@@ -323,15 +325,22 @@ pub(crate) fn clip_reset_label(l: Locale, clipped: usize) -> Option<String> {
 }
 
 #[allow(clippy::too_many_lines)] // one immediate-mode region
+/// Draws the mixer. `details` is the progressive-disclosure flag for the
+/// strips' typed gain, balance, and delay entries; the header key flips it.
 pub(crate) fn draw_mixer(
     ui: &mut Ui,
     state: &StudioUiState,
     ballistics: &mut MeterBallistics,
-    dt_ms: u32,
+    (dt_ms, details): (u32, &mut bool),
     intents: &mut Vec<StudioIntent>,
 ) {
-    let fader_height =
-        (ui.available_height() - STRIP_CHROME_HEIGHT).clamp(MIN_FADER_HEIGHT, MAX_FADER_HEIGHT);
+    // Hidden entries give their height to the faders.
+    let chrome = if *details {
+        STRIP_CHROME_HEIGHT
+    } else {
+        STRIP_CHROME_HEIGHT - ENTRY_ROWS_HEIGHT
+    };
+    let fader_height = (ui.available_height() - chrome).clamp(MIN_FADER_HEIGHT, MAX_FADER_HEIGHT);
     let enabled = state.connection_status.controls_enabled()
         && state.can_control_audio
         && state.view.is_some();
@@ -346,6 +355,17 @@ pub(crate) fn draw_mixer(
         ui.ctx().request_repaint_after(METER_REPAINT_INTERVAL);
     }
     section_header(ui, l.text(Msg::ViewAudioMixer), |ui| {
+        if state.view.is_some() {
+            crate::theme::disclosure(
+                ui,
+                details,
+                l.text(Msg::MixerDetailsKey),
+                (
+                    l.text(Msg::DisclosureShowMixer),
+                    l.text(Msg::DisclosureHideMixer),
+                ),
+            );
+        }
         if meters_unavailable(state) {
             ui.label(
                 RichText::new(l.text(Msg::MetersUnavailable))
@@ -440,6 +460,7 @@ pub(crate) fn draw_mixer(
                                     StripGate {
                                         enabled,
                                         reason: audio_reason,
+                                        details: *details,
                                     },
                                     fader_height,
                                     intents,
@@ -507,6 +528,8 @@ fn stale_badge(ui: &mut Ui, text: &str) {
 struct StripGate {
     enabled: bool,
     reason: &'static str,
+    /// Whether the typed gain, balance, and delay entries show.
+    details: bool,
 }
 
 fn strip_frame(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut Ui)) {
@@ -694,7 +717,11 @@ fn draw_input_strip(
     intents: &mut Vec<StudioIntent>,
 ) -> bool {
     let l = l10n::locale(ui.ctx());
-    let StripGate { enabled, reason } = gate;
+    let StripGate {
+        enabled,
+        reason,
+        details,
+    } = gate;
     let name = label_for_input(l, view, status.input);
     let ordinal = view
         .inputs
@@ -745,46 +772,48 @@ fn draw_input_strip(
             )
             .changed();
         });
-        ui.vertical_centered_justified(|ui| {
-            let entry_changed = ui
-                .add_enabled(
-                    enabled,
-                    DragValue::new(&mut gain_millidb)
-                        .range(-96_000..=24_000)
-                        .speed(100.0)
-                        .custom_formatter(|value, _| {
-                            #[allow(clippy::cast_possible_truncation)] // bounded range
-                            format_gain(l, value as i32)
-                        })
-                        .custom_parser(|text| parse_gain(l, text)),
-                )
-                .hint(l.text(Msg::GainEntryHover), reason)
-                .changed();
-            gain_changed |= entry_changed;
-            balance_changed = ui
-                .add_enabled(
-                    enabled,
-                    DragValue::new(&mut balance_basis_points)
-                        .range(-10_000..=10_000)
-                        .speed(100.0)
-                        .prefix("BAL ")
-                        .custom_formatter(|value, _| format_balance(value))
-                        .custom_parser(parse_balance),
-                )
-                .hint(l.text(Msg::BalanceHover), reason)
-                .changed();
-            delay_changed = ui
-                .add_enabled(
-                    enabled,
-                    DragValue::new(&mut delay_samples)
-                        .range(0..=48_000)
-                        .speed(48.0)
-                        .prefix(format!("{} ", l.text(Msg::DelayPrefix)))
-                        .suffix(" smp"),
-                )
-                .hint(l.text(Msg::DelayHover), reason)
-                .changed();
-        });
+        if details {
+            ui.vertical_centered_justified(|ui| {
+                let entry_changed = ui
+                    .add_enabled(
+                        enabled,
+                        DragValue::new(&mut gain_millidb)
+                            .range(-96_000..=24_000)
+                            .speed(100.0)
+                            .custom_formatter(|value, _| {
+                                #[allow(clippy::cast_possible_truncation)] // bounded range
+                                format_gain(l, value as i32)
+                            })
+                            .custom_parser(|text| parse_gain(l, text)),
+                    )
+                    .hint(l.text(Msg::GainEntryHover), reason)
+                    .changed();
+                gain_changed |= entry_changed;
+                balance_changed = ui
+                    .add_enabled(
+                        enabled,
+                        DragValue::new(&mut balance_basis_points)
+                            .range(-10_000..=10_000)
+                            .speed(100.0)
+                            .prefix("BAL ")
+                            .custom_formatter(|value, _| format_balance(value))
+                            .custom_parser(parse_balance),
+                    )
+                    .hint(l.text(Msg::BalanceHover), reason)
+                    .changed();
+                delay_changed = ui
+                    .add_enabled(
+                        enabled,
+                        DragValue::new(&mut delay_samples)
+                            .range(0..=48_000)
+                            .speed(48.0)
+                            .prefix(format!("{} ", l.text(Msg::DelayPrefix)))
+                            .suffix(" smp"),
+                    )
+                    .hint(l.text(Msg::DelayHover), reason)
+                    .changed();
+            });
+        }
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             let half = (STRIP_INNER_WIDTH - 3.0) / 2.0;

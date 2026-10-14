@@ -18,7 +18,7 @@ use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
 use fm_ui_model::{ClientView, ManualTransitionStatus};
 
 use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
-use crate::gating::{Capability, unavailable_reason};
+use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::input_bank::project_editing_available;
 use crate::l10n::{self, Arg, Locale, Msg, with_key};
 use crate::theme::{
@@ -951,12 +951,14 @@ impl StudioShell {
                 });
                 ui.add_space(6.0);
                 ui.label(section_label(l.text(Msg::AddInputName)));
-                let edit = ui.add(
-                    egui::TextEdit::singleline(&mut draft.name)
-                        .id(egui::Id::new("studio-add-input-name"))
-                        .char_limit(MAX_INPUT_NAME_BYTES)
-                        .desired_width(ui.available_width()),
-                );
+                let edit = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut draft.name)
+                            .id(egui::Id::new("studio-add-input-name"))
+                            .char_limit(MAX_INPUT_NAME_BYTES)
+                            .desired_width(ui.available_width()),
+                    )
+                    .on_hover_text(l.text(Msg::AddInputNameHover));
                 if draft.focus_pending {
                     draft.focus_pending = false;
                     edit.request_focus();
@@ -1020,10 +1022,12 @@ impl StudioShell {
                                 ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
                                 for (label, color) in COLOUR_PRESETS {
                                     if colour_swatch(ui, color, draft.color == color)
-                                        .on_hover_text(format!(
-                                            "{}  {}",
-                                            l.text(label),
-                                            hex_colour(color)
+                                        .on_hover_text(l.format(
+                                            Msg::ColourSwatchHover,
+                                            &[
+                                                ("colour", Arg::Str(l.text(label))),
+                                                ("hex", Arg::Str(&hex_colour(color))),
+                                            ],
                                         ))
                                         .clicked()
                                     {
@@ -1105,15 +1109,10 @@ impl StudioShell {
                                 )
                             })
                             .inner
-                            .on_hover_text(with_key(
-                                l,
-                                l.text(Msg::AddInputKeyHover),
-                                l.text(Msg::KeyEnter),
-                            ))
-                            .on_disabled_hover_text(l10n::unavailable(
-                                l,
+                            .hint(
+                                &with_key(l, l.text(Msg::AddInputKeyHover), l.text(Msg::KeyEnter)),
                                 submission.as_ref().err().copied().unwrap_or(""),
-                            ));
+                            );
                         if add.clicked() {
                             submit = true;
                         }
@@ -1241,8 +1240,7 @@ impl StudioShell {
                                 )
                             })
                             .inner
-                            .on_hover_text(l.text(Msg::RemoveKeyHover))
-                            .on_disabled_hover_text(l10n::unavailable(l, availability.reason))
+                            .hint(l.text(Msg::RemoveKeyHover), availability.reason)
                             .clicked()
                         {
                             remove = true;

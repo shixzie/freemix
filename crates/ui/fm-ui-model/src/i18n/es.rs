@@ -477,7 +477,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::ViewResetLayout, t("Restablecer diseño")),
     (
         Msg::ViewResetLayoutDisabled,
-        t("El diseño ya es el predeterminado"),
+        t("el diseño ya es el predeterminado"),
     ),
     (
         Msg::ViewResetLayoutHover,
@@ -543,7 +543,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::PrefsResetDisabled,
-        t("Todas las preferencias ya tienen su valor predeterminado"),
+        t("todas las preferencias ya tienen su valor predeterminado"),
     ),
     (Msg::PrefsDone, t("Listo")),
     (Msg::PrefsDoneHover, t("Cerrar Preferencias  [Esc]")),
@@ -1917,4 +1917,191 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("este elemento ya es el primero"),
     ),
     (Msg::PlaylistReasonLast, t("este elemento ya es el último")),
+    // Hover help for every control (RC-018).
+    (
+        Msg::MenuFileHover,
+        t("Preferencias y salir; el daemon guarda el show tras cada edición"),
+    ),
+    (
+        Msg::MenuEditHover,
+        t(
+            "Deshacer, rehacer, el candado de edición y el nombre y la posición de la entrada en Previo",
+        ),
+    ),
+    (
+        Msg::MenuViewHover,
+        t("Paneles, la pestaña del panel lateral, el diseño, el idioma y el reloj"),
+    ),
+    (
+        Msg::MenuInputsHover,
+        t("Añadir, quitar, seleccionar y cortar entradas"),
+    ),
+    (
+        Msg::MenuOutputHover,
+        t("Transiciones, fundido a negro, la T-bar, grabación, transmisiones y Stingers"),
+    ),
+    (
+        Msg::MenuHelpHover,
+        t("Atajos de teclado e información de la versión"),
+    ),
+    (Msg::RenamePreviewHover, t("Renombrar la entrada en Previo")),
+    (
+        Msg::MoveEarlierHover,
+        t("Mover la entrada en Previo un lugar antes en el banco"),
+    ),
+    (
+        Msg::MoveLaterHover,
+        t("Mover la entrada en Previo un lugar después en el banco"),
+    ),
+    (
+        Msg::TabOverlaysHover,
+        t(
+            "Canales de overlay O1–O8: tomar, encolar y dar estilo a fuentes superpuestas sobre Programa",
+        ),
+    ),
+    (
+        Msg::TabStingersHover,
+        t("Ranuras de Stinger S1–S8: lanzar una ranura configurada o configurar su medio"),
+    ),
+    (
+        Msg::TabTitlesHover,
+        t("Entradas de título: editar sus campos, previsualizar y llevarlas al aire"),
+    ),
+    (
+        Msg::TabPlaylistHover,
+        t("Un orden automático de entradas con duraciones y transiciones"),
+    ),
+    (
+        Msg::SelectNamedOnPreviewHover,
+        t("Seleccionar «{name}» en Previo"),
+    ),
+    (
+        Msg::CutNamedToProgramHover,
+        t("Seleccionar «{name}» en Previo y cortarla a Programa"),
+    ),
+    (
+        Msg::NoStreamTargetsHover,
+        t("Iniciar y detener los destinos de transmisión del show"),
+    ),
+    (
+        Msg::ClearStingerMenuHover,
+        t("Vaciar una ranura de Stinger configurada"),
+    ),
+    (
+        Msg::AboutHover,
+        t("Versión, licencia y qué es FreeMix Studio"),
+    ),
+    (
+        Msg::TileRenameHover,
+        t("Dar un nuevo nombre a esta entrada"),
+    ),
+    (
+        Msg::TileMoveLeftHover,
+        t("Mover esta entrada un lugar antes en el banco"),
+    ),
+    (
+        Msg::TileMoveRightHover,
+        t("Mover esta entrada un lugar después en el banco"),
+    ),
+    (
+        Msg::RenameFieldHover,
+        t("El nuevo nombre de la entrada; Intro lo aplica"),
+    ),
+    (
+        Msg::StingerSlotOptionHover,
+        t("Configurar la ranura de Stinger S{slot}"),
+    ),
+    (
+        Msg::StingerMediaOptionHover,
+        t("Reproducir «{name}» como medio de esta ranura"),
+    ),
+    (
+        Msg::TitleTextFieldHover,
+        t("Texto que el título muestra en el campo"),
+    ),
+    (
+        Msg::TitleNumberFieldHover,
+        t("Número entero que el título muestra en el campo"),
+    ),
+    (
+        Msg::TitleColorFieldHover,
+        t("Color del campo en hexadecimal #RRGGBB o #RRGGBBAA"),
+    ),
+    (
+        Msg::TitleImageFieldHover,
+        t("URI del recurso de imagen que el título muestra en el campo"),
+    ),
+    (
+        Msg::TitleChannelOptionHover,
+        t("Tomar este título en el canal de overlay O{channel}"),
+    ),
+    (
+        Msg::PlaylistInputPickHover,
+        t("Entrada que este elemento pone al aire"),
+    ),
+    (
+        Msg::PlaylistInputOptionHover,
+        t("Poner «{name}» al aire en este elemento"),
+    ),
+    (
+        Msg::PlaylistTransitionPickHover,
+        t("Transición que lleva este elemento al aire"),
+    ),
+    (
+        Msg::PlaylistTransitionOptionHover,
+        t("Llevar este elemento al aire con: {kind}"),
+    ),
+    (
+        Msg::PlaylistTransitionFramesHover,
+        t("Duración de la transición en fotogramas (arrastre o escriba)"),
+    ),
+    (
+        Msg::PlaylistReasonCutHasNoLength,
+        t("un Corte es instantáneo y no tiene duración"),
+    ),
+    (
+        Msg::AddInputNameHover,
+        t("El nombre de la nueva entrada, único en el show; Intro la añade"),
+    ),
+    (Msg::ColourSwatchHover, t("Usar {colour}  {hex}")),
+    (Msg::ViewDetails, t("Controles avanzados")),
+    (
+        Msg::ViewMixerDetails,
+        t("Valores de ganancia, balance y retardo del mezclador"),
+    ),
+    (
+        Msg::ViewMixerDetailsHover,
+        t(
+            "Mostrar los valores de ganancia, balance y retardo bajo cada canal; el fader y las teclas M, S y AFV se muestran siempre",
+        ),
+    ),
+    (Msg::ViewManualDetails, t("Detalles de la T-bar manual")),
+    (
+        Msg::ViewManualDetailsHover,
+        t(
+            "Mostrar la posición exacta de la T-bar, Completar, Cancelar y la tarjeta de estado aunque no haya una transición manual activa",
+        ),
+    ),
+    (Msg::MixerDetailsKey, t("GAN · BAL · RET")),
+    (Msg::DetailsKey, t("DETALLES")),
+    (
+        Msg::DisclosureShowMixer,
+        t("Mostrar los valores de ganancia, balance y retardo en cada canal"),
+    ),
+    (
+        Msg::DisclosureHideMixer,
+        t("Ocultar los valores; el fader sigue ajustando la ganancia"),
+    ),
+    (
+        Msg::DisclosureShowManual,
+        t(
+            "Mostrar la posición exacta, Completar, Cancelar y el estado antes de iniciar una transición manual",
+        ),
+    ),
+    (
+        Msg::DisclosureHideManual,
+        t(
+            "Ocultarlos hasta que empiece una transición manual; se muestran mientras haya una activa",
+        ),
+    ),
 ];

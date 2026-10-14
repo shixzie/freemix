@@ -8,6 +8,7 @@
 use egui::{Button, Event, Key, Modifiers, RichText, Ui, Vec2};
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
+use crate::gating::Hint;
 use crate::l10n::{self, Arg, Msg};
 use crate::theme::{caption, section_label, text_dim_color};
 use crate::{StudioShell, toasts::ToastKind};
@@ -358,8 +359,7 @@ impl StudioShell {
                     !defaults,
                     Button::new(l.text(Msg::PrefsReset)).min_size(Vec2::new(0.0, 28.0)),
                 )
-                .on_hover_text(l.text(Msg::PrefsResetHover))
-                .on_disabled_hover_text(l.text(Msg::PrefsResetDisabled))
+                .hint(l.text(Msg::PrefsResetHover), Msg::PrefsResetDisabled.en())
                 .clicked()
             {
                 self.reset_preferences();

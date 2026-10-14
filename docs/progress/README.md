@@ -264,7 +264,8 @@ the counts and lock chips.
 |---|---|
 | `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click, hovering the Program well: both wells show `SIMULATED` frames (Camera 1 Wide on Preview, Camera 2 Close on Program) under the solid `PREVIEW`/`PROGRAM` tally chips, the two tiles borrow those frames, and the tooltip states that Fade to Black is not composited. |
 | `studio-console-monitors-scene.png` | 1920x1080, the demo show as launched: Main Scene on Program (the simulated composite of its layers), Camera 2 Close on Preview, the neutral `CUT` and `FTB` keys, neutral `START` keys on both stopped recorders, the HLS ladder `NOT LIVE` with an amber-outlined `STOP`, and the lit meter bridge with Guest Remote's latched `CLIP` and `RESET CLIP` in the mixer header. |
-| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, lit red `STOP` key, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` with its `TAKE OFF` key (composited into the Program frame and badged on the Program header), the HLS ladder `NOT LIVE` with its amber `STOP`, the stopped RTMP target with a neutral `START`. |
+| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red lamp, solid `RECORDING` chip, lit red `STOP` key, header `1 / 2 RECORDING`, red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` with its `TAKE OFF` key (composited into the Program frame and badged on the Program header), the HLS ladder `NOT LIVE` with its amber `STOP`, the stopped RTMP target with a neutral `START`. The manual transition block and the mixer strips show their simpler default: the `▸ DETAILS` and `▸ GAIN · BAL · DLY` disclosure keys keep the manual position/commit/cancel controls and the per-strip gain, balance, and delay fields out of view. |
+| `studio-console-hover-help.png` | The same session hovering `FADE`: the tooltip says what the key does in operator language and names its shortcut (`Fade Preview to Program over the shared duration  [F]`). Every interactive control carries help like this (RC-018). |
 | `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: the amber `T-BAR 46%` header, the amber status card naming the transition, sources, and position, and the active `COMMIT`/`CANCEL` keys while automatic transitions are blocked. |
 | `studio-console-fade-to-black.png` | 1920x1080 after `FTB` (with REC 2 recording and O1 on air): the lit red `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program canvas. |
 | `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with amber `NOT LIVE` chips and amber-outlined `STOP` keys, and the Output menu with `NOT LIVE` beside both Stop items and `RECORDING` beside Stop recorder 2. |
@@ -309,6 +310,35 @@ the counts and lock chips.
 | `studio-console-preferences.png` | 1920x1080, File › Preferences… (or Ctrl+,) after choosing the 12-hour clock (the top-bar clock reads `10:20:35 PM`) and pressing Tab eight times: Language (each language named in itself), Clock, Display with the UI scale keys (`90%` to `150%`, `100%` selected) and the keyboard focus ring on `125%`, the High-contrast theme checkbox, the note that the choices live in `studio.conf` and that `--lang`/`--clock` win for their session, and the enabled `Reset to defaults` and `Done` keys. |
 | `studio-console-high-contrast.png` | 1920x1080 with `ui.high_contrast = on` in `studio.conf` (REC 2 recording, O1 on air): pure black panels, cards, keys, and fields told apart by 2 px light-grey outlines, near-white text and muted text, captions, field labels, chips, and tab labels 1.5 pt larger, tile ordinals and `no thumbnail` in the palette's muted text instead of near-black grey, while the tally and status hues (red Program, `RECORDING`, `ON AIR`, green Preview, amber `NOT LIVE`) are unchanged. |
 | `studio-console-spanish-high-contrast.png` | The same high-contrast session with `--lang es`: the longer Spanish keys (`FUNDIDO`, `CORTINA`, `DETENER`, `RETIRAR`) fit their outlined keys at the larger label size. |
+| `studio-console-spanish-hover-help.png` | `--lang es`, REC 2 recording and O1 taken (`TOMAR`), hovering `FUNDIDO`: the Spanish help line with its shortcut (`Fundir Previo a Programa con la duración compartida  [F]`); the `▸ DETALLES` and `▸ GAN · BAL · RET` disclosure keys stand in for the hidden advanced controls. |
+
+UI round 11 (RC-018, discoverable operator UI) gave every interactive
+control hover help in every shipped language: one line saying what it does
+in operator language, its keyboard shortcut in brackets when it has one
+(from the same table as the `?` reference), and, while it is disabled, the
+standard `Unavailable: …` reason beneath that line. Menus, menu items,
+submenus, side panel tabs, tile context menus, combo-box options, text and
+number fields, colour swatches, and dialog keys gained the help they lacked.
+A headless audit test in `fm-ui-egui` (`hover_audit.rs`) renders the full
+console in English and Spanish across some twenty scenes (each side tab
+as operator and viewer, the advanced controls opened, a manual transition in
+flight, a locked project, Fade to Black with a running playlist, toasts,
+every dialog, and a disconnected console), forces every tooltip, menu, and
+submenu open, and fails if any of the ~600 interactive widgets lacks help, a
+disabled control lacks its reason or its action, help runs past four lines,
+or the Spanish text falls back to English. Before this round it found 109
+controls without help and 64 disabled controls that showed only the reason.
+The round also introduced progressive disclosure: the per-strip
+gain/balance/delay fields of the audio mixer sit behind a `▸ GAIN · BAL ·
+DLY` key in the mixer header, and the manual transition's position,
+`COMMIT`/`CANCEL`, and status card behind a `▸ DETAILS` key beside
+`MANUAL` (they still appear on their own while a manual transition is in
+flight). Both start hidden, are also offered under View › Advanced controls,
+and persist in `studio.conf` as `layout.mixer_details` and
+`layout.manual_details`. Overlay channel rows already open their detail
+cards on demand. This round regenerated `-overview` and added `-hover-help`
+and `-spanish-hover-help`; the other captures predate the disclosure keys and
+still show the mixer entry rows and the always-open manual block.
 
 UI round 10 made the high-contrast theme a distinct accessibility mode. It
 now draws every surface pure black and separates panels, cards, keys, and
@@ -582,6 +612,10 @@ the scratch `FREEMIX_STUDIO_PREFS` file before launching Studio, then starts
 REC 2 and takes O1; `-spanish-high-contrast.png` repeats it with `--lang es`
 (clicking `TOMAR`). Typing into Studio's fields with `xdotool type` also needs
 `xdotool windowfocus` first.
+
+The hover-help captures take O1, move the pointer onto the `FADE` (or
+`FUNDIDO`) key with `xdotool mousemove`, nudge it by a pixel so egui sees a
+hover, and wait about three seconds for the tooltip before `import`.
 
 Software Vulkan is slow; allow roughly ten seconds after the window maps
 before capturing. The overview's overlay take was a click on O1 `TAKE` in the

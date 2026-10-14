@@ -34,6 +34,32 @@ pub(crate) enum SideTab {
     Playlist,
 }
 
+impl SideTab {
+    /// Every tab in panel order.
+    pub(crate) const ALL: [Self; 4] =
+        [Self::Overlays, Self::Stingers, Self::Titles, Self::Playlist];
+
+    /// The tab's title.
+    pub(crate) const fn title(self) -> Msg {
+        match self {
+            Self::Overlays => Msg::TabOverlays,
+            Self::Stingers => Msg::TabStingers,
+            Self::Titles => Msg::TabTitles,
+            Self::Playlist => Msg::TabPlaylist,
+        }
+    }
+
+    /// What the tab holds, for its hover help.
+    pub(crate) const fn hover(self) -> Msg {
+        match self {
+            Self::Overlays => Msg::TabOverlaysHover,
+            Self::Stingers => Msg::TabStingersHover,
+            Self::Titles => Msg::TabTitlesHover,
+            Self::Playlist => Msg::TabPlaylistHover,
+        }
+    }
+}
+
 pub(crate) const STREAMS_NONE_CONFIGURED: &str = Msg::StreamsNoneConfigured.en();
 
 impl StudioShell {
@@ -55,12 +81,7 @@ impl StudioShell {
         ui.add_space(8.0);
         let l = self.locale;
         ui.horizontal(|ui| {
-            let tabs = [
-                (SideTab::Overlays, Msg::TabOverlays),
-                (SideTab::Stingers, Msg::TabStingers),
-                (SideTab::Titles, Msg::TabTitles),
-                (SideTab::Playlist, Msg::TabPlaylist),
-            ];
+            let tabs = SideTab::ALL;
             let spacing = ui.spacing().item_spacing.x;
             // Every tab gets an exact quarter of the row, so the row never
             // overflows a narrow panel; a long label ellipsizes instead.
@@ -71,9 +92,9 @@ impl StudioShell {
                 .clamp(40.0, 96.0);
             ui.spacing_mut().button_padding.x = 4.0;
             let high_contrast = crate::theme::high_contrast();
-            for (tab, label) in tabs {
+            for tab in tabs {
                 let selected = self.side_tab == tab;
-                let text = RichText::new(l.text(label).to_uppercase())
+                let text = RichText::new(l.text(tab.title()).to_uppercase())
                     .size(if high_contrast { 12.0 } else { 11.0 })
                     .strong()
                     .extra_letter_spacing(if high_contrast { 0.3 } else { 1.0 })
@@ -82,25 +103,27 @@ impl StudioShell {
                     } else {
                         text_dim_color()
                     });
-                let response = ui.add_sized(
-                    Vec2::new(tab_width, 26.0),
-                    Button::new(text)
-                        .fill(if selected {
-                            raised_color()
-                        } else {
-                            Color32::TRANSPARENT
-                        })
-                        .stroke(Stroke::new(
-                            crate::theme::line_width(),
-                            if selected {
-                                border_color()
+                let response = ui
+                    .add_sized(
+                        Vec2::new(tab_width, 26.0),
+                        Button::new(text)
+                            .fill(if selected {
+                                raised_color()
                             } else {
                                 Color32::TRANSPARENT
-                            },
-                        ))
-                        .truncate()
-                        .min_size(Vec2::new(tab_width, 26.0)),
-                );
+                            })
+                            .stroke(Stroke::new(
+                                crate::theme::line_width(),
+                                if selected {
+                                    border_color()
+                                } else {
+                                    Color32::TRANSPARENT
+                                },
+                            ))
+                            .truncate()
+                            .min_size(Vec2::new(tab_width, 26.0)),
+                    )
+                    .on_hover_text(l.text(tab.hover()));
                 if selected {
                     let rect = response.rect;
                     ui.painter().line_segment(

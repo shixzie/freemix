@@ -108,7 +108,7 @@ pub(crate) fn draw_transition_column(
     draw_manual_transition(
         ui,
         (desired, realized),
-        manual,
+        (manual, &mut shell.layout.show_manual_details),
         (session_reason, manual_reason),
         names,
         intents,
@@ -215,16 +215,32 @@ fn draw_auto_transitions(
     shell.set_transition_duration_frames(shell.transition_duration_frames);
 }
 
+/// The manual block: start keys always; the exact position, Commit and
+/// Cancel keys, and status card while a manual transition is desired or
+/// realized, or while the operator keeps the details open.
 fn draw_manual_transition(
     ui: &mut Ui,
     (desired, realized): (ManualTransitionStatus, ManualTransitionStatus),
-    availability: ManualTransitionAvailability,
+    (availability, details): (ManualTransitionAvailability, &mut bool),
     (start_reason, active_reason): (&str, &str),
     names: InputNames<'_>,
     intents: &mut Vec<StudioIntent>,
 ) {
     let l = l10n::locale(ui.ctx());
-    ui.label(field_label(l.text(Msg::ManualLabel)));
+    ui.horizontal(|ui| {
+        ui.label(field_label(l.text(Msg::ManualLabel)));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            crate::theme::disclosure(
+                ui,
+                details,
+                l.text(Msg::DetailsKey),
+                (
+                    l.text(Msg::DisclosureShowManual),
+                    l.text(Msg::DisclosureHideManual),
+                ),
+            );
+        });
+    });
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         draw_manual_start_buttons(
@@ -235,6 +251,11 @@ fn draw_manual_transition(
             intents,
         );
     });
+    let in_flight = matches!(desired, ManualTransitionStatus::Active(_))
+        || matches!(realized, ManualTransitionStatus::Active(_));
+    if !(*details || in_flight) {
+        return;
+    }
     ui.horizontal(|ui| {
         draw_manual_position(
             ui,

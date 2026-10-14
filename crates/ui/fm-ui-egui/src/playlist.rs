@@ -782,7 +782,7 @@ impl PlaylistPanel {
 
     /// Selects `entry`, loads it into the form, and moves keyboard focus to
     /// the form's first field so the operator can edit it from the keyboard.
-    fn select(&mut self, entry: &PlaylistEntrySpec, rate: FrameRate) {
+    pub(crate) fn select(&mut self, entry: &PlaylistEntrySpec, rate: FrameRate) {
         self.selected = Some(entry.id);
         self.form = Some(EntryForm::load(entry, rate));
         self.focus_form = true;
@@ -1532,14 +1532,20 @@ fn draw_entry_form(
                         for (input, name) in names.view.inputs.iter().zip(&names.view.input_names) {
                             if ui
                                 .selectable_label(form.input == Some(*input), name)
+                                .on_hover_text(l.format(
+                                    Msg::PlaylistInputOptionHover,
+                                    &[("name", Arg::Str(name))],
+                                ))
                                 .clicked()
                             {
                                 form.input = Some(*input);
                             }
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text(l.text(Msg::PlaylistInputPickHover));
                 if focus {
-                    picker.response.request_focus();
+                    picker.request_focus();
                 }
                 ui.end_row();
 
@@ -1573,16 +1579,25 @@ fn draw_entry_form(
                                     &mut form.transition,
                                     kind,
                                     l.tr(transition_label(kind)),
-                                );
+                                )
+                                .on_hover_text(l.format(
+                                    Msg::PlaylistTransitionOptionHover,
+                                    &[("kind", Arg::Str(l.tr(transition_label(kind))))],
+                                ));
                             }
-                        });
+                        })
+                        .response
+                        .on_hover_text(l.text(Msg::PlaylistTransitionPickHover));
                     ui.add_enabled(
                         form.transition != PlaylistTransitionKind::Cut,
                         egui::DragValue::new(&mut form.transition_frames)
                             .range(1..=MAX_PLAYLIST_TRANSITION_FRAMES)
                             .suffix(" fr"),
                     )
-                    .on_hover_text(l.text(Msg::PlaylistFramesLabel));
+                    .hint(
+                        l.text(Msg::PlaylistTransitionFramesHover),
+                        Msg::PlaylistReasonCutHasNoLength.en(),
+                    );
                 });
                 ui.end_row();
             });

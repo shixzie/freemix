@@ -35,6 +35,8 @@ mod edit_history;
 mod fade_to_black;
 mod gating;
 mod health;
+#[cfg(test)]
+mod hover_audit;
 mod input_bank;
 mod input_catalogue;
 mod l10n;
@@ -1635,7 +1637,13 @@ impl StudioShell {
                         |ui| {
                             theme::card().show(ui, |ui| {
                                 ui.set_min_size(Vec2::new(ui.available_width(), height - 22.0));
-                                mixer::draw_mixer(ui, state, &mut self.meters, dt_ms, intents);
+                                mixer::draw_mixer(
+                                    ui,
+                                    state,
+                                    &mut self.meters,
+                                    (dt_ms, &mut self.layout.show_mixer_details),
+                                    intents,
+                                );
                             });
                         },
                     );
@@ -1650,7 +1658,13 @@ impl StudioShell {
             ui.add_space(12.0);
             theme::card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                mixer::draw_mixer(ui, state, &mut self.meters, dt_ms, intents);
+                mixer::draw_mixer(
+                    ui,
+                    state,
+                    &mut self.meters,
+                    (dt_ms, &mut self.layout.show_mixer_details),
+                    intents,
+                );
             });
         }
     }
@@ -2098,6 +2112,10 @@ mod tests {
     fn console_layout_defaults_to_every_region_and_round_trips() {
         let mut shell = StudioShell::default();
         assert_eq!(shell.layout(), ConsoleLayout::default());
+        // Progressive disclosure: the advanced mixer and manual T-bar
+        // controls start hidden.
+        assert!(!shell.layout().show_mixer_details);
+        assert!(!shell.layout().show_manual_details);
         let layout = ConsoleLayout {
             show_mixer: false,
             ..ConsoleLayout::default()
@@ -2112,6 +2130,8 @@ mod tests {
             show_input_bank: false,
             show_side_panel: false,
             side_panel_width: Some(512),
+            show_mixer_details: true,
+            show_manual_details: true,
             ..ConsoleLayout::default()
         };
         let mut read = ConsoleLayout::default();

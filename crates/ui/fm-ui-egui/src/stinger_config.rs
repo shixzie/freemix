@@ -210,6 +210,10 @@ fn draw_stinger_pickers(
                 for slot in 1..=STINGER_SLOT_COUNT {
                     if ui
                         .selectable_label(editor.slot == slot, slot_text(slot))
+                        .on_hover_text(l.format(
+                            Msg::StingerSlotOptionHover,
+                            &[("slot", Arg::Plain(slot.into()))],
+                        ))
                         .clicked()
                     {
                         editor.slot = slot;
@@ -231,7 +235,13 @@ fn draw_stinger_pickers(
             )
             .show_ui(ui, |ui| {
                 for (input, name) in view.inputs.iter().zip(&view.input_names) {
-                    if ui.selectable_label(media == Some(*input), name).clicked() {
+                    if ui
+                        .selectable_label(media == Some(*input), name)
+                        .on_hover_text(
+                            l.format(Msg::StingerMediaOptionHover, &[("name", Arg::Str(name))]),
+                        )
+                        .clicked()
+                    {
                         editor.media = Some(*input);
                     }
                 }

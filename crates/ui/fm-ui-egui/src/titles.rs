@@ -463,9 +463,13 @@ impl TitlesPanel {
                 if matches!(field.field_type, FieldType::Number | FieldType::Color) {
                     edit = edit.font(egui::TextStyle::Monospace);
                 }
-                let response = ui
-                    .add_enabled(can_edit, edit)
-                    .on_disabled_hover_text(l10n::unavailable(l, edit_reason));
+                let hover = l.text(match field.field_type {
+                    FieldType::Text => Msg::TitleTextFieldHover,
+                    FieldType::Number => Msg::TitleNumberFieldHover,
+                    FieldType::Color => Msg::TitleColorFieldHover,
+                    FieldType::Image => Msg::TitleImageFieldHover,
+                });
+                let response = ui.add_enabled(can_edit, edit).hint(hover, edit_reason);
                 changed |= response.changed();
                 changed
             })
@@ -551,7 +555,11 @@ impl TitlesPanel {
                 .width(58.0)
                 .show_ui(ui, |ui| {
                     for number in 1_u8..=8 {
-                        ui.selectable_value(&mut channel, number, format!("O{number}"));
+                        ui.selectable_value(&mut channel, number, format!("O{number}"))
+                            .on_hover_text(l.format(
+                                Msg::TitleChannelOptionHover,
+                                &[("channel", Arg::Plain(number.into()))],
+                            ));
                     }
                 })
                 .response

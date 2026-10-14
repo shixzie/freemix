@@ -686,6 +686,60 @@ pub(crate) fn close_key(size: f32) -> egui::Button<'static> {
         .min_size(Vec2::splat(MIN_TARGET))
 }
 
+/// A progressive-disclosure key: a right-pointing triangle and `label` while
+/// the advanced controls it governs are hidden, a down-pointing one while
+/// they show. Flips `open` on a click and explains itself on hover (`show` /
+/// `hide` say what a click does).
+pub(crate) fn disclosure(
+    ui: &mut Ui,
+    open: &mut bool,
+    label: &str,
+    (show, hide): (&str, &str),
+) -> Response {
+    // The triangle is painted rather than typed: the console fonts have no
+    // reliable glyph for it.
+    let color = if *open {
+        text_color()
+    } else {
+        text_dim_color()
+    };
+    let response = ui
+        .add(
+            egui::Button::new(
+                RichText::new(format!("    {label}"))
+                    .size(legible(9.5))
+                    .strong()
+                    .extra_letter_spacing(0.6)
+                    .color(color),
+            )
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::new(line_width(), border_color()))
+            .min_size(Vec2::new(0.0, 18.0)),
+        )
+        .on_hover_text(if *open { hide } else { show });
+    let centre = response.rect.left_center() + Vec2::new(10.0, 0.0);
+    let half = 3.5;
+    let points = if *open {
+        vec![
+            centre + Vec2::new(-half, -half * 0.6),
+            centre + Vec2::new(half, -half * 0.6),
+            centre + Vec2::new(0.0, half * 0.8),
+        ]
+    } else {
+        vec![
+            centre + Vec2::new(-half * 0.6, -half),
+            centre + Vec2::new(half * 0.8, 0.0),
+            centre + Vec2::new(-half * 0.6, half),
+        ]
+    };
+    ui.painter()
+        .add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+    if response.clicked() {
+        *open = !*open;
+    }
+    response
+}
+
 /// Compact toolbar button.
 pub(crate) fn small_button(text: impl Into<String>) -> egui::Button<'static> {
     egui::Button::new(RichText::new(text.into()).size(legible(11.0))).min_size(Vec2::new(0.0, 20.0))

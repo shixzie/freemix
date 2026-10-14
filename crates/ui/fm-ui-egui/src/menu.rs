@@ -1,7 +1,8 @@
 //! The application menu bar plus the Help windows.
 //!
 //! Every action item maps to an existing [`StudioIntent`] under that intent's
-//! usual gate; gated items are disabled with the blocking reason as tooltip.
+//! usual gate. Every item says what it does (and its key) on hover; a
+//! disabled item adds the blocking reason.
 //! Output covers transitions, Fade to black, the manual T-bar, per-slot
 //! recorders, per-target stream Start/Stop, and Stinger slot assignment.
 //! Inputs also opens the Add input dialog and the Remove confirmation.
@@ -11,7 +12,7 @@ use egui::{Button, RichText, Ui, Vec2};
 use fm_protocol::{WireRecorderSlot, WireStingerSlotId, WireStreamTargetId};
 use fm_types::InputId;
 
-use crate::gating::{Capability, unavailable_reason};
+use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::input_bank::{neighbour_move_lock_reason, project_editing_available};
 use crate::l10n::{self, Arg, Msg};
 use crate::outputs::{recorder_row, stream_row};
@@ -49,6 +50,14 @@ pub struct ConsoleLayout {
     /// The side panel width the operator dragged to, in points; `None`
     /// follows the default width. Clamped to the window when drawn.
     pub side_panel_width: Option<u16>,
+    /// Progressive disclosure: the mixer strips' typed gain, balance, and
+    /// delay entries. Hidden by default; the fader, Mute, Solo, and AFV
+    /// keys always show.
+    pub show_mixer_details: bool,
+    /// Progressive disclosure: the manual T-bar's exact position, Commit
+    /// and Cancel keys, and status card while no manual transition is
+    /// active. Hidden by default; they always show during a transition.
+    pub show_manual_details: bool,
 }
 
 impl Default for ConsoleLayout {
@@ -59,6 +68,8 @@ impl Default for ConsoleLayout {
             show_side_panel: true,
             show_status_bar: true,
             side_panel_width: None,
+            show_mixer_details: false,
+            show_manual_details: false,
         }
     }
 }
@@ -70,20 +81,30 @@ impl ConsoleLayout {
     pub const MAX_SIDE_PANEL_WIDTH: u16 = 1_200;
 
     /// Preference keys, in the order [`Self::preference_entries`] writes them.
-    pub const PREFERENCE_KEYS: [&'static str; 5] = [
+    pub const PREFERENCE_KEYS: [&'static str; 7] = [
         "layout.input_bank",
         "layout.mixer",
         "layout.side_panel",
         "layout.status_bar",
         "layout.side_panel_width",
+        "layout.mixer_details",
+        "layout.manual_details",
     ];
 
     /// `key = value` pairs that reproduce this layout in a preferences file.
     /// An automatic side panel width is written as `auto`.
     #[must_use]
-    pub fn preference_entries(&self) -> [(&'static str, String); 5] {
+    pub fn preference_entries(&self) -> [(&'static str, String); 7] {
         let shown = |shown: bool| if shown { "shown" } else { "hidden" }.to_owned();
-        let [bank, mixer, side, status, width] = Self::PREFERENCE_KEYS;
+        let [
+            bank,
+            mixer,
+            side,
+            status,
+            width,
+            mixer_details,
+            manual_details,
+        ] = Self::PREFERENCE_KEYS;
         [
             (bank, shown(self.show_input_bank)),
             (mixer, shown(self.show_mixer)),
@@ -94,6 +115,8 @@ impl ConsoleLayout {
                 self.side_panel_width
                     .map_or_else(|| "auto".to_owned(), |width| width.to_string()),
             ),
+            (mixer_details, shown(self.show_mixer_details)),
+            (manual_details, shown(self.show_manual_details)),
         ]
     }
 
@@ -105,12 +128,22 @@ impl ConsoleLayout {
             "hidden" | "false" | "off" => Some(false),
             _ => None,
         };
-        let [bank, mixer, side, status, width] = Self::PREFERENCE_KEYS;
+        let [
+            bank,
+            mixer,
+            side,
+            status,
+            width,
+            mixer_details,
+            manual_details,
+        ] = Self::PREFERENCE_KEYS;
         let flag = match key {
             key if key == bank => &mut self.show_input_bank,
             key if key == mixer => &mut self.show_mixer,
             key if key == side => &mut self.show_side_panel,
             key if key == status => &mut self.show_status_bar,
+            key if key == mixer_details => &mut self.show_mixer_details,
+            key if key == manual_details => &mut self.show_manual_details,
             key if key == width => {
                 if value == "auto" {
                     self.side_panel_width = None;
@@ -165,15 +198,27 @@ impl ConsoleLayout {
     }
 }
 
-/// One menu entry: label, optional shortcut, enabled flag, disabled reason.
-fn item(ui: &mut Ui, enabled: bool, label: &str, shortcut: Option<&str>, reason: &str) -> bool {
+/// One menu entry: label, optional shortcut, what it does (`hover`), and
+/// the reason shown while it is disabled.
+fn item(
+    ui: &mut Ui,
+    enabled: bool,
+    label: &str,
+    shortcut: Option<&str>,
+    hover: &str,
+    reason: &str,
+) -> bool {
     let mut button = Button::new(label);
-    if let Some(shortcut) = shortcut {
-        button = button.shortcut_text(RichText::new(shortcut).color(muted_color()));
-    }
     let l = l10n::locale(ui.ctx());
+    let hover = match shortcut {
+        Some(shortcut) => {
+            button = button.shortcut_text(RichText::new(shortcut).color(muted_color()));
+            l10n::with_key(l, hover, shortcut)
+        }
+        None => hover.to_owned(),
+    };
     ui.add_enabled(enabled, button)
-        .on_disabled_hover_text(l10n::unavailable(l, reason))
+        .hint(&hover, reason)
         .clicked()
 }
 
@@ -195,8 +240,7 @@ fn status_item(
             .color(tone.color()),
     );
     ui.add_enabled(enabled, button)
-        .on_hover_text(hover)
-        .on_disabled_hover_text(l10n::disabled_text(l, hover, reason))
+        .hint(hover, reason)
         .clicked()
 }
 
@@ -248,18 +292,30 @@ impl StudioShell {
         egui::MenuBar::new().ui(ui, |ui| {
             ui.spacing_mut().button_padding = Vec2::new(8.0, 2.0);
             let l = self.locale;
-            ui.menu_button(l.text(Msg::MenuFile), |ui| self.file_menu(ui, state));
+            ui.menu_button(l.text(Msg::MenuFile), |ui| self.file_menu(ui, state))
+                .response
+                .on_hover_text(l.text(Msg::MenuFileHover));
             ui.menu_button(l.text(Msg::MenuEdit), |ui| {
                 self.edit_menu(ui, state, intents);
-            });
-            ui.menu_button(l.text(Msg::MenuView), |ui| self.view_menu(ui));
+            })
+            .response
+            .on_hover_text(l.text(Msg::MenuEditHover));
+            ui.menu_button(l.text(Msg::MenuView), |ui| self.view_menu(ui))
+                .response
+                .on_hover_text(l.text(Msg::MenuViewHover));
             ui.menu_button(l.text(Msg::MenuInputs), |ui| {
                 self.inputs_menu(ui, state, intents);
-            });
+            })
+            .response
+            .on_hover_text(l.text(Msg::MenuInputsHover));
             ui.menu_button(l.text(Msg::MenuOutput), |ui| {
                 self.output_menu(ui, state, manual, intents);
-            });
-            ui.menu_button(l.text(Msg::MenuHelp), |ui| self.help_menu(ui));
+            })
+            .response
+            .on_hover_text(l.text(Msg::MenuOutputHover));
+            ui.menu_button(l.text(Msg::MenuHelp), |ui| self.help_menu(ui))
+                .response
+                .on_hover_text(l.text(Msg::MenuHelpHover));
         });
     }
 
@@ -363,7 +419,7 @@ impl StudioShell {
             (editing && preview.is_some(), locked),
             l.text(Msg::RenameEllipsis),
             None,
-            None,
+            l.text(Msg::RenamePreviewHover),
             if editing { no_preview } else { reason },
         ) && let Some((_, input)) = preview
             && let Some(name) = &name
@@ -391,7 +447,7 @@ impl StudioShell {
             ),
             l.text(Msg::MoveEarlier),
             None,
-            None,
+            l.text(Msg::MoveEarlierHover),
             if !editing {
                 reason
             } else if earlier {
@@ -415,7 +471,7 @@ impl StudioShell {
             ),
             l.text(Msg::MoveLater),
             None,
-            None,
+            l.text(Msg::MoveLaterHover),
             if !editing {
                 reason
             } else if later {
@@ -445,19 +501,25 @@ impl StudioShell {
         ui.checkbox(&mut self.layout.show_status_bar, l.text(Msg::ViewStatusBar))
             .on_hover_text(l.text(Msg::ViewStatusBarHover));
         ui.separator();
+        heading(ui, l.text(Msg::ViewDetails));
+        ui.checkbox(
+            &mut self.layout.show_mixer_details,
+            l.text(Msg::ViewMixerDetails),
+        )
+        .on_hover_text(l.text(Msg::ViewMixerDetailsHover));
+        ui.checkbox(
+            &mut self.layout.show_manual_details,
+            l.text(Msg::ViewManualDetails),
+        )
+        .on_hover_text(l.text(Msg::ViewManualDetailsHover));
+        ui.separator();
         heading(ui, l.text(Msg::ViewSidePanelTab));
+        let tab_reason = Msg::ReasonSidePanelHidden.en();
         ui.add_enabled_ui(self.layout.show_side_panel, |ui| {
-            ui.radio_value(
-                &mut self.side_tab,
-                SideTab::Overlays,
-                l.text(Msg::TabOverlays),
-            );
-            ui.radio_value(
-                &mut self.side_tab,
-                SideTab::Stingers,
-                l.text(Msg::TabStingers),
-            );
-            ui.radio_value(&mut self.side_tab, SideTab::Titles, l.text(Msg::TabTitles));
+            for tab in SideTab::ALL {
+                ui.radio_value(&mut self.side_tab, tab, l.text(tab.title()))
+                    .hint(l.text(tab.hover()), tab_reason);
+            }
         });
         ui.separator();
         if ui
@@ -465,8 +527,10 @@ impl StudioShell {
                 self.layout != ConsoleLayout::default(),
                 Button::new(l.text(Msg::ViewResetLayout)),
             )
-            .on_hover_text(l.text(Msg::ViewResetLayoutHover))
-            .on_disabled_hover_text(l.text(Msg::ViewResetLayoutDisabled))
+            .hint(
+                l.text(Msg::ViewResetLayoutHover),
+                Msg::ViewResetLayoutDisabled.en(),
+            )
             .clicked()
         {
             self.reset_layout(ui.ctx());
@@ -536,14 +600,21 @@ impl StudioShell {
         };
         let Some(view) = &state.view else {
             ui.add_enabled(false, Button::new(l.text(Msg::NoInputs)))
-                .on_disabled_hover_text(l10n::unavailable(l, preview_reason));
+                .hint(l.text(Msg::ShortcutSelectPreview), preview_reason);
             return;
         };
         heading(ui, l.text(Msg::SelectOnPreview));
         for (index, (input, name)) in view.inputs.iter().zip(&view.input_names).enumerate() {
             let shortcut = (index < 8).then(|| format!("{}", index + 1));
             let label = format!("{:>2}  {}", index + 1, ellipsize(name, MENU_LABEL_CHARS));
-            if item(ui, preview, &label, shortcut.as_deref(), preview_reason) {
+            if item(
+                ui,
+                preview,
+                &label,
+                shortcut.as_deref(),
+                &l.format(Msg::SelectNamedOnPreviewHover, &[("name", Arg::Str(name))]),
+                preview_reason,
+            ) {
                 intents.push(StudioIntent::SelectPreview(*input));
             }
         }
@@ -557,6 +628,7 @@ impl StudioShell {
                         cut,
                         &format!("{:>2}  {}", index + 1, ellipsize(name, MENU_LABEL_CHARS)),
                         None,
+                        &l.format(Msg::CutNamedToProgramHover, &[("name", Arg::Str(name))]),
                         cut_reason,
                     ) {
                         intents.push(StudioIntent::SelectPreview(*input));
@@ -564,9 +636,9 @@ impl StudioShell {
                     }
                 }
             })
-        })
-        .response
-        .on_disabled_hover_text(l10n::unavailable(l, cut_reason));
+            .response
+            .hint(l.text(Msg::ShortcutTileDoubleClick), cut_reason);
+        });
     }
 
     /// Inputs › Add input… and the Remove input submenu, whose right column
@@ -580,7 +652,7 @@ impl StudioShell {
             (add.enabled, add.locked()),
             l.text(Msg::AddInputEllipsis),
             None,
-            Some(l.text(Msg::AddInputMenuHover)),
+            l.text(Msg::AddInputMenuHover),
             add.reason,
         ) {
             self.open_add_input(state);
@@ -623,10 +695,9 @@ impl StudioShell {
                     }
                 }
             })
-        })
-        .response
-        .on_hover_text(l.text(Msg::RemoveInputMenuHover))
-        .on_disabled_hover_text(l10n::unavailable(l, reason));
+            .response
+            .hint(l.text(Msg::RemoveInputMenuHover), reason);
+        });
         if let Some((input, name)) = open {
             self.open_remove_input(input, &name);
         }
@@ -652,46 +723,52 @@ impl StudioShell {
                 &[("frames", Arg::from(duration_frames))],
             ),
         );
-        let transitions: [(&str, Option<&str>, bool, StudioIntent); 6] = [
+        let transitions: [(Msg, Option<&str>, Msg, bool, StudioIntent); 6] = [
             (
-                l.text(Msg::TransitionCut),
+                Msg::TransitionCut,
                 Some("C"),
+                Msg::ShortcutCut,
                 availability.basic(),
                 StudioIntent::Cut,
             ),
             (
-                l.text(Msg::TransitionFade),
+                Msg::TransitionFade,
                 Some("F"),
+                Msg::AutoFadeHover,
                 availability.basic(),
                 StudioIntent::Fade { duration_frames },
             ),
             (
-                l.text(Msg::TransitionWipe),
+                Msg::TransitionWipe,
                 None,
+                Msg::AutoWipeHover,
                 availability.wipe,
                 StudioIntent::Wipe { duration_frames },
             ),
             (
-                l.text(Msg::TransitionAlphaFade),
+                Msg::TransitionAlphaFade,
                 None,
+                Msg::AutoAlphaHover,
                 availability.alpha_fade,
                 StudioIntent::AlphaFade { duration_frames },
             ),
             (
-                l.text(Msg::TransitionSlide),
+                Msg::TransitionSlide,
                 None,
+                Msg::AutoSlideHover,
                 availability.slide(),
                 StudioIntent::Slide { duration_frames },
             ),
             (
-                l.text(Msg::TransitionZoom),
+                Msg::TransitionZoom,
                 None,
+                Msg::AutoZoomHover,
                 availability.zoom(),
                 StudioIntent::Zoom { duration_frames },
             ),
         ];
-        for (label, shortcut, enabled, intent) in transitions {
-            if item(ui, enabled, label, shortcut, reason) {
+        for (label, shortcut, hover, enabled, intent) in transitions {
+            if item(ui, enabled, l.text(label), shortcut, l.text(hover), reason) {
                 intents.push(intent);
             }
         }
@@ -707,12 +784,20 @@ impl StudioShell {
         );
         let in_flight = TransitionGate::from_state(state).manual_transition_in_flight;
         let black = desired.is_some_and(|desired| desired.target_active);
-        let (label, enabled) = if black {
-            (l.text(Msg::ReturnToLive), ftb.to_live && !in_flight)
+        let (label, hover, enabled) = if black {
+            (
+                l.text(Msg::ReturnToLive),
+                l.text(Msg::FtbReverseHover),
+                ftb.to_live && !in_flight,
+            )
         } else {
-            (l.text(Msg::FadeToBlack), ftb.to_black && !in_flight)
+            (
+                l.text(Msg::FadeToBlack),
+                l.text(Msg::FtbHover),
+                ftb.to_black && !in_flight,
+            )
         };
-        if item(ui, enabled, label, Some("B"), reason) {
+        if item(ui, enabled, label, Some("B"), hover, reason) {
             intents.push(StudioIntent::FadeToBlack {
                 active: !black,
                 duration_frames: self.fade_to_black_duration_frames,
@@ -733,6 +818,7 @@ impl StudioShell {
             manual.active_controls,
             l.text(Msg::CommitTransition),
             None,
+            l.text(Msg::CommitHover),
             manual_reason,
         ) {
             intents.push(StudioIntent::CommitManualTransition);
@@ -742,6 +828,7 @@ impl StudioShell {
             manual.active_controls,
             l.text(Msg::CancelTransition),
             Some("Esc"),
+            l.text(Msg::ShortcutCancelManual),
             manual_reason,
         ) {
             intents.push(StudioIntent::CancelManualTransition);
@@ -795,14 +882,14 @@ impl StudioShell {
         heading(ui, l.text(Msg::StreamsHeading));
         if state.streams.is_empty() {
             ui.add_enabled(false, Button::new(l.text(Msg::NoStreamTargets)))
-                .on_disabled_hover_text(l10n::unavailable(
-                    l,
+                .hint(
+                    l.text(Msg::NoStreamTargetsHover),
                     if state.view.is_some() {
                         Msg::ReasonNoStreamTargets.en()
                     } else {
                         Msg::ReasonNotSynchronized.en()
                     },
-                ));
+                );
         }
         for stream in &state.streams {
             let requested = StreamAction::for_stream(stream);
@@ -875,10 +962,9 @@ impl StudioShell {
                     }
                 }
             })
-        })
-        .response
-        .on_hover_text(l.text(Msg::AssignStingerMediaHover))
-        .on_disabled_hover_text(l10n::unavailable(l, assign_reason));
+            .response
+            .hint(l.text(Msg::AssignStingerMediaHover), assign_reason);
+        });
         let configured = state
             .view
             .as_ref()
@@ -906,16 +992,18 @@ impl StudioShell {
                     }
                 }
             })
-        })
-        .response
-        .on_disabled_hover_text(l10n::unavailable(l, clear_reason));
+            .response
+            .hint(l.text(Msg::ClearStingerMenuHover), clear_reason);
+        });
         if ui
             .add_enabled(
                 self.layout.show_side_panel,
                 Button::new(l.text(Msg::StingerSlotsEllipsis)),
             )
-            .on_hover_text(l.text(Msg::StingerSlotsHover))
-            .on_disabled_hover_text(l10n::unavailable(l, Msg::ReasonSidePanelHidden.en()))
+            .hint(
+                l.text(Msg::StingerSlotsHover),
+                Msg::ReasonSidePanelHidden.en(),
+            )
             .clicked()
         {
             self.side_tab = SideTab::Stingers;
@@ -930,11 +1018,20 @@ impl StudioShell {
                 Button::new(l.text(Msg::KeyboardShortcuts))
                     .shortcut_text(RichText::new(l.text(Msg::KeyHelp)).color(muted_color())),
             )
+            .on_hover_text(l10n::with_key(
+                l,
+                l.text(Msg::ShortcutHelp),
+                l.text(Msg::KeyHelp),
+            ))
             .clicked()
         {
             self.show_shortcuts = true;
         }
-        if ui.button(l.text(Msg::AboutStudio)).clicked() {
+        if ui
+            .button(l.text(Msg::AboutStudio))
+            .on_hover_text(l.text(Msg::AboutHover))
+            .clicked()
+        {
             self.show_about = true;
         }
     }
@@ -1199,7 +1296,7 @@ fn lockable_item(
     (enabled, locked): (bool, bool),
     label: &str,
     shortcut: Option<&str>,
-    hover: Option<&str>,
+    hover: &str,
     reason: &str,
 ) -> bool {
     let l = l10n::locale(ui.ctx());
@@ -1214,13 +1311,8 @@ fn lockable_item(
     } else if let Some(shortcut) = shortcut {
         button = button.shortcut_text(RichText::new(shortcut).color(muted_color()));
     }
-    let response = ui.add_enabled(enabled, button);
-    let response = match hover {
-        Some(hover) => response.on_hover_text(hover),
-        None => response,
-    };
-    response
-        .on_disabled_hover_text(l10n::unavailable(l, reason))
+    ui.add_enabled(enabled, button)
+        .hint(hover, reason)
         .clicked()
 }
 
@@ -1249,7 +1341,7 @@ fn history_menu_items(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<Stud
             (side.enabled(), side.locked),
             &side.menu_label(l, verb),
             Some(shortcut),
-            Some(&side.hover(l, verb, shortcut)),
+            &side.hover(l, verb, shortcut),
             side.reason,
         ) && let Some(intent) = intent
         {

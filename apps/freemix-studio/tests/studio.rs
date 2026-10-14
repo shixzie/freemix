@@ -1774,6 +1774,7 @@ fn saved_layout_round_trips_and_ignores_bad_values() {
         show_mixer: false,
         show_status_bar: false,
         side_panel_width: Some(480),
+        show_mixer_details: true,
         ..ConsoleLayout::default()
     };
     let saved = SavedPreferences {
@@ -1784,6 +1785,9 @@ fn saved_layout_round_trips_and_ignores_bad_values() {
     assert!(text.contains("layout.mixer = hidden\n"), "{text}");
     assert!(text.contains("layout.input_bank = shown\n"), "{text}");
     assert!(text.contains("layout.side_panel_width = 480\n"), "{text}");
+    // The progressive-disclosure toggles persist like the panels.
+    assert!(text.contains("layout.mixer_details = shown\n"), "{text}");
+    assert!(text.contains("layout.manual_details = hidden\n"), "{text}");
     assert!(!text.contains("language"), "{text}");
     assert_eq!(SavedPreferences::parse(&text), saved);
     // An automatic width is written as `auto` and reads back as `None`.
@@ -2137,6 +2141,7 @@ fn dependency_tree_contains_only_client_side_freemix_crates() {
     );
 
     let allowed = [
+        "fm-animation",
         "fm-client",
         "fm-command",
         "fm-protocol",

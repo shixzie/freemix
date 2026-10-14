@@ -523,30 +523,31 @@ impl StudioShell {
         let locked = tile.locked;
         // Marks arrive as catalog English (`LOCKED`, `IN USE`) so their tone
         // can be matched; they are worded in the console language here.
-        let item = |ui: &mut Ui, enabled: bool, label: &str, shortcut: &str, reason: &str| {
-            let mut button = egui::Button::new(label);
-            let mark = l.tr(shortcut);
-            if let Some(color) = mark_color(shortcut) {
-                button = button.shortcut_text(
-                    RichText::new(mark)
-                        .size(crate::theme::legible(10.0))
-                        .strong()
-                        .color(color),
-                );
-            } else if shortcut == LOCKED_MARK {
-                button = button.shortcut_text(
-                    RichText::new(mark)
-                        .size(crate::theme::legible(10.0))
-                        .strong()
-                        .color(AMBER),
-                );
-            } else if !shortcut.is_empty() {
-                button = button.shortcut_text(RichText::new(mark).color(muted_color()));
-            }
-            ui.add_enabled(enabled, button)
-                .on_disabled_hover_text(l10n::unavailable(l, reason))
-                .clicked()
-        };
+        let item =
+            |ui: &mut Ui, enabled: bool, label: &str, shortcut: &str, hover: &str, reason: &str| {
+                let mut button = egui::Button::new(label);
+                let mark = l.tr(shortcut);
+                if let Some(color) = mark_color(shortcut) {
+                    button = button.shortcut_text(
+                        RichText::new(mark)
+                            .size(crate::theme::legible(10.0))
+                            .strong()
+                            .color(color),
+                    );
+                } else if shortcut == LOCKED_MARK {
+                    button = button.shortcut_text(
+                        RichText::new(mark)
+                            .size(crate::theme::legible(10.0))
+                            .strong()
+                            .color(AMBER),
+                    );
+                } else if !shortcut.is_empty() {
+                    button = button.shortcut_text(RichText::new(mark).color(muted_color()));
+                }
+                ui.add_enabled(enabled, button)
+                    .hint(hover, reason)
+                    .clicked()
+            };
         let key = if index < 8 {
             format!("{}", index + 1)
         } else {
@@ -557,6 +558,11 @@ impl StudioShell {
             enabled,
             l.text(Msg::SelectOnPreview),
             &key,
+            &if key.is_empty() {
+                l.text(Msg::ShortcutTileClick).to_owned()
+            } else {
+                l10n::with_key(l, l.text(Msg::ShortcutTileClick), &key)
+            },
             preview_reason,
         ) {
             intents.extend(tile_intents(input, TileGesture::Click, gates));
@@ -566,6 +572,7 @@ impl StudioShell {
             cut_enabled,
             l.text(Msg::CutToProgram),
             Msg::KeyDoubleClickShort.en(),
+            l.text(Msg::TileCutHover),
             cut_reason,
         ) {
             intents.extend(tile_intents(input, TileGesture::Cut, gates));
@@ -578,6 +585,7 @@ impl StudioShell {
             reorder_enabled,
             l.text(Msg::RenameEllipsis),
             edit_mark,
+            l.text(Msg::TileRenameHover),
             edit_reason,
         ) {
             self.rename_draft = Some(RenameDraft::new(input, name));
@@ -591,6 +599,7 @@ impl StudioShell {
             } else {
                 edit_mark
             },
+            l.text(Msg::TileMoveLeftHover),
             if !reorder_enabled {
                 edit_reason
             } else if index == 0 {
@@ -613,6 +622,7 @@ impl StudioShell {
             } else {
                 edit_mark
             },
+            l.text(Msg::TileMoveRightHover),
             if !reorder_enabled {
                 edit_reason
             } else if index + 1 >= count {
@@ -634,6 +644,7 @@ impl StudioShell {
             removal.enabled,
             l.text(Msg::RemoveEllipsis),
             remove_mark,
+            &l.format(Msg::RemoveInputHover, &[("name", Arg::Str(name))]),
             removal.reason,
         ) {
             self.open_remove_input(input, name);
@@ -689,11 +700,13 @@ impl StudioShell {
             && !duplicate
             && draft.name != current;
         let mut close = false;
-        let edit = ui.add(
-            egui::TextEdit::singleline(&mut draft.name)
-                .id(egui::Id::new(("studio-rename", input)))
-                .desired_width(ui.available_width()),
-        );
+        let edit = ui
+            .add(
+                egui::TextEdit::singleline(&mut draft.name)
+                    .id(egui::Id::new(("studio-rename", input)))
+                    .desired_width(ui.available_width()),
+            )
+            .on_hover_text(l10n::locale(ui.ctx()).text(Msg::RenameFieldHover));
         if draft.focus_pending {
             draft.focus_pending = false;
             edit.request_focus();

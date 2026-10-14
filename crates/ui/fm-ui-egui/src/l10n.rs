@@ -36,9 +36,14 @@ pub(crate) fn unavailable(locale: Locale, reason: &str) -> String {
 }
 
 /// `{action}` above `Unavailable: {reason}`, for a disabled control's
-/// tooltip.
+/// tooltip; an action text that already ends in that line keeps it once.
 pub(crate) fn disabled_text(locale: Locale, action: &str, reason: &str) -> String {
-    format!("{action}\n{}", unavailable(locale, reason))
+    let unavailable = unavailable(locale, reason);
+    if action.lines().any(|line| line == unavailable) {
+        action.to_owned()
+    } else {
+        format!("{action}\n{unavailable}")
+    }
 }
 
 /// `{action}  [{key}]`: an action with its keyboard shortcut, for tooltips.
@@ -111,6 +116,15 @@ mod tests {
         assert_eq!(
             unavailable(spanish, "disk full"),
             "No disponible: disk full"
+        );
+        // A reason the action text already states is not repeated.
+        assert_eq!(
+            disabled_text(Locale::ENGLISH, "Undo\nUnavailable: busy", "busy"),
+            "Undo\nUnavailable: busy"
+        );
+        assert_eq!(
+            disabled_text(Locale::ENGLISH, "Undo", "busy"),
+            "Undo\nUnavailable: busy"
         );
     }
 
