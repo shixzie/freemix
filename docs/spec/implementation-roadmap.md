@@ -1694,6 +1694,17 @@ gaps: no daemon, protocol, persistence, or vMix API wiring, no cross-input GO
 bank, no M3U or file-list import, no transitions or variable speed between
 items, and no real-media acceptance. `IN-006` and `OR-015` remain planned.
 
+Current implementation boundary for item 9: `fm-ptz` encodes and parses VISCA
+commands, inquiries, and replies for pan/tilt, zoom, focus, presets, and
+system control with explicit range errors, translates each PTZ intent into a
+complete drive set so zero components stop prior motion, frames VISCA-over-IP
+payloads and control messages with a wrapping sequencer, and maps joystick and
+mouse input to axis speeds through deadzones and response curves. Remaining
+gaps: no serial or UDP transport, retransmit, timeout, or reply correlation,
+no camera adapter or hardware validation, presets are not yet switchable
+virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic,
+NDI, or digital PTZ. `IN-028` remains planned.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)
