@@ -180,7 +180,9 @@ id = "accept-gx-006"
 state = "planned"
 [[tests]]
 id = "accept-gx-007"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-telestrator/tests/collaboration_redo_eraser_laser.rs"]
+commands = ["cargo test -p fm-telestrator --test collaboration_redo_eraser_laser"]
 [[tests]]
 id = "accept-gx-008"
 state = "planned"
