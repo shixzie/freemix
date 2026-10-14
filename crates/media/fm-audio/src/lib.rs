@@ -10,6 +10,7 @@ use std::fmt;
 use fm_types::{AudioFormat, ChannelLayout, FrameRate, InputId, SampleFormat, SampleRate};
 
 mod automix;
+mod bus_matrix;
 mod channel_mapping;
 mod clock_recalibration;
 mod dsp;
@@ -20,6 +21,11 @@ mod synchronizer;
 pub use automix::{
     AutomixChannelSettings, AutomixChannelTelemetry, AutomixConfig, AutomixError, AutomixTelemetry,
     Automixer, MAX_AUTOMIX_CHANNELS, MAX_AUTOMIX_SMOOTHING_SAMPLES, MAX_AUTOMIX_WEIGHT,
+};
+pub use bus_matrix::{
+    BUS_COUNT, BusDestination, BusMatrix, BusMatrixError, BusMatrixTelemetry, BusSend,
+    BusStripInput, DestinationId, MAX_BUS_CHANNELS, MAX_BUS_DESTINATIONS, MAX_BUS_INPUT_MAGNITUDE,
+    MAX_BUS_NAME_BYTES, MAX_BUS_STRIPS, MixBus, SendTap,
 };
 pub use channel_mapping::{
     ChannelMapping, ChannelMappingError, ChannelMappingRoute, ChannelMappingSide,
