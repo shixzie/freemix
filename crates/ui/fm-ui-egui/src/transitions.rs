@@ -49,8 +49,10 @@ pub(crate) fn draw_transition_column(
             ui.label(
                 RichText::new(if active {
                     format!(
-                        "T-BAR {}%",
-                        desired_manual_position(desired).basis_points() / 100
+                        "T-BAR {}",
+                        crate::l10n::locale(ui.ctx()).percent(i64::from(
+                            desired_manual_position(desired).basis_points() / 100
+                        ))
                     )
                 } else {
                     "T-BAR".to_owned()
@@ -332,7 +334,7 @@ fn draw_manual_status(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if active {
                         ui.label(
-                            mono(format!("{}%", summary.percent))
+                            mono(crate::l10n::locale(ui.ctx()).percent(i64::from(summary.percent)))
                                 .size(11.0)
                                 .strong()
                                 .color(TEXT),

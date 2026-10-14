@@ -7,6 +7,7 @@ use egui::{
 };
 use fm_protocol::StreamRealizedState;
 
+use crate::l10n::{self, Arg, Locale, Msg, trailing_layout};
 use crate::panels::latest_stream_sample;
 use crate::theme::{
     ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PREVIEW,
@@ -15,7 +16,7 @@ use crate::theme::{
 };
 use crate::toasts::{Toast, ToastKind};
 use crate::{
-    PadlockToggle, REDO_SHORTCUT, StudioConnectionStatus, StudioIntent, StudioUiState,
+    HistoryVerb, PadlockToggle, REDO_SHORTCUT, StudioConnectionStatus, StudioIntent, StudioUiState,
     UNDO_SHORTCUT, edit_history_availability, edit_lock_summary, padlock_toggle,
 };
 
@@ -43,15 +44,16 @@ pub(crate) fn on_air(state: &StudioUiState) -> OnAir {
     }
 }
 
-/// Formats seconds since the Unix epoch as a UTC wall-clock `HH:MM:SS`.
-pub(crate) fn format_utc_clock(seconds_since_epoch: u64) -> String {
-    let seconds = seconds_since_epoch % 86_400;
-    format!(
-        "{:02}:{:02}:{:02}",
-        seconds / 3_600,
-        (seconds / 60) % 60,
-        seconds % 60
-    )
+/// Formats seconds since the Unix epoch as the UTC wall clock in the
+/// locale's hour cycle (`HH:MM:SS` on the default 24-hour clock).
+pub(crate) fn format_utc_clock(locale: Locale, seconds_since_epoch: u64) -> String {
+    locale.time_of_day(seconds_since_epoch)
+}
+
+/// The clock tooltip: what the clock shows and today's UTC date.
+pub(crate) fn utc_clock_hover(locale: Locale, seconds_since_epoch: u64) -> String {
+    let days = i64::try_from(seconds_since_epoch / 86_400).unwrap_or(i64::MAX);
+    locale.format(Msg::ClockHover, &[("date", Arg::Str(&locale.date(days)))])
 }
 
 fn utc_now_seconds() -> u64 {
@@ -63,22 +65,23 @@ fn utc_now_seconds() -> u64 {
 /// The top-bar edit group: the project padlock beside Undo and Redo keys,
 /// each with its hover explanation and (when available) its intent.
 fn edit_controls(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+    let l = l10n::locale(ui.ctx());
     let padlock = padlock_toggle(state);
     let summary = edit_lock_summary(state);
     let response = padlock_button(ui, padlock);
     let hover = format!(
         "{}\n{}",
-        if padlock.locked {
-            "Click to unlock project edits."
+        l.text(if padlock.locked {
+            Msg::PadlockClickUnlock
         } else {
-            "Click to lock project edits; live switching stays available."
-        },
-        summary.detail()
+            Msg::PadlockClickLock
+        }),
+        summary.detail(l)
     );
     let response = if padlock.enabled {
         response.on_hover_text(hover)
     } else {
-        response.on_hover_text(format!("{hover}\nUnavailable: {}", padlock.reason))
+        response.on_hover_text(l10n::disabled_text(l, &hover, padlock.reason))
     };
     if response.clicked()
         && let Some(intent) = padlock.intent()
@@ -90,14 +93,14 @@ fn edit_controls(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioInt
         ui.spacing_mut().item_spacing.x = 2.0;
         for (verb, shortcut, side, intent, redo) in [
             (
-                "Undo",
+                HistoryVerb::Undo,
                 UNDO_SHORTCUT,
                 history.undo,
                 history.undo_intent(),
                 false,
             ),
             (
-                "Redo",
+                HistoryVerb::Redo,
                 REDO_SHORTCUT,
                 history.redo,
                 history.redo_intent(),
@@ -105,7 +108,7 @@ fn edit_controls(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioInt
             ),
         ] {
             if history_key(ui, side.enabled(), redo)
-                .on_hover_text(side.hover(verb, shortcut))
+                .on_hover_text(side.hover(l, verb, shortcut))
                 .clicked()
                 && let Some(intent) = intent
             {
@@ -182,10 +185,11 @@ fn paint_turn_arrow(painter: &egui::Painter, center: egui::Pos2, color: Color32,
 
 /// The show name, ellipsized so on-air badges and the clock keep their place.
 fn show_name_label(ui: &mut Ui, state: &StudioUiState) {
+    let l = l10n::locale(ui.ctx());
     match state.view.as_ref().map(|view| view.show_name.as_str()) {
         Some(name) => {
             let name = if name.is_empty() {
-                "Untitled show"
+                l.text(Msg::UntitledShow)
             } else {
                 name
             };
@@ -202,17 +206,18 @@ fn show_name_label(ui: &mut Ui, state: &StudioUiState) {
         }
         None => {
             ui.label(
-                RichText::new("No synchronized show")
+                RichText::new(l.text(Msg::NoSynchronizedShow))
                     .size(15.0)
                     .color(MUTED),
             )
-            .on_hover_text("The show name appears once project state is synchronized");
+            .on_hover_text(l.text(Msg::ShowNameHover));
         }
     }
 }
 
 pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
-    ui.horizontal_centered(|ui| {
+    let l = l10n::locale(ui.ctx());
+    l10n::leading_row(ui, l, |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         // Wordmark.
         ui.label(
@@ -231,20 +236,31 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
         divider(ui);
         show_name_label(ui, state);
         let status = state.connection_status;
-        pill(ui, status.operator_label(), connection_color(status), false)
-            .on_hover_text("Control connection lifecycle");
+        pill(
+            ui,
+            l.tr(status.operator_label()),
+            connection_color(status),
+            false,
+        )
+        .on_hover_text(l.text(Msg::ConnectionPillHover));
         if let Some(view) = &state.view {
             ui.label(
-                mono(format!("REV {}", view.cursor.revision.get()))
-                    .size(11.0)
-                    .color(TEXT_DIM),
+                mono(l.format(
+                    Msg::RevisionShort,
+                    &[("revision", Arg::Plain(view.cursor.revision.get()))],
+                ))
+                .size(11.0)
+                .color(TEXT_DIM),
             )
-            .on_hover_text("Replicated project revision");
+            .on_hover_text(l.text(Msg::RevisionHover));
         }
         if state.pending_commands > 0 {
             pill(
                 ui,
-                &format!("{} PENDING", state.pending_commands),
+                &l.format(
+                    Msg::PendingPill,
+                    &[("count", Arg::from(state.pending_commands))],
+                ),
                 AMBER,
                 false,
             );
@@ -254,11 +270,11 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             edit_controls(ui, state, intents);
         }
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.with_layout(trailing_layout(l), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let now = utc_now_seconds();
-            ui.label(mono(format_utc_clock(now)).size(17.0).color(TEXT))
-                .on_hover_text("Wall clock (UTC)");
+            ui.label(mono(format_utc_clock(l, now)).size(17.0).color(TEXT))
+                .on_hover_text(utc_clock_hover(l, now));
             ui.label(RichText::new("UTC").size(10.0).color(MUTED));
             divider(ui);
             let air = on_air(state);
@@ -269,26 +285,26 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             } else {
                 MUTED
             };
-            on_air_badge(ui, "LIVE", stream_color, air.stream_live).on_hover_text(
-                if air.stream_live {
-                    "A stream target reports realized Live"
+            on_air_badge(ui, l.text(Msg::Live), stream_color, air.stream_live).on_hover_text(
+                l.text(if air.stream_live {
+                    Msg::LiveHoverLive
                 } else if air.stream_desired {
-                    "A stream target is desired running but not reported live"
+                    Msg::LiveHoverDesired
                 } else {
-                    "No stream target is desired running"
-                },
+                    Msg::LiveHoverIdle
+                }),
             );
             on_air_badge(
                 ui,
-                "REC",
+                l.text(Msg::BadgeRec),
                 if air.recording { PROGRAM } else { MUTED },
                 air.recording,
             )
-            .on_hover_text(if air.recording {
-                "A recorder slot is desired recording"
+            .on_hover_text(l.text(if air.recording {
+                Msg::RecHoverRecording
             } else {
-                "No recorder slot is desired recording"
-            });
+                Msg::RecHoverIdle
+            }));
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(500));
         });
@@ -300,7 +316,20 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
 /// unlocked is an unlit outline. Clicks are reported only when toggling is
 /// available.
 fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
-    let size = Vec2::new(104.0, 24.0);
+    let l = l10n::locale(ui.ctx());
+    let font = FontId::new(10.5, FontFamily::Proportional);
+    // One width for both states, so toggling never shifts the bar; wide
+    // enough for the longer word in the console language.
+    let label_width = [Msg::Locked, Msg::Unlocked]
+        .map(|word| {
+            ui.painter()
+                .layout_no_wrap(l.text(word).to_owned(), font.clone(), TEXT)
+                .size()
+                .x
+        })
+        .into_iter()
+        .fold(0.0_f32, f32::max);
+    let size = Vec2::new((29.0 + label_width + 9.0).max(104.0), 24.0);
     let sense = if padlock.enabled {
         Sense::click()
     } else {
@@ -343,8 +372,8 @@ fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
         painter.text(
             rect.left_center() + Vec2::new(29.0, 0.5),
             Align2::LEFT_CENTER,
-            padlock.label(),
-            FontId::new(10.5, FontFamily::Proportional),
+            l.tr(padlock.label()),
+            font,
             text.gamma_multiply(dim),
         );
     }
@@ -397,6 +426,7 @@ fn on_air_badge(ui: &mut Ui, label: &str, color: Color32, lit: bool) -> egui::Re
 
 /// Draws one toast card; returns `true` when the operator dismissed it.
 pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
+    let l = l10n::locale(ui.ctx());
     let color = match toast.kind {
         ToastKind::Error => ERROR,
         ToastKind::Notice | ToastKind::Uncertain | ToastKind::Pending => AMBER,
@@ -423,26 +453,27 @@ pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(toast.kind.title())
+                    RichText::new(l.tr(toast.kind.title()))
                         .size(10.5)
                         .strong()
                         .extra_letter_spacing(1.0)
                         .color(color),
                 );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.with_layout(trailing_layout(l), |ui| {
                     if ui
                         .add(
                             egui::Button::new(RichText::new("×").size(15.0).color(TEXT_DIM))
                                 .frame(false),
                         )
-                        .on_hover_text("Dismiss; the status bar keeps the latest message")
+                        .on_hover_text(l.text(Msg::ToastDismissHover))
                         .clicked()
                     {
                         dismissed = true;
                     }
                 });
             });
-            ui.add(egui::Label::new(RichText::new(&toast.message).size(12.0).color(TEXT)).wrap());
+            let message = crate::toasts::localize_notice(l, &toast.message);
+            ui.add(egui::Label::new(RichText::new(message).size(12.0).color(TEXT)).wrap());
         })
         .response;
     let rect = response.rect;
@@ -478,50 +509,56 @@ pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
 
 /// One-line bottom status bar: connection, last result, and key hints.
 pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState) {
-    ui.horizontal_centered(|ui| {
+    let l = l10n::locale(ui.ctx());
+    l10n::leading_row(ui, l, |ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         let status = state.connection_status;
         status_dot(ui, connection_color(status));
         ui.label(
-            RichText::new(status.operator_label())
+            RichText::new(l.tr(status.operator_label()))
                 .size(10.5)
                 .color(connection_color(status)),
         );
         bar_divider(ui);
         ui.label(
-            mono(format!("{} pending", state.pending_commands))
-                .size(10.5)
-                .color(if state.pending_commands > 0 {
-                    AMBER
-                } else {
-                    MUTED
-                }),
+            mono(l.format(
+                Msg::PendingCount,
+                &[("count", Arg::from(state.pending_commands))],
+            ))
+            .size(10.5)
+            .color(if state.pending_commands > 0 {
+                AMBER
+            } else {
+                MUTED
+            }),
         );
         bar_divider(ui);
         if edit_lock_summary(state).project {
             ui.label(
-                RichText::new("EDITS LOCKED")
+                RichText::new(l.text(Msg::EditsLocked))
                     .size(10.0)
                     .strong()
                     .extra_letter_spacing(0.6)
                     .color(AMBER),
             )
-            .on_hover_text(edit_lock_summary(state).detail());
+            .on_hover_text(edit_lock_summary(state).detail(l));
             bar_divider(ui);
         }
-        let (message, color) = status_message(state);
+        let (message, color) = status_message(l, state);
         ui.add(egui::Label::new(RichText::new(message).size(10.5).color(color)).truncate());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.with_layout(trailing_layout(l), |ui| {
             ui.label(
-                RichText::new(
-                    "1–8 PVW   C CUT   F FADE   B FTB   ESC CANCEL T-BAR   ·   HELP › SHORTCUTS",
-                )
-                .size(10.0)
-                .extra_letter_spacing(0.5)
-                .color(MUTED),
+                RichText::new(l.text(Msg::StatusBarKeyHints))
+                    .size(10.0)
+                    .extra_letter_spacing(0.5)
+                    .color(MUTED),
             );
             if status.controls_enabled() {
-                ui.label(RichText::new("KEYS").size(10.0).color(TEXT_DIM));
+                ui.label(
+                    RichText::new(l.text(Msg::StatusBarKeys))
+                        .size(10.0)
+                        .color(TEXT_DIM),
+                );
             }
         });
     });
@@ -533,34 +570,48 @@ fn bar_divider(ui: &mut Ui) {
 }
 
 /// Picks the most important one-line status message.
-pub(crate) fn status_message(state: &StudioUiState) -> (String, Color32) {
+pub(crate) fn status_message(l: Locale, state: &StudioUiState) -> (String, Color32) {
     if let Some(error) = &state.error {
-        return (format!("ERROR | {error}"), ERROR);
+        return (
+            l.format(Msg::StatusError, &[("message", Arg::Str(error))]),
+            ERROR,
+        );
     }
     if let Some(uncertainty) = state.terminal_uncertainties.last() {
         return (
-            format!(
-                "{} command(s) with uncertain outcome; last {}",
-                state.terminal_uncertainties.len(),
-                uncertainty.command_id
+            l.format(
+                Msg::StatusUncertain,
+                &[
+                    ("count", Arg::from(state.terminal_uncertainties.len())),
+                    ("command", Arg::Str(&uncertainty.command_id)),
+                ],
             ),
             AMBER,
         );
     }
     if let Some(notice) = state.notice.as_ref().or(state.external_notice.as_ref()) {
-        return (format!("NOTICE | {notice}"), AMBER);
+        return (
+            l.format(
+                Msg::StatusNotice,
+                &[(
+                    "message",
+                    Arg::Str(&crate::toasts::localize_notice(l, notice)),
+                )],
+            ),
+            AMBER,
+        );
     }
     let idle = match state.connection_status {
-        StudioConnectionStatus::Ready => "Ready",
-        StudioConnectionStatus::ProtocolMismatch => "Peer did not select the current protocol",
-        StudioConnectionStatus::Failed => "Connection failed",
-        StudioConnectionStatus::Disconnected => "No control connection",
+        StudioConnectionStatus::Ready => Msg::StatusIdleReady,
+        StudioConnectionStatus::ProtocolMismatch => Msg::StatusIdleProtocol,
+        StudioConnectionStatus::Failed => Msg::StatusIdleFailed,
+        StudioConnectionStatus::Disconnected => Msg::StatusIdleDisconnected,
         StudioConnectionStatus::Launching
         | StudioConnectionStatus::Connecting
         | StudioConnectionStatus::Synchronizing
-        | StudioConnectionStatus::Backoff => "Waiting for synchronized state",
+        | StudioConnectionStatus::Backoff => Msg::StatusIdleWaiting,
     };
-    (idle.to_owned(), MUTED)
+    (l.text(idle).to_owned(), MUTED)
 }
 
 #[cfg(test)]
@@ -569,9 +620,56 @@ mod tests {
 
     #[test]
     fn utc_clock_wraps_days() {
-        assert_eq!(format_utc_clock(0), "00:00:00");
-        assert_eq!(format_utc_clock(86_399), "23:59:59");
-        assert_eq!(format_utc_clock(86_400 + 3_661), "01:01:01");
+        assert_eq!(format_utc_clock(Locale::ENGLISH, 0), "00:00:00");
+        assert_eq!(format_utc_clock(Locale::ENGLISH, 86_399), "23:59:59");
+        assert_eq!(
+            format_utc_clock(Locale::ENGLISH, 86_400 + 3_661),
+            "01:01:01"
+        );
+        let twelve = Locale::ENGLISH.with_hour_cycle(fm_ui_model::i18n::HourCycle::H12);
+        assert_eq!(format_utc_clock(twelve, 13 * 3_600 + 5), "1:00:05\u{a0}PM");
+    }
+
+    #[test]
+    fn clock_hover_names_the_utc_date_in_the_locale() {
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        // 2026-10-14T12:00:00Z
+        let now = 1_791_979_200;
+        assert_eq!(
+            utc_clock_hover(Locale::ENGLISH, now),
+            "Wall clock (UTC) · Oct 14, 2026"
+        );
+        assert_eq!(
+            utc_clock_hover(spanish, now),
+            "Reloj de pared (UTC) · 14 oct 2026"
+        );
+    }
+
+    #[test]
+    fn status_message_is_localized_with_plural_counts() {
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready);
+        assert_eq!(status_message(spanish, &state).0, "Listo");
+        state.notice = Some("Queued 1 command(s) in operator FIFO".to_owned());
+        assert_eq!(
+            status_message(spanish, &state).0,
+            "AVISO | 1 comando en la cola del operador"
+        );
+        state.notice = Some("Queued 3 command(s) in operator FIFO".to_owned());
+        assert_eq!(
+            status_message(Locale::ENGLISH, &state).0,
+            "NOTICE | 3 commands queued in the operator FIFO"
+        );
+        state
+            .terminal_uncertainties
+            .push(crate::TerminalUncertaintyNotice {
+                command_id: "c9".to_owned(),
+                received_command_id: "r9".to_owned(),
+            });
+        assert_eq!(
+            status_message(spanish, &state).0,
+            "1 comando con resultado incierto; el último c9"
+        );
     }
 
     #[test]
@@ -597,17 +695,24 @@ mod tests {
     #[test]
     fn status_message_prefers_errors_then_uncertainty_then_notices() {
         let mut state = StudioUiState::new(StudioConnectionStatus::Ready);
-        assert_eq!(status_message(&state).0, "Ready");
+        assert_eq!(status_message(Locale::ENGLISH, &state).0, "Ready");
         state.notice = Some("saved".to_owned());
-        assert_eq!(status_message(&state).0, "NOTICE | saved");
+        assert_eq!(status_message(Locale::ENGLISH, &state).0, "NOTICE | saved");
         state
             .terminal_uncertainties
             .push(crate::TerminalUncertaintyNotice {
                 command_id: "c1".to_owned(),
                 received_command_id: "r1".to_owned(),
             });
-        assert!(status_message(&state).0.contains("uncertain"));
+        assert!(
+            status_message(Locale::ENGLISH, &state)
+                .0
+                .contains("uncertain")
+        );
         state.error = Some("boom".to_owned());
-        assert_eq!(status_message(&state), ("ERROR | boom".to_owned(), ERROR));
+        assert_eq!(
+            status_message(Locale::ENGLISH, &state),
+            ("ERROR | boom".to_owned(), ERROR)
+        );
     }
 }

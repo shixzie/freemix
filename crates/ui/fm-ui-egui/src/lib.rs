@@ -25,6 +25,7 @@ use fm_protocol::{
     WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_types::{InputId, OutputId};
+use fm_ui_model::i18n::{Locale, Msg};
 use fm_ui_model::{ClientView, ManualTransitionStatus, StreamStatus, SwitcherState};
 
 mod chrome;
@@ -34,6 +35,7 @@ mod fade_to_black;
 mod gating;
 mod input_bank;
 mod input_catalogue;
+mod l10n;
 mod menu;
 mod meter_ballistics;
 mod mixer;
@@ -49,9 +51,10 @@ mod toasts;
 mod transitions;
 
 pub use edit_history::{
-    EditHistoryAvailability, EditLockSummary, HistoryActionAvailability, PadlockToggle,
-    REDO_SHORTCUT, UNDO_SHORTCUT, command_rejection_message, edit_history_availability,
-    edit_lock_summary, input_edit_lock_reason, padlock_toggle, stinger_edit_lock_reason,
+    EditHistoryAvailability, EditLockSummary, HistoryActionAvailability, HistoryVerb,
+    PadlockToggle, REDO_SHORTCUT, UNDO_SHORTCUT, command_rejection_message,
+    edit_history_availability, edit_lock_summary, input_edit_lock_reason, padlock_toggle,
+    stinger_edit_lock_reason,
 };
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
 pub use input_catalogue::{
@@ -244,14 +247,14 @@ impl StudioConnectionStatus {
     #[must_use]
     pub const fn operator_label(self) -> &'static str {
         match self {
-            Self::Launching => "LAUNCHING",
-            Self::Connecting => "CONNECTING",
-            Self::Synchronizing => "SYNCHRONIZING",
-            Self::Ready => "CONTROL READY",
-            Self::Backoff => "RETRY BACKOFF",
-            Self::Disconnected => "DISCONNECTED",
-            Self::Failed => "FAILED",
-            Self::ProtocolMismatch => "PROTOCOL MISMATCH",
+            Self::Launching => Msg::ConnLaunching.en(),
+            Self::Connecting => Msg::ConnConnecting.en(),
+            Self::Synchronizing => Msg::ConnSynchronizing.en(),
+            Self::Ready => Msg::ConnReady.en(),
+            Self::Backoff => Msg::ConnBackoff.en(),
+            Self::Disconnected => Msg::ConnDisconnected.en(),
+            Self::Failed => Msg::ConnFailed.en(),
+            Self::ProtocolMismatch => Msg::ConnProtocolMismatch.en(),
         }
     }
 
@@ -676,10 +679,10 @@ pub(crate) enum ShortcutGroup {
 impl ShortcutGroup {
     pub(crate) const fn title(self) -> &'static str {
         match self {
-            Self::Switching => "Switching",
-            Self::Transitions => "Transitions",
-            Self::Editing => "Editing",
-            Self::InputBank => "Input bank (pointer and focus)",
+            Self::Switching => Msg::ShortcutGroupSwitching.en(),
+            Self::Transitions => Msg::ShortcutGroupTransitions.en(),
+            Self::Editing => Msg::ShortcutGroupEditing.en(),
+            Self::InputBank => Msg::ShortcutGroupInputBank.en(),
         }
     }
 }
@@ -700,67 +703,67 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 11] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
-        action: "Select input 1–8 on Preview",
+        action: Msg::ShortcutSelectPreview.en(),
         key: Some(Key::Num1),
     },
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "C",
-        action: "Cut Preview to Program",
+        action: Msg::ShortcutCut.en(),
         key: Some(Key::C),
     },
     ShortcutEntry {
         group: ShortcutGroup::Transitions,
         keys: "F",
-        action: "Fade Preview to Program (shared duration)",
+        action: Msg::ShortcutFade.en(),
         key: Some(Key::F),
     },
     ShortcutEntry {
         group: ShortcutGroup::Transitions,
         keys: "B",
-        action: "Toggle Fade-to-Black",
+        action: Msg::ShortcutFadeToBlack.en(),
         key: Some(Key::B),
     },
     ShortcutEntry {
         group: ShortcutGroup::Transitions,
         keys: "Esc",
-        action: "Cancel the active manual T-bar transition",
+        action: Msg::ShortcutCancelManual.en(),
         key: Some(Key::Escape),
     },
     ShortcutEntry {
         group: ShortcutGroup::Editing,
         keys: UNDO_SHORTCUT,
-        action: "Undo the last project edit (shared history)",
+        action: Msg::ShortcutUndo.en(),
         key: None,
     },
     ShortcutEntry {
         group: ShortcutGroup::Editing,
         keys: REDO_SHORTCUT,
-        action: "Redo the last undone project edit",
+        action: Msg::ShortcutRedo.en(),
         key: None,
     },
     ShortcutEntry {
         group: ShortcutGroup::InputBank,
-        keys: "Click",
-        action: "Select the input on Preview",
+        keys: Msg::KeyClick.en(),
+        action: Msg::ShortcutTileClick.en(),
         key: None,
     },
     ShortcutEntry {
         group: ShortcutGroup::InputBank,
-        keys: "Double-click",
-        action: "Select on Preview, then Cut to Program",
+        keys: Msg::KeyDoubleClick.en(),
+        action: Msg::ShortcutTileDoubleClick.en(),
         key: None,
     },
     ShortcutEntry {
         group: ShortcutGroup::InputBank,
-        keys: "Right-click",
-        action: "Input menu: Preview, Cut, Rename, Move, Remove",
+        keys: Msg::KeyRightClick.en(),
+        action: Msg::ShortcutTileMenu.en(),
         key: None,
     },
     ShortcutEntry {
         group: ShortcutGroup::InputBank,
-        keys: "Tab · Enter",
-        action: "Focus a tile, then select it on Preview",
+        keys: Msg::KeyTabEnter.en(),
+        action: Msg::ShortcutTileFocus.en(),
         key: None,
     },
 ];
@@ -892,22 +895,22 @@ impl TallyState {
 
     /// Returns a compact, deterministic operator label for this tally.
     #[must_use]
-    pub fn operator_label(self) -> String {
+    pub fn operator_label(self, locale: Locale) -> String {
         let mut labels = Vec::with_capacity(4);
         if self.is_realized_program() {
-            labels.push("PROGRAM");
+            labels.push(locale.text(Msg::TallyProgram));
         }
         if self.is_realized_preview() {
-            labels.push("PREVIEW");
+            labels.push(locale.text(Msg::TallyPreview));
         }
         if self.is_desired_program() {
-            labels.push("PROGRAM DESIRED");
+            labels.push(locale.text(Msg::TallyProgramDesired));
         }
         if self.is_desired_preview() {
-            labels.push("PREVIEW DESIRED");
+            labels.push(locale.text(Msg::TallyPreviewDesired));
         }
         if labels.is_empty() {
-            "NO TALLY".to_owned()
+            locale.text(Msg::TallyNone).to_owned()
         } else {
             labels.join(" / ")
         }
@@ -965,6 +968,8 @@ pub struct StudioShell {
     remove_input: Option<input_catalogue::RemoveConfirm>,
     /// Sent input adds and removes awaiting their outcome.
     catalogue: input_catalogue::CatalogueTracker,
+    /// The operator's UI language and clock; local to this console.
+    locale: Locale,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1031,6 +1036,18 @@ impl StudioShell {
         self.layout = layout;
     }
 
+    /// Returns the console's UI language and clock preference.
+    #[must_use]
+    pub const fn locale(&self) -> Locale {
+        self.locale
+    }
+
+    /// Switches the UI language or clock; the next frame draws in it. The
+    /// choice is local to this console and never sent to the daemon.
+    pub const fn set_locale(&mut self, locale: Locale) {
+        self.locale = locale;
+    }
+
     /// Collects this frame's global keyboard shortcuts in UI order: switcher
     /// shortcuts first, then edit history (Ctrl+Z / Ctrl+Shift+Z).
     fn keyboard_intents(
@@ -1073,12 +1090,21 @@ impl StudioShell {
             || egui::Popup::is_any_open(context)
     }
 
+    /// Publishes the console locale to this frame's drawing code and to the
+    /// queues that word their own toasts.
+    fn apply_locale(&mut self, context: &egui::Context) {
+        l10n::set_locale(context, self.locale);
+        self.toasts.locale = self.locale;
+        self.catalogue.locale = self.locale;
+    }
+
     /// Draws one complete shell frame and returns operator intents in UI order.
     ///
     /// The UI must belong to an active `egui` pass, as is customary for
     /// immediate-mode drawing.
     pub fn draw(&mut self, ui: &mut Ui, state: &StudioUiState) -> Vec<StudioIntent> {
         theme::apply_console_visuals(ui.ctx());
+        self.apply_locale(ui.ctx());
         self.monitor_textures.sync(ui.ctx(), &state.monitor_images);
         self.canvas = monitors::canvas_shape(&state.monitor_images, self.canvas);
         if state.monitor_images.iter().any(Option::is_some) {
@@ -1405,6 +1431,7 @@ impl Default for StudioShell {
             add_input: None,
             remove_input: None,
             catalogue: input_catalogue::CatalogueTracker::default(),
+            locale: Locale::ENGLISH,
         }
     }
 }
@@ -1883,7 +1910,14 @@ mod tests {
         assert!(tally.is_desired_program());
         assert!(!tally.is_realized_program());
         assert!(!tally.is_desired_preview());
-        assert_eq!(tally.operator_label(), "PREVIEW / PROGRAM DESIRED");
+        assert_eq!(
+            tally.operator_label(Locale::ENGLISH),
+            "PREVIEW / PROGRAM DESIRED"
+        );
+        assert_eq!(
+            tally.operator_label(Locale::new(fm_ui_model::i18n::Language::Spanish)),
+            "PREVIO / PROGRAMA PEDIDO"
+        );
     }
 
     #[test]
@@ -3169,6 +3203,66 @@ mod tests {
         );
         let _intents = shell.draw(&mut ui, state);
         context.end_pass()
+    }
+
+    /// Every string painted in one frame's output.
+    fn painted_text(output: &egui::FullOutput) -> Vec<String> {
+        fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => {
+                    for shape in shapes {
+                        collect(shape, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &output.shapes {
+            collect(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn the_console_draws_in_the_chosen_language_from_the_next_frame() {
+        use fm_ui_model::i18n::Language;
+        let context = egui::Context::default();
+        let state = recording_state([true, false], false);
+        let mut shell = StudioShell::default();
+        assert_eq!(shell.locale(), Locale::ENGLISH);
+        let english = painted_text(&run_frame(&context, &mut shell, &state));
+        for expected in ["File", "Inputs", "INPUT BANK", "CONTROL READY", "REC"] {
+            assert!(
+                english.iter().any(|text| text == expected),
+                "missing {expected:?} in {english:?}"
+            );
+        }
+        shell.set_locale(Locale::new(Language::Spanish));
+        let spanish = painted_text(&run_frame(&context, &mut shell, &state));
+        for expected in [
+            "Archivo",
+            "Entradas",
+            "Ayuda",
+            "BANCO DE ENTRADAS",
+            "CONTROL LISTO",
+            "DESBLOQUEADO",
+        ] {
+            assert!(
+                spanish.iter().any(|text| text == expected),
+                "missing {expected:?} in {spanish:?}"
+            );
+        }
+        for english_only in ["File", "Help", "CONTROL READY", "UNLOCKED"] {
+            assert!(
+                !spanish.iter().any(|text| text == english_only),
+                "{english_only:?} still painted in Spanish: {spanish:?}"
+            );
+        }
+        // The language is presentation only: the same state yields the same
+        // (empty) intents in both languages.
+        assert_eq!(l10n::locale(&context).language, Language::Spanish);
     }
 
     #[test]

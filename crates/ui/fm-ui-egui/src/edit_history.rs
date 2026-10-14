@@ -13,6 +13,7 @@ use fm_types::InputId;
 
 use crate::gating::{Capability, unavailable_reason};
 use crate::input_bank::project_editing_available;
+use crate::l10n::{Arg, Locale, Msg};
 use crate::{StudioIntent, StudioUiState};
 
 /// Keyboard shortcut text for Undo.
@@ -20,10 +21,17 @@ pub const UNDO_SHORTCUT: &str = "Ctrl+Z";
 /// Keyboard shortcut text for Redo.
 pub const REDO_SHORTCUT: &str = "Ctrl+Shift+Z";
 
-pub(crate) const PROJECT_LOCKED_REASON: &str = "the project is locked against edits";
-pub(crate) const INPUT_LOCKED_REASON: &str = "this input is locked against edits";
-pub(crate) const NOTHING_TO_UNDO_REASON: &str = "there is no project edit to undo";
-pub(crate) const NOTHING_TO_REDO_REASON: &str = "there is no project edit to redo";
+pub(crate) const PROJECT_LOCKED_REASON: &str = Msg::ReasonProjectLocked.en();
+pub(crate) const INPUT_LOCKED_REASON: &str = Msg::ReasonInputLocked.en();
+pub(crate) const NOTHING_TO_UNDO_REASON: &str = Msg::ReasonNothingToUndo.en();
+pub(crate) const NOTHING_TO_REDO_REASON: &str = Msg::ReasonNothingToRedo.en();
+
+/// Which side of the shared history an action walks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryVerb {
+    Undo,
+    Redo,
+}
 
 /// Availability of one history action.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,26 +73,37 @@ impl HistoryActionAvailability {
     /// Menu label: the verb plus the revision it reverts or reapplies, so the
     /// operator sees which shared edit the action targets.
     #[must_use]
-    pub fn menu_label(self, verb: &str) -> String {
+    pub fn menu_label(self, locale: Locale, verb: HistoryVerb) -> String {
+        let (plain, at) = match verb {
+            HistoryVerb::Undo => (Msg::Undo, Msg::UndoEditAt),
+            HistoryVerb::Redo => (Msg::Redo, Msg::RedoEditAt),
+        };
         match self.expected_edit {
-            Some(edit) => format!("{verb} edit at REV {edit}"),
-            None => verb.to_owned(),
+            Some(edit) => locale.format(at, &[("revision", Arg::Plain(edit))]),
+            None => locale.text(plain).to_owned(),
         }
     }
 
     /// Hover text: what the action does, its key, and the history depth.
     #[must_use]
-    pub fn hover(self, verb: &str, shortcut: &str) -> String {
+    pub fn hover(self, locale: Locale, verb: HistoryVerb, shortcut: &str) -> String {
         let steps = match self.depth {
-            0 => "history empty".to_owned(),
-            1 => "1 step in the shared history".to_owned(),
-            depth => format!("{depth} steps in the shared history"),
+            0 => locale.text(Msg::HistoryEmpty).to_owned(),
+            depth => locale.format(Msg::HistorySteps, &[("count", Arg::from(depth))]),
+        };
+        let (plain, at) = match verb {
+            HistoryVerb::Undo => (Msg::Undo, Msg::UndoHoverAt),
+            HistoryVerb::Redo => (Msg::Redo, Msg::RedoHoverAt),
         };
         match self.expected_edit {
-            Some(edit) => format!("{verb} the project edit at REV {edit}  [{shortcut}]\n{steps}"),
+            Some(edit) => format!(
+                "{}  [{shortcut}]\n{steps}",
+                locale.format(at, &[("revision", Arg::Plain(edit))])
+            ),
             None => format!(
-                "{verb}  [{shortcut}]\n{steps}\nUnavailable: {}",
-                self.reason
+                "{}  [{shortcut}]\n{steps}\n{}",
+                locale.text(plain),
+                crate::l10n::unavailable(locale, self.reason)
             ),
         }
     }
@@ -182,16 +201,20 @@ impl PadlockToggle {
     /// Short top-bar label.
     #[must_use]
     pub const fn label(self) -> &'static str {
-        if self.locked { "LOCKED" } else { "UNLOCKED" }
+        if self.locked {
+            Msg::Locked.en()
+        } else {
+            Msg::Unlocked.en()
+        }
     }
 
     /// Hover text describing the state and the click action.
     #[must_use]
     pub const fn hover(self) -> &'static str {
         if self.locked {
-            "Project edits are locked; live switching still works. Click to unlock."
+            Msg::PadlockHoverLocked.en()
         } else {
-            "Project edits are unlocked. Click to lock edits; live switching stays available."
+            Msg::PadlockHoverUnlocked.en()
         }
     }
 
@@ -199,9 +222,9 @@ impl PadlockToggle {
     #[must_use]
     pub const fn menu_label(self) -> &'static str {
         if self.locked {
-            "Unlock project edits"
+            Msg::PadlockMenuUnlock.en()
         } else {
-            "Lock project edits"
+            Msg::PadlockMenuLock.en()
         }
     }
 }
@@ -244,11 +267,14 @@ impl EditLockSummary {
 
     /// Short chip text for the input bank header, if any lock applies.
     #[must_use]
-    pub fn bank_chip(self) -> Option<String> {
+    pub fn bank_chip(self, locale: Locale) -> Option<String> {
         if self.project {
-            Some("EDITS LOCKED".to_owned())
+            Some(locale.text(Msg::EditsLocked).to_owned())
         } else if self.locked_inputs > 0 {
-            Some(format!("{} LOCKED", self.locked_inputs))
+            Some(locale.format(
+                Msg::InputsLockedChip,
+                &[("count", Arg::from(self.locked_inputs))],
+            ))
         } else {
             None
         }
@@ -256,22 +282,20 @@ impl EditLockSummary {
 
     /// One-paragraph explanation of what the padlocks block and keep.
     #[must_use]
-    pub fn detail(self) -> String {
+    pub fn detail(self, locale: Locale) -> String {
         let inputs = match self.locked_inputs {
             0 => String::new(),
-            1 => "1 input is locked against rename, move, and removal.".to_owned(),
-            count => format!("{count} inputs are locked against rename, move, and removal."),
+            count => locale.format(Msg::InputsLockedDetail, &[("count", Arg::from(count))]),
         };
-        if self.project {
-            format!(
-                "Project edits are locked: rename, move, adding and removing inputs, Stinger slot \
-                 setup, undo, and redo are blocked. Switching, transitions, audio, overlays, and outputs still work.{}{inputs}",
-                if inputs.is_empty() { "" } else { "\n" }
-            )
-        } else if inputs.is_empty() {
-            "Project edits are unlocked.".to_owned()
+        let lead = locale.text(if self.project {
+            Msg::ProjectEditsLockedDetail
         } else {
-            format!("Project edits are unlocked. {inputs}")
+            Msg::ProjectEditsUnlocked
+        });
+        match (self.project, inputs.is_empty()) {
+            (_, true) => lead.to_owned(),
+            (true, false) => format!("{lead}\n{inputs}"),
+            (false, false) => format!("{lead} {inputs}"),
         }
     }
 }
@@ -585,16 +609,28 @@ mod tests {
     #[test]
     fn history_labels_name_the_target_revision_and_depth() {
         let available = edit_history_availability(&editor(EditLocks::default(), HISTORY));
-        assert_eq!(available.undo.menu_label("Undo"), "Undo edit at REV 7");
-        assert_eq!(available.redo.menu_label("Redo"), "Redo edit at REV 8");
         assert_eq!(
-            available.undo.hover("Undo", UNDO_SHORTCUT),
+            available
+                .undo
+                .menu_label(Locale::ENGLISH, HistoryVerb::Undo),
+            "Undo edit at REV 7"
+        );
+        assert_eq!(
+            available
+                .redo
+                .menu_label(Locale::ENGLISH, HistoryVerb::Redo),
+            "Redo edit at REV 8"
+        );
+        assert_eq!(
+            available
+                .undo
+                .hover(Locale::ENGLISH, HistoryVerb::Undo, UNDO_SHORTCUT),
             "Undo the project edit at REV 7  [Ctrl+Z]\n2 steps in the shared history"
         );
         assert!(
             available
                 .redo
-                .hover("Redo", REDO_SHORTCUT)
+                .hover(Locale::ENGLISH, HistoryVerb::Redo, REDO_SHORTCUT)
                 .ends_with("1 step in the shared history")
         );
         assert!(!available.undo.locked);
@@ -607,9 +643,14 @@ mod tests {
             HISTORY,
         ));
         assert!(locked.undo.locked && locked.redo.locked);
-        assert_eq!(locked.undo.menu_label("Undo"), "Undo");
         assert_eq!(
-            locked.undo.hover("Undo", UNDO_SHORTCUT),
+            locked.undo.menu_label(Locale::ENGLISH, HistoryVerb::Undo),
+            "Undo"
+        );
+        assert_eq!(
+            locked
+                .undo
+                .hover(Locale::ENGLISH, HistoryVerb::Undo, UNDO_SHORTCUT),
             "Undo  [Ctrl+Z]\n2 steps in the shared history\nUnavailable: the project is locked against edits"
         );
 
@@ -619,7 +660,7 @@ mod tests {
         assert!(
             empty
                 .undo
-                .hover("Undo", UNDO_SHORTCUT)
+                .hover(Locale::ENGLISH, HistoryVerb::Undo, UNDO_SHORTCUT)
                 .contains("history empty")
         );
     }
@@ -628,8 +669,8 @@ mod tests {
     fn lock_summary_badges_project_and_known_input_locks() {
         let none = edit_lock_summary(&editor(EditLocks::default(), HISTORY));
         assert!(!none.any());
-        assert_eq!(none.bank_chip(), None);
-        assert_eq!(none.detail(), "Project edits are unlocked.");
+        assert_eq!(none.bank_chip(Locale::ENGLISH), None);
+        assert_eq!(none.detail(Locale::ENGLISH), "Project edits are unlocked.");
 
         let inputs = edit_lock_summary(&editor(
             EditLocks {
@@ -639,9 +680,12 @@ mod tests {
             HISTORY,
         ));
         assert_eq!(inputs.locked_inputs, 1);
-        assert_eq!(inputs.bank_chip().as_deref(), Some("1 LOCKED"));
         assert_eq!(
-            inputs.detail(),
+            inputs.bank_chip(Locale::ENGLISH).as_deref(),
+            Some("1 LOCKED")
+        );
+        assert_eq!(
+            inputs.detail(Locale::ENGLISH),
             "Project edits are unlocked. 1 input is locked against rename, move, and removal."
         );
 
@@ -653,16 +697,59 @@ mod tests {
             HISTORY,
         ));
         assert!(project.any());
-        assert_eq!(project.bank_chip().as_deref(), Some("EDITS LOCKED"));
-        assert!(project.detail().starts_with("Project edits are locked"));
+        assert_eq!(
+            project.bank_chip(Locale::ENGLISH).as_deref(),
+            Some("EDITS LOCKED")
+        );
         assert!(
             project
-                .detail()
+                .detail(Locale::ENGLISH)
+                .starts_with("Project edits are locked")
+        );
+        assert!(
+            project
+                .detail(Locale::ENGLISH)
                 .ends_with("2 inputs are locked against rename, move, and removal.")
         );
 
         let offline = StudioUiState::new(StudioConnectionStatus::Disconnected);
         assert_eq!(edit_lock_summary(&offline), EditLockSummary::default());
+
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(inputs.bank_chip(spanish).as_deref(), Some("1 BLOQUEADA"));
+        assert_eq!(
+            inputs.detail(spanish),
+            "Las ediciones del proyecto están desbloqueadas. 1 entrada está bloqueada contra cambio de nombre, movimiento y eliminación."
+        );
+    }
+
+    #[test]
+    fn history_hover_is_worded_per_language() {
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let available = edit_history_availability(&editor(EditLocks::default(), HISTORY));
+        assert_eq!(
+            available.undo.menu_label(spanish, HistoryVerb::Undo),
+            "Deshacer edición en REV 7"
+        );
+        assert_eq!(
+            available
+                .undo
+                .hover(spanish, HistoryVerb::Undo, UNDO_SHORTCUT),
+            "Deshacer la edición del proyecto en REV 7  [Ctrl+Z]\n2 pasos en el historial compartido"
+        );
+        let locked = edit_history_availability(&editor(
+            EditLocks {
+                project: true,
+                inputs: Vec::new(),
+            },
+            HISTORY,
+        ));
+        assert!(
+            locked
+                .redo
+                .hover(spanish, HistoryVerb::Redo, REDO_SHORTCUT)
+                .ends_with("No disponible: el proyecto está bloqueado contra ediciones")
+        );
     }
 
     #[test]

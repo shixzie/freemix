@@ -2,6 +2,7 @@ use std::{fmt, net::SocketAddr, num::NonZeroU128, path::PathBuf};
 
 use fm_protocol::Role;
 use fm_types::ProjectId;
+use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
 use crate::{DEFAULT_DAEMON, RestartPolicy};
 
@@ -30,6 +31,11 @@ Client options:
   --osc-listen <ADDR>    Receive OSC control on a loopback address and nonzero port
   --web-connect <ADDR>   Connect to an existing loopback WebSocket daemon
   --diagnose             Run the one-shot connection diagnostic instead of Studio
+
+Interface options:
+  --lang <LANG>          Console language: en or es
+                         [default: from LC_ALL, LC_MESSAGES, or LANG; else en]
+  --clock <CYCLE>        Top-bar clock: 24h or 12h [default: 24h]
   -h, --help             Print help
   -V, --version          Print version";
 
@@ -56,6 +62,34 @@ pub struct StudioConfig {
     pub restart_policy: RestartPolicy,
     pub osc_listen: Option<SocketAddr>,
     pub transport: ControlTransport,
+    /// Local console presentation; never sent to the daemon.
+    pub ui: UiPreferences,
+}
+
+/// Console language and clock chosen on the command line.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UiPreferences {
+    /// `--lang`; `None` defers to the environment.
+    pub language: Option<Language>,
+    /// `--clock`; `None` keeps the 24-hour broadcast clock.
+    pub hour_cycle: Option<HourCycle>,
+}
+
+impl UiPreferences {
+    /// The console locale: `--lang`, else the first of `LC_ALL`,
+    /// `LC_MESSAGES`, and `LANG` that is set (POSIX precedence) when it
+    /// names a language with a catalog, else English.
+    #[must_use]
+    pub fn locale(self, env: impl Fn(&str) -> Option<String>) -> Locale {
+        let language = self.language.unwrap_or_else(|| {
+            ["LC_ALL", "LC_MESSAGES", "LANG"]
+                .into_iter()
+                .find_map(|name| env(name).filter(|value| !value.is_empty()))
+                .and_then(|value| Language::from_tag(&value))
+                .unwrap_or_default()
+        });
+        Locale::new(language).with_hour_cycle(self.hour_cycle.unwrap_or_default())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,6 +134,8 @@ pub enum ArgsError {
     InvalidProjectId(String),
     InvalidRestartCount(String),
     InvalidRole(String),
+    InvalidLanguage(String),
+    InvalidClock(String),
     ConflictingModes,
     SupervisedOnly(&'static str),
     ExistingOnly(&'static str),
@@ -132,6 +168,12 @@ impl fmt::Display for ArgsError {
                 write!(formatter, "restart count `{value}` must be a u8")
             }
             Self::InvalidRole(role) => write!(formatter, "unknown role `{role}`"),
+            Self::InvalidLanguage(value) => {
+                write!(formatter, "unknown language `{value}`; expected en or es")
+            }
+            Self::InvalidClock(value) => {
+                write!(formatter, "unknown clock `{value}`; expected 24h or 12h")
+            }
             Self::ConflictingModes => {
                 formatter.write_str("--project and --connect cannot be used together")
             }
@@ -192,6 +234,8 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
     let mut osc_listen = None;
     let mut diagnose = None;
     let mut web_connect = None;
+    let mut language = None;
+    let mut hour_cycle = None;
     let mut arguments = arguments.into_iter();
     while let Some(option) = arguments.next() {
         match option.as_str() {
@@ -246,6 +290,16 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
                 let address = socket_address("--web-connect", &value)?;
                 set_once(&mut web_connect, address, "--web-connect")?;
             }
+            "--lang" => {
+                let value = required(&mut arguments, "--lang")?;
+                let parsed = Language::from_tag(&value).ok_or(ArgsError::InvalidLanguage(value))?;
+                set_once(&mut language, parsed, "--lang")?;
+            }
+            "--clock" => {
+                let value = required(&mut arguments, "--clock")?;
+                let parsed = HourCycle::from_flag(&value).ok_or(ArgsError::InvalidClock(value))?;
+                set_once(&mut hour_cycle, parsed, "--clock")?;
+            }
             _ => return Err(ArgsError::UnknownArgument(option)),
         }
     }
@@ -291,6 +345,10 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
             ControlTransport::WebSocket
         } else {
             ControlTransport::Tcp
+        },
+        ui: UiPreferences {
+            language,
+            hour_cycle,
         },
     };
     Ok(if diagnose.is_some() {

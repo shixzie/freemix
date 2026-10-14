@@ -210,6 +210,8 @@ impl StudioApp {
         creation_context: &eframe::CreationContext<'_>,
     ) -> Result<Self, std::io::Error> {
         let osc = config.osc_listen.map(OscReceiver::bind).transpose()?;
+        let mut shell = StudioShell::default();
+        shell.set_locale(config.ui.locale(|name| std::env::var(name).ok()));
         let (request_sender, request_receiver) = sync_channel(REQUEST_CAPACITY);
         let repaint_context = creation_context.egui_ctx.clone();
         let (publisher, updates) = state_mailbox(repaint_context);
@@ -219,7 +221,7 @@ impl StudioApp {
                 run_worker(config, &request_receiver, &publisher);
             })?;
         Ok(Self {
-            shell: StudioShell::default(),
+            shell,
             state: StudioUiState::new(StudioConnectionStatus::Launching),
             requests: Some(request_sender),
             pending_intents: PendingIntents::new(),
@@ -2833,6 +2835,7 @@ mod tests {
             },
             osc_listen: None,
             transport: crate::ControlTransport::Tcp,
+            ui: crate::UiPreferences::default(),
         })
         .unwrap();
         runtime.connect(HEARTBEAT_TEST_TIMEOUT).unwrap();
@@ -3017,6 +3020,7 @@ mod tests {
                     },
                     osc_listen: None,
                     transport: crate::ControlTransport::Tcp,
+                    ui: crate::UiPreferences::default(),
                 },
                 &request_receiver,
                 &publisher,
@@ -3073,6 +3077,7 @@ mod tests {
                     },
                     osc_listen: None,
                     transport: crate::ControlTransport::Tcp,
+                    ui: crate::UiPreferences::default(),
                 },
                 &request_receiver,
                 &publisher,

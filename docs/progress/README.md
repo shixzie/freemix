@@ -230,6 +230,8 @@ the counts and lock chips.
 | `studio-console-inputs-menu.png` | Inputs menu with the Catalogue group: `Add input…` and the `Remove input` submenu, where Main Scene (`PGM`) and Solid Colour 1 (`PVW`) are disabled with their tally marks. |
 | `studio-console-add-input-disabled.png` | Operator session hovering the dimmed `+` tile: the tooltip "Add input… A solid colour or colour bars, appended to the end of the bank. Unavailable: this session lacks the edit_project permission". |
 | `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with attempt count, retry delay, the last error, and the disabled-controls footer over the dimmed monitors; `NO STATE` chips, `— TARGETS`, `— SOURCES`, centered empty states for the input bank and mixer, and "No synchronized show" in the top bar (no edit group without synchronized state). |
+| `studio-console-spanish.png` | 1920x1080 demo show with Studio started with `--lang es`: the menu bar (`Archivo` … `Ayuda`), top bar (`CONTROL LISTO`, `DESBLOQUEADO` padlock sized to the Spanish word, `VIVO`/`REC` badges), the `BANCO DE ENTRADAS` card (`7 FUENTES`, `sin miniatura`, `CORTE` keys, `Añadir entrada`), the recorder and stream chips and details (`DETENIDO`, `GRABANDO`, `NO EN VIVO`, `APAGADO`), Spanish decimals in the mixer gain entries (`+0,0 dB`), and the status bar (`0 pendientes`, `Listo`, the Spanish key hints). Transition column, overlays, Stingers, and mixer labels are not yet in the catalog and stay English. |
+| `studio-console-spanish-menu.png` | The same session with `Salida` open: every transition, Fade to black, T-bar, recorder (`Iniciar grabador 1` / `DETENIDO`), stream, and Stinger item worded in Spanish. |
 
 In this round the `-add-input`, `-add-input-bars`, `-input-added`,
 `-remove-input`, `-input-refused`, `-inputs-menu`, and `-add-input-disabled`
@@ -295,6 +297,10 @@ freemix-cli remote-record-start 127.0.0.1:7000 --recorder 2
 
 DISPLAY=:99 import -window root shot.png
 ```
+
+The Spanish captures add `--lang es` to the Studio command above (the
+language can also be switched at runtime from View › Language, and `--clock
+12h` selects the 12-hour clock); `-spanish-menu.png` then clicks `Salida`.
 
 The edit-menu, locked, and mixer captures run Studio with `--role admin`
 (the default operator role lacks `edit_project`), then drive the daemon with

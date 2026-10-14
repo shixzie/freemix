@@ -360,9 +360,11 @@ pub(crate) fn status_chip_painted(
         );
     }
     let text_color = if solid { Color32::WHITE } else { color };
+    // Chips carry catalog status words (`RECORDING`, `LOCKED`, ...) as
+    // English; they are worded in the console's language here.
     let galley = elided(
         painter,
-        text,
+        crate::l10n::locale(painter.ctx()).tr(text),
         FontId::new(9.5, FontFamily::Proportional),
         text_color,
         rect.width() - 8.0,

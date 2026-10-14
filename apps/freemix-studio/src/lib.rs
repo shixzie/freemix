@@ -8,7 +8,7 @@ mod supervisor;
 
 pub use args::{
     ArgsError, Command, ConnectionConfig, ControlTransport, ExistingConfig, HELP, StudioConfig,
-    SupervisedConfig, parse_args,
+    SupervisedConfig, UiPreferences, parse_args,
 };
 pub use native::launch_native;
 pub use runtime::{LifecycleState, StudioError, StudioRuntime};

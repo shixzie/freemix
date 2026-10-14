@@ -15,6 +15,7 @@ use fm_protocol::{
 use fm_ui_model::{StingerStatus, StreamStatus};
 
 use crate::gating::{Capability, unavailable_reason};
+use crate::l10n::Msg;
 use crate::stinger_config::{self, StingerEditor};
 use crate::theme::{
     ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PREVIEW, TEXT,
@@ -136,7 +137,11 @@ impl StudioShell {
 /// Operator-facing recording status derived only from the replicated desired
 /// flag; it is never an optimistic local guess.
 pub(crate) const fn recording_status_label(desired: bool) -> &'static str {
-    if desired { "RECORDING" } else { "STOPPED" }
+    if desired {
+        Msg::Recording.en()
+    } else {
+        Msg::Stopped.en()
+    }
 }
 
 /// Pure placeholder decision: connected with a view but no configured streams.
@@ -224,27 +229,27 @@ pub(crate) enum StingerSlotState {
 pub(crate) const fn stinger_slot_presentation(state: StingerSlotState) -> StingerSlotPresentation {
     match state {
         StingerSlotState::Unavailable => StingerSlotPresentation {
-            label: "STATE UNAVAILABLE",
+            label: Msg::StingerStateUnavailable.en(),
             color: MUTED,
             ready: false,
         },
         StingerSlotState::Unconfigured => StingerSlotPresentation {
-            label: "UNCONFIGURED",
+            label: Msg::StingerUnconfigured.en(),
             color: MUTED,
             ready: false,
         },
         StingerSlotState::Readiness(StingerReadiness::NotRequested) => StingerSlotPresentation {
-            label: "NOT REQUESTED",
+            label: Msg::StingerNotRequested.en(),
             color: AMBER,
             ready: false,
         },
         StingerSlotState::Readiness(StingerReadiness::Ready) => StingerSlotPresentation {
-            label: "READY",
+            label: Msg::StingerReady.en(),
             color: PREVIEW,
             ready: true,
         },
         StingerSlotState::Readiness(StingerReadiness::Missing) => StingerSlotPresentation {
-            label: "MISSING",
+            label: Msg::StingerMissing.en(),
             color: ERROR,
             ready: false,
         },
@@ -411,7 +416,7 @@ fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardC
         );
         let label = elided(
             painter,
-            presentation.label,
+            crate::l10n::locale(painter.ctx()).tr(presentation.label),
             FontId::new(9.5, FontFamily::Proportional),
             tone.color(),
             rect.width() - 60.0,

@@ -5,6 +5,7 @@
 
 use egui::Response;
 
+use crate::l10n::{self, Msg};
 use crate::{StudioConnectionStatus, StudioUiState, TransitionGate};
 
 /// The session capability a control depends on.
@@ -24,17 +25,17 @@ pub(crate) fn unavailable_reason(state: &StudioUiState, capability: Capability) 
     match state.connection_status {
         StudioConnectionStatus::Ready => {}
         StudioConnectionStatus::ProtocolMismatch => {
-            return "the daemon did not select the current protocol";
+            return Msg::ReasonProtocol.en();
         }
-        StudioConnectionStatus::Failed => return "the control connection failed",
-        StudioConnectionStatus::Disconnected => return "there is no control connection",
+        StudioConnectionStatus::Failed => return Msg::ReasonConnectionFailed.en(),
+        StudioConnectionStatus::Disconnected => return Msg::ReasonNoConnection.en(),
         StudioConnectionStatus::Launching
         | StudioConnectionStatus::Connecting
         | StudioConnectionStatus::Synchronizing
-        | StudioConnectionStatus::Backoff => return "the control connection is not ready yet",
+        | StudioConnectionStatus::Backoff => return Msg::ReasonNotReady.en(),
     }
     if state.view.is_none() {
-        return "project state is not synchronized yet";
+        return Msg::ReasonNotSynchronized.en();
     }
     let permitted = match capability {
         Capability::SelectPreview => state.can_select_preview,
@@ -44,10 +45,10 @@ pub(crate) fn unavailable_reason(state: &StudioUiState, capability: Capability) 
     };
     if !permitted {
         return match capability {
-            Capability::SelectPreview => "this session lacks the select_preview permission",
-            Capability::Transition => "this session lacks the transition permission",
-            Capability::Audio => "this session lacks the control_audio permission",
-            Capability::EditProject => "this session lacks the edit_project permission",
+            Capability::SelectPreview => Msg::ReasonNoSelectPreview.en(),
+            Capability::Transition => Msg::ReasonNoTransition.en(),
+            Capability::Audio => Msg::ReasonNoControlAudio.en(),
+            Capability::EditProject => Msg::ReasonNoEditProject.en(),
         };
     }
     if matches!(
@@ -55,14 +56,16 @@ pub(crate) fn unavailable_reason(state: &StudioUiState, capability: Capability) 
         Capability::SelectPreview | Capability::Transition
     ) && TransitionGate::from_state(state).manual_transition_in_flight
     {
-        return "a manual T-bar transition is in progress";
+        return Msg::ReasonManualInFlight.en();
     }
-    "the current state does not allow it"
+    Msg::ReasonStateDisallows.en()
 }
 
-/// Formats the disabled tooltip for one action.
+/// Formats the disabled tooltip for one action in English; drawing code
+/// uses [`l10n::disabled_text`] with the frame's locale.
+#[cfg(test)]
 pub(crate) fn disabled_text(action: &str, reason: &str) -> String {
-    format!("{action}\nUnavailable: {reason}")
+    l10n::disabled_text(l10n::Locale::ENGLISH, action, reason)
 }
 
 /// Tooltip helpers shared by every gated control.
@@ -73,8 +76,9 @@ pub(crate) trait Hint {
 
 impl Hint for Response {
     fn hint(self, action: &str, reason: &str) -> Self {
+        let locale = l10n::locale(&self.ctx);
         self.on_hover_text(action)
-            .on_disabled_hover_text(disabled_text(action, reason))
+            .on_disabled_hover_text(l10n::disabled_text(locale, action, reason))
     }
 }
 

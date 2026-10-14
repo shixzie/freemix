@@ -30,9 +30,11 @@ use fm_protocol::{
     WireMessage, WireRecorderSlot, encode_line, encode_qoi_rgb, monitor_frame_parts,
 };
 use fm_types::{InputId, ProjectId};
+use fm_ui_model::i18n::{HourCycle, Language, Locale};
 use freemix_studio::{
-    Command, ConnectionConfig, ControlTransport, ExistingConfig, LifecycleState, RestartPolicy,
-    StudioConfig, StudioError, StudioRuntime, SupervisedConfig, parse_args,
+    ArgsError, Command, ConnectionConfig, ControlTransport, ExistingConfig, LifecycleState,
+    RestartPolicy, StudioConfig, StudioError, StudioRuntime, SupervisedConfig, UiPreferences,
+    parse_args,
 };
 #[cfg(unix)]
 use freemix_studio::{DaemonSupervisor, ReadinessRecord, SupervisorError, SupervisorState};
@@ -226,6 +228,7 @@ fn existing_config(address: SocketAddr, expected_project_id: ProjectId) -> Studi
         restart_policy: RestartPolicy::default(),
         osc_listen: None,
         transport: ControlTransport::Tcp,
+        ui: UiPreferences::default(),
     }
 }
 
@@ -1514,6 +1517,101 @@ fn arguments_preserve_supervised_and_existing_configuration_distinction() {
             if address == "127.0.0.1:9000".parse().unwrap()
                 && expected_project_id == project_id()
     ));
+}
+
+#[test]
+fn language_and_clock_flags_choose_the_console_locale() {
+    let open = |extra: &[&str]| {
+        let mut arguments = vec![
+            "--connect".to_owned(),
+            "127.0.0.1:9000".to_owned(),
+            "--project-id".to_owned(),
+            PROJECT_VALUE.to_string(),
+        ];
+        arguments.extend(extra.iter().map(|value| (*value).to_owned()));
+        parse_args(arguments)
+    };
+    let no_env = |_: &str| None;
+    let Ok(Command::Open(config)) = open(&["--lang", "es", "--clock", "12h"]) else {
+        panic!("expected open command");
+    };
+    assert_eq!(
+        config.ui,
+        UiPreferences {
+            language: Some(Language::Spanish),
+            hour_cycle: Some(HourCycle::H12),
+        }
+    );
+    assert_eq!(
+        config.ui.locale(no_env),
+        Locale::new(Language::Spanish).with_hour_cycle(HourCycle::H12)
+    );
+    // Regional tags select their language's catalog.
+    let Ok(Command::Open(config)) = open(&["--lang", "es-MX"]) else {
+        panic!("expected open command");
+    };
+    assert_eq!(config.ui.language, Some(Language::Spanish));
+    assert_eq!(
+        open(&["--lang", "fr"]),
+        Err(ArgsError::InvalidLanguage("fr".to_owned()))
+    );
+    assert_eq!(
+        open(&["--clock", "25h"]),
+        Err(ArgsError::InvalidClock("25h".to_owned()))
+    );
+    assert_eq!(
+        open(&["--lang", "es", "--lang", "en"]),
+        Err(ArgsError::DuplicateOption("--lang"))
+    );
+    assert_eq!(open(&["--lang"]), Err(ArgsError::MissingValue("--lang")));
+}
+
+#[test]
+fn console_language_falls_back_to_the_posix_environment_then_english() {
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    };
+    let defaults = UiPreferences::default();
+    assert_eq!(defaults.locale(env(&[])), Locale::ENGLISH);
+    assert_eq!(
+        defaults.locale(env(&[("LANG", "es_ES.UTF-8")])).language,
+        Language::Spanish
+    );
+    // LC_ALL wins over LANG, and an empty variable is skipped.
+    assert_eq!(
+        defaults
+            .locale(env(&[("LC_ALL", "en_US.UTF-8"), ("LANG", "es_ES.UTF-8")]))
+            .language,
+        Language::English
+    );
+    assert_eq!(
+        defaults
+            .locale(env(&[
+                ("LC_ALL", ""),
+                ("LC_MESSAGES", "es_AR"),
+                ("LANG", "C")
+            ]))
+            .language,
+        Language::Spanish
+    );
+    // A locale without a catalog falls back to English, and the flag wins.
+    assert_eq!(
+        defaults.locale(env(&[("LANG", "de_DE.UTF-8")])),
+        Locale::ENGLISH
+    );
+    let flagged = UiPreferences {
+        language: Some(Language::English),
+        hour_cycle: None,
+    };
+    assert_eq!(
+        flagged.locale(env(&[("LANG", "es_ES.UTF-8")])),
+        Locale::ENGLISH
+    );
 }
 
 #[test]

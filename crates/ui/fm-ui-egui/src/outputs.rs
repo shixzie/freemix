@@ -16,6 +16,7 @@ use fm_protocol::{StreamRealizedState, StreamStatusSample, WireStreamTargetId};
 use fm_ui_model::StreamStatus;
 
 use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::l10n::{Arg, Locale, Msg};
 use crate::panels::{STREAMS_NONE_CONFIGURED, latest_stream_sample, stream_row_text};
 use crate::stream_control::{stream_action_text, stream_unavailable_reason};
 use crate::theme::{
@@ -44,12 +45,12 @@ pub(crate) struct OutputRow {
 }
 
 /// Presents one recorder slot from its replicated desired flag.
-pub(crate) fn recorder_row(has_view: bool, desired: bool, pending: bool) -> OutputRow {
+pub(crate) fn recorder_row(l: Locale, has_view: bool, desired: bool, pending: bool) -> OutputRow {
     if !has_view {
         return OutputRow {
-            status: "NO STATE",
+            status: Msg::StatusNoState.en(),
             tone: Tone::Idle,
-            detail: "Not synchronized".to_owned(),
+            detail: l.text(Msg::RowNotSynchronized).to_owned(),
         };
     }
     let status = crate::panels::recording_status_label(desired);
@@ -57,20 +58,20 @@ pub(crate) fn recorder_row(has_view: bool, desired: bool, pending: bool) -> Outp
         return OutputRow {
             status,
             tone: Tone::Pending,
-            detail: "Command pending".to_owned(),
+            detail: l.text(Msg::RowCommandPending).to_owned(),
         };
     }
     if desired {
         OutputRow {
             status,
             tone: Tone::OnAir,
-            detail: "Recording Program".to_owned(),
+            detail: l.text(Msg::RowRecordingProgram).to_owned(),
         }
     } else {
         OutputRow {
             status,
             tone: Tone::Idle,
-            detail: "Program · idle".to_owned(),
+            detail: l.text(Msg::RowProgramIdle).to_owned(),
         }
     }
 }
@@ -81,6 +82,7 @@ pub(crate) fn recorder_row(has_view: bool, desired: bool, pending: bool) -> Outp
 /// state. A target that is desired running but not reported live is amber,
 /// never red: red means the daemon reports the target live.
 pub(crate) fn stream_row(
+    l: Locale,
     stream: &StreamStatus,
     sample: Option<&StreamStatusSample>,
     pending: bool,
@@ -88,16 +90,16 @@ pub(crate) fn stream_row(
     let realized = sample.map_or(stream.realized, |sample| sample.realized);
     let desired = stream.desired_running;
     let (status, tone) = match realized {
-        StreamRealizedState::Live if desired => ("LIVE", Tone::OnAir),
-        StreamRealizedState::Live => ("LIVE", Tone::Pending),
-        StreamRealizedState::Starting => ("STARTING", Tone::Pending),
-        StreamRealizedState::WaitingToReconnect => ("RECONNECTING", Tone::Pending),
-        StreamRealizedState::Congested => ("CONGESTED", Tone::Pending),
-        StreamRealizedState::Failed => ("FAILED", Tone::Fault),
-        StreamRealizedState::Stopped if desired => ("NOT LIVE", Tone::Pending),
-        StreamRealizedState::Stopped => ("OFF", Tone::Idle),
-        StreamRealizedState::Unavailable if desired => ("UNAVAILABLE", Tone::Pending),
-        StreamRealizedState::Unavailable => ("UNAVAILABLE", Tone::Idle),
+        StreamRealizedState::Live if desired => (Msg::Live.en(), Tone::OnAir),
+        StreamRealizedState::Live => (Msg::Live.en(), Tone::Pending),
+        StreamRealizedState::Starting => (Msg::StreamStarting.en(), Tone::Pending),
+        StreamRealizedState::WaitingToReconnect => (Msg::StreamReconnecting.en(), Tone::Pending),
+        StreamRealizedState::Congested => (Msg::StreamCongested.en(), Tone::Pending),
+        StreamRealizedState::Failed => (Msg::ConnFailed.en(), Tone::Fault),
+        StreamRealizedState::Stopped if desired => (Msg::StreamNotLive.en(), Tone::Pending),
+        StreamRealizedState::Stopped => (Msg::StreamOff.en(), Tone::Idle),
+        StreamRealizedState::Unavailable if desired => (Msg::StreamUnavailable.en(), Tone::Pending),
+        StreamRealizedState::Unavailable => (Msg::StreamUnavailable.en(), Tone::Idle),
     };
     let tone = if pending && tone != Tone::Fault {
         Tone::Pending
@@ -106,24 +108,30 @@ pub(crate) fn stream_row(
     };
     let mut detail = match sample {
         Some(sample) => {
-            let mut text = format!(
-                "{} sent · {} dropped",
-                format_bytes(sample.muxed_bytes),
-                sample.dropped_pairs
+            let mut text = l.format(
+                Msg::RowStreamCounters,
+                &[
+                    ("bytes", Arg::Str(&l.bytes(sample.muxed_bytes))),
+                    ("count", Arg::Count(sample.dropped_pairs)),
+                ],
             );
             if let Some(local) = sample.local {
-                let _ = write!(text, " · {} seg", local.segments);
+                let _ = write!(
+                    text,
+                    " · {}",
+                    l.format(Msg::RowSegments, &[("count", Arg::from(local.segments))])
+                );
             }
             if let Some(failure) = &sample.failure {
                 let _ = write!(text, " · {failure}");
             }
             text
         }
-        None if desired => "Requested · no transport sample".to_owned(),
-        None => "Desired off".to_owned(),
+        None if desired => l.text(Msg::RowRequestedNoSample).to_owned(),
+        None => l.text(Msg::RowDesiredOff).to_owned(),
     };
     if pending {
-        detail = format!("Command pending · {detail}");
+        detail = format!("{} · {detail}", l.text(Msg::RowCommandPending));
     }
     OutputRow {
         status,
@@ -132,22 +140,11 @@ pub(crate) fn stream_row(
     }
 }
 
-/// Formats a byte counter with binary units and one decimal.
+/// Formats a byte counter with binary units and one decimal in the
+/// English console format; see [`fm_ui_model::i18n::Locale::bytes`].
+#[cfg(test)]
 pub(crate) fn format_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
-    if bytes < 1_024 {
-        return format!("{bytes} B");
-    }
-    #[allow(clippy::cast_precision_loss)] // display only
-    let mut value = bytes as f64 / 1_024.0;
-    let mut unit = 0;
-    // Step up on the displayed (one-decimal) value, so 1023.96 KB reads
-    // `1.0 MB` rather than `1024.0 KB`.
-    while (value * 10.0).round() >= 10_240.0 && unit + 1 < UNITS.len() {
-        value /= 1_024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
+    crate::l10n::Locale::ENGLISH.bytes(bytes)
 }
 
 /// Section header summary: how many rows are on air out of how many, such
@@ -304,7 +301,7 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
         } else {
             RecordingAction::Start(recorder)
         };
-        let row = recorder_row(has_view, desired, pending);
+        let row = recorder_row(crate::l10n::locale(ui.ctx()), has_view, desired, pending);
         let allowed = recording_action(state, requested);
         let action = if requested.starts() {
             format!("Start program recorder {slot}")
@@ -351,6 +348,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
         .zip(&samples)
         .map(|(stream, sample)| {
             stream_row(
+                crate::l10n::locale(ui.ctx()),
                 stream,
                 *sample,
                 stream_command_pending(state, WireStreamTargetId::new(stream.target)),
@@ -461,17 +459,23 @@ mod tests {
 
     #[test]
     fn recorder_rows_never_claim_state_without_a_view() {
-        let unknown = recorder_row(false, true, false);
+        let unknown = recorder_row(Locale::ENGLISH, false, true, false);
         assert_eq!(unknown.status, "NO STATE");
         assert_eq!(unknown.tone, Tone::Idle);
-        assert_eq!(recorder_row(true, false, false).status, "STOPPED");
-        assert_eq!(recorder_row(true, false, false).tone, Tone::Idle);
-        let recording = recorder_row(true, true, false);
+        assert_eq!(
+            recorder_row(Locale::ENGLISH, true, false, false).status,
+            "STOPPED"
+        );
+        assert_eq!(
+            recorder_row(Locale::ENGLISH, true, false, false).tone,
+            Tone::Idle
+        );
+        let recording = recorder_row(Locale::ENGLISH, true, true, false);
         assert_eq!(
             (recording.status, recording.tone),
             ("RECORDING", Tone::OnAir)
         );
-        let pending = recorder_row(true, true, true);
+        let pending = recorder_row(Locale::ENGLISH, true, true, true);
         assert_eq!((pending.status, pending.tone), ("RECORDING", Tone::Pending));
         assert!(pending.detail.starts_with("Command pending"));
     }
@@ -479,6 +483,7 @@ mod tests {
     #[test]
     fn stream_rows_are_red_only_when_reported_live() {
         let live = stream_row(
+            Locale::ENGLISH,
             &stream(true, StreamRealizedState::Stopped),
             Some(&sample(StreamRealizedState::Live)),
             false,
@@ -486,24 +491,49 @@ mod tests {
         assert_eq!((live.status, live.tone), ("LIVE", Tone::OnAir));
         assert_eq!(live.detail, "1.5 MB sent · 2 dropped");
         // Desired on, daemon reports stopped: amber, never red.
-        let requested = stream_row(&stream(true, StreamRealizedState::Stopped), None, false);
+        let requested = stream_row(
+            Locale::ENGLISH,
+            &stream(true, StreamRealizedState::Stopped),
+            None,
+            false,
+        );
         assert_eq!(
             (requested.status, requested.tone),
             ("NOT LIVE", Tone::Pending)
         );
         assert_eq!(requested.detail, "Requested · no transport sample");
-        let off = stream_row(&stream(false, StreamRealizedState::Stopped), None, false);
+        let off = stream_row(
+            Locale::ENGLISH,
+            &stream(false, StreamRealizedState::Stopped),
+            None,
+            false,
+        );
         assert_eq!(
             (off.status, off.tone, off.detail.as_str()),
             ("OFF", Tone::Idle, "Desired off")
         );
         // Live but desired off: a stop the daemon has not realized yet.
-        let stopping = stream_row(&stream(false, StreamRealizedState::Live), None, false);
+        let stopping = stream_row(
+            Locale::ENGLISH,
+            &stream(false, StreamRealizedState::Live),
+            None,
+            false,
+        );
         assert_eq!((stopping.status, stopping.tone), ("LIVE", Tone::Pending));
-        let failed = stream_row(&stream(true, StreamRealizedState::Failed), None, true);
+        let failed = stream_row(
+            Locale::ENGLISH,
+            &stream(true, StreamRealizedState::Failed),
+            None,
+            true,
+        );
         assert_eq!((failed.status, failed.tone), ("FAILED", Tone::Fault));
         assert!(failed.detail.starts_with("Command pending · "));
-        let pending = stream_row(&stream(false, StreamRealizedState::Stopped), None, true);
+        let pending = stream_row(
+            Locale::ENGLISH,
+            &stream(false, StreamRealizedState::Stopped),
+            None,
+            true,
+        );
         assert_eq!(pending.tone, Tone::Pending);
     }
 
@@ -517,6 +547,7 @@ mod tests {
         });
         local.failure = Some("io".to_owned());
         let row = stream_row(
+            Locale::ENGLISH,
             &stream(true, StreamRealizedState::Live),
             Some(&local),
             false,

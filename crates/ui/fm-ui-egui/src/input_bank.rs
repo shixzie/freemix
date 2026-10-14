@@ -14,8 +14,9 @@ use fm_protocol::{MonitorFrameOrigin, MonitorTap, WireInputId};
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
 use fm_ui_model::{EditLocks, SwitcherState};
 
-use crate::gating::{self, Capability, Hint, unavailable_reason};
+use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::input_catalogue::{CatalogueAvailability, MAX_LIVE_INPUTS};
+use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::{FrameFacts, MonitorPicture, letterbox, picture_visible};
 use crate::theme::{
     ACCENT, AMBER, BORDER_STRONG, GRAPHITE_RAISED, LOCK_BADGE_SIZE, MONITOR_BLACK, MUTED, PREVIEW,
@@ -82,7 +83,7 @@ pub(crate) fn dynamic_columns(available_width: f32, spacing: f32) -> usize {
 }
 
 /// Right-column marker for a tile menu item blocked by a padlock.
-const LOCKED_MARK: &str = "LOCKED";
+const LOCKED_MARK: &str = Msg::Locked.en();
 
 /// Why moving the input at `index` one step is blocked by the neighbour it
 /// would swap with, if that neighbour has its own padlock. The server refuses
@@ -100,7 +101,7 @@ pub(crate) fn neighbour_move_lock_reason(
     let neighbour = *inputs.get(neighbour)?;
     locks
         .is_input_locked(neighbour)
-        .then_some("the neighbouring input is locked against moves")
+        .then_some(Msg::ReasonNeighbourLocked.en())
 }
 
 /// Picks the monitor tap whose current frame shows exactly `input`, if any.
@@ -218,20 +219,21 @@ impl StudioShell {
         state: &StudioUiState,
         intents: &mut Vec<StudioIntent>,
     ) {
+        let l = self.locale;
         let count = state.view.as_ref().map(|view| view.inputs.len());
         let locks = edit_lock_summary(state);
-        section_header(ui, "Input bank", |ui| {
-            if let Some(chip) = locks.bank_chip() {
+        section_header(ui, l.text(Msg::InputBank), |ui| {
+            if let Some(chip) = locks.bank_chip(l) {
                 ui.scope(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    status_chip(ui, &chip, Tone::Pending, 92.0).on_hover_text(locks.detail());
-                    lock_badge(ui).on_hover_text(locks.detail());
+                    status_chip(ui, &chip, Tone::Pending, 92.0).on_hover_text(locks.detail(l));
+                    lock_badge(ui).on_hover_text(locks.detail(l));
                 });
             }
             ui.label(
                 mono(count.map_or_else(
-                    || "— SOURCES".to_owned(),
-                    |count| format!("{count} SOURCES"),
+                    || l.text(Msg::SourcesUnknown).to_owned(),
+                    |count| l.format(Msg::SourcesCount, &[("count", Arg::from(count))]),
                 ))
                 .size(10.5)
                 .color(TEXT_DIM),
@@ -239,7 +241,7 @@ impl StudioShell {
             // The gesture hint is dropped first when the header is narrow.
             if ui.available_width() > 250.0 {
                 ui.label(
-                    RichText::new("click PVW · double-click CUT · right-click more")
+                    RichText::new(l.text(Msg::BankGestureHint))
                         .size(10.0)
                         .color(MUTED),
                 );
@@ -264,8 +266,8 @@ impl StudioShell {
                 let Some(view) = state.view.as_ref() else {
                     crate::theme::empty_state(
                         ui,
-                        "No input state",
-                        "Sources appear once project state is synchronized.",
+                        l.text(Msg::NoInputState),
+                        l.text(Msg::NoInputStateDetail),
                     );
                     return;
                 };
@@ -356,6 +358,7 @@ impl StudioShell {
             cut_enabled,
             ..
         } = tile;
+        let l = self.locale;
         let preview_reason = unavailable_reason(state, Capability::SelectPreview);
         let cut_reason = if enabled {
             unavailable_reason(state, Capability::Transition)
@@ -394,21 +397,19 @@ impl StudioShell {
         } else {
             String::new()
         };
-        let source = thumbnail.map_or(
-            "Thumbnail: none (only Preview/Program tap frames are delivered)",
-            |(tap, _)| match tap {
-                MonitorTap::Program => "Thumbnail: current Program tap frame",
-                MonitorTap::Preview => "Thumbnail: current Preview tap frame",
-            },
-        );
+        let source = l.text(thumbnail.map_or(Msg::ThumbnailNone, |(tap, _)| match tap {
+            MonitorTap::Program => Msg::ThumbnailProgram,
+            MonitorTap::Preview => Msg::ThumbnailPreview,
+        }));
         let hover = format!(
-            "{name}\n{}\n{source}\nClick: select Preview{shortcut} · Double-click: cut to Program · Right-click: more",
-            tally.operator_label()
+            "{name}\n{}\n{source}\n{}",
+            tally.operator_label(l),
+            l.format(Msg::TileGestures, &[("shortcut", Arg::Str(&shortcut))])
         );
         let response = if enabled {
             response.on_hover_text(hover)
         } else {
-            response.on_hover_text(gating::disabled_text(&hover, preview_reason))
+            response.on_hover_text(l10n::disabled_text(l, &hover, preview_reason))
         };
         let gates = TileGates {
             preview: enabled,
@@ -455,19 +456,21 @@ impl StudioShell {
                 );
             })
             .0
-            .on_hover_text("More: Preview, Cut, Rename, Move, Remove");
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            .on_hover_text(l.text(Msg::TileMoreHover));
+            ui.with_layout(l10n::trailing_layout(l), |ui| {
                 let cut = ui
                     .add_enabled(
                         cut_enabled,
-                        egui::Button::new(RichText::new("CUT").size(11.0).strong().color(PROGRAM))
-                            .stroke(Stroke::new(1.0, PROGRAM.gamma_multiply(0.35)))
-                            .min_size(Vec2::new(56.0, 20.0)),
+                        egui::Button::new(
+                            RichText::new(l.text(Msg::CutKey))
+                                .size(11.0)
+                                .strong()
+                                .color(PROGRAM),
+                        )
+                        .stroke(Stroke::new(1.0, PROGRAM.gamma_multiply(0.35)))
+                        .min_size(Vec2::new(56.0, 20.0)),
                     )
-                    .hint(
-                        "Select this input on Preview, then cut it to Program  [double-click]",
-                        cut_reason,
-                    );
+                    .hint(l.text(Msg::TileCutHover), cut_reason);
                 if cut.clicked() {
                     intents.extend(tile_intents(input, TileGesture::Cut, gates));
                 }
@@ -509,24 +512,26 @@ impl StudioShell {
             preview: enabled,
             transition: cut_enabled,
         };
+        let l = self.locale;
         ui.set_min_width(230.0);
         ui.set_max_width(260.0);
         draw_tile_menu_header(ui, index, name, tile.tally);
         ui.separator();
         let locked = tile.locked;
+        // Marks arrive as catalog English (`LOCKED`, `IN USE`) so their tone
+        // can be matched; they are worded in the console language here.
         let item = |ui: &mut Ui, enabled: bool, label: &str, shortcut: &str, reason: &str| {
             let mut button = egui::Button::new(label);
+            let mark = l.tr(shortcut);
             if let Some(color) = mark_color(shortcut) {
-                button =
-                    button.shortcut_text(RichText::new(shortcut).size(10.0).strong().color(color));
+                button = button.shortcut_text(RichText::new(mark).size(10.0).strong().color(color));
             } else if shortcut == LOCKED_MARK {
-                button =
-                    button.shortcut_text(RichText::new(shortcut).size(10.0).strong().color(AMBER));
+                button = button.shortcut_text(RichText::new(mark).size(10.0).strong().color(AMBER));
             } else if !shortcut.is_empty() {
-                button = button.shortcut_text(RichText::new(shortcut).color(MUTED));
+                button = button.shortcut_text(RichText::new(mark).color(MUTED));
             }
             ui.add_enabled(enabled, button)
-                .on_disabled_hover_text(format!("Unavailable: {reason}"))
+                .on_disabled_hover_text(l10n::unavailable(l, reason))
                 .clicked()
         };
         let key = if index < 8 {
@@ -534,22 +539,40 @@ impl StudioShell {
         } else {
             String::new()
         };
-        if item(ui, enabled, "Select on Preview", &key, preview_reason) {
+        if item(
+            ui,
+            enabled,
+            l.text(Msg::SelectOnPreview),
+            &key,
+            preview_reason,
+        ) {
             intents.extend(tile_intents(input, TileGesture::Click, gates));
         }
-        if item(ui, cut_enabled, "Cut to Program", "Dbl-click", cut_reason) {
+        if item(
+            ui,
+            cut_enabled,
+            l.text(Msg::CutToProgram),
+            Msg::KeyDoubleClickShort.en(),
+            cut_reason,
+        ) {
             intents.extend(tile_intents(input, TileGesture::Cut, gates));
         }
         ui.separator();
         let edit_mark = if locked { LOCKED_MARK } else { "" };
         let [left_lock, right_lock] = tile.move_locks;
-        if item(ui, reorder_enabled, "Rename…", edit_mark, edit_reason) {
+        if item(
+            ui,
+            reorder_enabled,
+            l.text(Msg::RenameEllipsis),
+            edit_mark,
+            edit_reason,
+        ) {
             self.rename_draft = Some(RenameDraft::new(input, name));
         }
         if item(
             ui,
             reorder_enabled && index > 0 && left_lock.is_none(),
-            "Move left",
+            l.text(Msg::MoveLeft),
             if left_lock.is_some() {
                 LOCKED_MARK
             } else {
@@ -558,7 +581,7 @@ impl StudioShell {
             if !reorder_enabled {
                 edit_reason
             } else if index == 0 {
-                "this input is already first"
+                Msg::ReasonInputFirst.en()
             } else {
                 left_lock.unwrap_or("")
             },
@@ -571,7 +594,7 @@ impl StudioShell {
         if item(
             ui,
             reorder_enabled && index + 1 < count && right_lock.is_none(),
-            "Move right",
+            l.text(Msg::MoveRight),
             if right_lock.is_some() {
                 LOCKED_MARK
             } else {
@@ -580,7 +603,7 @@ impl StudioShell {
             if !reorder_enabled {
                 edit_reason
             } else if index + 1 >= count {
-                "this input is already last"
+                Msg::ReasonInputLast.en()
             } else {
                 right_lock.unwrap_or("")
             },
@@ -593,10 +616,17 @@ impl StudioShell {
         ui.separator();
         let removal = tile.removal;
         let remove_mark = removal.mark.unwrap_or("");
-        if item(ui, removal.enabled, "Remove…", remove_mark, removal.reason) {
+        if item(
+            ui,
+            removal.enabled,
+            l.text(Msg::RemoveEllipsis),
+            remove_mark,
+            removal.reason,
+        ) {
             self.open_remove_input(input, name);
         }
         let notes = tile_menu_notes(
+            l,
             TileGates {
                 preview: enabled,
                 transition: cut_enabled,
@@ -649,19 +679,20 @@ impl StudioShell {
             edit.request_focus();
         }
         let submitted = edit.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+        let l = self.locale;
         let reason = if draft.name.trim().is_empty() {
-            "the name is empty"
+            Msg::ReasonNameEmpty.en()
         } else if draft.name.len() > MAX_INPUT_NAME_BYTES {
-            "the name is too long"
+            Msg::ReasonNameTooLong.en()
         } else if duplicate {
-            "another input already uses this name"
+            Msg::ReasonNameTaken.en()
         } else {
-            "the name is unchanged"
+            Msg::ReasonNameUnchanged.en()
         };
         ui.horizontal(|ui| {
             if (ui
-                .add_enabled(valid, small_button("APPLY"))
-                .hint("Rename this input  [Enter]", reason)
+                .add_enabled(valid, small_button(l.text(Msg::ApplyKey)))
+                .hint(l.text(Msg::RenameApplyHover), reason)
                 .clicked()
                 || (submitted && valid))
                 && !close
@@ -673,8 +704,8 @@ impl StudioShell {
                 close = true;
             }
             if ui
-                .add(small_button("CANCEL"))
-                .on_hover_text("Discard this rename")
+                .add(small_button(l.text(Msg::CancelKey)))
+                .on_hover_text(l.text(Msg::RenameCancelHover))
                 .clicked()
             {
                 close = true;
@@ -688,6 +719,7 @@ impl StudioShell {
 
 /// Menu header: the input's key, its name (ellipsized), and its tally role.
 fn draw_tile_menu_header(ui: &mut Ui, index: usize, name: &str, tally: crate::TallyState) {
+    let l = l10n::locale(ui.ctx());
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         let (key, _) = ui.allocate_exact_size(Vec2::new(18.0, 18.0), Sense::hover());
@@ -715,8 +747,8 @@ fn draw_tile_menu_header(ui: &mut Ui, index: usize, name: &str, tally: crate::Ta
             );
         });
         if let Some(badge) = badge {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                pill(ui, badge, tally_color(tally), true).on_hover_text(tally.operator_label());
+            ui.with_layout(l10n::trailing_layout(l), |ui| {
+                pill(ui, badge, tally_color(tally), true).on_hover_text(tally.operator_label(l));
             });
         }
     });
@@ -727,7 +759,7 @@ fn mark_color(mark: &str) -> Option<Color32> {
     match mark {
         "PGM" => Some(PROGRAM),
         "PVW" => Some(PREVIEW),
-        "IN USE" | "PENDING" => Some(AMBER),
+        mark if mark == Msg::InUse.en() || mark == Msg::Pending.en() => Some(AMBER),
         _ => None,
     }
 }
@@ -736,6 +768,7 @@ impl StudioShell {
     /// The `+` tile at the end of the bank: opens the Add input dialog, or
     /// explains why adding is unavailable.
     fn draw_add_tile(&mut self, ui: &mut Ui, state: &StudioUiState, width: f32) {
+        let l = self.locale;
         let gate = self.add_input_gate(state);
         let thumb_height = (width * 9.0 / 16.0).round();
         let (rect, response) = ui.allocate_exact_size(
@@ -752,11 +785,11 @@ impl StudioShell {
                 response.has_focus(),
             );
         }
-        let action = "Add input…\nA solid colour or colour bars, appended to the end of the bank";
+        let action = l.text(Msg::AddTileHover);
         let response = if gate.enabled {
             response.on_hover_text(action)
         } else {
-            response.on_hover_text(gating::disabled_text(action, gate.reason))
+            response.on_hover_text(l10n::disabled_text(l, action, gate.reason))
         };
         if response.clicked() && gate.enabled {
             self.open_add_input(state);
@@ -768,7 +801,7 @@ impl StudioShell {
                 Some(name) => {
                     ui.add(
                         egui::Label::new(
-                            RichText::new(format!("ADDING {name}…"))
+                            RichText::new(l.format(Msg::AddingName, &[("name", Arg::Str(name))]))
                                 .size(10.0)
                                 .strong()
                                 .color(AMBER),
@@ -778,11 +811,15 @@ impl StudioShell {
                 }
                 None => {
                     ui.label(
-                        mono(format!("{count} / {MAX_LIVE_INPUTS}"))
-                            .size(10.0)
-                            .color(MUTED),
+                        mono(format!(
+                            "{} / {}",
+                            l.integer(count as u64),
+                            l.integer(MAX_LIVE_INPUTS as u64)
+                        ))
+                        .size(10.0)
+                        .color(MUTED),
                     )
-                    .on_hover_text("Inputs in the show / the most a show may hold");
+                    .on_hover_text(l.text(Msg::InputCountHover));
                 }
             }
         });
@@ -791,6 +828,7 @@ impl StudioShell {
 
 #[allow(clippy::fn_params_excessive_bools)] // independent paint states
 fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: bool, focused: bool) {
+    let l = l10n::locale(ui.ctx());
     let painter = ui.painter_at(rect.expand(4.0));
     let radius = CornerRadius::same(4);
     let thumb = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.max.y - TILE_NAME_HEIGHT));
@@ -840,7 +878,7 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
     painter.text(
         pos2(thumb.center().x, thumb.max.y - 10.0),
         Align2::CENTER_CENTER,
-        "solid colour · colour bars",
+        l.text(Msg::AddTileKinds),
         FontId::new(9.0, FontFamily::Proportional),
         MUTED.gamma_multiply(if enabled { 0.9 } else { 0.6 }),
     );
@@ -869,7 +907,7 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
     };
     let label = elided(
         &painter,
-        "Add input",
+        l.text(Msg::AddInput),
         FontId::new(12.0, FontFamily::Proportional),
         if enabled { TEXT } else { MUTED },
         name_bar.width() - 12.0 - lock_room,
@@ -899,24 +937,23 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
 /// note (the session or a padlock) covers Remove too, so Remove gets its own
 /// note only for its own reasons, such as the input being on Program.
 pub(crate) fn tile_menu_notes(
+    l: Locale,
     gates: TileGates,
     edit: bool,
     remove_blocked: Option<&str>,
     reasons: TileReasons,
 ) -> Vec<String> {
+    let note = |msg, reason: &str| l.format(msg, &[("reason", Arg::Str(l.tr(reason)))]);
     let mut notes = Vec::new();
     if !gates.preview {
-        notes.push(format!("Preview and Cut unavailable: {}", reasons.preview));
+        notes.push(note(Msg::NotePreviewCutUnavailable, reasons.preview));
     } else if !gates.transition {
-        notes.push(format!("Cut unavailable: {}", reasons.cut));
+        notes.push(note(Msg::NoteCutUnavailable, reasons.cut));
     }
     if !edit {
-        notes.push(format!(
-            "Rename, Move, and Remove unavailable: {}",
-            reasons.edit
-        ));
+        notes.push(note(Msg::NoteEditUnavailable, reasons.edit));
     } else if let Some(reason) = remove_blocked {
-        notes.push(format!("Remove unavailable: {reason}"));
+        notes.push(note(Msg::NoteRemoveUnavailable, reason));
     }
     notes
 }
@@ -1035,7 +1072,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         painter.text(
             pos2(thumb.center().x, thumb.max.y - 10.0),
             Align2::CENTER_CENTER,
-            "no thumbnail",
+            l10n::locale(ui.ctx()).text(Msg::NoThumbnail),
             FontId::new(9.0, FontFamily::Proportional),
             MUTED.gamma_multiply(0.7),
         );
@@ -1177,17 +1214,23 @@ mod tests {
             transition: true,
         };
         assert_eq!(
-            tile_menu_notes(open, true, None, reasons),
+            tile_menu_notes(Locale::ENGLISH, open, true, None, reasons),
             Vec::<String>::new()
         );
         assert_eq!(
-            tile_menu_notes(open, false, Some("ignored"), reasons),
+            tile_menu_notes(Locale::ENGLISH, open, false, Some("ignored"), reasons),
             [
                 "Rename, Move, and Remove unavailable: this session lacks the edit_project permission"
             ]
         );
         assert_eq!(
-            tile_menu_notes(open, true, Some("this input is on Program"), reasons),
+            tile_menu_notes(
+                Locale::ENGLISH,
+                open,
+                true,
+                Some("this input is on Program"),
+                reasons
+            ),
             ["Remove unavailable: this input is on Program"]
         );
         let no_cut = TileGates {
@@ -1195,7 +1238,7 @@ mod tests {
             ..open
         };
         assert_eq!(
-            tile_menu_notes(no_cut, true, None, reasons),
+            tile_menu_notes(Locale::ENGLISH, no_cut, true, None, reasons),
             ["Cut unavailable: a manual T-bar transition is in progress"]
         );
         // Without Preview selection, Cut is covered by the same note.
@@ -1204,10 +1247,31 @@ mod tests {
             transition: false,
         };
         assert_eq!(
-            tile_menu_notes(closed, false, None, reasons),
+            tile_menu_notes(Locale::ENGLISH, closed, false, None, reasons),
             [
                 "Preview and Cut unavailable: no preview permission",
                 "Rename, Move, and Remove unavailable: this session lacks the edit_project permission",
+            ]
+        );
+    }
+
+    #[test]
+    fn tile_menu_notes_are_worded_in_the_console_language() {
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let reasons = TileReasons {
+            preview: Msg::ReasonNoSelectPreview.en(),
+            cut: Msg::ReasonManualInFlight.en(),
+            edit: Msg::ReasonProjectLocked.en(),
+        };
+        let closed = TileGates {
+            preview: false,
+            transition: false,
+        };
+        assert_eq!(
+            tile_menu_notes(spanish, closed, false, None, reasons),
+            [
+                "Previo y corte no disponibles: esta sesión no tiene el permiso select_preview",
+                "Renombrar, mover y quitar no disponibles: el proyecto está bloqueado contra ediciones",
             ]
         );
     }

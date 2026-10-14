@@ -7,6 +7,7 @@
 
 use std::collections::VecDeque;
 
+use crate::l10n::{Arg, Locale, Msg};
 use crate::{StudioUiState, TerminalUncertaintyNotice};
 
 /// Maximum toasts shown at once; the oldest is dropped first.
@@ -51,11 +52,11 @@ impl ToastKind {
 
     pub(crate) const fn title(self) -> &'static str {
         match self {
-            Self::Notice => "NOTICE",
-            Self::Error => "ERROR",
-            Self::Uncertain => "OUTCOME UNCERTAIN",
-            Self::Pending => "PENDING",
-            Self::Success => "DONE",
+            Self::Notice => Msg::ToastNotice.en(),
+            Self::Error => Msg::ToastError.en(),
+            Self::Uncertain => Msg::ToastUncertain.en(),
+            Self::Pending => Msg::Pending.en(),
+            Self::Success => Msg::ToastDone.en(),
         }
     }
 }
@@ -81,6 +82,8 @@ pub(crate) struct ToastQueue {
     seen_external_notice: Option<String>,
     seen_uncertainties: Vec<TerminalUncertaintyNotice>,
     next_id: u64,
+    /// Language of the messages this queue words itself.
+    pub(crate) locale: Locale,
 }
 
 impl ToastQueue {
@@ -170,9 +173,12 @@ impl ToastQueue {
         for notice in fresh {
             self.push(
                 ToastKind::Uncertain,
-                format!(
-                    "Command {} may or may not have applied (server receipt {}). Check Program before retrying.",
-                    notice.command_id, notice.received_command_id
+                self.locale.format(
+                    Msg::ToastUncertainCommand,
+                    &[
+                        ("command", Arg::Str(&notice.command_id)),
+                        ("receipt", Arg::Str(&notice.received_command_id)),
+                    ],
                 ),
             );
         }
@@ -204,6 +210,26 @@ impl ToastQueue {
 /// The coalescing key of a notice whose newer versions supersede older ones.
 fn notice_key(notice: &str) -> Option<&'static str> {
     (notice.starts_with("Queued ") && notice.contains(" command(s)")).then_some(QUEUED_COMMANDS_KEY)
+}
+
+/// The operator-FIFO depth of the runtime's `Queued N command(s) in
+/// operator FIFO` notice.
+fn queued_commands(notice: &str) -> Option<u64> {
+    notice
+        .strip_prefix("Queued ")?
+        .strip_suffix(" command(s) in operator FIFO")?
+        .parse()
+        .ok()
+}
+
+/// Words a runtime notice in the operator's language. The Studio runtime
+/// publishes notices as English text; known ones are re-worded (with real
+/// plurals), and any other text is shown as published.
+pub(crate) fn localize_notice(locale: Locale, notice: &str) -> String {
+    match queued_commands(notice) {
+        Some(count) => locale.format(Msg::QueuedCommands, &[("count", Arg::Count(count))]),
+        None => notice.to_owned(),
+    }
 }
 
 /// Returns the current message when it differs from the last announced one.
@@ -357,6 +383,47 @@ mod tests {
         queue.acknowledge_error(state.error.as_ref());
         queue.observe(&state);
         assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn queued_notices_are_reworded_with_plurals() {
+        use fm_ui_model::i18n::Language;
+        let spanish = Locale::new(Language::Spanish);
+        let notice = |count: u32| format!("Queued {count} command(s) in operator FIFO");
+        assert_eq!(
+            localize_notice(Locale::ENGLISH, &notice(1)),
+            "1 command queued in the operator FIFO"
+        );
+        assert_eq!(
+            localize_notice(Locale::ENGLISH, &notice(1_200)),
+            "1,200 commands queued in the operator FIFO"
+        );
+        assert_eq!(
+            localize_notice(spanish, &notice(2)),
+            "2 comandos en la cola del operador"
+        );
+        assert_eq!(
+            localize_notice(spanish, "OSC receive failed"),
+            "OSC receive failed"
+        );
+    }
+
+    #[test]
+    fn uncertainty_toasts_use_the_queue_locale() {
+        let mut queue = ToastQueue {
+            locale: Locale::new(fm_ui_model::i18n::Language::Spanish),
+            ..ToastQueue::default()
+        };
+        let mut state = state();
+        state.terminal_uncertainties = vec![TerminalUncertaintyNotice {
+            command_id: "c1".to_owned(),
+            received_command_id: "r1".to_owned(),
+        }];
+        queue.observe(&state);
+        assert_eq!(
+            queue.iter().next().unwrap().message,
+            "El comando c1 pudo aplicarse o no (recibo del servidor r1). Revise Programa antes de reintentar."
+        );
     }
 
     #[test]

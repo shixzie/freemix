@@ -20,6 +20,7 @@ use fm_ui_model::{ClientView, ManualTransitionStatus};
 use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
 use crate::gating::{Capability, unavailable_reason};
 use crate::input_bank::project_editing_available;
+use crate::l10n::{Arg, Locale, Msg};
 use crate::theme::{
     ACCENT, ACCENT_FILL, AMBER, BORDER_STRONG, ERROR, MONITOR_BLACK, MUTED, PROGRAM, PROGRAM_FILL,
     TEXT, TEXT_DIM, Tone, WIDGET, mono, paint_lamp, section_label,
@@ -31,15 +32,15 @@ use crate::{StudioIntent, StudioShell, StudioUiState};
 /// engine also enforces (`too_many_inputs`).
 pub const MAX_LIVE_INPUTS: usize = fm_protocol::MAX_LIST_ITEMS;
 
-pub(crate) const INPUT_LIMIT_REASON: &str = "the show already holds the maximum of 256 inputs";
-pub(crate) const UNKNOWN_INPUT_REASON: &str = "the input no longer exists";
-pub(crate) const REMOVAL_PENDING_REASON: &str = "a removal of this input is already pending";
-pub(crate) const ON_PROGRAM_REASON: &str = "this input is on Program";
-pub(crate) const ON_PREVIEW_REASON: &str = "this input is on Preview";
-pub(crate) const IN_TRANSITION_REASON: &str = "this input is in the active manual transition";
-pub(crate) const STINGER_MEDIA_REASON: &str = "this input is a Stinger slot's media";
-pub(crate) const OVERLAY_ON_AIR_REASON: &str = "this input is on air in an overlay";
-pub(crate) const OVERLAY_QUEUED_REASON: &str = "this input is queued on an overlay";
+pub(crate) const INPUT_LIMIT_REASON: &str = Msg::ReasonInputLimit.en();
+pub(crate) const UNKNOWN_INPUT_REASON: &str = Msg::ReasonUnknownInput.en();
+pub(crate) const REMOVAL_PENDING_REASON: &str = Msg::ReasonRemovalPending.en();
+pub(crate) const ON_PROGRAM_REASON: &str = Msg::ReasonOnProgram.en();
+pub(crate) const ON_PREVIEW_REASON: &str = Msg::ReasonOnPreview.en();
+pub(crate) const IN_TRANSITION_REASON: &str = Msg::ReasonInTransition.en();
+pub(crate) const STINGER_MEDIA_REASON: &str = Msg::ReasonStingerMedia.en();
+pub(crate) const OVERLAY_ON_AIR_REASON: &str = Msg::ReasonOverlayOnAir.en();
+pub(crate) const OVERLAY_QUEUED_REASON: &str = Msg::ReasonOverlayQueued.en();
 
 /// An outcome is assumed lost when a request was never seen pending after
 /// this long (for example the queue was full or the payload was refused
@@ -145,11 +146,11 @@ pub fn suggested_input_name(kind: NewInputKind, taken: &[&str]) -> String {
 pub fn input_name_problem(name: &str, taken: &[&str]) -> Option<&'static str> {
     let name = name.trim();
     if name.is_empty() {
-        Some("the name is empty")
+        Some(Msg::ReasonNameEmpty.en())
     } else if name.len() > MAX_INPUT_NAME_BYTES {
-        Some("the name is longer than 128 bytes")
+        Some(Msg::ReasonNameTooLongBytes.en())
     } else if taken.contains(&name) {
-        Some("another input already uses this name")
+        Some(Msg::ReasonNameTaken.en())
     } else {
         None
     }
@@ -183,7 +184,7 @@ impl CatalogueAvailability {
     /// Whether a padlock is what blocks the action.
     #[must_use]
     pub fn locked(self) -> bool {
-        self.mark == Some("LOCKED")
+        self.mark == Some(Msg::Locked.en())
     }
 }
 
@@ -208,7 +209,7 @@ pub fn add_input_availability(
         );
     };
     if view.edit_locks.project {
-        return CatalogueAvailability::blocked(PROJECT_LOCKED_REASON, Some("LOCKED"));
+        return CatalogueAvailability::blocked(PROJECT_LOCKED_REASON, Some(Msg::Locked.en()));
     }
     if view.inputs.len() + adds_in_flight >= MAX_LIVE_INPUTS {
         return CatalogueAvailability::blocked(INPUT_LIMIT_REASON, None);
@@ -273,16 +274,16 @@ pub fn remove_input_availability(
         );
     };
     if view.edit_locks.project {
-        return CatalogueAvailability::blocked(PROJECT_LOCKED_REASON, Some("LOCKED"));
+        return CatalogueAvailability::blocked(PROJECT_LOCKED_REASON, Some(Msg::Locked.en()));
     }
     if !view.inputs.contains(&input) {
         return CatalogueAvailability::blocked(UNKNOWN_INPUT_REASON, None);
     }
     if view.edit_locks.is_input_locked(input) {
-        return CatalogueAvailability::blocked(INPUT_LOCKED_REASON, Some("LOCKED"));
+        return CatalogueAvailability::blocked(INPUT_LOCKED_REASON, Some(Msg::Locked.en()));
     }
     if removal_in_flight {
-        return CatalogueAvailability::blocked(REMOVAL_PENDING_REASON, Some("PENDING"));
+        return CatalogueAvailability::blocked(REMOVAL_PENDING_REASON, Some(Msg::Pending.en()));
     }
     match input_usage_reason(view, input) {
         Some(reason) => CatalogueAvailability::blocked(
@@ -290,7 +291,7 @@ pub fn remove_input_availability(
             Some(match reason {
                 ON_PROGRAM_REASON => "PGM",
                 ON_PREVIEW_REASON => "PVW",
-                _ => "IN USE",
+                _ => Msg::InUse.en(),
             }),
         ),
         None => CatalogueAvailability::AVAILABLE,
@@ -483,6 +484,8 @@ pub(crate) struct CatalogueTracker {
     outstanding: Vec<Outstanding>,
     seen_refusal: Option<String>,
     next_key: u64,
+    /// Language of the pending and outcome toasts this tracker words.
+    pub(crate) locale: Locale,
 }
 
 impl CatalogueTracker {
@@ -490,11 +493,22 @@ impl CatalogueTracker {
     pub(crate) fn submit(&mut self, request: CatalogueRequest, name: String) -> CatalogueToast {
         let key = format!("input-catalogue-{}", self.next_key);
         self.next_key = self.next_key.wrapping_add(1);
+        let l = self.locale;
         let message = match &request {
-            CatalogueRequest::Add { input, .. } => {
-                format!("Adding \"{name}\" as input {input}…")
-            }
-            CatalogueRequest::Remove { input } => format!("Removing \"{name}\" (input {input})…"),
+            CatalogueRequest::Add { input, .. } => l.format(
+                Msg::ToastAdding,
+                &[
+                    ("name", Arg::Str(&name)),
+                    ("input", Arg::Str(&input.to_string())),
+                ],
+            ),
+            CatalogueRequest::Remove { input } => l.format(
+                Msg::ToastRemoving,
+                &[
+                    ("name", Arg::Str(&name)),
+                    ("input", Arg::Str(&input.to_string())),
+                ],
+            ),
         };
         self.outstanding.push(Outstanding {
             request,
@@ -552,11 +566,12 @@ impl CatalogueTracker {
             self.seen_refusal = Some(refusal.command_id.clone());
         }
         let ready = state.connection_status.controls_enabled();
+        let locale = self.locale;
         self.outstanding.retain_mut(|outstanding| {
             outstanding.age_ms = outstanding.age_ms.saturating_add(dt_ms);
             let pending = state.catalogue_pending.contains(&outstanding.request);
             outstanding.seen_pending |= pending;
-            let resolved = resolve(outstanding, state, pending, ready, fresh_refusal);
+            let resolved = resolve(locale, outstanding, state, pending, ready, fresh_refusal);
             if let Some((kind, message)) = resolved {
                 if kind == ToastKind::Error
                     && fresh_refusal.is_some_and(|refusal| refusal.request == outstanding.request)
@@ -663,6 +678,7 @@ fn input_name(view: &ClientView, input: InputId) -> Option<&str> {
 
 /// The toast that resolves one request this frame, if it resolves.
 fn resolve(
+    l: Locale,
     outstanding: &Outstanding,
     state: &StudioUiState,
     pending: bool,
@@ -670,21 +686,20 @@ fn resolve(
     fresh_refusal: Option<&CatalogueRefusal>,
 ) -> Option<(ToastKind, String)> {
     let name = outstanding.name.as_str();
-    let verb = if outstanding.request.is_add() {
-        "Add"
-    } else {
-        "Removal"
-    };
+    let add = outstanding.request.is_add();
     if let Some(view) = state.view.as_ref().filter(|_| ready) {
         match &outstanding.request {
             CatalogueRequest::Add { input, .. } => {
                 if let Some(index) = view.inputs.iter().position(|candidate| candidate == input) {
                     return Some((
                         ToastKind::Success,
-                        format!(
-                            "Added \"{}\" as input {input} at position {}. Undo removes it again.",
-                            view.input_names[index],
-                            index + 1
+                        l.format(
+                            Msg::ToastAdded,
+                            &[
+                                ("name", Arg::Str(&view.input_names[index])),
+                                ("input", Arg::Str(&input.to_string())),
+                                ("position", Arg::from(index + 1)),
+                            ],
                         ),
                     ));
                 }
@@ -693,7 +708,13 @@ fn resolve(
                 if !pending && !view.inputs.contains(input) {
                     return Some((
                         ToastKind::Success,
-                        format!("Removed \"{name}\" (input {input}) with its mixer strip."),
+                        l.format(
+                            Msg::ToastRemoved,
+                            &[
+                                ("name", Arg::Str(name)),
+                                ("input", Arg::Str(&input.to_string())),
+                            ],
+                        ),
                     ));
                 }
             }
@@ -708,19 +729,35 @@ fn resolve(
     let detail = state
         .error
         .as_deref()
-        .unwrap_or("no result from the daemon");
+        .unwrap_or_else(|| l.text(Msg::NoDaemonResult));
+    let args = [("name", Arg::Str(name)), ("detail", Arg::Str(detail))];
     if outstanding.seen_pending {
         return Some((
             ToastKind::Error,
-            format!("{verb} of \"{name}\" was not applied: {detail}"),
+            l.format(
+                if add {
+                    Msg::ToastAddNotApplied
+                } else {
+                    Msg::ToastRemovalNotApplied
+                },
+                &args,
+            ),
         ));
     }
     (outstanding.age_ms >= CATALOGUE_TIMEOUT_MS).then(|| {
         (
             ToastKind::Error,
-            format!(
-                "{verb} of \"{name}\" was not confirmed after {} s: {detail}. Check the input bank.",
-                CATALOGUE_TIMEOUT_MS / 1_000
+            l.format(
+                if add {
+                    Msg::ToastAddNotConfirmed
+                } else {
+                    Msg::ToastRemovalNotConfirmed
+                },
+                &[
+                    args[0],
+                    args[1],
+                    ("seconds", Arg::from(CATALOGUE_TIMEOUT_MS / 1_000)),
+                ],
             ),
         )
     })

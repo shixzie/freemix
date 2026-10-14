@@ -16,6 +16,7 @@ use fm_protocol::AudioMeterChannel;
 use fm_ui_model::{ClientView, InputAudioStripStatus};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::l10n::{self, Locale};
 use crate::meter_ballistics::{
     ChannelBallistics, MeterBallistics, MeterKey, held_peak_mdb, peak_readout,
 };
@@ -129,24 +130,17 @@ pub(crate) fn fader_mdb(position: f32) -> i32 {
 
 /// Formats a fader gain for its dB entry and tooltip: `+0.0 dB`, `-inf dB`
 /// at the bottom of the travel.
-pub(crate) fn format_gain(mdb: i32) -> String {
-    if mdb <= FADER_TAPER[0].1 {
-        "-inf dB".to_owned()
-    } else {
-        format!("{:+.1} dB", f64::from(mdb) / 1000.0)
-    }
+pub(crate) fn format_gain(l: Locale, mdb: i32) -> String {
+    l.decibels(
+        f64::from(mdb) / 1000.0,
+        f64::from(FADER_TAPER[0].1) / 1000.0,
+    )
 }
 
 /// Parses a typed gain in dB (`-6.5`, `+3 dB`, `-inf`) to milli-dB. Text that
 /// is not a number is refused: `NaN` would otherwise reach the entry as 0 dB.
-pub(crate) fn parse_gain(text: &str) -> Option<f64> {
-    text.trim()
-        .trim_end_matches("dB")
-        .trim_end_matches("db")
-        .trim()
-        .parse::<f64>()
-        .ok()
-        .filter(|db| !db.is_nan())
+pub(crate) fn parse_gain(l: Locale, text: &str) -> Option<f64> {
+    l.parse_decimal(text.trim().trim_end_matches("dB").trim_end_matches("db"))
         .map(|db| db * 1000.0)
 }
 
@@ -613,6 +607,7 @@ fn draw_input_strip(
     fader_height: f32,
     intents: &mut Vec<StudioIntent>,
 ) -> bool {
+    let l = l10n::locale(ui.ctx());
     let StripGate { enabled, reason } = gate;
     let name = label_for_input(view, status.input);
     let ordinal = view
@@ -669,9 +664,9 @@ fn draw_input_strip(
                         .speed(100.0)
                         .custom_formatter(|value, _| {
                             #[allow(clippy::cast_possible_truncation)] // bounded range
-                            format_gain(value as i32)
+                            format_gain(l, value as i32)
                         })
-                        .custom_parser(parse_gain),
+                        .custom_parser(|text| parse_gain(l, text)),
                 )
                 .hint(
                     "Input gain in decibels (stored in one-thousandths of a dB)",
@@ -1025,7 +1020,7 @@ fn fader(
         painter.text(
             pos2(cap.min.x - 3.0, cap_y - FADER_CAP.y),
             Align2::RIGHT_CENTER,
-            format_gain(*gain_mdb),
+            format_gain(l10n::locale(painter.ctx()), *gain_mdb),
             FontId::new(9.5, FontFamily::Monospace),
             TEXT,
         );
@@ -1084,6 +1079,7 @@ fn meter_width(bars: usize) -> f32 {
 /// clicked (clear request).
 #[allow(clippy::too_many_lines)] // one painter pass per meter region
 fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
+    let l = l10n::locale(ui.ctx());
     let MeterFeed {
         channels,
         holds,
@@ -1233,12 +1229,12 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
                 format!(
                     "Ch {}  peak {}  RMS {}  hold {}{}",
                     index + 1,
-                    format_db(meter_db(channel.peak_millionths)),
-                    format_db(meter_db(channel.rms_millionths)),
+                    format_db(l, meter_db(channel.peak_millionths)),
+                    format_db(l, meter_db(channel.rms_millionths)),
                     hold.map_or_else(
                         || "--".to_owned(),
                         #[allow(clippy::cast_precision_loss)]
-                        |hold| format_db(hold.held_mdb as f32 / 1_000.0)
+                        |hold| format_db(l, hold.held_mdb as f32 / 1_000.0)
                     ),
                     if hold.is_some_and(ChannelBallistics::clipping) {
                         "  CLIP"
@@ -1261,12 +1257,8 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
 }
 
 /// Formats a dBFS level for meter tooltips.
-pub(crate) fn format_db(db: f32) -> String {
-    if db.is_finite() && db > METER_FLOOR_DB {
-        format!("{db:+.1} dB")
-    } else {
-        "-inf dB".to_owned()
-    }
+pub(crate) fn format_db(l: Locale, db: f32) -> String {
+    l.decibels(f64::from(db), f64::from(METER_FLOOR_DB))
 }
 
 /// The Master meter's dB scale: a label beside each tick in the gutter.
@@ -1350,10 +1342,10 @@ mod tests {
 
     #[test]
     fn gain_and_clip_labels() {
-        assert_eq!(format_gain(0), "+0.0 dB");
-        assert_eq!(format_gain(-6_500), "-6.5 dB");
-        assert_eq!(format_gain(12_000), "+12.0 dB");
-        assert_eq!(format_gain(-96_000), "-inf dB");
+        assert_eq!(format_gain(Locale::ENGLISH, 0), "+0.0 dB");
+        assert_eq!(format_gain(Locale::ENGLISH, -6_500), "-6.5 dB");
+        assert_eq!(format_gain(Locale::ENGLISH, 12_000), "+12.0 dB");
+        assert_eq!(format_gain(Locale::ENGLISH, -96_000), "-inf dB");
         assert_eq!(clip_reset_label(0), None);
         assert_eq!(clip_reset_label(1).as_deref(), Some("RESET CLIP"));
         assert_eq!(clip_reset_label(3).as_deref(), Some("RESET 3 CLIPS"));
@@ -1382,12 +1374,12 @@ mod tests {
     fn typed_gain_and_balance_refuse_not_a_number() {
         // `NaN` parses as an f64; the entries would store it as 0 (unity
         // gain, centre balance) instead of refusing the text.
-        assert_eq!(parse_gain("-6.5 dB"), Some(-6_500.0));
-        assert_eq!(parse_gain(" +3db "), Some(3_000.0));
-        assert_eq!(parse_gain("-inf"), Some(f64::NEG_INFINITY));
-        assert_eq!(parse_gain("loud"), None);
-        assert_eq!(parse_gain("NaN"), None);
-        assert_eq!(parse_gain("nan dB"), None);
+        assert_eq!(parse_gain(Locale::ENGLISH, "-6.5 dB"), Some(-6_500.0));
+        assert_eq!(parse_gain(Locale::ENGLISH, " +3db "), Some(3_000.0));
+        assert_eq!(parse_gain(Locale::ENGLISH, "-inf"), Some(f64::NEG_INFINITY));
+        assert_eq!(parse_gain(Locale::ENGLISH, "loud"), None);
+        assert_eq!(parse_gain(Locale::ENGLISH, "NaN"), None);
+        assert_eq!(parse_gain(Locale::ENGLISH, "nan dB"), None);
         assert_eq!(parse_balance("NaN"), None);
         assert_eq!(parse_balance("Lnan"), None);
         assert_eq!(parse_balance("R inf"), Some(f64::INFINITY));
@@ -1411,9 +1403,23 @@ mod tests {
 
     #[test]
     fn meter_tooltips_format_levels_and_floor() {
-        assert_eq!(format_db(-6.02), "-6.0 dB");
-        assert_eq!(format_db(0.0), "+0.0 dB");
-        assert_eq!(format_db(f32::NEG_INFINITY), "-inf dB");
-        assert_eq!(format_db(-60.0), "-inf dB");
+        assert_eq!(format_db(Locale::ENGLISH, -6.02), "-6.0 dB");
+        assert_eq!(format_db(Locale::ENGLISH, 0.0), "+0.0 dB");
+        assert_eq!(format_db(Locale::ENGLISH, f32::NEG_INFINITY), "-inf dB");
+        assert_eq!(format_db(Locale::ENGLISH, -60.0), "-inf dB");
+    }
+
+    #[test]
+    fn levels_use_the_locale_decimal_mark_and_parse_back() {
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(format_gain(spanish, -6_500), "-6,5 dB");
+        assert_eq!(format_gain(spanish, -96_000), "-inf dB");
+        assert_eq!(format_db(spanish, -6.02), "-6,0 dB");
+        // The formatted text round-trips, and a typed `.` still works.
+        assert_eq!(parse_gain(spanish, "-6,5 dB"), Some(-6_500.0));
+        assert_eq!(parse_gain(spanish, "+3.5"), Some(3_500.0));
+        assert_eq!(parse_gain(spanish, "-inf dB"), Some(f64::NEG_INFINITY));
+        // English never reads a comma as a decimal mark.
+        assert_eq!(parse_gain(Locale::ENGLISH, "-6,5 dB"), None);
     }
 }
