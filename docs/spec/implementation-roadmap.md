@@ -1289,23 +1289,6 @@ provide pre-fader PFL taps; device selection is an opaque ID without I/O; and
 talkback is not delivered to guest or camera transports. Both rows remain
 planned.
 
-Current implementation boundary for recording audio flexibility (`AU-010`):
-`fm-record` provides a validated per-recorder track map that selects Master
-and aux bus channels into ordered mono, stereo, or multichannel tracks under
-explicit track and channel limits, and routes interleaved bus audio into
-per-track or combined buffers. A WAV writer emits exact RIFF headers for
-16/24/32-bit PCM and 32-bit float with extensible layouts, bounded whole-frame
-buffering, optional BWF `bext` metadata with exact timecode-to-sample
-references, size patching on checkpoint and finalize, and automatic RF64 past
-4 GiB through a reserved chunk; recovery rebuilds an unfinalized file's sizes
-from its data length. A track recorder writes interleaved or split per-track
-files after validating every file up front. Remaining gaps: nothing connects
-this to `fm-audio` buses, the daemon recorder slots, persistence, or UI; WAV
-output is separate from the crash-safe packet spool and has no time or size
-rollover; and metadata stops at version-1 `bext` without iXML, loudness, or
-UMID. `AU-010` remains planned.
-
-
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
@@ -1646,6 +1629,22 @@ ledger feature statuses are release states, most rows read planned or blocked
 even where development slices exist, and the acceptance column is where local
 evidence appears. Publishing measured capability support for certified devices
 therefore remains future work, and item 11 remains incomplete.
+
+Current implementation boundary for recording audio flexibility (`AU-010`):
+`fm-record` provides a validated per-recorder track map that selects Master
+and aux bus channels into ordered mono, stereo, or multichannel tracks under
+explicit track and channel limits, and routes interleaved bus audio into
+per-track or combined buffers. A WAV writer emits exact RIFF headers for
+16/24/32-bit PCM and 32-bit float with extensible layouts, bounded whole-frame
+buffering, optional BWF `bext` metadata with exact timecode-to-sample
+references, size patching on checkpoint and finalize, and automatic RF64 past
+4 GiB through a reserved chunk; recovery rebuilds an unfinalized file's sizes
+from its data length. A track recorder writes interleaved or split per-track
+files after validating every file up front. Remaining gaps: nothing connects
+this to `fm-audio` buses, the daemon recorder slots, persistence, or UI; WAV
+output is separate from the crash-safe packet spool and has no time or size
+rollover; and metadata stops at version-1 `bext` without iXML, loudness, or
+UMID. `AU-010` remains planned.
 
 Exit: a remote-controlled headless production can stream and record
 independently with tested recovery.
