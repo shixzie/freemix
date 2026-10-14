@@ -1818,7 +1818,19 @@ per-section choice, report secret re-entry, unknown references, and ID
 collisions, and apply atomically only when resolved against an unchanged base.
 Applied snapshots are not yet turned into project mutations or engine
 commands, nothing in the daemon, protocol, CLI, or UI calls the planner,
-secrets are excluded rather than separately encrypted, and undo/lock remains
+secrets are excluded rather than separately encrypted. For `SW-017`,
+`fm-engine` classifies commands into undoable project edits (input rename and
+reorder, stinger slot configuration, overlay settings) and live operations
+(preview, cut, transitions, overlays on/off, FTB, audio strips, streams,
+records) that are never recorded, undone, or locked. Each edit stores its exact
+inverse command in a shared linear history of 100 entries; undo and redo run as
+ordinary idempotent edits, a new edit clears redo, an `expected_edit` mismatch
+is a `history_conflict`, and a failed inverse leaves history untouched.
+Durable project and per-input padlocks reject edits (including undo/redo) with
+stable reason codes while live switching continues; history resets on restore.
+Remaining undo/lock gaps: no protocol, control, CLI, or UI wiring; locks are
+not persisted in `project.json`; there is no per-author history; and outputs,
+stream targets, and titles are not engine edits yet, so `SW-017` remains
 planned. For `RC-012`, `fm-persistence` adds rotated atomic autosave
 generations whose recovery returns the newest same-project generation that
 loads cleanly and reports every skipped one; a canonical-path recent-projects

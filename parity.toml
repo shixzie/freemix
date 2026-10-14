@@ -175,7 +175,9 @@ paths = ["crates/media/fm-video/tests/snapshot_freeze.rs"]
 commands = ["cargo test -p fm-video --test snapshot_freeze"]
 [[tests]]
 id = "accept-sw-017"
-state = "planned"
+state = "present"
+paths = ["crates/services/fm-engine/tests/undo_lock.rs"]
+commands = ["cargo test -p fm-engine --test undo_lock"]
 [[tests]]
 id = "accept-sw-018"
 state = "planned"
