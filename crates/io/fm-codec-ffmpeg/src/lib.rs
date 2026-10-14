@@ -93,9 +93,7 @@ struct SourceFingerprint {
     change_time_seconds: i64,
     #[cfg(unix)]
     change_time_nanoseconds: i64,
-    #[cfg(windows)]
     volume_serial_number: Option<u32>,
-    #[cfg(windows)]
     file_index: Option<u64>,
 }
 
@@ -310,8 +308,7 @@ fn fingerprint(path: &Path, maximum: u64) -> Result<SourceFingerprint, Error> {
 }
 
 fn source_fingerprint(path: &Path, metadata: &Metadata) -> Result<SourceFingerprint, Error> {
-    #[cfg(windows)]
-    let (volume_serial_number, file_index) = windows_source_identity(path);
+    let (volume_serial_number, file_index) = platform_file_identity(path);
     Ok(SourceFingerprint {
         size: metadata.len(),
         modified: metadata.modified().map_err(|error| map_input_io(&error))?,
@@ -323,9 +320,7 @@ fn source_fingerprint(path: &Path, metadata: &Metadata) -> Result<SourceFingerpr
         change_time_seconds: metadata.ctime(),
         #[cfg(unix)]
         change_time_nanoseconds: metadata.ctime_nsec(),
-        #[cfg(windows)]
         volume_serial_number,
-        #[cfg(windows)]
         file_index,
     })
 }
@@ -338,7 +333,7 @@ fn source_fingerprint(path: &Path, metadata: &Metadata) -> Result<SourceFingerpr
 /// identity the API cannot report, records no identity, matching the optional
 /// fingerprint fields; size and modified time always remain.
 #[cfg(windows)]
-fn windows_source_identity(path: &Path) -> (Option<u32>, Option<u64>) {
+fn platform_file_identity(path: &Path) -> (Option<u32>, Option<u64>) {
     let Ok(file) = std::fs::File::open(path) else {
         return (None, None);
     };
@@ -349,6 +344,13 @@ fn windows_source_identity(path: &Path) -> (Option<u32>, Option<u64>) {
         u32::try_from(information.volume_serial_number()).ok(),
         Some(information.file_index()),
     )
+}
+
+/// Non-Windows platforms carry no volume serial number or file index; the
+/// device, inode, and change time already identify the file.
+#[cfg(not(windows))]
+const fn platform_file_identity(_path: &Path) -> (Option<u32>, Option<u64>) {
+    (None, None)
 }
 
 fn parse_version(tool: Tool, bytes: &[u8]) -> Option<String> {
@@ -444,7 +446,7 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("source.nut");
         fs::write(&path, b"media").unwrap();
-        let (volume_serial_number, file_index) = windows_source_identity(&path);
+        let (volume_serial_number, file_index) = platform_file_identity(&path);
         assert!(volume_serial_number.is_some());
         assert!(file_index.is_some());
         assert_eq!(

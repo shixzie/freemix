@@ -1902,6 +1902,7 @@ fn configure_http_stream(
     stream.set_write_timeout(Some(timeout))
 }
 
+#[derive(Debug)]
 enum HttpRequestError {
     TooLarge,
     Timeout,
@@ -1929,6 +1930,9 @@ fn read_http_request(
             .map_err(|error| HttpRequestError::Io(error.kind()))?;
         let count = match stream.read(&mut buffer) {
             Ok(count) => count,
+            // A signal must not end the request; retry through the
+            // top-of-loop deadline check.
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             Err(error)
                 if matches!(
                     error.kind(),
@@ -3271,43 +3275,64 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
-        let endpoint = Endpoint {
-            listener,
-            path: "/right".to_owned(),
-            input: MediaInput::Video,
-        };
+        // A dripping peer below the header terminator is read directly: the
+        // accept loop cannot make this deterministic because a read that
+        // stalls just before the deadline is classified as a retryable
+        // connection, not as the deadline itself.
+        let (dripping_sender, dripping_receiver) = mpsc::channel();
         let attacker = thread::Builder::new()
             .name("slowloris-test".to_owned())
             .spawn(move || {
                 let mut stream = TcpStream::connect(address).unwrap();
-                for _ in 0..100 {
+                for _ in 0..200 {
                     if stream.write_all(b"x").is_err() {
                         return;
                     }
-                    thread::sleep(Duration::from_millis(10));
+                    let _ = dripping_sender.send(());
+                    thread::sleep(Duration::from_millis(5));
                 }
             })
             .unwrap();
-        let started = Instant::now();
-        let result = loop {
-            match try_accept_http(
-                &endpoint,
-                started + Duration::from_millis(80),
-                Duration::from_millis(30),
-            ) {
-                Ok(None) if started.elapsed() < Duration::from_millis(80) => {
+        let connect_deadline = Instant::now() + Duration::from_secs(5);
+        let (mut server, _) = loop {
+            match listener.accept() {
+                Ok(value) => break value,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < connect_deadline,
+                        "slowloris client never connected"
+                    );
                     thread::sleep(POLL_INTERVAL);
                 }
-                result => break result,
+                Err(error) => panic!("slowloris listener failed: {error}"),
             }
         };
-        assert!(matches!(
-            result,
-            Err(StartErrorKind::ConnectTimeout {
-                input: MediaInput::Video
-            })
-        ));
-        assert!(started.elapsed() < Duration::from_millis(200));
+        dripping_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("slowloris client sent its first byte");
+        // The no-progress limit is deliberately longer than the absolute
+        // deadline: a dripping peer must be cut off by the absolute deadline,
+        // not by an unrelated per-read stall.
+        let started = Instant::now();
+        let result = read_http_request(
+            &mut server,
+            started + Duration::from_millis(80),
+            Duration::from_secs(1),
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "slowloris extended the absolute header deadline: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            matches!(
+                result,
+                Err(HttpRequestError::Timeout
+                    | HttpRequestError::Io(io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock))
+            ),
+            "unexpected slowloris result: {result:?}"
+        );
+        drop(server);
         attacker.join().unwrap();
     }
 

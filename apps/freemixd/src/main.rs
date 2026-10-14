@@ -12681,10 +12681,16 @@ mod tests {
 
         configure_client_socket(&server_stream).unwrap();
 
-        let read_timeout = server_stream.read_timeout().unwrap();
-        let write_timeout = server_stream.write_timeout().unwrap();
-        assert_eq!(read_timeout, Some(CLIENT_READ_POLL_INTERVAL));
-        assert_eq!(write_timeout, Some(CLIENT_WRITE_TIMEOUT));
+        // The kernel may round a socket timeout up to its timer granularity
+        // (jiffies on Linux, for example 4 ms ticks), so each configured value
+        // is bounded by the request plus one coarse tick rather than compared
+        // exactly.
+        let read_timeout = server_stream.read_timeout().unwrap().unwrap();
+        assert!(read_timeout >= CLIENT_READ_POLL_INTERVAL);
+        assert!(read_timeout <= CLIENT_READ_POLL_INTERVAL + Duration::from_millis(10));
+        let write_timeout = server_stream.write_timeout().unwrap().unwrap();
+        assert!(write_timeout >= CLIENT_WRITE_TIMEOUT);
+        assert!(write_timeout <= CLIENT_WRITE_TIMEOUT + Duration::from_millis(10));
     }
 
     #[test]

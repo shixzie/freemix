@@ -14,9 +14,10 @@ use std::{
 };
 
 use fm_client::{
-    Client as ProtocolClient, ClientConfig, ClientError, ConnectionState, DisconnectCause, Intake,
-    Outbound, SessionEvent, TcpSession,
+    Client as ProtocolClient, ClientConfig, ClientError, ConnectionState, Intake, Outbound,
 };
+#[cfg(unix)]
+use fm_client::{DisconnectCause, SessionEvent, TcpSession};
 use fm_model::{
     AudioBus, Input, InputAudioStripState, InputGainMilliDb, InputKind, Layer, LayerGeometry,
     MainMix, Output, Project, ProjectSettings, RecorderSlot, RectMask, RestartPolicy, Rgba8,
@@ -105,6 +106,7 @@ impl Daemon {
         }
     }
 
+    #[cfg(unix)]
     fn start_web(project: &Path, token: &str) -> (Self, SocketAddr) {
         let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
             .arg("serve")

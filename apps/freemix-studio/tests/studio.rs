@@ -1,14 +1,19 @@
 use std::{
     collections::VecDeque,
-    fs,
     io::{ErrorKind, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     num::NonZeroU128,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Child, Command as ProcessCommand, Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
+};
+
+#[cfg(unix)]
+use std::{
+    fs,
+    path::PathBuf,
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 #[cfg(unix)]
@@ -26,10 +31,11 @@ use fm_protocol::{
 };
 use fm_types::{InputId, ProjectId};
 use freemix_studio::{
-    Command, ConnectionConfig, ControlTransport, DaemonSupervisor, ExistingConfig, LifecycleState,
-    ReadinessRecord, RestartPolicy, StudioConfig, StudioError, StudioRuntime, SupervisedConfig,
-    SupervisorError, SupervisorState, parse_args,
+    Command, ConnectionConfig, ControlTransport, ExistingConfig, LifecycleState, RestartPolicy,
+    StudioConfig, StudioError, StudioRuntime, SupervisedConfig, parse_args,
 };
+#[cfg(unix)]
+use freemix_studio::{DaemonSupervisor, ReadinessRecord, SupervisorError, SupervisorState};
 use tungstenite::{
     Message, accept_hdr,
     handshake::server::{Request, Response},
@@ -38,6 +44,7 @@ use tungstenite::{
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const DIAGNOSE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
 const PROJECT_VALUE: u128 = 18_446_744_073_709_551_657;
+#[cfg(unix)]
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const WEB_OPEN_CHILD_MARKER: &str = "FREEMIX_STUDIO_WEB_OPEN_CHILD";
 
@@ -1050,8 +1057,10 @@ fn diagnose_reports_validated_heartbeat_and_control_diagnostics() {
     assert_diagnose_success(output);
 }
 
+#[cfg(unix)]
 struct TestDirectory(PathBuf);
 
+#[cfg(unix)]
 impl TestDirectory {
     fn new(name: &str) -> Self {
         let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1068,6 +1077,7 @@ impl TestDirectory {
     }
 }
 
+#[cfg(unix)]
 impl Drop for TestDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
