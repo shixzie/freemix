@@ -1708,19 +1708,19 @@ editor, no project-schema instantiation, and no animation/ticker integration
 with real data sources. Item 1 therefore remains incomplete and `GX-001`
 remains planned.
 
-Current implementation boundary for item 10: `fm-telestrator` provides a
-sequenced, bounded collaborative board with normalized strokes, per-author and
-global undo/redo with bounded history, redo invalidation on new edits, and
-explicit undo/redo conflicts instead of silent corruption. A freehand eraser
-removes coverage from earlier strokes only, per-author laser pointers expire
-against a caller-supplied clock outside the undoable operation log, an author
-limit bounds participants, and ten fixed shortcut slots carry validated tool
-presets. Deterministic CPU rendering exports straight or premultiplied RGBA.
-Remaining gaps: no text primitives or custom image stamps, no GPU renderer or
-persistence, no protocol, browser, or device input integration, no
-low-latency program/input preview, no web monitor, and no routing of the layer
-into the compositor. Laser pointers are not replicated, so item 10 remains
-incomplete and `GX-007` remains planned.
+Current implementation boundary for item 3: `fm-browser-input` provides a
+deterministic network policy that strictly normalizes URLs (including numeric
+IPv4 and IPv6 literal forms and dot segments), rejects credentials and
+malformed hosts, applies scheme, private-network (also after resolution), and
+wildcard host allow/deny rules where deny wins, and validates bounded redirect
+chains against loops, HTTPS downgrades, and `file:` targets. Custom CSS is
+accepted only after a lexical scan rejects style breakout, imports, escapes
+outside strings, unsafe functions, and excess external `url()` references,
+which are returned for policy checks. Remaining gaps: no real browser engine,
+DNS, or sockets; the fake renderer still navigates through the older policy;
+in-page fetches are not policed; and browser audio, HTML5 media, on-disk
+profile isolation, refresh-on-activate, and zoomed input translation remain
+contracts or fakes. `IN-013` remains planned.
 
 Current implementation boundary for item 4: `fm-data` parses bounded CSV and
 JSON from in-memory bytes into exact typed rows. CSV supports quoting, embedded
@@ -1747,17 +1747,6 @@ gaps: no daemon, protocol, persistence, or vMix API wiring, no cross-input GO
 bank, no M3U or file-list import, no transitions or variable speed between
 items, and no real-media acceptance. `IN-006` and `OR-015` remain planned.
 
-Current implementation boundary for item 9: `fm-ptz` encodes and parses VISCA
-commands, inquiries, and replies for pan/tilt, zoom, focus, presets, and
-system control with explicit range errors, translates each PTZ intent into a
-complete drive set so zero components stop prior motion, frames VISCA-over-IP
-payloads and control messages with a wrapping sequencer, and maps joystick and
-mouse input to axis speeds through deadzones and response curves. Remaining
-gaps: no serial or UDP transport, retransmit, timeout, or reply correlation,
-no camera adapter or hardware validation, presets are not yet switchable
-virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic,
-NDI, or digital PTZ. `IN-028` remains planned.
-
 Current implementation boundary for item 6: `fm-automation` provides a typed
 per-input trigger catalog (transition and overlay in/out, completion,
 countdown and playback-time thresholds, call state, active speaker, and replay
@@ -1773,19 +1762,30 @@ dispatches, or persists bindings and macros; macro permissions are not
 enforced; scripts have no loops or arithmetic and cannot recall dispatched
 commands on cancellation. `IN-027` and `RC-010` remain planned.
 
-Current implementation boundary for item 3: `fm-browser-input` provides a
-deterministic network policy that strictly normalizes URLs (including numeric
-IPv4 and IPv6 literal forms and dot segments), rejects credentials and
-malformed hosts, applies scheme, private-network (also after resolution), and
-wildcard host allow/deny rules where deny wins, and validates bounded redirect
-chains against loops, HTTPS downgrades, and `file:` targets. Custom CSS is
-accepted only after a lexical scan rejects style breakout, imports, escapes
-outside strings, unsafe functions, and excess external `url()` references,
-which are returned for policy checks. Remaining gaps: no real browser engine,
-DNS, or sockets; the fake renderer still navigates through the older policy;
-in-page fetches are not policed; and browser audio, HTML5 media, on-disk
-profile isolation, refresh-on-activate, and zoomed input translation remain
-contracts or fakes. `IN-013` remains planned.
+Current implementation boundary for item 9: `fm-ptz` encodes and parses VISCA
+commands, inquiries, and replies for pan/tilt, zoom, focus, presets, and
+system control with explicit range errors, translates each PTZ intent into a
+complete drive set so zero components stop prior motion, frames VISCA-over-IP
+payloads and control messages with a wrapping sequencer, and maps joystick and
+mouse input to axis speeds through deadzones and response curves. Remaining
+gaps: no serial or UDP transport, retransmit, timeout, or reply correlation,
+no camera adapter or hardware validation, presets are not yet switchable
+virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic,
+NDI, or digital PTZ. `IN-028` remains planned.
+
+Current implementation boundary for item 10: `fm-telestrator` provides a
+sequenced, bounded collaborative board with normalized strokes, per-author and
+global undo/redo with bounded history, redo invalidation on new edits, and
+explicit undo/redo conflicts instead of silent corruption. A freehand eraser
+removes coverage from earlier strokes only, per-author laser pointers expire
+against a caller-supplied clock outside the undoable operation log, an author
+limit bounds participants, and ten fixed shortcut slots carry validated tool
+presets. Deterministic CPU rendering exports straight or premultiplied RGBA.
+Remaining gaps: no text primitives or custom image stamps, no GPU renderer or
+persistence, no protocol, browser, or device input integration, no
+low-latency program/input preview, no web monitor, and no routing of the layer
+into the compositor. Laser pointers are not replicated, so item 10 remains
+incomplete and `GX-007` remains planned.
 
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
