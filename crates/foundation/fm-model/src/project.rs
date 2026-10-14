@@ -7,6 +7,7 @@ use fm_types::{
 
 use crate::{
     EntityRef, ValidationError, ValidationErrorKind,
+    playlist::Playlist,
     stream::{StreamTarget, StreamTargetId},
     title::{SetTitleFieldsError, TitleFieldEntry, TitleInput, validate_title_fields},
     validation::validate_project,
@@ -34,6 +35,8 @@ pub enum InputReference {
     SceneAudioSource(InputId),
     /// The target of an alias input.
     AliasTarget(InputId),
+    /// The input of a playlist entry.
+    PlaylistEntry(u64),
 }
 
 impl std::fmt::Display for InputReference {
@@ -47,6 +50,7 @@ impl std::fmt::Display for InputReference {
                 write!(formatter, "the audio source of Scene input {input}")
             }
             Self::AliasTarget(input) => write!(formatter, "the target of alias input {input}"),
+            Self::PlaylistEntry(entry) => write!(formatter, "playlist entry {entry}"),
         }
     }
 }
@@ -779,7 +783,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(27);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(28);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -814,6 +818,7 @@ pub struct Project {
     restart_policy: RestartPolicy,
     locked: bool,
     locked_inputs: BTreeSet<InputId>,
+    playlist: Playlist,
 }
 
 impl Project {
@@ -836,6 +841,7 @@ impl Project {
             restart_policy: RestartPolicy::default(),
             locked: false,
             locked_inputs: BTreeSet::new(),
+            playlist: Playlist::default(),
         }
     }
 
@@ -945,6 +951,18 @@ impl Project {
     #[must_use]
     pub const fn restart_policy(&self) -> RestartPolicy {
         self.restart_policy
+    }
+
+    /// The playlist definition and its persisted automation state.
+    #[must_use]
+    pub const fn playlist(&self) -> &Playlist {
+        &self.playlist
+    }
+
+    /// Replaces the playlist without checking it; [`Project::validate`]
+    /// reports structural errors and entries naming unknown inputs.
+    pub fn set_playlist(&mut self, playlist: Playlist) {
+        self.playlist = playlist;
     }
 
     /// Whether the project-wide edit padlock is engaged.
@@ -1087,6 +1105,13 @@ impl Project {
                 | InputKind::MixFeed(_)
                 | InputKind::Title(_)
                 | InputKind::Simulated(_) => None,
+            })
+            .or_else(|| {
+                self.playlist
+                    .entries
+                    .iter()
+                    .find(|entry| entry.input == input)
+                    .map(|entry| InputReference::PlaylistEntry(entry.id))
             })
     }
 

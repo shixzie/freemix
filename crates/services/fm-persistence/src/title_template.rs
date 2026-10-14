@@ -6,7 +6,7 @@
 //! family the template draws with to a font file in the same bundle:
 //!
 //! ```json
-//! {"schema_version": 27,
+//! {"schema_version": 28,
 //!  "template": {"id": 1, "name": "Lower third", "width": 1920, "height": 1080,
 //!               "background": "#00000000", "fields": [...], "elements": [...]},
 //!  "fonts": [{"family": "Inter Bold", "asset_uri": "asset://fonts/Inter-Bold.ttf"}]}

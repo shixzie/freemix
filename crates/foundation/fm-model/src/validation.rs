@@ -50,6 +50,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_inputs(project, &mut errors);
     validate_input_audio_strips(project, &mut errors);
     validate_input_locks(project, &mut errors);
+    validate_playlist(project, &mut errors);
     validate_main_mix(project, &mut errors);
     validate_stingers(project, &mut errors);
     validate_scenes(project, &mut errors);
@@ -128,6 +129,44 @@ fn validate_input_locks(project: &Project, errors: &mut Vec<ValidationError>) {
                 kind: ValidationErrorKind::MissingReference(EntityRef::Input(input)),
             });
         }
+    }
+}
+
+fn validate_playlist(project: &Project, errors: &mut Vec<ValidationError>) {
+    let playlist = project.playlist();
+    if let Err(error) = crate::validate_playlist_entries(&playlist.entries) {
+        errors.push(ValidationError {
+            entity: None,
+            field: "playlist.entries",
+            kind: match error {
+                crate::PlaylistEntryError::DuplicateEntry(_) => ValidationErrorKind::DuplicateId,
+                crate::PlaylistEntryError::TooManyEntries { .. }
+                | crate::PlaylistEntryError::InvalidDuration(_)
+                | crate::PlaylistEntryError::InvalidTransition(_) => {
+                    ValidationErrorKind::OutOfRange
+                }
+            },
+        });
+    }
+    for entry in &playlist.entries {
+        if !project
+            .inputs()
+            .iter()
+            .any(|candidate| candidate.id == entry.input)
+        {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(entry.input)),
+                field: "playlist.entries.input",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(entry.input)),
+            });
+        }
+    }
+    if playlist.next_take == 0 {
+        errors.push(ValidationError {
+            entity: None,
+            field: "playlist.next_take",
+            kind: ValidationErrorKind::OutOfRange,
+        });
     }
 }
 

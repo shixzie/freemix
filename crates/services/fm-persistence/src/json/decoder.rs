@@ -3,12 +3,13 @@ use std::{collections::BTreeMap, num::NonZeroU128};
 use fm_model::{
     AudioBus, BusSend, CropRect, Input, InputAudioStrip, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerEffect,
-    LayerGeometry, MainMix, MixFeed, Output, Project, ProjectSettings, RECORDER_SLOT_COUNT,
-    RecorderSlot, RectMask, RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput,
-    SimulatedVideo, SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
-    StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
-    StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetId, TitleFieldEntry, TitleFieldId,
-    TitleFieldValue, TitleInput,
+    LayerGeometry, MainMix, MixFeed, Output, Playlist, PlaylistEntry, PlaylistLoop,
+    PlaylistRunState, PlaylistTransition, PlaylistTransitionKind, Project, ProjectSettings,
+    RECORDER_SLOT_COUNT, RecorderSlot, RectMask, RestartPolicy, Rgba8, Rotation, Scene,
+    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
+    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
+    StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol, StreamTarget,
+    StreamTargetId, TitleFieldEntry, TitleFieldId, TitleFieldValue, TitleInput,
 };
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, ChromaLocation, ColorMetadata, ColorPrimaries,
@@ -71,6 +72,7 @@ struct ProjectDto {
     stingers: Vec<StingerConfig>,
     restart_policy: RestartPolicy,
     edit_locks: EditLocks,
+    playlist: Playlist,
 }
 
 struct EditLocks {
@@ -108,6 +110,7 @@ impl ProjectDto {
             stingers: parse_array(object.take("stingers")?, "stingers", parse_stinger)?,
             restart_policy: parse_restart_policy(object.take("restart_policy")?)?,
             edit_locks: parse_edit_locks(object.take("edit_locks")?)?,
+            playlist: parse_playlist(object.take("playlist")?)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -174,6 +177,10 @@ impl ProjectDto {
             // validation when the manifest is assembled.
             project.set_input_locked(input, true);
         }
+        // Entry bounds and input references are reported by project
+        // validation; whether the state is reachable is checked when an
+        // engine restores it.
+        project.set_playlist(self.playlist);
         project
     }
 }
@@ -803,6 +810,107 @@ fn parse_edit_locks(value: Value) -> Result<EditLocks, DecodeError> {
         return Err(syntax("edit_locks.inputs must be strictly ascending"));
     }
     Ok(EditLocks { project, inputs })
+}
+
+/// Parses the persisted playlist: loop mode, entries, automation state, the
+/// next take number, and the last observed frame.
+fn parse_playlist(value: Value) -> Result<Playlist, DecodeError> {
+    let mut object = Object::new(value, "playlist")?;
+    let loop_mode = match object.string("loop")?.as_str() {
+        "off" => PlaylistLoop::Off,
+        "all" => PlaylistLoop::All,
+        "one" => PlaylistLoop::One,
+        value => return Err(unknown_enum("playlist loop", value)),
+    };
+    let entries = parse_array(
+        object.take("entries")?,
+        "playlist.entries",
+        parse_playlist_entry,
+    )?;
+    let state = parse_playlist_state(object.take("state")?)?;
+    let next_take = object.u64("next_take")?;
+    let observed_frame = object.u64("observed_frame")?;
+    object.finish()?;
+    Ok(Playlist {
+        loop_mode,
+        entries,
+        state,
+        next_take,
+        observed_frame,
+    })
+}
+
+fn parse_playlist_entry(value: Value) -> Result<PlaylistEntry, DecodeError> {
+    let mut object = Object::new(value, "playlist entry")?;
+    let id = object.u64("id")?;
+    let input = InputId::new(object.nonzero_u128("input")?);
+    let duration_frames = object.u64("duration_frames")?;
+    let mut transition = Object::new(object.take("transition")?, "playlist transition")?;
+    let kind = match transition.string("kind")?.as_str() {
+        "cut" => PlaylistTransitionKind::Cut,
+        "fade" => PlaylistTransitionKind::Fade,
+        "alpha_fade" => PlaylistTransitionKind::AlphaFade,
+        "wipe" => PlaylistTransitionKind::Wipe,
+        "slide" => PlaylistTransitionKind::Slide,
+        "zoom" => PlaylistTransitionKind::Zoom,
+        value => return Err(unknown_enum("playlist transition kind", value)),
+    };
+    let transition_frames = transition.u32("duration_frames")?;
+    transition.finish()?;
+    let enabled = object.boolean("enabled")?;
+    object.finish()?;
+    Ok(PlaylistEntry {
+        id,
+        input,
+        duration_frames,
+        transition: PlaylistTransition {
+            kind,
+            duration_frames: transition_frames,
+        },
+        enabled,
+    })
+}
+
+fn parse_playlist_state(value: Value) -> Result<PlaylistRunState, DecodeError> {
+    let mut object = Object::new(value, "playlist state")?;
+    let state = match object.string("type")?.as_str() {
+        "stopped" => PlaylistRunState::Stopped,
+        "armed" => PlaylistRunState::Armed {
+            start_frame: object.u64("start_frame")?,
+            from: parse_optional(object.take("from")?, |value| {
+                entry_id(&value, "playlist state from")
+            })?,
+        },
+        "playing" => PlaylistRunState::Playing {
+            entry: object.u64("entry")?,
+            take: object.u64("take")?,
+            cycle: object.u64("cycle")?,
+            started_frame: object.u64("started_frame")?,
+        },
+        "paused" => PlaylistRunState::Paused {
+            entry: object.u64("entry")?,
+            take: object.u64("take")?,
+            cycle: object.u64("cycle")?,
+            elapsed_frames: object.u64("elapsed_frames")?,
+        },
+        "finished" => PlaylistRunState::Finished {
+            last: parse_optional(object.take("last")?, |value| {
+                entry_id(&value, "playlist state last")
+            })?,
+        },
+        value => return Err(unknown_enum("playlist state", value)),
+    };
+    object.finish()?;
+    Ok(state)
+}
+
+fn entry_id(value: &Value, context: &str) -> Result<u64, DecodeError> {
+    let Value::Number(value) = value else {
+        return Err(syntax(format!(
+            "{context} must be an unsigned integer or null"
+        )));
+    };
+    u64::try_from(*value).map_err(|_| syntax(format!("{context} exceeds u64")))
 }
 
 fn parse_restart_policy(value: Value) -> Result<RestartPolicy, DecodeError> {

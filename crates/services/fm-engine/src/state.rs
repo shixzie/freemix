@@ -1,6 +1,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use fm_automation::{Playlist, PlaylistConfig};
 use fm_switcher::{
     DesiredStream, InputUsage, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherEvent,
     SwitcherState, TBarState,
@@ -89,6 +90,7 @@ pub struct ShowState {
     project_locked: bool,
     locked_inputs: BTreeSet<InputId>,
     titles: BTreeMap<InputId, EngineTitle>,
+    playlist: Playlist,
 }
 
 impl ShowState {
@@ -145,6 +147,8 @@ impl ShowState {
             project_locked: false,
             locked_inputs: BTreeSet::new(),
             titles: BTreeMap::new(),
+            playlist: Playlist::new(Vec::new(), PlaylistConfig::default())
+                .expect("an empty playlist is valid"),
         })
     }
 
@@ -356,6 +360,17 @@ impl ShowState {
             .iter()
             .position(|candidate| *candidate == input)
             .ok_or(InputCatalogueError::UnknownInput(input))?;
+        if let Some(entry) = self
+            .playlist
+            .entries()
+            .iter()
+            .find(|entry| entry.input == input)
+        {
+            return Err(InputCatalogueError::InPlaylist {
+                input,
+                entry: entry.id.get(),
+            });
+        }
         self.desired_switcher
             .remove_input(input)
             .map_err(|error| match error {
@@ -526,6 +541,35 @@ impl ShowState {
 
     pub(crate) fn title_mut(&mut self, input: InputId) -> Option<&mut EngineTitle> {
         self.titles.get_mut(&input)
+    }
+
+    /// Returns the playlist definition and its automation state. Playlist
+    /// time is measured in engine frames.
+    #[must_use]
+    pub const fn playlist(&self) -> &Playlist {
+        &self.playlist
+    }
+
+    /// Installs a restored playlist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] when an entry names an input
+    /// outside this show.
+    pub fn set_playlist(&mut self, playlist: Playlist) -> Result<(), ShowError> {
+        if let Some(entry) = playlist
+            .entries()
+            .iter()
+            .find(|entry| !self.inputs.contains(&entry.input))
+        {
+            return Err(ShowError::UnknownInput(entry.input));
+        }
+        self.playlist = playlist;
+        Ok(())
+    }
+
+    pub(crate) fn replace_playlist(&mut self, playlist: Playlist) {
+        self.playlist = playlist;
     }
 
     pub const fn desired_switcher_mut(&mut self) -> &mut SwitcherState {

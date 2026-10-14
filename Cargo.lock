@@ -1307,6 +1307,7 @@ dependencies = [
 name = "fm-engine"
 version = "0.1.0"
 dependencies = [
+ "fm-automation",
  "fm-clock",
  "fm-command",
  "fm-model",

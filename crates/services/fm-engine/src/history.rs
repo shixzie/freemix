@@ -116,7 +116,8 @@ impl EngineCommand {
             | Self::RemoveStinger { .. }
             | Self::ConfigureOverlayTransition { .. }
             | Self::ConfigureOverlayAppearance { .. }
-            | Self::SetOverlayOutputInclusion { .. } => EngineCommandKind::ProjectEdit,
+            | Self::SetOverlayOutputInclusion { .. }
+            | Self::SetPlaylist { .. } => EngineCommandKind::ProjectEdit,
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }
@@ -144,7 +145,10 @@ impl EngineCommand {
             | Self::RecordStop { .. }
             | Self::SetTitleFields { .. }
             | Self::TakeTitle { .. }
-            | Self::TitleOffAir { .. } => EngineCommandKind::LiveOperation,
+            | Self::TitleOffAir { .. }
+            | Self::PlaylistControl(_)
+            | Self::PlaylistAdvance { .. }
+            | Self::RealizePlaylistCue(_) => EngineCommandKind::LiveOperation,
         }
     }
 }

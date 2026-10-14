@@ -3,6 +3,7 @@
 mod engine;
 mod error;
 mod history;
+mod playlist;
 mod state;
 
 pub use engine::{
@@ -20,6 +21,10 @@ pub use error::{
 pub use history::{
     EditHistoryEntry, EditLockScope, EditRejection, EditRejectionKind, EngineCommandKind,
     MAX_EDIT_HISTORY,
+};
+pub use playlist::{
+    EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,
+    PlaylistRestoreError, playlist_due_frame, playlist_from_model, playlist_to_model,
 };
 pub use state::{
     EngineInputAudioStripState, EngineInputSource, EngineTitle, MAX_SHOW_INPUTS, ShowState,

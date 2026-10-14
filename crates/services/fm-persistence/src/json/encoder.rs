@@ -1,8 +1,9 @@
 use std::fmt::Write as _;
 
 use fm_model::{
-    InputKind, MixFeed, RestartPolicy, Rgba8, Rotation, SimulatedAudio, SimulatedVideo, SourceRef,
-    StartupPolicy, TitleFieldValue, TitleInput,
+    InputKind, MixFeed, Playlist, PlaylistLoop, PlaylistRunState, PlaylistTransitionKind,
+    RestartPolicy, Rgba8, Rotation, SimulatedAudio, SimulatedVideo, SourceRef, StartupPolicy,
+    TitleFieldValue, TitleInput,
 };
 use fm_types::{
     Channel, ChromaLocation, ColorPrimaries, DiscreteChannel, MatrixCoefficients, PixelFormat,
@@ -109,7 +110,91 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
         write!(output, "{input}").expect("writing to a string cannot fail");
     }
     output.push_str("]}");
+    write_playlist(output, project.playlist());
     output.push_str("\n  },");
+}
+
+fn write_playlist(output: &mut String, playlist: &Playlist) {
+    let loop_mode = match playlist.loop_mode {
+        PlaylistLoop::Off => "off",
+        PlaylistLoop::All => "all",
+        PlaylistLoop::One => "one",
+    };
+    write!(
+        output,
+        ",\n    \"playlist\": {{\"loop\": \"{loop_mode}\", \"entries\": ["
+    )
+    .expect("writing to a string cannot fail");
+    for (index, entry) in playlist.entries.iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        let kind = match entry.transition.kind {
+            PlaylistTransitionKind::Cut => "cut",
+            PlaylistTransitionKind::Fade => "fade",
+            PlaylistTransitionKind::AlphaFade => "alpha_fade",
+            PlaylistTransitionKind::Wipe => "wipe",
+            PlaylistTransitionKind::Slide => "slide",
+            PlaylistTransitionKind::Zoom => "zoom",
+        };
+        write!(
+            output,
+            "{{\"id\": {}, \"input\": {}, \"duration_frames\": {}, \"transition\": \
+             {{\"kind\": \"{kind}\", \"duration_frames\": {}}}, \"enabled\": {}}}",
+            entry.id,
+            entry.input,
+            entry.duration_frames,
+            entry.transition.duration_frames,
+            entry.enabled
+        )
+        .expect("writing to a string cannot fail");
+    }
+    output.push_str("], \"state\": ");
+    let optional =
+        |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |id| id.to_string());
+    match playlist.state {
+        PlaylistRunState::Stopped => output.push_str("{\"type\": \"stopped\"}"),
+        PlaylistRunState::Armed { start_frame, from } => write!(
+            output,
+            "{{\"type\": \"armed\", \"start_frame\": {start_frame}, \"from\": {}}}",
+            optional(from)
+        )
+        .expect("writing to a string cannot fail"),
+        PlaylistRunState::Playing {
+            entry,
+            take,
+            cycle,
+            started_frame,
+        } => write!(
+            output,
+            "{{\"type\": \"playing\", \"entry\": {entry}, \"take\": {take}, \"cycle\": {cycle}, \
+             \"started_frame\": {started_frame}}}"
+        )
+        .expect("writing to a string cannot fail"),
+        PlaylistRunState::Paused {
+            entry,
+            take,
+            cycle,
+            elapsed_frames,
+        } => write!(
+            output,
+            "{{\"type\": \"paused\", \"entry\": {entry}, \"take\": {take}, \"cycle\": {cycle}, \
+             \"elapsed_frames\": {elapsed_frames}}}"
+        )
+        .expect("writing to a string cannot fail"),
+        PlaylistRunState::Finished { last } => write!(
+            output,
+            "{{\"type\": \"finished\", \"last\": {}}}",
+            optional(last)
+        )
+        .expect("writing to a string cannot fail"),
+    }
+    write!(
+        output,
+        ", \"next_take\": {}, \"observed_frame\": {}}}",
+        playlist.next_take, playlist.observed_frame
+    )
+    .expect("writing to a string cannot fail");
 }
 
 fn write_runtime(output: &mut String, stored: &StoredProject) {

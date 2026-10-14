@@ -54,9 +54,19 @@ pub enum InputCatalogueError {
     EmptyName,
     NameTooLong,
     DuplicateName,
-    TooManyInputs { maximum: usize },
+    TooManyInputs {
+        maximum: usize,
+    },
     UnknownInput(InputId),
-    InUse { input: InputId, usage: InputUsage },
+    InUse {
+        input: InputId,
+        usage: InputUsage,
+    },
+    /// A playlist entry plays the input.
+    InPlaylist {
+        input: InputId,
+        entry: u64,
+    },
 }
 
 impl fmt::Display for InputCatalogueError {
@@ -79,6 +89,10 @@ impl fmt::Display for InputCatalogueError {
             Self::InUse { input, usage } => {
                 write!(formatter, "input {input} cannot be removed: it is {usage}")
             }
+            Self::InPlaylist { input, entry } => write!(
+                formatter,
+                "input {input} cannot be removed: playlist entry {entry} plays it"
+            ),
         }
     }
 }

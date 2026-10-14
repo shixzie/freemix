@@ -17,6 +17,10 @@ use fm_titles::{FieldId, FieldValue};
 use fm_types::{FrameRate, InputId, InputOrderError, OutputId, RenameInputError};
 
 use crate::history::{EditHistory, HistoryStep, ResolvedCommand, check_edit_locks};
+use crate::playlist::{
+    EnginePlaylistOperation, PlaylistCue, PlaylistStep, apply_desired_cue, cue_transition_kind,
+    is_playlist_command, playlist_due_frame, playlist_step, realize_cue,
+};
 use crate::{
     EditHistoryEntry, EditLockScope, EngineError, EngineInputAudioStripState, EngineInputSource,
     InputCatalogueError, ShowState, SnapshotError, TitleRejection,
@@ -257,6 +261,29 @@ pub enum EngineCommand {
     TitleOffAir {
         input: InputId,
     },
+    /// Replaces the playlist's entries and loop mode while it is stopped or
+    /// finished. Durations are fixed and, like transition durations, in
+    /// frames. A project edit without an undo entry.
+    SetPlaylist {
+        entries: Vec<fm_automation::PlaylistEntry>,
+        loop_mode: fm_automation::LoopMode,
+    },
+    /// Controls the playlist on the command's target frame. An operation
+    /// that puts an entry on air also takes its input to Program.
+    PlaylistControl(EnginePlaylistOperation),
+    /// The playlist clock: processes every playlist boundary up to `frame`
+    /// and takes the entry then on air to Program on exactly that frame.
+    ///
+    /// `frame` must equal [`Engine::playlist_advance_frame`]: the due
+    /// boundary, or the next frame when the boundary has already passed. The
+    /// command is accepted ahead of `frame` and realized on it, and no other
+    /// command is accepted until it has been realized.
+    PlaylistAdvance {
+        frame: u64,
+    },
+    /// The runtime action of an accepted playlist command. Never accepted
+    /// as a command.
+    RealizePlaylistCue(Option<PlaylistCue>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -302,6 +329,13 @@ pub enum EngineEvent {
     TitleFieldsChanged {
         input: InputId,
         revision: u64,
+    },
+    /// A playlist command was accepted for `frame`. `cue` is the entry it
+    /// put on air, whose input is taken to Program on `frame`; the playlist
+    /// itself is read from [`ShowState::playlist`].
+    PlaylistChanged {
+        frame: u64,
+        cue: Option<PlaylistCue>,
     },
 }
 
@@ -530,6 +564,9 @@ pub struct Engine {
     transition_in_flight: Option<TransitionKind>,
     /// Session-scoped undo/redo history; never snapshotted or restored.
     history: EditHistory,
+    /// The future frame an accepted playlist advance is realized on. No
+    /// other command is accepted before it.
+    playlist_hold: Option<FrameNumber>,
 }
 
 impl Engine {
@@ -547,6 +584,7 @@ impl Engine {
             pending_actions: 0,
             transition_in_flight: None,
             history: EditHistory::default(),
+            playlist_hold: None,
         }
     }
 
@@ -646,6 +684,35 @@ impl Engine {
         self.history.redo_entries()
     }
 
+    /// Returns the only frame a [`EngineCommand::PlaylistAdvance`] is
+    /// accepted for: the playlist's next boundary, or the next frame when
+    /// that boundary has already passed. `None` while no boundary is pending.
+    #[must_use]
+    pub fn playlist_advance_frame(&self) -> Option<u64> {
+        playlist_due_frame(self.show().playlist())
+            .map(|due| due.max(self.scheduler.pacer().next_frame().get()))
+    }
+
+    fn playlist_step(
+        &self,
+        command: &EngineCommand,
+        target_frame: FrameNumber,
+    ) -> Result<PlaylistStep, Rejection> {
+        if let EngineCommand::PlaylistAdvance { frame } = command {
+            let expected = self.playlist_advance_frame();
+            if expected != Some(*frame) {
+                let message = expected.map_or_else(
+                    || format!("no playlist boundary is pending at frame {frame}"),
+                    |expected| {
+                        format!("the playlist advances at frame {expected}, not at frame {frame}")
+                    },
+                );
+                return Err(Rejection::new(RejectionCode::Conflict, message));
+            }
+        }
+        playlist_step(self.show(), command, target_frame.get())
+    }
+
     /// Returns how many idempotency receipts are retained, at most
     /// [`MAX_RETAINED_RECEIPTS`].
     #[must_use]
@@ -735,19 +802,46 @@ impl Engine {
     ) -> Result<EngineCommandOutcome, EngineError> {
         let key = envelope.idempotency_key.clone();
         let command_id = envelope.id.clone();
-        let target_frame = self.scheduler.pacer().next_frame();
+        let next_frame = self.scheduler.pacer().next_frame();
+        // A playlist advance is accepted ahead of its boundary and realized
+        // on it; every other command targets the next frame.
+        let target_frame = match &envelope.command {
+            EngineCommand::PlaylistAdvance { frame } if *frame > next_frame.get() => {
+                FrameNumber::new(*frame)
+            }
+            _ => next_frame,
+        };
+        let held_until = self.playlist_hold.filter(|frame| *frame >= next_frame);
         let already_seen = self.commands.receipt(&key).is_some();
         // Undo and redo resolve to the stored project edit before scheduling,
         // so the runtime only ever realizes ordinary edit commands.
         let resolution = self
             .history
             .resolve(self.commands.state(), &envelope.command);
+        // A playlist command is stepped once, here, against the pre-command
+        // show: the mutation installs the result and the runtime realizes
+        // its cue.
+        let playlist = match resolution.as_ref().map(|resolved| &resolved.command) {
+            Ok(command) if is_playlist_command(command) => {
+                Some(self.playlist_step(command, target_frame))
+            }
+            _ => None,
+        };
+        let playlist_transition = match &playlist {
+            Some(Ok(PlaylistStep { cue: Some(cue), .. })) => {
+                cue_transition_kind(self.commands.state().desired_switcher(), cue)
+            }
+            _ => None,
+        };
         let scheduled = match (&resolution, already_seen) {
             (Ok(resolved), false) => Some(
                 self.scheduler
                     .schedule_action(
                         target_frame,
-                        runtime_action(self.commands.state(), &resolved.command),
+                        match &playlist {
+                            Some(Ok(step)) => EngineCommand::RealizePlaylistCue(step.cue),
+                            _ => runtime_action(self.commands.state(), &resolved.command),
+                        },
                     )
                     .map_err(EngineError::Schedule)?,
             ),
@@ -777,6 +871,12 @@ impl Engine {
         let staged_resolution = resolution.clone();
         let outcome = self.commands.apply(envelope, now_millis, move |_, _| {
             let ResolvedCommand { command, .. } = staged_resolution?;
+            if let Some(frame) = held_until {
+                return Err(Rejection::new(
+                    RejectionCode::Conflict,
+                    format!("a playlist take is scheduled for frame {}", frame.get()),
+                ));
+            }
             if let Some((input, usage)) = realized_usage {
                 return Err(input_catalogue_rejection(InputCatalogueError::InUse {
                     input,
@@ -817,6 +917,7 @@ impl Engine {
                 command,
                 target_frame,
                 realized_on_air,
+                playlist,
             })
         });
 
@@ -831,8 +932,13 @@ impl Engine {
         if let (Some(revision), Ok(resolved)) = (accepted_revision, resolution) {
             let ResolvedCommand { command, step } = resolved;
             self.pending_actions += 1;
-            if let Some(kind) = runtime_transition_kind(self.commands.state(), &command) {
+            if let Some(kind) =
+                runtime_transition_kind(self.commands.state(), &command).or(playlist_transition)
+            {
                 self.transition_in_flight = Some(kind);
+            }
+            if target_frame > next_frame {
+                self.playlist_hold = Some(target_frame);
             }
             if !matches!(step, HistoryStep::None) {
                 self.history.commit(step, command, command_id, revision);
@@ -870,6 +976,12 @@ impl Engine {
         self.clock.set(ClockTime::from_nanos(deadline.at_ns))?;
         let tick = self.scheduler.tick(deadline.at_ns)?;
         self.pending_actions = self.pending_actions.saturating_sub(tick.actions.len());
+        if self
+            .playlist_hold
+            .is_some_and(|frame| frame <= tick.deadline.frame)
+        {
+            self.playlist_hold = None;
+        }
 
         let mut events = Vec::new();
         let mut input_audio_strip_updates = Vec::new();
@@ -1011,6 +1123,7 @@ impl Engine {
             pending_actions: 0,
             transition_in_flight: None,
             history: EditHistory::default(),
+            playlist_hold: None,
         })
     }
 }
@@ -1119,6 +1232,8 @@ struct EngineMutation {
     target_frame: FrameNumber,
     /// The realized switcher's on-air use of a title command's input.
     realized_on_air: Option<InputUsage>,
+    /// The stepped playlist of a playlist command.
+    playlist: Option<Result<PlaylistStep, Rejection>>,
 }
 
 impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
@@ -1141,6 +1256,11 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             return apply_edit_lock_mutation(state, events, scope, locked, self.target_frame);
         }
         check_edit_locks(state, &self.command).map_err(crate::EditRejection::into_rejection)?;
+        if is_playlist_command(&self.command)
+            || matches!(&self.command, EngineCommand::RealizePlaylistCue(_))
+        {
+            return apply_playlist_mutation(state, events, self);
+        }
         if is_title_command(&self.command) {
             return apply_title_mutation(state, events, self);
         }
@@ -1379,6 +1499,12 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             | EngineCommand::TitleOffAir { .. } => {
                 unreachable!("title mutations return before switcher command mapping")
             }
+            EngineCommand::SetPlaylist { .. }
+            | EngineCommand::PlaylistControl(_)
+            | EngineCommand::PlaylistAdvance { .. }
+            | EngineCommand::RealizePlaylistCue(_) => {
+                unreachable!("playlist mutations return before switcher command mapping")
+            }
         };
         state
             .desired_switcher_mut()
@@ -1389,6 +1515,34 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             target_frame: self.target_frame,
         })
     }
+}
+
+fn apply_playlist_mutation(
+    state: &mut ShowState,
+    events: &mut Vec<EngineEvent>,
+    mutation: EngineMutation,
+) -> Result<EngineAcceptance, Rejection> {
+    let EngineMutation {
+        target_frame,
+        playlist,
+        ..
+    } = mutation;
+    let Some(step) = playlist else {
+        return Err(Rejection::new(
+            RejectionCode::InvalidCommand,
+            "playlist cues are realized by the engine and are not commands",
+        ));
+    };
+    let PlaylistStep { playlist, cue } = step?;
+    if let Some(cue) = &cue {
+        apply_desired_cue(state.desired_switcher_mut(), cue).map_err(switcher_rejection)?;
+    }
+    state.replace_playlist(playlist);
+    events.push(EngineEvent::PlaylistChanged {
+        frame: target_frame.get(),
+        cue,
+    });
+    Ok(EngineAcceptance { target_frame })
 }
 
 fn apply_input_catalogue_mutation(
@@ -1440,7 +1594,9 @@ fn input_catalogue_rejection(error: InputCatalogueError) -> Rejection {
             (RejectionCode::Conflict, "input", "too_many_inputs")
         }
         InputCatalogueError::UnknownInput(_) => (RejectionCode::NotFound, "input", "unknown_input"),
-        InputCatalogueError::InUse { .. } => (RejectionCode::Conflict, "input", "input_in_use"),
+        InputCatalogueError::InUse { .. } | InputCatalogueError::InPlaylist { .. } => {
+            (RejectionCode::Conflict, "input", "input_in_use")
+        }
     };
     let message = error.to_string();
     Rejection::new(code, message.clone()).with_field(FieldIssue::new(field, issue, message))
@@ -1688,6 +1844,11 @@ fn apply_runtime(
     ) {
         return Ok(Vec::new());
     }
+    if let EngineCommand::RealizePlaylistCue(cue) = &command {
+        return cue
+            .as_ref()
+            .map_or_else(|| Ok(Vec::new()), |cue| realize_cue(switcher, cue));
+    }
     if let Some(result) = apply_runtime_stream(switcher, &command) {
         return result;
     }
@@ -1812,6 +1973,12 @@ fn apply_runtime(
         | EngineCommand::TitleOffAir { .. } => {
             unreachable!("title commands are scheduled as overlay commands or ignored")
         }
+        EngineCommand::SetPlaylist { .. }
+        | EngineCommand::PlaylistControl(_)
+        | EngineCommand::PlaylistAdvance { .. }
+        | EngineCommand::RealizePlaylistCue(_) => {
+            unreachable!("playlist commands are scheduled as playlist cues")
+        }
     })
 }
 
@@ -1933,7 +2100,11 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetEditLock { .. }
         | EngineCommand::SetTitleFields { .. }
         | EngineCommand::TakeTitle { .. }
-        | EngineCommand::TitleOffAir { .. } => None,
+        | EngineCommand::TitleOffAir { .. }
+        | EngineCommand::SetPlaylist { .. }
+        | EngineCommand::PlaylistControl(_)
+        | EngineCommand::PlaylistAdvance { .. }
+        | EngineCommand::RealizePlaylistCue(_) => None,
     }
 }
 
@@ -2013,6 +2184,7 @@ fn apply_title_mutation(
         command,
         target_frame,
         realized_on_air,
+        ..
     } = mutation;
     let input = match &command {
         EngineCommand::SetTitleFields { input, .. }

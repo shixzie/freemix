@@ -594,7 +594,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 27"));
+    assert!(encoded.contains("\"schema_version\": 28"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -664,7 +664,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 27"));
+    assert!(encoded.contains("\"schema_version\": 28"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -820,7 +820,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 27"));
+    assert!(valid.contains("\"schema_version\": 28"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -836,7 +836,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 27", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 28", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1252,7 +1252,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 27"));
+    assert!(encoded.contains("\"schema_version\": 28"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1589,7 +1589,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 27"));
+    assert!(encoded.contains("\"schema_version\": 28"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -1661,7 +1661,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     store.save(&stored_rich_project()).unwrap();
     let unlocked = fs::read_to_string(store.manifest_path()).unwrap();
     assert!(unlocked.contains(
-        "\"recording_desired\": [false, false],\n    \"edit_locks\": {\"project\": false, \"inputs\": []}\n  },\n  \"runtime\": {"
+        "\"recording_desired\": [false, false],\n    \"edit_locks\": {\"project\": false, \"inputs\": []},\n    \"playlist\": {\"loop\": \"off\", \"entries\": [], \"state\": {\"type\": \"stopped\"}, \"next_take\": 1, \"observed_frame\": 0}\n  },\n  \"runtime\": {"
     ));
 
     // Locks are written in identifier order regardless of the order applied.
@@ -1682,11 +1682,11 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 27"));
+    assert!(encoded.contains("\"schema_version\": 28"));
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
-            "\"recording_desired\": [false, false],\n    {locks}\n  }},\n  \"runtime\": {{"
+            "\"recording_desired\": [false, false],\n    {locks},\n    \"playlist\": {{\"loop\": \"off\", \"entries\": [], \"state\": {{\"type\": \"stopped\"}}, \"next_take\": 1, \"observed_frame\": 0}}\n  }},\n  \"runtime\": {{"
         )),
         "unexpected edit lock encoding in {encoded}"
     );
@@ -1823,7 +1823,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 27,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 28,\n"));
     let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
          \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
          \"Jane \\\"JD\\\" Doe\"}, {\"id\": 2, \"type\": \"number\", \"value\": -4}, {\"id\": 3, \
@@ -1912,7 +1912,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        encoded.replacen("\"schema_version\": 27", "\"schema_version\": 26", 1),
+        encoded.replacen("\"schema_version\": 28", "\"schema_version\": 26", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1956,4 +1956,165 @@ fn title_fields_change_through_the_model_and_persist() {
     assert!(encoded.contains("\"field_revision\": 4"));
     assert!(encoded.contains("\"value\": \"#00000000\""));
     assert_eq!(store.load().unwrap(), updated);
+}
+
+fn playlist_project(state: fm_model::PlaylistRunState) -> StoredProject {
+    use fm_model::{
+        Playlist, PlaylistEntry, PlaylistLoop, PlaylistTransition, PlaylistTransitionKind,
+    };
+
+    let high = u128::from(u64::MAX) + 101;
+    let mut project = rich_project();
+    project.set_playlist(Playlist {
+        loop_mode: PlaylistLoop::All,
+        entries: vec![
+            PlaylistEntry {
+                id: 7,
+                input: input_id(high),
+                duration_frames: 90,
+                transition: PlaylistTransition::CUT,
+                enabled: true,
+            },
+            PlaylistEntry {
+                id: u64::MAX,
+                input: input_id(high + 3),
+                duration_frames: 45,
+                transition: PlaylistTransition {
+                    kind: PlaylistTransitionKind::AlphaFade,
+                    duration_frames: 12,
+                },
+                enabled: false,
+            },
+        ],
+        state,
+        next_take: 4,
+        observed_frame: 321,
+    });
+    StoredProject::from_project(
+        project,
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn playlist_round_trips_every_state_exactly_and_is_strict_at_the_current_schema() {
+    use fm_model::PlaylistRunState;
+
+    let temp = TestDirectory::new("playlist");
+    let store = temp.store("show");
+    for state in [
+        PlaylistRunState::Stopped,
+        PlaylistRunState::Armed {
+            start_frame: 400,
+            from: Some(u64::MAX),
+        },
+        PlaylistRunState::Armed {
+            start_frame: 400,
+            from: None,
+        },
+        PlaylistRunState::Playing {
+            entry: 7,
+            take: 3,
+            cycle: 1,
+            started_frame: 300,
+        },
+        PlaylistRunState::Paused {
+            entry: 7,
+            take: 3,
+            cycle: 1,
+            elapsed_frames: 21,
+        },
+        PlaylistRunState::Finished { last: Some(7) },
+        PlaylistRunState::Finished { last: None },
+    ] {
+        let expected = playlist_project(state);
+        store.save(&expected).unwrap();
+        assert_eq!(store.load().unwrap(), expected, "state {state:?}");
+    }
+
+    let expected = playlist_project(PlaylistRunState::Playing {
+        entry: 7,
+        take: 3,
+        cycle: 1,
+        started_frame: 300,
+    });
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(encoded.contains("\"schema_version\": 28"));
+    let playlist = "\"playlist\": {\"loop\": \"all\", \"entries\": [{\"id\": 7, \"input\": 18446744073709551716, \"duration_frames\": 90, \"transition\": {\"kind\": \"cut\", \"duration_frames\": 0}, \"enabled\": true}, {\"id\": 18446744073709551615, \"input\": 18446744073709551719, \"duration_frames\": 45, \"transition\": {\"kind\": \"alpha_fade\", \"duration_frames\": 12}, \"enabled\": false}], \"state\": {\"type\": \"playing\", \"entry\": 7, \"take\": 3, \"cycle\": 1, \"started_frame\": 300}, \"next_take\": 4, \"observed_frame\": 321}";
+    assert!(
+        encoded.contains(&format!("    {playlist}\n  }},\n  \"runtime\": {{")),
+        "unexpected playlist encoding in {encoded}"
+    );
+
+    // The field is required, typed, and closed.
+    for malformed in [
+        encoded.replacen(&format!(",\n    {playlist}"), "", 1),
+        encoded.replacen(playlist, "\"playlist\": null", 1),
+        encoded.replacen("\"loop\": \"all\"", "\"loop\": \"forever\"", 1),
+        encoded.replacen("\"kind\": \"cut\"", "\"kind\": \"stinger\"", 1),
+        encoded.replacen("\"type\": \"playing\"", "\"type\": \"running\"", 1),
+        encoded.replacen("\"enabled\": true", "\"enabled\": 1", 1),
+        encoded.replacen("\"started_frame\": 300", "\"started_frame\": -1", 1),
+        encoded.replacen(", \"observed_frame\": 321", "", 1),
+        encoded.replacen(
+            "\"observed_frame\": 321}",
+            "\"observed_frame\": 321, \"extra\": 1}",
+            1,
+        ),
+    ] {
+        assert_ne!(malformed, encoded);
+        fs::write(store.manifest_path(), malformed).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "accepted a malformed playlist"
+        );
+    }
+
+    // Structural bounds and input references are domain errors.
+    for invalid in [
+        encoded.replacen("\"duration_frames\": 90", "\"duration_frames\": 0", 1),
+        encoded.replacen(
+            "\"kind\": \"cut\", \"duration_frames\": 0",
+            "\"kind\": \"cut\", \"duration_frames\": 3",
+            1,
+        ),
+        encoded.replacen(
+            "\"kind\": \"alpha_fade\", \"duration_frames\": 12",
+            "\"kind\": \"alpha_fade\", \"duration_frames\": 46",
+            1,
+        ),
+        encoded.replacen("\"id\": 18446744073709551615", "\"id\": 7", 1),
+        encoded.replacen(
+            "{\"id\": 7, \"input\": 18446744073709551716",
+            "{\"id\": 7, \"input\": 99",
+            1,
+        ),
+        encoded.replacen("\"next_take\": 4", "\"next_take\": 0", 1),
+    ] {
+        assert_ne!(invalid, encoded);
+        fs::write(store.manifest_path(), invalid).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
+    }
+}
+
+#[test]
+fn playlist_entries_keep_their_inputs_from_being_removed() {
+    let high = u128::from(u64::MAX) + 101;
+    let stored = playlist_project(fm_model::PlaylistRunState::Stopped);
+    let mut project = stored.project().clone();
+    assert_eq!(
+        project.input_reference(input_id(high + 3)),
+        Some(fm_model::InputReference::PlaylistEntry(u64::MAX))
+    );
+    assert_eq!(
+        project.remove_input(input_id(high + 3)),
+        Err(fm_model::RemoveInputError::DomainReference(input_id(
+            high + 3
+        )))
+    );
 }

@@ -1,10 +1,16 @@
 mod cycles;
+mod playlist;
 mod project;
 mod resolve;
 mod stream;
 mod title;
 mod validation;
 
+pub use playlist::{
+    MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_FRAMES, MAX_PLAYLIST_TRANSITION_FRAMES, Playlist,
+    PlaylistEntry, PlaylistEntryError, PlaylistLoop, PlaylistRunState, PlaylistTransition,
+    PlaylistTransitionKind, validate_playlist_entries,
+};
 pub use project::AddInputError;
 pub use project::AudioBusSendError;
 pub use project::{
