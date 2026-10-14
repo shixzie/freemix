@@ -124,6 +124,57 @@ impl SwitcherState {
         Ok(())
     }
 
+    /// Returns the first reference that puts `input` on air, if any: Program,
+    /// an automatic or manual transition endpoint, or the source of an overlay
+    /// channel that is on air or fading.
+    ///
+    /// Unlike [`Self::input_usage`], Preview, overlay queues, and Stinger
+    /// media are not on air and are ignored.
+    #[must_use]
+    pub fn on_air_usage(&self, input: InputId) -> Option<InputUsage> {
+        match self.input_usage_on_bus(input) {
+            Some(usage) => Some(usage),
+            None => self
+                .overlay_channels_showing(input)
+                .next()
+                .map(InputUsage::Overlay),
+        }
+    }
+
+    /// Returns, in channel order, the overlay channels whose source is
+    /// `input` while on air or fading.
+    pub fn overlay_channels_showing(
+        &self,
+        input: InputId,
+    ) -> impl Iterator<Item = OverlayChannelId> + '_ {
+        OverlayChannelId::ALL
+            .into_iter()
+            .zip(&self.overlays)
+            .filter(move |(_, overlay)| overlay.shows(input))
+            .map(|(channel, _)| channel)
+    }
+
+    /// Returns the Program-bus reference to `input`: Program or a transition
+    /// endpoint.
+    fn input_usage_on_bus(&self, input: InputId) -> Option<InputUsage> {
+        if self.program == input {
+            return Some(InputUsage::Program);
+        }
+        if self
+            .transition
+            .is_some_and(|transition| transition.from() == input || transition.to() == input)
+        {
+            return Some(InputUsage::Transition);
+        }
+        if self
+            .t_bar
+            .is_some_and(|t_bar| t_bar.from() == input || t_bar.to() == input)
+        {
+            return Some(InputUsage::ManualTransition);
+        }
+        None
+    }
+
     /// Returns the first switcher reference to `input`, if any: Program,
     /// Preview, a transition endpoint, the source of an overlay that is on
     /// air or fading, an overlay queue entry, or a Stinger slot's media.
@@ -955,5 +1006,128 @@ fn append_fade_to_black_events(events: &mut Vec<SwitcherEvent>, advance: FadeToB
         events.push(SwitcherEvent::FadeToBlackCompleted {
             active: target.active(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::StingerAudioPolicy;
+
+    fn input(value: u128) -> InputId {
+        InputId::new(core::num::NonZeroU128::new(value).unwrap())
+    }
+
+    fn channel(number: u8) -> OverlayChannelId {
+        OverlayChannelId::new(number).unwrap()
+    }
+
+    fn switcher() -> SwitcherState {
+        SwitcherState::new((1..=6).map(input).collect(), input(1), input(2)).unwrap()
+    }
+
+    #[test]
+    fn program_is_on_air_but_preview_is_not() {
+        let state = switcher();
+        assert_eq!(state.on_air_usage(input(1)), Some(InputUsage::Program));
+        assert_eq!(state.input_usage(input(2)), Some(InputUsage::Preview));
+        assert_eq!(state.on_air_usage(input(2)), None);
+        assert_eq!(state.on_air_usage(input(3)), None);
+    }
+
+    #[test]
+    fn transition_endpoints_are_on_air() {
+        let mut state = switcher();
+        state
+            .apply(SwitcherCommand::Transition {
+                kind: TransitionKind::Fade,
+                duration_frames: 4,
+            })
+            .unwrap();
+        // Program outranks the transition endpoint it also is.
+        assert_eq!(state.on_air_usage(input(1)), Some(InputUsage::Program));
+        assert_eq!(state.on_air_usage(input(2)), Some(InputUsage::Transition));
+
+        let mut manual = switcher();
+        manual
+            .apply(SwitcherCommand::StartTBar {
+                kind: TransitionKind::Fade,
+            })
+            .unwrap();
+        manual
+            .apply(SwitcherCommand::SetTBarPosition(
+                TBarPosition::new(5_000).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(
+            manual.on_air_usage(input(2)),
+            Some(InputUsage::ManualTransition)
+        );
+    }
+
+    #[test]
+    fn overlays_are_on_air_while_shown_or_fading_but_not_queued() {
+        let mut state = switcher();
+        state
+            .apply(SwitcherCommand::ConfigureOverlayTransition {
+                channel: channel(1),
+                transition: OverlayTransitionKind::Fade,
+                duration_frames: 2,
+            })
+            .unwrap();
+        state.request_overlay_take(channel(1), input(3)).unwrap();
+        state.request_overlay_take(channel(3), input(3)).unwrap();
+        state
+            .apply(SwitcherCommand::QueueOverlay {
+                channel: channel(2),
+                source: input(4),
+            })
+            .unwrap();
+        assert_eq!(
+            state.on_air_usage(input(3)),
+            Some(InputUsage::Overlay(channel(1)))
+        );
+        assert_eq!(
+            state.overlay_channels_showing(input(3)).collect::<Vec<_>>(),
+            vec![channel(1), channel(3)]
+        );
+        assert_eq!(
+            state.input_usage(input(4)),
+            Some(InputUsage::OverlayQueue(channel(2)))
+        );
+        assert_eq!(state.on_air_usage(input(4)), None);
+
+        // A fade-out keeps the source on air until it completes.
+        let _ = state.request_overlay_off(channel(1));
+        let _ = state.request_overlay_off(channel(3));
+        assert_eq!(
+            state.on_air_usage(input(3)),
+            Some(InputUsage::Overlay(channel(1)))
+        );
+        for _ in 0..2 {
+            let _ = state.advance_frame_events();
+        }
+        assert_eq!(state.on_air_usage(input(3)), None);
+        assert_eq!(state.overlay_channels_showing(input(3)).count(), 0);
+    }
+
+    #[test]
+    fn stinger_media_is_not_on_air() {
+        let mut state = switcher();
+        let slot = StingerSlotId::new(1).unwrap();
+        state
+            .configure_stinger(
+                slot,
+                StingerDescriptor {
+                    media_input: input(5),
+                    preload: false,
+                    cut_point_frames: 1,
+                    audio_policy: StingerAudioPolicy::Muted,
+                    missing_media_fallback: MissingMediaFallback::Cut,
+                },
+            )
+            .unwrap();
+        assert_eq!(state.input_usage(input(5)), Some(InputUsage::Stinger(slot)));
+        assert_eq!(state.on_air_usage(input(5)), None);
     }
 }

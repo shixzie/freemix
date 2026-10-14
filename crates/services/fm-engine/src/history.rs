@@ -12,9 +12,10 @@
 //! - **Live operations** act on what is on air or being delivered: Preview
 //!   selection, cuts and transitions (including Stinger playback and the
 //!   T-bar), overlay take/update/off/queue, Fade to Black, audio strip moves,
-//!   streaming, and recording. They are never recorded, never reverted by
-//!   undo or redo, and never blocked by a padlock, so a locked show stays
-//!   fully switchable.
+//!   streaming, recording, and title content (field edits, title take, and
+//!   title off-air: content, not layout). They are never recorded, never
+//!   reverted by undo or redo, and never blocked by a padlock, so a locked
+//!   show stays fully switchable.
 //! - **History** commands ([`EngineCommand::Undo`], [`EngineCommand::Redo`])
 //!   resolve to the stored inverse or forward project edit and then run
 //!   through the same validation, lock, idempotency, and scheduling path as a
@@ -140,7 +141,10 @@ impl EngineCommand {
             | Self::StreamStart { .. }
             | Self::StreamStop { .. }
             | Self::RecordStart { .. }
-            | Self::RecordStop { .. } => EngineCommandKind::LiveOperation,
+            | Self::RecordStop { .. }
+            | Self::SetTitleFields { .. }
+            | Self::TakeTitle { .. }
+            | Self::TitleOffAir { .. } => EngineCommandKind::LiveOperation,
         }
     }
 }

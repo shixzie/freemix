@@ -268,7 +268,11 @@ impl TitleControlPort for FakeTitleServer {
                         expected,
                         actual,
                     },
-                    UpdateError::EmptyImageAsset(field) => TitleRejection::InvalidValue(field),
+                    UpdateError::EmptyImageAsset(field)
+                    | UpdateError::TextTooLong { field, .. } => TitleRejection::InvalidValue(field),
+                    UpdateError::ContentTooLarge { .. } => {
+                        TitleRejection::InvalidValue(fields[0].0)
+                    }
                     UpdateError::RevisionExhausted | UpdateError::RevisionConflict { .. } => {
                         TitleRejection::RevisionExhausted
                     }

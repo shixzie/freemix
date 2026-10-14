@@ -4,6 +4,11 @@
 //!
 //! * Templates, typed fields, optimistic scene updates, keyframe animation,
 //!   clock and ticker runtime, and structural validation.
+//! * [`TitleFieldSet`]: a title's typed, revisioned field values separated
+//!   from layout, with compare-and-set updates bounded by
+//!   [`MAX_TITLE_FIELDS`], [`MAX_TITLE_TEXT_CHARS`], and
+//!   [`MAX_TITLE_CONTENT_BYTES`], and exact restore of persisted values.
+//!   [`TitleScene`] delegates its field state to it.
 //! * Production clocks: an [`ElementKind::ProductionClock`] element shows a
 //!   named `fm_clock` production clock (timer, time of day in a POSIX zone,
 //!   media remaining, session) in its own or an element-level preset, read
@@ -96,9 +101,10 @@ pub use editor::{DEFAULT_UNDO_DEPTH, DesignEdit, DesignEditor, MAX_UNDO_DEPTH, N
 pub use font::{FontError, FontFace, MAX_FONT_BYTES};
 pub use id::{ElementId, FieldId, TemplateId, TitleId};
 pub use model::{
-    Alignment, Bounds, Color, Element, ElementKind, FieldDefinition, FieldType, FieldValue,
-    FontStyle, HorizontalAlignment, ImageFilter, ImageFit, ImageSource, InstantiationError, Style,
-    TitleScene, TitleTemplate, UpdateError, VerticalAlignment,
+    Alignment, Bounds, Color, Element, ElementKind, FieldDefinition, FieldSetError, FieldType,
+    FieldValue, FontStyle, HorizontalAlignment, ImageFilter, ImageFit, ImageSource,
+    InstantiationError, MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELDS, MAX_TITLE_TEXT_CHARS, Style,
+    TitleFieldSet, TitleScene, TitleTemplate, UpdateError, VerticalAlignment,
 };
 pub use playback::{PlaybackError, PlaybackOutcome, PlaybackPhase, TitlePlayback};
 pub use production_clock::{

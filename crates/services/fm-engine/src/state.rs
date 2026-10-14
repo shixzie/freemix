@@ -5,6 +5,7 @@ use fm_switcher::{
     DesiredStream, InputUsage, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherEvent,
     SwitcherState, TBarState,
 };
+use fm_titles::TitleFieldSet;
 use fm_types::{
     InputId, InputOrderError, MAX_INPUT_NAME_BYTES, OutputId, RenameInputError, validate_input_name,
 };
@@ -56,6 +57,27 @@ impl Default for EngineInputAudioStripState {
     }
 }
 
+/// The live field state of one title input.
+///
+/// `name` is the title template's display name; `fields` holds the typed,
+/// revisioned values that title commands edit. Layout and rendering stay with
+/// the media plane.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineTitle {
+    pub name: String,
+    pub fields: TitleFieldSet,
+}
+
+impl EngineTitle {
+    #[must_use]
+    pub fn new(name: impl Into<String>, fields: TitleFieldSet) -> Self {
+        Self {
+            name: name.into(),
+            fields,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShowState {
     name: String,
@@ -66,6 +88,7 @@ pub struct ShowState {
     desired_switcher: SwitcherState,
     project_locked: bool,
     locked_inputs: BTreeSet<InputId>,
+    titles: BTreeMap<InputId, EngineTitle>,
 }
 
 impl ShowState {
@@ -121,6 +144,7 @@ impl ShowState {
             desired_switcher,
             project_locked: false,
             locked_inputs: BTreeSet::new(),
+            titles: BTreeMap::new(),
         })
     }
 
@@ -344,6 +368,7 @@ impl ShowState {
         self.input_names.remove(index);
         self.input_audio_strips.remove(&input);
         self.locked_inputs.remove(&input);
+        self.titles.remove(&input);
         Ok(())
     }
 
@@ -471,6 +496,36 @@ impl ShowState {
             self.locked_inputs.remove(&input);
         }
         Ok(())
+    }
+
+    /// Makes `input` a title input with `title` as its live field state,
+    /// replacing any title it already had.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] when the input is outside this show.
+    pub fn set_title(&mut self, input: InputId, title: EngineTitle) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        self.titles.insert(input, title);
+        Ok(())
+    }
+
+    /// Returns the live field state of a title input.
+    #[must_use]
+    pub fn title(&self, input: InputId) -> Option<&EngineTitle> {
+        self.titles.get(&input)
+    }
+
+    /// Returns every title input's live field state, in identifier order.
+    #[must_use]
+    pub const fn titles(&self) -> &BTreeMap<InputId, EngineTitle> {
+        &self.titles
+    }
+
+    pub(crate) fn title_mut(&mut self, input: InputId) -> Option<&mut EngineTitle> {
+        self.titles.get_mut(&input)
     }
 
     pub const fn desired_switcher_mut(&mut self) -> &mut SwitcherState {

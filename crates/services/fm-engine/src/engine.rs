@@ -8,17 +8,18 @@ use fm_command::{
 };
 use fm_scheduler::{FrameNumber, FrameScheduler, PlanGeneration};
 use fm_switcher::{
-    FadeToBlackFrame, FadeToBlackPosition, OVERLAY_CHANNEL_COUNT, OverlayBorderPreset,
+    FadeToBlackFrame, FadeToBlackPosition, InputUsage, OVERLAY_CHANNEL_COUNT, OverlayBorderPreset,
     OverlayChannelId, OverlayChannelState, OverlayPositionPreset, OverlayTransitionKind,
     ProgramFrame, RecorderSlot, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherCommand,
     SwitcherError, SwitcherEvent, SwitcherState, TBarPosition, TransitionKind,
 };
+use fm_titles::{FieldId, FieldValue};
 use fm_types::{FrameRate, InputId, InputOrderError, OutputId, RenameInputError};
 
 use crate::history::{EditHistory, HistoryStep, ResolvedCommand, check_edit_locks};
 use crate::{
     EditHistoryEntry, EditLockScope, EngineError, EngineInputAudioStripState, EngineInputSource,
-    InputCatalogueError, ShowState, SnapshotError,
+    InputCatalogueError, ShowState, SnapshotError, TitleRejection,
 };
 
 type RuntimeScheduler = FrameScheduler<(), (), EngineCommand, ()>;
@@ -86,6 +87,20 @@ pub struct EngineManualTransitionState {
 pub struct EngineFadeToBlackState {
     pub active: bool,
     pub position: FadeToBlackPosition,
+}
+
+/// Whether a title field edit requires its title to be off air or on air.
+///
+/// A title is on air while it is on Program, an endpoint of an automatic or
+/// manual transition, or the source of an overlay channel that is shown or
+/// still fading, in either the desired or the realized switcher. An overlay
+/// fading out therefore keeps its title on air until the fade completes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TitleAirRequirement {
+    /// Prepare (save) a title that is not on air.
+    OffAir,
+    /// Update a title live while it is on air.
+    OnAir,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -218,6 +233,29 @@ pub enum EngineCommand {
         scope: EditLockScope,
         locked: bool,
     },
+    /// Atomically sets title field values when `base_revision` is the title's
+    /// current field revision and the title's air state meets `require`.
+    ///
+    /// An empty field list is accepted without advancing the revision.
+    SetTitleFields {
+        input: InputId,
+        base_revision: u64,
+        require: TitleAirRequirement,
+        fields: Vec<(FieldId, FieldValue)>,
+    },
+    /// Applies field values to an off-air title and takes it onto an overlay
+    /// channel. The fields change at acceptance, before the overlay realizes,
+    /// so the first frame on air already shows them.
+    TakeTitle {
+        input: InputId,
+        channel: OverlayChannelId,
+        base_revision: u64,
+        fields: Vec<(FieldId, FieldValue)>,
+    },
+    /// Takes a title off the single overlay channel that shows it.
+    TitleOffAir {
+        input: InputId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -253,6 +291,16 @@ pub enum EngineEvent {
     EditLockChanged {
         scope: EditLockScope,
         locked: bool,
+    },
+    /// A [`EngineCommand::SetTitleFields`] was accepted; `revision` is the
+    /// title's field revision afterwards (unchanged for an empty edit).
+    ///
+    /// [`EngineCommand::TakeTitle`] and [`EngineCommand::TitleOffAir`] report
+    /// [`EngineEvent::DesiredSwitcherChanged`] instead; the taken title's
+    /// field revision is read from [`ShowState::title`].
+    TitleFieldsChanged {
+        input: InputId,
+        revision: u64,
     },
 }
 
@@ -696,7 +744,10 @@ impl Engine {
         let scheduled = match (&resolution, already_seen) {
             (Ok(resolved), false) => Some(
                 self.scheduler
-                    .schedule_action(target_frame, resolved.command.clone())
+                    .schedule_action(
+                        target_frame,
+                        runtime_action(self.commands.state(), &resolved.command),
+                    )
                     .map_err(EngineError::Schedule)?,
             ),
             _ => None,
@@ -710,6 +761,16 @@ impl Engine {
                 .realized_switcher
                 .input_usage(*input)
                 .map(|usage| (*input, usage)),
+            _ => None,
+        };
+        // Title air checks span both switchers for the same reason: a title
+        // fading out of an overlay is still on air.
+        let realized_on_air = match resolution.as_ref().map(|resolved| &resolved.command) {
+            Ok(
+                EngineCommand::SetTitleFields { input, .. }
+                | EngineCommand::TakeTitle { input, .. }
+                | EngineCommand::TitleOffAir { input },
+            ) => self.realized_switcher.on_air_usage(*input),
             _ => None,
         };
         let staged_resolution = resolution.clone();
@@ -736,6 +797,7 @@ impl Engine {
                     EngineCommand::RecordStart { .. } | EngineCommand::RecordStop { .. }
                 )
                 && !is_overlay_command(&command)
+                && !is_title_command(&command)
             {
                 let name = match kind {
                     TransitionKind::Fade => "fade",
@@ -753,6 +815,7 @@ impl Engine {
             Ok(EngineMutation {
                 command,
                 target_frame,
+                realized_on_air,
             })
         });
 
@@ -1053,6 +1116,8 @@ fn validate_idle_restore(
 struct EngineMutation {
     command: EngineCommand,
     target_frame: FrameNumber,
+    /// The realized switcher's on-air use of a title command's input.
+    realized_on_air: Option<InputUsage>,
 }
 
 impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
@@ -1075,6 +1140,9 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             return apply_edit_lock_mutation(state, events, scope, locked, self.target_frame);
         }
         check_edit_locks(state, &self.command).map_err(crate::EditRejection::into_rejection)?;
+        if is_title_command(&self.command) {
+            return apply_title_mutation(state, events, self);
+        }
         if matches!(
             &self.command,
             EngineCommand::ConfigureStinger { .. } | EngineCommand::RemoveStinger { .. }
@@ -1305,6 +1373,11 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             | EngineCommand::SetEditLock { .. } => {
                 unreachable!("history and lock mutations return before switcher command mapping")
             }
+            EngineCommand::SetTitleFields { .. }
+            | EngineCommand::TakeTitle { .. }
+            | EngineCommand::TitleOffAir { .. } => {
+                unreachable!("title mutations return before switcher command mapping")
+            }
         };
         state
             .desired_switcher_mut()
@@ -1325,6 +1398,7 @@ fn apply_input_catalogue_mutation(
     let EngineMutation {
         command,
         target_frame,
+        ..
     } = mutation;
     match command {
         EngineCommand::AddInput {
@@ -1401,6 +1475,7 @@ fn apply_stream_mutation(
     let EngineMutation {
         command,
         target_frame,
+        ..
     } = mutation;
     let running = matches!(command, EngineCommand::StreamStart { .. });
     let target = match &command {
@@ -1425,6 +1500,7 @@ fn apply_recording_mutation(
     let EngineMutation {
         target_frame,
         command,
+        ..
     } = mutation;
     let (recorder, active) = match &command {
         EngineCommand::RecordStart { recorder } => (*recorder, true),
@@ -1471,6 +1547,7 @@ fn apply_fade_to_black_mutation(
     let EngineMutation {
         command,
         target_frame,
+        ..
     } = mutation;
     let EngineCommand::FadeToBlack {
         active,
@@ -1495,6 +1572,7 @@ fn apply_overlay_mutation(
     let EngineMutation {
         command,
         target_frame,
+        ..
     } = mutation;
     if let EngineCommand::SetOverlayOutputInclusion { output, .. } = &command
         && !state
@@ -1567,6 +1645,7 @@ fn apply_stinger_mutation(
     let EngineMutation {
         command,
         target_frame,
+        ..
     } = mutation;
     if state.desired_switcher().t_bar().is_some() {
         return Err(Rejection::new(
@@ -1604,6 +1683,7 @@ fn apply_runtime(
         EngineCommand::RenameInput { .. }
             | EngineCommand::SetInputAudioStrip { .. }
             | EngineCommand::SetEditLock { .. }
+            | EngineCommand::SetTitleFields { .. }
     ) {
         return Ok(Vec::new());
     }
@@ -1726,6 +1806,11 @@ fn apply_runtime(
         EngineCommand::SetEditLock { .. } => {
             unreachable!("edit-lock commands return before switcher command mapping")
         }
+        EngineCommand::SetTitleFields { .. }
+        | EngineCommand::TakeTitle { .. }
+        | EngineCommand::TitleOffAir { .. } => {
+            unreachable!("title commands are scheduled as overlay commands or ignored")
+        }
     })
 }
 
@@ -1844,7 +1929,10 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::RecordStop { .. }
         | EngineCommand::Undo { .. }
         | EngineCommand::Redo { .. }
-        | EngineCommand::SetEditLock { .. } => None,
+        | EngineCommand::SetEditLock { .. }
+        | EngineCommand::SetTitleFields { .. }
+        | EngineCommand::TakeTitle { .. }
+        | EngineCommand::TitleOffAir { .. } => None,
     }
 }
 
@@ -1860,6 +1948,150 @@ const fn is_overlay_command(command: &EngineCommand) -> bool {
             | EngineCommand::TakeNextOverlay { .. }
             | EngineCommand::SetOverlayOutputInclusion { .. }
     )
+}
+
+const fn is_title_command(command: &EngineCommand) -> bool {
+    matches!(
+        command,
+        EngineCommand::SetTitleFields { .. }
+            | EngineCommand::TakeTitle { .. }
+            | EngineCommand::TitleOffAir { .. }
+    )
+}
+
+/// Returns the runtime action that realizes an accepted `command`.
+///
+/// Title takes and off-airs realize as the overlay commands they resolve to
+/// against the pre-command desired state, which is the state the mutation
+/// validates; a refused command's action is cancelled before it runs.
+fn runtime_action(state: &ShowState, command: &EngineCommand) -> EngineCommand {
+    match command {
+        EngineCommand::TakeTitle { input, channel, .. } => EngineCommand::TakeOverlay {
+            channel: *channel,
+            source: *input,
+        },
+        EngineCommand::TitleOffAir { input } => {
+            match title_off_air_channel(state.desired_switcher(), None, *input) {
+                Ok(channel) => EngineCommand::OverlayOff { channel },
+                Err(_) => command.clone(),
+            }
+        }
+        _ => command.clone(),
+    }
+}
+
+/// Resolves the one desired overlay channel that takes a title off air.
+fn title_off_air_channel(
+    desired: &SwitcherState,
+    realized_on_air: Option<InputUsage>,
+    input: InputId,
+) -> Result<OverlayChannelId, TitleRejection> {
+    let on_bus = |usage: Option<InputUsage>| {
+        matches!(
+            usage,
+            Some(InputUsage::Program | InputUsage::Transition | InputUsage::ManualTransition)
+        )
+    };
+    if on_bus(desired.on_air_usage(input)) || on_bus(realized_on_air) {
+        return Err(TitleRejection::OnProgram(input));
+    }
+    let mut channels = desired.overlay_channels_showing(input);
+    match (channels.next(), channels.next()) {
+        (None, _) => Err(TitleRejection::OffAir(input)),
+        (Some(channel), None) => Ok(channel),
+        (Some(_), Some(_)) => Err(TitleRejection::OnMultipleOverlays(input)),
+    }
+}
+
+fn apply_title_mutation(
+    state: &mut ShowState,
+    events: &mut Vec<EngineEvent>,
+    mutation: EngineMutation,
+) -> Result<EngineAcceptance, Rejection> {
+    let EngineMutation {
+        command,
+        target_frame,
+        realized_on_air,
+    } = mutation;
+    let input = match &command {
+        EngineCommand::SetTitleFields { input, .. }
+        | EngineCommand::TakeTitle { input, .. }
+        | EngineCommand::TitleOffAir { input } => *input,
+        _ => unreachable!("only title commands are delegated"),
+    };
+    if state.title(input).is_none() {
+        return Err(TitleRejection::UnknownTitle(input).into_rejection());
+    }
+    let on_air = state
+        .desired_switcher()
+        .on_air_usage(input)
+        .or(realized_on_air)
+        .is_some();
+    match &command {
+        EngineCommand::SetTitleFields {
+            base_revision,
+            require,
+            fields,
+            ..
+        } => {
+            match (require, on_air) {
+                (TitleAirRequirement::OffAir, true) => {
+                    return Err(TitleRejection::OnAir(input).into_rejection());
+                }
+                (TitleAirRequirement::OnAir, false) => {
+                    return Err(TitleRejection::OffAir(input).into_rejection());
+                }
+                _ => {}
+            }
+            let revision = update_title_fields(state, input, *base_revision, fields)?;
+            events.push(EngineEvent::TitleFieldsChanged { input, revision });
+        }
+        EngineCommand::TakeTitle {
+            channel,
+            base_revision,
+            fields,
+            ..
+        } => {
+            if on_air {
+                return Err(TitleRejection::OnAir(input).into_rejection());
+            }
+            update_title_fields(state, input, *base_revision, fields)?;
+            state
+                .desired_switcher_mut()
+                .apply(SwitcherCommand::TakeOverlay {
+                    channel: *channel,
+                    source: input,
+                })
+                .map_err(switcher_rejection)?;
+            events.push(EngineEvent::DesiredSwitcherChanged(command));
+        }
+        EngineCommand::TitleOffAir { .. } => {
+            let channel = title_off_air_channel(state.desired_switcher(), realized_on_air, input)
+                .map_err(TitleRejection::into_rejection)?;
+            state
+                .desired_switcher_mut()
+                .apply(SwitcherCommand::OverlayOff(channel))
+                .map_err(switcher_rejection)?;
+            events.push(EngineEvent::DesiredSwitcherChanged(command));
+        }
+        _ => unreachable!("only title commands are delegated"),
+    }
+    Ok(EngineAcceptance { target_frame })
+}
+
+fn update_title_fields(
+    state: &mut ShowState,
+    input: InputId,
+    base_revision: u64,
+    fields: &[(FieldId, FieldValue)],
+) -> Result<u64, Rejection> {
+    let title = state
+        .title_mut(input)
+        .ok_or_else(|| TitleRejection::UnknownTitle(input).into_rejection())?;
+    title
+        .fields
+        .update(base_revision, fields)
+        .map_err(|error| TitleRejection::from(error).into_rejection())
 }
 
 fn rename_input_rejection(error: RenameInputError) -> Rejection {

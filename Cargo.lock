@@ -1308,8 +1308,10 @@ version = "0.1.0"
 dependencies = [
  "fm-clock",
  "fm-command",
+ "fm-model",
  "fm-scheduler",
  "fm-switcher",
+ "fm-titles",
  "fm-types",
 ]
 

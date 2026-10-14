@@ -8,8 +8,10 @@ rust-version.workspace = true
 [dependencies]
 fm-clock = { path = "../../media/fm-clock" }
 fm-command = { path = "../../foundation/fm-command" }
+fm-model = { path = "../../foundation/fm-model" }
 fm-scheduler = { path = "../../media/fm-scheduler" }
 fm-switcher = { path = "../../features/fm-switcher" }
+fm-titles = { path = "../../features/fm-titles" }
 fm-types = { path = "../../foundation/fm-types" }
 
 [lints]
