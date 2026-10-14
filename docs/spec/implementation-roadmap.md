@@ -1733,6 +1733,21 @@ Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 7. Add optional authorized Zoom adapter as a separate licensed workstream.
 8. Run eight-guest network impairment and long-call tests.
 
+Current implementation boundary for items 1, 3, and 4: `fm-guest` is a
+deterministic, transport-free planning model for up to eight guests. Each
+guest selects return video and, independently, return audio from Master,
+Headphones, Outputs 1–4, or aux buses A–G; mix-minus plans give each guest the
+clean bed of that source plus the other guests' microphones and never their
+own microphone or manager talkback. Microphone mute and gain apply to every
+route carrying that microphone and survive reconnect, expired reconnect
+windows end their sessions and free slots, and manager commands, per-guest
+health, and chat review are checked against role permissions before any state
+changes. Remaining gaps: no audio engine, WebRTC adapter, daemon, or protocol
+consumes these plans; clean return beds are an engine contract only; there is
+no per-guest return level, echo or latency measurement, authentication,
+persistence, audit, signaling, encryption, bandwidth adaptation, or NDI
+exposure. `RC-001`, `RC-002`, and `RC-003` remain planned.
+
 Exit: Remote Show scenario passes; named proprietary rows remain explicitly
 pending until licensed adapters pass.
 
