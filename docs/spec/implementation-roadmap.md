@@ -1683,6 +1683,17 @@ Google Sheets, chat, or database adapters, no real HTTP or file polling, and
 mapped values do not yet feed `fm-titles` templates, the project schema, or
 ticker updates. Item 4 remains incomplete and `GX-004` remains planned.
 
+Current implementation boundary for item 5: `fm-playback` provides a
+fixture-backed `ListPlayer` that advances once per monotonic engine frame tick
+with ordered auto-next, loop, auto-first, per-item in/out marks, exact
+durations that trim or hold, and a seeded deterministic shuffle per loop cycle.
+Programmed GO (Play, Next, Previous, First, Stop) lands at an absolute or
+relative frame, is idempotent by ID, and records executed, ignored, or
+cancelled outcomes under explicit item, pending, and history limits. Remaining
+gaps: no daemon, protocol, persistence, or vMix API wiring, no cross-input GO
+bank, no M3U or file-list import, no transitions or variable speed between
+items, and no real-media acceptance. `IN-006` and `OR-015` remain planned.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)
@@ -1758,6 +1769,17 @@ Exit: each adapter ships only with a platform-specific conformance report.
 5. Exercise every universal acceptance scenario on each applicable Tier-1 OS.
 6. Run 72-hour release soak and disaster-recovery drills.
 7. External security, broadcast-operator, and hardware conformance review.
+
+Current implementation boundary for item 2: `fm-vmix-compat` translates a
+bounded set of HTTP functions and now frames the persistent TCP API:
+FUNCTION with a server-acknowledged completion handshake, TALLY, XML with an
+exact UTF-8 byte length, XMLTEXT through a bounded `vmix`-rooted XPath subset,
+SUBSCRIBE/UNSUBSCRIBE for TALLY and ACTS, VERSION, and QUIT. A hub of at most
+64 sessions fans out per-session change events in deterministic order.
+Remaining gaps: no sockets or running-server wiring, a partial function and
+state-document surface, no descendant or wildcard XPath, a partial ACTS set,
+no authentication, and no byte comparison against a real vMix 29 instance.
+`RC-009` remains planned.
 
 Exit: no unclassified vMix 29 public feature and no incomplete P0/P1/P2 row
 without a documented legal/platform exception.
