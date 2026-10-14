@@ -87,10 +87,14 @@ paths = ["crates/features/fm-switcher/tests/mix_bank.rs"]
 commands = ["cargo test -p fm-switcher --test mix_bank"]
 [[tests]]
 id = "accept-in-024"
-state = "planned"
+state = "present"
+paths = ["crates/foundation/fm-model/tests/mix_feed_inputs.rs"]
+commands = ["cargo test -p fm-model --test mix_feed_inputs"]
 [[tests]]
 id = "accept-in-025"
-state = "planned"
+state = "present"
+paths = ["crates/foundation/fm-model/tests/virtual_inputs.rs"]
+commands = ["cargo test -p fm-model --test virtual_inputs"]
 [[tests]]
 id = "accept-in-026"
 state = "planned"

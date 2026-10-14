@@ -1433,6 +1433,22 @@ integration, or clip save; `SampleDelay` cannot follow live changes or exceed
 one second; no source/output clock drift compensation; and memory accounting
 relies on caller-reported sizes. `IN-022` remains planned.
 
+Current implementation boundary for virtual and mix-feed inputs (`IN-024`,
+`IN-025`): the current project schema (25) adds alias inputs with their own id,
+name, position, audio strip, and crop over a target input, and Program/Preview
+feed inputs that show the previous tick's committed bus frame (black before the
+first commit). Validation rejects missing, self, and cyclic alias targets and
+closes scene and audio cycle checks through aliases, while mix feeds add no
+cycle edges because the one-frame delay is the explicit break. `fm-model`'s
+`SourceResolver` maps any input to its concrete source with feedback detection
+and a finite dependency render order, and its borrow structure forbids
+committing a feed frame while a tick is still resolving. Remaining gaps: no
+renderer (native, simulated, CLI, or monitor tap) consumes the resolver, so
+these inputs are refused or skipped at runtime; there is no CLI, protocol, or
+Studio authoring; feedback ignores the second input of an active transition;
+and aliases do not yet carry independent effects, shortcuts, or layer state.
+`IN-024` and `IN-025` remain planned.
+
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
