@@ -111,7 +111,7 @@ Total: 103 features. Status: planned=96, blocked=7. Priority: P0=24, P1=70, P2=9
 | RC-013 | P1 | 5 | planned | engine-control-persistence-security | accept-rc-013 (present) |
 | RC-014 | P1 | 5 | planned | studio-web-ux | accept-rc-014 (present) |
 | RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (present) |
-| RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (planned) |
+| RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (present) |
 | RC-017 | P1 | 5 | planned | graphics-data-automation-plugins | accept-rc-017 (planned) |
 
 ## macos-tier1
@@ -219,7 +219,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | RC-013 | P1 | 5 | planned | engine-control-persistence-security | accept-rc-013 (present) |
 | RC-014 | P1 | 5 | planned | studio-web-ux | accept-rc-014 (present) |
 | RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (present) |
-| RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (planned) |
+| RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (present) |
 | RC-017 | P1 | 5 | planned | graphics-data-automation-plugins | accept-rc-017 (planned) |
 
 ## linux-tier1
@@ -327,7 +327,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | RC-013 | P1 | 5 | planned | engine-control-persistence-security | accept-rc-013 (present) |
 | RC-014 | P1 | 5 | planned | studio-web-ux | accept-rc-014 (present) |
 | RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (present) |
-| RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (planned) |
+| RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (present) |
 | RC-017 | P1 | 5 | planned | graphics-data-automation-plugins | accept-rc-017 (planned) |
 
 ## browser-control
@@ -346,7 +346,7 @@ Total: 11 features. Status: planned=10, blocked=1. Priority: P0=1, P1=8, P2=2.
 | RC-007 | P1 | 4 | planned | studio-web-ux | accept-rc-007 (planned) |
 | RC-008 | P0 | 1 | planned | engine-control-persistence-security | accept-rc-008 (present) |
 | RC-014 | P1 | 5 | planned | studio-web-ux | accept-rc-014 (present) |
-| RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (planned) |
+| RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (present) |
 
 ## profile-a-hd
 

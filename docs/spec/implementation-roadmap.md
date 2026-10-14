@@ -2395,6 +2395,20 @@ hold only camera pose and timing, the planner is separate from the existing
 planes, and nothing reaches the engine, commands, persistence, or UI.
 `IN-021` remains planned.
 
+Current implementation boundary for item 4 (localization, `RC-016`):
+`fm_ui_model::i18n` declares typed message keys with English inline and a
+complete Spanish catalog that falls back to English per key, named
+arguments, one/other plurals, and a validator for missing keys, malformed
+templates, and argument or plural-shape mismatches. Locale helpers format
+grouped numbers, decimals, percent, dB, bytes, durations, 24h/12h clocks,
+and dates, and parse locale decimals. Studio's top bar, menus, toasts, input
+bank, status bar, and disabled-control reasons use the catalogs; View ›
+Language switches at runtime and `--lang`/`--clock` or the POSIX locale
+environment choose the start locale. Remaining gaps: transition, monitor,
+mixer, overlay, stinger, and add/remove-input panels plus daemon messages
+stay English, the choice is not persisted, there is no RTL catalog, font,
+or bidi pass, and no accessibility audit. `RC-016` remains planned.
+
 Exit: no unclassified vMix 29 public feature and no incomplete P0/P1/P2 row
 without a documented legal/platform exception.
 
