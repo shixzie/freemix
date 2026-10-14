@@ -21,7 +21,9 @@ id = "accept-in-005"
 state = "planned"
 [[tests]]
 id = "accept-in-006"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-playback/tests/list_scheduling.rs"]
+commands = ["cargo test -p fm-playback --test list_scheduling"]
 [[tests]]
 id = "accept-in-007"
 state = "planned"
@@ -325,7 +327,9 @@ paths = ["apps/freemixd/tests/process.rs", "crates/services/fm-server/tests/serv
 commands = ["cargo test -p freemixd --test process", "cargo test -p fm-server --test server", "cargo test -p fm-protocol --test protocol", "cargo test -p fm-client --test client"]
 [[tests]]
 id = "accept-rc-009"
-state = "planned"
+state = "present"
+paths = ["crates/services/fm-vmix-compat/tests/tcp_session.rs"]
+commands = ["cargo test -p fm-vmix-compat --test tcp_session"]
 [[tests]]
 id = "accept-rc-010"
 state = "planned"
