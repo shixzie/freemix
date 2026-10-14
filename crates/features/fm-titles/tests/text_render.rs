@@ -147,7 +147,7 @@ fn scene_of(text: &str, width: u32, height: u32, element: Element) -> TitleTempl
 /// Bounding box of every pixel with non-zero alpha, as `(min_x, min_y, max_x, max_y)`.
 fn ink_bounds(pixels: &[u8], width: u32) -> Option<(u32, u32, u32, u32)> {
     let mut bounds: Option<(u32, u32, u32, u32)> = None;
-    for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+    for (index, pixel) in pixels.as_chunks::<4>().0.iter().enumerate() {
         if pixel[3] == 0 {
             continue;
         }
@@ -223,7 +223,7 @@ fn identical_input_renders_byte_identical_output() {
         first.frame.pixels().iter().any(|channel| *channel != 0),
         "expected rasterized ink"
     );
-    assert!(first.report.missing_fonts.is_empty());
+    assert_eq!(first.report.missing_fonts, Vec::new());
 }
 
 #[test]
@@ -257,7 +257,7 @@ fn glyph_coverage_is_premultiplied_over_a_transparent_background() {
 
     let mut partial = 0_u32;
     let mut opaque = 0_u32;
-    for pixel in output.frame.pixels().chunks_exact(4) {
+    for pixel in output.frame.pixels().as_chunks::<4>().0 {
         let (red, green, blue, alpha) = (pixel[0], pixel[1], pixel[2], pixel[3]);
         // Pure red at full opacity: premultiplication must scale the colour by
         // coverage exactly as it scales alpha, and must not leave colour in
@@ -514,12 +514,12 @@ fn text_over_the_element_cap_degrades_one_element_not_the_frame() {
     )
     .instantiate(TitleId::new(NonZeroU128::new(1).unwrap()))
     .expect("valid template");
-    assert!(
+    assert_eq!(
         ReferenceRenderer
             .render(&scene, 0, &assets)
             .expect("frame renders")
             .report
-            .degraded
-            .is_empty()
+            .degraded,
+        Vec::new()
     );
 }

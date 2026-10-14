@@ -10,10 +10,12 @@
 //!   alignment, anti-aliased coverage composited into premultiplied RGBA8, and
 //!   clipping at the element box and the frame edge.
 //! * Image rendering: a caller-decoded premultiplied RGBA8 frame registered
-//!   with [`AssetCatalog::with_decoded_image`] is stretched to the element
-//!   bounds with deterministic nearest-neighbor sampling, clipped to the
-//!   element box and the frame edge, and composited source-over. An element
-//!   whose asset has no decoded pixels keeps the placeholder.
+//!   with [`AssetCatalog::with_decoded_image`] is placed inside the element
+//!   bounds by an [`ImageFit`] (stretch, contain, cover, or native size) and
+//!   the element alignment, resampled with integer nearest-neighbor or
+//!   fixed-point bilinear [`ImageFilter`]ing, clipped to the element box and
+//!   the frame edge, and composited source-over. An element whose asset has no
+//!   decoded pixels keeps the placeholder.
 //! * Bounded work: output size, font size, characters per element, lines per
 //!   element, glyphs per frame, and per-glyph rasterization area are capped,
 //!   and every fill iterates its intersection with the canvas rather than the
@@ -27,8 +29,8 @@
 //! * Grapheme-level shaping. Text is laid out in codepoint order: no bidi, no
 //!   complex-script shaping, no ligatures or other OpenType features.
 //! * Image decoding. Callers hand the renderer decoded premultiplied RGBA8
-//!   frames; this crate parses no image files and applies no fit modes,
-//!   filtering, color profiles, orientation, or animation. See
+//!   frames; this crate parses no image files and applies no color profiles,
+//!   orientation, animation, or mipmapped minification. See
 //!   [`REFERENCE_RENDERER_LIMITATIONS`].
 //! * GPU rasterization, production effects, and any pipeline wiring. Nothing
 //!   in the project schema instantiates these scenes yet.
@@ -36,6 +38,7 @@
 mod animation;
 mod font;
 mod id;
+mod image;
 mod model;
 mod render;
 mod runtime;
@@ -47,8 +50,8 @@ pub use font::{FontError, FontFace, MAX_FONT_BYTES};
 pub use id::{ElementId, FieldId, TemplateId, TitleId};
 pub use model::{
     Alignment, Bounds, Color, Element, ElementKind, FieldDefinition, FieldType, FieldValue,
-    FontStyle, HorizontalAlignment, ImageSource, InstantiationError, Style, TitleScene,
-    TitleTemplate, UpdateError, VerticalAlignment,
+    FontStyle, HorizontalAlignment, ImageFilter, ImageFit, ImageSource, InstantiationError, Style,
+    TitleScene, TitleTemplate, UpdateError, VerticalAlignment,
 };
 pub use render::{
     Degradation, DegradedElement, MAX_FONT_SIZE_PX, MAX_GLYPH_RASTER_DIMENSION,

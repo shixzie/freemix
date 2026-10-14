@@ -361,7 +361,7 @@ fn validate_element(
             &[FieldType::Text, FieldType::Number],
             "text or number",
         ),
-        ElementKind::Image { field } => require_field(
+        ElementKind::Image { field, .. } => require_field(
             errors,
             fields,
             element.id,
@@ -467,7 +467,7 @@ fn missing_assets(
                 fonts.push(missing);
             }
         }
-        if let ElementKind::Image { field } = element.kind
+        if let ElementKind::Image { field, .. } = element.kind
             && let Some(FieldValue::Image(image)) = values.get(&field)
             && !assets.has_image(&image.asset)
         {

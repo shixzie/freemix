@@ -1,8 +1,8 @@
 use fm_titles::{
     Alignment, AnimatedProperty, AnimationTrack, AssetCatalog, Bounds, ClockDirection, ClockFormat,
     ClockSpec, Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldType,
-    FieldValue, FontError, FontFace, FontStyle, ImageSource, Interpolation, Keyframe,
-    MAX_OUTPUT_WIDTH, ReferenceRenderer, RenderError, Style, TemplateId, TickerDirection,
+    FieldValue, FontError, FontFace, FontStyle, ImageFilter, ImageFit, ImageSource, Interpolation,
+    Keyframe, MAX_OUTPUT_WIDTH, ReferenceRenderer, RenderError, Style, TemplateId, TickerDirection,
     TickerSpec, TitleId, TitleTemplate, UpdateError, ValidationError, evaluate_clock,
     evaluate_ticker_position, validate_template,
 };
@@ -355,7 +355,11 @@ fn validation_and_rendering_report_missing_assets_and_limitations() {
             alignment: Alignment::default(),
         },
         color_field: None,
-        kind: ElementKind::Image { field: logo },
+        kind: ElementKind::Image {
+            field: logo,
+            fit: ImageFit::default(),
+            filter: ImageFilter::default(),
+        },
         animations: Vec::new(),
     };
     let template = template(fields, vec![element], 8, 8);
@@ -382,7 +386,7 @@ fn validation_and_rendering_report_missing_assets_and_limitations() {
             .report
             .limitations
             .iter()
-            .any(|limitation| limitation.contains("nearest-neighbor"))
+            .any(|limitation| limitation.contains("no mipmapping"))
     );
     assert!(
         rendered
@@ -490,8 +494,10 @@ fn an_element_far_larger_than_the_canvas_costs_only_the_canvas() {
     // The canvas is entirely inside the element, so every pixel is filled.
     assert!(
         pixels
-            .chunks_exact(4)
-            .all(|pixel| pixel == [0, 255, 0, 255]),
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 255, 0, 255]),
         "the clipped fill must still cover the whole canvas"
     );
 }

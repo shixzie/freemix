@@ -5,8 +5,9 @@
 
 use fm_titles::{
     Alignment, AssetCatalog, Bounds, Color, Element, ElementId, ElementKind, FieldDefinition,
-    FieldId, FieldValue, ImageAssetError, ImageSource, MAX_IMAGE_ASSET_BYTES, MAX_IMAGE_ASSETS,
-    MissingImage, ReferenceRenderer, Style, TemplateId, TitleId, TitleScene, TitleTemplate,
+    FieldId, FieldValue, ImageAssetError, ImageFilter, ImageFit, ImageSource,
+    MAX_IMAGE_ASSET_BYTES, MAX_IMAGE_ASSETS, MissingImage, ReferenceRenderer, Style, TemplateId,
+    TitleId, TitleScene, TitleTemplate,
 };
 use fm_video::{ImageFrame, Rgba8};
 use std::num::NonZeroU128;
@@ -69,7 +70,11 @@ fn image_element(id: u128, z_index: i32, bounds: Bounds, style: Style) -> Elemen
         visible: true,
         style,
         color_field: None,
-        kind: ElementKind::Image { field: field_id(1) },
+        kind: ElementKind::Image {
+            field: field_id(1),
+            fit: ImageFit::Stretch,
+            filter: ImageFilter::Nearest,
+        },
         animations: Vec::new(),
     }
 }
@@ -181,7 +186,7 @@ fn two_by_two_source_stretches_into_exact_two_pixel_blocks() {
             );
         }
     }
-    assert!(output.report.missing_images.is_empty());
+    assert_eq!(output.report.missing_images, Vec::new());
 }
 
 #[test]
@@ -465,7 +470,7 @@ fn unknown_name_only_and_decoded_assets_report_and_draw_distinctly() {
     assert!(name_only.has_image("logo"));
     assert!(name_only.image("logo").is_none());
     let output = ReferenceRenderer.render(&scene, 0, &name_only).unwrap();
-    assert!(output.report.missing_images.is_empty());
+    assert_eq!(output.report.missing_images, Vec::new());
     assert_placeholder(&output.frame, bounds);
 
     // Decoded pixels: no placeholder, no missing report.
@@ -476,10 +481,10 @@ fn unknown_name_only_and_decoded_assets_report_and_draw_distinctly() {
     assert!(decoded.has_image("logo"));
     assert!(decoded.image("logo").is_some());
     let output = ReferenceRenderer.render(&scene, 0, &decoded).unwrap();
-    assert!(output.report.missing_images.is_empty());
-    for (index, pixel) in output.frame.pixels().chunks_exact(4).enumerate() {
+    assert_eq!(output.report.missing_images, Vec::new());
+    for (index, pixel) in output.frame.pixels().as_chunks::<4>().0.iter().enumerate() {
         assert_eq!(
-            pixel,
+            *pixel,
             red.to_bytes(),
             "pixel {index} must be decoded red, not a placeholder"
         );
@@ -749,8 +754,8 @@ fn a_large_source_and_element_cost_only_the_canvas() {
     let side_usize = usize::try_from(side).unwrap();
     let stride = side_usize * 4;
     let mut bytes = vec![0_u8; stride * side_usize];
-    for pixel in bytes.chunks_exact_mut(4) {
-        pixel.copy_from_slice(&[9, 8, 7, 255]);
+    for pixel in bytes.as_chunks_mut::<4>().0 {
+        *pixel = [9, 8, 7, 255];
     }
     let source = ImageFrame::new(side, side, stride, bytes).unwrap();
     assert_eq!(source.pixels().len(), MAX_IMAGE_ASSET_BYTES);
@@ -788,7 +793,11 @@ fn a_large_source_and_element_cost_only_the_canvas() {
         .recv_timeout(Duration::from_secs(10))
         .expect("image work must be bounded by the canvas, not by the element extent");
     assert!(
-        pixels.chunks_exact(4).all(|pixel| pixel == [9, 8, 7, 255]),
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [9, 8, 7, 255]),
         "the clipped image must still sample its source over the whole canvas"
     );
 }

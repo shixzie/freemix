@@ -5,9 +5,10 @@
 //! outlines come from a caller-supplied font through `ab_glyph`, with kerned
 //! advances, ascent-correct baselines, word wrapping, and anti-aliased
 //! coverage composited source-over into the frame. Image elements draw
-//! caller-decoded premultiplied RGBA8 frames stretched to their bounds with
-//! nearest-neighbor sampling, clipped to the element box and the frame edge;
-//! an asset without decoded pixels keeps the placeholder.
+//! caller-decoded premultiplied RGBA8 frames placed by a fit mode and
+//! alignment and resampled with nearest or bilinear filtering, clipped to the
+//! element box and the frame edge; an asset without decoded pixels keeps the
+//! placeholder.
 //!
 //! # Determinism
 //!
@@ -49,10 +50,12 @@
 
 use crate::{
     Alignment, AssetCatalog, Bounds, Color, Element, ElementId, ElementKind, FieldId, FieldValue,
-    FontFace, HorizontalAlignment, TickerSpec, TitleScene, VerticalAlignment,
+    FontFace, HorizontalAlignment, ImageFilter, ImageFit, TickerSpec, TitleScene,
+    VerticalAlignment,
     animation::evaluate_tracks,
     evaluate_clock, evaluate_ticker_position,
     font::ScaledFace,
+    image,
     text::{LaidText, fixed_to_px, layout_text},
     validate_scene,
 };
@@ -83,7 +86,7 @@ const CULL_MARGIN_FACTOR: i64 = 16;
 
 pub const REFERENCE_RENDERER_LIMITATIONS: &[&str] = &[
     "text is laid out in codepoint order: no bidi, no complex-script shaping, no ligatures or other OpenType features",
-    "image elements stretch decoded frames to the element bounds with nearest-neighbor sampling and floor-mapped source coordinates: no fit modes, filtering, color profile handling, orientation, or animated image integration",
+    "image elements place decoded frames with integer stretch/contain/cover/none fits and nearest or 8-bit fixed-point bilinear sampling: no mipmapping or higher-order filters for strong minification, no color profile handling, orientation, or animated image integration",
     "rasterization is CPU-only and layout/animation use integer arithmetic without production GPU effects",
 ];
 
@@ -217,7 +220,8 @@ impl ReferenceRenderer {
     /// background but no text, and are listed in
     /// [`RenderReport::missing_fonts`]; a missing asset degrades one element
     /// instead of failing the frame. An image element draws the decoded frame
-    /// registered for its field's asset, stretched to the element bounds; an
+    /// registered for its field's asset, fitted and filtered inside the element
+    /// bounds as the element's [`ElementKind::Image`] requests; an
     /// asset with no decoded pixels keeps the placeholder. An element that
     /// reaches the per-element character cap or exhausts the frame glyph budget
     /// is likewise drawn as far as it can be and listed in
@@ -354,11 +358,13 @@ fn draw_element(
             canvas.rect(evaluated.bounds, fill, evaluated.opacity);
             return Ok(());
         }
-        ElementKind::Image { field } => {
+        ElementKind::Image { field, fit, filter } => {
             ImagePaint {
                 element,
                 bounds: evaluated.bounds,
                 field,
+                fit,
+                filter,
                 fill,
                 opacity: evaluated.opacity,
             }
@@ -431,7 +437,7 @@ fn draw_element(
 /// What an image element draws and where.
 ///
 /// Decoded pixels replace the placeholder wholesale: a decoded frame is drawn
-/// stretched to the element bounds, while the placeholder stays for a
+/// fitted inside the element bounds, while the placeholder stays for a
 /// name-only asset, an unknown asset (reported as missing by `validate_scene`),
 /// or a field that is absent or of another type. `style.background` is part of
 /// the placeholder drawing and is not painted under decoded pixels.
@@ -439,6 +445,8 @@ struct ImagePaint<'a> {
     element: &'a Element,
     bounds: Bounds,
     field: FieldId,
+    fit: ImageFit,
+    filter: ImageFilter,
     fill: Color,
     opacity: u8,
 }
@@ -453,7 +461,16 @@ impl ImagePaint<'_> {
             })
             .and_then(|asset| assets.image(asset));
         if let Some(frame) = decoded {
-            canvas.image(self.bounds, frame, self.opacity);
+            canvas.image(
+                self.bounds,
+                frame,
+                ImageLayout {
+                    fit: self.fit,
+                    filter: self.filter,
+                    alignment: self.element.style.alignment,
+                },
+                self.opacity,
+            );
         } else {
             draw_placeholder(
                 canvas,
@@ -667,6 +684,14 @@ impl TextPaint<'_> {
     }
 }
 
+/// How a decoded image is fitted, aligned, and filtered inside its bounds.
+#[derive(Clone, Copy, Debug)]
+struct ImageLayout {
+    fit: ImageFit,
+    filter: ImageFilter,
+    alignment: Alignment,
+}
+
 /// A half-open rectangle of canvas pixels, `x0..x1` by `y0..y1`, already
 /// intersected with the canvas: every coordinate in it indexes a real pixel, so
 /// iterating it can never run longer than the canvas.
@@ -705,8 +730,8 @@ struct Canvas<'a> {
 impl Canvas<'_> {
     fn fill(&mut self, color: Color) {
         let color = premultiply(color, u8::MAX);
-        for pixel in self.pixels.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&color);
+        for pixel in self.pixels.as_chunks_mut::<4>().0 {
+            *pixel = color;
         }
     }
 
@@ -751,47 +776,59 @@ impl Canvas<'_> {
         }
     }
 
-    /// Draws a decoded premultiplied RGBA8 frame stretched to `bounds` with
-    /// deterministic nearest-neighbor sampling, clipped to this canvas.
+    /// Draws a decoded premultiplied RGBA8 frame placed inside `bounds` by
+    /// `layout`, clipped to both `bounds` and this canvas.
     ///
-    /// Destination pixel `(x, y)` inside `bounds` samples source pixel
-    /// `(dx * source_width / bounds_width, dy * source_height / bounds_height)`
-    /// where `dx` and `dy` are the offsets from `bounds` and the divisions
-    /// floor, matching `fm_video::transform_nearest`. The sampled pixel is
-    /// scaled by `opacity` and composited source-over by
-    /// [`Self::blend_premultiplied`].
+    /// [`crate::image::place`] computes the placed rectangle from the fit mode
+    /// and alignment; each destination pixel inside it samples the source with
+    /// the layout's filter (see [`crate::ImageFilter`]). With
+    /// [`ImageFit::Stretch`] and [`ImageFilter::Nearest`] destination offset
+    /// `d` samples `floor(d * source / bound)` on each axis, matching
+    /// `fm_video::transform_nearest`. The sample is scaled by `opacity` and
+    /// composited source-over by [`Self::blend_premultiplied`].
     ///
-    /// Only the intersection of `bounds` and the canvas is iterated, and each
-    /// destination pixel samples exactly one source pixel: work is bounded by
-    /// the canvas, never by the decoded frame's size or the element's declared
-    /// extent. A source far larger than the canvas is therefore sampled, not
-    /// rasterized wholesale.
-    fn image(&mut self, bounds: Bounds, frame: &ImageFrame, opacity: u8) {
+    /// Only the intersection of the canvas, `bounds`, and the placed rectangle
+    /// is iterated, and each destination pixel reads at most four source
+    /// pixels: work is bounded by the canvas, never by the decoded frame's
+    /// size, the placed size, or the element's declared extent.
+    fn image(&mut self, bounds: Bounds, frame: &ImageFrame, layout: ImageLayout, opacity: u8) {
         let Some(region) = self.region(bounds) else {
             return;
         };
-        // `region` is non-empty only when `bounds` is non-empty, so neither
-        // divisor can be zero.
-        let width = u64::from(bounds.width);
-        let height = u64::from(bounds.height);
-        for y in region.y0..region.y1 {
-            let local_y = i64::from(y) - i64::from(bounds.y);
-            let Ok(local_y) = u64::try_from(local_y) else {
-                continue;
-            };
-            let source_y = local_y * u64::from(frame.height()) / height;
-            let source_y = u32::try_from(source_y).unwrap_or(frame.height() - 1);
-            for x in region.x0..region.x1 {
-                let local_x = i64::from(x) - i64::from(bounds.x);
-                let Ok(local_x) = u64::try_from(local_x) else {
-                    continue;
-                };
-                let source_x = local_x * u64::from(frame.width()) / width;
-                let source_x = u32::try_from(source_x).unwrap_or(frame.width() - 1);
-                let Some(pixel) = frame.pixel(source_x, source_y) else {
-                    continue;
-                };
-                self.blend_premultiplied(x, y, pixel, opacity);
+        let Some(placement) = image::place(
+            bounds,
+            frame.width(),
+            frame.height(),
+            layout.fit,
+            layout.alignment,
+        ) else {
+            return;
+        };
+        // Intersect one axis of the clipped element region with the placed
+        // image; `None` when they do not overlap.
+        let clip = |start: u32, end: u32, origin: i128, extent: i128| -> Option<(u32, u32)> {
+            let low = i128::from(start).max(origin);
+            let high = i128::from(end).min(origin.checked_add(extent)?);
+            if low >= high {
+                return None;
+            }
+            Some((u32::try_from(low).ok()?, u32::try_from(high).ok()?))
+        };
+        let Some((x0, x1)) = clip(region.x0, region.x1, placement.x, placement.width) else {
+            return;
+        };
+        let Some((y0, y1)) = clip(region.y0, region.y1, placement.y, placement.height) else {
+            return;
+        };
+        for y in y0..y1 {
+            let local_y = i128::from(y) - placement.y;
+            for x in x0..x1 {
+                let local_x = i128::from(x) - placement.x;
+                if let Some(pixel) =
+                    image::sample(frame, placement, local_x, local_y, layout.filter)
+                {
+                    self.blend_premultiplied(x, y, pixel, opacity);
+                }
             }
         }
     }

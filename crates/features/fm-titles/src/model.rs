@@ -95,6 +95,42 @@ impl ImageSource {
     }
 }
 
+/// How a decoded image is sized inside its element bounds.
+///
+/// Every mode except [`Self::Stretch`] keeps the source aspect ratio. The
+/// placed image is positioned by the element's `style.alignment`; whatever
+/// falls outside the element bounds is clipped, and element area the image
+/// does not cover is left untouched (no background is painted under decoded
+/// pixels). Placed sizes are integers: the scaled axis is
+/// `round(other_source * bound / source)` with halves rounding up and a
+/// minimum of one pixel.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ImageFit {
+    /// Scale each axis independently to exactly fill the bounds.
+    #[default]
+    Stretch,
+    /// Scale uniformly so the whole image fits inside the bounds
+    /// (letterbox/pillarbox). Also known as "fit" or "contain".
+    Contain,
+    /// Scale uniformly so the image covers the bounds, cropping the overflow.
+    /// Also known as "fill" or "cover".
+    Cover,
+    /// Draw at the source's native pixel size, cropping any overflow.
+    None,
+}
+
+/// How destination pixels sample a scaled decoded image.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ImageFilter {
+    /// One source pixel per destination pixel, chosen by
+    /// `floor(offset * source / placed)`.
+    #[default]
+    Nearest,
+    /// Pixel-center bilinear interpolation of premultiplied channels with
+    /// 8-bit fixed-point weights and clamp-to-edge addressing.
+    Bilinear,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FieldType {
     Text,
@@ -154,10 +190,13 @@ pub enum ElementKind {
     },
     Rectangle,
     /// Draws an image field. When the referenced asset has decoded pixels in
-    /// the renderer's [`crate::AssetCatalog`] they are stretched to the element
-    /// bounds; otherwise the element draws the image placeholder.
+    /// the renderer's [`crate::AssetCatalog`] they are placed inside the
+    /// element bounds by `fit` (aligned by `style.alignment`) and resampled
+    /// with `filter`; otherwise the element draws the image placeholder.
     Image {
         field: FieldId,
+        fit: ImageFit,
+        filter: ImageFilter,
     },
     Clock(ClockSpec),
     Ticker(TickerSpec),
