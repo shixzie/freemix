@@ -2066,6 +2066,25 @@ low-latency program/input preview, no web monitor, and no routing of the layer
 into the compositor. Laser pointers are not replicated, so item 10 remains
 incomplete and `GX-007` remains planned.
 
+Current implementation boundary for item 10 web tally (`RC-014`):
+`freemix-web` provides a transport-free `TallyLink` over the current client
+reducer with realized-state program/preview/idle lights (both sides of an
+active manual transition count as on air), an offline state that never shows
+stale red, capped exponential reconnect, heartbeat and sync timeouts, terminal
+handling of role denial and protocol mismatch, and permission-gated
+full-screen, Preview, and Cut shortcuts. The `freemixd` WebSocket gateway serves
+a self-contained `/tally` page with `no-store`, strict CSP, `nosniff`, and
+frame-denial headers. Because browsers cannot set `Authorization`, the page
+presents the same `FREEMIXD_WEB_TOKEN` as a `freemix.bearer.<base64url>`
+WebSocket subprotocol, accepted only from the serving origin, compared in
+constant time, and never echoed; roles still come from the handshake.
+Remaining gaps: the gateway is loopback-only, simulated-mode-only, without TLS,
+pairing, or per-device tokens, and admits one Web peer; Web peers receive no
+monitor frames, so there is no low-latency web preview; the page's JavaScript
+duplicates the Rust model and is only manually browser-verified; and FTB, audio
+tally, and Cut confirmation are not modelled. `RC-014` remains planned.
+
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)

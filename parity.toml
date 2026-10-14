@@ -407,7 +407,9 @@ paths = ["crates/services/fm-persistence/tests/settings_import_export.rs"]
 commands = ["cargo test -p fm-persistence --test settings_import_export"]
 [[tests]]
 id = "accept-rc-014"
-state = "planned"
+state = "present"
+paths = ["apps/freemix-web/tests/tally.rs", "apps/freemixd/tests/web_tally.rs"]
+commands = ["cargo test -p freemix-web --test tally", "cargo test -p freemixd --test web_tally"]
 [[tests]]
 id = "accept-rc-015"
 state = "present"
