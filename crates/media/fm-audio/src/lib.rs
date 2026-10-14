@@ -9,12 +9,18 @@ use std::fmt;
 
 use fm_types::{AudioFormat, ChannelLayout, FrameRate, InputId, SampleFormat, SampleRate};
 
+mod automix;
 mod channel_mapping;
 mod clock_recalibration;
 mod dsp;
+mod monitor;
 mod sample_delay;
 mod synchronizer;
 
+pub use automix::{
+    AutomixChannelSettings, AutomixChannelTelemetry, AutomixConfig, AutomixError, AutomixTelemetry,
+    Automixer, MAX_AUTOMIX_CHANNELS, MAX_AUTOMIX_SMOOTHING_SAMPLES, MAX_AUTOMIX_WEIGHT,
+};
 pub use channel_mapping::{
     ChannelMapping, ChannelMappingError, ChannelMappingRoute, ChannelMappingSide,
     MAX_CHANNEL_MAPPING_BYTES, MAX_CHANNEL_MAPPING_CHANNELS, MAX_CHANNEL_MAPPING_ROUTES,
@@ -26,6 +32,12 @@ pub use clock_recalibration::{
 pub use dsp::{
     Biquad, BiquadCoefficients, BiquadKind, BiquadSettings, Compressor, DspError, DspMeter,
     DspMeterReading, Gate, Limiter, MAX_EQ_BANDS, ParametricEq, Polarity, StripDsp,
+};
+pub use monitor::{
+    MAX_MONITOR_AUX_BUSES, MAX_MONITOR_CHANNELS, MAX_MONITOR_LEVEL_DB, MAX_MONITOR_STRIPS,
+    MAX_TALKBACK_GAIN_DB, MAX_TALKBACK_ROUTES, MONITOR_DIM_DB, MonitorBus, MonitorDeviceId,
+    MonitorError, MonitorSource, MonitorTap, MonitorTelemetry, TalkbackDestination, TalkbackFeed,
+    TalkbackRoute,
 };
 pub use sample_delay::{
     MAX_SAMPLE_DELAY_BYTES, MAX_SAMPLE_DELAY_SAMPLES, SampleDelay, SampleDelayError,
