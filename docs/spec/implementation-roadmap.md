@@ -1289,7 +1289,6 @@ provide pre-fader PFL taps; device selection is an opaque ID without I/O; and
 talkback is not delivered to guest or camera transports. Both rows remain
 planned.
 
-
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
