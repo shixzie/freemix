@@ -17,7 +17,9 @@ mod dsp;
 mod embedded_audio;
 mod monitor;
 mod multichannel;
+mod resampler;
 mod sample_delay;
+mod source_sync;
 mod synchronizer;
 
 pub use automix::{
@@ -57,9 +59,20 @@ pub use multichannel::{
     MAX_MULTICHANNEL_CHANNELS, MINUS_3_DB, MatrixRoute, MultichannelError, MultichannelLayout,
     MultichannelSide, SpeakerLabel, StandardLayout,
 };
+pub use resampler::{
+    ENGINE_SAMPLE_RATE, ENGINE_SAMPLE_RATE_HZ, MAX_RESAMPLER_DECIMATION, MAX_RESAMPLER_RATE_HZ,
+    MIN_RESAMPLER_RATE_HZ, ResamplerError, SINC_CUTOFF_FRACTION, SINC_KAISER_BETA, SINC_PHASES,
+    SINC_ZERO_CROSSINGS, SincKernel,
+};
 pub use sample_delay::{
     MAX_SAMPLE_DELAY_BYTES, MAX_SAMPLE_DELAY_SAMPLES, SampleDelay, SampleDelayError,
     SampleDelaySide,
+};
+pub use source_sync::{
+    DiscontinuityPolicy, DriftControlConfig, DriftController, JumpAction, MAX_DECLICK_SAMPLES,
+    MAX_DRIFT_CORRECTION_PPM, MAX_SOURCE_SYNC_CAPACITY_SAMPLES, MAX_SOURCE_SYNC_PULL_SAMPLES,
+    MAX_SOURCE_SYNC_PUSH_SAMPLES, PullReport, PushContinuity, PushReport, SourceSync,
+    SourceSyncConfig, SourceSyncError, SourceSyncState, SourceSyncTelemetry,
 };
 pub use synchronizer::{
     AudioCadenceOrigin, AudioRenderPlan, AudioSilenceSpan, AudioSynchronizerError,
