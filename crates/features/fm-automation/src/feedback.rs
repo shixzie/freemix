@@ -4,6 +4,14 @@
 //! Observations overwrite the latest value for each bound control; draining
 //! emits only controls whose latest encoded bytes differ from what was last
 //! sent to a connected device. Reattaching a device forces a full resend.
+//!
+//! For high-rate surfaces, [`FeedbackRouter::drain_tick`] adds a per-device
+//! message budget per tick (round-robin, so no control starves), a minimum
+//! resend interval per binding, and touch-aware echo suppression: a fader the
+//! operator is holding receives no motor feedback, and its authoritative value
+//! is resent once on release. [`FeedbackRouter::acknowledge_level`] records a
+//! value the device already shows (because the operator just moved it), so
+//! the resulting state change is not echoed back.
 
 use crate::control_map::{BindingId, DeviceKey, Span};
 use crate::controller::{ActivatorRule, TallySnapshot};
@@ -12,7 +20,9 @@ use crate::osc::{
     OscArg, OscLimits, OscMessage, OscPacket, encode_osc_packet, validate_osc_address,
 };
 use core::fmt;
-use std::collections::BTreeSet;
+use core::num::NonZeroUsize;
+use fm_types::{MediaDuration, MediaTimestamp};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Maximum feedback bindings held by one [`FeedbackRouter`].
 pub const MAX_FEEDBACK_BINDINGS: usize = 1024;
@@ -197,6 +207,9 @@ pub enum FeedbackError {
     TargetConflict(BindingId),
     NonFiniteValue,
     Encode(String),
+    UnknownBinding(BindingId),
+    /// The binding does not follow a level, so it cannot acknowledge one.
+    NotALevel(BindingId),
 }
 
 impl fmt::Display for FeedbackError {
@@ -217,6 +230,16 @@ impl fmt::Display for FeedbackError {
             }
             Self::NonFiniteValue => formatter.write_str("feedback level must be finite"),
             Self::Encode(reason) => write!(formatter, "feedback encode failed: {reason}"),
+            Self::UnknownBinding(id) => {
+                write!(formatter, "feedback binding {} is unknown", id.as_str())
+            }
+            Self::NotALevel(id) => {
+                write!(
+                    formatter,
+                    "feedback binding {} follows no level",
+                    id.as_str()
+                )
+            }
         }
     }
 }
@@ -332,6 +355,31 @@ struct Slot {
     binding: FeedbackBinding,
     current: Option<FeedbackPayload>,
     sent: Option<FeedbackPayload>,
+    /// The operator is holding the physical control; feedback is withheld.
+    touched: bool,
+    last_sent_at: Option<MediaTimestamp>,
+}
+
+/// Pacing applied by [`FeedbackRouter::drain_tick`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FeedbackSchedule {
+    /// Maximum messages emitted to one device per tick.
+    pub per_device_budget: NonZeroUsize,
+    /// Minimum caller ticks between two sends of one binding (`0` disables).
+    /// Changes inside the interval coalesce and go out once it elapses.
+    pub min_interval: MediaDuration,
+}
+
+/// What one [`FeedbackRouter::drain_tick`] emitted and withheld.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FeedbackTick {
+    pub messages: Vec<FeedbackMessage>,
+    /// Changed bindings left pending because their device's budget ran out.
+    pub deferred_budget: usize,
+    /// Changed bindings left pending inside their minimum interval.
+    pub deferred_interval: usize,
+    /// Changed bindings withheld because the operator is touching them.
+    pub withheld_touched: usize,
 }
 
 /// Derives coalesced outgoing feedback from typed state observations.
@@ -339,6 +387,9 @@ struct Slot {
 pub struct FeedbackRouter {
     slots: Vec<Slot>,
     connected: BTreeSet<DeviceKey>,
+    /// Round-robin start position per device, as an index into that
+    /// device's bindings in binding order.
+    cursors: BTreeMap<DeviceKey, usize>,
 }
 
 impl FeedbackRouter {
@@ -375,6 +426,8 @@ impl FeedbackRouter {
             binding,
             current: None,
             sent: None,
+            touched: false,
+            last_sent_at: None,
         });
         Ok(())
     }
@@ -424,12 +477,16 @@ impl FeedbackRouter {
     }
 
     /// Marks a device connected and forgets what it was sent, so the next
-    /// drain resends every known value for it.
+    /// drain resends every known value for it. Touch state and resend
+    /// intervals restart.
     pub fn attach(&mut self, device: &DeviceKey) {
         self.connected.insert(device.clone());
+        self.cursors.remove(device);
         for slot in &mut self.slots {
             if &slot.binding.device == device {
                 slot.sent = None;
+                slot.touched = false;
+                slot.last_sent_at = None;
             }
         }
     }
@@ -437,12 +494,146 @@ impl FeedbackRouter {
     /// Marks a device disconnected; its changes stay pending.
     pub fn detach(&mut self, device: &DeviceKey) {
         self.connected.remove(device);
+        for slot in &mut self.slots {
+            if &slot.binding.device == device {
+                slot.touched = false;
+            }
+        }
+    }
+
+    fn slot_mut(&mut self, id: &BindingId) -> Result<&mut Slot, FeedbackError> {
+        self.slots
+            .iter_mut()
+            .find(|slot| &slot.binding.id == id)
+            .ok_or_else(|| FeedbackError::UnknownBinding(id.clone()))
+    }
+
+    /// Records whether the operator is touching the control behind `id`
+    /// (e.g. a motor fader's touch sense). While touched, nothing is sent to
+    /// it, so the motor never fights the hand and the operator's own moves
+    /// are not echoed. On release the latest authoritative value is resent
+    /// once, even if it equals what was last sent, because the physical
+    /// position has drifted from it. Returns whether the touch state changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FeedbackError::UnknownBinding`] for an unknown binding.
+    pub fn set_touched(&mut self, id: &BindingId, touched: bool) -> Result<bool, FeedbackError> {
+        let slot = self.slot_mut(id)?;
+        if slot.touched == touched {
+            return Ok(false);
+        }
+        slot.touched = touched;
+        if !touched {
+            slot.sent = None;
+            slot.last_sent_at = None;
+        }
+        Ok(true)
+    }
+
+    /// Whether the control behind `id` is currently touched.
+    #[must_use]
+    pub fn is_touched(&self, id: &BindingId) -> bool {
+        self.slots
+            .iter()
+            .any(|slot| &slot.binding.id == id && slot.touched)
+    }
+
+    /// Records that the device already shows `value` (in the binding's level
+    /// units) on the control behind `id`, typically because the operator just
+    /// moved that control. A later [`Self::observe_level`] of the same value
+    /// then encodes identically and is not echoed back; a different value
+    /// (clamping, another operator) is still sent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unknown or non-level bindings and non-finite
+    /// values.
+    pub fn acknowledge_level(&mut self, id: &BindingId, value: f64) -> Result<(), FeedbackError> {
+        if !value.is_finite() {
+            return Err(FeedbackError::NonFiniteValue);
+        }
+        let slot = self.slot_mut(id)?;
+        let FeedbackSource::Level { range, .. } = &slot.binding.source else {
+            return Err(FeedbackError::NotALevel(id.clone()));
+        };
+        slot.sent = Some(encode(&slot.binding.target, range.normalize(value))?);
+        Ok(())
     }
 
     fn is_due(&self, slot: &Slot) -> bool {
         slot.current.is_some()
             && slot.current != slot.sent
+            && !slot.touched
             && self.connected.contains(&slot.binding.device)
+    }
+
+    /// Emits one tick of paced feedback at caller time `now`.
+    ///
+    /// Each connected device receives at most `schedule.per_device_budget`
+    /// messages. Its bindings are visited round-robin from where the previous
+    /// tick stopped, so a busy control cannot starve the others. A binding
+    /// sent less than `schedule.min_interval` ago stays pending (still
+    /// coalescing) until the interval elapses; time running backwards makes
+    /// it due. Touched bindings are withheld. Output is grouped by device in
+    /// key order.
+    pub fn drain_tick(&mut self, now: MediaTimestamp, schedule: FeedbackSchedule) -> FeedbackTick {
+        let mut tick = FeedbackTick::default();
+        let mut by_device: BTreeMap<DeviceKey, Vec<usize>> = BTreeMap::new();
+        for (index, slot) in self.slots.iter().enumerate() {
+            if self.connected.contains(&slot.binding.device) {
+                by_device
+                    .entry(slot.binding.device.clone())
+                    .or_default()
+                    .push(index);
+            }
+        }
+        let interval = i128::from(schedule.min_interval.ticks());
+        for (device, indices) in by_device {
+            let start = self.cursors.get(&device).copied().unwrap_or(0) % indices.len();
+            let mut emitted = 0;
+            let mut next_cursor = None;
+            for offset in 0..indices.len() {
+                let position = (start + offset) % indices.len();
+                let slot = &self.slots[indices[position]];
+                if slot.current.is_none() || slot.current == slot.sent {
+                    continue;
+                }
+                if slot.touched {
+                    tick.withheld_touched += 1;
+                    continue;
+                }
+                let waiting = slot.last_sent_at.is_some_and(|sent| {
+                    let elapsed = i128::from(now.ticks()) - i128::from(sent.ticks());
+                    (0..interval).contains(&elapsed)
+                });
+                if waiting {
+                    tick.deferred_interval += 1;
+                    continue;
+                }
+                if emitted >= schedule.per_device_budget.get() {
+                    tick.deferred_budget += 1;
+                    continue;
+                }
+                let slot = &mut self.slots[indices[position]];
+                let Some(payload) = slot.current.clone() else {
+                    continue;
+                };
+                slot.sent = Some(payload.clone());
+                slot.last_sent_at = Some(now);
+                emitted += 1;
+                next_cursor = Some(position + 1);
+                tick.messages.push(FeedbackMessage {
+                    device: slot.binding.device.clone(),
+                    binding: slot.binding.id.clone(),
+                    payload,
+                });
+            }
+            if let Some(cursor) = next_cursor {
+                self.cursors.insert(device, cursor % indices.len());
+            }
+        }
+        tick
     }
 
     /// Number of messages the next unbounded drain would emit.

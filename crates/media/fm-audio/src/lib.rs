@@ -15,6 +15,7 @@ mod channel_mapping;
 mod clock_recalibration;
 mod dsp;
 mod embedded_audio;
+mod gain_smoother;
 mod monitor;
 mod multichannel;
 mod resampler;
@@ -46,6 +47,10 @@ pub use dsp::{
 pub use embedded_audio::{
     EMBEDDED_CHANNELS, EMBEDDED_CHANNELS_PER_GROUP, EMBEDDED_GROUPS, EmbeddedAssignment,
     EmbeddedAudioMap, EmbeddedPair, EmbeddedSlot, deembed_group, deembed_mono, deembed_pair,
+};
+pub use gain_smoother::{
+    GainSmoother, GainSmootherConfig, GainSmootherError, GainSmootherTelemetry,
+    MAX_GAIN_SMOOTHER_RAMP_SAMPLES,
 };
 pub use monitor::{
     MAX_MONITOR_AUX_BUSES, MAX_MONITOR_CHANNELS, MAX_MONITOR_LEVEL_DB, MAX_MONITOR_STRIPS,

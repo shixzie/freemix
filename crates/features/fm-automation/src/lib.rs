@@ -6,6 +6,7 @@
 //! timestamp.
 
 mod catalog;
+mod coalesce;
 mod condition;
 mod control;
 mod control_map;
@@ -29,6 +30,10 @@ pub use catalog::{
     InputTriggerFire, InputTriggerMatch, InputTriggerSet, MAX_INPUT_TRIGGER_ACTIONS,
     MAX_INPUT_TRIGGER_BINDINGS, TimelineObservation, TriggerAction,
 };
+pub use coalesce::{
+    CoalesceError, CoalesceOutcome, CoalescePolicy, CoalescedEvent, CoalescerTelemetry,
+    ControlCoalescer, MAX_COALESCE_POLICIES, MAX_COALESCE_PORT_BYTES, MAX_COALESCER_CAPACITY,
+};
 pub use condition::{Condition, ConditionContext, Predicate, Value};
 pub use control::{ControlEvent, ControlId, ControlValue};
 pub use control_map::{
@@ -45,7 +50,8 @@ pub use controller::{
 };
 pub use feedback::{
     FeedbackBinding, FeedbackError, FeedbackMessage, FeedbackPayload, FeedbackRouter,
-    FeedbackSource, FeedbackTarget, MAX_FEEDBACK_BINDINGS, OscFeedbackFormat,
+    FeedbackSchedule, FeedbackSource, FeedbackTarget, FeedbackTick, MAX_FEEDBACK_BINDINGS,
+    OscFeedbackFormat,
 };
 pub use go::{
     GoAction, GoActionFire, GoEngine, GoError, GoPreview, GoStart, MAX_GO_START_RECEIPTS,
