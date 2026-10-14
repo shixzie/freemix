@@ -76,7 +76,9 @@ id = "accept-in-022"
 state = "planned"
 [[tests]]
 id = "accept-in-023"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-switcher/tests/mix_bank.rs"]
+commands = ["cargo test -p fm-switcher --test mix_bank"]
 [[tests]]
 id = "accept-in-024"
 state = "planned"
