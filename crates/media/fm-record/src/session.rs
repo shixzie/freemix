@@ -785,12 +785,27 @@ impl<P: SpaceProbe> SegmentStorage for FileStorage<P> {
     type Sink = File;
 
     fn create_segment(&mut self, path: &Path) -> io::Result<File> {
-        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        if let Some(parent) = path.parent() {
-            sync_directory_io(parent)?;
-        }
-        Ok(file)
+        create_segment_file(path, sync_directory_io)
     }
+}
+
+/// Creates `path` exclusively and syncs its directory entry with
+/// `sync_parent`. When that sync fails the caller treats the segment as never
+/// created, so the empty file is removed rather than left behind for recovery
+/// or an operator to trip on.
+fn create_segment_file(
+    path: &Path,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<File> {
+    let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+    if let Some(parent) = path.parent()
+        && let Err(error) = sync_parent(parent)
+    {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(file)
 }
 
 /// What the writer should do after a failure.
@@ -1602,6 +1617,25 @@ fn recover_segment(path: &Path, recorded: Option<SegmentEntry>) -> SegmentOutcom
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_directory_sync_removes_the_new_segment_file() {
+        let directory =
+            std::env::temp_dir().join(format!("fm-record-segment-dir-sync-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("show.mp4");
+        let error =
+            create_segment_file(&path, |_| Err(io::Error::other("injected dir sync"))).unwrap_err();
+        assert_eq!(error.to_string(), "injected dir sync");
+        let left_behind = path.exists();
+
+        let created = create_segment_file(&path, |_| Ok(())).map(drop);
+        let exists = path.exists();
+        let _ = fs::remove_dir_all(&directory);
+        assert!(!left_behind, "no empty segment is left behind");
+        created.unwrap();
+        assert!(exists);
+    }
 
     #[test]
     fn manifest_round_trips_and_rejects_tampering() {

@@ -190,7 +190,10 @@ impl<S: SegmentStorage> ResilientOutput<S> {
     /// Publishes a finished writer's outcome. A stream that ended inside a
     /// fragment (a killed or crashed muxer) is not an output failure: the
     /// partial fragment never reached a segment and the session is stopped
-    /// with every segment ending on a fragment boundary.
+    /// with every segment ending on a fragment boundary. It therefore never
+    /// stands in for a failed session stop, which is reported instead; when a
+    /// placement failure and a stop failure both occur, the placement failure
+    /// picks the error kind and the rendered error names both.
     fn conclude(&self, finish: WriterFinish) -> io::Result<()> {
         let WriterFinish {
             stats,
@@ -199,14 +202,27 @@ impl<S: SegmentStorage> ResilientOutput<S> {
             discarded_bytes,
             error,
         } = finish;
-        let (snapshot, error) = match (snapshot, error) {
-            (Ok(snapshot), Some(WriterError::Stream(SplitError::Truncated { .. })) | None) => {
-                (Some(snapshot), None)
+        let error = error
+            .filter(|error| !matches!(error, WriterError::Stream(SplitError::Truncated { .. })));
+        let (snapshot, failure) = match (snapshot, error) {
+            (Ok(snapshot), None) => (Some(snapshot), None),
+            (Ok(snapshot), Some(error)) => (
+                Some(snapshot),
+                Some((error.to_string(), writer_io_error(&error))),
+            ),
+            (Err(stop), None) => {
+                let error = WriterError::Session(stop);
+                (None, Some((error.to_string(), writer_io_error(&error))))
             }
-            (snapshot, Some(error)) => (snapshot.ok(), Some(error)),
-            (Err(error), None) => (None, Some(WriterError::Session(error))),
+            (Err(stop), Some(error)) => {
+                let rendered = format!("{error}; stopping the session also failed: {stop}");
+                let kind = writer_io_error(&error).kind();
+                (
+                    None,
+                    Some((rendered.clone(), io::Error::new(kind, rendered))),
+                )
+            }
         };
-        let failure = error.map(|error| (error.to_string(), writer_io_error(&error)));
         self.status.update(|state| {
             state.stats = stats;
             state.segments = segments;
@@ -288,5 +304,68 @@ fn failure_kind_io(kind: FailureKind) -> io::ErrorKind {
         FailureKind::AlreadyExists => io::ErrorKind::AlreadyExists,
         FailureKind::Interrupted => io::ErrorKind::Interrupted,
         FailureKind::Other => io::ErrorKind::Other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fm_record::{FileStorage, SessionConfig, UnknownSpace};
+
+    fn output(directory: &std::path::Path) -> ResilientOutput<FileStorage<UnknownSpace>> {
+        let config = SessionConfig::new("conclude", directory).unwrap();
+        let session = RecordingSession::start(config, FileStorage::new(UnknownSpace)).unwrap();
+        ResilientOutput::new(session, ResilientWriterConfig::default())
+    }
+
+    #[test]
+    fn a_truncated_stream_does_not_mask_a_failed_session_stop() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut output = output(directory.path());
+        let mut finish = output.writer.take().unwrap().finish_report();
+        finish.snapshot = Err(SessionError::ManifestUnwritable(
+            io::ErrorKind::ReadOnlyFilesystem,
+        ));
+        finish.error = Some(WriterError::Stream(SplitError::Truncated { buffered: 7 }));
+        finish.discarded_bytes = 7;
+
+        let error = output.conclude(finish).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::ReadOnlyFilesystem);
+        let state = output.status().get();
+        assert!(state.finished);
+        assert_eq!(state.discarded_tail_bytes, 7);
+        let rendered = state.error.expect("the stop failure is reported");
+        assert!(rendered.contains("manifest"), "{rendered}");
+    }
+
+    #[test]
+    fn a_placement_failure_and_a_failed_session_stop_are_both_reported() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut output = output(directory.path());
+        let mut finish = output.writer.take().unwrap().finish_report();
+        finish.snapshot = Err(SessionError::InvalidState("close the open segment first"));
+        finish.error = Some(WriterError::Session(SessionError::ManifestUnwritable(
+            io::ErrorKind::StorageFull,
+        )));
+
+        let error = output.conclude(finish).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::StorageFull);
+        let rendered = output.status().get().error.unwrap();
+        assert!(
+            rendered.contains("close the open segment first"),
+            "{rendered}"
+        );
+        assert_eq!(error.to_string(), rendered);
+    }
+
+    #[test]
+    fn a_truncated_stream_with_a_stopped_session_is_not_a_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut output = output(directory.path());
+        let mut finish = output.writer.take().unwrap().finish_report();
+        finish.error = Some(WriterError::Stream(SplitError::Truncated { buffered: 3 }));
+
+        output.conclude(finish).unwrap();
+        assert!(output.status().get().error.is_none());
     }
 }
