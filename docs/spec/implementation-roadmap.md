@@ -1669,6 +1669,20 @@ low-latency program/input preview, no web monitor, and no routing of the layer
 into the compositor. Laser pointers are not replicated, so item 10 remains
 incomplete and `GX-007` remains planned.
 
+Current implementation boundary for item 4: `fm-data` parses bounded CSV and
+JSON from in-memory bytes into exact typed rows. CSV supports quoting, embedded
+newlines, every line-ending form, a BOM, custom delimiters, and headerless
+columns; JSON keeps integers and decimals exact without floating point and
+rejects duplicate keys and trailing data. Byte, row, column, field, depth, and
+value limits fail with located errors. A row cursor navigates with stop or
+wrap edges, stays valid across refresh, and selects by exact key. A validated
+title mapper coerces values onto text, number, color, and image fields with
+explicit rounding and color rules, fallbacks, optional fields, and per-field
+diagnostics. Remaining gaps: no XML/XPath, RSS, HTML-table, spreadsheet,
+Google Sheets, chat, or database adapters, no real HTTP or file polling, and
+mapped values do not yet feed `fm-titles` templates, the project schema, or
+ticker updates. Item 4 remains incomplete and `GX-004` remains planned.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)
