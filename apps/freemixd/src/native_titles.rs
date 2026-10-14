@@ -30,6 +30,16 @@
 //! project frame duration, the same approximation the simulated monitor tap
 //! documents: every title is treated as having started at frame zero.
 //!
+//! Production clock elements read their template's clocks in the daemon's
+//! clock domain (see [`title_render::TitleTime`]): the monotonic clock is the
+//! published frame on the project frame grid and time of day reads the
+//! system wall clock at the render. A since-take stopwatch counts from the
+//! frame a title was first projected on Program (either side of a
+//! transition) or on an active overlay channel, which the session loop
+//! publishes with [`NativeTitleSources::observe_frame`]; it rests at zero
+//! while the title is off air. Production clock templates are
+//! time-dependent, so they refresh at the same bounded rate.
+//!
 //! A re-render that fails (for example a field value the template no longer
 //! instantiates) keeps the last frame on air and is counted.
 
@@ -39,6 +49,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use fm_engine::FrameResult;
 use fm_frame::{
     AlphaMode, ChromaLocation, ClockDomainId, ColorMetadata, ColorPrimaries, CpuVideoFrame,
     CpuVideoPayload, CpuVideoPlane, MatrixCoefficients, MediaTimestamp, MediaTiming,
@@ -88,20 +99,21 @@ impl TitleFrameFormat {
         .ok()
     }
 
-    /// Renders `title` at `frame` into a native source frame.
+    /// Renders `title` at `frame`, on air since `taken_frame`, into a
+    /// native source frame.
     fn render(
         self,
         assets: &TitleAssets,
         input: InputId,
         title: &TitleInput,
-        frame: u64,
+        (frame, taken_frame): (u64, Option<u64>),
         sequence: u64,
     ) -> Option<CpuVideoFrame> {
         let image = title_render::render_title_at(
             assets,
             input,
             title,
-            title_render::scene_time_ms(self.frame_rate, frame),
+            title_render::TitleTime::now(frame, self.frame_rate, taken_frame),
             self.width,
             self.height,
         )?;
@@ -175,6 +187,8 @@ struct WorkerState {
     dirty: BTreeSet<InputId>,
     /// Finished frames not yet ingested, latest-wins per input.
     completed: BTreeMap<InputId, CpuVideoFrame>,
+    /// The frame each title input on air was first projected there.
+    taken: BTreeMap<InputId, u64>,
     renders: u64,
     failed_renders: u64,
     shutdown: bool,
@@ -231,7 +245,7 @@ impl NativeTitleSources {
                 animated.insert(input.id);
             }
             let frame = format
-                .render(&assets, input.id, title, 0, 0)
+                .render(&assets, input.id, title, (0, None), 0)
                 .ok_or_else(|| format!("native title input {} did not render", input.id))?;
             seeds.push((input.id, frame));
             submitted.insert(input.id, title.clone());
@@ -309,6 +323,39 @@ impl NativeTitleSources {
         self.shared.frame.store(frame, Ordering::Relaxed);
     }
 
+    /// Dates every title input this projected frame puts on air (either
+    /// Program endpoint or an active overlay channel's source) to its frame,
+    /// keeping the date of a title already on air, and forgets every title
+    /// it does not show. Never renders.
+    pub(crate) fn observe_frame(&self, projected: &FrameResult) {
+        let program = &projected.program;
+        let overlays = projected
+            .overlays
+            .iter()
+            .filter(|channel| channel.is_active() || channel.is_transitioning())
+            .filter_map(fm_switcher::OverlayChannelState::source);
+        self.observe_on_air(
+            projected.frame.get(),
+            std::iter::once(program.primary)
+                .chain(program.secondary)
+                .chain(overlays),
+        );
+    }
+
+    fn observe_on_air(&self, frame: u64, on_air: impl Iterator<Item = InputId>) {
+        if self.worker.is_none() {
+            return;
+        }
+        let on_air = on_air
+            .filter(|input| self.submitted.contains_key(input))
+            .collect::<BTreeSet<_>>();
+        let mut state = self.shared.lock();
+        state.taken.retain(|input, _| on_air.contains(input));
+        for input in on_air {
+            state.taken.entry(input).or_insert(frame);
+        }
+    }
+
     /// Takes every finished frame not yet ingested, in input order.
     pub(crate) fn take_completed(&self) -> Vec<(InputId, CpuVideoFrame)> {
         if self.worker.is_none() {
@@ -324,6 +371,17 @@ impl NativeTitleSources {
     pub(crate) fn render_counts(&self) -> (u64, u64) {
         let state = self.shared.lock();
         (state.renders, state.failed_renders)
+    }
+
+    /// The take frame of every title on air.
+    #[cfg(test)]
+    pub(crate) fn taken_frames(&self) -> Vec<(InputId, u64)> {
+        self.shared
+            .lock()
+            .taken
+            .iter()
+            .map(|(input, frame)| (*input, *frame))
+            .collect()
     }
 }
 
@@ -382,16 +440,19 @@ fn run_worker(
             }
             inputs
                 .into_iter()
-                .filter_map(|input| Some((input, state.desired.get(&input)?.clone())))
+                .filter_map(|input| {
+                    let title = state.desired.get(&input)?.clone();
+                    Some((input, title, state.taken.get(&input).copied()))
+                })
                 .collect::<Vec<_>>()
         };
         let frame = shared.frame.load(Ordering::Relaxed);
-        for (input, title) in work {
+        for (input, title, taken_frame) in work {
             let Some(sequence) = sequences.get_mut(&input) else {
                 continue;
             };
             *sequence = sequence.saturating_add(1);
-            let rendered = format.render(assets, input, &title, frame, *sequence);
+            let rendered = format.render(assets, input, &title, (frame, taken_frame), *sequence);
             let mut state = shared.lock();
             state.renders = state.renders.saturating_add(1);
             if let Some(rendered) = rendered {
@@ -627,6 +688,34 @@ mod tests {
     }
 
     #[test]
+    fn titles_are_dated_to_the_projected_frame_they_go_on_air_until_they_leave_it() {
+        let project = project(&[
+            (20, title(BAR_URI, 0, [1, 2, 3, 255])),
+            (21, title(CLOCK_URI, 0, [1, 2, 3, 255])),
+        ]);
+        let (sources, _) = NativeTitleSources::start(assets(), &project, domain()).unwrap();
+        // Inputs that are not titles are never dated.
+        sources.observe_on_air(5, [input_id(20), input_id(99)].into_iter());
+        assert_eq!(sources.taken_frames(), vec![(input_id(20), 5)]);
+        // A title already on air keeps its take frame.
+        sources.observe_on_air(7, [input_id(21), input_id(20)].into_iter());
+        assert_eq!(
+            sources.taken_frames(),
+            vec![(input_id(20), 5), (input_id(21), 7)]
+        );
+        // Leaving air forgets the take; the next take starts over.
+        sources.observe_on_air(9, [input_id(21)].into_iter());
+        assert_eq!(sources.taken_frames(), vec![(input_id(21), 7)]);
+        sources.observe_on_air(11, [input_id(20), input_id(21)].into_iter());
+        assert_eq!(
+            sources.taken_frames(),
+            vec![(input_id(20), 11), (input_id(21), 7)]
+        );
+        sources.observe_on_air(12, std::iter::empty());
+        assert_eq!(sources.taken_frames(), Vec::new());
+    }
+
+    #[test]
     fn a_field_change_renders_a_new_frame_off_the_loop_and_an_unchanged_title_does_not() {
         let original = project(&[(20, title(BAR_URI, 0, [200, 40, 10, 255]))]);
         let (mut sources, _) = NativeTitleSources::start(assets(), &original, domain()).unwrap();
@@ -779,6 +868,7 @@ mod daemon_tests {
         let document = fm_persistence::encode_title_template(&StoredTitleTemplate {
             template,
             fonts: Vec::new(),
+            clocks: Vec::new(),
         })
         .unwrap();
         let path = store.assets_root().join(TEMPLATE_KEY);

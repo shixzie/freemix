@@ -16,6 +16,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use fm_clock::production::{
+    ClockName, DisplayFormat, DurationFormat, OverrunPolicy, TimeOfDayFormat, TimeZone, UtcInstant,
+};
 use fm_model::{
     Input, InputKind, Project, ProjectSettings, Rgba8, TitleFieldEntry, TitleFieldId,
     TitleFieldValue, TitleInput,
@@ -30,8 +33,8 @@ use fm_titles::{
     Alignment, AnimatedProperty, AnimationTrack, Bounds, ClockDirection, ClockFormat, ClockSpec,
     Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldType, FieldValue,
     FontError, FontStyle, HorizontalAlignment, ImageFilter, ImageFit, ImageSource, Interpolation,
-    Keyframe, ProductionClockSpec, Style, TemplateId, TickerDirection, TickerSpec, TitleTemplate,
-    VerticalAlignment,
+    Keyframe, ProductionClockSpec, Style, TemplateId, TickerDirection, TickerSpec, TitleClock,
+    TitleClockError, TitleClockKind, TitleTemplate, VerticalAlignment,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -374,11 +377,19 @@ fn rich_template() -> StoredTitleTemplate {
                 asset_uri: "asset://fonts/Mono.ttf".into(),
             },
         ],
+        clocks: Vec::new(),
     }
 }
 
-/// A source document for import: the stored format with an empty font table.
+/// A source document for import: the stored format with an empty font table
+/// and no clocks.
 fn source_document(template: &TitleTemplate) -> String {
+    source_document_with_clocks(template, Vec::new())
+}
+
+/// A source document for import: the stored format with an empty font table
+/// and `clocks`.
+fn source_document_with_clocks(template: &TitleTemplate, clocks: Vec<TitleClock>) -> String {
     // Encode with a placeholder font table, then empty it: the encoder
     // refuses a font table that does not cover the template.
     let families = template
@@ -398,10 +409,12 @@ fn source_document(template: &TitleTemplate) -> String {
     let encoded = encode_title_template(&StoredTitleTemplate {
         template: template.clone(),
         fonts,
+        clocks,
     })
     .unwrap();
     let start = encoded.find("  \"fonts\": [").unwrap();
-    format!("{}  \"fonts\": []\n}}\n", &encoded[..start])
+    let end = encoded.find("  \"clocks\": [").unwrap();
+    format!("{}  \"fonts\": [],\n{}", &encoded[..start], &encoded[end..])
 }
 
 fn write_source(temp: &TestDirectory, name: &str, template: &TitleTemplate) -> PathBuf {
@@ -470,7 +483,12 @@ fn store_template(
     template: TitleTemplate,
     fonts: Vec<TitleFontAsset>,
 ) -> String {
-    let document = encode_title_template(&StoredTitleTemplate { template, fonts }).unwrap();
+    let document = encode_title_template(&StoredTitleTemplate {
+        template,
+        fonts,
+        clocks: Vec::new(),
+    })
+    .unwrap();
     write(&store.assets_root().join(key), document.as_bytes());
     format!("asset://{key}")
 }
@@ -508,7 +526,7 @@ fn assets_listing(store: &ProjectStore) -> Vec<String> {
 fn every_element_kind_round_trips_exactly() {
     let expected = rich_template();
     let encoded = encode_title_template(&expected).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 28,\n  \"template\": {\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 29,\n  \"template\": {\n"));
     assert!(encoded.contains(
         "\"kind\": {\"type\": \"image\", \"field\": 4, \"fit\": \"contain\", \"filter\": \"bilinear\"}"
     ));
@@ -620,15 +638,15 @@ fn strict_decoder_refuses_unknown_missing_and_out_of_contract_content() {
         );
     }
 
-    for (schema, found) in [("27", 27), ("29", 29)] {
+    for (schema, found) in [("28", 28), ("30", 30)] {
         let document = encoded.replacen(
-            "\"schema_version\": 28",
+            "\"schema_version\": 29",
             &format!("\"schema_version\": {schema}"),
             1,
         );
         assert!(matches!(
             decode_title_template(&document),
-            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 28 }) if f == found
+            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 29 }) if f == found
         ));
     }
 
@@ -695,31 +713,360 @@ fn strict_decoder_refuses_unknown_missing_and_out_of_contract_content() {
     ));
 }
 
+fn clock_name(text: &str) -> ClockName {
+    ClockName::new(text).unwrap()
+}
+
+/// Every production clock kind, every preset, and both overrun policies.
+#[allow(clippy::too_many_lines)]
+fn clock_template() -> StoredTitleTemplate {
+    let rate = FrameRate::new(30_000, 1_001).unwrap();
+    let durations = [
+        DurationFormat::HoursMinutesSeconds,
+        DurationFormat::MinutesSeconds,
+        DurationFormat::Seconds,
+        DurationFormat::HoursMinutesSecondsTenths,
+        DurationFormat::MinutesSecondsTenths,
+        DurationFormat::HoursMinutesSecondsMillis,
+        DurationFormat::HoursMinutesSecondsFrames(rate),
+        DurationFormat::Compact,
+    ];
+    let times = [
+        TimeOfDayFormat::Hours24,
+        TimeOfDayFormat::Hours24Minutes,
+        TimeOfDayFormat::Hours12,
+        TimeOfDayFormat::Hours12Minutes,
+        TimeOfDayFormat::Date,
+        TimeOfDayFormat::Rfc3339,
+    ];
+    let target = UtcInstant::from_utc_civil(2026, 10, 14, 23, 0, 0, 0).unwrap();
+    let mut clocks = Vec::new();
+    for (index, format) in durations.into_iter().enumerate() {
+        clocks.push(TitleClock {
+            name: clock_name(&format!("Since-{index}")),
+            kind: TitleClockKind::SinceTake { format },
+        });
+        clocks.push(TitleClock {
+            name: clock_name(&format!("To_{index}")),
+            kind: TitleClockKind::CountdownTo {
+                target,
+                overrun: if index % 2 == 0 {
+                    OverrunPolicy::StopAtTarget
+                } else {
+                    OverrunPolicy::Continue
+                },
+                format,
+            },
+        });
+    }
+    let zones = [
+        "EST5EDT,M3.2.0,M11.1.0",
+        "CET-1CEST,M3.5.0,M10.5.0/3",
+        "UTC0",
+        "<+0530>-5:30",
+        "AEST-10AEDT,M10.1.0,M4.1.0/3",
+        "NZST-12NZDT,J60,300",
+    ];
+    for (index, (format, zone)) in times.into_iter().zip(zones).enumerate() {
+        clocks.push(TitleClock {
+            name: clock_name(&format!("Local{index}")),
+            kind: TitleClockKind::TimeOfDay {
+                zone: TimeZone::parse_posix(zone).unwrap(),
+                format,
+            },
+        });
+    }
+    let mut elements = Vec::new();
+    for (index, clock) in clocks.iter().enumerate() {
+        let id = u128::try_from(index).unwrap() + 1;
+        elements.push(element(
+            id,
+            ElementKind::ProductionClock(ProductionClockSpec::new(clock.name.clone())),
+            Some("Mono"),
+        ));
+    }
+    // Element presets of both kinds, including the frames preset.
+    let first_duration = elements.len() + 1;
+    for (offset, format) in durations.into_iter().enumerate() {
+        elements.push(element(
+            u128::try_from(first_duration + offset).unwrap(),
+            ElementKind::ProductionClock(ProductionClockSpec::with_format(
+                clock_name("Since-0"),
+                DisplayFormat::Duration(format),
+            )),
+            Some("Mono"),
+        ));
+    }
+    let first_time = elements.len() + 1;
+    for (offset, format) in times.into_iter().enumerate() {
+        elements.push(element(
+            u128::try_from(first_time + offset).unwrap(),
+            ElementKind::ProductionClock(ProductionClockSpec::with_format(
+                clock_name("Local0"),
+                DisplayFormat::TimeOfDay(format),
+            )),
+            Some("Mono"),
+        ));
+    }
+    clocks.sort_by(|left, right| left.name.cmp(&right.name));
+    StoredTitleTemplate {
+        template: TitleTemplate {
+            id: TemplateId::new(nz(12)),
+            name: "Clocks".into(),
+            width: 1920,
+            height: 1080,
+            background: Color::TRANSPARENT,
+            fields: Vec::new(),
+            elements,
+        },
+        fonts: vec![TitleFontAsset {
+            family: "Mono".into(),
+            asset_uri: "asset://fonts/Mono.ttf".into(),
+        }],
+        clocks,
+    }
+}
+
 #[test]
-fn production_clocks_are_refused_with_a_typed_error() {
-    let mut stored = rich_template();
-    stored.template.elements.push(element(
-        11,
-        ElementKind::ProductionClock(ProductionClockSpec::new(
-            fm_clock::production::ClockName::new("Show").unwrap(),
+fn production_clocks_of_every_kind_and_preset_round_trip_exactly() {
+    let expected = clock_template();
+    let encoded = encode_title_template(&expected).unwrap();
+    for fragment in [
+        "{\"name\": \"Local0\", \"kind\": \"time_of_day\", \"zone\": \"EST5EDT,M3.2.0,M11.1.0\", \"format\": {\"type\": \"time_of_day\", \"preset\": \"hours_24\"}}",
+        "{\"name\": \"Local5\", \"kind\": \"time_of_day\", \"zone\": \"NZST-12NZDT,J60,300\", \"format\": {\"type\": \"time_of_day\", \"preset\": \"rfc3339\"}}",
+        "{\"name\": \"To_0\", \"kind\": \"countdown_to\", \"target_utc\": \"2026-10-14T23:00:00Z\", \"overrun\": \"stop_at_target\", \"format\": {\"type\": \"duration\", \"preset\": \"hours_minutes_seconds\"}}",
+        "{\"name\": \"To_1\", \"kind\": \"countdown_to\", \"target_utc\": \"2026-10-14T23:00:00Z\", \"overrun\": \"continue\", \"format\": {\"type\": \"duration\", \"preset\": \"minutes_seconds\"}}",
+        "{\"name\": \"Since-6\", \"kind\": \"since_take\", \"format\": {\"type\": \"duration\", \"preset\": \"hours_minutes_seconds_frames\", \"frame_rate\": {\"numerator\": 30000, \"denominator\": 1001}}}",
+        "\"kind\": {\"type\": \"production_clock\", \"clock\": \"Local0\", \"format\": null}",
+        "\"kind\": {\"type\": \"production_clock\", \"clock\": \"Since-0\", \"format\": {\"type\": \"duration\", \"preset\": \"compact\"}}",
+        "\"kind\": {\"type\": \"production_clock\", \"clock\": \"Local0\", \"format\": {\"type\": \"time_of_day\", \"preset\": \"hours_12_minutes\"}}",
+    ] {
+        assert!(
+            encoded.contains(fragment),
+            "missing {fragment} in {encoded}"
+        );
+    }
+    let decoded = decode_title_template(&encoded).unwrap();
+    assert_eq!(decoded, expected);
+    assert_eq!(encode_title_template(&decoded).unwrap(), encoded);
+
+    // Clocks are written sorted by name whatever the in-memory order.
+    let mut reversed = expected.clone();
+    reversed.clocks.reverse();
+    assert_eq!(encode_title_template(&reversed).unwrap(), encoded);
+
+    // A document with unsorted clocks is refused.
+    let local0 = encoded.find("    {\"name\": \"Local0\"").unwrap();
+    let local1 = encoded.find("    {\"name\": \"Local1\"").unwrap();
+    let mut swapped = encoded.clone();
+    let first = encoded[local0..local1].to_owned();
+    let second_end = local1 + encoded[local1..].find('\n').unwrap() + 1;
+    let second = encoded[local1..second_end].to_owned();
+    swapped.replace_range(local0..second_end, &format!("{second}{first}"));
+    assert!(matches!(
+        decode_title_template(&swapped),
+        Err(TitleTemplateError::Malformed { message, .. }) if message.contains("sorted")
+    ));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn clock_tables_and_clock_content_are_strict() {
+    let stored = clock_template();
+    let encoded = encode_title_template(&stored).unwrap();
+
+    // The table covers exactly the clocks elements show.
+    let mut missing = stored.clone();
+    missing.clocks.retain(|clock| clock.name.as_str() != "To_3");
+    assert!(matches!(
+        encode_title_template(&missing),
+        Err(TitleTemplateError::InvalidClocks(TitleClockError::UndefinedClock { clock, .. }))
+            if clock.as_str() == "To_3"
+    ));
+    let mut unused = stored.clone();
+    unused.clocks.push(TitleClock {
+        name: clock_name("Spare"),
+        kind: TitleClockKind::SinceTake {
+            format: DurationFormat::Seconds,
+        },
+    });
+    assert!(matches!(
+        encode_title_template(&unused),
+        Err(TitleTemplateError::InvalidClocks(TitleClockError::UnusedClock(clock)))
+            if clock.as_str() == "Spare"
+    ));
+    let mut duplicate = stored.clone();
+    duplicate.clocks.push(stored.clocks[0].clone());
+    assert!(matches!(
+        encode_title_template(&duplicate),
+        Err(TitleTemplateError::InvalidClocks(
+            TitleClockError::DuplicateClock(_)
+        ))
+    ));
+    // An element preset must be of its clock's kind.
+    let mut mismatch = stored.clone();
+    mismatch.template.elements.push(element(
+        999,
+        ElementKind::ProductionClock(ProductionClockSpec::with_format(
+            clock_name("Local0"),
+            DisplayFormat::Duration(DurationFormat::Seconds),
         )),
         Some("Mono"),
     ));
     assert!(matches!(
-        encode_title_template(&stored),
-        Err(TitleTemplateError::ProductionClockUnsupported(id)) if id == element_id(11)
+        encode_title_template(&mismatch),
+        Err(TitleTemplateError::InvalidClocks(TitleClockError::FormatMismatch { element, .. }))
+            if element == element_id(999)
+    ));
+    // Only exactly representable clocks are stored.
+    let mut fractional = stored.clone();
+    for clock in &mut fractional.clocks {
+        if let TitleClockKind::CountdownTo { target, .. } = &mut clock.kind {
+            *target = UtcInstant::new(target.unix_seconds(), 1).unwrap();
+        }
+    }
+    assert!(matches!(
+        encode_title_template(&fractional),
+        Err(TitleTemplateError::UnencodableClock { .. })
+    ));
+    let mut short_zone = stored.clone();
+    for clock in &mut short_zone.clocks {
+        if let TitleClockKind::TimeOfDay { zone, .. } = &mut clock.kind {
+            *zone = TimeZone::fixed("Z", 0).unwrap();
+        }
+    }
+    assert!(matches!(
+        encode_title_template(&short_zone),
+        Err(TitleTemplateError::UnencodableClock { .. })
     ));
 
-    let encoded = encode_title_template(&rich_template()).unwrap();
-    let document = encoded.replacen(
-        "{\"type\": \"rectangle\"}",
-        "{\"type\": \"production_clock\", \"clock\": \"Show\"}",
+    // Strict decoding of clock content.
+    for (from, to) in [
+        // Non-canonical, invalid, or absent zones.
+        ("\"zone\": \"UTC0\"", "\"zone\": \"UTC+0\""),
+        ("\"zone\": \"UTC0\"", "\"zone\": \"Europe/Paris\""),
+        ("\"zone\": \"UTC0\", ", ""),
+        // Targets are exactly YYYY-MM-DDTHH:MM:SSZ.
+        ("2026-10-14T23:00:00Z", "2026-10-14T23:00:00.5Z"),
+        ("2026-10-14T23:00:00Z", "2026-10-14 23:00:00Z"),
+        ("2026-10-14T23:00:00Z", "2026-02-30T23:00:00Z"),
+        ("2026-10-14T23:00:00Z", "2026-10-14T24:00:00Z"),
+        ("2026-10-14T23:00:00Z", "+026-10-14T23:00:00Z"),
+        ("\"overrun\": \"continue\"", "\"overrun\": \"wrap\""),
+        ("\"kind\": \"since_take\"", "\"kind\": \"stopwatch\""),
+        // Formats of the wrong kind, unknown presets, stray or missing rates.
+        (
+            "\"kind\": \"time_of_day\", \"zone\": \"UTC0\", \"format\": {\"type\": \"time_of_day\"",
+            "\"kind\": \"time_of_day\", \"zone\": \"UTC0\", \"format\": {\"type\": \"duration\"",
+        ),
+        (
+            "\"kind\": \"since_take\", \"format\": {\"type\": \"duration\"",
+            "\"kind\": \"since_take\", \"format\": {\"type\": \"time_of_day\"",
+        ),
+        ("\"preset\": \"compact\"", "\"preset\": \"tiny\""),
+        (
+            "\"type\": \"duration\", \"preset\": \"seconds\"",
+            "\"type\": \"span\", \"preset\": \"seconds\"",
+        ),
+        (
+            "\"preset\": \"seconds\"}",
+            "\"preset\": \"seconds\", \"frame_rate\": {\"numerator\": 25, \"denominator\": 1}}",
+        ),
+        (
+            ", \"frame_rate\": {\"numerator\": 30000, \"denominator\": 1001}",
+            "",
+        ),
+        (
+            "\"numerator\": 30000, \"denominator\": 1001",
+            "\"numerator\": 30000, \"denominator\": 0",
+        ),
+        // Clock names follow the registry rules.
+        ("\"name\": \"To_0\"", "\"name\": \"To 0\""),
+        (
+            "\"clock\": \"Local0\", \"format\": null",
+            "\"clock\": \"\", \"format\": null",
+        ),
+        // Elements need both keys.
+        (
+            "\"clock\": \"Local0\", \"format\": null",
+            "\"clock\": \"Local0\"",
+        ),
+        (
+            "\"name\": \"Since-0\", ",
+            "\"name\": \"Since-0\", \"extra\": 1, ",
+        ),
+    ] {
+        assert!(encoded.contains(from), "fixture lacks {from}");
+        let document = encoded.replacen(from, to, 1);
+        assert!(
+            matches!(
+                decode_title_template(&document),
+                Err(TitleTemplateError::Malformed { .. })
+            ),
+            "{from} -> {to} decoded: {:?}",
+            decode_title_template(&document)
+        );
+    }
+    // The clocks key itself is required.
+    let without = encoded.replacen(
+        &encoded[encoded.find(",\n  \"clocks\"").unwrap()..encoded.len() - 2],
+        "",
         1,
     );
     assert!(matches!(
-        decode_title_template(&document),
-        Err(TitleTemplateError::ProductionClockUnsupported(id)) if id == element_id(2)
+        decode_title_template(&without),
+        Err(TitleTemplateError::Malformed { .. })
     ));
+}
+
+#[test]
+fn imports_keep_the_source_clock_table() {
+    let temp = TestDirectory::new("import-clocks");
+    let store = temp.store("show.freemix");
+    let mut template = shape_template("Clock");
+    let mut clock = element(
+        5,
+        ElementKind::ProductionClock(ProductionClockSpec::new(clock_name("Doors"))),
+        None,
+    );
+    clock.style.font = None;
+    template.elements.push(clock);
+    let clocks = vec![TitleClock {
+        name: clock_name("Doors"),
+        kind: TitleClockKind::CountdownTo {
+            target: UtcInstant::from_utc_civil(2026, 10, 14, 23, 0, 0, 0).unwrap(),
+            overrun: OverrunPolicy::Continue,
+            format: DurationFormat::MinutesSeconds,
+        },
+    }];
+    // A production clock draws text, so it needs a font family; without one
+    // the template is structurally invalid.
+    let path = temp.path("doors.fmtitle");
+    let no_font = source_document_with_clocks(&shape_template("Clock"), Vec::new()).replacen(
+        "\"elements\": [",
+        "\"elements\": [\n      {\"id\": 5, \"name\": \"Doors\", \"bounds\": {\"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}, \"z_index\": 0, \"visible\": true, \"style\": {\"fill\": \"#ffffffff\", \"background\": null, \"opacity\": 255, \"font\": null, \"alignment\": {\"horizontal\": \"start\", \"vertical\": \"start\"}}, \"color_field\": null, \"kind\": {\"type\": \"production_clock\", \"clock\": \"Doors\", \"format\": null}, \"animations\": []},",
+        1,
+    );
+    write(&path, no_font.as_bytes());
+    assert!(store.import_title_template(&path, &[]).is_err());
+    assert_eq!(assets_listing(&store), Vec::<String>::new());
+
+    // With a font family the clock table travels into the stored template.
+    template.elements[1].style = style(Some("Sans"));
+    let path = temp.path("doors-font.fmtitle");
+    write(
+        &path,
+        source_document_with_clocks(&template, clocks.clone()).as_bytes(),
+    );
+    let Some(font) = discover_font() else {
+        return;
+    };
+    let imported = store
+        .import_title_template(&path, &[("Sans".into(), font)])
+        .unwrap();
+    assert_eq!(imported.stored.clocks, clocks);
+    let loaded = store.load_title_template(&imported.template_uri).unwrap();
+    assert_eq!(loaded, imported.stored);
 }
 
 #[test]
@@ -762,7 +1109,7 @@ fn a_compact_source_whose_stored_form_exceeds_the_cap_is_refused() {
     // would leave a template that never loads again.
     let cap = usize::try_from(fm_persistence::MAX_TITLE_TEMPLATE_BYTES).unwrap();
     let mut source = String::from(
-        r##"{"schema_version":28,"template":{"id":1,"name":"Big","width":16,"height":9,"background":"#00000000","fields":[],"elements":["##,
+        r##"{"schema_version":29,"template":{"id":1,"name":"Big","width":16,"height":9,"background":"#00000000","fields":[],"elements":["##,
     );
     let mut id = 1_u32;
     while source.len() < cap - 1024 {
@@ -776,7 +1123,7 @@ fn a_compact_source_whose_stored_form_exceeds_the_cap_is_refused() {
         .unwrap();
         id += 1;
     }
-    source.push_str(r#"]},"fonts":[]}"#);
+    source.push_str(r#"]},"fonts":[],"clocks":[]}"#);
     assert!(source.len() <= cap);
 
     let temp = TestDirectory::new("encoded-cap");
@@ -848,6 +1195,7 @@ fn imports_refuse_bad_sources_and_fonts_before_copying_anything() {
                 family: "Sans".into(),
                 asset_uri: "asset://fonts/Sans.ttf".into(),
             }],
+            clocks: Vec::new(),
         })
         .unwrap()
         .as_bytes(),
@@ -922,17 +1270,18 @@ fn imports_refuse_bad_sources_and_fonts_before_copying_anything() {
         Err(TitleImportError::UnresolvedImage { field, .. }) if field == field_id(9)
     ));
 
+    // A production clock element draws text, so it needs a font.
     let clock_source = temp.path("clock.fmtitle");
     let document = source_document(&shape_template("Clock")).replacen(
         "{\"type\": \"rectangle\"}",
-        "{\"type\": \"production_clock\"}",
+        "{\"type\": \"production_clock\", \"clock\": \"Show\", \"format\": null}",
         1,
     );
     write(&clock_source, document.as_bytes());
     assert!(matches!(
         store.import_title_template(&clock_source, &[]),
         Err(TitleImportError::Template(
-            TitleTemplateError::ProductionClockUnsupported(_)
+            TitleTemplateError::InvalidTemplate(_)
         ))
     ));
 

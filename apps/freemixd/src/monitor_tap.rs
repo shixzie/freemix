@@ -295,6 +295,10 @@ pub(crate) struct SimulatedMonitorTap {
     composed: Vec<ComposedScene>,
     /// The latest render of each title input, keyed by its full title state.
     rendered_titles: BTreeMap<InputId, RenderedTitle>,
+    /// The frame each title input on air (on Program or a realized overlay)
+    /// was first seen there, which since-take clocks count from. Observed
+    /// once per poll, so a take is dated to the first poll that sees it.
+    taken_titles: BTreeMap<InputId, u64>,
     /// The latest Program picture with overlays composited.
     program_overlaid: Option<(ProgramKey, Option<Arc<ImageFrame>>)>,
     /// Scene compositions performed, observed by tests to prove caching.
@@ -351,6 +355,7 @@ impl SimulatedMonitorTap {
         demand: bool,
         emit: &mut dyn FnMut(MonitorTap, Vec<u8>),
     ) {
+        self.observe_takes(state, project);
         if !demand {
             self.idle();
             return;
@@ -502,7 +507,8 @@ impl SimulatedMonitorTap {
         project: &Project,
     ) -> Option<&RenderedTitle> {
         let title = title_render::title_of_input(project, input)?;
-        let key = title_render::title_key(&self.titles, title, frame)?;
+        let taken_frame = self.taken_frame(input);
+        let key = title_render::title_key(&self.titles, title, frame, taken_frame)?;
         let cached = self
             .rendered_titles
             .get(&input)
@@ -513,12 +519,11 @@ impl SimulatedMonitorTap {
                 self.title_renders += 1;
             }
             let pipeline = self.pipeline.as_ref()?;
-            let keyed = title_render::render_title(
+            let keyed = title_render::render_title_at(
                 &self.titles,
-                project,
                 input,
                 title,
-                frame,
+                title_render::TitleTime::now(frame, project.settings().frame_rate, taken_frame),
                 pipeline.width(),
                 pipeline.height(),
             );
@@ -583,8 +588,14 @@ impl SimulatedMonitorTap {
             titles: std::iter::once(state.program)
                 .chain(state.overlays.iter().map(|overlay| overlay.source))
                 .map(|input| {
-                    title_render::title_of_input(project, input)
-                        .and_then(|title| title_render::title_key(&self.titles, title, state.frame))
+                    title_render::title_of_input(project, input).and_then(|title| {
+                        title_render::title_key(
+                            &self.titles,
+                            title,
+                            state.frame,
+                            self.taken_frame(input),
+                        )
+                    })
                 })
                 .collect(),
         };
@@ -625,6 +636,24 @@ impl SimulatedMonitorTap {
     fn idle(&mut self) {
         self.last_emit = None;
         self.last_key = None;
+    }
+
+    /// Dates each title input newly on Program or a realized overlay to the
+    /// current frame and forgets every title no longer on air.
+    fn observe_takes(&mut self, state: &RealizedMonitorState, project: &Project) {
+        let on_air = std::iter::once(state.program)
+            .chain(state.overlays.iter().map(|overlay| overlay.source))
+            .filter(|input| title_render::title_of_input(project, *input).is_some())
+            .collect::<Vec<_>>();
+        self.taken_titles.retain(|input, _| on_air.contains(input));
+        for input in on_air {
+            self.taken_titles.entry(input).or_insert(state.frame);
+        }
+    }
+
+    /// The frame `input` went on air at, while it is on air.
+    fn taken_frame(&self, input: InputId) -> Option<u64> {
+        self.taken_titles.get(&input).copied()
     }
 }
 
@@ -1546,6 +1575,42 @@ mod tests {
         }
         // Frames 4, 5, and 6 each render once; the repeated frame 4 hits.
         assert_eq!(tap.title_renders, 3);
+    }
+
+    #[test]
+    fn titles_on_program_or_an_overlay_are_dated_to_the_frame_they_went_on_air() {
+        let mut project = project(1_920, 1_080);
+        add_title(&mut project, 20, TITLE_URI, (200, 40, 10));
+        add_title(&mut project, 22, CLOCK_TITLE_URI, (200, 40, 10));
+        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
+        let observe = |tap: &mut SimulatedMonitorTap, frame, program, overlays: &[u128]| {
+            let mut realized = state(1, program, 1);
+            realized.frame = frame;
+            realized.overlays = overlays
+                .iter()
+                .map(|source| {
+                    overlay(
+                        *source,
+                        255,
+                        OverlayPositionPreset::FullFrame,
+                        OverlayBorderPreset::None,
+                    )
+                })
+                .collect();
+            // Taking is observed with or without monitor demand.
+            tap.poll_state(realized, &project, &server(), Instant::now(), false);
+            (tap.taken_frame(input_id(20)), tap.taken_frame(input_id(22)))
+        };
+        // Preview alone and non-title sources are not on air.
+        assert_eq!(observe(&mut tap, 3, 1, &[2]), (None, None));
+        assert_eq!(observe(&mut tap, 4, 1, &[22]), (None, Some(4)));
+        // A title stays dated to its take while it remains on air, on any
+        // bus.
+        assert_eq!(observe(&mut tap, 9, 20, &[22]), (Some(9), Some(4)));
+        assert_eq!(observe(&mut tap, 12, 22, &[20]), (Some(9), Some(4)));
+        // Off air forgets the take; the next take starts over.
+        assert_eq!(observe(&mut tap, 15, 1, &[20]), (Some(9), None));
+        assert_eq!(observe(&mut tap, 18, 1, &[22]), (None, Some(18)));
     }
 
     #[test]

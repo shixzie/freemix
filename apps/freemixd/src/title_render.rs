@@ -26,19 +26,31 @@
 //! the project frame duration, a documented approximation: the simulated
 //! daemon has no title playback state, so every title is treated as having
 //! started at frame zero.
+//!
+//! Production clock elements read the clocks their template defines (see
+//! [`fm_titles::TitleClock`]) through a registry built for each render from
+//! the daemon's clocks ([`TitleTime`]): the monotonic clock is the rendered
+//! frame's time on the project frame grid, the same timeline the engine
+//! paces, so a since-take stopwatch advances exactly one frame duration per
+//! frame from the frame the title went on air; time-of-day and countdown-to
+//! clocks read the system wall clock (UTC) sampled at the render, resolved
+//! through the clock's POSIX zone rules.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Read as _;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use fm_clock::ClockTime;
+use fm_clock::production::{TimeReading, UtcInstant};
 use fm_model::{InputKind, Project, TitleFieldEntry, TitleFieldValue, TitleInput};
 use fm_persistence::ProjectStore;
 use fm_titles::{
-    AssetCatalog, Color, ElementKind, FieldId, FieldValue, ImageSource, MAX_FONT_BYTES,
-    ReferenceRenderer, TitleId, TitleTemplate,
+    AssetCatalog, ClockSource, Color, ElementKind, FieldId, FieldValue, ImageSource,
+    MAX_FONT_BYTES, ReferenceRenderer, TitleClock, TitleClockKind, TitleClockTime, TitleId,
+    TitleTemplate, title_clock_registry,
 };
-use fm_types::InputId;
+use fm_types::{FrameRate, InputId};
 use fm_video::ImageFrame;
 
 /// Largest encoded image file a title loads.
@@ -57,6 +69,11 @@ pub(crate) struct LoadedTitleTemplate {
     /// Whether a rendered picture depends on scene time (clock, ticker, or
     /// animated elements), so the frame cursor belongs in its cache key.
     time_dependent: bool,
+    /// The production clocks the template defines for its elements.
+    clocks: Vec<TitleClock>,
+    /// Whether a clock counts from the title's take, so the take frame
+    /// belongs in its cache key.
+    uses_take: bool,
 }
 
 /// A template's catalog and every image URI it already tried to decode.
@@ -83,7 +100,18 @@ impl LoadedTitleTemplate {
                 attempted: BTreeSet::new(),
             }),
             time_dependent,
+            clocks: Vec::new(),
+            uses_take: false,
         }
+    }
+
+    /// The template with the production clocks its stored document defines.
+    pub(crate) fn with_clocks(mut self, clocks: Vec<TitleClock>) -> Self {
+        self.uses_take = clocks
+            .iter()
+            .any(|clock| matches!(clock.kind, TitleClockKind::SinceTake { .. }));
+        self.clocks = clocks;
+        self
     }
 
     pub(crate) const fn time_dependent(&self) -> bool {
@@ -176,7 +204,7 @@ impl TitleAssets {
                 }
                 assets.templates.insert(
                     title.template_uri.clone(),
-                    LoadedTitleTemplate::new(stored.template, catalog),
+                    LoadedTitleTemplate::new(stored.template, catalog).with_clocks(stored.clocks),
                 );
             }
             if let Some(loaded) = assets.templates.get_mut(&title.template_uri) {
@@ -303,59 +331,107 @@ pub(crate) fn title_of_input(project: &Project, input: InputId) -> Option<&Title
 }
 
 /// Everything one rendered title picture depends on. The frame is present
-/// only for a time-dependent template.
+/// only for a time-dependent template, the take frame only for a template
+/// with a since-take clock.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TitleKey {
     template_uri: String,
     field_revision: u64,
     fields: Vec<TitleFieldEntry>,
     frame: Option<u64>,
+    taken_frame: Option<u64>,
 }
 
-/// The cache key of `title` rendered at `frame`, or `None` when its template
-/// was not loaded.
-pub(crate) fn title_key(assets: &TitleAssets, title: &TitleInput, frame: u64) -> Option<TitleKey> {
+/// The cache key of `title` rendered at `frame` after going on air at
+/// `taken_frame`, or `None` when its template was not loaded.
+pub(crate) fn title_key(
+    assets: &TitleAssets,
+    title: &TitleInput,
+    frame: u64,
+    taken_frame: Option<u64>,
+) -> Option<TitleKey> {
     let loaded = assets.template(&title.template_uri)?;
     Some(TitleKey {
         template_uri: title.template_uri.clone(),
         field_revision: title.field_revision,
         fields: title.fields.clone(),
         frame: loaded.time_dependent().then_some(frame),
+        taken_frame: taken_frame.filter(|_| loaded.uses_take),
     })
 }
 
-/// Renders `title` at `frame` and scales it to `width`x`height`.
+/// When a title is rendered, in the daemon's clock domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TitleTime {
+    /// The engine frame shown. Scene time, and the monotonic clock of
+    /// production clocks, are this frame's start on the project frame grid.
+    pub(crate) frame: u64,
+    pub(crate) rate: FrameRate,
+    /// Wall-clock UTC for time-of-day and countdown-to clocks.
+    pub(crate) utc: UtcInstant,
+    /// The frame the title went on air at, while it is on air.
+    pub(crate) taken_frame: Option<u64>,
+}
+
+impl TitleTime {
+    /// `frame` of a title on air since `taken_frame`, read against the
+    /// system wall clock now.
+    pub(crate) fn now(frame: u64, rate: FrameRate, taken_frame: Option<u64>) -> Self {
+        Self {
+            frame,
+            rate,
+            utc: utc_now(),
+            taken_frame,
+        }
+    }
+
+    fn scene_time_ms(self) -> u64 {
+        scene_time_ms(self.rate, self.frame)
+    }
+
+    /// The production clock reading of this render.
+    fn clock_time(self) -> TitleClockTime {
+        TitleClockTime {
+            at: TimeReading::new(frame_clock_time(self.rate, self.frame), self.utc),
+            taken_at: self
+                .taken_frame
+                .map(|frame| frame_clock_time(self.rate, frame)),
+        }
+    }
+}
+
+/// The start of `frame` on the frame grid of `rate`, in nanoseconds,
+/// saturating.
+fn frame_clock_time(rate: FrameRate, frame: u64) -> ClockTime {
+    let numerator = u128::from(rate.numerator()).max(1);
+    let nanos = u128::from(frame) * 1_000_000_000 * u128::from(rate.denominator()) / numerator;
+    ClockTime::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+}
+
+/// The system wall clock as a UTC instant; the Unix epoch if the clock is
+/// set before it or beyond year 9999.
+pub(crate) fn utc_now() -> UtcInstant {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| {
+            UtcInstant::new(i64::try_from(since.as_secs()).ok()?, since.subsec_nanos()).ok()
+        })
+        .unwrap_or(UtcInstant::UNIX_EPOCH)
+}
+
+/// Renders `title` at `time` and scales it to `width`x`height`.
 ///
 /// The result is premultiplied RGBA8 that keeps the template's alpha, ready
 /// to be layered as an overlay or flattened over black. Returns `None` when
 /// the template was not loaded or does not instantiate, a persisted field
-/// does not match the template, or rendering fails.
-pub(crate) fn render_title(
-    assets: &TitleAssets,
-    project: &Project,
-    input: InputId,
-    title: &TitleInput,
-    frame: u64,
-    width: u32,
-    height: u32,
-) -> Option<ImageFrame> {
-    render_title_at(
-        assets,
-        input,
-        title,
-        scene_time_ms(project.settings().frame_rate, frame),
-        width,
-        height,
-    )
-}
-
-/// Renders `title` at `scene_time_ms` and scales it to `width`x`height`;
-/// see [`render_title`].
+/// does not match the template, or rendering fails. Production clock
+/// elements read the template's clocks at `time`.
 pub(crate) fn render_title_at(
     assets: &TitleAssets,
     input: InputId,
     title: &TitleInput,
-    scene_time_ms: u64,
+    time: TitleTime,
     width: u32,
     height: u32,
 ) -> Option<ImageFrame> {
@@ -371,9 +447,19 @@ pub(crate) fn render_title_at(
         .map(|entry| (FieldId::new(entry.id.get()), field_value(&entry.value)))
         .collect::<Vec<_>>();
     scene.update_fields(scene.revision(), &updates).ok()?;
-    let output = ReferenceRenderer
-        .render(&scene, scene_time_ms, &catalog)
-        .ok()?;
+    let output = if loaded.clocks.is_empty() {
+        ReferenceRenderer.render(&scene, time.scene_time_ms(), &catalog)
+    } else {
+        let clock_time = time.clock_time();
+        let registry = title_clock_registry(&loaded.clocks, clock_time).ok()?;
+        ReferenceRenderer.render_with_clocks(
+            &scene,
+            time.scene_time_ms(),
+            &catalog,
+            ClockSource::new(&registry, clock_time.at),
+        )
+    }
+    .ok()?;
     if output.frame.width() == width && output.frame.height() == height {
         return Some(output.frame);
     }
@@ -495,6 +581,15 @@ mod tests {
         }
     }
 
+    fn frame_zero() -> TitleTime {
+        TitleTime {
+            frame: 0,
+            rate: fm_types::FrameRate::new(25, 1).unwrap(),
+            utc: UtcInstant::UNIX_EPOCH,
+            taken_frame: None,
+        }
+    }
+
     fn pixel(frame: &ImageFrame, x: u32, y: u32) -> [u8; 4] {
         let pixel = frame.pixel(x, y).unwrap();
         [pixel.r, pixel.g, pixel.b, pixel.a]
@@ -524,7 +619,7 @@ mod tests {
             &assets,
             input,
             &title("asset://images/runtime.png"),
-            0,
+            frame_zero(),
             64,
             36,
         )
@@ -539,7 +634,8 @@ mod tests {
         // An image that does not decode, or does not exist, keeps the
         // reference renderer's placeholder rather than any decoded picture.
         for uri in ["asset://images/corrupt.png", "asset://images/absent.png"] {
-            let placeholder = render_title_at(&assets, input, &title(uri), 0, 64, 36).unwrap();
+            let placeholder =
+                render_title_at(&assets, input, &title(uri), frame_zero(), 64, 36).unwrap();
             assert_ne!(pixel(&placeholder, 8, 8), [100, 50, 25, 128], "{uri}");
             assert_ne!(pixel(&placeholder, 8, 8), [0; 4], "{uri}");
         }
@@ -548,5 +644,434 @@ mod tests {
         assert!(images.catalog.image("asset://images/runtime.png").is_some());
         assert!(images.catalog.image("asset://images/corrupt.png").is_none());
         assert_eq!(images.attempted.len(), 4);
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    //! Production clocks on title inputs, read in the daemon's clock domain.
+    //!
+    //! Exact-text tests render the clock title and, as the oracle, a plain
+    //! text title holding the expected string with the same bounds and style.
+    //! They need a real font: `FM_TITLES_FONT`, then well-known system paths,
+    //! then a scan of the system font roots; they skip when none is found
+    //! unless `FM_REQUIRE_FONT=1`. Every other test is font-free.
+
+    use std::num::NonZeroU128;
+    use std::path::{Path, PathBuf};
+
+    use fm_clock::production::{DurationFormat, OverrunPolicy, TimeOfDayFormat, TimeZone};
+    use fm_model::ProjectSettings;
+    use fm_titles::{
+        Bounds, Element, ElementId, FieldDefinition, FontStyle, ProductionClockSpec, Style,
+        TemplateId,
+    };
+    use fm_types::{
+        AudioFormat, ChannelLayout, ColorMetadata, PixelFormat, ProjectId, SampleFormat,
+        SampleRate, ScanMode, VideoDimensions, VideoFormat,
+    };
+
+    use super::*;
+
+    const FAMILY: &str = "Clock face";
+    const WIDTH: u32 = 240;
+    const HEIGHT: u32 = 48;
+    const BACKGROUND: Color = Color::new(0, 0, 96, 255);
+
+    fn clock_name(text: &str) -> fm_clock::production::ClockName {
+        fm_clock::production::ClockName::new(text).unwrap()
+    }
+
+    fn utc(hour: u8, minute: u8, second: u8) -> UtcInstant {
+        UtcInstant::from_utc_civil(2026, 10, 14, hour, minute, second, 0).unwrap()
+    }
+
+    fn rate() -> FrameRate {
+        FrameRate::new(25, 1).unwrap()
+    }
+
+    fn input() -> InputId {
+        InputId::new(NonZeroU128::MIN)
+    }
+
+    /// Doors at 23:00 UTC (overrunning), US Eastern time of day, and a
+    /// since-take stopwatch.
+    fn clocks() -> Vec<TitleClock> {
+        vec![
+            TitleClock {
+                name: clock_name("doors"),
+                kind: TitleClockKind::CountdownTo {
+                    target: utc(23, 0, 0),
+                    overrun: OverrunPolicy::Continue,
+                    format: DurationFormat::MinutesSeconds,
+                },
+            },
+            TitleClock {
+                name: clock_name("eastern"),
+                kind: TitleClockKind::TimeOfDay {
+                    zone: TimeZone::parse_posix("EST5EDT,M3.2.0,M11.1.0").unwrap(),
+                    format: TimeOfDayFormat::Hours24,
+                },
+            },
+            TitleClock {
+                name: clock_name("on-air"),
+                kind: TitleClockKind::SinceTake {
+                    format: DurationFormat::MinutesSeconds,
+                },
+            },
+        ]
+    }
+
+    fn element(kind: ElementKind) -> Element {
+        Element {
+            id: ElementId::new(NonZeroU128::MIN),
+            name: "clock".into(),
+            bounds: Bounds {
+                x: 8,
+                y: 4,
+                width: WIDTH - 16,
+                height: HEIGHT - 8,
+            },
+            z_index: 0,
+            visible: true,
+            style: Style {
+                fill: Color::new(255, 255, 255, 255),
+                background: Some(BACKGROUND),
+                opacity: 255,
+                font: Some(FontStyle {
+                    family: FAMILY.into(),
+                    size_px: 28,
+                }),
+                alignment: fm_titles::Alignment::default(),
+            },
+            color_field: None,
+            kind,
+            animations: Vec::new(),
+        }
+    }
+
+    fn template(element: Element, fields: Vec<FieldDefinition>) -> TitleTemplate {
+        TitleTemplate {
+            id: TemplateId::new(NonZeroU128::MIN),
+            name: "Clock".into(),
+            width: WIDTH,
+            height: HEIGHT,
+            background: Color::TRANSPARENT,
+            fields,
+            elements: vec![element],
+        }
+    }
+
+    /// Assets with one template per clock, at `asset://titles/<clock>`.
+    fn assets(catalog: &AssetCatalog) -> TitleAssets {
+        let mut assets = TitleAssets::default();
+        for clock in clocks() {
+            let shown = clock.name.clone();
+            let element = element(ElementKind::ProductionClock(ProductionClockSpec::new(
+                shown.clone(),
+            )));
+            let own = clocks()
+                .into_iter()
+                .filter(|candidate| candidate.name == shown)
+                .collect();
+            assets.insert(
+                format!("asset://titles/{shown}"),
+                LoadedTitleTemplate::new(template(element, Vec::new()), catalog.clone())
+                    .with_clocks(own),
+            );
+        }
+        assets
+    }
+
+    fn title(clock: &str) -> TitleInput {
+        TitleInput {
+            template_uri: format!("asset://titles/{clock}"),
+            field_revision: 0,
+            fields: Vec::new(),
+        }
+    }
+
+    fn at(frame: u64, utc: UtcInstant, taken_frame: Option<u64>) -> TitleTime {
+        TitleTime {
+            frame,
+            rate: rate(),
+            utc,
+            taken_frame,
+        }
+    }
+
+    #[test]
+    fn title_time_maps_frames_onto_the_monotonic_frame_grid() {
+        let time = at(50, utc(12, 0, 0), Some(25));
+        let clock = time.clock_time();
+        assert_eq!(clock.at.monotonic, ClockTime::from_nanos(2_000_000_000));
+        assert_eq!(clock.at.utc, utc(12, 0, 0));
+        assert_eq!(clock.taken_at, Some(ClockTime::from_nanos(1_000_000_000)));
+        assert_eq!(time.scene_time_ms(), 2_000);
+        let ntsc = TitleTime {
+            rate: FrameRate::new(30_000, 1_001).unwrap(),
+            ..at(30, utc(12, 0, 0), None)
+        };
+        assert_eq!(
+            ntsc.clock_time().at.monotonic,
+            ClockTime::from_nanos(1_001_000_000)
+        );
+        assert_eq!(ntsc.clock_time().taken_at, None);
+        // The system wall clock is after this code was written.
+        assert!(utc_now() > utc(0, 0, 0));
+    }
+
+    #[test]
+    fn only_since_take_templates_key_their_renders_by_the_take() {
+        let assets = assets(&AssetCatalog::new());
+        let since = title("on-air");
+        let doors = title("doors");
+        let key = |title: &TitleInput, taken| title_key(&assets, title, 10, taken).unwrap();
+        assert_ne!(key(&since, None), key(&since, Some(3)));
+        assert_ne!(key(&since, Some(3)), key(&since, Some(4)));
+        assert_eq!(key(&doors, None), key(&doors, Some(3)));
+        // Every production clock template is time-dependent.
+        assert_ne!(
+            title_key(&assets, &doors, 10, None),
+            title_key(&assets, &doors, 11, None)
+        );
+    }
+
+    #[test]
+    fn clock_titles_render_their_background_without_a_font() {
+        // Without the font every clock element still draws its background
+        // box and nothing outside it; the picture does not depend on time.
+        let assets = assets(&AssetCatalog::new());
+        for clock in ["doors", "eastern", "on-air"] {
+            let frame = render_title_at(
+                &assets,
+                input(),
+                &title(clock),
+                at(100, utc(22, 59, 30), Some(25)),
+                WIDTH,
+                HEIGHT,
+            )
+            .unwrap();
+            let pixel = |x, y| {
+                let pixel = frame.pixel(x, y).unwrap();
+                [pixel.r, pixel.g, pixel.b, pixel.a]
+            };
+            assert_eq!(pixel(8, 4), [0, 0, 96, 255], "{clock}");
+            assert_eq!(pixel(WIDTH - 9, HEIGHT - 5), [0, 0, 96, 255], "{clock}");
+            assert_eq!(pixel(7, 4), [0; 4], "{clock}");
+            assert_eq!(pixel(WIDTH - 8, HEIGHT - 4), [0; 4], "{clock}");
+            let later = render_title_at(
+                &assets,
+                input(),
+                &title(clock),
+                at(900, utc(23, 30, 0), None),
+                WIDTH,
+                HEIGHT,
+            )
+            .unwrap();
+            assert_eq!(frame.pixels(), later.pixels(), "{clock}");
+        }
+    }
+
+    #[test]
+    fn stored_clock_templates_load_with_their_clocks() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+        let shown = element(ElementKind::ProductionClock(ProductionClockSpec::new(
+            clock_name("on-air"),
+        )));
+        let document =
+            fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
+                template: template(shown, Vec::new()),
+                fonts: vec![fm_persistence::TitleFontAsset {
+                    family: FAMILY.into(),
+                    asset_uri: "asset://fonts/missing.ttf".into(),
+                }],
+                clocks: clocks().split_off(2),
+            })
+            .unwrap();
+        let path = store.assets_root().join("titles/on-air.fmtitle");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, document).unwrap();
+        let mut project = Project::new(
+            ProjectId::new(NonZeroU128::MIN),
+            "Clocks",
+            ProjectSettings {
+                frame_rate: rate(),
+                video: VideoFormat {
+                    dimensions: VideoDimensions::new(320, 180).unwrap(),
+                    frame_rate: rate(),
+                    pixel_format: PixelFormat::Rgba8,
+                    scan: ScanMode::Progressive,
+                    color: ColorMetadata::default(),
+                },
+                audio: AudioFormat {
+                    sample_rate: SampleRate::new(48_000).unwrap(),
+                    sample_format: SampleFormat::I16,
+                    channels: ChannelLayout::stereo(),
+                },
+            },
+        );
+        project.add_input(fm_model::Input {
+            id: input(),
+            name: "Clock".into(),
+            kind: InputKind::Title(TitleInput {
+                template_uri: "asset://titles/on-air.fmtitle".into(),
+                field_revision: 0,
+                fields: Vec::new(),
+            }),
+            required_capabilities: Vec::new(),
+        });
+        let assets = TitleAssets::load(&store, &project);
+        let loaded = assets.template("asset://titles/on-air.fmtitle").unwrap();
+        assert_eq!(loaded.clocks, clocks().split_off(2));
+        assert!(loaded.uses_take);
+        assert!(loaded.time_dependent());
+    }
+
+    // -----------------------------------------------------------------------
+    // Exact text (font required)
+    // -----------------------------------------------------------------------
+
+    /// The picture a plain text title holding `expected` draws.
+    fn oracle(catalog: &AssetCatalog, expected: &str) -> Vec<u8> {
+        let field = FieldId::new(NonZeroU128::MIN);
+        let mut assets = TitleAssets::default();
+        assets.insert(
+            "asset://titles/oracle",
+            LoadedTitleTemplate::new(
+                template(
+                    element(ElementKind::Text { field }),
+                    vec![FieldDefinition {
+                        id: field,
+                        name: "Text".into(),
+                        default: FieldValue::Text(expected.into()),
+                    }],
+                ),
+                catalog.clone(),
+            ),
+        );
+        render_title_at(
+            &assets,
+            input(),
+            &TitleInput {
+                template_uri: "asset://titles/oracle".into(),
+                field_revision: 0,
+                fields: Vec::new(),
+            },
+            at(0, utc(0, 0, 0), None),
+            WIDTH,
+            HEIGHT,
+        )
+        .unwrap()
+        .pixels()
+        .to_vec()
+    }
+
+    #[test]
+    fn clock_titles_draw_exactly_the_clock_text_of_the_daemon_time() {
+        let Some(catalog) = catalog() else { return };
+        let assets = assets(&catalog);
+        for (clock, time, expected) in [
+            // 30 s before the 23:00 UTC doors, then 65 s after them.
+            ("doors", at(0, utc(22, 59, 30), None), "00:30"),
+            ("doors", at(0, utc(23, 1, 5), None), "-01:05"),
+            // 22:59:30 UTC is 18:59:30 EDT in October.
+            ("eastern", at(0, utc(22, 59, 30), None), "18:59:30"),
+            // 15:30 UTC on 2026-12-01 is 10:30 EST.
+            (
+                "eastern",
+                at(
+                    0,
+                    UtcInstant::from_utc_civil(2026, 12, 1, 15, 30, 0, 0).unwrap(),
+                    None,
+                ),
+                "10:30:00",
+            ),
+            // Taken at frame 25, read at frame 1_600: 63 s at 25 fps.
+            ("on-air", at(1_600, utc(0, 0, 0), Some(25)), "01:03"),
+            ("on-air", at(1_600, utc(0, 0, 0), None), "00:00"),
+        ] {
+            let rendered = render_title_at(&assets, input(), &title(clock), time, WIDTH, HEIGHT)
+                .unwrap()
+                .pixels()
+                .to_vec();
+            let wanted = oracle(&catalog, expected);
+            assert!(wanted != oracle(&catalog, ""), "the font draws {expected}");
+            assert!(rendered == wanted, "{clock} at {time:?} is not {expected}");
+        }
+    }
+
+    const DIRECT_FONTS: &[&str] = &[
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+    ];
+
+    const FONT_ROOTS: &[&str] = &[
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
+        "/Library/Fonts",
+        "/System/Library/Fonts",
+        "C:\\Windows\\Fonts",
+    ];
+
+    fn catalog() -> Option<AssetCatalog> {
+        let face = std::env::var_os("FM_TITLES_FONT")
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(DIRECT_FONTS.iter().map(PathBuf::from))
+            .find_map(|path| parse_font(&path))
+            .or_else(|| {
+                FONT_ROOTS
+                    .iter()
+                    .find_map(|root| scan_for_font(Path::new(root), 0))
+            });
+        let Some(face) = face else {
+            assert!(
+                std::env::var("FM_REQUIRE_FONT").as_deref() != Ok("1"),
+                "FM_REQUIRE_FONT=1 but no usable font file was found"
+            );
+            eprintln!("skipping exact clock text: no font file available");
+            return None;
+        };
+        Some(AssetCatalog::new().with_font(FAMILY, face))
+    }
+
+    fn parse_font(path: &Path) -> Option<fm_titles::FontFace> {
+        fm_titles::FontFace::from_bytes(std::fs::read(path).ok()?).ok()
+    }
+
+    fn scan_for_font(directory: &Path, depth: u32) -> Option<fm_titles::FontFace> {
+        if depth > 4 {
+            return None;
+        }
+        let mut entries = std::fs::read_dir(directory)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+            .iter()
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| {
+                            extension.eq_ignore_ascii_case("ttf")
+                                || extension.eq_ignore_ascii_case("otf")
+                        })
+            })
+            .find_map(|path| parse_font(path))
+            .or_else(|| {
+                entries
+                    .iter()
+                    .filter(|path| path.is_dir())
+                    .find_map(|path| scan_for_font(path, depth + 1))
+            })
     }
 }

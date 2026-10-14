@@ -2008,8 +2008,9 @@ Current implementation boundary for item 1 project hosting: project schema
 27 adds title inputs that reference a bundled `.fmtitle` template and carry a
 persisted field revision plus typed text, number, colour, and image field
 values within bounded counts, text length, and content bytes. `fm-persistence`
-reads and writes templates strictly (every element kind except production
-clocks, 1 MiB cap), imports fonts with dedupe and parse validation, checks
+reads and writes templates strictly (every element kind, 1 MiB cap; schema 29
+adds a `clocks` table that defines exactly the production clocks the
+template's elements show), imports fonts with dedupe and parse validation, checks
 project fields against their templates, audits missing template, font, and
 image assets, and copies title assets on export and append, refusing rather
 than renaming keys. `freemix-cli title-input-add` imports a template with
@@ -2025,7 +2026,10 @@ composite active overlays on Program. Native freemixd realizes each title
 input as a live source frame rendered by the reference renderer on a title
 worker off the session loop, re-rendered after field changes (and at a
 bounded refresh of at most 25 Hz for clock, ticker, and animated templates),
-so titles reach Program, Scenes, and project-output overlays. Image fields
+so titles reach Program, Scenes, and project-output overlays. Production
+clock elements render in both simulated monitors and native titles from a
+per-render clock registry in the daemon's clock domain (see the `SW-013`
+boundary). Image fields
 load their PNG/JPEG assets on demand, including URIs first set at runtime, in
 `native-media` builds; a build without `fm-codec-image` keeps the image
 placeholder. The title editor core and its protocol bridge live in
@@ -2034,8 +2038,9 @@ typed fields with conflict rebase/discard, previews, saves, takes on a chosen
 overlay channel, updates live, and takes titles off air. Remaining gaps: no
 grapheme shaping or bidi, no template designer persistence, titles cannot be
 stinger media, runtime-added title inputs are not rendered in simulated
-mode, and template field names are not localized, so `GX-001` remains
-planned.
+mode, scene time (animations, tickers, scene clocks) still starts at frame
+zero rather than at the take, and template field names are not localized, so
+`GX-001` remains planned.
 
 Current implementation boundary for item 1 scoreboards and tickers
 (`GX-003`): `fm-titles` provides a deterministic ticker crawl (horizontal
@@ -2246,10 +2251,25 @@ whose readings flatten into title binding values. `fm-titles` clock elements
 can reference a named production clock with an optional per-element preset
 through a caller-supplied clock source, degrading to a background-only element
 when unresolved, and scene and scoreboard clocks share the same formatter.
-Remaining gaps: no engine, daemon, protocol, CLI, UI, or persistence wiring;
-designer compositions and crawls take no clock source; no IANA tz
-database, leap seconds, drop-frame timecode, playback-speed-aware media
-remaining, playlist remaining time, or locale formats. `SW-013` remains planned.
+Title templates define the clocks they show (schema 29 `.fmtitle` `clocks`
+table, strictly decoded with canonical POSIX zones and whole-second UTC
+targets): time of day in a POSIX zone with its DST rules, a countdown to a
+UTC instant that holds at zero or overruns negative, and a stopwatch since
+the title's take. freemixd builds a registry from those definitions for every
+title render: the monotonic clock is the rendered engine frame on the project
+frame grid, time of day and countdowns read the system wall clock, and the
+take is the first frame the title is on Program or a realized overlay
+(projected frames in native mode, monitor polls in simulated mode); clock
+titles refresh at the bounded title rate. `freemix-cli title-input-add`
+imports clock templates. Remaining gaps: no shared project or engine clock
+registry, so title clocks are per title, not operator-controllable timers,
+and not exposed through the protocol, CLI commands, or UI; no project-level
+time zone (each time-of-day clock names its zone); templates cannot show
+media remaining, session, or playlist clocks; the simulated take is dated at
+monitor-poll granularity; designer compositions and crawls take no clock
+source; no IANA tz database, leap seconds, drop-frame timecode,
+playback-speed-aware media remaining, or locale formats. `SW-013` remains
+planned.
 
 
 Current implementation boundary for item 8: `fm-automation` provides a

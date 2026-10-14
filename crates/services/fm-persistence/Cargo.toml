@@ -6,13 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+fm-clock = { path = "../../media/fm-clock" }
 fm-model = { path = "../../foundation/fm-model" }
 fm-titles = { path = "../../features/fm-titles" }
 fm-types = { path = "../../foundation/fm-types" }
 turso = { version = "0.7.2", default-features = false }
-
-[dev-dependencies]
-fm-clock = { path = "../../media/fm-clock" }
 
 [lints]
 workspace = true

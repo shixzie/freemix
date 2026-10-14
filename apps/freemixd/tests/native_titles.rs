@@ -94,6 +94,7 @@ fn save_title_project(path: &Path) {
     let document = fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
         template,
         fonts: Vec::new(),
+        clocks: Vec::new(),
     })
     .unwrap();
     let template_path = store.assets_root().join(TEMPLATE_KEY);

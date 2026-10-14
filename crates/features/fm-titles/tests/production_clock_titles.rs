@@ -23,8 +23,9 @@ use fm_titles::{
     Alignment, AssetCatalog, Bounds, ClockDirection, ClockFormat, ClockSource, ClockSpec,
     ClockUnresolved, Color, Degradation, DegradedElement, Element, ElementId, ElementKind,
     FieldDefinition, FieldId, FieldValue, FontStyle, ProductionClockSpec, ReferenceRenderer, Style,
-    TemplateId, TitleId, TitleTemplate, ValidationError, evaluate_clock, evaluate_production_clock,
-    validate_template,
+    TemplateId, TitleClock, TitleClockError, TitleClockKind, TitleClockTime, TitleId,
+    TitleTemplate, ValidationError, evaluate_clock, evaluate_production_clock,
+    title_clock_registry, validate_template, validate_title_clocks,
 };
 
 const FAMILY: &str = "test-face";
@@ -576,4 +577,215 @@ fn scan_for_font(directory: &Path, depth: u32) -> Option<Vec<u8>> {
         .iter()
         .filter(|path| path.is_dir())
         .find_map(|path| scan_for_font(path, depth + 1))
+}
+
+// ---------------------------------------------------------------------------
+// Template-defined clocks (font-free)
+// ---------------------------------------------------------------------------
+
+fn title_clocks() -> Vec<TitleClock> {
+    vec![
+        TitleClock {
+            name: name("doors"),
+            kind: TitleClockKind::CountdownTo {
+                target: utc(2026, 10, 14, 23, 0, 0),
+                overrun: OverrunPolicy::StopAtTarget,
+                format: DurationFormat::HoursMinutesSeconds,
+            },
+        },
+        TitleClock {
+            name: name("late"),
+            kind: TitleClockKind::CountdownTo {
+                target: utc(2026, 10, 14, 23, 0, 0),
+                overrun: OverrunPolicy::Continue,
+                format: DurationFormat::MinutesSeconds,
+            },
+        },
+        TitleClock {
+            name: name("on-air"),
+            kind: TitleClockKind::SinceTake {
+                format: DurationFormat::MinutesSecondsTenths,
+            },
+        },
+        TitleClock {
+            name: name("eastern"),
+            kind: TitleClockKind::TimeOfDay {
+                zone: TimeZone::parse_posix("EST5EDT,M3.2.0,M11.1.0").unwrap(),
+                format: TimeOfDayFormat::Hours24,
+            },
+        },
+    ]
+}
+
+fn title_clock_text(
+    clock: &str,
+    format: Option<DisplayFormat>,
+    at: TimeReading,
+    taken_at: Option<ClockTime>,
+) -> String {
+    let registry = title_clock_registry(&title_clocks(), TitleClockTime { at, taken_at }).unwrap();
+    let spec = ProductionClockSpec {
+        clock: name(clock),
+        format,
+    };
+    text(&registry, &spec, at)
+}
+
+#[test]
+fn countdown_to_counts_the_wall_clock_down_to_its_target() {
+    let reading = |hour, minute, second, nanos| {
+        TimeReading::new(
+            mono_ms(5_000),
+            UtcInstant::from_utc_civil(2026, 10, 14, hour, minute, second, nanos).unwrap(),
+        )
+    };
+    for (at, doors, late) in [
+        (reading(21, 30, 0, 0), "01:30:00", "90:00"),
+        // Countdowns round up: half a second before the target still shows 1.
+        (reading(22, 59, 59, 500_000_000), "00:00:01", "00:01"),
+        (reading(23, 0, 0, 0), "00:00:00", "00:00"),
+        // Past the target one holds zero and the other runs negative.
+        (reading(23, 0, 1, 0), "00:00:00", "-00:01"),
+        (reading(23, 2, 5, 0), "00:00:00", "-02:05"),
+    ] {
+        assert_eq!(title_clock_text("doors", None, at, None), doors);
+        assert_eq!(title_clock_text("late", None, at, None), late);
+    }
+    // An element preset reformats the same value.
+    assert_eq!(
+        title_clock_text(
+            "doors",
+            Some(DisplayFormat::Duration(DurationFormat::Seconds)),
+            reading(22, 58, 20, 0),
+            None
+        ),
+        "100"
+    );
+    // A target beyond the clock range saturates instead of failing.
+    let far = TimeReading::new(mono_ms(0), utc(1, 1, 1, 0, 0, 0));
+    let registry = title_clock_registry(
+        &title_clocks(),
+        TitleClockTime {
+            at: far,
+            taken_at: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        registry.reading(&name("doors"), far).unwrap().value,
+        Some(ClockValue::MAX)
+    );
+}
+
+#[test]
+fn since_take_runs_from_the_take_instant_and_rests_at_zero_off_air() {
+    let at = TimeReading::new(mono_ms(12_345), utc(2026, 1, 1, 0, 0, 0));
+    assert_eq!(title_clock_text("on-air", None, at, None), "00:00.0");
+    assert_eq!(
+        title_clock_text("on-air", None, at, Some(mono_ms(2_000))),
+        "00:10.3"
+    );
+    assert_eq!(
+        title_clock_text("on-air", None, at, Some(mono_ms(12_345))),
+        "00:00.0"
+    );
+    // A take after the reading is not on air yet.
+    assert_eq!(
+        title_clock_text("on-air", None, at, Some(mono_ms(20_000))),
+        "00:00.0"
+    );
+    assert_eq!(
+        title_clock_text(
+            "on-air",
+            Some(DisplayFormat::Duration(DurationFormat::HoursMinutesSeconds)),
+            TimeReading::new(mono_ms(3_725_000), utc(2026, 1, 1, 0, 0, 0)),
+            Some(mono_ms(0))
+        ),
+        "01:02:05"
+    );
+}
+
+#[test]
+fn template_time_of_day_follows_its_posix_zone_across_dst() {
+    for (instant, expected) in [
+        // 2026-03-08 02:00 EST springs forward to 03:00 EDT (07:00 UTC).
+        (utc(2026, 3, 8, 6, 59, 59), "01:59:59"),
+        (utc(2026, 3, 8, 7, 0, 0), "03:00:00"),
+        // 2026-11-01 02:00 EDT falls back to 01:00 EST (06:00 UTC).
+        (utc(2026, 11, 1, 5, 59, 59), "01:59:59"),
+        (utc(2026, 11, 1, 6, 0, 0), "01:00:00"),
+    ] {
+        assert_eq!(
+            title_clock_text("eastern", None, at_utc(instant), None),
+            expected
+        );
+    }
+    assert_eq!(
+        title_clock_text(
+            "eastern",
+            Some(DisplayFormat::TimeOfDay(TimeOfDayFormat::Rfc3339)),
+            at_utc(utc(2026, 7, 4, 16, 30, 0)),
+            None
+        ),
+        "2026-07-04T12:30:00-04:00"
+    );
+}
+
+#[test]
+fn template_clock_tables_must_match_the_elements_exactly() {
+    let element_with_id = |index: u128, spec: ProductionClockSpec| {
+        let mut element = clock_element(spec);
+        element.id = ElementId::new(NonZeroU128::new(index).unwrap());
+        element
+    };
+    let mut elements = title_clocks()
+        .into_iter()
+        .zip(1..)
+        .map(|(clock, index)| element_with_id(index, ProductionClockSpec::new(clock.name)))
+        .collect::<Vec<_>>();
+    let build = |elements: &[Element]| TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(1).unwrap()),
+        name: "clocks".into(),
+        width: WIDTH,
+        height: HEIGHT,
+        background: Color::TRANSPARENT,
+        fields: Vec::new(),
+        elements: elements.to_vec(),
+    };
+    assert_eq!(
+        validate_title_clocks(&build(&elements), &title_clocks()),
+        Ok(())
+    );
+
+    let mut clocks = title_clocks();
+    clocks.push(clocks[0].clone());
+    assert_eq!(
+        validate_title_clocks(&build(&elements), &clocks),
+        Err(TitleClockError::DuplicateClock(name("doors")))
+    );
+    assert_eq!(
+        validate_title_clocks(&build(&elements[1..]), &title_clocks()),
+        Err(TitleClockError::UnusedClock(name("doors")))
+    );
+    assert_eq!(
+        validate_title_clocks(&build(&elements), &title_clocks()[1..]),
+        Err(TitleClockError::UndefinedClock {
+            element: ElementId::new(NonZeroU128::new(1).unwrap()),
+            clock: name("doors"),
+        })
+    );
+    elements[3] = element_with_id(
+        4,
+        ProductionClockSpec::with_format(
+            name("eastern"),
+            DisplayFormat::Duration(DurationFormat::Seconds),
+        ),
+    );
+    assert_eq!(
+        validate_title_clocks(&build(&elements), &title_clocks()),
+        Err(TitleClockError::FormatMismatch {
+            element: ElementId::new(NonZeroU128::new(4).unwrap()),
+            clock: name("eastern"),
+        })
+    );
 }

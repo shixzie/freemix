@@ -3945,10 +3945,13 @@ Usage:
       Imports a title template and adds a title input showing its default
       field values (field_revision 0). The source is a .fmtitle document in
       the stored format (schema_version equal to the current project schema,
-      a \"template\" object, and \"fonts\": []); every font family the template
-      draws with is supplied once with --font and must parse as a font. The
-      template is stored as assets/titles/<source-stem>.fmtitle and fonts are
-      copied to assets/fonts/, reusing identical files. Image field defaults
+      a \"template\" object, \"fonts\": [], and a \"clocks\" table defining
+      exactly the production clocks its elements show: time_of_day in a
+      POSIX TZ zone, countdown_to a UTC time, or since_take); every font
+      family the template draws with is supplied once with --font and must
+      parse as a font. The template is stored as
+      assets/titles/<source-stem>.fmtitle and fonts are copied to
+      assets/fonts/, reusing identical files. Image field defaults
       must already be bundle asset:// URIs that resolve.
   freemix-cli audio-bus-add <show.freemix> <nonzero-bus-id> <name>
   freemix-cli audio-bus-rename <show.freemix> <existing-bus-id> <name>

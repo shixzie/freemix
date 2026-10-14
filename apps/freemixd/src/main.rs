@@ -5529,6 +5529,7 @@ impl NativeDaemon {
             .projected_frame
             .as_ref()
             .expect("next frame projection was initialized");
+        self.titles.observe_frame(projected);
         let audio_covered = self
             .master
             .service_project_next_frame(projected, &self.project_plan)?;

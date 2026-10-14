@@ -2258,7 +2258,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 28,
+  "schema_version": 29,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -2273,7 +2273,8 @@ const SHAPE_TITLE_SOURCE: &str = r##"{
       {"id": 1, "name": "Bar", "bounds": {"x": 0, "y": 900, "width": 1920, "height": 120}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": 2, "kind": {"type": "rectangle"}, "animations": []}
     ]
   },
-  "fonts": []
+  "fonts": [],
+  "clocks": []
 }
 "##;
 
@@ -2463,7 +2464,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 28", "\"schema_version\": 27"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 29", "\"schema_version\": 28"),
     )
     .unwrap();
     assert_failure_contains(
@@ -2477,7 +2478,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 27 is unsupported; expected 28",
+        "title template schema 28 is unsupported; expected 29",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -2489,6 +2490,235 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             .count(),
         1
     );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// A `.fmtitle` source document whose three production clock elements show
+/// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
+/// all drawn with the `Clock Face` font family.
+const CLOCK_TITLE_SOURCE: &str = r##"{
+  "schema_version": 29,
+  "template": {
+    "id": 9,
+    "name": "Clocks",
+    "width": 1920,
+    "height": 1080,
+    "background": "#00000000",
+    "fields": [],
+    "elements": [
+      {"id": 1, "name": "Doors", "bounds": {"x": 0, "y": 0, "width": 600, "height": 80}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 48}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "doors", "format": null}, "animations": []},
+      {"id": 2, "name": "Local", "bounds": {"x": 0, "y": 100, "width": 600, "height": 80}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 48}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "eastern", "format": {"type": "time_of_day", "preset": "hours_12"}}, "animations": []},
+      {"id": 3, "name": "On air", "bounds": {"x": 0, "y": 200, "width": 600, "height": 80}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": {"family": "Clock Face", "size_px": 48}, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "production_clock", "clock": "on-air", "format": null}, "animations": []}
+    ]
+  },
+  "fonts": [],
+  "clocks": [
+    {"name": "doors", "kind": "countdown_to", "target_utc": "2026-10-14T23:00:00Z", "overrun": "continue", "format": {"type": "duration", "preset": "minutes_seconds"}},
+    {"name": "eastern", "kind": "time_of_day", "zone": "EST5EDT,M3.2.0,M11.1.0", "format": {"type": "time_of_day", "preset": "hours_24"}},
+    {"name": "on-air", "kind": "since_take", "format": {"type": "duration", "preset": "hours_minutes_seconds_frames", "frame_rate": {"numerator": 30000, "denominator": 1001}}}
+  ]
+}
+"##;
+
+/// A usable system font file: `FM_TITLES_FONT`, then well-known paths, then
+/// the first `.ttf`/`.otf` under the system font roots. `None` (and the
+/// caller skips) unless `FM_REQUIRE_FONT=1`.
+fn discover_font_file() -> Option<PathBuf> {
+    fn scan(directory: &Path, depth: u32) -> Option<PathBuf> {
+        if depth > 4 {
+            return None;
+        }
+        let mut entries = fs::read_dir(directory)
+            .ok()?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+            .iter()
+            .find(|path| {
+                path.is_file()
+                    && path
+                        .extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| {
+                            extension.eq_ignore_ascii_case("ttf")
+                                || extension.eq_ignore_ascii_case("otf")
+                        })
+            })
+            .cloned()
+            .or_else(|| {
+                entries
+                    .iter()
+                    .filter(|path| path.is_dir())
+                    .find_map(|path| scan(path, depth + 1))
+            })
+    }
+    let found = std::env::var_os("FM_TITLES_FONT")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(
+            [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "C:\\Windows\\Fonts\\arial.ttf",
+            ]
+            .into_iter()
+            .map(PathBuf::from),
+        )
+        .find(|path| path.is_file())
+        .or_else(|| {
+            [
+                "/usr/share/fonts",
+                "/usr/local/share/fonts",
+                "/Library/Fonts",
+                "/System/Library/Fonts",
+                "C:\\Windows\\Fonts",
+            ]
+            .into_iter()
+            .find_map(|root| scan(Path::new(root), 0))
+        });
+    if found.is_none() {
+        assert!(
+            std::env::var("FM_REQUIRE_FONT").as_deref() != Ok("1"),
+            "FM_REQUIRE_FONT=1 but no usable font file was found"
+        );
+        eprintln!("skipping clock title import: no font file available");
+    }
+    found
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    let manifest = fs::read(context.project.join("project.json")).unwrap();
+
+    // The clock table must define exactly the clocks the elements show; this
+    // is checked before the font is read, so it needs no real font.
+    let undefined = context.root.join("undefined.fmtitle");
+    fs::write(
+        &undefined,
+        CLOCK_TITLE_SOURCE.replace("\"clock\": \"on-air\"", "\"clock\": \"later\""),
+    )
+    .unwrap();
+    let not_a_font = context.root.join("not-a-font.ttf");
+    fs::write(&not_a_font, b"not a font").unwrap();
+    let font_argument = |path: &Path| format!("Clock Face={}", path.to_str().unwrap());
+    assert_failure_contains(
+        &invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            "9",
+            "--name",
+            "Clocks",
+            "--template",
+            undefined.to_str().unwrap(),
+            "--font",
+            &font_argument(&not_a_font),
+        ]),
+        "title template clocks: element 3 shows clock later, which is not defined",
+    );
+    let bad_zone = context.root.join("bad-zone.fmtitle");
+    fs::write(
+        &bad_zone,
+        CLOCK_TITLE_SOURCE.replace("EST5EDT,M3.2.0,M11.1.0", "America/New_York"),
+    )
+    .unwrap();
+    assert_failure_contains(
+        &invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            "9",
+            "--name",
+            "Clocks",
+            "--template",
+            bad_zone.to_str().unwrap(),
+            "--font",
+            &font_argument(&not_a_font),
+        ]),
+        "malformed title template",
+    );
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest
+    );
+    assert!(!context.project.join("assets/titles").exists());
+
+    let Some(font) = discover_font_file() else {
+        fs::remove_dir_all(context.root).unwrap();
+        return;
+    };
+    let source = context.root.join("clocks.fmtitle");
+    fs::write(&source, CLOCK_TITLE_SOURCE).unwrap();
+    let added = invoke(&[
+        "title-input-add",
+        context.project_path(),
+        "--id",
+        "9",
+        "--name",
+        "Clocks",
+        "--template",
+        source.to_str().unwrap(),
+        "--font",
+        &font_argument(&font),
+    ]);
+    assert_success(&added);
+    assert!(
+        stdout(&added)
+            .starts_with("title-input-add: template asset://titles/clocks.fmtitle copied bytes="),
+        "{}",
+        stdout(&added)
+    );
+    // The stored template keeps the clock table and element presets exactly.
+    let stored = fs::read_to_string(context.project.join("assets/titles/clocks.fmtitle")).unwrap();
+    for line in CLOCK_TITLE_SOURCE
+        .lines()
+        .filter(|line| line.contains("\"kind\": \"") && line.trim_start().starts_with("{\"name\""))
+    {
+        assert!(
+            stored.contains(line.trim_end_matches(',')),
+            "missing {line} in {stored}"
+        );
+    }
+    assert!(stored.contains(
+        "\"kind\": {\"type\": \"production_clock\", \"clock\": \"eastern\", \"format\": {\"type\": \"time_of_day\", \"preset\": \"hours_12\"}}"
+    ));
+    let template = store
+        .load_title_template("asset://titles/clocks.fmtitle")
+        .unwrap();
+    assert_eq!(
+        template
+            .clocks
+            .iter()
+            .map(|clock| clock.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["doors", "eastern", "on-air"]
+    );
+    let loaded = store.load().unwrap();
+    let title = loaded
+        .project()
+        .inputs()
+        .iter()
+        .find(|candidate| candidate.id == InputId::new(NonZeroU128::new(9).unwrap()))
+        .unwrap();
+    assert_eq!(
+        title.kind,
+        InputKind::Title(fm_model::TitleInput {
+            template_uri: "asset://titles/clocks.fmtitle".into(),
+            field_revision: 0,
+            fields: Vec::new(),
+        })
+    );
+    assert_eq!(store.validate_titles(&loaded), Vec::new());
+    let audit = invoke(&["asset-audit", context.project_path()]);
+    assert_success(&audit);
+    assert_eq!(stdout(&audit), "asset-audit: clean");
     fs::remove_dir_all(context.root).unwrap();
 }
 
@@ -3417,13 +3647,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        28
+        29
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 28);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 29);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -3436,7 +3666,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 28);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 29);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -3512,7 +3742,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        28
+        29
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -3520,7 +3750,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 28);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 29);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -3530,7 +3760,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 28);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 29);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -3538,7 +3768,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 28);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 29);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));

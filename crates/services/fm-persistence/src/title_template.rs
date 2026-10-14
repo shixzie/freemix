@@ -6,17 +6,28 @@
 //! family the template draws with to a font file in the same bundle:
 //!
 //! ```json
-//! {"schema_version": 28,
+//! {"schema_version": 29,
 //!  "template": {"id": 1, "name": "Lower third", "width": 1920, "height": 1080,
 //!               "background": "#00000000", "fields": [...], "elements": [...]},
-//!  "fonts": [{"family": "Inter Bold", "asset_uri": "asset://fonts/Inter-Bold.ttf"}]}
+//!  "fonts": [{"family": "Inter Bold", "asset_uri": "asset://fonts/Inter-Bold.ttf"}],
+//!  "clocks": [{"name": "Local", "kind": "time_of_day",
+//!              "zone": "EST5EDT,M3.2.0,M11.1.0",
+//!              "format": {"type": "time_of_day", "preset": "hours_24"}}]}
 //! ```
 //!
 //! The codec is as strict as the manifest codec: unknown or missing keys,
 //! unknown enum values, and any `schema_version` other than the current one
-//! are refused, documents are capped at [`MAX_TITLE_TEMPLATE_BYTES`], and
-//! production-clock elements (which need a live clock source no stored
-//! template can name yet) are refused with a typed error.
+//! are refused, and documents are capped at [`MAX_TITLE_TEMPLATE_BYTES`].
+//!
+//! A production clock element (`{"type": "production_clock", "clock": name,
+//! "format": preset or null}`) names a clock in the document's `clocks`
+//! table, which, like the font table, holds exactly the clocks the elements
+//! show, sorted by name. Each clock is a [`TitleClock`]: `time_of_day` in a
+//! canonical POSIX `TZ` zone (DST rules included), `countdown_to` a whole
+//! second UTC `target_utc` (`YYYY-MM-DDTHH:MM:SSZ`) with an `overrun` policy,
+//! or `since_take`. Display presets are `{"type": "duration" | "time_of_day",
+//! "preset": name}`; the frames preset adds a `frame_rate`. A host reads the
+//! clocks through [`fm_titles::title_clock_registry`].
 //!
 //! [`ProjectStore::import_title_template`] ingests a source document in the
 //! same format whose `fonts` array is empty: fonts are supplied separately as
@@ -33,6 +44,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use fm_clock::production::{
+    ClockName, DisplayFormat, DurationFormat, OverrunPolicy, TimeOfDayFormat, TimeZone, UtcInstant,
+};
 use fm_model::{
     InputKind, MAX_TITLE_FIELDS, Project, Rgba8, TitleFieldEntry, TitleFieldId, TitleFieldValue,
     TitleFieldsError, validate_title_fields,
@@ -41,10 +55,11 @@ use fm_titles::{
     Alignment, AnimatedProperty, AnimationTrack, Bounds, ClockDirection, ClockFormat, ClockSpec,
     Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldType, FieldValue,
     FontError, FontFace, FontStyle, HorizontalAlignment, ImageFilter, ImageFit, ImageSource,
-    Interpolation, Keyframe, MAX_FONT_BYTES, Style, TemplateId, TickerDirection, TickerSpec,
-    TitleTemplate, VerticalAlignment,
+    Interpolation, Keyframe, MAX_FONT_BYTES, ProductionClockSpec, Style, TemplateId,
+    TickerDirection, TickerSpec, TitleClock, TitleClockError, TitleClockKind, TitleTemplate,
+    VerticalAlignment,
 };
-use fm_types::InputId;
+use fm_types::{FrameRate, InputId};
 
 use crate::{
     AssetAuditIssue, AssetAuditReason, AssetDisposition, AssetResolveError, BundleError,
@@ -78,13 +93,16 @@ pub struct StoredTitleTemplate {
     pub template: TitleTemplate,
     /// Font table sorted by family.
     pub fonts: Vec<TitleFontAsset>,
+    /// The clocks production clock elements show, sorted by name.
+    pub clocks: Vec<TitleClock>,
 }
 
 impl StoredTitleTemplate {
     /// Checks everything the codec enforces: template structure, field
-    /// defaults within project title bounds, valid image default URIs, no
-    /// production clocks, and a font table that covers exactly the families
-    /// the template uses.
+    /// defaults within project title bounds, valid image default URIs, a
+    /// font table that covers exactly the families the template uses, and a
+    /// clock table that covers exactly the clocks it shows, in a form the
+    /// document can hold.
     ///
     /// # Errors
     ///
@@ -102,7 +120,7 @@ impl StoredTitleTemplate {
                 });
             }
         }
-        Ok(())
+        check_clock_table(&self.template, &self.clocks)
     }
 
     /// Every bundle asset URI the template references: fonts and image
@@ -142,9 +160,15 @@ pub enum TitleTemplateError {
         found: u32,
         supported: u32,
     },
-    /// Production clocks need a live clock source a stored template cannot
-    /// name yet.
-    ProductionClockUnsupported(ElementId),
+    /// The clock table does not match the production clock elements.
+    InvalidClocks(TitleClockError),
+    /// A clock the document cannot hold exactly: a zone whose canonical
+    /// POSIX form does not parse back to it, or a countdown target with a
+    /// sub-second part.
+    UnencodableClock {
+        clock: ClockName,
+        reason: &'static str,
+    },
     /// The template fails structural validation.
     InvalidTemplate(Vec<fm_titles::ValidationError>),
     /// The template has more fields than a title input may carry.
@@ -186,10 +210,10 @@ impl fmt::Display for TitleTemplateError {
                 formatter,
                 "title template schema {found} is unsupported; expected {supported}"
             ),
-            Self::ProductionClockUnsupported(element) => write!(
-                formatter,
-                "element {element} is a production clock, which stored templates do not support"
-            ),
+            Self::InvalidClocks(error) => write!(formatter, "title template clocks: {error}"),
+            Self::UnencodableClock { clock, reason } => {
+                write!(formatter, "clock {clock} cannot be stored: {reason}")
+            }
             Self::InvalidTemplate(errors) => write!(
                 formatter,
                 "title template has {} validation error(s): {errors:?}",
@@ -233,6 +257,7 @@ impl Error for TitleTemplateError {
             Self::Io(error) => Some(error),
             Self::Asset(error) => Some(error),
             Self::InvalidFieldDefaults(error) => Some(error),
+            Self::InvalidClocks(error) => Some(error),
             _ => None,
         }
     }
@@ -406,12 +431,13 @@ impl ProjectStore {
         fonts: &[(String, PathBuf)],
     ) -> Result<ImportedTitleTemplate, TitleImportError> {
         let source = read_template_file(template)?;
-        let (parsed, declared_fonts) = decode_document(&source)?;
+        let (parsed, declared_fonts, clocks) = decode_document(&source)?;
         if !declared_fonts.is_empty() {
             return Err(TitleImportError::SourceDeclaresFonts);
         }
         validate_template_body(&parsed)?;
         check_font_table(&parsed, fonts.iter().map(|(family, _)| family.as_str()))?;
+        check_clock_table(&parsed, &clocks)?;
         // The checked bytes are what gets stored, so a source file changing
         // after it was checked cannot place an unparsable or oversized font.
         let mut font_bytes = Vec::with_capacity(fonts.len());
@@ -463,6 +489,7 @@ impl ProjectStore {
                     asset_uri: font.asset_uri.clone(),
                 })
                 .collect(),
+            clocks,
         };
         let document = encode_title_template(&stored)?;
 
@@ -653,13 +680,6 @@ pub fn title_field_defaults(template: &TitleTemplate) -> Vec<TitleFieldEntry> {
 }
 
 fn validate_template_body(template: &TitleTemplate) -> Result<(), TitleTemplateError> {
-    if let Some(element) = template
-        .elements
-        .iter()
-        .find(|element| matches!(element.kind, ElementKind::ProductionClock(_)))
-    {
-        return Err(TitleTemplateError::ProductionClockUnsupported(element.id));
-    }
     let report = fm_titles::validate_template(template, &fm_titles::AssetCatalog::new());
     if !report.errors.is_empty() {
         return Err(TitleTemplateError::InvalidTemplate(report.errors));
@@ -706,6 +726,39 @@ fn check_font_table<'a>(
     }
     if let Some(unused) = supplied.difference(&used).next() {
         return Err(TitleTemplateError::UnusedFontFamily((*unused).to_owned()));
+    }
+    Ok(())
+}
+
+/// Requires `clocks` to be exactly the clocks `template` shows (see
+/// [`fm_titles::validate_title_clocks`]) and each to survive the document
+/// form unchanged.
+fn check_clock_table(
+    template: &TitleTemplate,
+    clocks: &[TitleClock],
+) -> Result<(), TitleTemplateError> {
+    fm_titles::validate_title_clocks(template, clocks)
+        .map_err(TitleTemplateError::InvalidClocks)?;
+    for clock in clocks {
+        let unencodable = |reason| TitleTemplateError::UnencodableClock {
+            clock: clock.name.clone(),
+            reason,
+        };
+        match &clock.kind {
+            TitleClockKind::TimeOfDay { zone, .. } => {
+                if TimeZone::parse_posix(&zone.to_string()).as_ref() != Ok(zone) {
+                    return Err(unencodable(
+                        "the zone has no POSIX TZ form that parses back to it",
+                    ));
+                }
+            }
+            TitleClockKind::CountdownTo { target, .. } => {
+                if target.subsec_nanos() != 0 {
+                    return Err(unencodable("countdown targets are whole UTC seconds"));
+                }
+            }
+            TitleClockKind::SinceTake { .. } => {}
+        }
     }
     Ok(())
 }
@@ -773,8 +826,12 @@ fn place_bytes(
 /// Returns a [`TitleTemplateError`] for oversized, malformed, wrong-schema,
 /// or invalid documents.
 pub fn decode_title_template(source: &str) -> Result<StoredTitleTemplate, TitleTemplateError> {
-    let (template, fonts) = decode_document(source)?;
-    let stored = StoredTitleTemplate { template, fonts };
+    let (template, fonts, clocks) = decode_document(source)?;
+    let stored = StoredTitleTemplate {
+        template,
+        fonts,
+        clocks,
+    };
     stored.validate()?;
     if stored
         .fonts
@@ -786,16 +843,27 @@ pub fn decode_title_template(source: &str) -> Result<StoredTitleTemplate, TitleT
             message: "fonts must be sorted by family".to_owned(),
         });
     }
+    if stored
+        .clocks
+        .windows(2)
+        .any(|pair| pair[0].name >= pair[1].name)
+    {
+        return Err(TitleTemplateError::Malformed {
+            offset: 0,
+            message: "clocks must be sorted by name".to_owned(),
+        });
+    }
     Ok(stored)
 }
 
-/// Encodes a stored `.fmtitle` document. Fonts are written sorted by family.
+/// Encodes a stored `.fmtitle` document. Fonts are written sorted by family
+/// and clocks sorted by name.
 ///
 /// # Errors
 ///
 /// Returns a [`TitleTemplateError`] when the template would not decode, for
-/// example because it holds a production clock, its font table is wrong, or
-/// the encoded document exceeds [`MAX_TITLE_TEMPLATE_BYTES`].
+/// example because its font or clock table is wrong, or the encoded document
+/// exceeds [`MAX_TITLE_TEMPLATE_BYTES`].
 pub fn encode_title_template(stored: &StoredTitleTemplate) -> Result<String, TitleTemplateError> {
     stored.validate()?;
     let mut fonts = stored.fonts.iter().collect::<Vec<_>>();
@@ -834,7 +902,7 @@ pub fn encode_title_template(stored: &StoredTitleTemplate) -> Result<String, Tit
     output.push_str("    \"elements\": [");
     for (index, element) in template.elements.iter().enumerate() {
         output.push_str(if index == 0 { "\n      " } else { ",\n      " });
-        write_element(&mut output, element)?;
+        write_element(&mut output, element);
     }
     output.push_str(if template.elements.is_empty() {
         "]\n  },\n"
@@ -850,7 +918,15 @@ pub fn encode_title_template(stored: &StoredTitleTemplate) -> Result<String, Tit
         write_string(&mut output, &font.asset_uri);
         output.push('}');
     }
-    output.push_str(if fonts.is_empty() {
+    output.push_str(if fonts.is_empty() { "],\n" } else { "\n  ],\n" });
+    let mut clocks = stored.clocks.iter().collect::<Vec<_>>();
+    clocks.sort_by(|left, right| left.name.cmp(&right.name));
+    output.push_str("  \"clocks\": [");
+    for (index, clock) in clocks.iter().enumerate() {
+        output.push_str(if index == 0 { "\n    " } else { ",\n    " });
+        write_clock(&mut output, clock);
+    }
+    output.push_str(if clocks.is_empty() {
         "]\n}\n"
     } else {
         "\n  ]\n}\n"
@@ -901,7 +977,7 @@ fn write_field_value(output: &mut String, value: &FieldValue) {
     output.push('}');
 }
 
-fn write_element(output: &mut String, element: &Element) -> Result<(), TitleTemplateError> {
+fn write_element(output: &mut String, element: &Element) {
     write!(output, "{{\"id\": {}, \"name\": ", element.id)
         .expect("writing to a string cannot fail");
     write_string(output, &element.name);
@@ -942,7 +1018,7 @@ fn write_element(output: &mut String, element: &Element) -> Result<(), TitleTemp
         None => output.push_str("null"),
     }
     output.push_str(", \"kind\": ");
-    write_element_kind(output, element)?;
+    write_element_kind(output, element);
     output.push_str(", \"animations\": [");
     for (index, track) in element.animations.iter().enumerate() {
         if index != 0 {
@@ -973,10 +1049,92 @@ fn write_element(output: &mut String, element: &Element) -> Result<(), TitleTemp
         output.push_str("]}");
     }
     output.push_str("]}");
-    Ok(())
 }
 
-fn write_element_kind(output: &mut String, element: &Element) -> Result<(), TitleTemplateError> {
+fn write_clock(output: &mut String, clock: &TitleClock) {
+    output.push_str("{\"name\": ");
+    write_string(output, clock.name.as_str());
+    match &clock.kind {
+        TitleClockKind::TimeOfDay { zone, .. } => {
+            output.push_str(", \"kind\": \"time_of_day\", \"zone\": ");
+            write_string(output, &zone.to_string());
+        }
+        TitleClockKind::CountdownTo {
+            target, overrun, ..
+        } => {
+            let civil = target.to_civil(0);
+            write!(
+                output,
+                ", \"kind\": \"countdown_to\", \"target_utc\": \"{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z\", \"overrun\": \"{}\"",
+                civil.year,
+                civil.month,
+                civil.day,
+                civil.hour,
+                civil.minute,
+                civil.second,
+                match overrun {
+                    OverrunPolicy::StopAtTarget => "stop_at_target",
+                    OverrunPolicy::Continue => "continue",
+                }
+            )
+            .expect("writing to a string cannot fail");
+        }
+        TitleClockKind::SinceTake { .. } => output.push_str(", \"kind\": \"since_take\""),
+    }
+    output.push_str(", \"format\": ");
+    write_display_format(output, clock.kind.display_format());
+    output.push('}');
+}
+
+fn write_display_format(output: &mut String, format: DisplayFormat) {
+    match format {
+        DisplayFormat::Duration(DurationFormat::HoursMinutesSecondsFrames(rate)) => write!(
+            output,
+            "{{\"type\": \"duration\", \"preset\": \"hours_minutes_seconds_frames\", \"frame_rate\": {{\"numerator\": {}, \"denominator\": {}}}}}",
+            rate.numerator(),
+            rate.denominator()
+        )
+        .expect("writing to a string cannot fail"),
+        DisplayFormat::Duration(format) => write!(
+            output,
+            "{{\"type\": \"duration\", \"preset\": \"{}\"}}",
+            duration_preset_name(format)
+        )
+        .expect("writing to a string cannot fail"),
+        DisplayFormat::TimeOfDay(format) => write!(
+            output,
+            "{{\"type\": \"time_of_day\", \"preset\": \"{}\"}}",
+            time_of_day_preset_name(format)
+        )
+        .expect("writing to a string cannot fail"),
+    }
+}
+
+const fn duration_preset_name(format: DurationFormat) -> &'static str {
+    match format {
+        DurationFormat::HoursMinutesSeconds => "hours_minutes_seconds",
+        DurationFormat::MinutesSeconds => "minutes_seconds",
+        DurationFormat::Seconds => "seconds",
+        DurationFormat::HoursMinutesSecondsTenths => "hours_minutes_seconds_tenths",
+        DurationFormat::MinutesSecondsTenths => "minutes_seconds_tenths",
+        DurationFormat::HoursMinutesSecondsMillis => "hours_minutes_seconds_millis",
+        DurationFormat::HoursMinutesSecondsFrames(_) => "hours_minutes_seconds_frames",
+        DurationFormat::Compact => "compact",
+    }
+}
+
+const fn time_of_day_preset_name(format: TimeOfDayFormat) -> &'static str {
+    match format {
+        TimeOfDayFormat::Hours24 => "hours_24",
+        TimeOfDayFormat::Hours24Minutes => "hours_24_minutes",
+        TimeOfDayFormat::Hours12 => "hours_12",
+        TimeOfDayFormat::Hours12Minutes => "hours_12_minutes",
+        TimeOfDayFormat::Date => "date",
+        TimeOfDayFormat::Rfc3339 => "rfc3339",
+    }
+}
+
+fn write_element_kind(output: &mut String, element: &Element) {
     match &element.kind {
         ElementKind::Text { field } => {
             write!(output, "{{\"type\": \"text\", \"field\": {field}}}")
@@ -1018,11 +1176,17 @@ fn write_element_kind(output: &mut String, element: &Element) -> Result<(), Titl
             spec.starts_at_ms
         )
         .expect("writing to a string cannot fail"),
-        ElementKind::ProductionClock(_) => {
-            return Err(TitleTemplateError::ProductionClockUnsupported(element.id));
+        ElementKind::ProductionClock(spec) => {
+            output.push_str("{\"type\": \"production_clock\", \"clock\": ");
+            write_string(output, spec.clock.as_str());
+            output.push_str(", \"format\": ");
+            match spec.format {
+                Some(format) => write_display_format(output, format),
+                None => output.push_str("null"),
+            }
+            output.push('}');
         }
     }
-    Ok(())
 }
 
 const fn horizontal_name(alignment: HorizontalAlignment) -> &'static str {
@@ -1071,7 +1235,7 @@ const fn property_name(property: AnimatedProperty) -> &'static str {
 /// between stored documents and import sources.
 fn decode_document(
     source: &str,
-) -> Result<(TitleTemplate, Vec<TitleFontAsset>), TitleTemplateError> {
+) -> Result<(TitleTemplate, Vec<TitleFontAsset>, Vec<TitleClock>), TitleTemplateError> {
     let length = u64::try_from(source.len()).unwrap_or(u64::MAX);
     if length > MAX_TITLE_TEMPLATE_BYTES {
         return Err(TitleTemplateError::TooLarge {
@@ -1092,8 +1256,135 @@ fn decode_document(
     }
     let template = parse_template(root.take("template")?)?;
     let fonts = parse_array(root.take("fonts")?, "fonts", parse_font)?;
+    let clocks = parse_array(root.take("clocks")?, "clocks", parse_clock)?;
     root.finish()?;
-    Ok((template, fonts))
+    Ok((template, fonts, clocks))
+}
+
+fn parse_clock(value: Value) -> Result<TitleClock, DecodeError> {
+    let mut object = Object::new(value, "clock")?;
+    let name = parse_clock_name(&object.string("name")?)?;
+    let kind = match object.string("kind")?.as_str() {
+        "time_of_day" => {
+            let text = object.string("zone")?;
+            let zone = TimeZone::parse_posix(&text).map_err(|error| syntax(error.to_string()))?;
+            if zone.to_string() != text {
+                return Err(syntax(format!(
+                    "zone `{text}` is not in its canonical POSIX form `{zone}`"
+                )));
+            }
+            let DisplayFormat::TimeOfDay(format) = parse_display_format(object.take("format")?)?
+            else {
+                return Err(syntax("a time_of_day clock needs a time_of_day format"));
+            };
+            TitleClockKind::TimeOfDay { zone, format }
+        }
+        "countdown_to" => {
+            let target = parse_utc_seconds(&object.string("target_utc")?)?;
+            let overrun = match object.string("overrun")?.as_str() {
+                "stop_at_target" => OverrunPolicy::StopAtTarget,
+                "continue" => OverrunPolicy::Continue,
+                value => return Err(unknown_enum("clock overrun", value)),
+            };
+            TitleClockKind::CountdownTo {
+                target,
+                overrun,
+                format: parse_duration_format(object.take("format")?)?,
+            }
+        }
+        "since_take" => TitleClockKind::SinceTake {
+            format: parse_duration_format(object.take("format")?)?,
+        },
+        value => return Err(unknown_enum("clock kind", value)),
+    };
+    object.finish()?;
+    Ok(TitleClock { name, kind })
+}
+
+fn parse_clock_name(text: &str) -> Result<ClockName, DecodeError> {
+    ClockName::new(text).map_err(|error| syntax(format!("clock `{text}`: {error}")))
+}
+
+/// Parses exactly `YYYY-MM-DDTHH:MM:SSZ`.
+fn parse_utc_seconds(text: &str) -> Result<UtcInstant, DecodeError> {
+    let invalid = || syntax(format!("`{text}` is not a YYYY-MM-DDTHH:MM:SSZ UTC time"));
+    let bytes = text.as_bytes();
+    if bytes.len() != 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'Z'
+    {
+        return Err(invalid());
+    }
+    let number = |range: core::ops::Range<usize>| -> Result<u32, DecodeError> {
+        let digits = &text[range];
+        if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        digits.parse().map_err(|_| invalid())
+    };
+    let narrow = |value: u32| u8::try_from(value).map_err(|_| invalid());
+    UtcInstant::from_utc_civil(
+        i32::try_from(number(0..4)?).map_err(|_| invalid())?,
+        narrow(number(5..7)?)?,
+        narrow(number(8..10)?)?,
+        narrow(number(11..13)?)?,
+        narrow(number(14..16)?)?,
+        narrow(number(17..19)?)?,
+        0,
+    )
+    .map_err(|_| invalid())
+}
+
+fn parse_duration_format(value: Value) -> Result<DurationFormat, DecodeError> {
+    match parse_display_format(value)? {
+        DisplayFormat::Duration(format) => Ok(format),
+        DisplayFormat::TimeOfDay(_) => Err(syntax("this clock needs a duration format")),
+    }
+}
+
+fn parse_display_format(value: Value) -> Result<DisplayFormat, DecodeError> {
+    let mut object = Object::new(value, "clock format")?;
+    let kind = object.string("type")?;
+    let preset = object.string("preset")?;
+    let format = match kind.as_str() {
+        "duration" => DisplayFormat::Duration(match preset.as_str() {
+            "hours_minutes_seconds" => DurationFormat::HoursMinutesSeconds,
+            "minutes_seconds" => DurationFormat::MinutesSeconds,
+            "seconds" => DurationFormat::Seconds,
+            "hours_minutes_seconds_tenths" => DurationFormat::HoursMinutesSecondsTenths,
+            "minutes_seconds_tenths" => DurationFormat::MinutesSecondsTenths,
+            "hours_minutes_seconds_millis" => DurationFormat::HoursMinutesSecondsMillis,
+            "hours_minutes_seconds_frames" => DurationFormat::HoursMinutesSecondsFrames(
+                parse_frame_rate(object.take("frame_rate")?)?,
+            ),
+            "compact" => DurationFormat::Compact,
+            value => return Err(unknown_enum("duration preset", value)),
+        }),
+        "time_of_day" => DisplayFormat::TimeOfDay(match preset.as_str() {
+            "hours_24" => TimeOfDayFormat::Hours24,
+            "hours_24_minutes" => TimeOfDayFormat::Hours24Minutes,
+            "hours_12" => TimeOfDayFormat::Hours12,
+            "hours_12_minutes" => TimeOfDayFormat::Hours12Minutes,
+            "date" => TimeOfDayFormat::Date,
+            "rfc3339" => TimeOfDayFormat::Rfc3339,
+            value => return Err(unknown_enum("time of day preset", value)),
+        }),
+        value => return Err(unknown_enum("clock format type", value)),
+    };
+    object.finish()?;
+    Ok(format)
+}
+
+fn parse_frame_rate(value: Value) -> Result<FrameRate, DecodeError> {
+    let mut object = Object::new(value, "frame_rate")?;
+    let numerator = object.u32("numerator")?;
+    let denominator = object.u32("denominator")?;
+    object.finish()?;
+    FrameRate::new(numerator, denominator).map_err(|error| syntax(error.to_string()))
 }
 
 fn parse_font(value: Value) -> Result<TitleFontAsset, DecodeError> {
@@ -1174,12 +1465,6 @@ fn parse_element(value: Value) -> Result<Element, TitleTemplateError> {
         parse_field_id(&value, "color_field")
     })?;
     let kind = parse_kind(object.take("kind")?)?;
-    if matches!(kind, ParsedKind::ProductionClock) {
-        return Err(TitleTemplateError::ProductionClockUnsupported(id));
-    }
-    let ParsedKind::Kind(kind) = kind else {
-        unreachable!("production clocks were refused above");
-    };
     let animations = parse_array(object.take("animations")?, "animations", parse_track)?;
     object.finish()?;
     Ok(Element {
@@ -1268,12 +1553,7 @@ fn parse_alignment(value: Value) -> Result<Alignment, DecodeError> {
     })
 }
 
-enum ParsedKind {
-    Kind(ElementKind),
-    ProductionClock,
-}
-
-fn parse_kind(value: Value) -> Result<ParsedKind, DecodeError> {
+fn parse_kind(value: Value) -> Result<ElementKind, DecodeError> {
     let mut object = Object::new(value, "title element kind")?;
     let kind = match object.string("type")?.as_str() {
         "text" => ElementKind::Text {
@@ -1320,12 +1600,14 @@ fn parse_kind(value: Value) -> Result<ParsedKind, DecodeError> {
             gap_px: object.u32("gap_px")?,
             starts_at_ms: object.u64("starts_at_ms")?,
         }),
-        // Recognized so the refusal is typed rather than an unknown value.
-        "production_clock" => return Ok(ParsedKind::ProductionClock),
+        "production_clock" => ElementKind::ProductionClock(ProductionClockSpec {
+            clock: parse_clock_name(&object.string("clock")?)?,
+            format: parse_optional(object.take("format")?, parse_display_format)?,
+        }),
         value => return Err(unknown_enum("title element kind", value)),
     };
     object.finish()?;
-    Ok(ParsedKind::Kind(kind))
+    Ok(kind)
 }
 
 fn parse_track(value: Value) -> Result<AnimationTrack, DecodeError> {
