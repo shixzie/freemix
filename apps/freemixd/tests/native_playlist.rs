@@ -4,7 +4,10 @@
 //! clock takes each scheduled entry to Program on exactly its frame, paced by
 //! the native frame pacer; the journaled advances survive a SIGKILL so a
 //! restarted native daemon resumes the playing playlist; and playlist
-//! control (here Stop) is accepted on the native runtime.
+//! control (here Stop) is accepted on the native runtime. Idle frames the
+//! pacer realizes after the last command survive a SIGKILL through the
+//! journal's progress marker, so a restarted daemon resumes close to the
+//! last frame it realized rather than where its last command ended.
 //!
 //! The test needs a native GPU adapter (Metal, Vulkan, or Direct3D 12; a
 //! software Vulkan driver such as lavapipe suffices). Without one the daemon
@@ -299,6 +302,23 @@ impl Client {
     }
 }
 
+impl Client {
+    /// Receives until a Program monitor frame at or past `frame` arrives,
+    /// returning its frame.
+    fn monitor_frame_at_least(&mut self, frame: u64) -> u64 {
+        let deadline = Instant::now() + EVENT_TIMEOUT;
+        while Instant::now() < deadline {
+            self.receive();
+            if let Some(sample) = self.samples.last()
+                && sample.frame >= frame
+            {
+                return sample.frame;
+            }
+        }
+        panic!("no monitor frame reached {frame}");
+    }
+}
+
 fn playing(entry: u64, started_frame: u64) -> impl Fn(&PlaylistRunState) -> bool {
     move |state| {
         matches!(state, PlaylistRunState::Playing { entry: on, started_frame: at, .. }
@@ -455,4 +475,83 @@ fn native_playlist_clock_cuts_program_on_scheduled_frames_and_survives_sigkill()
     }
     drop(client);
     drop(daemon);
+}
+
+/// Frames between two progress markers at the test's 25 fps (one second).
+const MARKER_FRAMES: u64 = 25;
+
+#[test]
+fn native_idle_progress_survives_sigkill_through_the_progress_marker() {
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-idle.freemix");
+    save_project(&project_path);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native idle progress integration skipped: {error}");
+            return;
+        }
+    };
+
+    let (mut client, _) = Client::connect(daemon.address);
+    client.command(
+        "set",
+        CommandPayload::SetPlaylist {
+            loop_mode: PlaylistLoopMode::Off,
+            entries: vec![PlaylistEntrySpec {
+                id: 1,
+                input: wire(2),
+                duration_frames: 100_000,
+                transition: PlaylistTransitionKind::Cut,
+                transition_frames: 0,
+                enabled: true,
+            }],
+        },
+    );
+    assert_eq!(client.accepted("set"), 1);
+    client.command(
+        "start",
+        CommandPayload::PlaylistControl {
+            operation: PlaylistOperation::Start {
+                at: PlaylistStart::AfterFrames(5),
+                from: None,
+            },
+        },
+    );
+    assert_eq!(client.accepted("start"), 2);
+    let (frame, state, program) = loop {
+        let changed = client.playlist_changed();
+        if matches!(changed.1, PlaylistRunState::Playing { .. }) {
+            break changed;
+        }
+    };
+    assert_eq!(program, wire(2));
+    assert!(playing(1, frame)(&state), "{state:?}");
+    let started = frame;
+
+    // Four seconds of idle frames after the last journaled command (the
+    // clock's advance), then SIGKILL.
+    let reached = client.monitor_frame_at_least(started + 4 * MARKER_FRAMES);
+    drop(client);
+    drop(daemon);
+
+    let daemon = start_native(&project_path).expect("the native daemon restarts after SIGKILL");
+    let (_client, playlist) = Client::connect(daemon.address);
+    let playlist = playlist.expect("a playing playlist is sent after the snapshot");
+    assert_eq!(playlist.revision, 3, "no command ran after the advance");
+    assert!(playing(1, started)(&playlist.state), "{playlist:?}");
+    // The restart resumes at or after the newest marker, which is at most
+    // one marker interval (plus the frame in flight) behind the last frame
+    // the killed daemon realized; without markers it would resume right
+    // after the advance at `started`.
+    assert!(
+        playlist.frame + MARKER_FRAMES + 1 >= reached,
+        "resumed at {} after realizing {reached} (entry started at {started})",
+        playlist.frame
+    );
+    assert!(playlist.frame > started + 2 * MARKER_FRAMES, "{playlist:?}");
 }

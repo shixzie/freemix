@@ -291,6 +291,27 @@ Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
   native pacer also realizes idle frames between commands, so journal replay
   ticks the engine idle up to the frame each recorded command began at (its
   recorded end frame minus the frames it realizes) before re-executing it.
+  Idle frames after the last command are made durable by a progress marker:
+  a single overwritten `journal_progress` row in the bundle's journal
+  database naming the journal head (sequence and revision) it was written
+  above and the full project position reached there. A native daemon writes
+  it once per second of realized frames, from the session loop right after a
+  paced frame and only at an idle frame boundary, and folds idle progress
+  into the manifest (a checkpoint) once per five minutes of frames; neither
+  runs on the frame path, and a failed write is reported on stderr
+  (`FREEMIXD_JOURNAL progress=failed`) without stopping the show. Recovery
+  ticks idle from the last recorded command up to a current marker and
+  requires it to land on the marker's whole position, so a SIGKILL loses at
+  most one second of idle progress; a marker written above an older head is
+  stale and ignored, and `--recover-to-checkpoint` discards it. Replay ticks
+  at most 24 hours of idle frames (at the project frame rate) per recovery
+  and refuses, before ticking, a journal that asks for more as damaged. The
+  clock also runs inside the native recorder startup barrier, so a restored
+  playlist cuts on schedule while a configured recorder starts. Frames a
+  client transition command (or a Stinger mutation) realizes run inside that
+  command's execution, where no other journaled command can be ordered, so a
+  boundary that falls inside them is cut on the first frame after the
+  command (the entry keeps its scheduled start).
   After a refusal either clock retries only once another command changed the
   revision. Both runtimes accept `playlist_set` and every playlist control.
 - Every accepted playlist command publishes `event=playlist_changed` with

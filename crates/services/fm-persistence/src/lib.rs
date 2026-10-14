@@ -26,9 +26,9 @@ pub use autosave::{
 };
 pub use bundle::{BundleExport, BundledAsset};
 pub use journal::{
-    AbandonedJournal, CompactionReport, JournalError, JournalObservation, JournalScan,
-    JournalWriter, MAX_JOURNAL_RECORD_BYTES, MAX_UNAPPLIED_JOURNAL_BATCHES,
-    MAX_UNAPPLIED_JOURNAL_BYTES, MutationBatch,
+    AbandonedJournal, CompactionReport, JournalError, JournalObservation, JournalProgress,
+    JournalScan, JournalWriter, MAX_JOURNAL_PROGRESS_BYTES, MAX_JOURNAL_RECORD_BYTES,
+    MAX_UNAPPLIED_JOURNAL_BATCHES, MAX_UNAPPLIED_JOURNAL_BYTES, MutationBatch,
 };
 pub use media::{
     AssetDisposition, BundleError, ImportedAsset, RelinkEntry, RelinkOutcome, RelinkPlan,

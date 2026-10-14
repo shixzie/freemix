@@ -470,6 +470,11 @@ pub(super) fn run(
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
     };
     let mut native = native;
+    // Only the native pacer realizes frames between commands, so only it has
+    // idle progress to record.
+    let mut progress = native
+        .is_some()
+        .then(|| crate::NativeProgress::new(durable));
     // Simulated monitor frames are composed off this loop so a slow Scene
     // composition never delays command results, heartbeats, or events.
     let mut simulated_monitor = if native.is_none() {
@@ -620,6 +625,9 @@ pub(super) fn run(
             if let Err(error) = native.tick_if_due(&mut control.borrow_mut(), authority) {
                 shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
                 return Err(error);
+            }
+            if let Some(progress) = progress.as_mut() {
+                progress.poll(control, store, durable);
             }
             native.advance_recordings();
             if let Some(meters) = native.take_audio_meters() {

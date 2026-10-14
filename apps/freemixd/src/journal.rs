@@ -5,6 +5,12 @@
 //! client and before any runtime realization is published. The manifest is no
 //! longer rewritten per command; it is rewritten at a checkpoint, which folds
 //! the recorded mutations into it and compacts the journal.
+//!
+//! Frames a native daemon realizes between commands move no revision, so no
+//! mutation records them. A progress marker does (see [`ProgressCadence`]):
+//! a single overwritten journal row holding the position the show reached
+//! above the newest mutation, written at a bounded cadence, which replay
+//! ticks the engine idle up to after the last recorded command.
 
 use std::cell::Cell;
 
@@ -13,6 +19,7 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, ProtocolVersion, WireMessage, decode_line,
     encode_line,
 };
+use fm_types::FrameRate;
 
 use crate::{AppFailure, AppResult};
 
@@ -56,6 +63,14 @@ pub(crate) trait DurableStore {
     /// journal. `project` must hold the revision of the newest recorded
     /// mutation, which is what the journal checkpoint is validated against.
     fn checkpoint(&self, project: &StoredProject) -> AppResult<()>;
+
+    /// Durably records that the show reached `position` without a mutation:
+    /// idle frames realized above the newest recorded mutation. `position`
+    /// must hold that mutation's revision. Stores without a journal record
+    /// nothing.
+    fn record_progress(&self, _position: ProjectPosition) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 /// The live journal of a served project.
@@ -143,6 +158,11 @@ impl DurableStore for DurableJournal<'_> {
         self.writer
             .checkpoint_and_compact(project, self.writer.head_sequence())?;
         self.pending.set(0);
+        Ok(())
+    }
+
+    fn record_progress(&self, position: ProjectPosition) -> AppResult<()> {
+        self.writer.record_progress(&encode_progress(position))?;
         Ok(())
     }
 }
@@ -268,6 +288,167 @@ pub(crate) fn decode_mutation(payload: &[u8]) -> AppResult<RecordedMutation> {
     }
 }
 
+/// Encodes a progress marker: the position the show reached, nothing else.
+///
+/// Unlike a mutation, a marker carries no command, so nothing in it depends
+/// on the wire protocol.
+fn encode_progress(position: ProjectPosition) -> Vec<u8> {
+    position_fields(position)
+        .iter()
+        .flat_map(|field| field.to_le_bytes())
+        .collect()
+}
+
+/// Decodes what [`encode_progress`] wrote.
+///
+/// # Errors
+///
+/// Returns an error for a payload of any other length, which this daemon did
+/// not write.
+pub(crate) fn decode_progress(payload: &[u8]) -> AppResult<ProjectPosition> {
+    let (fields, []) = payload.as_chunks::<8>() else {
+        return Err(progress_length_error(payload));
+    };
+    let [
+        revision,
+        state_epoch,
+        event_sequence,
+        frames_rendered,
+        runtime_generation,
+        clock_time_nanos,
+    ] = fields
+    else {
+        return Err(progress_length_error(payload));
+    };
+    Ok(ProjectPosition {
+        revision: u64::from_le_bytes(*revision),
+        state_epoch: u64::from_le_bytes(*state_epoch),
+        event_sequence: u64::from_le_bytes(*event_sequence),
+        frames_rendered: u64::from_le_bytes(*frames_rendered),
+        runtime_generation: u64::from_le_bytes(*runtime_generation),
+        clock_time_nanos: u64::from_le_bytes(*clock_time_nanos),
+    })
+}
+
+fn progress_length_error(payload: &[u8]) -> Box<dyn std::error::Error> {
+    AppFailure(format!(
+        "journal progress marker is {} bytes, not the {POSITION_BYTES}-byte position this \
+         daemon writes",
+        payload.len()
+    ))
+    .into()
+}
+
+/// Seconds of show between two progress markers.
+///
+/// This is how much idle progress a SIGKILL can lose: a restarted daemon
+/// resumes at most this far behind the last frame it realized (a playlist
+/// entry on air runs at most this much longer). Each marker is one small
+/// journal commit — the same cost as one accepted command — so a one-second
+/// cadence bounds the journal's commit rate at one per second while idle.
+pub(crate) const PROGRESS_MARKER_SECONDS: u64 = 1;
+
+/// Seconds of show between two folds of idle progress into the manifest.
+///
+/// Replay ticks every idle frame since the manifest's position, so without
+/// a fold the recovery cost of an idle show grows with the show. A fold is a
+/// manifest checkpoint — far dearer than a marker — so it is rare: five
+/// minutes keeps a recovery's idle replay to at most that much show (well
+/// under a second of ticking) while costing one manifest write per five
+/// minutes.
+pub(crate) const PROGRESS_FOLD_SECONDS: u64 = 300;
+
+/// Show time journal replay may tick idle before it refuses the journal.
+///
+/// Idle ticks are bounded by recorded frame numbers, so a damaged journal
+/// naming an absurd frame would otherwise keep startup ticking for hours or
+/// forever. With markers every [`PROGRESS_MARKER_SECONDS`] and folds every
+/// [`PROGRESS_FOLD_SECONDS`], an intact journal asks for minutes; a whole
+/// day is far beyond any show that checkpointed as designed and still
+/// replays in seconds.
+pub(crate) const MAX_REPLAY_IDLE_SECONDS: u64 = 24 * 60 * 60;
+
+/// Whole frames in `seconds` of show at `rate`, rounded down, at least one.
+pub(crate) fn frames_in(seconds: u64, rate: FrameRate) -> u64 {
+    let frames =
+        u128::from(seconds) * u128::from(rate.numerator()) / u128::from(rate.denominator());
+    u64::try_from(frames).unwrap_or(u64::MAX).max(1)
+}
+
+/// What the progress cadence asks for at a frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProgressDue {
+    /// Nothing to record.
+    Nothing,
+    /// Write a progress marker.
+    Marker,
+    /// Fold idle progress into the manifest (falls back to a marker while
+    /// the engine is not at an idle boundary).
+    Fold,
+}
+
+/// Decides when the native session loop records idle progress.
+///
+/// Counted in realized frames, not wall time, so it needs no timer and
+/// lands at the same frames in a show as in a test. Nothing is recorded
+/// while the show has not moved past the newest durable position: a command
+/// that just executed already recorded where it ended.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProgressCadence {
+    marker_frames: u64,
+    fold_frames: u64,
+    marked: u64,
+    folded: u64,
+}
+
+impl ProgressCadence {
+    /// A cadence for a show at `rate` whose durable position is at `frame`.
+    pub(crate) fn new(rate: FrameRate, frame: u64) -> Self {
+        Self::with_intervals(
+            frames_in(PROGRESS_MARKER_SECONDS, rate),
+            frames_in(PROGRESS_FOLD_SECONDS, rate),
+            frame,
+        )
+    }
+
+    const fn with_intervals(marker_frames: u64, fold_frames: u64, frame: u64) -> Self {
+        Self {
+            marker_frames,
+            fold_frames,
+            marked: frame,
+            folded: frame,
+        }
+    }
+
+    /// What to record with the engine cursor at `cursor` and the newest
+    /// durable position at `durable_frame`.
+    pub(crate) const fn due(&self, cursor: u64, durable_frame: u64) -> ProgressDue {
+        if cursor <= durable_frame {
+            ProgressDue::Nothing
+        } else if cursor.saturating_sub(self.folded) >= self.fold_frames {
+            ProgressDue::Fold
+        } else if cursor.saturating_sub(self.marked) >= self.marker_frames {
+            ProgressDue::Marker
+        } else {
+            ProgressDue::Nothing
+        }
+    }
+
+    /// A marker was written (or attempted) at `cursor`. A failed attempt
+    /// also waits a whole interval, so a failing disk is retried at the
+    /// marker cadence rather than on every frame.
+    pub(crate) const fn marked(&mut self, cursor: u64) {
+        self.marked = cursor;
+    }
+
+    /// Progress was folded into the manifest (or the fold failed) at
+    /// `cursor`; a fold also stands for a marker.
+    pub(crate) const fn folded(&mut self, cursor: u64) {
+        self.folded = cursor;
+        self.marked = cursor;
+    }
+}
+
 /// The recorded position, in the order [`decode_mutation`] reads it back.
 const fn position_fields(position: ProjectPosition) -> [u64; 6] {
     [
@@ -322,6 +503,47 @@ mod tests {
         assert_eq!(decoded.position, test_position());
         assert!(decode_mutation(&payload[..4]).is_err());
         assert!(decode_mutation(&payload[..HEADER_BYTES]).is_err());
+    }
+
+    /// A progress marker carries the whole position and nothing else; a
+    /// payload of any other length is refused.
+    #[test]
+    fn a_progress_marker_round_trips_its_position() {
+        let payload = encode_progress(test_position());
+        assert_eq!(payload.len(), POSITION_BYTES);
+        assert_eq!(decode_progress(&payload).unwrap(), test_position());
+        assert!(decode_progress(&payload[..POSITION_BYTES - 8]).is_err());
+        assert!(decode_progress(&[payload.clone(), vec![0; 8]].concat()).is_err());
+        assert!(decode_progress(&payload[..POSITION_BYTES - 1]).is_err());
+    }
+
+    /// Markers come one interval apart in realized frames, a fold every fold
+    /// interval stands for a marker, and nothing is recorded while the show
+    /// has not passed the newest durable position.
+    #[test]
+    fn the_progress_cadence_marks_and_folds_on_frame_intervals() {
+        let mut cadence = ProgressCadence::with_intervals(25, 100, 10);
+        assert_eq!(cadence.due(10, 10), ProgressDue::Nothing);
+        assert_eq!(cadence.due(34, 10), ProgressDue::Nothing);
+        assert_eq!(cadence.due(35, 10), ProgressDue::Marker);
+        // A command that ended at or after the cursor already recorded it.
+        assert_eq!(cadence.due(35, 35), ProgressDue::Nothing);
+        cadence.marked(35);
+        assert_eq!(cadence.due(59, 10), ProgressDue::Nothing);
+        assert_eq!(cadence.due(60, 10), ProgressDue::Marker);
+        cadence.marked(60);
+        assert_eq!(cadence.due(110, 10), ProgressDue::Fold);
+        cadence.folded(110);
+        assert_eq!(cadence.due(134, 110), ProgressDue::Nothing);
+        assert_eq!(cadence.due(135, 110), ProgressDue::Marker);
+        assert_eq!(cadence.due(210, 110), ProgressDue::Fold);
+
+        let rate = FrameRate::new(30_000, 1_001).unwrap();
+        let cadence = ProgressCadence::new(rate, 0);
+        assert_eq!(cadence.due(29, 0), ProgressDue::Marker);
+        assert_eq!(cadence.due(28, 0), ProgressDue::Nothing);
+        assert_eq!(frames_in(PROGRESS_FOLD_SECONDS, rate), 8_991);
+        assert_eq!(frames_in(0, rate), 1);
     }
 
     /// The payload is the command re-encoded by the build that accepted it, so

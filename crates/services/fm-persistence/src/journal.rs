@@ -27,6 +27,19 @@ const RECORD_OVERHEAD_BYTES: u64 = 8 + 8 + 8 + 4;
 
 const CHECKPOINT_TABLE: &str = "journal_checkpoint";
 const BATCH_TABLE: &str = "journal_batch";
+const PROGRESS_TABLE: &str = "journal_progress";
+
+/// The progress table, on its own so a journal initialised before it existed
+/// gains it on its next write-path open (see [`ProjectStore::open_journal`]).
+const CREATE_PROGRESS_SQL: &str = "
+CREATE TABLE IF NOT EXISTS journal_progress (
+    id INTEGER PRIMARY KEY,
+    sequence INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    checksum INTEGER NOT NULL
+);
+";
 
 const CREATE_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS journal_checkpoint (
@@ -38,6 +51,13 @@ CREATE TABLE IF NOT EXISTS journal_checkpoint (
 CREATE TABLE IF NOT EXISTS journal_batch (
     sequence INTEGER PRIMARY KEY,
     base_revision INTEGER NOT NULL,
+    revision INTEGER NOT NULL,
+    payload BLOB NOT NULL,
+    checksum INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS journal_progress (
+    id INTEGER PRIMARY KEY,
+    sequence INTEGER NOT NULL,
     revision INTEGER NOT NULL,
     payload BLOB NOT NULL,
     checksum INTEGER NOT NULL
@@ -63,6 +83,15 @@ const DELETE_APPLIED_SQL: &str = "DELETE FROM journal_batch WHERE sequence <= ?1
 const SELECT_UNVERIFIED_BATCHES_SQL: &str = "SELECT sequence, base_revision, revision, payload \
      FROM journal_batch WHERE sequence > ?1 ORDER BY sequence ASC";
 const CHECKPOINT_LOG_SQL: &str = "PRAGMA wal_checkpoint(TRUNCATE)";
+const SELECT_PROGRESS_SQL: &str =
+    "SELECT sequence, revision, payload, checksum FROM journal_progress WHERE id = 1";
+const DELETE_PROGRESS_SQL: &str = "DELETE FROM journal_progress";
+const INSERT_PROGRESS_SQL: &str = "INSERT INTO journal_progress \
+     (id, sequence, revision, payload, checksum) VALUES (1, ?1, ?2, ?3, ?4)";
+
+/// Maximum progress marker payload (4 KiB). A marker describes a position,
+/// not a mutation; anything larger is a caller bug, refused before writing.
+pub const MAX_JOURNAL_PROGRESS_BYTES: usize = 4 * 1024;
 
 /// Bytes of write-ahead log header that precede the first frame.
 const LOG_HEADER_BYTES: usize = 32;
@@ -131,6 +160,41 @@ impl MutationBatch {
     }
 }
 
+/// How far the show ran past the newest recorded batch.
+///
+/// Time that passes between commands moves no revision, so no batch records
+/// it. A progress marker does: it is a single overwritten row naming the
+/// journal head (`sequence`, `revision`) it was written above and an opaque
+/// payload describing the position reached there. Persistence stores and
+/// checksums it and never interprets the payload, exactly as it treats batch
+/// payloads. A marker is only meaningful above the head it names: a later
+/// batch makes it stale, and a scan then drops it rather than returning it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalProgress {
+    sequence: u64,
+    revision: u64,
+    payload: Vec<u8>,
+}
+
+impl JournalProgress {
+    /// The journal head sequence the marker was written above.
+    #[must_use]
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// The revision of that head.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
 /// Something a scan observed about the journal that is not part of its normal
 /// state and that an operator must be told about.
 ///
@@ -171,6 +235,7 @@ pub struct JournalScan {
     checkpoint_sequence: u64,
     checkpoint_revision: u64,
     batches: Vec<MutationBatch>,
+    progress: Option<JournalProgress>,
     observations: Vec<JournalObservation>,
 }
 
@@ -191,6 +256,14 @@ impl JournalScan {
     #[must_use]
     pub fn batches(&self) -> &[MutationBatch] {
         &self.batches
+    }
+
+    /// The progress marker written above the newest batch (or above the
+    /// checkpoint when no batch is unapplied), if one is current. A marker
+    /// written above an older head is stale and never returned.
+    #[must_use]
+    pub const fn progress(&self) -> Option<&JournalProgress> {
+        self.progress.as_ref()
     }
 
     /// Everything the scan had to reconcile or found damaged. Empty for an
@@ -457,6 +530,11 @@ impl ProjectStore {
         database
             .execute(DELETE_APPLIED_SQL, vec![sql_u64(sequence)?], &deadline)
             .map_err(StoreError::Journal)?;
+        // Progress past abandoned history describes a show that no longer
+        // exists, and it would name a head the next append reuses.
+        database
+            .execute(DELETE_PROGRESS_SQL, Vec::new(), &deadline)
+            .map_err(StoreError::Journal)?;
         transaction.commit(&deadline).map_err(StoreError::Journal)?;
         truncate_write_ahead_log(&database, &deadline)?;
         Ok(AbandonedJournal {
@@ -626,6 +704,12 @@ impl ProjectStore {
                 JournalDatabase::open(&database_path, deadline).map_err(StoreError::Journal)?;
             require_table(&database, CHECKPOINT_TABLE, deadline)?;
             require_table(&database, BATCH_TABLE, deadline)?;
+            // The progress table is the one table this path may create on an
+            // initialised journal: losing it loses only idle progress, never
+            // an acknowledged command, so an absent table is "no marker".
+            database
+                .execute_batch(CREATE_PROGRESS_SQL, deadline)
+                .map_err(StoreError::Journal)?;
             return Ok(database);
         }
 
@@ -833,10 +917,19 @@ impl ProjectStore {
                 }));
             }
         }
+        let (head_sequence, head_revision) = batches
+            .last()
+            .map_or((resolved.sequence, resolved.revision), |batch| {
+                (batch.sequence, batch.revision)
+            });
+        let progress = read_progress(database, deadline)?.filter(|progress| {
+            progress.sequence == head_sequence && progress.revision == head_revision
+        });
         Ok(JournalScan {
             checkpoint_sequence: resolved.sequence,
             checkpoint_revision: resolved.revision,
             batches,
+            progress,
             observations,
         })
     }
@@ -941,6 +1034,52 @@ impl JournalWriter<'_> {
     #[must_use]
     pub fn head_sequence(&self) -> u64 {
         self.state.borrow().head_sequence
+    }
+
+    /// Durably replaces the progress marker with `payload`, written above the
+    /// current journal head.
+    ///
+    /// One small row is overwritten, so a marker costs one commit no matter
+    /// how often it is written and the journal does not grow with it. A
+    /// failed write leaves the previous marker in place.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a payload over [`MAX_JOURNAL_PROGRESS_BYTES`],
+    /// plus any database, lock, deadline, or filesystem error.
+    pub fn record_progress(&self, payload: &[u8]) -> Result<(), StoreError> {
+        let deadline = Deadline::new("record_progress");
+        if payload.len() > MAX_JOURNAL_PROGRESS_BYTES {
+            return Err(StoreError::Journal(JournalError::RecordTooLarge {
+                size: u64::try_from(payload.len()).unwrap_or(u64::MAX),
+                maximum: MAX_JOURNAL_PROGRESS_BYTES as u64,
+            }));
+        }
+        let state = self.state.borrow();
+        let progress = JournalProgress {
+            sequence: state.head_sequence,
+            revision: state.head_revision,
+            payload: payload.to_vec(),
+        };
+        drop(state);
+        let transaction =
+            Transaction::begin(&self.database, &deadline).map_err(StoreError::Journal)?;
+        self.database
+            .execute_prepared(DELETE_PROGRESS_SQL, Vec::new(), &deadline)
+            .map_err(StoreError::Journal)?;
+        self.database
+            .execute_prepared(
+                INSERT_PROGRESS_SQL,
+                vec![
+                    sql_u64(progress.sequence)?,
+                    sql_u64(progress.revision)?,
+                    Value::Blob(progress.payload.clone()),
+                    Value::Integer(i64::from(progress_checksum(&progress))),
+                ],
+                &deadline,
+            )
+            .map_err(StoreError::Journal)?;
+        transaction.commit(&deadline).map_err(StoreError::Journal)
     }
 
     /// Appends one immutable checksummed mutation batch.
@@ -1118,6 +1257,7 @@ impl JournalScan {
             checkpoint_sequence: 0,
             checkpoint_revision: manifest_revision,
             batches: Vec::new(),
+            progress: None,
             observations: Vec::new(),
         }
     }
@@ -1235,6 +1375,49 @@ fn read_head(
     Ok(rows.into_iter().next())
 }
 
+/// Reads the progress marker, verifying its checksum.
+///
+/// A journal whose progress table is absent has no marker. A marker whose
+/// checksum does not verify is damage and is refused like a damaged batch.
+fn read_progress(
+    database: &JournalDatabase,
+    deadline: &Deadline,
+) -> Result<Option<JournalProgress>, StoreError> {
+    let present = database
+        .query(
+            SELECT_TABLE_SQL,
+            vec![Value::Text(PROGRESS_TABLE.to_owned())],
+            deadline,
+            |row| column_integer(row, 0),
+        )
+        .map_err(StoreError::Journal)?
+        .first()
+        .is_some_and(|count| *count > 0);
+    if !present {
+        return Ok(None);
+    }
+    let rows = database
+        .query(SELECT_PROGRESS_SQL, Vec::new(), deadline, |row| {
+            let progress = JournalProgress {
+                sequence: row_u64(row, 0)?,
+                revision: row_u64(row, 1)?,
+                payload: column_blob(row, 2)?,
+            };
+            let stored = u32::try_from(column_integer(row, 3)?)
+                .map_err(|_| JournalError::MalformedColumn { index: 3 })?;
+            let actual = progress_checksum(&progress);
+            if stored != actual {
+                return Err(JournalError::ProgressChecksumMismatch {
+                    expected: stored,
+                    actual,
+                });
+            }
+            Ok(progress)
+        })
+        .map_err(StoreError::Journal)?;
+    Ok(rows.into_iter().next())
+}
+
 fn write_checkpoint(
     database: &JournalDatabase,
     checkpoint: Checkpoint,
@@ -1316,6 +1499,14 @@ fn checksum(batch: &MutationBatch) -> u32 {
     fnv1a32(hash, &batch.payload)
 }
 
+fn progress_checksum(progress: &JournalProgress) -> u32 {
+    let mut hash = 0x811c_9dc5_u32;
+    for field in [progress.sequence, progress.revision] {
+        hash = fnv1a32(hash, &field.to_le_bytes());
+    }
+    fnv1a32(hash, &progress.payload)
+}
+
 fn fnv1a32(mut hash: u32, bytes: &[u8]) -> u32 {
     for byte in bytes {
         hash ^= u32::from(*byte);
@@ -1342,6 +1533,11 @@ pub enum JournalError {
     },
     ChecksumMismatch {
         sequence: u64,
+        expected: u32,
+        actual: u32,
+    },
+    /// The progress marker does not match its stored checksum.
+    ProgressChecksumMismatch {
         expected: u32,
         actual: u32,
     },
@@ -1437,6 +1633,9 @@ impl fmt::Display for JournalError {
                 formatter,
                 "journal batch {sequence} does not match its stored checksum"
             ),
+            Self::ProgressChecksumMismatch { .. } => {
+                formatter.write_str("journal progress marker does not match its stored checksum")
+            }
             Self::MalformedColumn { index } => write!(
                 formatter,
                 "journal database column {index} holds an unexpected value"
@@ -2046,6 +2245,105 @@ mod tests {
                 .iter()
                 .chain(&more_squatters)
                 .all(|squatter| squatter.exists())
+        );
+    }
+
+    /// A progress marker is returned only while it sits above the head it was
+    /// written at: a later batch makes it stale, a checkpoint at that head
+    /// keeps it, and abandoning history removes it.
+    #[test]
+    fn a_progress_marker_is_current_only_above_the_head_it_names() {
+        let bundle = TestBundle::new("progress");
+        let store = bundle.store(3);
+        {
+            let writer = store.open_journal_writer().unwrap();
+            writer.record_progress(b"idle-at-checkpoint").unwrap();
+        }
+        let scan = store.scan_journal().unwrap();
+        let progress = scan.progress().expect("a marker above the checkpoint");
+        assert_eq!(
+            (progress.sequence(), progress.revision(), progress.payload()),
+            (0, 3, &b"idle-at-checkpoint"[..])
+        );
+
+        {
+            let writer = store.open_journal_writer().unwrap();
+            writer
+                .append_batch(&MutationBatch::new(1, 3, 4, b"one".to_vec()))
+                .unwrap();
+        }
+        assert_eq!(
+            store.scan_journal().unwrap().progress(),
+            None,
+            "a batch after the marker makes it stale"
+        );
+
+        {
+            let writer = store.open_journal_writer().unwrap();
+            writer.record_progress(b"first").unwrap();
+            writer.record_progress(b"second").unwrap();
+            writer.checkpoint_and_compact(&manifest(4), 1).unwrap();
+        }
+        let scan = store.recover_journal().unwrap();
+        assert_eq!(scan.batches(), &[] as &[MutationBatch]);
+        assert_eq!(
+            scan.progress().map(JournalProgress::payload),
+            Some(&b"second"[..]),
+            "the newest marker survives a checkpoint at its head"
+        );
+
+        store.abandon_unapplied_batches().unwrap();
+        assert_eq!(store.scan_journal().unwrap().progress(), None);
+    }
+
+    /// A marker whose bytes no longer round-trip is refused, an oversized one
+    /// is never written, and a journal from before the progress table reads as
+    /// having no marker and gains the table on its next write-path open.
+    #[test]
+    fn a_damaged_oversized_or_absent_progress_marker_is_handled() {
+        let bundle = TestBundle::new("progress-damage");
+        let store = bundle.store(0);
+        {
+            let writer = store.open_journal_writer().unwrap();
+            assert!(matches!(
+                writer.record_progress(&vec![0; MAX_JOURNAL_PROGRESS_BYTES + 1]),
+                Err(StoreError::Journal(JournalError::RecordTooLarge { .. }))
+            ));
+            writer.record_progress(b"original").unwrap();
+        }
+        let deadline = Deadline::new("test");
+        let database = JournalDatabase::open(&store.journal_database_path(), &deadline).unwrap();
+        database
+            .execute(
+                "UPDATE journal_progress SET payload = ?1 WHERE id = 1",
+                vec![Value::Blob(b"tampered".to_vec())],
+                &deadline,
+            )
+            .unwrap();
+        drop(database);
+        assert!(matches!(
+            store.scan_journal(),
+            Err(StoreError::Journal(
+                JournalError::ProgressChecksumMismatch { .. }
+            ))
+        ));
+
+        let database = JournalDatabase::open(&store.journal_database_path(), &deadline).unwrap();
+        database
+            .execute_batch("DROP TABLE journal_progress;", &deadline)
+            .unwrap();
+        drop(database);
+        assert_eq!(store.scan_journal().unwrap().progress(), None);
+        let writer = store.open_journal_writer().unwrap();
+        writer.record_progress(b"again").unwrap();
+        drop(writer);
+        assert_eq!(
+            store
+                .scan_journal()
+                .unwrap()
+                .progress()
+                .map(JournalProgress::payload),
+            Some(&b"again"[..])
         );
     }
 }

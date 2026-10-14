@@ -4584,12 +4584,16 @@ impl NativeDaemon {
     /// shutdown path. A configured slot whose restored flag is false stays
     /// closed even when the other slot is recording. `Ok(false)` means a
     /// requested shutdown interrupted a barrier.
+    /// `before_frame` runs before every frame the startup barrier lets the
+    /// pacer realize, so the playlist clock keeps cutting on schedule while a
+    /// recorder starts.
     fn start_and_prime_configured_recorders(
         &mut self,
         stored: &StoredProject,
         control: &mut ControlService<Policy>,
         server: &ServerIdentity,
         shutdown: Option<&ProcessShutdown>,
+        before_frame: &mut BeforeNativeFrame<'_>,
     ) -> AppResult<bool> {
         let paths = [self.record_program.clone(), self.record_program_2.clone()];
         let configured = paths.each_ref().map(Option::is_some);
@@ -4606,7 +4610,7 @@ impl NativeDaemon {
         }
         for slot in 0..RECORDER_SLOTS {
             if self.recorders[slot].is_running()
-                && !self.prime_recorder(slot, control, server, shutdown)?
+                && !self.prime_recorder(slot, control, server, shutdown, before_frame)?
             {
                 return Ok(false);
             }
@@ -4789,6 +4793,7 @@ impl NativeDaemon {
         control: &mut ControlService<Policy>,
         server: &ServerIdentity,
         shutdown: Option<&ProcessShutdown>,
+        before_frame: &mut BeforeNativeFrame<'_>,
     ) -> AppResult<bool> {
         let ProgramRecording::Running(recorder) = &self.recorders[slot] else {
             return Ok(true);
@@ -4816,6 +4821,7 @@ impl NativeDaemon {
                     ProgramRecording::Off => unreachable!("recorder presence was checked"),
                 });
             }
+            before_frame(self, control)?;
             self.tick_if_due(control, server)?;
             thread::sleep(NATIVE_IO_POLL_INTERVAL);
         }
@@ -6267,6 +6273,7 @@ impl NativeDaemon {
         _control: &mut ControlService<Policy>,
         _server: &ServerIdentity,
         _shutdown: Option<&ProcessShutdown>,
+        _before_frame: &mut BeforeNativeFrame<'_>,
     ) -> AppResult<bool> {
         Ok(true)
     }
@@ -8373,11 +8380,39 @@ fn serve_inner(
             .iter()
             .any(|&active| active)
         {
+            // The playlist clock runs inside the startup barrier too: a
+            // restored playlist keeps cutting on its scheduled frames while
+            // the recorder starts, exactly as the session loop's clock does.
+            let stored = durable.clone();
+            let principal = development_principal()?;
+            let mut clock = playlist_clock::PlaylistClock::default();
+            let mut before_frame =
+                |native: &mut NativeDaemon, control: &mut ControlService<Policy>| {
+                    let Some((frame, revision)) =
+                        clock.due(control, playlist_clock::Pacing::Engine)
+                    else {
+                        return Ok(());
+                    };
+                    let delivery = execute_native_authority_command(
+                        control,
+                        &journal,
+                        &mut durable,
+                        &principal,
+                        &authority,
+                        &playlist_clock::advance_command(frame, revision),
+                        now_millis()?,
+                        native,
+                        Some(&process_shutdown),
+                    )?;
+                    clock.observe(frame, revision, &delivery.result);
+                    Ok(())
+                };
             let primed = native.start_and_prime_configured_recorders(
-                &durable,
+                &stored,
                 &mut control.borrow_mut(),
                 &authority,
                 Some(&process_shutdown),
+                &mut before_frame,
             );
             match primed {
                 Ok(true) => {}
@@ -8591,6 +8626,11 @@ fn serve_inner(
     Ok(())
 }
 
+/// Work a native frame loop outside the session loop runs before each frame
+/// it lets the pacer realize.
+type BeforeNativeFrame<'a> =
+    dyn FnMut(&mut NativeDaemon, &mut ControlService<Policy>) -> AppResult<()> + 'a;
+
 fn checkpoint_native(
     control: &SharedControl,
     store: &dyn DurableStore,
@@ -8602,6 +8642,89 @@ fn checkpoint_native(
     // revision, so it is not a mutation: it belongs in the manifest directly.
     store.checkpoint(durable)?;
     Ok(())
+}
+
+/// Records a native daemon's idle progress (see [`journal::ProgressCadence`]).
+///
+/// The session loop calls [`Self::poll`] once per pass, right after the
+/// pacer's frame, so a write lands in the slack before the next deadline
+/// rather than in front of a frame. A marker is one small journal commit per
+/// [`journal::PROGRESS_MARKER_SECONDS`]; a fold is a manifest checkpoint per
+/// [`journal::PROGRESS_FOLD_SECONDS`]. Progress is only recorded at an idle
+/// frame boundary — the only position replay (and a checkpoint) can
+/// reproduce — so a pass with work in flight records nothing and the next
+/// pass tries again. A failed write is reported once and never stops the
+/// show: it loses at most idle progress, never an acknowledged command.
+pub(crate) struct NativeProgress {
+    cadence: journal::ProgressCadence,
+    failing: bool,
+}
+
+impl NativeProgress {
+    pub(crate) fn new(durable: &StoredProject) -> Self {
+        Self {
+            cadence: journal::ProgressCadence::new(
+                durable.project().settings().frame_rate,
+                durable.position().frames_rendered,
+            ),
+            failing: false,
+        }
+    }
+
+    pub(crate) fn poll(
+        &mut self,
+        control: &SharedControl,
+        store: &dyn DurableStore,
+        durable: &mut StoredProject,
+    ) {
+        let control = control.borrow();
+        let cursor = control.frame_cursor();
+        let due = self.cadence.due(cursor, durable.position().frames_rendered);
+        if due == journal::ProgressDue::Nothing {
+            return;
+        }
+        let Ok(snapshot) = control.idle_engine_snapshot() else {
+            return;
+        };
+        drop(control);
+        let result = if due == journal::ProgressDue::Fold {
+            self.cadence.folded(cursor);
+            // The idle snapshot moves the runtime position without moving
+            // the revision, exactly as the shutdown checkpoint does.
+            stored_project_checkpoint(durable, &snapshot).and_then(|folded| {
+                store.checkpoint(&folded)?;
+                *durable = folded;
+                Ok(())
+            })
+        } else {
+            self.cadence.marked(cursor);
+            store.record_progress(snapshot_position(&snapshot))
+        };
+        match (result, self.failing) {
+            (Ok(()), true) => {
+                self.failing = false;
+                eprintln!("FREEMIXD_JOURNAL\tv=1\tprogress=recovered\tframe={cursor}");
+            }
+            (Err(error), false) => {
+                self.failing = true;
+                eprintln!("FREEMIXD_JOURNAL\tv=1\tprogress=failed\tframe={cursor}\terror={error}");
+            }
+            // Reported once per failing streak.
+            (Ok(()), false) | (Err(_), true) => {}
+        }
+    }
+}
+
+/// The durable coordinates of an idle engine snapshot.
+fn snapshot_position(snapshot: &EngineSnapshot) -> ProjectPosition {
+    ProjectPosition {
+        revision: snapshot.revision().get(),
+        state_epoch: snapshot.state_epoch().get(),
+        event_sequence: snapshot.event_sequence().get(),
+        frames_rendered: snapshot.frames_rendered(),
+        runtime_generation: snapshot.runtime_generation().get(),
+        clock_time_nanos: snapshot.clock_time().as_nanos(),
+    }
 }
 
 /// Loads the manifest and replays whatever the journal recorded after it.
@@ -8627,7 +8750,17 @@ fn load_and_recover(store: &ProjectStore, recover_to_checkpoint: bool) -> AppRes
     for observation in scan.observations() {
         eprintln!("FREEMIXD_JOURNAL\tv=1\tobservation={observation}");
     }
-    if scan.batches().is_empty() {
+    let progress = scan
+        .progress()
+        .map(|progress| journal::decode_progress(progress.payload()))
+        .transpose()?
+        // A marker at or behind the manifest (a fold or a clean stop wrote
+        // the manifest after it) has nothing left to replay.
+        .filter(|progress| {
+            !scan.batches().is_empty()
+                || progress.frames_rendered > manifest.position().frames_rendered
+        });
+    if scan.batches().is_empty() && progress.is_none() {
         return Ok(manifest);
     }
     let journal_head = scan
@@ -8636,16 +8769,17 @@ fn load_and_recover(store: &ProjectStore, recover_to_checkpoint: bool) -> AppRes
         .map_or_else(|| scan.checkpoint_sequence(), MutationBatch::sequence);
 
     let title_templates = load_title_templates(store, manifest.project())?;
-    let durable = replay_journal(&manifest, &title_templates, scan.batches())?;
+    let durable = replay_journal(&manifest, &title_templates, scan.batches(), progress)?;
     // Fold the replayed mutations into the manifest and discard them, so the
     // next crash replays only what happened after this point and a second
     // recovery of the same batches is impossible.
     store.checkpoint_and_compact(&durable, journal_head)?;
     eprintln!(
-        "FREEMIXD_JOURNAL\tv=1\trecovered_batches={}\tfrom_revision={}\tto_revision={}",
+        "FREEMIXD_JOURNAL\tv=1\trecovered_batches={}\tfrom_revision={}\tto_revision={}\tframe={}",
         scan.batches().len(),
         manifest.position().revision,
-        durable.position().revision
+        durable.position().revision,
+        durable.position().frames_rendered
     );
     Ok(durable)
 }
@@ -8695,7 +8829,11 @@ fn abandon_to_checkpoint(
 /// nobody.
 ///
 /// Frames a native daemon realized between two commands are ticked idle
-/// before the later one (see [`replay_idle_frames`]).
+/// before the later one (see [`replay_idle_frames`]), and the frames it
+/// realized after the last one are ticked idle up to the journal's progress
+/// marker, `progress`, when that is ahead (see [`journal::ProgressCadence`]).
+/// Every idle frame counts against one bound, [`IdleReplayBudget`], so a
+/// damaged frame number refuses startup instead of ticking forever.
 ///
 /// Every batch must land on exactly the position it recorded — not just its
 /// revision. A refused command advances no revision and a frame that elapsed
@@ -8708,6 +8846,7 @@ fn replay_journal(
     manifest: &StoredProject,
     title_templates: &TitleTemplates,
     batches: &[MutationBatch],
+    progress: Option<ProjectPosition>,
 ) -> AppResult<StoredProject> {
     let mut durable = manifest.clone();
     let project_id = durable.project().id();
@@ -8721,6 +8860,7 @@ fn replay_journal(
     );
     let server = control_server_identity(&control, project_id);
     let principal = development_principal()?;
+    let mut budget = IdleReplayBudget::new(durable.project().settings().frame_rate);
     for batch in batches {
         let recorded = journal::decode_mutation(batch.payload())?;
         if recorded.position.revision != batch.revision() {
@@ -8732,7 +8872,15 @@ fn replay_journal(
             ))
             .into());
         }
-        replay_idle_frames(&mut control, &principal, &server, &recorded)?;
+        replay_idle_frames(&mut control, &principal, &server, &recorded, &mut budget).map_err(
+            |error| {
+                AppFailure(format!(
+                    "journal batch {} (command `{}`): {error}",
+                    batch.sequence(),
+                    recorded.command.id
+                ))
+            },
+        )?;
         execute_durable_command(
             &mut control,
             &ReplayedMutations,
@@ -8753,7 +8901,112 @@ fn replay_journal(
             .into());
         }
     }
+    if let Some(progress) = progress {
+        replay_progress(&mut control, &server, &mut durable, progress, &mut budget)?;
+    }
     Ok(durable)
+}
+
+/// Ticks the engine idle up to the journal's progress marker.
+///
+/// The marker records the position a native daemon reached after the last
+/// recorded command, so the frames between are idle frames, ticked exactly
+/// as the pacer realized them; the result must land on the whole recorded
+/// position, like a replayed batch. A marker at or behind the replay names
+/// progress a later checkpoint already holds, and is skipped.
+fn replay_progress(
+    control: &mut ControlService<Policy>,
+    server: &ServerIdentity,
+    durable: &mut StoredProject,
+    progress: ProjectPosition,
+    budget: &mut IdleReplayBudget,
+) -> AppResult<()> {
+    if progress.revision != durable.position().revision
+        || progress.frames_rendered <= durable.position().frames_rendered
+    {
+        return Ok(());
+    }
+    budget
+        .tick_until(control, server, progress.frames_rendered)
+        .map_err(|error| AppFailure(format!("journal progress marker: {error}")))?;
+    let snapshot = control.idle_engine_snapshot().map_err(|error| {
+        AppFailure(format!(
+            "journal progress marker at frame {} is not an idle frame boundary: {error}",
+            progress.frames_rendered
+        ))
+    })?;
+    let advanced = stored_project_checkpoint(durable, &snapshot)?;
+    if advanced.position() != progress {
+        return Err(AppFailure(format!(
+            "journal progress marker replayed to {:?} instead of the recorded {progress:?}",
+            advanced.position()
+        ))
+        .into());
+    }
+    *durable = advanced;
+    Ok(())
+}
+
+/// How many idle frames journal replay may still tick.
+///
+/// Idle frames carry no command, so replay reaches them only from recorded
+/// frame numbers. A damaged journal can name any frame, and ticking to it
+/// would hold startup for hours or forever, so the whole replay shares one
+/// budget of [`journal::MAX_REPLAY_IDLE_SECONDS`] of show at the project's
+/// frame rate, checked *before* ticking: a request past it refuses startup
+/// immediately with the frames it asked for.
+struct IdleReplayBudget {
+    remaining: u64,
+    limit: u64,
+}
+
+impl IdleReplayBudget {
+    fn new(rate: fm_types::FrameRate) -> Self {
+        let limit = journal::frames_in(journal::MAX_REPLAY_IDLE_SECONDS, rate);
+        Self {
+            remaining: limit,
+            limit,
+        }
+    }
+
+    /// Ticks the engine idle until its cursor reaches `target`, refusing a
+    /// target the remaining budget does not cover.
+    fn tick_until(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        server: &ServerIdentity,
+        target: u64,
+    ) -> AppResult<()> {
+        let from = control.frame_cursor();
+        self.check(from, target)?;
+        while control.frame_cursor() < target {
+            control.tick(server)?;
+        }
+        self.charge(control.frame_cursor().saturating_sub(from));
+        Ok(())
+    }
+
+    /// Charges `frames` ticked idle frames.
+    const fn charge(&mut self, frames: u64) {
+        self.remaining = self.remaining.saturating_sub(frames);
+    }
+
+    /// Refuses ticking from `cursor` up to `target` when the remaining
+    /// budget does not cover it.
+    fn check(&self, cursor: u64, target: u64) -> AppResult<()> {
+        let frames = target.saturating_sub(cursor);
+        if frames > self.remaining {
+            return Err(AppFailure(format!(
+                "replay would tick {frames} idle frames (frame {cursor} to {target}), past the \
+                 bound of {} idle frames ({} hours of show) per recovery; the recorded frame is \
+                 implausible, so the journal is damaged (--recover-to-checkpoint discards it)",
+                self.limit,
+                journal::MAX_REPLAY_IDLE_SECONDS / 3_600
+            ))
+            .into());
+        }
+        Ok(())
+    }
 }
 
 /// Realizes the idle frames the daemon rendered before `recorded` executed.
@@ -8779,11 +9032,17 @@ fn replay_idle_frames(
     principal: &Principal,
     server: &ServerIdentity,
     recorded: &journal::RecordedMutation,
+    budget: &mut IdleReplayBudget,
 ) -> AppResult<()> {
     if let CommandPayload::PlaylistAdvance { frame } = recorded.command.payload {
+        // Ticks stop at the boundary when the advance was on time, so
+        // `frame` only bounds them; the budget is charged what was ticked.
+        let from = control.frame_cursor();
+        budget.check(from, frame)?;
         while control.frame_cursor() < frame && control.playlist_advance_frame() != Some(frame) {
             control.tick(server)?;
         }
+        budget.charge(control.frame_cursor().saturating_sub(from));
     }
     let ticks = match control.prepare_submit(
         principal,
@@ -8796,10 +9055,7 @@ fn replay_idle_frames(
         PrepareSubmitOutcome::Prepared(_) | PrepareSubmitOutcome::Replayed(_) => return Ok(()),
     };
     let began = recorded.position.frames_rendered.saturating_sub(ticks);
-    while control.frame_cursor() < began {
-        control.tick(server)?;
-    }
-    Ok(())
+    budget.tick_until(control, server, began)
 }
 
 /// Maps one validated model recorder slot onto the switcher's slot domain.
@@ -9657,105 +9913,136 @@ fn execute_authority_command(
     native: Option<&mut NativeDaemon>,
     process_shutdown: Option<&ProcessShutdown>,
 ) -> AppResult<CommandDelivery> {
-    let execution = {
-        let mut control = control.borrow_mut();
-        if let Some(native) = native {
-            if matches!(
-                command.payload,
-                CommandPayload::AddInput { .. } | CommandPayload::RemoveInput { .. }
-            ) {
+    let mut control = control.borrow_mut();
+    if let Some(native) = native {
+        return execute_native_authority_command(
+            &mut control,
+            store,
+            durable,
+            principal,
+            server,
+            command,
+            now,
+            native,
+            process_shutdown,
+        );
+    }
+    let execution = execute_durable_command(
+        &mut control,
+        store,
+        durable,
+        principal,
+        server,
+        command,
+        now,
+    )?;
+    Ok(durable_delivery(execution))
+}
+
+/// Executes one command through the native realization path, with the
+/// control service already borrowed: from the session loop, and from frame
+/// loops that run before it (the playlist clock during the recorder startup
+/// barrier).
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::used_underscore_binding
+)]
+fn execute_native_authority_command(
+    control: &mut ControlService<Policy>,
+    store: &dyn DurableStore,
+    durable: &mut StoredProject,
+    principal: &Principal,
+    server: &ServerIdentity,
+    command: &CommandMessage,
+    now: u64,
+    native: &mut NativeDaemon,
+    process_shutdown: Option<&ProcessShutdown>,
+) -> AppResult<CommandDelivery> {
+    if matches!(
+        command.payload,
+        CommandPayload::AddInput { .. } | CommandPayload::RemoveInput { .. }
+    ) {
+        return Ok(CommandDelivery {
+            result: native_input_catalogue_rejection(
+                command,
+                control.diagnostics().current_revision,
+            ),
+            #[cfg(test)]
+            events: Vec::new(),
+            #[cfg(test)]
+            runtime_events: Vec::new(),
+        });
+    }
+    native.invalidate_projection();
+    let execution = if is_stinger_mutation(command) {
+        match execute_native_stinger_mutation(
+            control,
+            store,
+            durable,
+            principal,
+            server,
+            command,
+            now,
+            native,
+            process_shutdown,
+        )? {
+            Ok(execution) => execution,
+            Err(failure) => {
                 return Ok(CommandDelivery {
-                    result: native_input_catalogue_rejection(
-                        command,
-                        control.diagnostics().current_revision,
-                    ),
+                    result: failure.result,
                     #[cfg(test)]
                     events: Vec::new(),
                     #[cfg(test)]
-                    runtime_events: Vec::new(),
+                    runtime_events: failure.runtime_events,
                 });
             }
-            native.invalidate_projection();
-            let execution = if is_stinger_mutation(command) {
-                match execute_native_stinger_mutation(
-                    &mut control,
-                    store,
-                    durable,
-                    principal,
-                    server,
-                    command,
-                    now,
-                    native,
-                    process_shutdown,
-                )? {
-                    Ok(execution) => execution,
-                    Err(failure) => {
-                        return Ok(CommandDelivery {
-                            result: failure.result,
-                            #[cfg(test)]
-                            events: Vec::new(),
-                            #[cfg(test)]
-                            runtime_events: failure.runtime_events,
-                        });
-                    }
-                }
-            } else {
-                execute_durable_command_with_ticks(
-                    &mut control,
-                    store,
-                    durable,
-                    principal,
-                    server,
-                    command,
-                    now,
-                    |control, server| {
-                        native
-                            .wait_and_tick(control, server, process_shutdown)?
-                            .map_or_else(
-                                || Ok(control.tick_for_shutdown(server)?.runtime_events),
-                                Ok,
-                            )
-                    },
-                )?
-            };
-            // Live sink changes and recording segments are realized by the
-            // native runtime right here, after durability and the engine
-            // commit have settled but before the acknowledgement is queued.
-            // A recording start only begins here; the session loop holds its
-            // acknowledgement until the segment is mux-ready.
-            #[cfg(feature = "native-media")]
-            native.observe_stream_command(command, &execution.submission.output.result);
-            #[cfg(feature = "native-media")]
-            native.observe_recording_command(command, &execution.submission.output.result, durable);
-            // Changed title fields re-render on the title worker; this only
-            // compares and hands over state.
-            #[cfg(feature = "native-media")]
-            native.titles.observe(durable.project());
-            execution
-        } else {
-            execute_durable_command(
-                &mut control,
-                store,
-                durable,
-                principal,
-                server,
-                command,
-                now,
-            )?
         }
+    } else {
+        execute_durable_command_with_ticks(
+            control,
+            store,
+            durable,
+            principal,
+            server,
+            command,
+            now,
+            |control, server| {
+                native
+                    .wait_and_tick(control, server, process_shutdown)?
+                    .map_or_else(|| Ok(control.tick_for_shutdown(server)?.runtime_events), Ok)
+            },
+        )?
     };
+    // Live sink changes and recording segments are realized by the
+    // native runtime right here, after durability and the engine
+    // commit have settled but before the acknowledgement is queued.
+    // A recording start only begins here; the session loop holds its
+    // acknowledgement until the segment is mux-ready.
+    #[cfg(feature = "native-media")]
+    native.observe_stream_command(command, &execution.submission.output.result);
+    #[cfg(feature = "native-media")]
+    native.observe_recording_command(command, &execution.submission.output.result, durable);
+    // Changed title fields re-render on the title worker; this only
+    // compares and hands over state.
+    #[cfg(feature = "native-media")]
+    native.titles.observe(durable.project());
+    Ok(durable_delivery(execution))
+}
+
+#[allow(clippy::used_underscore_binding)]
+fn durable_delivery(execution: DurableExecution) -> CommandDelivery {
     let DurableExecution {
         submission,
         runtime_events: _runtime_events,
     } = execution;
-
-    Ok(CommandDelivery {
+    CommandDelivery {
         result: submission.output.result,
         #[cfg(test)]
         events: submission.output.events,
         #[cfg(test)]
         runtime_events: _runtime_events,
-    })
+    }
 }
 
 fn is_stinger_mutation(command: &CommandMessage) -> bool {
@@ -10614,14 +10901,7 @@ fn stored_project_with_receipts(
             realized: persisted_fade_to_black(snapshot.realized_fade_to_black()),
         },
         persisted_overlays(desired, realized),
-        ProjectPosition {
-            revision: snapshot.revision().get(),
-            state_epoch: snapshot.state_epoch().get(),
-            event_sequence: snapshot.event_sequence().get(),
-            frames_rendered: snapshot.frames_rendered(),
-            runtime_generation: snapshot.runtime_generation().get(),
-            clock_time_nanos: snapshot.clock_time().as_nanos(),
-        },
+        snapshot_position(snapshot),
         receipts,
     )
     .map_err(Into::into)
@@ -18167,7 +18447,8 @@ mod tests {
         // the playlist and Program routing the operator saw.
         let scan = store.scan_journal().unwrap();
         assert_eq!(scan.batches().len(), 5);
-        let replayed = replay_journal(&manifest, &TitleTemplates::new(), scan.batches()).unwrap();
+        let replayed =
+            replay_journal(&manifest, &TitleTemplates::new(), scan.batches(), None).unwrap();
         assert_eq!(replayed.project().playlist(), durable.project().playlist());
         assert_eq!(replayed.runtime_routing(), durable.runtime_routing());
         assert_eq!(replayed.position(), durable.position());
@@ -18265,9 +18546,159 @@ mod tests {
         assert_eq!(realized.last().unwrap().0, late_frame);
         assert_eq!(realized.last().unwrap().1, test_input_id(2));
         let scan = store.scan_journal().unwrap();
-        let replayed = replay_journal(&manifest, &TitleTemplates::new(), scan.batches()).unwrap();
+        let replayed =
+            replay_journal(&manifest, &TitleTemplates::new(), scan.batches(), None).unwrap();
         assert_eq!(replayed.position(), durable.position());
         assert_eq!(replayed.project().playlist(), durable.project().playlist());
+    }
+
+    /// Idle frames a native daemon realizes after its last command survive a
+    /// crash through the progress marker: markers land one second of frames
+    /// apart, replay and recovery tick idle up to the newest one and land on
+    /// its whole position, and a fold moves idle progress into the manifest.
+    #[test]
+    fn idle_progress_markers_replay_past_the_last_command_and_fold_into_the_manifest() {
+        use fm_protocol::{PlaylistEntrySpec, PlaylistLoopMode, PlaylistTransitionKind};
+        use journal::{DurableJournal, PROGRESS_FOLD_SECONDS, decode_progress, frames_in};
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("progress.freemix")).unwrap();
+        let manifest = test_project();
+        store.save(&manifest).unwrap();
+        let rate = manifest.project().settings().frame_rate;
+        let control = Rc::new(RefCell::new(test_control(&manifest)));
+        let server = test_server(&control.borrow());
+        let mut durable = manifest.clone();
+        let mut realized = Vec::new();
+        let marker_frames = frames_in(journal::PROGRESS_MARKER_SECONDS, rate);
+        {
+            let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+            let result = native_paced_command(
+                &mut control.borrow_mut(),
+                &journal,
+                &mut durable,
+                &server,
+                &test_command(
+                    "set",
+                    "set-key",
+                    CommandPayload::SetPlaylist {
+                        loop_mode: PlaylistLoopMode::Off,
+                        entries: vec![PlaylistEntrySpec {
+                            id: 1,
+                            input: fm_protocol::WireInputId::from_domain(test_input_id(2)),
+                            duration_frames: 50,
+                            transition: PlaylistTransitionKind::Cut,
+                            transition_frames: 0,
+                            enabled: true,
+                        }],
+                    },
+                ),
+                &mut realized,
+            );
+            assert!(
+                matches!(result, CommandResult::Accepted { .. }),
+                "{result:?}"
+            );
+            let command_end = durable.position().frames_rendered;
+            let mut progress = NativeProgress::new(&durable);
+            // The pacer realizes idle frames; the loop polls after each.
+            let mut markers = Vec::new();
+            for _ in 0..(marker_frames * 2 + 7) {
+                control.borrow_mut().tick(&server).unwrap();
+                progress.poll(&control, &journal, &mut durable);
+                if let Some(marker) = store_progress(&store)
+                    && markers.last() != Some(&marker.frames_rendered)
+                {
+                    markers.push(marker.frames_rendered);
+                }
+            }
+            assert_eq!(
+                markers,
+                [command_end + marker_frames, command_end + 2 * marker_frames],
+                "one marker per second of realized frames"
+            );
+            assert_eq!(
+                durable.position().frames_rendered,
+                command_end,
+                "markers leave the manifest alone"
+            );
+        }
+
+        // Replay (and so startup recovery) resumes at the newest marker, on
+        // its whole position, not where the last command ended.
+        let scan = store.scan_journal().unwrap();
+        let marker = decode_progress(scan.progress().unwrap().payload()).unwrap();
+        let replayed = replay_journal(
+            &manifest,
+            &TitleTemplates::new(),
+            scan.batches(),
+            Some(marker),
+        )
+        .unwrap();
+        assert_eq!(replayed.position(), marker);
+        assert_eq!(replayed.project().playlist(), durable.project().playlist());
+        let recovered = load_and_recover(&store, false).unwrap();
+        assert_eq!(recovered.position(), marker);
+        assert_eq!(store.load().unwrap().position(), marker);
+        // The recovered manifest holds the marker, so it has nothing left to
+        // replay and a second recovery changes nothing.
+        assert_eq!(load_and_recover(&store, false).unwrap().position(), marker);
+
+        // A fold checkpoints idle progress into the manifest itself.
+        let control = Rc::new(RefCell::new(test_control(&recovered)));
+        let server = test_server(&control.borrow());
+        let mut durable = recovered;
+        let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+        let mut progress = NativeProgress::new(&durable);
+        let fold_at = marker.frames_rendered + frames_in(PROGRESS_FOLD_SECONDS, rate);
+        while control.borrow().frame_cursor() < fold_at {
+            control.borrow_mut().tick(&server).unwrap();
+            progress.poll(&control, &journal, &mut durable);
+        }
+        assert_eq!(durable.position().frames_rendered, fold_at);
+        assert_eq!(store.load().unwrap().position(), durable.position());
+    }
+
+    fn store_progress(store: &ProjectStore) -> Option<ProjectPosition> {
+        // The newest current marker, read beside the open writer.
+        store
+            .scan_journal()
+            .ok()?
+            .progress()
+            .map(|progress| journal::decode_progress(progress.payload()).unwrap())
+    }
+
+    /// Replay refuses, before ticking anything, a journal that asks it to
+    /// tick idle frames past its bound: a damaged frame number becomes a
+    /// clear startup error instead of a startup that never finishes.
+    #[test]
+    fn replay_refuses_idle_frames_past_its_bound() {
+        let manifest = test_project();
+        let rate = manifest.project().settings().frame_rate;
+        let limit = journal::frames_in(journal::MAX_REPLAY_IDLE_SECONDS, rate);
+        let mut budget = IdleReplayBudget::new(rate);
+        assert!(budget.check(10, 10 + limit).is_ok());
+        assert!(budget.check(10, 11 + limit).is_err());
+        budget.charge(limit - 5);
+        assert!(budget.check(0, 5).is_ok());
+        assert!(budget.check(0, 6).is_err());
+
+        let damaged = ProjectPosition {
+            frames_rendered: u64::MAX / 2,
+            ..manifest.position()
+        };
+        let started = Instant::now();
+        let error = replay_journal(&manifest, &TitleTemplates::new(), &[], Some(damaged))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("progress marker") && error.contains("idle frames"),
+            "{error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "refused before ticking"
+        );
     }
 
     #[test]
@@ -18426,7 +18857,8 @@ mod tests {
         let manifest = reloaded.load().unwrap();
         let scan = reloaded.scan_journal().unwrap();
         assert_eq!(scan.batches().len(), 1);
-        let replayed = replay_journal(&manifest, &TitleTemplates::new(), scan.batches()).unwrap();
+        let replayed =
+            replay_journal(&manifest, &TitleTemplates::new(), scan.batches(), None).unwrap();
         assert_eq!(replayed.position().revision, 1);
         assert_eq!(replayed.project().recording_desired_slots(), [false, false]);
 

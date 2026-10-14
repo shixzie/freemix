@@ -2163,7 +2163,15 @@ replay ticks idle frames up to where each recorded command began, so the
 idle frames the native pacer realizes between commands no longer make
 recovery refuse a native journal, and a playlist playing at a SIGKILL
 resumes on restart from the last journaled frame (`native_playlist`
-covers both under lavapipe).
+covers both under lavapipe). Idle frames after the last command are durable
+too: the native session loop writes a journal progress marker (one
+overwritten `journal_progress` row: head sequence, revision, and full
+position) once per second of realized frames at an idle boundary, and folds
+idle progress into the manifest every five minutes of frames, so recovery
+ticks idle up to the newest marker and a SIGKILL loses at most a second of
+idle progress; replay refuses, before ticking, a journal asking for more
+than 24 hours of idle frames. The playlist clock also runs inside the
+recorder startup barrier.
 Protocol 2.26 completes snapshots with the playlist: a snapshot carries the
 show's `frame_rate` and announces with `playlist=1` a `playlist_state` record
 (revision, frame, loop mode, entries, run state) that follows its title
@@ -2174,13 +2182,13 @@ down, offers Start/Stop/Pause-Resume/Previous/Next and a per-row jump or
 start-from key under the transition permission, and edits the list (add,
 remove, reorder, enable/skip, duration, transition, loop mode) under
 `edit_project` while the playlist is stopped or finished.
-Remaining gaps: native frames realized without a clock pass (a client
-transition command's own frames, or the recorder startup barrier) can carry a
-boundary past its frame, so that entry's Program cut lands on the next frame
-instead (its scheduled start, and so every later boundary, is kept); after a
-SIGKILL a native daemon resumes from the end of its last journaled command,
-because the idle frames realized after it are recorded nowhere (a graceful
-stop checkpoints them); simulated pacing anchors to the wall clock when a
+Remaining gaps: frames a client transition command (or Stinger mutation)
+realizes run inside that command's execution, where no other journaled
+command can be ordered, so a boundary falling inside them is cut on the first
+frame after the command (its scheduled start, and so every later boundary, is
+kept); a SIGKILL still loses up to one second of idle progress (the marker
+cadence), and marker and fold writes run on the session thread between paced
+frames rather than on a separate writer; simulated pacing anchors to the wall clock when a
 boundary becomes pending, so it is approximate across commands and the catch-up frames
 render synchronously, and controls such as Pause or Next execute at the
 lagging frame cursor, so Studio's countdown is approximate on the simulated
