@@ -1956,3 +1956,62 @@ fn stream_local_status_codec_enforces_bounds_and_shapes() {
         ));
     }
 }
+
+/// The field bound applies to the escaped bytes on the wire, which is what the
+/// decoder measures. A value that fits unescaped but not once escaped must be
+/// refused by the encoder rather than sent to a peer that cannot read it.
+#[test]
+fn encoder_never_emits_a_field_the_decoder_refuses_as_too_long() {
+    let message = WireMessage::Error(ErrorMessage {
+        request_id: None,
+        current_revision: None,
+        error: StructuredError {
+            code: "too_large".to_owned(),
+            // 20000 bytes unescaped, 60000 escaped: under the line bound,
+            // over the field bound.
+            message: " ".repeat(20_000),
+            fields: Vec::new(),
+            retryable: false,
+        },
+    });
+    match encode_line(&message) {
+        Ok(line) => assert_eq!(decode_line(&line), Ok(message)),
+        Err(error) => assert_eq!(error, CodecError::FieldValueTooLong),
+    }
+}
+
+/// A `stream_status` failure code the decoder refuses (empty or longer than
+/// the redacted-detail bound) must be refused by the encoder too: a peer that
+/// receives it drops the whole session, and the publisher discards a record it
+/// cannot encode.
+#[test]
+fn stream_status_failure_bounds_are_enforced_by_the_encoder() {
+    use fm_protocol::{StreamStatusMessage, StreamStatusSample};
+
+    for failure in [String::new(), "x".repeat(65)] {
+        let message = WireMessage::StreamStatus(StreamStatusMessage {
+            server: server_identity(),
+            sequence: 1,
+            samples: vec![StreamStatusSample {
+                target: WireStreamTargetId::new(NonZeroU128::new(3).unwrap()),
+                realized: StreamRealizedState::Failed,
+                connected: false,
+                muxed_bytes: 0,
+                enqueued_pairs: 0,
+                dropped_pairs: 0,
+                failure: Some(failure),
+                local: None,
+            }],
+        });
+        match encode_line(&message) {
+            Ok(line) => assert_eq!(decode_line(&line), Ok(message)),
+            Err(error) => assert!(matches!(
+                error,
+                CodecError::InvalidField {
+                    field: "samples",
+                    ..
+                }
+            )),
+        }
+    }
+}

@@ -114,6 +114,8 @@ impl Record {
             line.push('\t');
             line.push_str(name);
             line.push('=');
+            // The decoder bounds the escaped bytes, so bound them here too.
+            let value_start = line.len();
             for byte in value.bytes() {
                 let additional =
                     if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
@@ -123,6 +125,9 @@ impl Record {
                     };
                 if line.len() + additional + 1 > MAX_LINE_BYTES {
                     return Err(CodecError::LineTooLong);
+                }
+                if line.len() - value_start + additional > MAX_FIELD_VALUE_BYTES {
+                    return Err(CodecError::FieldValueTooLong);
                 }
                 if additional == 1 {
                     line.push(char::from(byte));
@@ -1031,6 +1036,14 @@ fn encode_stream_status(
                 });
             }
             previous = Some(sample.target.get());
+            if let Some(failure) = &sample.failure
+                && (failure.is_empty() || failure.len() > super::MAX_STREAM_DETAIL_BYTES)
+            {
+                return Err(CodecError::InvalidField {
+                    field: "samples",
+                    value: sample.target.to_string(),
+                });
+            }
             let local = match sample.local {
                 Some(local) => {
                     if local.segments > MAX_STREAM_LOCAL_SEGMENTS
