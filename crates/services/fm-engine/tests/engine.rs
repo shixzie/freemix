@@ -922,6 +922,36 @@ fn rejected_receipt_is_staged_and_becomes_durable_only_on_commit() {
 }
 
 #[test]
+fn receipt_lookup_reports_only_committed_receipts_without_staging() {
+    let mut engine = engine();
+    let accepted_key = IdempotencyKey::new("lookup-accepted");
+    let rejected_key = IdempotencyKey::new("lookup-rejected");
+    assert!(engine.receipt(&accepted_key).is_none());
+
+    let prepared = engine
+        .prepare_execute(envelope("lookup-accepted", EngineCommand::Cut), 0)
+        .unwrap()
+        .prepared()
+        .unwrap();
+    assert!(prepared.staged_engine().receipt(&accepted_key).is_some());
+    assert!(engine.receipt(&accepted_key).is_none());
+    let accepted = engine.commit_execute(prepared).unwrap();
+    assert_eq!(engine.receipt(&accepted_key), Some(&accepted.receipt));
+
+    let revision = engine.revision();
+    assert!(engine.receipt(&rejected_key).is_none());
+    assert_eq!(engine.revision(), revision);
+    let rejected = engine
+        .execute(
+            envelope("lookup-rejected", EngineCommand::Cut).expecting(Revision::new(99)),
+            0,
+        )
+        .unwrap();
+    assert!(rejected.receipt.rejected().is_some());
+    assert_eq!(engine.receipt(&rejected_key), Some(&rejected.receipt));
+}
+
+#[test]
 fn dropping_or_aborting_a_preparation_leaves_the_engine_unchanged() {
     let engine = engine();
     let before = engine.snapshot().unwrap();

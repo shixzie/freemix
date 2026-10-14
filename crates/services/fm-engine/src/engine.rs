@@ -514,6 +514,14 @@ impl Engine {
             .map_err(|error| EngineError::Tick(fm_scheduler::TickError::Pacing(error)))
     }
 
+    /// Returns the durable receipt recorded for an idempotency key, if any.
+    ///
+    /// This is a read-only lookup: it neither validates nor stages a command.
+    #[must_use]
+    pub fn receipt(&self, key: &IdempotencyKey) -> Option<&CommandReceipt<EngineAcceptance>> {
+        self.commands.receipt(key)
+    }
+
     /// Prepares a durable command and its runtime action on an isolated clone.
     ///
     /// Duplicate idempotency keys return their durable receipt without creating

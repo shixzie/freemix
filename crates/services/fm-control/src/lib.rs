@@ -25,9 +25,7 @@ pub use automation::{
 };
 
 use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
-use fm_command::{
-    CommandEnvelope, CommandReceipt, Deadline, DurableEvent, IdempotencyKey, RejectionCode,
-};
+use fm_command::{CommandReceipt, DurableEvent, IdempotencyKey, RejectionCode};
 use fm_engine::{
     Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineError, EngineEvent,
     EngineFadeToBlackState, EngineInputAudioStripState, EngineManualTransitionKind,
@@ -741,21 +739,8 @@ impl<A: AuthorizationHook> ControlService<A> {
             .authorizer
             .authorize(principal, command_class(&message.payload))
         {
-            // The engine checks its receipts before anything else, so an
-            // already-exceeded probe envelope detects an existing receipt
-            // without validating or staging the denied command.
-            let remember = !matches!(
-                self.engine.prepare_execute(
-                    CommandEnvelope::new(
-                        message.id.clone(),
-                        message.idempotency_key.clone(),
-                        EngineCommand::Cut,
-                    )
-                    .with_deadline(Deadline::from_millis(0)),
-                    u64::MAX,
-                ),
-                Ok(EnginePrepareOutcome::Replayed(_))
-            );
+            // A cached denial must never shadow a durable engine receipt.
+            let remember = self.engine.receipt(&idempotency_key).is_none();
             let result = CommandResult::Rejected {
                 id: message.id,
                 code: RejectionCode::PermissionDenied.as_str().to_owned(),
