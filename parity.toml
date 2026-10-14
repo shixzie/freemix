@@ -142,7 +142,9 @@ id = "accept-sw-013"
 state = "planned"
 [[tests]]
 id = "accept-sw-014"
-state = "planned"
+state = "present"
+paths = ["crates/gpu/fm-compositor/tests/safe_areas.rs", "crates/gpu/fm-compositor/tests/golden.rs"]
+commands = ["cargo test -p fm-compositor --test safe_areas", "cargo test -p fm-compositor --test golden"]
 [[tests]]
 id = "accept-sw-015"
 state = "planned"
