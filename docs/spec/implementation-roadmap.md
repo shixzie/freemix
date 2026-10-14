@@ -599,6 +599,13 @@ and meters are non-rasterized intent, and the Mix selector, a second independent
 multiview, selection persistence, protocol or wire state, daemon multiview
 outputs, confidence-mode behavior, and click/touch dispatch to the engine all
 remain absent, so item 7 and `SW-011` remain planned.
+`fm-compositor` also generates exact integer safe-area guides: centered 93%
+action and 90% title presets, an SMPTE preset that emits both, and
+caller-positioned custom guides in basis points, all with documented truncating
+geometry, half-open bounds, a sixteen-guide plan bound, and operator-only
+rasterization. Aspect-ratio guide sets, explicit non-operator routing,
+persistence, wire state, and an operator UI for choosing guides remain absent,
+so `SW-014` remains planned.
 
 Current implementation boundary for item 6: the switcher and engine now own
 eight independently addressed overlay channels with a retained source, exact
