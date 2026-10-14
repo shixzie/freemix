@@ -1799,8 +1799,23 @@ per-section choice, report secret re-entry, unknown references, and ID
 collisions, and apply atomically only when resolved against an unchanged base.
 Applied snapshots are not yet turned into project mutations or engine
 commands, nothing in the daemon, protocol, CLI, or UI calls the planner,
-secrets are excluded rather than separately encrypted, and append, bundle,
-relink, templates, and undo/lock remain planned.
+secrets are excluded rather than separately encrypted, and undo/lock remains
+planned. For `RC-012`, `fm-persistence` adds rotated atomic autosave
+generations whose recovery returns the newest same-project generation that
+loads cleanly and reports every skipped one; a canonical-path recent-projects
+document with bounded size and missing-entry reporting; deduplicating media
+import into `assets/`; a plan-then-apply relink that searches the bundle and
+caller-ordered directories by file name, reports ambiguity instead of guessing,
+and refuses stale plans; staged portable bundle export that copies only
+referenced assets, renames them to be portable, and never overwrites an
+existing destination; template instantiation with a fresh identity and no
+receipts; and append with id remapping and name-conflict reports. Remaining
+gaps: append skips outputs, buses, stream targets, and stingers; relink matches
+by name only because assets carry no size or hash; external media references
+are not in the current schema; there is no cross-process lock on recent
+projects, crash-temp cleanup, cancellation, or progress; and nothing in the
+CLI, daemon, Studio, or protocol calls these operations. `RC-012` remains
+planned.
 
 Current implementation boundary for item 1: `fm-titles` provides dependent,
 bounded title scenes and a deterministic CPU renderer. Templates carry typed
