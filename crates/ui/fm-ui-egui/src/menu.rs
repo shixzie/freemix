@@ -326,6 +326,7 @@ impl StudioShell {
                 SideTab::Stingers,
                 l.text(Msg::TabStingers),
             );
+            ui.radio_value(&mut self.side_tab, SideTab::Titles, l.text(Msg::TabTitles));
         });
         ui.separator();
         if ui

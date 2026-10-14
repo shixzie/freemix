@@ -23,9 +23,11 @@ use fm_types::OutputId;
 use fm_ui_egui::{
     CatalogueRefusal, CatalogueRequest, ExternalStudioAction, InputAudioStripUpdate,
     InputMoveDirection, ReconnectStatus, RecordingAction, StreamAction, StudioConnectionStatus,
-    StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice, external_intent,
+    StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice, TitleUpdate,
+    external_intent,
 };
 use fm_ui_model::ClientView;
+use fm_ui_model::title_editor::{TitleAccess, title_payload};
 
 #[cfg(test)]
 use fm_protocol::{AudioMeterChannel, AudioMetersMessage};
@@ -137,6 +139,14 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
     }
 }
 
+/// Whether a full worker-side FIFO must still keep `intent`. A title
+/// command is already pending in the UI's editor, which allows one per
+/// title, so title commands are bounded by the title count and are never
+/// dropped (a dropped one would leave its title blocked).
+const fn exceeds_capacity_allowed(intent: &StudioIntent) -> bool {
+    matches!(intent, StudioIntent::Title(_))
+}
+
 struct PendingIntents {
     intents: VecDeque<StudioIntent>,
 }
@@ -189,8 +199,12 @@ impl PendingIntents {
         Ok(())
     }
 
-    fn clear(&mut self) {
-        self.intents.clear();
+    /// Empties the queue and returns the title requests it held.
+    fn clear(&mut self) -> Vec<u64> {
+        self.intents
+            .drain(..)
+            .filter_map(|intent| intent.title_request())
+            .collect()
     }
 }
 
@@ -265,6 +279,7 @@ impl StudioApp {
     }
 
     fn enqueue_intent(&mut self, intent: StudioIntent) {
+        let title_request = intent.title_request();
         let result = self
             .requests
             .as_ref()
@@ -272,6 +287,11 @@ impl StudioApp {
                 self.pending_intents.submit(sender, intent)
             });
         if let Err(error) = result {
+            // The worker will never answer a title command it did not get.
+            if let Some(request) = title_request {
+                self.shell
+                    .receive_title_updates([TitleUpdate::Abandoned { request }]);
+            }
             self.handle_enqueue_error(error);
         }
     }
@@ -290,7 +310,12 @@ impl StudioApp {
 
     fn handle_enqueue_error(&mut self, error: EnqueueError) {
         if error == EnqueueError::Disconnected {
-            self.pending_intents.clear();
+            let abandoned = self.pending_intents.clear();
+            self.shell.receive_title_updates(
+                abandoned
+                    .into_iter()
+                    .map(|request| TitleUpdate::Abandoned { request }),
+            );
             self.requests.take();
         }
         self.report_enqueue_error(error);
@@ -367,8 +392,10 @@ impl StudioApp {
 impl eframe::App for StudioApp {
     fn logic(&mut self, _context: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(updates) = &self.updates
-            && let Some(state) = updates.try_recv()
+            && let Some(mut state) = updates.try_recv()
         {
+            self.shell
+                .receive_title_updates(std::mem::take(&mut state.title_updates));
             self.state = state;
         }
         #[cfg(feature = "capture-meter-signal")]
@@ -424,7 +451,9 @@ fn reconcile_finished_worker(
     updates: &mut Option<StateUpdates>,
     panicked: bool,
 ) {
-    if let Some(last) = updates.take().and_then(|updates| updates.try_recv()) {
+    if let Some(mut last) = updates.take().and_then(|updates| updates.try_recv()) {
+        // The worker is gone; its title answers no longer matter.
+        last.title_updates.clear();
         *state = last;
     }
     if panicked {
@@ -461,8 +490,19 @@ fn state_mailbox(repaint_context: egui::Context) -> (StatePublisher, StateUpdate
 }
 
 impl StatePublisher {
-    fn publish(&self, state: StudioUiState) -> bool {
-        *self.latest.lock().unwrap_or_else(PoisonError::into_inner) = Some(state);
+    /// Replaces the latest state. Title updates are delivered exactly once:
+    /// a state the UI has not taken yet hands its updates on to this one.
+    fn publish(&self, mut state: StudioUiState) -> bool {
+        let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(previous) = latest.take()
+            && !previous.title_updates.is_empty()
+        {
+            let mut updates = previous.title_updates;
+            updates.append(&mut state.title_updates);
+            state.title_updates = updates;
+        }
+        *latest = Some(state);
+        drop(latest);
         match self.sender.try_send(()) {
             Ok(()) | Err(TrySendError::Full(())) => {
                 self.repaint_context.request_repaint();
@@ -604,7 +644,9 @@ impl WorkerRecovery {
                 &self.terminal_uncertainties,
             );
         }
-        if self.deferred_intents.len() == DEFERRED_INTENT_CAPACITY {
+        if self.deferred_intents.len() >= DEFERRED_INTENT_CAPACITY
+            && !exceeds_capacity_allowed(&intent)
+        {
             self.deferred_rejections = self.deferred_rejections.saturating_add(1);
             return publish_runtime_with_uncertainties(
                 runtime,
@@ -718,7 +760,9 @@ fn cancellation_requested(
             {
                 return false;
             }
-            if deferred_intents.len() == DEFERRED_INTENT_CAPACITY {
+            if deferred_intents.len() >= DEFERRED_INTENT_CAPACITY
+                && !exceeds_capacity_allowed(&intent)
+            {
                 *deferred_rejections = deferred_rejections.saturating_add(1);
             } else {
                 deferred_intents.push_back(intent);
@@ -972,10 +1016,14 @@ fn handle_worker_intent(
     publisher: &StatePublisher,
     recovery: &mut WorkerRecovery,
 ) -> bool {
+    let title_request = intent.title_request();
     if recovery.terminal_uncertainties.len() == TERMINAL_UNCERTAINTY_CAPACITY {
         recovery.visible_error = Some(format!(
             "Command not sent: terminal uncertainty ledger reached capacity {TERMINAL_UNCERTAINTY_CAPACITY}; restart Studio to explicitly clear operator history"
         ));
+        if let Some(request) = title_request {
+            runtime.titles_mut().unsent(request);
+        }
         return publish_recovery_runtime(runtime, publisher, recovery);
     }
     let command_id = match begin_intent(
@@ -988,6 +1036,9 @@ fn handle_worker_intent(
     ) {
         Ok(command_id) => command_id,
         Err(error) => {
+            if let Some(request) = title_request {
+                runtime.titles_mut().unsent(request);
+            }
             recovery.visible_error = Some(error);
             return publish_runtime_with_uncertainties(
                 runtime,
@@ -1311,6 +1362,10 @@ fn begin_intent(
     terminal_uncertainties: &[TerminalUncertaintyNotice],
 ) -> Result<String, String> {
     let view = runtime.session().client().model().view();
+    let title = match &intent {
+        StudioIntent::Title(command) => Some(command.clone()),
+        _ => None,
+    };
     let payload = intent_payload(intent, view.as_ref())?;
     let expected_revision = view
         .as_ref()
@@ -1319,9 +1374,15 @@ fn begin_intent(
     let key = keys
         .next()
         .ok_or_else(|| "Studio idempotency key space is exhausted".to_owned())?;
+    // A title command carries its own base revision; an unrelated project
+    // change must not refuse it.
+    let expected_revision = title.is_none().then_some(expected_revision);
     let command = runtime
-        .queue_command(payload, key, Some(expected_revision), None)
+        .queue_command(payload, key, expected_revision, None)
         .map_err(|error| format!("Could not queue command: {error}"))?;
+    if let Some(title) = &title {
+        runtime.titles_mut().track(&command.id, title);
+    }
 
     // This publication exposes SelectPreview's optimistic desired state before I/O.
     if !publish_runtime_with_uncertainties(
@@ -1986,6 +2047,8 @@ fn intent_payload(
                 source,
             }
         }
+        StudioIntent::Title(command) => title_payload(&command)
+            .map_err(|error| format!("Cannot send title command: {error}"))?,
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
             if !view.inputs.contains(&input) {
@@ -2106,7 +2169,10 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
         .with_audio_permission(can_control_audio)
         .with_edit_project_permission(can_edit_project);
     state.reconnect = reconnect;
-    if connection_status == StudioConnectionStatus::Ready {
+    let ready = connection_status == StudioConnectionStatus::Ready;
+    state.title_access = TitleAccess::from_permissions(ready, permissions.unwrap_or_default());
+    if ready {
+        state.project_state = client.model().state().cloned();
         let view = client.model().view();
         state.streams = view
             .as_ref()
@@ -2129,6 +2195,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
     state.stream_pending = stream_command_pending_targets(client);
     state.catalogue_pending = catalogue_pending_requests(client);
     state.error = error.or(lifecycle_error);
+    state.title_updates = runtime.take_title_updates(ready);
     state
 }
 
@@ -2236,6 +2303,9 @@ fn publish_recovery_runtime(
     publisher: &StatePublisher,
     recovery: &WorkerRecovery,
 ) -> bool {
+    // Between commands the worker pursues only `pending_command`; a title
+    // command it gave up on will never be answered.
+    runtime.settle_titles(recovery.pending_command.as_deref());
     if recovery.deferred_intents.is_empty() {
         publish_runtime_with_uncertainties(
             runtime,
@@ -4785,5 +4855,348 @@ mod tests {
                 border: OverlayBorderPreset::ThickWhite,
             },
         );
+    }
+
+    mod titles {
+        use fm_protocol::{
+            TitleFieldStatus, TitleFieldValue, TitleStateMessage, TitleSummary,
+            WireOverlayChannelId, WireTitleFieldId,
+        };
+        use fm_ui_model::title_editor::{
+            TitleCommand, TitleCommandBody, TitleReply, TitleSnapshot,
+        };
+
+        use super::*;
+
+        const TITLE_INPUT: u128 = 3;
+
+        fn title_input() -> WireInputId {
+            WireInputId::new(NonZeroU128::new(TITLE_INPUT).unwrap())
+        }
+
+        fn title_field() -> WireTitleFieldId {
+            WireTitleFieldId::new(NonZeroU128::new(1).unwrap())
+        }
+
+        /// The heartbeat show plus title input 3 (one text field).
+        fn title_snapshot() -> SnapshotMessage {
+            let mut snapshot = heartbeat_snapshot();
+            snapshot.inputs.push(InputStatus {
+                input: title_input(),
+                name: "Lower third".into(),
+            });
+            let mut strip = snapshot.input_audio_strips[0];
+            strip.input = title_input();
+            snapshot.input_audio_strips.push(strip);
+            snapshot.titles = vec![TitleSummary {
+                input: title_input(),
+                field_revision: 0,
+            }];
+            snapshot
+        }
+
+        fn title_state() -> TitleStateMessage {
+            TitleStateMessage {
+                revision: title_snapshot().revision,
+                input: title_input(),
+                name: "Lower third".into(),
+                field_revision: 0,
+                fields: vec![TitleFieldStatus {
+                    field: title_field(),
+                    name: "Name".into(),
+                    value: TitleFieldValue::Text("Ana".into()),
+                }],
+            }
+        }
+
+        fn command(request: u64, body: TitleCommandBody) -> TitleCommand {
+            TitleCommand {
+                request,
+                title: title_input().to_domain(),
+                body,
+            }
+        }
+
+        fn take(request: u64, channel: u8) -> TitleCommand {
+            command(
+                request,
+                TitleCommandBody::Take {
+                    channel,
+                    base_revision: 0,
+                    fields: Vec::new(),
+                },
+            )
+        }
+
+        fn taken_event(revision: u64) -> EventMessage {
+            let mut overlays = OverlayStatus::empty_channels();
+            overlays[0].source = Some(title_input());
+            overlays[0].active = true;
+            overlays[0].opacity = 255;
+            EventMessage {
+                payload: EventPayload::TitleChanged {
+                    input: title_input(),
+                    field_revision: 0,
+                    fields: vec![fm_protocol::TitleFieldUpdate {
+                        field: title_field(),
+                        value: TitleFieldValue::Text("Ana".into()),
+                    }],
+                    overlays,
+                },
+                ..command_event(revision)
+            }
+        }
+
+        #[test]
+        fn title_intents_encode_their_protocol_payloads() {
+            let wire = title_input();
+            assert_eq!(
+                intent_payload(StudioIntent::Title(take(1, 3)), None),
+                Ok(CommandPayload::TakeTitle {
+                    input: wire,
+                    channel: WireOverlayChannelId::new(3).unwrap(),
+                    base_revision: 0,
+                    fields: Vec::new(),
+                })
+            );
+            assert_eq!(
+                intent_payload(
+                    StudioIntent::Title(command(2, TitleCommandBody::OffAir)),
+                    None
+                ),
+                Ok(CommandPayload::TitleOffAir { input: wire })
+            );
+            let save = command(
+                3,
+                TitleCommandBody::Save {
+                    base_revision: 4,
+                    fields: vec![(title_field(), TitleFieldValue::Text("Bea".into()))],
+                },
+            );
+            assert!(matches!(
+                intent_payload(StudioIntent::Title(save), None),
+                Ok(CommandPayload::SetTitleFields {
+                    base_revision: 4,
+                    require: fm_protocol::TitleAirRequirement::OffAir,
+                    ..
+                })
+            ));
+            let refused = intent_payload(StudioIntent::Title(take(4, 0)), None).unwrap_err();
+            assert!(refused.contains("overlay channel 0"), "{refused}");
+            assert_eq!(StudioIntent::Title(take(9, 1)).title_request(), Some(9));
+            assert_eq!(StudioIntent::Cut.title_request(), None);
+        }
+
+        #[test]
+        fn title_updates_survive_the_latest_state_mailbox_in_order() {
+            let (publisher, updates) = state_mailbox(egui::Context::default());
+            let mut first = StudioUiState::new(StudioConnectionStatus::Ready);
+            first.title_updates = vec![TitleUpdate::Abandoned { request: 1 }];
+            let mut second = StudioUiState::new(StudioConnectionStatus::Backoff);
+            second.title_updates = vec![TitleUpdate::Abandoned { request: 2 }];
+            assert!(publisher.publish(first));
+            assert!(publisher.publish(second));
+            assert!(publisher.publish(StudioUiState::new(StudioConnectionStatus::Backoff)));
+            let latest = updates.try_recv().unwrap();
+            assert_eq!(latest.connection_status, StudioConnectionStatus::Backoff);
+            assert_eq!(
+                latest.title_updates,
+                [
+                    TitleUpdate::Abandoned { request: 1 },
+                    TitleUpdate::Abandoned { request: 2 }
+                ]
+            );
+            // Taken once: the next state starts empty.
+            assert!(publisher.publish(StudioUiState::new(StudioConnectionStatus::Ready)));
+            assert_eq!(updates.try_recv().unwrap().title_updates, Vec::new());
+        }
+
+        #[test]
+        fn title_intents_are_never_dropped_and_report_lost_requests() {
+            let mut pending = PendingIntents::new();
+            pending.push(StudioIntent::Cut).unwrap();
+            pending.push(StudioIntent::Title(take(5, 1))).unwrap();
+            pending
+                .push(StudioIntent::Title(command(6, TitleCommandBody::OffAir)))
+                .unwrap();
+            assert_eq!(pending.clear(), [5, 6]);
+
+            let (sender, receiver) = sync_channel(1);
+            for _ in 0..=DEFERRED_INTENT_CAPACITY {
+                sender
+                    .try_send(WorkerRequest::Intent(StudioIntent::Cut))
+                    .unwrap_or(());
+                let _ = receiver.try_recv();
+            }
+            // A full deferred FIFO rejects other intents but keeps titles.
+            let mut deferred: VecDeque<StudioIntent> =
+                std::iter::repeat_n(StudioIntent::Cut, DEFERRED_INTENT_CAPACITY).collect();
+            let mut rejected = 0;
+            sender
+                .try_send(WorkerRequest::Intent(StudioIntent::Wipe {
+                    duration_frames: 1,
+                }))
+                .unwrap();
+            assert!(!cancellation_requested(
+                &receiver,
+                &mut deferred,
+                &mut rejected
+            ));
+            assert_eq!(rejected, 1);
+            sender
+                .try_send(WorkerRequest::Intent(StudioIntent::Title(take(7, 1))))
+                .unwrap();
+            assert!(!cancellation_requested(
+                &receiver,
+                &mut deferred,
+                &mut rejected
+            ));
+            assert_eq!(rejected, 1);
+            assert_eq!(
+                deferred.back().and_then(StudioIntent::title_request),
+                Some(7)
+            );
+        }
+
+        /// Serves a title show: answers a `title_take` with its result,
+        /// `title_changed`, and runtime realization, then drops the
+        /// connection on the next command, after accepting it when
+        /// `accept_then_drop` (so its reply is held for an event that never
+        /// comes) or before any result otherwise.
+        fn serve_worker_titles(
+            listener: &TcpListener,
+            command_seen: &SyncSender<CommandPayload>,
+            accept_then_drop: bool,
+        ) {
+            let mut peer = HeartbeatPeer::accept(listener);
+            peer.handshake_request();
+            peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+                HandshakeOutcome::Snapshot {
+                    reason: SnapshotReason::NoCursor,
+                },
+            )));
+            peer.send(&WireMessage::Snapshot(title_snapshot()));
+            peer.send(&WireMessage::TitleState(title_state()));
+            let mut answered = false;
+            loop {
+                let Some(line) = peer.next_line() else {
+                    return;
+                };
+                match decode_line(&line).unwrap() {
+                    WireMessage::Heartbeat(heartbeat) => {
+                        if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
+                            HeartbeatAcknowledgementMessage {
+                                server: heartbeat.server,
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        )) {
+                            return;
+                        }
+                    }
+                    WireMessage::Command(command) => {
+                        // Title commands carry their own base revision.
+                        assert_eq!(command.expected_revision, None);
+                        command_seen.send(command.payload).unwrap();
+                        if answered {
+                            if accept_then_drop {
+                                peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                                    id: command.id,
+                                    revision: title_snapshot().revision + 2,
+                                    scheduled_frame: None,
+                                }));
+                            }
+                            return;
+                        }
+                        answered = true;
+                        let revision = title_snapshot().revision + 1;
+                        peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                            id: command.id,
+                            revision,
+                            scheduled_frame: None,
+                        }));
+                        peer.send(&WireMessage::Event(taken_event(revision)));
+                        peer.send(&WireMessage::RuntimeEvent(command_runtime_event(revision)));
+                    }
+                    other => panic!("unexpected peer message: {other:?}"),
+                }
+            }
+        }
+
+        #[test]
+        fn worker_abandons_a_sent_title_command_on_connection_loss() {
+            worker_routes_title_results_and_abandons_on_connection_loss(false);
+        }
+
+        #[test]
+        fn worker_abandons_a_held_title_reply_on_connection_loss() {
+            worker_routes_title_results_and_abandons_on_connection_loss(true);
+        }
+
+        fn worker_routes_title_results_and_abandons_on_connection_loss(accept_then_drop: bool) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (command_seen, commands) = sync_channel(4);
+            let server = thread::spawn(move || {
+                serve_worker_titles(&listener, &command_seen, accept_then_drop);
+            });
+            let (request_sender, updates, worker) =
+                spawn_existing_worker(address, "title-intent-test");
+            let ready = receive_state_where(&updates, |state| {
+                state.connection_status == StudioConnectionStatus::Ready
+                    && state.project_state.is_some()
+            });
+            let project = ready.project_state.unwrap();
+            let before = TitleSnapshot::from_state(&project, title_input().to_domain()).unwrap();
+            assert!(!before.on_air);
+            // The test session holds no permissions, so neither may be used.
+            assert!(ready.title_access.is_ready() && !ready.title_access.can_air());
+
+            request_sender
+                .send(WorkerRequest::Intent(StudioIntent::Title(take(41, 1))))
+                .unwrap();
+            assert_eq!(
+                commands.recv_timeout(HEARTBEAT_TEST_TIMEOUT).unwrap(),
+                CommandPayload::TakeTitle {
+                    input: title_input(),
+                    channel: WireOverlayChannelId::new(1).unwrap(),
+                    base_revision: 0,
+                    fields: Vec::new(),
+                }
+            );
+            // The acceptance is held until `title_changed` is applied, so
+            // the reply already shows the title on air.
+            let replied = receive_state_where(&updates, |state| !state.title_updates.is_empty());
+            let [TitleUpdate::Reply(TitleReply::Applied { request, snapshot })] =
+                replied.title_updates.as_slice()
+            else {
+                panic!("expected one applied reply: {:?}", replied.title_updates);
+            };
+            assert_eq!(*request, 41);
+            assert!(snapshot.on_air);
+            assert_eq!(snapshot.fields, before.fields);
+            assert!(replied.error.is_none(), "{:?}", replied.error);
+
+            request_sender
+                .send(WorkerRequest::Intent(StudioIntent::Title(command(
+                    42,
+                    TitleCommandBody::OffAir,
+                ))))
+                .unwrap();
+            assert_eq!(
+                commands.recv_timeout(HEARTBEAT_TEST_TIMEOUT).unwrap(),
+                CommandPayload::TitleOffAir {
+                    input: title_input()
+                }
+            );
+            let lost = receive_state_where(&updates, |state| !state.title_updates.is_empty());
+            assert_eq!(lost.title_updates, [TitleUpdate::Abandoned { request: 42 }]);
+            assert_ne!(lost.connection_status, StudioConnectionStatus::Ready);
+            assert!(!lost.title_access.is_ready());
+
+            request_sender.send(WorkerRequest::Shutdown).unwrap();
+            worker.join().unwrap();
+            server.join().unwrap();
+        }
     }
 }

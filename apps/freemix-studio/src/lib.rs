@@ -8,6 +8,7 @@ mod osc;
 mod prefs;
 mod runtime;
 mod supervisor;
+mod titles;
 
 pub use args::{
     ArgsError, Command, ConnectionConfig, ControlTransport, ExistingConfig, HELP, StudioConfig,

@@ -4,6 +4,9 @@ use fm_client::{
     Client, ConnectionState, ReconnectBackoff, SessionEvent, TcpSession, TcpSessionError,
 };
 use fm_protocol::{CommandMessage, CommandPayload, HeartbeatMessage};
+use fm_ui_egui::TitleUpdate;
+
+use crate::titles::TitleRelay;
 
 use crate::{
     ConnectionConfig, ControlTransport, DaemonSupervisor, ReadinessRecord, StudioConfig,
@@ -96,6 +99,8 @@ pub struct StudioRuntime {
     address: SocketAddr,
     session: TcpSession,
     transport: ControlTransport,
+    /// Correlates title-editor commands with this session's results.
+    titles: TitleRelay,
 }
 
 impl StudioRuntime {
@@ -146,6 +151,7 @@ impl StudioRuntime {
             address,
             session: TcpSession::new(client),
             transport,
+            titles: TitleRelay::default(),
         })
     }
 
@@ -157,6 +163,21 @@ impl StudioRuntime {
     #[must_use]
     pub const fn session_mut(&mut self) -> &mut TcpSession {
         &mut self.session
+    }
+
+    pub(crate) const fn titles_mut(&mut self) -> &mut TitleRelay {
+        &mut self.titles
+    }
+
+    /// Resolves tracked title commands other than `keep`; see
+    /// [`TitleRelay::settle`].
+    pub(crate) fn settle_titles(&mut self, keep: Option<&str>) {
+        self.titles.settle(self.session.client(), keep);
+    }
+
+    /// Advances the title relay against the client and drains its updates.
+    pub(crate) fn take_title_updates(&mut self, ready: bool) -> Vec<TitleUpdate> {
+        self.titles.observe(self.session.client(), ready)
     }
 
     #[must_use]

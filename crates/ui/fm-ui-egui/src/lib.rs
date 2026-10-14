@@ -26,7 +26,8 @@ use fm_protocol::{
 };
 use fm_types::{InputId, OutputId};
 use fm_ui_model::i18n::{Locale, Msg};
-use fm_ui_model::{ClientView, ManualTransitionStatus, StreamStatus, SwitcherState};
+use fm_ui_model::title_editor::{TitleAccess, TitleCommand};
+use fm_ui_model::{ClientView, ManualTransitionStatus, ProjectState, StreamStatus, SwitcherState};
 
 mod chrome;
 mod connection_overlay;
@@ -47,6 +48,7 @@ mod panels;
 mod stinger_config;
 mod stream_control;
 mod theme;
+mod titles;
 mod toasts;
 mod transitions;
 
@@ -68,6 +70,7 @@ pub use stinger_config::{
     stinger_remove_intent, stinger_setup_block_reason,
 };
 pub use stream_control::{StreamAction, stream_action, stream_command_pending};
+pub use titles::TitleUpdate;
 
 use panels::SideTab;
 use theme::{BORDER, GRAPHITE, PANEL};
@@ -203,6 +206,21 @@ pub enum StudioIntent {
     },
     /// Removes one input nothing on air or configured references.
     RemoveInput { input: InputId },
+    /// Sends one title-editor command (save, take, update live, off air).
+    /// The editor already marked the title pending; the worker answers with
+    /// a [`TitleUpdate`] for `command.request`.
+    Title(TitleCommand),
+}
+
+impl StudioIntent {
+    /// The title-editor request this intent carries, if any.
+    #[must_use]
+    pub const fn title_request(&self) -> Option<u64> {
+        match self {
+            Self::Title(command) => Some(command.request),
+            _ => None,
+        }
+    }
 }
 
 /// External control actions accepted by native Studio ingress.
@@ -316,6 +334,14 @@ pub struct StudioUiState {
     /// The latest refused input add or remove, published once with its
     /// rejection.
     pub catalogue_refusal: Option<CatalogueRefusal>,
+    /// The replicated authoritative project state while control is ready;
+    /// the title editor syncs its titles from it.
+    pub project_state: Option<ProjectState>,
+    /// Title access from the granted session permissions.
+    pub title_access: TitleAccess,
+    /// Title command answers in arrival order. Each is published once;
+    /// the host hands them to [`StudioShell::receive_title_updates`].
+    pub title_updates: Vec<TitleUpdate>,
 }
 
 impl StudioUiState {
@@ -344,6 +370,9 @@ impl StudioUiState {
             monitor_images: [None, None],
             catalogue_pending: Vec::new(),
             catalogue_refusal: None,
+            project_state: None,
+            title_access: TitleAccess::new(false, false, false),
+            title_updates: Vec::new(),
         }
     }
 
@@ -970,6 +999,8 @@ pub struct StudioShell {
     catalogue: input_catalogue::CatalogueTracker,
     /// The operator's UI language and clock; local to this console.
     locale: Locale,
+    /// The Titles tab and its title editor.
+    titles: titles::TitlesPanel,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1090,6 +1121,22 @@ impl StudioShell {
             || egui::Popup::is_any_open(context)
     }
 
+    /// Applies the worker's title command answers to the title editor, in
+    /// order. Call once per received [`StudioUiState`] with its
+    /// [`StudioUiState::title_updates`] before drawing it, and with an
+    /// [`TitleUpdate::Abandoned`] for a [`StudioIntent::Title`] that could
+    /// not be handed to the worker.
+    pub fn receive_title_updates(&mut self, updates: impl IntoIterator<Item = TitleUpdate>) {
+        self.titles.receive(updates);
+    }
+
+    /// Reconciles console-local drafts and dialogs with the latest state.
+    fn reconcile_local_state(&mut self, state: &StudioUiState) {
+        self.reconcile_rename_draft(state);
+        self.reconcile_catalogue_dialogs(state);
+        self.titles.sync(state);
+    }
+
     /// Publishes the console locale to this frame's drawing code and to the
     /// queues that word their own toasts.
     fn apply_locale(&mut self, context: &egui::Context) {
@@ -1115,8 +1162,7 @@ impl StudioShell {
         self.set_transition_duration_frames(self.transition_duration_frames);
         self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
 
-        self.reconcile_rename_draft(state);
-        self.reconcile_catalogue_dialogs(state);
+        self.reconcile_local_state(state);
         let manual_transition_controls = manual_transition_availability(
             ManualTransitionGate::from_state(state),
             state.view.as_ref().is_some_and(|view| {
@@ -1433,6 +1479,7 @@ impl Default for StudioShell {
             remove_input: None,
             catalogue: input_catalogue::CatalogueTracker::default(),
             locale: Locale::ENGLISH,
+            titles: titles::TitlesPanel::default(),
         }
     }
 }

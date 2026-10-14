@@ -408,7 +408,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::ViewSidePanel, t("Panel lateral")),
     (
         Msg::ViewSidePanelHover,
-        t("Muestra u oculta grabación, streams, overlays y stingers"),
+        t("Muestra u oculta grabación, streams, overlays, stingers y títulos"),
     ),
     (Msg::ViewStatusBar, t("Barra de estado")),
     (
@@ -418,6 +418,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::ViewSidePanelTab, t("Pestaña del panel lateral")),
     (Msg::TabOverlays, t("Overlays")),
     (Msg::TabStingers, t("Stingers")),
+    (Msg::TabTitles, t("Títulos")),
     (Msg::ViewResetLayout, t("Restablecer diseño")),
     (
         Msg::ViewResetLayoutDisabled,
@@ -1416,4 +1417,189 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AdviceOffline,
         t("Quite esa referencia sin conexión primero."),
     ),
+    // Titles tab.
+    (
+        Msg::TitlesIntro,
+        t(
+            "Edite los campos de un título, previsualícelos y llévelo al aire. Tomar y Actualizar en vivo emiten exactamente los valores previsualizados.",
+        ),
+    ),
+    (Msg::TitlesNone, t("Sin títulos")),
+    (
+        Msg::TitlesNoneDetail,
+        t("Este show no tiene entradas de título."),
+    ),
+    (
+        Msg::TitlesNotSynced,
+        t("Los títulos aparecen cuando el estado del proyecto está sincronizado."),
+    ),
+    (
+        Msg::TitlesWaiting,
+        t("Esperando los valores del título desde el daemon"),
+    ),
+    (Msg::TitleRowHover, t("Editar {name}")),
+    (Msg::TitleEdited, t("EDITADO")),
+    (Msg::TitleConflict, t("CONFLICTO")),
+    (Msg::TitleOff, t("FUERA DEL AIRE")),
+    (Msg::TitleOnChannel, t("en O{channel}")),
+    (Msg::TitleOnProgram, t("en Programa")),
+    (Msg::FieldTypeText, t("TEXTO")),
+    (Msg::FieldTypeNumber, t("NÚMERO")),
+    (Msg::FieldTypeColor, t("COLOR")),
+    (Msg::FieldTypeImage, t("IMAGEN")),
+    (Msg::TitleFieldDiscard, t("Descartar")),
+    (
+        Msg::TitleFieldDiscardHover,
+        t("Descartar esta edición y conservar el valor del servidor"),
+    ),
+    (
+        Msg::TitleFieldChanged,
+        t("Cambió en el servidor desde que empezó a editar"),
+    ),
+    (Msg::TitleColorHint, t("#RRGGBB o #RRGGBBAA")),
+    (Msg::TitleColorPickHover, t("Elegir un color")),
+    (Msg::TitleImageHint, t("URI del recurso")),
+    (Msg::TitleMine, t("MÍO")),
+    (Msg::TitleTheirs, t("SUYO")),
+    (Msg::TitleFieldRemovedValue, t("eliminado del título")),
+    (
+        Msg::TitleConflictBanner,
+        t(
+            "Otro operador cambió este título. Compare los valores y luego Rebase para conservar sus ediciones sobre las suyas, o Descarte las propias.",
+        ),
+    ),
+    (Msg::TitleRejectedBanner, t("Rechazado: {reason}")),
+    (Msg::TitleRebase, t("Rebasar")),
+    (
+        Msg::TitleRebaseHover,
+        t(
+            "Conservar sus ediciones sobre los valores actuales del servidor; previsualice de nuevo antes de emitir",
+        ),
+    ),
+    (Msg::TitleDiscardAll, t("Descartar todo")),
+    (
+        Msg::TitleDiscardAllHover,
+        t("Descartar todas las ediciones de este título y adoptar los valores del servidor"),
+    ),
+    (Msg::TitlePreviewKey, t("Previsualizar")),
+    (
+        Msg::TitlePreviewHover,
+        t("Preparar Tomar y Actualizar en vivo con exactamente estos valores"),
+    ),
+    (Msg::TitlePreviewed, t("PREVISUALIZADO")),
+    (Msg::TitlePreviewHeading, t("Se emite como se previsualizó")),
+    (Msg::TitleFromDraft, t("editado")),
+    (Msg::TitleChannel, t("Canal")),
+    (
+        Msg::TitleChannelHover,
+        t("Canal de overlay en el que Tomar pone este título"),
+    ),
+    (
+        Msg::TitleChannelBusy,
+        t("O{channel} muestra ahora {name}; Tomar lo reemplaza."),
+    ),
+    (Msg::TitlePending, t("Esperando al servidor…")),
+    (Msg::TitleOpSave, t("Guardar")),
+    (Msg::TitleOpTake, t("Tomar")),
+    (Msg::TitleOpUpdate, t("Actualizar en vivo")),
+    (Msg::TitleOpOffAir, t("Retirar del aire")),
+    (
+        Msg::TitleOpSaveHover,
+        t("Guardar las ediciones sin salir al aire"),
+    ),
+    (
+        Msg::TitleOpTakeHover,
+        t("Llevar al aire el título previsualizado en O{channel}"),
+    ),
+    (
+        Msg::TitleOpUpdateHover,
+        t("Actualizar el título al aire con las ediciones previsualizadas"),
+    ),
+    (Msg::TitleOpOffAirHover, t("Retirar el título del aire")),
+    (
+        Msg::TitleBlockedPending,
+        t("un comando de este título espera al servidor"),
+    ),
+    (
+        Msg::TitleBlockedStale,
+        t("el título cambió en el servidor; rebase o descarte sus ediciones primero"),
+    ),
+    (
+        Msg::TitleBlockedInvalid,
+        t("corrija primero los campos no válidos"),
+    ),
+    (
+        Msg::TitleBlockedNotPreviewed,
+        t("previsualice primero las ediciones"),
+    ),
+    (Msg::TitleBlockedNoChanges, t("no hay ediciones que enviar")),
+    (Msg::TitleBlockedOnAir, t("el título está al aire")),
+    (Msg::TitleBlockedOffAir, t("el título está fuera del aire")),
+    (Msg::TitleRejUnknownTitle, t("el título ya no existe")),
+    (Msg::TitleRejUnknownField, t("el título no tiene ese campo")),
+    (
+        Msg::TitleRejDuplicateField,
+        t("un campo se envió dos veces"),
+    ),
+    (
+        Msg::TitleRejTypeMismatch,
+        t("un campo tiene el tipo equivocado"),
+    ),
+    (
+        Msg::TitleRejInvalidValue,
+        t("el valor de un campo no es válido"),
+    ),
+    (
+        Msg::TitleRejInvalidFields,
+        t("el servidor rechazó los valores de los campos"),
+    ),
+    (
+        Msg::TitleRejTooLarge,
+        t("el contenido del título es demasiado grande"),
+    ),
+    (Msg::TitleRejAlreadyOnAir, t("el título ya está al aire")),
+    (Msg::TitleRejNotOnAir, t("el título no está al aire")),
+    (
+        Msg::TitleRejOnProgram,
+        t("el título está en Programa; cambie Programa a otra entrada"),
+    ),
+    (
+        Msg::TitleRejMultipleOverlays,
+        t("el título está en varios canales de overlay; retire cada uno desde la pestaña Overlays"),
+    ),
+    (
+        Msg::TitleRejLocked,
+        t("el proyecto o el título está bloqueado para edición"),
+    ),
+    (
+        Msg::TitleRejNotPermitted,
+        t("el rol de esta sesión no lo permite"),
+    ),
+    (
+        Msg::TitleRejRevisionExhausted,
+        t("el contador de revisiones del título se agotó"),
+    ),
+    (Msg::TitleRejOther, t("el servidor rechazó el comando")),
+    (
+        Msg::FieldErrTextTooLong,
+        t("El texto supera los {max} caracteres."),
+    ),
+    (Msg::FieldErrNumber, t("Introduzca un número entero.")),
+    (
+        Msg::FieldErrColor,
+        t("Introduzca un color como #RRGGBB o #RRGGBBAA."),
+    ),
+    (
+        Msg::FieldErrEmptyImage,
+        t("Introduzca un recurso de imagen."),
+    ),
+    (
+        Msg::FieldErrImageTooLong,
+        t("La referencia de imagen supera los {max} caracteres."),
+    ),
+    (
+        Msg::FieldErrTypeMismatch,
+        t("Este campo admite {expected}, no {actual}."),
+    ),
+    (Msg::FieldErrRemoved, t("Este campo se eliminó del título.")),
 ];

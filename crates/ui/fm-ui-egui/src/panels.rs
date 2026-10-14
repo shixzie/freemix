@@ -1,5 +1,5 @@
 //! Right-hand side panel: on-air outputs (recording and streams) above a
-//! tabbed area for overlays and stingers.
+//! tabbed area for overlays, stingers, and titles.
 
 use core::fmt::Write as _;
 use core::num::NonZeroU128;
@@ -29,6 +29,7 @@ pub(crate) enum SideTab {
     #[default]
     Overlays,
     Stingers,
+    Titles,
 }
 
 pub(crate) const STREAMS_NONE_CONFIGURED: &str = Msg::StreamsNoneConfigured.en();
@@ -52,10 +53,18 @@ impl StudioShell {
         ui.add_space(8.0);
         let l = self.locale;
         ui.horizontal(|ui| {
-            for (tab, label) in [
+            let tabs = [
                 (SideTab::Overlays, Msg::TabOverlays),
                 (SideTab::Stingers, Msg::TabStingers),
-            ] {
+                (SideTab::Titles, Msg::TabTitles),
+            ];
+            let spacing = ui.spacing().item_spacing.x;
+            #[allow(clippy::cast_precision_loss)] // three tabs
+            let tab_width = ((ui.available_width() - spacing * (tabs.len() - 1) as f32)
+                / tabs.len() as f32)
+                .floor()
+                .clamp(72.0, 96.0);
+            for (tab, label) in tabs {
                 let selected = self.side_tab == tab;
                 let text = RichText::new(l.text(label).to_uppercase())
                     .size(11.0)
@@ -77,7 +86,8 @@ impl StudioShell {
                                 Color32::TRANSPARENT
                             },
                         ))
-                        .min_size(Vec2::new(96.0, 26.0)),
+                        .truncate()
+                        .min_size(Vec2::new(tab_width, 26.0)),
                 );
                 if selected {
                     let rect = response.rect;
@@ -115,6 +125,7 @@ impl StudioShell {
                         intents,
                     );
                 }
+                SideTab::Titles => self.titles.draw(ui, state, intents),
             });
     }
 
