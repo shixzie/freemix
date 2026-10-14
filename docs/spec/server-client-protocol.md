@@ -42,6 +42,17 @@ does not acknowledge an invalid heartbeat. This exchange gives bidirectional
 control-plane peer liveness only. It is not service readiness, production
 authentication, media health, or the planned HTTP/WebSocket transport.
 
+The optional loopback WebSocket gateway at `/v1/control` relays the same
+records. It accepts `FREEMIXD_WEB_TOKEN` either as an `Authorization: Bearer`
+header or, for browsers that cannot set that header, as a second
+`Sec-WebSocket-Protocol` value `freemix.bearer.<base64url(token)>` offered
+alongside `freemix.control.v1`. The subprotocol credential is accepted only
+when the `Origin` matches the gateway's own host, is compared in constant time,
+and is never echoed; the server selects only `freemix.control.v1`. A present
+but wrong Bearer header is rejected even if the subprotocol credential is
+correct. The same listener serves the self-contained `/tally` page for `GET`
+and `HEAD`; roles and permissions still come from the protocol handshake.
+
 Snapshots carry bounded project-order input and output catalogs as exact ID/name pairs.
 The canonical persisted name labels input tiles and mixer strips; clients do not
 invent ordinal display names. The `input_renamed` and `input_order_changed`
