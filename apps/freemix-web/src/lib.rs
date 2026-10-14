@@ -39,8 +39,8 @@ pub use stinger::{StingerControl, StingerControls};
 pub use tally::{
     SelectedTally, TALLY_HEARTBEAT_ACK_TIMEOUT_MS, TALLY_HEARTBEAT_INTERVAL_MS,
     TALLY_INITIAL_BACKOFF_MS, TALLY_MAX_BACKOFF_MS, TALLY_SYNC_TIMEOUT_MS, TallyAction, TallyBoard,
-    TallyConnection, TallyEntry, TallyIndicator, TallyLight, TallyLink, TallyPresentation,
-    TallyScreen, TallyShortcut, TallyStop,
+    TallyConnection, TallyEntry, TallyIndicator, TallyLight, TallyLink, TallyLock,
+    TallyPresentation, TallyScreen, TallyShortcut, TallyStop,
 };
 pub use title_editor::{
     domain_field_id, domain_field_value, scene_snapshot, title_access, wire_field_id,

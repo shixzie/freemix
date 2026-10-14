@@ -1,6 +1,6 @@
 //! Phone tally over the loopback web gateway: the served page, browser-style
 //! subprotocol authentication, a viewer tally that follows an operator's cut,
-//! server-side role limits, heartbeats, and reconnect.
+//! server-side role limits, edit padlocks, heartbeats, and reconnect.
 
 use std::{
     fs,
@@ -21,9 +21,9 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    EventPayload, HandshakeOutcome, HandshakeRequest, HeartbeatMessage, Role,
-    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, WireInputId, WireMessage, decode_line,
-    encode_line,
+    EditLockScope, EditLockStatus, EventMessage, EventPayload, HandshakeOutcome, HandshakeRequest,
+    HeartbeatMessage, Role, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, WireInputId,
+    WireMessage, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
@@ -310,6 +310,17 @@ fn receive(socket: &mut Browser) -> WireMessage {
     }
 }
 
+/// The next durable event, skipping the runtime realizations around it.
+fn next_event(socket: &mut Browser) -> EventMessage {
+    loop {
+        match receive(socket) {
+            WireMessage::Event(event) => return event,
+            WireMessage::RuntimeEvent(_) => {}
+            other => panic!("expected a durable event, got {other:?}"),
+        }
+    }
+}
+
 fn hello(role: Role) -> WireMessage {
     WireMessage::HandshakeRequest(HandshakeRequest {
         protocol: CURRENT_PROTOCOL_VERSION,
@@ -358,20 +369,24 @@ struct RawOperator {
 
 impl RawOperator {
     fn connect(address: SocketAddr) -> Self {
+        Self::connect_as(address, Role::Operator)
+    }
+
+    fn connect_as(address: SocketAddr, role: Role) -> Self {
         let stream = TcpStream::connect_timeout(&address, TIMEOUT).unwrap();
         stream.set_read_timeout(Some(TIMEOUT)).unwrap();
         let mut operator = Self {
             writer: stream.try_clone().unwrap(),
             reader: BufReader::new(stream),
         };
-        let mut request = hello(Role::Operator);
+        let mut request = hello(role);
         if let WireMessage::HandshakeRequest(request) = &mut request {
             request.client_type = ClientType::Studio;
         }
         operator.send(&request);
         assert!(matches!(
             operator.receive(),
-            WireMessage::HandshakeResponse(response) if response.granted_role == Role::Operator
+            WireMessage::HandshakeResponse(response) if response.granted_role == role
         ));
         assert!(matches!(operator.receive(), WireMessage::Snapshot(_)));
         operator
@@ -381,6 +396,22 @@ impl RawOperator {
         self.writer
             .write_all(encode_line(message).unwrap().as_bytes())
             .unwrap();
+    }
+
+    /// Waits for the result of command `id`, skipping the session's events.
+    fn accepted(&mut self, id: &str) -> u64 {
+        loop {
+            if let WireMessage::CommandResult(result) = self.receive() {
+                match result {
+                    CommandResult::Accepted {
+                        id: accepted,
+                        revision,
+                        ..
+                    } if accepted == id => return revision,
+                    other => panic!("command {id} was not accepted: {other:?}"),
+                }
+            }
+        }
     }
 
     fn receive(&mut self) -> WireMessage {
@@ -448,6 +479,11 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
     // Live input add and remove keep the input board in step.
     assert!(page.contains("name === \"input_added\""));
     assert!(page.contains("name === \"input_removed\""));
+    // Edit padlocks come from the snapshot and follow durable lock events.
+    assert!(page.contains("required(record, \"project_locked\")"));
+    assert!(page.contains("required(record, \"locked_inputs\")"));
+    assert!(page.contains("name === \"edit_lock_changed\""));
+    assert!(page.contains("id=\"lock\""));
     assert!(page.contains("\"freemix.control.v1\""));
     assert!(page.contains("\"freemix.bearer.\""));
     assert!(!page.contains(TOKEN), "the page never embeds the token");
@@ -567,6 +603,62 @@ fn browser_tally_follows_realized_cuts_with_role_limits_and_reconnects() {
     assert_eq!(snapshot.revision, 1);
     assert_eq!(snapshot.realized_program, input(2));
     assert_eq!(snapshot.realized_preview, input(1));
+    assert_eq!(snapshot.edit_locks, EditLockStatus::default());
+
+    // An admin engages the project padlock and Guest's own padlock; the tally
+    // receives both durable lock events, then a reconnect snapshot carries
+    // them, so the page can badge the locks without a live event history.
+    drop(operator);
+    let mut admin = RawOperator::connect_as(daemon.control, Role::Admin);
+    for (id, scope, revision) in [
+        ("lock-project", EditLockScope::Project, 2),
+        ("lock-guest", EditLockScope::Input(input(3)), 3),
+    ] {
+        admin.send(&command(
+            id,
+            CommandPayload::SetEditLock {
+                scope,
+                locked: true,
+            },
+        ));
+        assert_eq!(admin.accepted(id), revision);
+        let event = next_event(&mut tally);
+        assert_eq!(event.cursor.revision, revision);
+        assert_eq!(
+            event.payload,
+            EventPayload::EditLockChanged {
+                scope,
+                locked: true
+            }
+        );
+    }
+    tally.close(None).unwrap();
+    drop(tally);
+    let (mut tally, _, _, snapshot) = viewer_session(daemon.web);
+    assert_eq!(snapshot.revision, 3);
+    assert_eq!(
+        snapshot.edit_locks,
+        EditLockStatus {
+            project: true,
+            inputs: vec![input(3)],
+        }
+    );
+    // Releasing the project padlock leaves Guest's lock engaged.
+    admin.send(&command(
+        "unlock-project",
+        CommandPayload::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: false,
+        },
+    ));
+    assert_eq!(admin.accepted("unlock-project"), 4);
+    assert_eq!(
+        next_event(&mut tally).payload,
+        EventPayload::EditLockChanged {
+            scope: EditLockScope::Project,
+            locked: false
+        }
+    );
 
     // An operator-role tally is granted the shortcut permissions.
     tally.close(None).unwrap();

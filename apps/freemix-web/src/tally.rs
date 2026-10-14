@@ -73,18 +73,51 @@ impl TallyIndicator {
     }
 }
 
-/// One input's label and realized light.
+/// An engaged edit padlock covering one input. Padlocks are informational
+/// on a tally: they never change a light or a shortcut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TallyLock {
+    /// The whole project is locked.
+    Project,
+    /// The input's own padlock is engaged.
+    Input,
+}
+
+impl TallyLock {
+    /// Short badge text shown beside the padlock.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Project => "Project locked",
+            Self::Input => "Input locked",
+        }
+    }
+
+    /// Screen-reader text for the padlock badge.
+    #[must_use]
+    pub const fn accessibility_label(self) -> &'static str {
+        match self {
+            Self::Project => "Edits locked: Project locked",
+            Self::Input => "Edits locked: Input locked",
+        }
+    }
+}
+
+/// One input's label, realized light, and own edit padlock.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TallyEntry {
     pub input: InputId,
     pub label: String,
     pub light: TallyLight,
+    /// The input's own padlock; the project padlock is on [`TallyBoard`].
+    pub locked: bool,
 }
 
 /// Realized tally for every input, in canonical project order.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TallyBoard {
     entries: Vec<TallyEntry>,
+    project_locked: bool,
 }
 
 impl TallyBoard {
@@ -99,9 +132,33 @@ impl TallyBoard {
                 input,
                 label: label.clone(),
                 light: light_for(input, &view.switcher),
+                locked: view.edit_locks.is_input_locked(input),
             })
             .collect();
-        Self { entries }
+        Self {
+            entries,
+            project_locked: view.edit_locks.project,
+        }
+    }
+
+    /// Whether the project padlock is engaged.
+    #[must_use]
+    pub const fn project_locked(&self) -> bool {
+        self.project_locked
+    }
+
+    /// The padlock covering `input`: the project lock wins over the input's
+    /// own lock. `None` for an unlocked or unknown input.
+    #[must_use]
+    pub fn lock(&self, input: InputId) -> Option<TallyLock> {
+        let entry = self.entry(input)?;
+        if self.project_locked {
+            Some(TallyLock::Project)
+        } else if entry.locked {
+            Some(TallyLock::Input)
+        } else {
+            None
+        }
     }
 
     #[must_use]
@@ -247,12 +304,15 @@ pub struct TallyScreen {
     pub full_screen: bool,
 }
 
-/// The selected input's label and indicator.
+/// The selected input's label, indicator, and padlock.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectedTally {
     pub input: InputId,
     pub label: String,
     pub indicator: TallyIndicator,
+    /// The padlock covering the input; `None` while the tally is not live,
+    /// because the lock state is then unknown.
+    pub lock: Option<TallyLock>,
 }
 
 /// Everything a renderer needs for one tally frame.
@@ -555,14 +615,16 @@ impl TallyLink {
         let view = self.client.model().view();
         let board = view.as_ref().map(TallyBoard::from_view).unwrap_or_default();
         let selected = screen.selected.and_then(|input| {
+            let live = connection.is_live();
             board.entry(input).map(|entry| SelectedTally {
                 input,
                 label: entry.label.clone(),
-                indicator: if connection.is_live() {
+                indicator: if live {
                     TallyIndicator::Light(entry.light)
                 } else {
                     TallyIndicator::Offline
                 },
+                lock: board.lock(input).filter(|_| live),
             })
         });
         let shortcuts = TallyShortcut::ALL

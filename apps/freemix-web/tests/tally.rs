@@ -17,8 +17,8 @@ use fm_types::{InputId, ProjectId};
 use freemix_web::{
     TALLY_HEARTBEAT_ACK_TIMEOUT_MS, TALLY_HEARTBEAT_INTERVAL_MS, TALLY_INITIAL_BACKOFF_MS,
     TALLY_MAX_BACKOFF_MS, TALLY_SYNC_TIMEOUT_MS, TallyAction, TallyConnection, TallyIndicator,
-    TallyLight, TallyLink, TallyScreen, TallyShortcut, TallyStop, TransitionControlState,
-    client_config,
+    TallyLight, TallyLink, TallyLock, TallyScreen, TallyShortcut, TallyStop,
+    TransitionControlState, client_config,
 };
 
 const CAMERA: u128 = 11;
@@ -131,6 +131,20 @@ fn strips() -> Vec<InputAudioStripStatus> {
 }
 
 fn snapshot(revision: u64, program: u128, preview: u128) -> WireMessage {
+    snapshot_locked(
+        revision,
+        program,
+        preview,
+        fm_protocol::EditLockStatus::default(),
+    )
+}
+
+fn snapshot_locked(
+    revision: u64,
+    program: u128,
+    preview: u128,
+    edit_locks: fm_protocol::EditLockStatus,
+) -> WireMessage {
     on_wire(WireMessage::Snapshot(SnapshotMessage {
         engine: engine(),
         revision,
@@ -167,7 +181,7 @@ fn snapshot(revision: u64, program: u128, preview: u128) -> WireMessage {
             .collect(),
         desired_overlays: OverlayStatus::empty_channels(),
         realized_overlays: OverlayStatus::empty_channels(),
-        edit_locks: fm_protocol::EditLockStatus::default(),
+        edit_locks,
         edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         titles: Vec::new(),
     }))
@@ -230,6 +244,21 @@ fn rename(revision: u64, value: u128, name: &str) -> WireMessage {
             name: name.to_owned(),
         },
     }))
+}
+
+fn durable(revision: u64, payload: EventPayload) -> WireMessage {
+    on_wire(WireMessage::Event(EventMessage {
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+        cursor: EventCursor {
+            engine: engine(),
+            revision,
+        },
+        payload,
+    }))
+}
+
+fn edit_lock(revision: u64, scope: fm_protocol::EditLockScope, locked: bool) -> WireMessage {
+    durable(revision, EventPayload::EditLockChanged { scope, locked })
 }
 
 /// Unboxes a record the driver asked the transport to send.
@@ -365,6 +394,126 @@ fn both_sides_of_a_realized_manual_transition_are_on_air() {
     assert_eq!(
         indicator(&link, GUEST, 0),
         TallyIndicator::Light(TallyLight::Idle)
+    );
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn padlocks_follow_snapshots_and_events_without_changing_lights() {
+    use fm_protocol::{EditLockScope, EditLockStatus};
+
+    let mut link = link(Role::Viewer);
+    assert_eq!(link.start(), Some(TallyAction::OpenTransport));
+    link.transport_opened(0).unwrap();
+    assert_eq!(link.receive(handshake(Role::Viewer, 4), 0), None);
+    let locks = EditLockStatus {
+        project: false,
+        inputs: vec![wire(GUEST)],
+    };
+    assert_eq!(
+        link.receive(snapshot_locked(4, CAMERA, SLIDES, locks), 0),
+        None
+    );
+    let presentation = link.presentation(&screen(GUEST), 0);
+    assert!(!presentation.board.project_locked());
+    let locked = presentation
+        .board
+        .entries()
+        .iter()
+        .map(|entry| (entry.label.as_str(), entry.locked))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        locked,
+        [
+            ("Camera 1", false),
+            ("Slides", false),
+            ("Guest / Remote", true)
+        ]
+    );
+    let selected = presentation.selected.unwrap();
+    assert_eq!(selected.lock, Some(TallyLock::Input));
+    assert_eq!(selected.indicator, TallyIndicator::Light(TallyLight::Idle));
+    let camera = link.presentation(&screen(CAMERA), 0).selected.unwrap();
+    assert_eq!(camera.lock, None);
+    assert_eq!(camera.indicator, TallyIndicator::Light(TallyLight::Program));
+
+    // The project padlock covers every input and wins over an input lock;
+    // lights are unaffected.
+    assert_eq!(
+        link.receive(edit_lock(5, EditLockScope::Project, true), 10),
+        None
+    );
+    let presentation = link.presentation(&screen(CAMERA), 10);
+    assert!(presentation.board.project_locked());
+    let camera = presentation.selected.unwrap();
+    assert_eq!(camera.lock, Some(TallyLock::Project));
+    assert_eq!(camera.indicator, TallyIndicator::Light(TallyLight::Program));
+    assert_eq!(
+        link.presentation(&screen(GUEST), 10).selected.unwrap().lock,
+        Some(TallyLock::Project)
+    );
+
+    // Releasing the project lock reveals the input lock again; releasing
+    // that clears the badge.
+    assert_eq!(
+        link.receive(edit_lock(6, EditLockScope::Project, false), 20),
+        None
+    );
+    assert_eq!(
+        link.presentation(&screen(GUEST), 20).selected.unwrap().lock,
+        Some(TallyLock::Input)
+    );
+    assert_eq!(
+        link.receive(edit_lock(7, EditLockScope::Input(wire(GUEST)), false), 30),
+        None
+    );
+    assert_eq!(
+        link.presentation(&screen(GUEST), 30).selected.unwrap().lock,
+        None
+    );
+
+    // Removing a locked (idle) input drops its lock with the input.
+    assert_eq!(
+        link.receive(edit_lock(8, EditLockScope::Input(wire(GUEST)), true), 40),
+        None
+    );
+    assert!(
+        link.presentation(&screen(GUEST), 40)
+            .board
+            .entry(input(GUEST))
+            .unwrap()
+            .locked
+    );
+    assert_eq!(
+        link.receive(
+            durable(9, EventPayload::InputRemoved { input: wire(GUEST) }),
+            50
+        ),
+        None
+    );
+    let presentation = link.presentation(&screen(GUEST), 50);
+    assert!(presentation.board.entry(input(GUEST)).is_none());
+    assert!(
+        presentation
+            .board
+            .entries()
+            .iter()
+            .all(|entry| !entry.locked)
+    );
+
+    // While not live the lock state is unknown, like the light.
+    assert_eq!(
+        link.receive(edit_lock(10, EditLockScope::Project, true), 60),
+        None
+    );
+    link.transport_closed(70);
+    let offline = link.presentation(&screen(CAMERA), 70).selected.unwrap();
+    assert_eq!(offline.indicator, TallyIndicator::Offline);
+    assert_eq!(offline.lock, None);
+    assert_eq!(TallyLock::Project.label(), "Project locked");
+    assert_eq!(
+        TallyLock::Input.accessibility_label(),
+        "Edits locked: Input locked"
     );
 }
 

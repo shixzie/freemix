@@ -36,6 +36,12 @@
   #board button[data-light="program"] { background: var(--program); }
   #board button[data-light="preview"] { background: var(--preview); }
   #board button[data-light="idle"] { background: var(--idle); }
+  /* Edit padlocks are informational: they never change a light. */
+  .padlock { display: inline-block; width: .9em; height: .9em; vertical-align: -.1em; }
+  #lock { display: inline-flex; gap: .4em; align-items: center; margin-top: .75rem;
+    padding: .2rem .7rem; border-radius: 999px; background: #000a; color: #ffd27a;
+    font-size: clamp(.9rem, 3vw, 1.4rem); font-weight: 600; }
+  #board button .padlock { margin-right: .35em; color: #ffd27a; }
   form { display: grid; gap: .75rem; width: min(100%, 26rem); text-align: left; }
   label { display: grid; gap: .25rem; }
   input, select { min-height: 44px; padding: 0 .5rem; border-radius: 8px; border: 1px solid #fff6;
@@ -55,6 +61,7 @@
 <main id="tally" data-light="offline">
   <div id="label" aria-live="polite">FreeMix Tally</div>
   <div id="state" role="status" aria-live="polite">OFFLINE</div>
+  <div id="lock" hidden><span id="lock-text"></span></div>
   <div id="board" role="list" aria-label="Inputs" hidden></div>
   <form id="setup" hidden autocomplete="off">
     <label>Access token
@@ -89,6 +96,7 @@
     tally: $("tally"), label: $("label"), state: $("state"), status: $("status"),
     board: $("board"), setup: $("setup"), token: $("token"), role: $("role"),
     inputs: $("inputs"), preview: $("preview"), cut: $("cut"), fullscreen: $("fullscreen"),
+    lock: $("lock"), lockText: $("lock-text"),
   };
 
   const store = window.sessionStorage;
@@ -112,6 +120,8 @@
     name: "", inputs: [], desired: { program: "", preview: "" },
     realized: { program: "", preview: "", manualFrom: "", manualTo: "" },
     desiredByRevision: new Map(),
+    // Replicated edit padlocks: the project lock and each input's own lock.
+    locks: { project: false, inputs: new Set() },
   };
   let selected = store.getItem("freemix.tally.input") || "";
   let choosing = !selected;
@@ -279,6 +289,11 @@
           show.realized.manualFrom = required(record, "realized_manual_from");
           show.realized.manualTo = required(record, "realized_manual_to");
         }
+        const lockedInputs = required(record, "locked_inputs");
+        show.locks = {
+          project: required(record, "project_locked") === "1",
+          inputs: new Set(lockedInputs ? lockedInputs.split(",") : []),
+        };
         show.desiredByRevision.clear();
         trackDesired(link.revision, show.desired.program, show.desired.preview);
         if (!show.inputs.some((input) => input.id === selected)) { selected = ""; choosing = true; }
@@ -311,7 +326,16 @@
         } else if (name === "input_removed") {
           const id = required(record, "input");
           show.inputs = show.inputs.filter((candidate) => candidate.id !== id);
+          show.locks.inputs.delete(id); // Removing an input drops its lock.
           if (selected === id) { selected = ""; choosing = true; }
+        } else if (name === "edit_lock_changed") {
+          const locked = required(record, "locked") === "1";
+          const scope = required(record, "scope");
+          if (scope === "project") show.locks.project = locked;
+          else if (scope === "input") {
+            const id = required(record, "input");
+            if (locked) show.locks.inputs.add(id); else show.locks.inputs.delete(id);
+          } else throw new Error("unknown edit lock scope");
         }
         return;
       }
@@ -376,6 +400,34 @@
   }
   const STATE_TEXT = { program: "ON AIR", preview: "PREVIEW", idle: "IDLE", offline: "OFFLINE" };
 
+  // Edit padlock of an input: "project" when the whole project is locked,
+  // "input" for its own lock, otherwise "". Unknown while not live.
+  function lockOf(id) {
+    if (link.phase !== "live") return "";
+    if (show.locks.project) return "project";
+    return show.locks.inputs.has(id) ? "input" : "";
+  }
+  const LOCK_TEXT = { project: "Project locked", input: "Input locked" };
+  const SVG = "http://www.w3.org/2000/svg";
+  function padlock() {
+    const svg = document.createElementNS(SVG, "svg");
+    svg.setAttribute("class", "padlock");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("aria-hidden", "true");
+    const shackle = document.createElementNS(SVG, "path");
+    shackle.setAttribute("d", "M4.5 7V5a3.5 3.5 0 0 1 7 0v2");
+    shackle.setAttribute("fill", "none");
+    shackle.setAttribute("stroke", "currentColor");
+    shackle.setAttribute("stroke-width", "1.8");
+    const body = document.createElementNS(SVG, "rect");
+    body.setAttribute("x", "2.5"); body.setAttribute("y", "7");
+    body.setAttribute("width", "11"); body.setAttribute("height", "8"); body.setAttribute("rx", "1.5");
+    body.setAttribute("fill", "currentColor");
+    svg.append(shackle, body);
+    return svg;
+  }
+  ui.lock.prepend(padlock());
+
   function shortcutState(permission, extra) {
     if (!link.permissions.includes(permission)) return "hidden";
     return link.phase === "live" && extra ? "enabled" : "disabled";
@@ -405,6 +457,12 @@
     ui.state.textContent = choosing ? (link.phase === "live" ? "Choose an input" : STATE_TEXT.offline)
       : STATE_TEXT[light];
     ui.state.setAttribute("aria-label", choosing ? ui.state.textContent : "Tally: " + STATE_TEXT[light]);
+    // The selected input's padlock; on the input board only the project lock.
+    const lock = choosing ? (link.phase === "live" && show.locks.project ? "project" : "")
+      : input ? lockOf(input.id) : "";
+    ui.lock.hidden = !lock;
+    ui.lockText.textContent = lock ? LOCK_TEXT[lock] : "";
+    ui.lock.setAttribute("aria-label", lock ? "Edits locked: " + LOCK_TEXT[lock] : "");
     ui.status.textContent = statusText();
     ui.setup.hidden = link.phase !== "idle" && link.phase !== "stopped";
     ui.board.hidden = !choosing || link.phase !== "live";
@@ -425,6 +483,11 @@
       button.setAttribute("role", "listitem");
       button.dataset.light = lightOf(input.id);
       button.textContent = input.label;
+      if (lockOf(input.id) === "input") {
+        button.dataset.lock = "input";
+        button.prepend(padlock());
+        button.setAttribute("aria-label", input.label + ", input locked");
+      }
       button.addEventListener("click", () => {
         selected = input.id;
         choosing = false;
