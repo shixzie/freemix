@@ -291,7 +291,7 @@ impl DriftController {
         let limit = self.config.max_correction_ppm * 1e-6;
         if limit == 0.0
             || !fill_samples.is_finite()
-            || elapsed_seconds.is_nan()
+            || !elapsed_seconds.is_finite()
             || elapsed_seconds <= 0.0
         {
             return self.applied_ppb();
@@ -666,7 +666,7 @@ impl SourceSync {
                 minimum: minimum_target,
             });
         }
-        let minimum_capacity = config.target_fill_samples * 2;
+        let minimum_capacity = config.target_fill_samples.saturating_mul(2);
         if !(minimum_capacity..=MAX_SOURCE_SYNC_CAPACITY_SAMPLES).contains(&config.capacity_samples)
         {
             return Err(SourceSyncError::CapacityOutOfRange {
@@ -1072,6 +1072,10 @@ impl SourceSync {
         };
         self.expected_next = Some(next_expected);
         self.compact();
+        // Concealment beyond the capacity is always dropped by the overrun
+        // below; cut it here so the fill arithmetic cannot overflow.
+        let concealment_cut = gap.saturating_sub(self.config.capacity_samples);
+        gap -= concealment_cut;
 
         // Overrun: drop audio so the fill returns to the target.
         let mut dropped = 0;
@@ -1091,7 +1095,7 @@ impl SourceSync {
             rest -= from_gap;
             let from_incoming = rest.min(incoming - skip);
             skip += from_incoming;
-            dropped = from_buffer + from_gap + from_incoming;
+            dropped = concealment_cut.saturating_add(from_buffer + from_gap + from_incoming);
             edge = true;
             self.controller.reseed_fill();
             self.telemetry.overruns = self.telemetry.overruns.saturating_add(1);

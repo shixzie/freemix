@@ -673,3 +673,61 @@ fn explicit_reset_reprimes_and_keeps_the_drift_estimate() {
     sim.sync.reset_drift_estimate();
     assert_eq!(sim.sync.telemetry().estimated_drift_ppm, 0.0);
 }
+
+#[test]
+fn oversized_target_fill_is_rejected_without_overflow() {
+    assert_eq!(
+        SourceSync::new(mono(48_000).with_target_fill_samples(usize::MAX)).unwrap_err(),
+        SourceSyncError::CapacityOutOfRange {
+            capacity: 9_600,
+            minimum: usize::MAX
+        }
+    );
+}
+
+#[test]
+fn infinite_elapsed_time_does_not_poison_the_drift_controller() {
+    let mut controller = DriftController::new(DriftControlConfig::default(), rate(48_000), 960.0);
+    controller.update(1_000.0, 0.01);
+    let before = controller.applied_correction_ppm();
+    controller.update(960.0, f64::INFINITY);
+    assert!(controller.estimated_drift_ppm().is_finite());
+    assert_eq!(controller.applied_correction_ppm(), before);
+    for _ in 0..1_000 {
+        controller.update(1_200.0, 0.01);
+    }
+    assert!(controller.applied_correction_ppm() > 0.0);
+    assert!(controller.estimated_drift_ppm() > 0.0);
+}
+
+#[test]
+fn huge_concealable_gap_drops_back_to_the_target_without_overflow() {
+    let policy = DiscontinuityPolicy::new(usize::MAX, 0, JumpAction::Splice, 48).unwrap();
+    let mut sync = SourceSync::new(
+        mono(48_000)
+            .with_drift_control(DriftControlConfig::disabled())
+            .with_discontinuity_policy(policy),
+    )
+    .unwrap();
+    let block = vec![0.25_f32; 1_000];
+    sync.push(0, &[&block]).unwrap();
+    // A flagged discontinuity splices after the buffered audio, so the fill
+    // now exceeds the span of the source timeline.
+    sync.push_discontinuity(0, &[&block]).unwrap();
+    let tail = [0.25_f32; 10];
+    let first = u64::MAX - 10;
+    let report = sync.push(first, &[&tail]).unwrap();
+    assert_eq!(
+        report.continuity,
+        PushContinuity::GapFilled {
+            samples: first - 1_000
+        }
+    );
+    assert_eq!(report.overrun_dropped_samples, usize::MAX);
+    assert_eq!(report.accepted_samples, 10);
+    let target = sync.config().target_fill_samples();
+    assert_eq!(sync.buffer_fill(), target as f64);
+    let mut out = [0.0_f32; PULL];
+    let pulled = sync.pull(&mut [&mut out]).unwrap();
+    assert_eq!(pulled.rendered_samples, PULL);
+}
