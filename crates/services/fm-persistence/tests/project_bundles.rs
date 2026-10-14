@@ -705,6 +705,57 @@ fn append_remaps_ids_resolves_name_clashes_and_carries_media() {
 }
 
 #[test]
+fn append_never_binds_a_missing_source_asset_to_another_appended_asset() {
+    let temp = TestDirectory::new("append-claimed-keys");
+    let target_store = temp.store("target.freemix");
+    let target = stored(media_project(1, &[(1, "asset://clip")]));
+    target_store.save(&target).unwrap();
+    write_asset(&target_store, "clip", b"target clip");
+
+    // `clip` sorts before `clip-2`, so the missing `clip` picks its key
+    // before the present source asset `clip-2` is placed. Neither may end up
+    // sharing a key with another appended asset.
+    let source_store = temp.store("source.freemix");
+    let mut source = empty_project(2, "Source");
+    source.add_input(media(10, "Missing", "asset://clip"));
+    source.add_input(media(11, "Present", "asset://clip-2"));
+    source.add_input(media(12, "Missing too", "asset://clip-3"));
+    source_store.save(&stored(source)).unwrap();
+    write_asset(&source_store, "clip-2", b"present source clip");
+
+    let (appended, report) = target_store
+        .append_project(&target_store.load().unwrap(), &source_store)
+        .unwrap();
+    let targets = report
+        .assets
+        .iter()
+        .map(|asset| asset.target_uri.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(targets.len(), 3, "{:?}", report.assets);
+    // Only the two missing source assets stay unresolved.
+    let issues = target_store.audit_assets(&appended);
+    assert_eq!(
+        issues
+            .iter()
+            .map(|issue| (issue.input_id, issue.reason))
+            .collect::<Vec<_>>(),
+        [
+            (input_id(2), AssetAuditReason::MissingAsset),
+            (input_id(4), AssetAuditReason::MissingAsset),
+        ]
+    );
+    assert_eq!(
+        fs::read(
+            target_store
+                .resolve_asset_uri(uri_of(&appended, 3))
+                .unwrap()
+        )
+        .unwrap(),
+        b"present source clip"
+    );
+}
+
+#[test]
 fn appending_a_project_into_itself_duplicates_with_fresh_ids() {
     let temp = TestDirectory::new("append-self");
     let store = temp.store("show.freemix");
@@ -1101,4 +1152,33 @@ fn relink_import_refuses_a_key_directory_that_escapes_the_bundle() {
         Err(BundleError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidInput
     ));
     assert_eq!(tree(&temp.path("outside")), Vec::<String>::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn relink_never_proposes_an_in_bundle_symlink_that_escapes_the_assets() {
+    let temp = TestDirectory::new("relink-escaping-file-link");
+    let store = temp.store("show.freemix");
+    let project = stored(media_project(
+        1,
+        &[(1, "asset://clip.mov"), (2, "asset://other.mov")],
+    ));
+    store.save(&project).unwrap();
+    write(&temp.path("outside/clip.mov"), b"outside");
+    fs::create_dir_all(store.assets_root().join("links")).unwrap();
+    std::os::unix::fs::symlink(
+        temp.path("outside/clip.mov"),
+        store.assets_root().join("links/clip.mov"),
+    )
+    .unwrap();
+    write(&temp.path("search/other.mov"), b"other");
+
+    let plan = store
+        .plan_media_relink(&project, &RelinkSearch::new(vec![temp.path("search")]))
+        .unwrap();
+    assert_eq!(plan.entries[0].resolution, RelinkResolution::NotFound);
+    // The unusable link does not block the other repair.
+    let outcome = store.apply_media_relink(&project, &plan).unwrap();
+    assert_eq!(outcome.relinked, [input_id(2)]);
+    assert_eq!(outcome.unresolved, [input_id(1)]);
 }

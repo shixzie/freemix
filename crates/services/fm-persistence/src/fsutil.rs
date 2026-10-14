@@ -20,18 +20,41 @@ pub(crate) fn temp_sibling(path: &Path, tag: &str) -> PathBuf {
     ))
 }
 
+/// Most fresh temporary names tried before giving up.
+const MAX_TEMP_ATTEMPTS: u32 = 64;
+
+/// Exclusively creates a fresh temporary sibling of `path`.
+///
+/// A leftover temporary file from an earlier process that had the same id
+/// (common for long-lived daemons restarted in containers) is skipped rather
+/// than reported as an error or deleted. The returned guard removes only the
+/// file this call created.
+fn create_temp_sibling(path: &Path, tag: &str) -> io::Result<(PathBuf, File, TempGuard)> {
+    let mut attempts = 0;
+    loop {
+        let temp = temp_sibling(path, tag);
+        match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => return Ok((temp.clone(), file, TempGuard::new(temp))),
+            // Exhaustion is not reported as `AlreadyExists`, which callers
+            // read as "the destination is occupied".
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                attempts += 1;
+                if attempts == MAX_TEMP_ATTEMPTS {
+                    return Err(io::Error::other("no free temporary file name"));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Atomically replaces `path` with `bytes`.
 ///
 /// The bytes are written to a temporary sibling, flushed with `sync_all`, then
 /// renamed into place and the parent directory is synced. A failure leaves the
 /// previous file, if any, untouched.
 pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temp = temp_sibling(path, "tmp");
-    let mut guard = TempGuard::new(temp.clone());
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
+    let (temp, mut file, mut guard) = create_temp_sibling(path, "tmp")?;
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
@@ -56,12 +79,7 @@ pub(crate) fn copy_new_file(source: &Path, destination: &Path) -> io::Result<u64
             "copy source is not a regular file",
         ));
     }
-    let temp = temp_sibling(destination, "copy");
-    let _guard = TempGuard::new(temp.clone());
-    let mut output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
+    let (temp, mut output, _guard) = create_temp_sibling(destination, "copy")?;
     let bytes = io::copy(&mut input, &mut output)?;
     output.sync_all()?;
     drop(output);
@@ -154,5 +172,70 @@ fn store_io(error: crate::StoreError) -> io::Error {
     match error {
         crate::StoreError::Io(error) => error,
         other => io::Error::other(other.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "fm-persistence-fsutil-{}-{}-{name}",
+                std::process::id(),
+                next_temp_sequence()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Simulates leftovers from an earlier process with this process id by
+    /// occupying the next temporary names.
+    fn squat_next_temp_names(path: &Path, tag: &str) -> Vec<PathBuf> {
+        let next = next_temp_sequence() + 1;
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        (next..next + 32)
+            .map(|sequence| {
+                let squatter = parent_directory(path)
+                    .join(format!(".{name}.{tag}-{}-{sequence}", std::process::id()));
+                fs::write(&squatter, b"stale").unwrap();
+                squatter
+            })
+            .collect()
+    }
+
+    #[test]
+    fn atomic_writes_skip_leftover_temporary_files() {
+        let temp = TestDirectory::new("write-squatted");
+        let path = temp.0.join("recent.json");
+        fs::write(&path, b"old").unwrap();
+        let squatters = squat_next_temp_names(&path, "tmp");
+
+        write_atomically(&path, b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert!(squatters.iter().all(|squatter| squatter.exists()));
+    }
+
+    #[test]
+    fn copies_skip_leftover_temporary_files() {
+        let temp = TestDirectory::new("copy-squatted");
+        let source = temp.0.join("source.mov");
+        fs::write(&source, b"media").unwrap();
+        let destination = temp.0.join("clip.mov");
+        let squatters = squat_next_temp_names(&destination, "copy");
+
+        assert_eq!(copy_new_file(&source, &destination).unwrap(), 5);
+        assert_eq!(fs::read(&destination).unwrap(), b"media");
+        assert!(squatters.iter().all(|squatter| squatter.exists()));
     }
 }

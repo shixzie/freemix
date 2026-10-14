@@ -555,7 +555,13 @@ fn in_bundle_key(candidate: &Candidate, assets_root: Option<&Path>) -> Option<St
     if candidate.source_rank != 0 {
         return None;
     }
-    let relative = candidate.path.strip_prefix(assets_root?).ok()?;
+    let assets_root = assets_root?;
+    // A symlinked file inside `assets/` is usable only if its target is too;
+    // otherwise the rewritten URI would never resolve.
+    if !fs::canonicalize(&candidate.path).is_ok_and(|resolved| resolved.starts_with(assets_root)) {
+        return None;
+    }
+    let relative = candidate.path.strip_prefix(assets_root).ok()?;
     let key = relative
         .components()
         .map(|component| component.as_os_str().to_str())

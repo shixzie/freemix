@@ -168,8 +168,18 @@ impl ProjectStore {
             })
             .collect::<BTreeSet<_>>();
         let assets_root = self.assets_root();
+        // Keys handed to missing source assets exist only in the project, not
+        // on disk, so they are tracked here: no later asset, present or
+        // missing, may land on one, and a missing asset never takes a key a
+        // later source asset would keep verbatim.
+        let source_keys = uris
+            .iter()
+            .filter_map(|uri| asset_uri_key(uri).ok().map(str::to_owned))
+            .collect::<BTreeSet<_>>();
+        let mut claimed_missing = BTreeSet::new();
         let mut assets = Vec::with_capacity(uris.len());
-        for uri in uris {
+        for uri in &uris {
+            let uri = uri.clone();
             let Ok(key) = asset_uri_key(&uri) else {
                 // A syntactically invalid URI can never resolve in any
                 // bundle, so it is kept verbatim and reported as missing.
@@ -181,7 +191,9 @@ impl ProjectStore {
                 continue;
             };
             let (target_uri, disposition) = if let Ok(resolved) = source.resolve_asset_uri(&uri) {
-                let (key, disposition) = place_file(&assets_root, &resolved, key, |_| false)?;
+                let (key, disposition) = place_file(&assets_root, &resolved, key, |candidate| {
+                    claimed_missing.contains(candidate)
+                })?;
                 (
                     asset_uri(&key),
                     AppendedAssetDisposition::Placed(disposition),
@@ -193,12 +205,15 @@ impl ProjectStore {
                 let key = (1..=MAX_NAME_SUFFIX)
                     .map(|attempt| suffixed_key(key, attempt))
                     .find(|candidate| {
-                        asset_uri_key(&asset_uri(candidate)).is_ok()
+                        (candidate == key || !source_keys.contains(candidate))
+                            && !claimed_missing.contains(candidate)
+                            && asset_uri_key(&asset_uri(candidate)).is_ok()
                             && fs::symlink_metadata(assets_root.join(candidate)).is_err()
                     })
                     .ok_or_else(|| BundleError::NoAvailableKey {
                         key: key.to_owned(),
                     })?;
+                claimed_missing.insert(key.clone());
                 (asset_uri(&key), AppendedAssetDisposition::MissingInSource)
             };
             assets.push(AppendedAsset {

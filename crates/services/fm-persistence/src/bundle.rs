@@ -147,9 +147,8 @@ fn export_bundle(
     let project = stored.with_project(project)?;
     rewritten_inputs.sort_unstable();
 
-    let staging = StagingDirectory::new(target);
+    let staging = StagingDirectory::create(target)?;
     let staging_store = ProjectStore::new(staging.path.clone())?;
-    fs::create_dir(&staging.path)?;
     let mut assets = Vec::with_capacity(mapping.len());
     for (source_uri, bundled_uri) in &mapping {
         let resolved = source
@@ -225,6 +224,28 @@ impl StagingDirectory {
         }
     }
 
+    /// Creates a fresh staging directory. A leftover directory of the same
+    /// name (from an earlier process with this process id) is skipped, never
+    /// adopted or removed.
+    fn create(target: &Path) -> std::io::Result<Self> {
+        const MAX_ATTEMPTS: u32 = 64;
+        for _ in 0..MAX_ATTEMPTS {
+            let mut staging = Self::new(target);
+            match fs::create_dir(&staging.path) {
+                Ok(()) => return Ok(staging),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Not ours: disarm cleanup before dropping.
+                    staging.published = true;
+                }
+                Err(error) => {
+                    staging.published = true;
+                    return Err(error);
+                }
+            }
+        }
+        Err(std::io::Error::other("no free staging directory name"))
+    }
+
     fn publish(mut self, target: &Path) -> Result<(), BundleError> {
         // `rename` would replace an empty directory created meanwhile, so the
         // never-overwrite guarantee is rechecked immediately before it.
@@ -243,5 +264,45 @@ impl Drop for StagingDirectory {
         if !self.published {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staging_skips_and_keeps_a_leftover_directory_with_the_same_name() {
+        let parent = std::env::temp_dir().join(format!(
+            "fm-persistence-staging-{}-{}",
+            std::process::id(),
+            next_temp_sequence()
+        ));
+        fs::create_dir(&parent).unwrap();
+        let target = parent.join("show.freemix");
+        // Leftovers from an earlier process that had this process id.
+        let next = next_temp_sequence() + 1;
+        let leftovers = (next..next + 32)
+            .map(|sequence| {
+                let leftover = parent.join(format!(
+                    ".show.freemix.staging-{}-{sequence}.freemix",
+                    std::process::id()
+                ));
+                fs::create_dir(&leftover).unwrap();
+                fs::write(leftover.join("marker"), b"keep").unwrap();
+                leftover
+            })
+            .collect::<Vec<_>>();
+
+        let staging = StagingDirectory::create(&target).unwrap();
+        assert!(staging.path.is_dir());
+        assert!(!leftovers.contains(&staging.path));
+        drop(staging);
+        assert!(
+            leftovers
+                .iter()
+                .all(|leftover| leftover.join("marker").exists())
+        );
+        fs::remove_dir_all(parent).unwrap();
     }
 }
