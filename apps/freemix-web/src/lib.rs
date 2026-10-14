@@ -20,6 +20,16 @@ pub use audio_strip::AudioStripControls;
 pub use fade_to_black::{
     FadeToBlackControl, FadeToBlackModel, FadeToBlackPresentation, FadeToBlackProjection,
 };
+pub use fm_ui_model::title_editor::{
+    BridgeIntake, DEFAULT_TAKE_CHANNEL, ExposedField, FieldConflict, FieldError, FieldPresentation,
+    FieldType, InvalidTakeChannel, MAX_EDITOR_TITLES, MAX_EXPOSED_FIELDS, MAX_IMAGE_ASSET_CHARS,
+    MAX_TITLE_NAME_CHARS, MAX_TITLE_TEXT_CHARS, OperationPresentation, PreviewField, PreviewSource,
+    ReplyOutcome, SnapshotError, TITLE_AIR_PERMISSION, TITLE_EDIT_PERMISSION, TitleAccess,
+    TitleBlocked, TitleCommand, TitleCommandBody, TitleControlPort, TitleEditor, TitleEditorError,
+    TitleEditorPresentation, TitleListEntry, TitleNotice, TitleOperation, TitlePreview,
+    TitleProtocolBridge, TitleRejection, TitleReply, TitleSnapshot, UnexpectedReply,
+    WireTitleOutcome, classify_rejection, format_field_value, parse_field_input, title_payload,
+};
 pub use manual_transition::{
     ManualTransitionControl, ManualTransitionModel, ManualTransitionMotion,
     ManualTransitionPresentation, ManualTransitionProjection,
@@ -33,13 +43,8 @@ pub use tally::{
     TallyScreen, TallyShortcut, TallyStop,
 };
 pub use title_editor::{
-    ExposedField, FieldConflict, FieldError, FieldPresentation, MAX_EDITOR_TITLES,
-    MAX_EXPOSED_FIELDS, MAX_IMAGE_ASSET_CHARS, MAX_TITLE_NAME_CHARS, MAX_TITLE_TEXT_CHARS,
-    OperationPresentation, PreviewField, PreviewSource, ReplyOutcome, SnapshotError,
-    TITLE_AIR_PERMISSION, TITLE_EDIT_PERMISSION, TitleAccess, TitleBlocked, TitleCommand,
-    TitleCommandBody, TitleControlPort, TitleEditor, TitleEditorError, TitleEditorPresentation,
-    TitleListEntry, TitleNotice, TitleOperation, TitlePreview, TitleRejection, TitleReply,
-    TitleSnapshot, UnexpectedReply, format_field_value, parse_field_input,
+    domain_field_id, domain_field_value, scene_snapshot, title_access, wire_field_id,
+    wire_field_type, wire_field_value,
 };
 pub use transition::{TransitionControl, TransitionControlState, TransitionControls};
 

@@ -1719,7 +1719,11 @@ dependencies = [
 name = "freemix-web"
 version = "0.1.0"
 dependencies = [
+ "fm-auth",
  "fm-client",
+ "fm-clock",
+ "fm-control",
+ "fm-engine",
  "fm-protocol",
  "fm-titles",
  "fm-types",

@@ -1,22 +1,29 @@
 //! Browser title editor (`GX-006`): exposed typed fields, per-field drafts
 //! and validation, preview-before-take, role and air-state gating, and
 //! optimistic concurrency against a fake authority backed by real
-//! `fm_titles::TitleScene` revisions.
+//! `fm_titles::TitleScene` revisions. The editor is keyed on protocol types
+//! (title inputs, wire field ids, and wire values); the fake authority
+//! converts at its boundary.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU128;
 
 use fm_client::{ConnectionState, Session};
-use fm_protocol::{CURRENT_PROTOCOL_VERSION, Role, ServerIdentity};
-use fm_titles::{
-    Color, FieldDefinition, FieldId, FieldType, FieldValue, ImageSource, TemplateId, TitleId,
-    TitleScene, TitleTemplate, UpdateError,
+use fm_protocol::{
+    CURRENT_PROTOCOL_VERSION, Role, ServerIdentity, TitleFieldValue, WireTitleFieldId,
 };
+use fm_titles::{
+    Color, FieldDefinition, FieldId, FieldValue, ImageSource, TemplateId, TitleId, TitleScene,
+    TitleTemplate, UpdateError,
+};
+use fm_types::InputId;
 use freemix_web::{
-    ExposedField, FieldError, MAX_EXPOSED_FIELDS, MAX_TITLE_TEXT_CHARS, PreviewSource,
+    ExposedField, FieldError, FieldType, MAX_EXPOSED_FIELDS, MAX_TITLE_TEXT_CHARS, PreviewSource,
     ReplyOutcome, SnapshotError, TitleAccess, TitleBlocked, TitleCommand, TitleCommandBody,
     TitleControlPort, TitleEditor, TitleEditorError, TitleNotice, TitleOperation, TitleRejection,
-    TitleReply, TitleSnapshot, UnexpectedReply, format_field_value, parse_field_input,
+    TitleReply, TitleSnapshot, UnexpectedReply, domain_field_id, domain_field_value,
+    format_field_value, parse_field_input, scene_snapshot, title_access, wire_field_id,
+    wire_field_type, wire_field_value,
 };
 
 const LOWER_THIRD: u128 = 1;
@@ -27,16 +34,32 @@ const SCORE: u128 = 12;
 const ACCENT: u128 = 13;
 const LOGO: u128 = 14;
 
-fn title(value: u128) -> TitleId {
-    TitleId::new(NonZeroU128::new(value).unwrap())
+/// The input hosting a title.
+fn title(value: u128) -> InputId {
+    InputId::new(NonZeroU128::new(value).unwrap())
 }
 
-fn field(value: u128) -> FieldId {
-    FieldId::new(NonZeroU128::new(value).unwrap())
+fn field(value: u128) -> WireTitleFieldId {
+    WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
 }
 
-fn text(value: &str) -> FieldValue {
-    FieldValue::Text(value.to_owned())
+fn text(value: &str) -> TitleFieldValue {
+    TitleFieldValue::Text(value.to_owned())
+}
+
+fn color(red: u8, green: u8, blue: u8, alpha: u8) -> TitleFieldValue {
+    TitleFieldValue::Color {
+        red,
+        green,
+        blue,
+        alpha,
+    }
+}
+
+fn image(asset: &str) -> TitleFieldValue {
+    TitleFieldValue::Image {
+        asset_uri: asset.to_owned(),
+    }
 }
 
 fn session(permissions: &[&str]) -> Session {
@@ -58,7 +81,7 @@ fn session(permissions: &[&str]) -> Session {
 }
 
 fn access(permissions: &[&str]) -> TitleAccess {
-    TitleAccess::from_session(&ConnectionState::Ready, Some(&session(permissions)))
+    title_access(&ConnectionState::Ready, Some(&session(permissions)))
 }
 
 /// Admin-like access: may edit and take.
@@ -80,7 +103,7 @@ fn template(id: u128, fields: Vec<FieldDefinition>) -> TitleTemplate {
 
 fn definition(id: u128, name: &str, default: FieldValue) -> FieldDefinition {
     FieldDefinition {
-        id: field(id),
+        id: FieldId::new(NonZeroU128::new(id).unwrap()),
         name: name.to_owned(),
         default,
     }
@@ -96,7 +119,7 @@ struct Hosted {
 /// A deterministic in-process title authority implementing the port
 /// contract with the real `fm_titles` optimistic field update.
 struct FakeTitleServer {
-    titles: BTreeMap<TitleId, Hosted>,
+    titles: BTreeMap<InputId, Hosted>,
     commands: Vec<TitleCommand>,
 }
 
@@ -112,8 +135,8 @@ impl FakeTitleServer {
             template(
                 1,
                 vec![
-                    definition(NAME, "Name", text("Ada Lovelace")),
-                    definition(ROLE, "Role", text("Analyst")),
+                    definition(NAME, "Name", FieldValue::Text("Ada Lovelace".into())),
+                    definition(ROLE, "Role", FieldValue::Text("Analyst".into())),
                     definition(
                         ACCENT,
                         "Accent",
@@ -139,7 +162,9 @@ impl FakeTitleServer {
     }
 
     fn host(&mut self, id: u128, name: &str, template: TitleTemplate) {
-        let scene = template.instantiate(title(id)).unwrap();
+        let scene = template
+            .instantiate(TitleId::new(NonZeroU128::new(id).unwrap()))
+            .unwrap();
         self.titles.insert(
             title(id),
             Hosted {
@@ -153,15 +178,22 @@ impl FakeTitleServer {
 
     fn snapshot(&self, id: u128) -> TitleSnapshot {
         let hosted = &self.titles[&title(id)];
-        TitleSnapshot::from_scene(&hosted.name, &hosted.template, &hosted.scene, hosted.on_air)
+        scene_snapshot(
+            title(id),
+            &hosted.name,
+            &hosted.template,
+            &hosted.scene,
+            hosted.on_air,
+        )
     }
 
-    fn value(&self, id: u128, field_id: u128) -> FieldValue {
-        self.titles[&title(id)]
-            .scene
-            .field_value(field(field_id))
-            .unwrap()
-            .clone()
+    fn value(&self, id: u128, field_id: u128) -> TitleFieldValue {
+        wire_field_value(
+            self.titles[&title(id)]
+                .scene
+                .field_value(domain_field_id(field(field_id)))
+                .unwrap(),
+        )
     }
 
     fn on_air(&self, id: u128) -> bool {
@@ -194,7 +226,13 @@ impl TitleControlPort for FakeTitleServer {
             };
         };
         let snapshot = |hosted: &Hosted| {
-            TitleSnapshot::from_scene(&hosted.name, &hosted.template, &hosted.scene, hosted.on_air)
+            scene_snapshot(
+                command.title,
+                &hosted.name,
+                &hosted.template,
+                &hosted.scene,
+                hosted.on_air,
+            )
         };
         let reject = |hosted: &Hosted, reason| TitleReply::Rejected {
             request,
@@ -224,6 +262,7 @@ impl TitleControlPort for FakeTitleServer {
             TitleCommandBody::Take {
                 base_revision,
                 fields,
+                ..
             } => {
                 if hosted.on_air {
                     return reject(hosted, TitleRejection::AlreadyOnAir);
@@ -240,7 +279,11 @@ impl TitleControlPort for FakeTitleServer {
                 (base_revision, fields, false)
             }
         };
-        match hosted.scene.update_fields(base_revision, &fields) {
+        let domain: Vec<(FieldId, FieldValue)> = fields
+            .iter()
+            .map(|(field, value)| (domain_field_id(*field), domain_field_value(value)))
+            .collect();
+        match hosted.scene.update_fields(base_revision, &domain) {
             Ok(_) => {
                 if goes_on_air {
                     hosted.on_air = true;
@@ -254,30 +297,34 @@ impl TitleControlPort for FakeTitleServer {
                 request,
                 current: snapshot(hosted),
             },
-            Err(error) => reject(
-                hosted,
-                match error {
-                    UpdateError::UnknownField(field) => TitleRejection::UnknownField(field),
-                    UpdateError::DuplicateField(field) => TitleRejection::DuplicateField(field),
-                    UpdateError::TypeMismatch {
-                        field,
-                        expected,
-                        actual,
-                    } => TitleRejection::TypeMismatch {
-                        field,
-                        expected,
-                        actual,
-                    },
-                    UpdateError::EmptyImageAsset(field)
-                    | UpdateError::TextTooLong { field, .. } => TitleRejection::InvalidValue(field),
-                    UpdateError::ContentTooLarge { .. } => {
-                        TitleRejection::InvalidValue(fields[0].0)
-                    }
-                    UpdateError::RevisionExhausted | UpdateError::RevisionConflict { .. } => {
-                        TitleRejection::RevisionExhausted
-                    }
-                },
-            ),
+            Err(error) => reject(hosted, rejection(&error, &fields)),
+        }
+    }
+}
+
+/// The port rejection for a refused `fm_titles` field update.
+fn rejection(
+    error: &UpdateError,
+    fields: &[(WireTitleFieldId, TitleFieldValue)],
+) -> TitleRejection {
+    match *error {
+        UpdateError::UnknownField(field) => TitleRejection::UnknownField(wire_field_id(field)),
+        UpdateError::DuplicateField(field) => TitleRejection::DuplicateField(wire_field_id(field)),
+        UpdateError::TypeMismatch {
+            field,
+            expected,
+            actual,
+        } => TitleRejection::TypeMismatch {
+            field: wire_field_id(field),
+            expected: wire_field_type(expected),
+            actual: wire_field_type(actual),
+        },
+        UpdateError::EmptyImageAsset(field) | UpdateError::TextTooLong { field, .. } => {
+            TitleRejection::InvalidValue(wire_field_id(field))
+        }
+        UpdateError::ContentTooLarge { .. } => TitleRejection::InvalidValue(fields[0].0),
+        UpdateError::RevisionExhausted | UpdateError::RevisionConflict { .. } => {
+            TitleRejection::RevisionExhausted
         }
     }
 }
@@ -407,15 +454,9 @@ fn drafts_validate_per_field_and_track_dirty_state() {
     );
 
     let preview = editor.preview(lt).unwrap();
-    assert_eq!(
-        preview.fields[2].value,
-        FieldValue::Color(Color::new(255, 0, 0, 128))
-    );
+    assert_eq!(preview.fields[2].value, color(255, 0, 0, 128));
     assert_eq!(preview.fields[2].source, PreviewSource::Draft);
-    assert_eq!(
-        preview.fields[3].value,
-        FieldValue::Image(ImageSource::new("sponsor.png"))
-    );
+    assert_eq!(preview.fields[3].value, image("sponsor.png"));
     assert_eq!(preview.fields[0].source, PreviewSource::Live);
 
     editor.discard_all(lt).unwrap();
@@ -480,7 +521,7 @@ fn role_permissions_and_connection_gate_editing_and_air_control() {
     );
 
     // Disconnected: drafting is kept locally, nothing can be sent.
-    let mut offline = server.editor(TitleAccess::from_session(
+    let mut offline = server.editor(title_access(
         &ConnectionState::Disconnected,
         Some(&session(&["edit_project", "transition"])),
     ));
@@ -525,6 +566,7 @@ fn take_airs_exactly_what_was_previewed() {
     assert_eq!(
         command.body,
         TitleCommandBody::Take {
+            channel: 1,
             base_revision: 0,
             fields: vec![
                 (field(NAME), text("Grace Hopper")),
@@ -769,7 +811,7 @@ fn field_type_mismatches_are_caught_locally_and_by_the_authority() {
     let lt = title(LOWER_THIRD);
 
     editor
-        .set_value(lt, field(NAME), &FieldValue::Number(42))
+        .set_value(lt, field(NAME), &TitleFieldValue::Number(42))
         .unwrap();
     let view = editor.presentation(lt).unwrap();
     assert_eq!(
@@ -882,12 +924,12 @@ fn rebase_revalidates_drafts_against_changed_field_types() {
         ExposedField {
             id: field(NAME),
             name: "Name".into(),
-            value: FieldValue::Number(1),
+            value: TitleFieldValue::Number(1),
         },
         ExposedField {
             id: field(SCORE),
             name: "Score".into(),
-            value: FieldValue::Number(0),
+            value: TitleFieldValue::Number(0),
         },
     ];
     editor.observe(swapped).unwrap();
@@ -916,7 +958,7 @@ fn rebase_revalidates_drafts_against_changed_field_types() {
         command.body,
         TitleCommandBody::Save {
             base_revision: 5,
-            fields: vec![(field(SCORE), FieldValue::Number(7))],
+            fields: vec![(field(SCORE), TitleFieldValue::Number(7))],
         }
     );
 }
@@ -1039,7 +1081,7 @@ fn malformed_snapshots_are_refused() {
         .map(|id| ExposedField {
             id: field(id),
             name: format!("f{id}"),
-            value: FieldValue::Number(0),
+            value: TitleFieldValue::Number(0),
         })
         .collect();
     assert_eq!(editor.observe(oversized), Err(SnapshotError::TooManyFields));
@@ -1054,12 +1096,12 @@ fn malformed_snapshots_are_refused() {
 fn field_text_round_trips_through_parse_and_format() {
     for value in [
         text("Line one\nLine two"),
-        FieldValue::Number(-12),
-        FieldValue::Color(Color::new(1, 2, 254, 128)),
-        FieldValue::Image(ImageSource::new("assets/logo.png")),
+        TitleFieldValue::Number(-12),
+        color(1, 2, 254, 128),
+        image("assets/logo.png"),
     ] {
         let input = format_field_value(&value);
-        assert_eq!(parse_field_input(value.field_type(), &input), Ok(value));
+        assert_eq!(parse_field_input(FieldType::of(&value), &input), Ok(value));
     }
     assert_eq!(
         parse_field_input(FieldType::Color, "#abc"),
@@ -1067,7 +1109,7 @@ fn field_text_round_trips_through_parse_and_format() {
     );
     assert_eq!(
         parse_field_input(FieldType::Color, "#00ff00"),
-        Ok(FieldValue::Color(Color::new(0, 255, 0, 255)))
+        Ok(color(0, 255, 0, 255))
     );
     assert_eq!(
         parse_field_input(FieldType::Number, "99999999999999999999"),

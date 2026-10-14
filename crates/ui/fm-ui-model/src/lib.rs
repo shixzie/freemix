@@ -22,6 +22,7 @@ use fm_protocol::{
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
 pub mod i18n;
+pub mod title_editor;
 
 /// Maximum number of replicated stream statuses accepted in one snapshot.
 pub const MAX_STREAM_STATUSES: usize = 64;
