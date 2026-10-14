@@ -13,6 +13,7 @@ mod manual_transition;
 mod overlay;
 mod stinger;
 mod tally;
+mod title_editor;
 mod transition;
 
 pub use audio_strip::AudioStripControls;
@@ -30,6 +31,15 @@ pub use tally::{
     TALLY_INITIAL_BACKOFF_MS, TALLY_MAX_BACKOFF_MS, TALLY_SYNC_TIMEOUT_MS, TallyAction, TallyBoard,
     TallyConnection, TallyEntry, TallyIndicator, TallyLight, TallyLink, TallyPresentation,
     TallyScreen, TallyShortcut, TallyStop,
+};
+pub use title_editor::{
+    ExposedField, FieldConflict, FieldError, FieldPresentation, MAX_EDITOR_TITLES,
+    MAX_EXPOSED_FIELDS, MAX_IMAGE_ASSET_CHARS, MAX_TITLE_NAME_CHARS, MAX_TITLE_TEXT_CHARS,
+    OperationPresentation, PreviewField, PreviewSource, ReplyOutcome, SnapshotError,
+    TITLE_AIR_PERMISSION, TITLE_EDIT_PERMISSION, TitleAccess, TitleBlocked, TitleCommand,
+    TitleCommandBody, TitleControlPort, TitleEditor, TitleEditorError, TitleEditorPresentation,
+    TitleListEntry, TitleNotice, TitleOperation, TitlePreview, TitleRejection, TitleReply,
+    TitleSnapshot, UnexpectedReply, format_field_value, parse_field_input,
 };
 pub use transition::{TransitionControl, TransitionControlState, TransitionControls};
 

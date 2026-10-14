@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 fm-client = { path = "../../crates/services/fm-client" }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
+fm-titles = { path = "../../crates/features/fm-titles" }
 fm-types = { path = "../../crates/foundation/fm-types" }
 fm-ui-model = { path = "../../crates/ui/fm-ui-model" }
 
