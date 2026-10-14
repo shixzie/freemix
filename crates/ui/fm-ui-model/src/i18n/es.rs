@@ -1846,6 +1846,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::PlaylistDurationHint,
         t("HH:MM:SS:FF, MM:SS o segundos"),
     ),
+    (
+        Msg::PlaylistDurationHover,
+        t("HH:MM:SS:FF, MM:SS o segundos. Intro añade el elemento o actualiza el seleccionado"),
+    ),
     (Msg::PlaylistFramesLabel, t("Fotogramas")),
     (Msg::PlaylistAdd, t("Añadir")),
     (

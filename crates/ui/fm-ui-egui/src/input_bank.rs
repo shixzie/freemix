@@ -236,14 +236,14 @@ impl StudioShell {
                     || l.text(Msg::SourcesUnknown).to_owned(),
                     |count| l.format(Msg::SourcesCount, &[("count", Arg::from(count))]),
                 ))
-                .size(10.5)
+                .size(crate::theme::legible(10.5))
                 .color(text_dim_color()),
             );
             // The gesture hint is dropped first when the header is narrow.
             if ui.available_width() > 250.0 {
                 ui.label(
                     RichText::new(l.text(Msg::BankGestureHint))
-                        .size(10.0)
+                        .size(crate::theme::legible(10.0))
                         .color(muted_color()),
                 );
             }
@@ -464,13 +464,13 @@ impl StudioShell {
                         cut_enabled,
                         egui::Button::new(
                             RichText::new(l.text(Msg::CutKey))
-                                .size(11.0)
+                                .size(crate::theme::legible(11.0))
                                 .strong()
                                 .color(text_color()),
                         )
                         // Neutral: red in the bank means "this input is on
                         // Program", never "this key cuts".
-                        .stroke(Stroke::new(1.0, border_strong_color()))
+                        .stroke(Stroke::new(crate::theme::line_width(), border_strong_color()))
                         .min_size(Vec2::new(56.0, 20.0)),
                     )
                     .hint(l.text(Msg::TileCutHover), cut_reason);
@@ -527,9 +527,19 @@ impl StudioShell {
             let mut button = egui::Button::new(label);
             let mark = l.tr(shortcut);
             if let Some(color) = mark_color(shortcut) {
-                button = button.shortcut_text(RichText::new(mark).size(10.0).strong().color(color));
+                button = button.shortcut_text(
+                    RichText::new(mark)
+                        .size(crate::theme::legible(10.0))
+                        .strong()
+                        .color(color),
+                );
             } else if shortcut == LOCKED_MARK {
-                button = button.shortcut_text(RichText::new(mark).size(10.0).strong().color(AMBER));
+                button = button.shortcut_text(
+                    RichText::new(mark)
+                        .size(crate::theme::legible(10.0))
+                        .strong()
+                        .color(AMBER),
+                );
             } else if !shortcut.is_empty() {
                 button = button.shortcut_text(RichText::new(mark).color(muted_color()));
             }
@@ -645,8 +655,12 @@ impl StudioShell {
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 for note in notes {
                     ui.add(
-                        egui::Label::new(RichText::new(note).size(10.5).color(muted_color()))
-                            .wrap(),
+                        egui::Label::new(
+                            RichText::new(note)
+                                .size(crate::theme::legible(10.5))
+                                .color(muted_color()),
+                        )
+                        .wrap(),
                     );
                 }
             });
@@ -734,7 +748,7 @@ fn draw_tile_menu_header(ui: &mut Ui, index: usize, name: &str, tally: crate::Ta
         ui.painter().rect_stroke(
             key,
             CornerRadius::same(3),
-            Stroke::new(1.0, border_strong_color()),
+            Stroke::new(crate::theme::line_width(), border_strong_color()),
             StrokeKind::Inside,
         );
         ui.painter().text(
@@ -809,7 +823,7 @@ impl StudioShell {
                     ui.add(
                         egui::Label::new(
                             RichText::new(l.format(Msg::AddingName, &[("name", Arg::Str(name))]))
-                                .size(10.0)
+                                .size(crate::theme::legible(10.0))
                                 .strong()
                                 .color(AMBER),
                         )
@@ -823,7 +837,7 @@ impl StudioShell {
                             l.integer(count as u64),
                             l.integer(MAX_LIVE_INPUTS as u64)
                         ))
-                        .size(10.0)
+                        .size(crate::theme::legible(10.0))
                         .color(muted_color()),
                     )
                     .on_hover_text(l.text(Msg::InputCountHover));
@@ -845,7 +859,13 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
     painter.rect_filled(
         rect,
         radius,
-        if lit {
+        if crate::theme::high_contrast() {
+            if lit {
+                crate::theme::widget_hover_color()
+            } else {
+                crate::theme::graphite_color()
+            }
+        } else if lit {
             Color32::from_rgb(14, 18, 24)
         } else {
             Color32::from_rgb(9, 10, 12)
@@ -870,7 +890,7 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
     painter.extend(egui::Shape::dashed_line(
         &corners,
         Stroke::new(
-            1.0,
+            crate::theme::line_width(),
             if lit {
                 accent_color()
             } else {
@@ -894,8 +914,8 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
         pos2(thumb.center().x, thumb.max.y - 10.0),
         Align2::CENTER_CENTER,
         l.text(Msg::AddTileKinds),
-        FontId::new(9.0, FontFamily::Proportional),
-        muted_color().gamma_multiply(if enabled { 0.9 } else { 0.6 }),
+        FontId::new(crate::theme::legible(9.0), FontFamily::Proportional),
+        crate::theme::faded(muted_color(), if enabled { 0.9 } else { 0.6 }),
     );
     painter.rect_filled(
         name_bar.shrink(1.0),
@@ -905,7 +925,7 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
             sw: 4,
             se: 4,
         },
-        raised_color().gamma_multiply(0.7),
+        crate::theme::faded(raised_color(), 0.7),
     );
     let lock_room = if locked {
         let badge = Rect::from_center_size(
@@ -939,7 +959,7 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
         painter.rect_stroke(
             rect.expand(2.0),
             CornerRadius::same(6),
-            Stroke::new(2.0, accent_color()),
+            Stroke::new(crate::theme::focus_ring_width(), accent_color()),
             StrokeKind::Outside,
         );
     }
@@ -1041,7 +1061,11 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         rect,
         radius,
         if hovered && enabled {
-            Color32::from_rgb(14, 16, 19)
+            if crate::theme::high_contrast() {
+                crate::theme::widget_hover_color()
+            } else {
+                Color32::from_rgb(14, 16, 19)
+            }
         } else {
             MONITOR_BLACK
         },
@@ -1078,8 +1102,12 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
                 (thumb.height() * 0.42).clamp(22.0, 48.0),
                 FontFamily::Proportional,
             ),
+            // High contrast draws the ordinal in the palette's muted text
+            // (or the full tally hue) instead of a near-black grey.
             if has_tally {
-                border.gamma_multiply(0.35)
+                crate::theme::faded(border, 0.35)
+            } else if crate::theme::high_contrast() {
+                muted_color()
             } else {
                 Color32::from_rgb(40, 44, 50)
             },
@@ -1088,8 +1116,8 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             pos2(thumb.center().x, thumb.max.y - 10.0),
             Align2::CENTER_CENTER,
             l10n::locale(ui.ctx()).text(Msg::NoThumbnail),
-            FontId::new(9.0, FontFamily::Proportional),
-            muted_color().gamma_multiply(0.7),
+            FontId::new(crate::theme::legible(9.0), FontFamily::Proportional),
+            crate::theme::faded(muted_color(), 0.7),
         );
     }
     if has_tally {
@@ -1112,7 +1140,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         painter.rect_stroke(
             key,
             CornerRadius::same(3),
-            Stroke::new(1.0, border_strong_color()),
+            Stroke::new(crate::theme::line_width(), border_strong_color()),
             StrokeKind::Inside,
         );
         painter.text(
@@ -1205,7 +1233,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         painter.rect_stroke(
             rect.expand(2.0),
             CornerRadius::same(6),
-            Stroke::new(2.0, accent_color()),
+            Stroke::new(crate::theme::focus_ring_width(), accent_color()),
             StrokeKind::Outside,
         );
     }

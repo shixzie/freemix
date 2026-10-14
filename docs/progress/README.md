@@ -270,7 +270,7 @@ the counts and lock chips.
 | `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with amber `NOT LIVE` chips and amber-outlined `STOP` keys, and the Output menu with `NOT LIVE` beside both Stop items and `RECORDING` beside Stop recorder 2. |
 | `studio-console-stingers.png` | 1920x1080, Stingers tab after choosing Playback Clip in the Configure media picker and clicking `ASSIGN` for S1: the S1 card lit green `READY` with its media name, the Configure card's green `READY` chip, enabled `CLEAR`, and the replicated cut point (15 fr), preload, audio, and fallback. |
 | `studio-console-titles.png` | 1920x1080 `--role admin`, Titles tab (Protocol 2.24) listing Lower Third (taken to O1, red `ON AIR` badge, its bar composited into the simulated Program frame) and Score Bug (`OFF AIR`); the Lower Third editor with text, colour (swatch + `#RRGGBBAA`), and number fields, the edited Role and Bar colour fields marked `EDITED` with per-field `Discard` keys and an accent marker, the `PREVIEWED` frame showing the draft values to air, the `CHANNEL` picker, `UPDATE LIVE` and `OFF AIR` keys, and the disabled `TAKE` tooltip `Unavailable: the title is on air`. |
-| `studio-console-playlist.png` | 1920x1080 `--role admin`, Playlist tab (Protocol 2.26) after Studio restarted against a playlist already running in the simulated daemon (the late-join `playlist_state`): the `PLAYING` chip, the red `REMAINING` countdown in timecode with `of 00:00:45:00`, `ON AIR · Guest Remote` and the green `Next: Main Scene` line, loop `ALL`, the `START`/`STOP`/`PAUSE`/`PREVIOUS`/`NEXT` keys (Start disabled while running), five entries with transition and monospace duration, entry 04 lit red `ON AIR` with its row countdown, entry 05 lit green `NEXT`, the disabled entry 03 marked `SKIPPED`, and the New entry form disabled with "Unavailable: the playlist is running; stop it to change the list". |
+| `studio-console-playlist.png` | 1920x1080 `--role admin`, Playlist tab (Protocol 2.26) with the looping playlist running in the simulated daemon: the `PLAYING` chip, the red `REMAINING` countdown `-00:00:41:08` with `of 00:00:45:00`, `ON AIR · Guest Remote` and the green `Next: Main Scene` line, loop `ALL`, the `START`/`STOP`/`PAUSE`/`PREVIOUS`/`NEXT` keys (Start disabled while running), five entries with transition and monospace duration, entry 04 lit red `ON AIR` with the same `-00:00:41:08` countdown as the card (countdowns carry a leading minus everywhere; durations never do), entry 05 lit green `NEXT`, the disabled entry 03 marked `SKIPPED`, and the New entry form disabled with "Unavailable: the playlist is running; stop it to change the list". |
 | `studio-console-top.png` | The default 1600x940 window, idle: the top-bar padlock (`UNLOCKED`) with disabled Undo/Redo keys (the operator session lacks `edit_project`), both recorder rows `STOPPED` with neutral `START` keys, overlays collapsed to one row per channel. |
 | `studio-console-stopped.png` | The compact 1280x800 layout: the side panel narrows to 320 px so the monitors keep their width; the input bank header keeps `7 SOURCES` and drops the gesture hint; the mixer scrolls inside its card and the Master strip stays pinned, its short scale dropping the crowded `-48` label. |
 | `studio-console-compact-720.png` | 1280x720: the same compact layout at the smallest supported height; the console scrolls to reach the lower row. |
@@ -307,7 +307,31 @@ the counts and lock chips.
 | `studio-console-spanish-remove-input.png` | The Quitar entrada confirmation for "Color sólido 1" (entrada 8, posición 8) with the Spanish warning and the red `QUITAR` key. |
 | `studio-console-spanish-reconnecting.png` | 1600x940 `--lang es --connect` with no daemon: the Spanish Reconectando card (attempt, retry delay, last error, disabled-controls footer). |
 | `studio-console-preferences.png` | 1920x1080, File › Preferences… (or Ctrl+,) after choosing the 12-hour clock (the top-bar clock reads `10:20:35 PM`) and pressing Tab eight times: Language (each language named in itself), Clock, Display with the UI scale keys (`90%` to `150%`, `100%` selected) and the keyboard focus ring on `125%`, the High-contrast theme checkbox, the note that the choices live in `studio.conf` and that `--lang`/`--clock` win for their session, and the enabled `Reset to defaults` and `Done` keys. |
-| `studio-console-high-contrast.png` | 1920x1080 with `ui.high_contrast = on` in `studio.conf` (REC 2 recording, O1 on air): black and near-black surfaces, white and light-grey text, and light borders around every card and key, while the tally and status hues (red Program, `RECORDING`, `ON AIR`, green Preview, amber `NOT LIVE`) are unchanged. |
+| `studio-console-high-contrast.png` | 1920x1080 with `ui.high_contrast = on` in `studio.conf` (REC 2 recording, O1 on air): pure black panels, cards, keys, and fields told apart by 2 px light-grey outlines, near-white text and muted text, captions, field labels, chips, and tab labels 1.5 pt larger, tile ordinals and `no thumbnail` in the palette's muted text instead of near-black grey, while the tally and status hues (red Program, `RECORDING`, `ON AIR`, green Preview, amber `NOT LIVE`) are unchanged. |
+| `studio-console-spanish-high-contrast.png` | The same high-contrast session with `--lang es`: the longer Spanish keys (`FUNDIDO`, `CORTINA`, `DETENER`, `RETIRAR`) fit their outlined keys at the larger label size. |
+
+UI round 10 made the high-contrast theme a distinct accessibility mode. It
+now draws every surface pure black and separates panels, cards, keys, and
+fields with 2 px light-grey outlines (`#c8c8c8`, `#f5f5f5` when
+emphasized); text is white, secondary text `#f2f2f2`, and muted text
+`#d6d6d6`; the focus ring is 3 px in a brighter accent; and small text
+(captions, field labels, section labels, chips, badges, anything under
+12 pt) grows by 1.5 pt. Dim marks that were hard-coded or faded (tile
+ordinals, `no thumbnail`, the add tile's hint, monitor footnotes) follow
+the palette instead. The side panel tabs take an exact quarter of the row
+each, so four tabs never overflow a 320 px panel at 1280x720 in either
+language. The palette test now also checks that the high-contrast surfaces
+are black, outlines reach at least 3:1 on every surface (10:1 on black),
+and muted text at least 4.5:1 on every surface. The Playlist tab shows
+every countdown with a leading minus, as playout clocks do, so the status
+card's `REMAINING` clock and the on-air row read the same
+`-HH:MM:SS:FF`; durations are unsigned. Selecting a playlist row moves the
+keyboard focus to the entry form's input picker, Enter in the duration
+field adds the entry (or updates the selected one), and selecting a title
+row focuses its first field when the session may edit. This round
+regenerated `-high-contrast` and `-playlist` and added
+`-spanish-high-contrast`; `-spanish-playlist` is from round 9 and still
+shows its paused `RESTANTE` clock unsigned.
 
 UI round 9 added a Preferences window and a high-contrast theme, and
 audited keyboard access. File › Preferences… (Ctrl+, or Cmd+, anywhere a
@@ -507,10 +531,11 @@ freemix-cli remote-playlist 127.0.0.1:7000 set all \
 freemix-cli remote-playlist 127.0.0.1:7000 start
 ```
 
-and click the `PLAYLIST` tab (x 1865, y 326 at 1920x1080). For both
-captures Studio was restarted on the same project while the playlist ran, so
-the tab shows the `playlist_state` that follows the snapshot; the Spanish
-capture first runs `remote-playlist 127.0.0.1:7000 pause` and adds `--lang
+and click the `PLAYLIST` tab (x 1865, y 380 at 1920x1080 with the demo's
+stream targets). The round 10 English capture was taken about 50 seconds
+after `start` without a restart. The Spanish capture was taken after Studio
+was restarted on the same project while the playlist ran, so the tab shows
+the `playlist_state` that follows the snapshot; it first runs `remote-playlist 127.0.0.1:7000 pause` and adds `--lang
 es`. The simulated daemon executes Pause at its frame cursor, which lags wall
 time between playlist boundaries, so a paused entry can show less elapsed
 time than actually played.
@@ -554,7 +579,8 @@ and hovers `ACTUALIZAR EN VIVO` in the first. The Preferences capture presses
 Ctrl+, (after `xdotool windowfocus`), clicks `12-hour (AM/PM)`, and presses
 Tab eight times; the high-contrast capture writes `ui.high_contrast = on` to
 the scratch `FREEMIX_STUDIO_PREFS` file before launching Studio, then starts
-REC 2 and takes O1. Typing into Studio's fields with `xdotool type` also needs
+REC 2 and takes O1; `-spanish-high-contrast.png` repeats it with `--lang es`
+(clicking `TOMAR`). Typing into Studio's fields with `xdotool type` also needs
 `xdotool windowfocus` first.
 
 Software Vulkan is slow; allow roughly ten seconds after the window maps

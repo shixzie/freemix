@@ -12,6 +12,48 @@ use crate::{StudioConnectionStatus, TallyState};
 
 /// Width of the keyboard focus ring, in points.
 pub(crate) const FOCUS_RING_WIDTH: f32 = 2.0;
+/// Width of the keyboard focus ring in the high-contrast theme.
+pub(crate) const HIGH_CONTRAST_FOCUS_RING_WIDTH: f32 = 3.0;
+
+/// Width of the keyboard focus ring in the theme in effect.
+pub(crate) fn focus_ring_width() -> f32 {
+    if high_contrast() {
+        HIGH_CONTRAST_FOCUS_RING_WIDTH
+    } else {
+        FOCUS_RING_WIDTH
+    }
+}
+
+/// Width of panel, card, key, and field outlines in the theme in effect:
+/// one pixel normally, two in high contrast so every boundary is visible.
+pub(crate) fn line_width() -> f32 {
+    if high_contrast() { 2.0 } else { 1.0 }
+}
+
+/// Points added to small text (under 12 pt) in the high-contrast theme.
+pub(crate) const HIGH_CONTRAST_TEXT_BOOST: f32 = 1.5;
+
+/// The size to draw small text of nominal `size` at: captions, field
+/// labels, chips, and badges grow by [`HIGH_CONTRAST_TEXT_BOOST`] in high
+/// contrast; body text and larger sizes are unchanged.
+pub(crate) fn legible(size: f32) -> f32 {
+    if high_contrast() && size < 12.0 {
+        size + HIGH_CONTRAST_TEXT_BOOST
+    } else {
+        size
+    }
+}
+
+/// `color` faded by `factor` for secondary marks in the standard theme. In
+/// high contrast palette colours are never faded, so dim legends (tile
+/// ordinals, `no thumbnail`, hints) keep the palette's contrast.
+pub(crate) fn faded(color: Color32, factor: f32) -> Color32 {
+    if high_contrast() {
+        color
+    } else {
+        color.gamma_multiply(factor)
+    }
+}
 
 /// Outlines the widget holding keyboard focus with the accent ring, above
 /// whatever the widget painted itself, so focus is visible on every button
@@ -37,7 +79,7 @@ pub(crate) fn paint_focus_ring(context: &egui::Context) {
     painter.rect_stroke(
         rect.expand(1.0),
         CornerRadius::same(RADIUS),
-        Stroke::new(FOCUS_RING_WIDTH, accent_color()),
+        Stroke::new(focus_ring_width(), accent_color()),
         StrokeKind::Outside,
     );
 }
@@ -95,24 +137,28 @@ pub(crate) const STANDARD_PALETTE: Palette = Palette {
     faint_bg: Color32::from_rgb(20, 22, 26),
 };
 
-/// The high-contrast palette: darker surfaces, brighter text, and borders
-/// that outline every control. Every text colour reaches the WCAG AA ratio
-/// (4.5:1) on every surface (unit-tested).
+/// The high-contrast palette, an accessibility mode rather than a tint:
+/// pure black surfaces (panels, cards, keys, and fields are told apart by
+/// their outlines, not by shades of grey), light-grey outlines drawn
+/// [`line_width`] wide, near-white text and muted text, and a bright accent
+/// for selection and the wider focus ring. Every text colour reaches the
+/// WCAG AA ratio (4.5:1) and every outline 3:1 on every surface
+/// (unit-tested).
 pub(crate) const HIGH_CONTRAST_PALETTE: Palette = Palette {
     graphite: Color32::from_rgb(0, 0, 0),
-    raised: Color32::from_rgb(12, 13, 15),
-    panel: Color32::from_rgb(6, 7, 8),
-    widget: Color32::from_rgb(28, 31, 36),
-    widget_hover: Color32::from_rgb(44, 49, 57),
-    widget_active: Color32::from_rgb(58, 65, 76),
-    border: Color32::from_rgb(132, 140, 152),
-    border_strong: Color32::from_rgb(170, 178, 190),
+    raised: Color32::from_rgb(0, 0, 0),
+    panel: Color32::from_rgb(0, 0, 0),
+    widget: Color32::from_rgb(0, 0, 0),
+    widget_hover: Color32::from_rgb(40, 40, 40),
+    widget_active: Color32::from_rgb(64, 64, 64),
+    border: Color32::from_rgb(200, 200, 200),
+    border_strong: Color32::from_rgb(245, 245, 245),
     text: Color32::from_rgb(255, 255, 255),
-    text_dim: Color32::from_rgb(224, 229, 235),
-    muted: Color32::from_rgb(186, 194, 204),
-    accent: Color32::from_rgb(124, 192, 255),
+    text_dim: Color32::from_rgb(242, 242, 242),
+    muted: Color32::from_rgb(214, 214, 214),
+    accent: Color32::from_rgb(96, 208, 255),
     extreme_bg: Color32::from_rgb(0, 0, 0),
-    faint_bg: Color32::from_rgb(16, 18, 21),
+    faint_bg: Color32::from_rgb(16, 16, 16),
 };
 
 thread_local! {
@@ -126,9 +172,14 @@ pub(crate) fn set_high_contrast(high_contrast: bool) {
     HIGH_CONTRAST.with(|cell| cell.set(high_contrast));
 }
 
+/// Whether this thread draws with the high-contrast theme.
+pub(crate) fn high_contrast() -> bool {
+    HIGH_CONTRAST.with(std::cell::Cell::get)
+}
+
 /// The palette in effect.
 pub(crate) fn palette() -> &'static Palette {
-    if HIGH_CONTRAST.with(std::cell::Cell::get) {
+    if high_contrast() {
         &HIGH_CONTRAST_PALETTE
     } else {
         &STANDARD_PALETTE
@@ -223,7 +274,7 @@ fn console_style(style: &mut egui::Style) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = panel_color();
     visuals.window_fill = raised_color();
-    visuals.window_stroke = Stroke::new(1.0, border_strong_color());
+    visuals.window_stroke = Stroke::new(line_width(), border_strong_color());
     visuals.window_corner_radius = CornerRadius::same(6);
     visuals.menu_corner_radius = CornerRadius::same(4);
     visuals.extreme_bg_color = palette().extreme_bg;
@@ -233,15 +284,11 @@ fn console_style(style: &mut egui::Style) {
     visuals.error_fg_color = ERROR;
     visuals.hyperlink_color = accent_color();
     visuals.selection.bg_fill = ACCENT_FILL;
-    visuals.selection.stroke = Stroke::new(1.0, accent_color());
+    visuals.selection.stroke = Stroke::new(line_width(), accent_color());
     visuals.slider_trailing_fill = true;
     visuals.handle_shape = HandleShape::Rect { aspect_ratio: 0.6 };
     // Disabled controls stay legible in high contrast.
-    visuals.disabled_alpha = if *palette() == HIGH_CONTRAST_PALETTE {
-        0.6
-    } else {
-        0.45
-    };
+    visuals.disabled_alpha = if high_contrast() { 0.6 } else { 0.45 };
     visuals.striped = false;
     visuals.indent_has_left_vline = false;
 
@@ -249,34 +296,34 @@ fn console_style(style: &mut egui::Style) {
     let widgets = &mut visuals.widgets;
     widgets.noninteractive.bg_fill = raised_color();
     widgets.noninteractive.weak_bg_fill = raised_color();
-    widgets.noninteractive.bg_stroke = Stroke::new(1.0, border_color());
+    widgets.noninteractive.bg_stroke = Stroke::new(line_width(), border_color());
     widgets.noninteractive.fg_stroke = Stroke::new(1.0, text_dim_color());
     widgets.noninteractive.corner_radius = radius;
 
     widgets.inactive.bg_fill = widget_color();
     widgets.inactive.weak_bg_fill = widget_color();
-    widgets.inactive.bg_stroke = Stroke::new(1.0, border_color());
+    widgets.inactive.bg_stroke = Stroke::new(line_width(), border_color());
     widgets.inactive.fg_stroke = Stroke::new(1.0, text_color());
     widgets.inactive.corner_radius = radius;
     widgets.inactive.expansion = 0.0;
 
     widgets.hovered.bg_fill = widget_hover_color();
     widgets.hovered.weak_bg_fill = widget_hover_color();
-    widgets.hovered.bg_stroke = Stroke::new(1.0, border_strong_color());
+    widgets.hovered.bg_stroke = Stroke::new(line_width(), border_strong_color());
     widgets.hovered.fg_stroke = Stroke::new(1.5, Color32::WHITE);
     widgets.hovered.corner_radius = radius;
     widgets.hovered.expansion = 0.0;
 
     widgets.active.bg_fill = widget_active_color();
     widgets.active.weak_bg_fill = widget_active_color();
-    widgets.active.bg_stroke = Stroke::new(1.0, accent_color());
+    widgets.active.bg_stroke = Stroke::new(line_width(), accent_color());
     widgets.active.fg_stroke = Stroke::new(2.0, Color32::WHITE);
     widgets.active.corner_radius = radius;
     widgets.active.expansion = 0.0;
 
     widgets.open.bg_fill = widget_hover_color();
     widgets.open.weak_bg_fill = widget_hover_color();
-    widgets.open.bg_stroke = Stroke::new(1.0, accent_color());
+    widgets.open.bg_stroke = Stroke::new(line_width(), accent_color());
     widgets.open.fg_stroke = Stroke::new(1.0, text_color());
     widgets.open.corner_radius = radius;
 
@@ -284,12 +331,15 @@ fn console_style(style: &mut egui::Style) {
     style.text_styles = [
         (
             TextStyle::Small,
-            FontId::new(10.0, FontFamily::Proportional),
+            FontId::new(legible(10.0), FontFamily::Proportional),
         ),
         (TextStyle::Body, FontId::new(13.0, FontFamily::Proportional)),
         (
             TextStyle::Button,
-            FontId::new(12.5, FontFamily::Proportional),
+            FontId::new(
+                if high_contrast() { 13.0 } else { 12.5 },
+                FontFamily::Proportional,
+            ),
         ),
         (
             TextStyle::Monospace,
@@ -318,29 +368,32 @@ fn console_style(style: &mut egui::Style) {
 /// Uppercase, letter-spaced section label (the console's "small caps").
 pub(crate) fn section_label(text: &str) -> RichText {
     RichText::new(text.to_uppercase())
-        .size(10.5)
+        .size(legible(10.5))
         .strong()
         .extra_letter_spacing(1.2)
         .color(text_dim_color())
 }
 
-/// Text size of console captions and hint lines under a control.
+/// Nominal text size of console captions and hint lines under a control.
 pub(crate) const CAPTION_SIZE: f32 = 10.5;
-/// Text size of small field labels beside a control (`POS`, `DURATION`).
+/// Nominal text size of small field labels beside a control (`POS`,
+/// `DURATION`).
 pub(crate) const FIELD_LABEL_SIZE: f32 = 10.0;
 
 /// A small dim field label beside a control, letter-spaced like a console
 /// legend.
 pub(crate) fn field_label(text: &str) -> RichText {
     RichText::new(text.to_uppercase())
-        .size(FIELD_LABEL_SIZE)
+        .size(legible(FIELD_LABEL_SIZE))
         .extra_letter_spacing(0.6)
         .color(muted_color())
 }
 
 /// A muted caption line that explains a panel or control.
 pub(crate) fn caption(text: impl Into<String>) -> RichText {
-    RichText::new(text).size(CAPTION_SIZE).color(muted_color())
+    RichText::new(text)
+        .size(legible(CAPTION_SIZE))
+        .color(muted_color())
 }
 
 /// Monospace numeric text for timecode, revisions, and counters.
@@ -352,7 +405,7 @@ pub(crate) fn mono(text: impl Into<String>) -> RichText {
 pub(crate) fn card() -> Frame {
     Frame::new()
         .fill(raised_color())
-        .stroke(Stroke::new(1.0, border_color()))
+        .stroke(Stroke::new(line_width(), border_color()))
         .corner_radius(CornerRadius::same(RADIUS + 2))
         .inner_margin(Margin::same(10))
 }
@@ -367,7 +420,7 @@ pub(crate) fn section_header(ui: &mut Ui, title: &str, trailing: impl FnOnce(&mu
 
 /// A small rounded status pill with colored text on a tinted fill.
 pub(crate) fn pill(ui: &mut Ui, text: &str, color: Color32, filled: bool) -> Response {
-    let font = FontId::new(10.0, FontFamily::Proportional);
+    let font = FontId::new(legible(10.0), FontFamily::Proportional);
     let galley = ui.painter().layout_no_wrap(
         text.to_owned(),
         font,
@@ -441,7 +494,11 @@ pub(crate) fn paint_lamp(painter: &egui::Painter, center: egui::Pos2, radius: f3
         painter.circle_filled(center, radius, color);
     } else {
         painter.circle_filled(center, radius, MONITOR_BLACK);
-        painter.circle_stroke(center, radius, Stroke::new(1.0, border_strong_color()));
+        painter.circle_stroke(
+            center,
+            radius,
+            Stroke::new(line_width().min(1.5), border_strong_color()),
+        );
     }
 }
 
@@ -543,7 +600,10 @@ pub(crate) fn status_chip_painted(
     let galley = elided(
         painter,
         crate::l10n::locale(painter.ctx()).tr(text),
-        FontId::new(9.5, FontFamily::Proportional),
+        FontId::new(
+            legible(9.5).min(rect.height() - 4.0),
+            FontFamily::Proportional,
+        ),
         text_color,
         rect.width() - 8.0,
     );
@@ -580,12 +640,19 @@ pub(crate) fn empty_state(ui: &mut Ui, title: &str, detail: &str) {
     ui.vertical_centered(|ui| {
         ui.label(
             RichText::new(title.to_uppercase())
-                .size(11.0)
+                .size(legible(11.0))
                 .strong()
                 .extra_letter_spacing(1.0)
                 .color(text_dim_color()),
         );
-        ui.add(egui::Label::new(RichText::new(detail).size(10.5).color(muted_color())).wrap());
+        ui.add(
+            egui::Label::new(
+                RichText::new(detail)
+                    .size(legible(10.5))
+                    .color(muted_color()),
+            )
+            .wrap(),
+        );
     });
 }
 
@@ -603,7 +670,7 @@ pub(crate) fn console_button(
             .color(text_color()),
     )
     .fill(fill)
-    .stroke(Stroke::new(1.0, stroke))
+    .stroke(Stroke::new(line_width(), stroke))
     .corner_radius(CornerRadius::same(RADIUS))
     .min_size(size)
 }
@@ -621,7 +688,7 @@ pub(crate) fn close_key(size: f32) -> egui::Button<'static> {
 
 /// Compact toolbar button.
 pub(crate) fn small_button(text: impl Into<String>) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(text.into()).size(11.0)).min_size(Vec2::new(0.0, 20.0))
+    egui::Button::new(RichText::new(text.into()).size(legible(11.0))).min_size(Vec2::new(0.0, 20.0))
 }
 
 pub(crate) fn routing_color(desired: fm_types::InputId, realized: fm_types::InputId) -> Color32 {
@@ -778,6 +845,71 @@ mod tests {
         ] {
             assert!(contrast_ratio(high, surface) > contrast_ratio(normal, standard.raised));
         }
+    }
+
+    #[test]
+    fn high_contrast_is_a_distinct_accessibility_mode() {
+        let palette = &HIGH_CONTRAST_PALETTE;
+        let standard = &STANDARD_PALETTE;
+        // Panels, cards, keys, and fields are pure black; they are told
+        // apart by outlines.
+        for (name, surface) in [
+            ("graphite", palette.graphite),
+            ("raised", palette.raised),
+            ("panel", palette.panel),
+            ("widget", palette.widget),
+            ("extreme_bg", palette.extreme_bg),
+        ] {
+            assert_eq!(surface, Color32::BLACK, "{name}");
+        }
+        // Outlines are light: at least 3:1 against every surface (WCAG
+        // non-text contrast), and far above the standard theme's subtle
+        // borders on pure black.
+        for (line_name, line) in [
+            ("border", palette.border),
+            ("border_strong", palette.border_strong),
+        ] {
+            for (surface_name, surface) in surfaces(palette) {
+                let ratio = contrast_ratio(line, surface);
+                assert!(
+                    ratio >= 3.0,
+                    "{line_name} on {surface_name} is {ratio:.2}:1"
+                );
+            }
+            assert!(contrast_ratio(line, Color32::BLACK) >= 10.0, "{line_name}");
+        }
+        assert!(contrast_ratio(standard.border, standard.raised) < 1.5);
+        // Muted text, the dimmest text colour, still reads at WCAG AA on
+        // every surface, and is near-white rather than grey on black.
+        for (surface_name, surface) in surfaces(palette) {
+            let ratio = contrast_ratio(palette.muted, surface);
+            assert!(ratio >= 4.5, "muted on {surface_name} is {ratio:.2}:1");
+        }
+        assert!(contrast_ratio(palette.muted, Color32::BLACK) >= 12.0);
+        assert!(contrast_ratio(palette.text_dim, Color32::BLACK) >= 17.0);
+
+        // Outlines, focus ring, and small text grow; body text does not.
+        set_high_contrast(false);
+        let (line, ring) = (line_width(), focus_ring_width());
+        let (caption, label, chip) = (
+            legible(CAPTION_SIZE),
+            legible(FIELD_LABEL_SIZE),
+            legible(9.5),
+        );
+        assert_eq!(
+            (caption, label, chip),
+            (CAPTION_SIZE, FIELD_LABEL_SIZE, 9.5)
+        );
+        assert_eq!(faded(palette.muted, 0.5), palette.muted.gamma_multiply(0.5));
+        set_high_contrast(true);
+        assert!(line_width() >= 2.0 && line_width() > line);
+        assert!(focus_ring_width() > ring);
+        assert!(legible(CAPTION_SIZE) >= caption + 1.0);
+        assert!(legible(FIELD_LABEL_SIZE) >= label + 1.0);
+        assert!(legible(9.5) >= chip + 1.0);
+        assert!((legible(13.0) - 13.0).abs() < f32::EPSILON);
+        assert_eq!(faded(palette.muted, 0.5), palette.muted);
+        set_high_contrast(false);
     }
 
     #[test]

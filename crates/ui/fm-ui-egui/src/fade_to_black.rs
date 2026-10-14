@@ -106,7 +106,7 @@ pub(super) fn draw_fade_to_black(
                 enabled,
                 Button::new(RichText::new(label).strong().size(13.0).color(text_color()))
                     .fill(fill)
-                    .stroke(Stroke::new(1.0, stroke))
+                    .stroke(Stroke::new(crate::theme::line_width(), stroke))
                     .min_size(Vec2::new(100.0, 40.0)),
             )
             .hint(&hover, reason)
@@ -144,7 +144,7 @@ pub(super) fn draw_fade_to_black(
         ui.add(
             egui::Label::new(
                 RichText::new(&phase.text)
-                    .size(10.5)
+                    .size(crate::theme::legible(10.5))
                     .strong()
                     .extra_letter_spacing(0.6)
                     .color(color),

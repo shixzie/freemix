@@ -46,7 +46,7 @@ fn key_width(ui: &Ui, l: Locale) -> f32 {
             ui.painter()
                 .layout_no_wrap(
                     l.text(word).to_owned(),
-                    FontId::new(11.0, FontFamily::Proportional),
+                    FontId::new(crate::theme::legible(11.0), FontFamily::Proportional),
                     text_color(),
                 )
                 .size()
@@ -254,7 +254,7 @@ fn draw_row(
             rect,
             CornerRadius::same(4),
             Stroke::new(
-                1.0,
+                crate::theme::line_width(),
                 if row.tone == Tone::OnAir {
                     PROGRAM.gamma_multiply(0.55)
                 } else {
@@ -317,11 +317,16 @@ fn draw_row(
     ui.place(key_rect, |ui: &mut Ui| {
         ui.add_enabled(
             key.enabled,
-            Button::new(RichText::new(label).size(11.0).strong().color(text_color()))
-                .fill(fill)
-                .stroke(Stroke::new(1.0, stroke))
-                .min_size(key_rect.size())
-                .truncate(),
+            Button::new(
+                RichText::new(label)
+                    .size(crate::theme::legible(11.0))
+                    .strong()
+                    .color(text_color()),
+            )
+            .fill(fill)
+            .stroke(Stroke::new(crate::theme::line_width(), stroke))
+            .min_size(key_rect.size())
+            .truncate(),
         )
     })
     .hint(key.action, key.reason)
@@ -345,7 +350,7 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
                 state.recording_desired.len(),
                 OutputKind::Recorders,
             ))
-            .size(10.0)
+            .size(crate::theme::legible(10.0))
             .color(if recording > 0 {
                 PROGRAM
             } else {
@@ -435,7 +440,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             } else {
                 l.text(Msg::TargetsUnknown).to_owned()
             })
-            .size(10.0)
+            .size(crate::theme::legible(10.0))
             .color(if live > 0 { PROGRAM } else { text_dim_color() }),
         );
     });
@@ -457,7 +462,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
         painter.rect_stroke(
             rect,
             CornerRadius::same(4),
-            Stroke::new(1.0, border_color()),
+            Stroke::new(crate::theme::line_width(), border_color()),
             egui::StrokeKind::Inside,
         );
         painter.text(

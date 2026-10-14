@@ -62,23 +62,28 @@ impl StudioShell {
                 (SideTab::Playlist, Msg::TabPlaylist),
             ];
             let spacing = ui.spacing().item_spacing.x;
+            // Every tab gets an exact quarter of the row, so the row never
+            // overflows a narrow panel; a long label ellipsizes instead.
             #[allow(clippy::cast_precision_loss)] // four tabs
             let tab_width = ((ui.available_width() - spacing * (tabs.len() - 1) as f32)
                 / tabs.len() as f32)
                 .floor()
-                .clamp(72.0, 96.0);
+                .clamp(40.0, 96.0);
+            ui.spacing_mut().button_padding.x = 4.0;
+            let high_contrast = crate::theme::high_contrast();
             for (tab, label) in tabs {
                 let selected = self.side_tab == tab;
                 let text = RichText::new(l.text(label).to_uppercase())
-                    .size(11.0)
+                    .size(if high_contrast { 12.0 } else { 11.0 })
                     .strong()
-                    .extra_letter_spacing(1.0)
+                    .extra_letter_spacing(if high_contrast { 0.3 } else { 1.0 })
                     .color(if selected {
                         text_color()
                     } else {
                         text_dim_color()
                     });
-                let response = ui.add(
+                let response = ui.add_sized(
+                    Vec2::new(tab_width, 26.0),
                     Button::new(text)
                         .fill(if selected {
                             raised_color()
@@ -86,7 +91,7 @@ impl StudioShell {
                             Color32::TRANSPARENT
                         })
                         .stroke(Stroke::new(
-                            1.0,
+                            crate::theme::line_width(),
                             if selected {
                                 border_color()
                             } else {
@@ -369,7 +374,7 @@ fn draw_stingers(
         ui.label(section_label(l.text(Msg::Duration)));
         ui.label(
             mono(frames(l, duration_frames))
-                .size(11.5)
+                .size(crate::theme::legible(11.5))
                 .color(text_color()),
         );
         ui.add(egui::Label::new(caption(l.text(Msg::StingerDurationShared))).truncate());
@@ -409,12 +414,12 @@ fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardC
         };
         painter.rect_filled(rect, CornerRadius::same(4), fill);
         let stroke = if response.has_focus() {
-            Stroke::new(2.0, accent_color())
+            Stroke::new(crate::theme::focus_ring_width(), accent_color())
         } else if card.selected {
             Stroke::new(1.5, accent_color().gamma_multiply(0.8))
         } else if tone == Tone::Idle {
             Stroke::new(
-                1.0,
+                crate::theme::line_width(),
                 if hovered {
                     border_strong_color()
                 } else {
@@ -423,7 +428,7 @@ fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardC
             )
         } else {
             Stroke::new(
-                1.0,
+                crate::theme::line_width(),
                 tone.color()
                     .gamma_multiply(if hovered { 0.9 } else { 0.55 }),
             )

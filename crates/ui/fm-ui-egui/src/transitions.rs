@@ -62,7 +62,7 @@ pub(crate) fn draw_transition_column(
                 } else {
                     l.text(Msg::TBar).to_owned()
                 })
-                .size(10.0)
+                .size(crate::theme::legible(10.0))
                 .strong()
                 .extra_letter_spacing(1.0)
                 .color(if active { AMBER } else { muted_color() }),
@@ -361,7 +361,7 @@ fn draw_manual_status(
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(l.tr(summary.kind.unwrap_or(Msg::NoManualTransition.en())))
-                        .size(10.5)
+                        .size(crate::theme::legible(10.5))
                         .strong()
                         .extra_letter_spacing(0.8)
                         .color(if active { AMBER } else { muted_color() }),
@@ -370,7 +370,7 @@ fn draw_manual_status(
                     if active {
                         ui.label(
                             mono(l.percent(i64::from(summary.percent)))
-                                .size(11.0)
+                                .size(crate::theme::legible(11.0))
                                 .strong()
                                 .color(text_color()),
                         );
@@ -378,7 +378,7 @@ fn draw_manual_status(
                     if !summary.confirmed {
                         ui.label(
                             RichText::new(l.text(Msg::Syncing))
-                                .size(9.5)
+                                .size(crate::theme::legible(9.5))
                                 .strong()
                                 .color(AMBER),
                         );
@@ -401,7 +401,14 @@ fn draw_manual_status(
                 },
                 |(from, to)| (format!("{from}  ▶  {to}"), text_color()),
             );
-            ui.add(egui::Label::new(RichText::new(route).size(11.0).color(color)).truncate());
+            ui.add(
+                egui::Label::new(
+                    // Fixed at 11 pt so the start hint fits the column in
+                    // every theme.
+                    RichText::new(route).size(11.0).color(color),
+                )
+                .truncate(),
+            );
             {
                 let (bar, _) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), 3.0), Sense::hover());
@@ -497,7 +504,7 @@ fn draw_t_bar(
     painter.rect_stroke(
         groove,
         CornerRadius::same(4),
-        Stroke::new(1.0, border_color()),
+        Stroke::new(crate::theme::line_width(), border_color()),
         StrokeKind::Outside,
     );
     if fraction > 0.0 {
@@ -514,12 +521,12 @@ fn draw_t_bar(
         let x = rect.min.x + 2.0;
         painter.line_segment(
             [pos2(x, y), pos2(x + half - 4.0, y)],
-            Stroke::new(1.0, border_strong_color()),
+            Stroke::new(crate::theme::line_width(), border_strong_color()),
         );
         let x = rect.max.x - 2.0;
         painter.line_segment(
             [pos2(x - half + 4.0, y), pos2(x, y)],
-            Stroke::new(1.0, border_strong_color()),
+            Stroke::new(crate::theme::line_width(), border_strong_color()),
         );
     }
     let handle = Rect::from_center_size(pos2(rect.center().x, handle_y), HANDLE);
@@ -534,7 +541,7 @@ fn draw_t_bar(
     painter.rect_stroke(
         handle,
         CornerRadius::same(3),
-        Stroke::new(1.0, stroke),
+        Stroke::new(crate::theme::line_width(), stroke),
         StrokeKind::Inside,
     );
     for offset in [-3.0, 0.0, 3.0] {
@@ -544,7 +551,7 @@ fn draw_t_bar(
                 pos2(handle.max.x - 8.0, handle_y + offset),
             ],
             Stroke::new(
-                1.0,
+                crate::theme::line_width(),
                 if enabled {
                     text_dim_color()
                 } else {
@@ -631,7 +638,7 @@ fn draw_manual_start_buttons(
 fn start_button(label: &str, size: Vec2) -> egui::Button<'static> {
     egui::Button::new(
         RichText::new(label.to_owned())
-            .size(10.0)
+            .size(crate::theme::legible(10.0))
             .color(text_color()),
     )
     .min_size(size)
@@ -696,9 +703,13 @@ fn draw_manual_terminal_buttons(
         let response = ui
             .add_enabled(
                 enabled,
-                egui::Button::new(RichText::new(label).size(10.5).strong())
-                    .min_size(Vec2::new(width, 22.0))
-                    .truncate(),
+                egui::Button::new(
+                    RichText::new(label)
+                        .size(crate::theme::legible(10.5))
+                        .strong(),
+                )
+                .min_size(Vec2::new(width, 22.0))
+                .truncate(),
             )
             .hint(&tooltip, reason);
         if response.clicked() {

@@ -655,7 +655,7 @@ pub(crate) fn draw_monitor(
             pos2(center.x, video.max.y - 16.0),
             l.text(Msg::MonitorRoutingFootnote),
             FontId::new(9.5, FontFamily::Proportional),
-            muted_color().gamma_multiply(0.75),
+            crate::theme::faded(muted_color(), 0.75),
             video.width() - 16.0,
         );
     }
@@ -739,7 +739,7 @@ fn centered_line(
 
 /// Faint title-safe corner marks so the empty well reads as a monitor.
 fn draw_safe_area(painter: &egui::Painter, video: Rect) {
-    let guide = Stroke::new(1.0, border_color());
+    let guide = Stroke::new(crate::theme::line_width(), border_color());
     let safe = video.shrink2(video.size() * 0.1);
     let arm = (safe.width().min(safe.height()) * 0.08).max(8.0);
     for (corner, dx, dy) in [

@@ -151,7 +151,7 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
     painter.rect_stroke(
         rect,
         CornerRadius::same(8),
-        Stroke::new(1.0, border_strong_color()),
+        Stroke::new(crate::theme::line_width(), border_strong_color()),
         StrokeKind::Inside,
     );
     painter.rect_filled(
@@ -214,7 +214,7 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
     }
     painter.line_segment(
         [pos2(rect.min.x + 18.0, y), pos2(rect.max.x - 18.0, y)],
-        Stroke::new(1.0, border_strong_color().gamma_multiply(0.6)),
+        Stroke::new(1.0, crate::theme::faded(border_strong_color(), 0.6)),
     );
     painter.galley(pos2(rect.min.x + 24.0, y + 8.0), footer, muted_color());
 }

@@ -931,7 +931,7 @@ impl StudioShell {
             |ui| {
                 ui.label(
                     RichText::new(l.text(Msg::AddInputIntro))
-                        .size(11.0)
+                        .size(crate::theme::legible(11.0))
                         .color(text_dim_color()),
                 );
                 ui.add_space(8.0);
@@ -972,21 +972,21 @@ impl StudioShell {
                     Some(problem) => {
                         ui.label(
                             RichText::new(capitalized(l.tr(problem)))
-                                .size(10.5)
+                                .size(crate::theme::legible(10.5))
                                 .color(ERROR),
                         );
                     }
                     None if !draft.name_edited => {
                         ui.label(
                             RichText::new(l.text(Msg::NameSuggested))
-                                .size(10.5)
+                                .size(crate::theme::legible(10.5))
                                 .color(muted_color()),
                         );
                     }
                     None => {
                         ui.label(
                             RichText::new(l.text(Msg::NameFree))
-                                .size(10.5)
+                                .size(crate::theme::legible(10.5))
                                 .color(muted_color()),
                         );
                     }
@@ -1008,7 +1008,7 @@ impl StudioShell {
                                     )
                                 },
                             ))
-                            .size(10.5)
+                            .size(crate::theme::legible(10.5))
                             .color(text_dim_color()),
                         );
                     });
@@ -1039,7 +1039,9 @@ impl StudioShell {
                                 )
                                 .on_hover_text(l.text(Msg::ColourPickHover));
                                 ui.label(
-                                    mono(hex_colour(draft.color)).size(11.5).color(text_color()),
+                                    mono(hex_colour(draft.color))
+                                        .size(crate::theme::legible(11.5))
+                                        .color(text_color()),
                                 );
                             });
                         });
@@ -1054,7 +1056,7 @@ impl StudioShell {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(l10n::unavailable(l, reason))
-                                    .size(10.5)
+                                    .size(crate::theme::legible(10.5))
                                     .color(AMBER),
                             )
                             .truncate(),
@@ -1063,7 +1065,7 @@ impl StudioShell {
                     } else {
                         ui.label(
                             RichText::new(l.text(Msg::AddInputUndoNote))
-                                .size(10.5)
+                                .size(crate::theme::legible(10.5))
                                 .color(muted_color()),
                         );
                     }
@@ -1180,7 +1182,7 @@ impl StudioShell {
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(l.text(Msg::RemoveInputWarning))
-                        .size(11.0)
+                        .size(crate::theme::legible(11.0))
                         .color(text_dim_color()),
                 );
                 ui.add_space(8.0);
@@ -1192,7 +1194,7 @@ impl StudioShell {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(l10n::unavailable(l, availability.reason))
-                                    .size(10.5)
+                                    .size(crate::theme::legible(10.5))
                                     .color(AMBER),
                             )
                             .truncate(),
@@ -1271,7 +1273,7 @@ fn capitalized(text: &str) -> String {
 fn kind_key(label: &str, selected: bool) -> Button<'static> {
     Button::new(
         RichText::new(label.to_owned())
-            .size(11.5)
+            .size(crate::theme::legible(11.5))
             .strong()
             .color(if selected {
                 text_color()
@@ -1285,7 +1287,7 @@ fn kind_key(label: &str, selected: bool) -> Button<'static> {
         widget_color()
     })
     .stroke(Stroke::new(
-        1.0,
+        crate::theme::line_width(),
         if selected {
             accent_color()
         } else {
@@ -1393,7 +1395,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
     painter.rect_stroke(
         rect,
         CornerRadius::same(3),
-        Stroke::new(1.0, border_strong_color()),
+        Stroke::new(crate::theme::line_width(), border_strong_color()),
         StrokeKind::Inside,
     );
 }

@@ -349,7 +349,7 @@ pub(crate) fn draw_mixer(
         if meters_unavailable(state) {
             ui.label(
                 RichText::new(l.text(Msg::MetersUnavailable))
-                    .size(10.0)
+                    .size(crate::theme::legible(10.0))
                     .color(AMBER),
             )
             .on_hover_text(l.text(Msg::MetersUnavailableHover));
@@ -359,7 +359,7 @@ pub(crate) fn draw_mixer(
                     .add(
                         egui::Button::new(
                             RichText::new(label)
-                                .size(10.0)
+                                .size(crate::theme::legible(10.0))
                                 .strong()
                                 .color(Color32::WHITE),
                         )
@@ -375,7 +375,7 @@ pub(crate) fn draw_mixer(
             }
             ui.label(
                 RichText::new(l.text(Msg::MeterLegend))
-                    .size(10.0)
+                    .size(crate::theme::legible(10.0))
                     .color(muted_color()),
             )
             .on_hover_text(l.text(Msg::MeterLegendHover));
@@ -512,7 +512,7 @@ struct StripGate {
 fn strip_frame(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
         .fill(raised_color())
-        .stroke(Stroke::new(1.0, border_color()))
+        .stroke(Stroke::new(crate::theme::line_width(), border_color()))
         .corner_radius(CornerRadius::same(4))
         .inner_margin(egui::Margin::symmetric(5, 6))
         .show(ui, |ui| {
@@ -567,7 +567,7 @@ fn name_plate(ui: &mut Ui, ordinal: Option<usize>, name: &str, tally: TallyState
                 painter.rect_stroke(
                     cap,
                     CornerRadius::same(3),
-                    Stroke::new(1.0, border_strong_color()),
+                    Stroke::new(crate::theme::line_width(), border_strong_color()),
                     StrokeKind::Inside,
                 );
             }
@@ -883,7 +883,7 @@ fn led_key(
             rect,
             CornerRadius::same(3),
             Stroke::new(
-                1.0,
+                crate::theme::line_width(),
                 if on {
                     color.gamma_multiply(0.9 * dim)
                 } else if hovered {
@@ -1040,7 +1040,7 @@ fn fader(
     painter.rect_stroke(
         slot,
         CornerRadius::same(2),
-        Stroke::new(1.0, border_color()),
+        Stroke::new(crate::theme::line_width(), border_color()),
         StrokeKind::Outside,
     );
     // The cap: shadow, two-tone body, ridges, and a bright index line.
@@ -1144,7 +1144,7 @@ fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> boo
             ui.add(
                 egui::Label::new(
                     RichText::new(l.text(Msg::MasterTap))
-                        .size(8.5)
+                        .size(crate::theme::legible(8.5))
                         .color(muted_color()),
                 )
                 .wrap(),

@@ -205,7 +205,7 @@ fn draw_stinger_pickers(
         ComboBox::from_id_salt("studio-stinger-config-slot")
             .width(half)
             .truncate()
-            .selected_text(mono(slot_text(editor.slot)).size(10.5))
+            .selected_text(mono(slot_text(editor.slot)).size(crate::theme::legible(10.5)))
             .show_ui(ui, |ui| {
                 for slot in 1..=STINGER_SLOT_COUNT {
                     if ui
@@ -227,7 +227,7 @@ fn draw_stinger_pickers(
                     || l.text(Msg::StingerNoInput).to_owned(),
                     |m| input_name(l, view, m),
                 ))
-                .size(11.0),
+                .size(crate::theme::legible(11.0)),
             )
             .show_ui(ui, |ui| {
                 for (input, name) in view.inputs.iter().zip(&view.input_names) {
@@ -320,7 +320,10 @@ pub(crate) fn draw_stinger_configuration(
                     .painter()
                     .layout_no_wrap(
                         l.tr(label).to_owned(),
-                        egui::FontId::new(9.5, egui::FontFamily::Proportional),
+                        egui::FontId::new(
+                            crate::theme::legible(9.5),
+                            egui::FontFamily::Proportional,
+                        ),
                         text_color(),
                     )
                     .size()
@@ -336,7 +339,7 @@ pub(crate) fn draw_stinger_configuration(
         let Some(view) = &state.view else {
             ui.label(
                 RichText::new(l.text(Msg::StingerConfigNotSynced))
-                    .size(11.0)
+                    .size(crate::theme::legible(11.0))
                     .color(muted_color()),
             )
             .on_hover_text(l10n::unavailable(l, reason));
@@ -354,17 +357,22 @@ pub(crate) fn draw_stinger_configuration(
             ui.spacing_mut().item_spacing.x = 6.0;
             let width = ((ui.available_width() - 6.0) / 2.0).floor().max(80.0);
             let key = |label: &str, primary: bool| {
-                Button::new(RichText::new(label).size(11.0).strong().color(text_color()))
-                    .fill(if primary { ACCENT_FILL } else { widget_color() })
-                    .stroke(Stroke::new(
-                        1.0,
-                        if primary {
-                            accent_color().gamma_multiply(0.6)
-                        } else {
-                            border_strong_color()
-                        },
-                    ))
-                    .min_size(Vec2::new(width, 24.0))
+                Button::new(
+                    RichText::new(label)
+                        .size(crate::theme::legible(11.0))
+                        .strong()
+                        .color(text_color()),
+                )
+                .fill(if primary { ACCENT_FILL } else { widget_color() })
+                .stroke(Stroke::new(
+                    crate::theme::line_width(),
+                    if primary {
+                        accent_color().gamma_multiply(0.6)
+                    } else {
+                        border_strong_color()
+                    },
+                ))
+                .min_size(Vec2::new(width, 24.0))
             };
             let slot_arg = ("slot", Arg::Plain(u64::from(editor.slot)));
             let assign_text = media.map_or_else(
@@ -412,8 +420,16 @@ pub(crate) fn draw_stinger_configuration(
             .spacing(Vec2::new(12.0, 3.0))
             .show(ui, |ui| {
                 for (label, value) in stinger_details(l, view, editor.slot, duration_frames) {
-                    ui.label(RichText::new(label).size(10.5).color(muted_color()));
-                    ui.label(RichText::new(value).size(10.5).color(text_dim_color()));
+                    ui.label(
+                        RichText::new(label)
+                            .size(crate::theme::legible(10.5))
+                            .color(muted_color()),
+                    );
+                    ui.label(
+                        RichText::new(value)
+                            .size(crate::theme::legible(10.5))
+                            .color(text_dim_color()),
+                    );
                     ui.end_row();
                 }
             })

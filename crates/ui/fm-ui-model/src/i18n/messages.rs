@@ -848,6 +848,7 @@ messages! {
     PlaylistInput => t("Input"),
     PlaylistInputPick => t("Choose an input"),
     PlaylistDurationHint => t("HH:MM:SS:FF, MM:SS, or seconds"),
+    PlaylistDurationHover => t("HH:MM:SS:FF, MM:SS, or seconds. Enter adds the entry, or updates the selected one"),
     PlaylistFramesLabel => t("Frames"),
     PlaylistAdd => t("Add"),
     PlaylistAddHover => t("Append this entry to the playlist"),

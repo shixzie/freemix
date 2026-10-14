@@ -21,8 +21,8 @@ use core::time::Duration;
 use std::time::Instant;
 
 use egui::{
-    Button, Color32, ComboBox, CornerRadius, FontFamily, FontId, Frame, RichText, Sense, Stroke,
-    StrokeKind, TextEdit, Ui, Vec2, pos2,
+    Button, Color32, ComboBox, CornerRadius, FontFamily, FontId, Frame, Key, RichText, Sense,
+    Stroke, StrokeKind, TextEdit, Ui, Vec2, pos2,
 };
 use fm_protocol::{
     MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_FRAMES, MAX_PLAYLIST_TRANSITION_FRAMES,
@@ -294,6 +294,20 @@ pub fn timecode(frames: u64, rate: FrameRate) -> String {
         seconds % 60,
         frames % fps
     )
+}
+
+/// Formats a countdown: the timecode of the frames left, with a leading
+/// minus.
+///
+/// Convention: as in broadcast playout clocks, time still to run is signed
+/// negative and a duration is unsigned. Every countdown on the tab uses this
+/// one form: the status card's `REMAINING` (and `STARTS IN`) clock and the
+/// on-air row read the same `-HH:MM:SS:FF`, while entry durations, the
+/// card's `of HH:MM:SS:FF`, and the form's duration field never carry a
+/// sign.
+#[must_use]
+pub fn countdown_timecode(frames: u64, rate: FrameRate) -> String {
+    format!("-{}", timecode(frames, rate))
 }
 
 /// Parses an operator duration: `SS` (any number of seconds), `MM:SS`,
@@ -726,6 +740,9 @@ pub(crate) struct PlaylistPanel {
     selected: Option<u64>,
     form: Option<EntryForm>,
     anchor: Option<Anchor>,
+    /// Move keyboard focus to the form's first field (the input picker) on
+    /// the next draw, after a row was selected.
+    focus_form: bool,
 }
 
 impl PlaylistPanel {
@@ -761,6 +778,14 @@ impl PlaylistPanel {
                 form.editing = None;
             }
         }
+    }
+
+    /// Selects `entry`, loads it into the form, and moves keyboard focus to
+    /// the form's first field so the operator can edit it from the keyboard.
+    fn select(&mut self, entry: &PlaylistEntrySpec, rate: FrameRate) {
+        self.selected = Some(entry.id);
+        self.form = Some(EntryForm::load(entry, rate));
+        self.focus_form = true;
     }
 
     /// The engine frame now, extrapolated from the anchor.
@@ -835,10 +860,7 @@ impl PlaylistPanel {
                     take: row_take(playlist, entry.id, control),
                 };
                 match draw_entry_row(ui, &row) {
-                    RowClick::Select => {
-                        self.selected = Some(entry.id);
-                        self.form = Some(EntryForm::load(entry, rate));
-                    }
+                    RowClick::Select => self.select(entry, rate),
                     RowClick::Take => {
                         if let Ok(intent) = row.take {
                             intents.push(StudioIntent::Playlist(intent));
@@ -856,7 +878,8 @@ impl PlaylistPanel {
         if form.editing.is_some() && self.selected.is_none() {
             form.editing = None;
         }
-        if draw_entry_form(ui, form, playlist, rate, &names, edit, intents) {
+        let focus = std::mem::take(&mut self.focus_form);
+        if draw_entry_form(ui, form, playlist, rate, &names, edit, focus, intents) {
             self.selected = None;
             *form = EntryForm {
                 editing: None,
@@ -888,12 +911,12 @@ fn key_button(label: &str, tone: Option<Color32>, width: f32) -> Button<'static>
     });
     Button::new(
         RichText::new(label.to_owned())
-            .size(10.5)
+            .size(crate::theme::legible(10.5))
             .strong()
             .color(text_color()),
     )
     .fill(fill)
-    .stroke(Stroke::new(1.0, stroke))
+    .stroke(Stroke::new(crate::theme::line_width(), stroke))
     .truncate()
     .min_size(Vec2::new(width, 24.0))
 }
@@ -919,7 +942,7 @@ fn draw_status_card(
             raised_color()
         })
         .stroke(Stroke::new(
-            1.0,
+            crate::theme::line_width(),
             if on_air {
                 PROGRAM.gamma_multiply(0.6)
             } else {
@@ -944,26 +967,29 @@ fn draw_status_card(
                         .unwrap_or_default();
                     ui.horizontal(|ui| {
                         ui.label(field_label(l.text(Msg::PlaylistRemaining)));
-                        ui.label(mono(timecode(frames, rate)).size(20.0).strong().color(
-                            if phase == PlaylistPhase::Paused {
-                                AMBER
-                            } else {
-                                PROGRAM
-                            },
-                        ));
+                        ui.label(
+                            mono(countdown_timecode(frames, rate))
+                                .size(20.0)
+                                .strong()
+                                .color(if phase == PlaylistPhase::Paused {
+                                    AMBER
+                                } else {
+                                    PROGRAM
+                                }),
+                        );
                         ui.label(
                             mono(l.format(
                                 Msg::PlaylistElapsedOf,
                                 &[("duration", Arg::Str(&timecode(duration, rate)))],
                             ))
-                            .size(10.5)
+                            .size(crate::theme::legible(10.5))
                             .color(text_dim_color()),
                         );
                     });
                     ui.add(
                         egui::Label::new(
                             RichText::new(format!("{} · {name}", l.text(Msg::OverlayOnAir)))
-                                .size(11.5)
+                                .size(crate::theme::legible(11.5))
                                 .strong()
                                 .color(text_color()),
                         )
@@ -974,7 +1000,7 @@ fn draw_status_card(
                     ui.horizontal(|ui| {
                         ui.label(field_label(l.text(Msg::PlaylistStartsIn)));
                         ui.label(
-                            mono(timecode(frames, rate))
+                            mono(countdown_timecode(frames, rate))
                                 .size(20.0)
                                 .strong()
                                 .color(AMBER),
@@ -1003,11 +1029,13 @@ fn draw_status_card(
                     None => l.text(Msg::PlaylistNextEnd).to_owned(),
                 };
                 ui.add(
-                    egui::Label::new(RichText::new(text).size(11.0).color(if next.is_some() {
-                        PREVIEW
-                    } else {
-                        text_dim_color()
-                    }))
+                    egui::Label::new(RichText::new(text).size(crate::theme::legible(11.0)).color(
+                        if next.is_some() {
+                            PREVIEW
+                        } else {
+                            text_dim_color()
+                        },
+                    ))
                     .truncate(),
                 );
             }
@@ -1034,7 +1062,7 @@ fn draw_status_card(
                     let intent = list_edit(playlist, ListEdit::Loop(mode), edit);
                     let button = Button::new(
                         RichText::new(l.text(label).to_uppercase())
-                            .size(10.0)
+                            .size(crate::theme::legible(10.0))
                             .strong()
                             .color(if selected {
                                 text_color()
@@ -1048,7 +1076,7 @@ fn draw_status_card(
                         widget_color()
                     })
                     .stroke(Stroke::new(
-                        1.0,
+                        crate::theme::line_width(),
                         if selected {
                             accent_color().gamma_multiply(0.7)
                         } else {
@@ -1175,6 +1203,8 @@ enum RowClick {
 }
 
 const ROW_HEIGHT: f32 = 36.0;
+/// Id salt of the entry form's duration field.
+const DURATION_FIELD_ID: &str = "studio-playlist-duration";
 const TAKE_WIDTH: f32 = 26.0;
 
 /// One entry row: position, play key, name, transition, the role badge, and
@@ -1227,7 +1257,7 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
         let stroke = if row.selected {
             Stroke::new(1.5, accent_color())
         } else if row.role == EntryRole::Idle {
-            Stroke::new(1.0, border_color())
+            Stroke::new(crate::theme::line_width(), border_color())
         } else {
             Stroke::new(1.0, accent.gamma_multiply(0.8))
         };
@@ -1326,7 +1356,7 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
         // Duration, or the on-air countdown.
         let (text, color) = match row.countdown {
             Some(Countdown::Remaining { frames, .. }) => (
-                format!("-{}", timecode(frames, row.rate)),
+                countdown_timecode(frames, row.rate),
                 if matches!(row.role, EntryRole::OnAir) {
                     PROGRAM
                 } else {
@@ -1436,8 +1466,10 @@ fn draw_row_actions(
 }
 
 /// The entry form: input, duration, transition, and frames, with Add and
-/// Update keys. Returns whether the operator asked for a fresh form.
-#[allow(clippy::too_many_lines)] // one form card
+/// Update keys. `focus` moves keyboard focus to the input picker; Enter in
+/// the duration field submits the form (Update while an entry is loaded,
+/// else Add). Returns whether the operator asked for a fresh form.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // one form card
 fn draw_entry_form(
     ui: &mut Ui,
     form: &mut EntryForm,
@@ -1445,10 +1477,12 @@ fn draw_entry_form(
     rate: FrameRate,
     names: &Names<'_>,
     edit: Option<&'static str>,
+    focus: bool,
     intents: &mut Vec<StudioIntent>,
 ) -> bool {
     let l = names.l;
     let mut fresh = false;
+    let mut submit = false;
     crate::theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing.y = 5.0;
@@ -1484,7 +1518,7 @@ fn draw_entry_form(
             .spacing(Vec2::new(8.0, 4.0))
             .show(ui, |ui| {
                 ui.label(field_label(l.text(Msg::PlaylistInput)));
-                ComboBox::from_id_salt("studio-playlist-input")
+                let picker = ComboBox::from_id_salt("studio-playlist-input")
                     .width(ui.available_width().max(120.0))
                     .truncate()
                     .selected_text(
@@ -1492,7 +1526,7 @@ fn draw_entry_form(
                             || l.text(Msg::PlaylistInputPick).to_owned(),
                             |input| names.input(input),
                         ))
-                        .size(11.0),
+                        .size(crate::theme::legible(11.0)),
                     )
                     .show_ui(ui, |ui| {
                         for (input, name) in names.view.inputs.iter().zip(&names.view.input_names) {
@@ -1504,18 +1538,25 @@ fn draw_entry_form(
                             }
                         }
                     });
+                if focus {
+                    picker.response.request_focus();
+                }
                 ui.end_row();
 
                 ui.label(field_label(l.text(Msg::Duration)));
                 let valid = parse_duration(&form.duration, rate).is_some();
-                ui.add(
-                    TextEdit::singleline(&mut form.duration)
-                        .font(FontId::new(12.0, FontFamily::Monospace))
-                        .text_color(if valid { text_color() } else { ERROR })
-                        .hint_text(l.text(Msg::PlaylistDurationHint))
-                        .desired_width(110.0),
-                )
-                .on_hover_text(l.text(Msg::PlaylistDurationHint));
+                let duration = ui
+                    .add(
+                        TextEdit::singleline(&mut form.duration)
+                            .id(egui::Id::new(DURATION_FIELD_ID))
+                            .font(FontId::new(12.0, FontFamily::Monospace))
+                            .text_color(if valid { text_color() } else { ERROR })
+                            .hint_text(l.text(Msg::PlaylistDurationHint))
+                            .desired_width(110.0),
+                    )
+                    .on_hover_text(l.text(Msg::PlaylistDurationHover));
+                // A single-line field gives up focus on Enter.
+                submit = duration.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
                 ui.end_row();
 
                 ui.label(field_label(l.text(Msg::TransitionSection)));
@@ -1523,7 +1564,8 @@ fn draw_entry_form(
                     ComboBox::from_id_salt("studio-playlist-transition")
                         .width(96.0)
                         .selected_text(
-                            RichText::new(l.tr(transition_label(form.transition))).size(11.0),
+                            RichText::new(l.tr(transition_label(form.transition)))
+                                .size(crate::theme::legible(11.0)),
                         )
                         .show_ui(ui, |ui| {
                             for kind in TRANSITIONS {
@@ -1550,7 +1592,7 @@ fn draw_entry_form(
                     Msg::PlaylistErrDuration,
                     &[("max", Arg::Str(&timecode(MAX_PLAYLIST_ENTRY_FRAMES, rate)))],
                 ))
-                .size(10.5)
+                .size(crate::theme::legible(10.5))
                 .color(ERROR),
             );
         }
@@ -1558,6 +1600,14 @@ fn draw_entry_form(
             ui.spacing_mut().item_spacing.x = 6.0;
             let width = ((ui.available_width() - 6.0) / 2.0).floor().max(80.0);
             let add = form.add_intent(playlist, rate, edit);
+            let update = form.update_intent(playlist, rate, edit);
+            if submit {
+                // Enter updates the loaded entry, or adds a new one.
+                let intent = if position.is_some() { &update } else { &add };
+                if let Ok(intent) = intent {
+                    intents.push(StudioIntent::Playlist(intent.clone()));
+                }
+            }
             if ui
                 .add_enabled(
                     add.is_ok(),
@@ -1576,7 +1626,6 @@ fn draw_entry_form(
             {
                 intents.push(StudioIntent::Playlist(intent));
             }
-            let update = form.update_intent(playlist, rate, edit);
             let update_hover = l.format(
                 Msg::PlaylistUpdateHover,
                 &[(
@@ -1601,7 +1650,7 @@ fn draw_entry_form(
             ui.add(
                 egui::Label::new(
                     RichText::new(l10n::unavailable(l, reason))
-                        .size(10.5)
+                        .size(crate::theme::legible(10.5))
                         .color(muted_color()),
                 )
                 .wrap(),
@@ -2212,6 +2261,115 @@ mod tests {
     }
 
     #[test]
+    fn countdowns_carry_a_leading_minus_and_durations_do_not() {
+        assert_eq!(countdown_timecode(37 * 25 + 24, rate()), "-00:00:37:24");
+        assert_eq!(countdown_timecode(0, rate()), "-00:00:00:00");
+        assert_eq!(
+            countdown_timecode(250, rate()),
+            format!("-{}", timecode(250, rate()))
+        );
+        assert!(!timecode(250, rate()).starts_with('-'));
+    }
+
+    /// One frame of the shell with `events`, returning its intents.
+    fn frame(
+        context: &egui::Context,
+        shell: &mut StudioShell,
+        state: &StudioUiState,
+        events: Vec<egui::Event>,
+    ) -> Vec<StudioIntent> {
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(1600.0, 1000.0),
+            )),
+            events,
+            ..egui::RawInput::default()
+        });
+        let mut ui = Ui::new(
+            context.clone(),
+            egui::Id::new("fm-ui-egui-playlist-test"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(context.viewport_rect()),
+        );
+        let intents = shell.draw(&mut ui, state);
+        let _ = context.end_pass();
+        intents
+    }
+
+    /// One frame without input, which must send nothing.
+    fn idle(context: &egui::Context, shell: &mut StudioShell, state: &StudioUiState) {
+        let intents = frame(context, shell, state, Vec::new());
+        assert!(intents.is_empty(), "{intents:?}");
+    }
+
+    fn enter() -> egui::Event {
+        egui::Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn selecting_a_row_focuses_the_form_and_enter_submits_it() {
+        let stopped = list(PlaylistLoopMode::Off, PlaylistRunState::Stopped);
+        let synced = model(Some(stopped.clone()));
+        let state = ready_state(&synced, true, true);
+        let context = egui::Context::default();
+        let mut shell = StudioShell {
+            side_tab: SideTab::Playlist,
+            ..StudioShell::default()
+        };
+        idle(&context, &mut shell, &state);
+        assert_eq!(context.memory(egui::Memory::focused), None);
+
+        // Selecting entry 2 loads it and puts the keyboard on the input
+        // picker, the form's first field, once.
+        shell.playlist.select(&stopped.entries[1], rate());
+        idle(&context, &mut shell, &state);
+        let duration = egui::Id::new(DURATION_FIELD_ID);
+        let picker = context.memory(egui::Memory::focused);
+        assert!(picker.is_some_and(|id| id != duration), "{picker:?}");
+        assert!(!shell.playlist.focus_form);
+
+        // Enter in the duration field updates the loaded entry.
+        context.memory_mut(|memory| memory.request_focus(duration));
+        idle(&context, &mut shell, &state);
+        if let Some(form) = &mut shell.playlist.form {
+            form.duration = "7".into();
+        }
+        let intents = frame(&context, &mut shell, &state, vec![enter()]);
+        match intents.as_slice() {
+            [StudioIntent::Playlist(PlaylistIntent::Set { entries, .. })] => {
+                assert_eq!(entries[1].id, 2);
+                assert_eq!(entries[1].duration_frames, 7 * 25);
+                assert_eq!(entries.len(), stopped.entries.len());
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // With no entry loaded, Enter appends a new one.
+        shell.playlist.selected = None;
+        shell.playlist.form = Some(EntryForm {
+            input: Some(input(1)),
+            ..EntryForm::new(rate())
+        });
+        context.memory_mut(|memory| memory.request_focus(duration));
+        idle(&context, &mut shell, &state);
+        let intents = frame(&context, &mut shell, &state, vec![enter()]);
+        match intents.as_slice() {
+            [StudioIntent::Playlist(PlaylistIntent::Set { entries, .. })] => {
+                assert_eq!(entries.len(), stopped.entries.len() + 1);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn the_playlist_tab_draws_a_running_list_in_both_languages() {
         let mut running = list(PlaylistLoopMode::All, playing(2, 100));
         running.frame = 100;
@@ -2245,10 +2403,15 @@ mod tests {
                 "missing {expected:?} in {english:?}"
             );
         }
-        assert!(
-            english.iter().any(|text| text.starts_with("-00:00:0")),
-            "no countdown in {english:?}"
-        );
+        // The status card's REMAINING clock and the on-air row show the
+        // same signed countdown; durations stay unsigned.
+        let countdowns: Vec<_> = english
+            .iter()
+            .filter(|text| text.starts_with("-00:00:0"))
+            .collect();
+        assert_eq!(countdowns.len(), 2, "{english:?}");
+        assert_eq!(countdowns[0], countdowns[1]);
+        assert!(english.iter().any(|text| text == "REMAINING"));
 
         shell.set_locale(ES);
         let spanish = draw(&context, &mut shell, &state);

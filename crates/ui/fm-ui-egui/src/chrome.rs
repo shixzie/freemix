@@ -145,7 +145,7 @@ fn history_key(ui: &mut Ui, enabled: bool, redo: bool) -> egui::Response {
             rect,
             CornerRadius::same(4),
             Stroke::new(
-                1.0,
+                crate::theme::line_width(),
                 if hovered {
                     border_strong_color()
                 } else {
@@ -223,6 +223,7 @@ fn show_name_label(ui: &mut Ui, state: &StudioUiState) {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one immediate-mode bar
 pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
     let l = l10n::locale(ui.ctx());
     l10n::leading_row(ui, l, |ui| {
@@ -237,7 +238,7 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
         );
         ui.label(
             RichText::new("STUDIO")
-                .size(10.5)
+                .size(crate::theme::legible(10.5))
                 .extra_letter_spacing(1.5)
                 .color(muted_color()),
         );
@@ -257,7 +258,7 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                     Msg::RevisionShort,
                     &[("revision", Arg::Plain(view.cursor.revision.get()))],
                 ))
-                .size(11.0)
+                .size(crate::theme::legible(11.0))
                 .color(text_dim_color()),
             )
             .on_hover_text(l.text(Msg::RevisionHover));
@@ -287,7 +288,11 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                     .color(text_color()),
             )
             .on_hover_text(utc_clock_hover(l, now));
-            ui.label(RichText::new("UTC").size(10.0).color(muted_color()));
+            ui.label(
+                RichText::new("UTC")
+                    .size(crate::theme::legible(10.0))
+                    .color(muted_color()),
+            );
             divider(ui);
             let air = on_air(state);
             let stream_color = if air.stream_live {
@@ -478,7 +483,7 @@ pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(l.tr(toast.kind.title()))
-                        .size(10.5)
+                        .size(crate::theme::legible(10.5))
                         .strong()
                         .extra_letter_spacing(1.0)
                         .color(color),
@@ -545,7 +550,7 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
             .painter()
             .layout_no_wrap(
                 hints.to_owned(),
-                egui::FontId::proportional(10.0),
+                egui::FontId::proportional(crate::theme::legible(10.0)),
                 muted_color(),
             )
             .size()
@@ -554,21 +559,21 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
         if ui.available_width() - hint_width > STATUS_BAR_LEADING_WIDTH {
             ui.label(
                 RichText::new(hints)
-                    .size(10.0)
+                    .size(crate::theme::legible(10.0))
                     .extra_letter_spacing(0.5)
                     .color(muted_color()),
             );
             if status.controls_enabled() {
                 ui.label(
                     RichText::new(l.text(Msg::StatusBarKeys))
-                        .size(10.0)
+                        .size(crate::theme::legible(10.0))
                         .color(text_dim_color()),
                 );
             }
         } else {
             ui.label(
                 RichText::new(l.text(Msg::StatusBarHelpHint))
-                    .size(10.0)
+                    .size(crate::theme::legible(10.0))
                     .extra_letter_spacing(0.5)
                     .color(muted_color()),
             )
@@ -579,7 +584,7 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
             status_dot(ui, connection_color(status));
             ui.label(
                 RichText::new(l.tr(status.operator_label()))
-                    .size(10.5)
+                    .size(crate::theme::legible(10.5))
                     .color(connection_color(status)),
             );
             bar_divider(ui);
@@ -588,7 +593,7 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
                     Msg::PendingCount,
                     &[("count", Arg::from(state.pending_commands))],
                 ))
-                .size(10.5)
+                .size(crate::theme::legible(10.5))
                 .color(if state.pending_commands > 0 {
                     AMBER
                 } else {
@@ -599,7 +604,7 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
             if edit_lock_summary(state).project {
                 ui.label(
                     RichText::new(l.text(Msg::EditsLocked))
-                        .size(10.0)
+                        .size(crate::theme::legible(10.0))
                         .strong()
                         .extra_letter_spacing(0.6)
                         .color(AMBER),
@@ -608,7 +613,14 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
                 bar_divider(ui);
             }
             let (message, color) = status_message(l, state);
-            ui.add(egui::Label::new(RichText::new(message).size(10.5).color(color)).truncate());
+            ui.add(
+                egui::Label::new(
+                    RichText::new(message)
+                        .size(crate::theme::legible(10.5))
+                        .color(color),
+                )
+                .truncate(),
+            );
         });
     });
 }

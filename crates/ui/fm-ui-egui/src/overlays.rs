@@ -103,7 +103,7 @@ fn draw_overlay_channel(
     Frame::new()
         .fill(raised_color())
         .stroke(Stroke::new(
-            1.0,
+            crate::theme::line_width(),
             if on_air {
                 PROGRAM.gamma_multiply(0.6)
             } else {
@@ -138,13 +138,13 @@ fn draw_overlay_channel(
                     // `TAKE OFF` sits right of `TAKE` but is created after
                     // it, so Tab visits the row's keys left to right.
                     let off_text = RichText::new(l.text(Msg::OverlayOffKey))
-                        .size(11.0)
+                        .size(crate::theme::legible(11.0))
                         .strong();
                     let off_width = ui
                         .painter()
                         .layout_no_wrap(
                             l.text(Msg::OverlayOffKey).to_owned(),
-                            egui::FontId::proportional(11.0),
+                            egui::FontId::proportional(crate::theme::legible(11.0)),
                             text_color(),
                         )
                         .size()
@@ -201,7 +201,7 @@ fn draw_overlay_channel(
                                 })
                                 .to_owned()
                             }))
-                            .size(11.5)
+                            .size(crate::theme::legible(11.5))
                             .color(text_dim_color()),
                         )
                         .truncate(),
@@ -354,7 +354,7 @@ fn draw_overlay_details(
                             enabled && desired.is_some(),
                             egui::Checkbox::new(
                                 &mut included,
-                                RichText::new(&output.name).size(11.0),
+                                RichText::new(&output.name).size(crate::theme::legible(11.0)),
                             ),
                         )
                         .hint(
@@ -374,14 +374,14 @@ fn draw_overlay_details(
         Some(_) => {
             ui.label(
                 RichText::new(l.text(Msg::OverlayOutputsNone))
-                    .size(10.0)
+                    .size(crate::theme::legible(10.0))
                     .color(muted_color()),
             );
         }
         None => {
             ui.label(
                 RichText::new(l.text(Msg::OverlayOutputsUnsynced))
-                    .size(10.0)
+                    .size(crate::theme::legible(10.0))
                     .color(muted_color()),
             );
         }
@@ -400,7 +400,7 @@ fn draw_overlay_details(
                     )
                 },
             ))
-            .size(9.5)
+            .size(crate::theme::legible(9.5))
             .color(muted_color()),
         )
         .wrap(),

@@ -19,7 +19,7 @@ use egui::{
     Button, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Response, RichText, Sense,
     Stroke, StrokeKind, TextEdit, Ui, Vec2, pos2,
 };
-use fm_protocol::TitleFieldValue;
+use fm_protocol::{TitleFieldValue, WireTitleFieldId};
 use fm_types::InputId;
 use fm_ui_model::ClientView;
 use fm_ui_model::title_editor::{
@@ -67,6 +67,14 @@ pub(crate) struct TitlesPanel {
     selected: Option<InputId>,
     /// The values the last preview armed, shown while they stay armed.
     preview: Option<TitlePreview>,
+    /// Move keyboard focus to the editor's first field on the next draw,
+    /// after a title row was selected.
+    focus_field: bool,
+}
+
+/// The text field of `field` in `title`'s editor.
+fn field_edit_id(title: InputId, field: WireTitleFieldId) -> egui::Id {
+    egui::Id::new(("studio-title-field", title.get().get(), field.get().get()))
 }
 
 /// The editor access for `state`. Commands need a ready connection with
@@ -170,6 +178,7 @@ impl TitlesPanel {
             let row = TitleRow::new(l, entry, view, Some(entry.title) == self.selected);
             if draw_title_row(ui, &row).clicked() {
                 self.selected = Some(entry.title);
+                self.focus_field = true;
             }
         }
         ui.add_space(4.0);
@@ -180,6 +189,13 @@ impl TitlesPanel {
             return;
         };
         self.draw_editor(ui, state, &presentation, intents);
+        // A selected title opens with its first field ready for typing.
+        if std::mem::take(&mut self.focus_field)
+            && presentation.can_edit
+            && let Some(first) = presentation.fields.first()
+        {
+            ui.memory_mut(|memory| memory.request_focus(field_edit_id(title, first.id)));
+        }
     }
 
     #[allow(clippy::too_many_lines)] // one immediate-mode card
@@ -197,7 +213,7 @@ impl TitlesPanel {
         Frame::new()
             .fill(raised_color())
             .stroke(Stroke::new(
-                1.0,
+                crate::theme::line_width(),
                 if badge == TitleAirBadge::OnAir {
                     PROGRAM.gamma_multiply(0.6)
                 } else {
@@ -232,7 +248,7 @@ impl TitlesPanel {
                         ui.add(egui::Spinner::new().size(12.0).color(AMBER));
                         ui.label(
                             RichText::new(l.text(Msg::TitlePending))
-                                .size(11.0)
+                                .size(crate::theme::legible(11.0))
                                 .color(AMBER),
                         );
                     });
@@ -305,26 +321,33 @@ impl TitlesPanel {
         ui.horizontal(|ui| {
             ui.label(
                 RichText::new(&field.name)
-                    .size(11.5)
+                    .size(crate::theme::legible(11.5))
                     .strong()
                     .color(text_color()),
             );
             ui.label(
                 RichText::new(l.text(field_type_label(field.field_type)))
-                    .size(9.0)
+                    .size(crate::theme::legible(9.0))
                     .extra_letter_spacing(0.8)
                     .color(muted_color()),
             );
             if field.changed_upstream && !field.dirty {
-                ui.label(RichText::new("●").size(9.0).color(AMBER))
-                    .on_hover_text(l.text(Msg::TitleFieldChanged));
+                ui.label(
+                    RichText::new("●")
+                        .size(crate::theme::legible(9.0))
+                        .color(AMBER),
+                )
+                .on_hover_text(l.text(Msg::TitleFieldChanged));
             }
             if field.dirty {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .add(
-                            Button::new(RichText::new(l.text(Msg::TitleFieldDiscard)).size(10.5))
-                                .min_size(Vec2::new(0.0, 18.0)),
+                            Button::new(
+                                RichText::new(l.text(Msg::TitleFieldDiscard))
+                                    .size(crate::theme::legible(10.5)),
+                            )
+                            .min_size(Vec2::new(0.0, 18.0)),
                         )
                         .on_hover_text(l.text(Msg::TitleFieldDiscardHover))
                         .clicked()
@@ -333,7 +356,7 @@ impl TitlesPanel {
                     }
                     ui.label(
                         RichText::new(l.text(Msg::TitleEdited))
-                            .size(9.0)
+                            .size(crate::theme::legible(9.0))
                             .extra_letter_spacing(0.8)
                             .color(accent_color()),
                     );
@@ -352,7 +375,7 @@ impl TitlesPanel {
         if let Some(error) = field.error {
             ui.label(
                 RichText::new(field_error_text(l, error))
-                    .size(10.5)
+                    .size(crate::theme::legible(10.5))
                     .color(ERROR),
             );
         }
@@ -395,11 +418,7 @@ impl TitlesPanel {
     ) {
         let edit_reason = Msg::ReasonNoEditProject.en();
         let mut input = field.input.clone();
-        let id = egui::Id::new((
-            "studio-title-field",
-            title.get().get(),
-            field.id.get().get(),
-        ));
+        let id = field_edit_id(title, field.id);
         let changed = ui
             .horizontal(|ui| {
                 let mut changed = false;
@@ -908,11 +927,11 @@ fn draw_title_row(ui: &mut Ui, row: &TitleRow<'_>) -> Response {
         };
         painter.rect_filled(rect, CornerRadius::same(4), fill);
         let stroke = if response.has_focus() {
-            Stroke::new(2.0, accent_color())
+            Stroke::new(crate::theme::focus_ring_width(), accent_color())
         } else if row.selected {
             Stroke::new(1.5, accent_color().gamma_multiply(0.8))
         } else if tone == Tone::Idle {
-            Stroke::new(1.0, border_color())
+            Stroke::new(crate::theme::line_width(), border_color())
         } else {
             Stroke::new(1.0, tone.color().gamma_multiply(0.55))
         };
@@ -1006,7 +1025,7 @@ fn draw_editor_header(
                     Msg::RevisionShort,
                     &[("revision", Arg::Plain(presentation.live_revision))],
                 ))
-                .size(10.5)
+                .size(crate::theme::legible(10.5))
                 .color(muted_color()),
             );
             crate::theme::status_chip(ui, badge.label().en(), badge.tone(), BADGE_WIDTH);
@@ -1015,7 +1034,7 @@ fn draw_editor_header(
             {
                 ui.label(
                     RichText::new(location_text(l, location))
-                        .size(10.5)
+                        .size(crate::theme::legible(10.5))
                         .color(text_dim_color()),
                 );
             }
@@ -1035,7 +1054,14 @@ fn banner(ui: &mut Ui, color: Color32, text: &str) {
         .inner_margin(Margin::symmetric(8, 5))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.add(egui::Label::new(RichText::new(text).size(11.0).color(color)).wrap());
+            ui.add(
+                egui::Label::new(
+                    RichText::new(text)
+                        .size(crate::theme::legible(11.0))
+                        .color(color),
+                )
+                .wrap(),
+            );
         });
 }
 
@@ -1051,7 +1077,7 @@ fn compare_row(
         fixed_column(ui, 52.0, |ui| {
             ui.label(
                 RichText::new(label)
-                    .size(9.5)
+                    .size(crate::theme::legible(9.5))
                     .strong()
                     .extra_letter_spacing(0.8)
                     .color(color),
@@ -1062,11 +1088,16 @@ fn compare_row(
         }
         match value {
             Some(value) => ui.add(
-                egui::Label::new(RichText::new(value).size(11.0).color(text_color())).truncate(),
+                egui::Label::new(
+                    RichText::new(value)
+                        .size(crate::theme::legible(11.0))
+                        .color(text_color()),
+                )
+                .truncate(),
             ),
             None => ui.label(
                 RichText::new(l10n::locale(ui.ctx()).text(Msg::TitleFieldRemovedValue))
-                    .size(11.0)
+                    .size(crate::theme::legible(11.0))
                     .italics()
                     .color(muted_color()),
             ),
@@ -1095,7 +1126,7 @@ fn paint_swatch(ui: &mut Ui, color: Color32) {
     painter.rect_stroke(
         rect,
         CornerRadius::same(2),
-        Stroke::new(1.0, border_strong_color()),
+        Stroke::new(crate::theme::line_width(), border_strong_color()),
         StrokeKind::Inside,
     );
 }
@@ -1113,7 +1144,7 @@ fn draw_preview(ui: &mut Ui, l: Locale, preview: &TitlePreview) {
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(l.text(Msg::TitlePreviewed))
-                        .size(9.5)
+                        .size(crate::theme::legible(9.5))
                         .strong()
                         .extra_letter_spacing(1.0)
                         .color(accent_color()),
@@ -1126,7 +1157,7 @@ fn draw_preview(ui: &mut Ui, l: Locale, preview: &TitlePreview) {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(&field.name)
-                                    .size(10.5)
+                                    .size(crate::theme::legible(10.5))
                                     .color(text_dim_color()),
                             )
                             .truncate(),
@@ -1141,11 +1172,11 @@ fn draw_preview(ui: &mut Ui, l: Locale, preview: &TitlePreview) {
                         let _ = write!(text, "  · {}", l.text(Msg::TitleFromDraft));
                     }
                     ui.add(
-                        egui::Label::new(RichText::new(text).size(11.0).color(if draft {
-                            accent_color()
-                        } else {
-                            text_color()
-                        }))
+                        egui::Label::new(
+                            RichText::new(text)
+                                .size(crate::theme::legible(11.0))
+                                .color(if draft { accent_color() } else { text_color() }),
+                        )
                         .truncate(),
                     );
                 });
@@ -1179,14 +1210,14 @@ fn console_key(ui: &mut Ui, text: &str, width: f32, enabled: bool, tone: KeyTone
         enabled,
         Button::new(
             RichText::new(text.to_uppercase())
-                .size(11.0)
+                .size(crate::theme::legible(11.0))
                 .strong()
                 .extra_letter_spacing(0.6)
                 .color(text_color()),
         )
         .truncate()
         .fill(fill)
-        .stroke(Stroke::new(1.0, stroke))
+        .stroke(Stroke::new(crate::theme::line_width(), stroke))
         .corner_radius(CornerRadius::same(crate::theme::RADIUS))
         .min_size(Vec2::new(width, 26.0)),
     )
@@ -1872,6 +1903,32 @@ mod tests {
         let intents = shell.draw(&mut ui, state);
         assert!(intents.is_empty(), "{intents:?}");
         painted_text(&context.end_pass())
+    }
+
+    #[test]
+    fn selecting_a_title_focuses_its_first_field_when_editable() {
+        let model = model(keyed(TITLE, true, 255), keyed(TITLE, true, 255));
+        let context = egui::Context::default();
+        let mut shell = StudioShell {
+            side_tab: SideTab::Titles,
+            ..StudioShell::default()
+        };
+        let viewer = ready_state(&model, false, true);
+        draw(&context, &mut shell, &viewer);
+        // A session that cannot edit keeps focus where it was.
+        shell.titles.focus_field = true;
+        draw(&context, &mut shell, &viewer);
+        assert_eq!(context.memory(egui::Memory::focused), None);
+        assert!(!shell.titles.focus_field);
+
+        let editor = ready_state(&model, true, true);
+        shell.titles.focus_field = true;
+        draw(&context, &mut shell, &editor);
+        draw(&context, &mut shell, &editor);
+        assert_eq!(
+            context.memory(egui::Memory::focused),
+            Some(field_edit_id(input(TITLE), field(1)))
+        );
     }
 
     #[test]

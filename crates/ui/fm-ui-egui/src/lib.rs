@@ -1353,14 +1353,14 @@ impl StudioShell {
         self.observe_toasts(state, dt_ms);
         let bar_frame = Frame::new()
             .fill(panel_color())
-            .stroke(Stroke::new(1.0, border_color()))
+            .stroke(Stroke::new(crate::theme::line_width(), border_color()))
             .inner_margin(Margin::symmetric(14, 0));
         Panel::top("studio-menu-bar")
             .exact_size(26.0)
             .frame(
                 Frame::new()
                     .fill(theme::graphite_color())
-                    .stroke(Stroke::new(1.0, border_color()))
+                    .stroke(Stroke::new(crate::theme::line_width(), border_color()))
                     .inner_margin(Margin::symmetric(8, 0)),
             )
             .show(ui, |ui| {
@@ -1450,7 +1450,7 @@ impl StudioShell {
             .frame(
                 Frame::new()
                     .fill(panel_color())
-                    .stroke(Stroke::new(1.0, border_color()))
+                    .stroke(Stroke::new(crate::theme::line_width(), border_color()))
                     .inner_margin(Margin::same(10)),
             )
             .show(ui, |ui| self.draw_side_panel(ui, state, intents));

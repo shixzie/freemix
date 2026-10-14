@@ -190,7 +190,7 @@ fn status_item(
     let l = l10n::locale(ui.ctx());
     let button = Button::new(label).shortcut_text(
         RichText::new(l.tr(status))
-            .size(10.0)
+            .size(crate::theme::legible(10.0))
             .strong()
             .color(tone.color()),
     );
@@ -224,7 +224,7 @@ const MENU_LABEL_CHARS: usize = 32;
 
 fn heading(ui: &mut Ui, text: &str) {
     ui.add_space(2.0);
-    ui.label(section_label(text).size(9.5));
+    ui.label(section_label(text).size(crate::theme::legible(9.5)));
 }
 
 /// The Preview input the Edit menu acts on: the desired Preview selection.
@@ -281,7 +281,7 @@ impl StudioShell {
                             ("count", Arg::from(view.inputs.len())),
                         ],
                     ))
-                    .size(11.0)
+                    .size(crate::theme::legible(11.0))
                     .color(text_dim_color()),
                 );
             }
@@ -291,7 +291,7 @@ impl StudioShell {
         }
         ui.label(
             RichText::new(l.text(Msg::FileSavedByDaemon))
-                .size(10.5)
+                .size(crate::theme::legible(10.5))
                 .color(muted_color()),
         );
         ui.separator();
@@ -477,7 +477,7 @@ impl StudioShell {
             ui.add(
                 egui::Label::new(
                     RichText::new(l.text(Msg::ViewLayoutRemembered))
-                        .size(10.0)
+                        .size(crate::theme::legible(10.0))
                         .color(muted_color()),
                 )
                 .wrap(),
@@ -956,14 +956,14 @@ impl StudioShell {
                         paint_lamp(ui.painter(), lamp.center(), 4.0, tone);
                         ui.label(
                             RichText::new(status)
-                                .size(11.5)
+                                .size(crate::theme::legible(11.5))
                                 .strong()
                                 .color(tone.color()),
                         );
                     });
                     ui.label(
                         RichText::new(l.text(Msg::ShortcutsIntro))
-                            .size(11.0)
+                            .size(crate::theme::legible(11.0))
                             .color(text_dim_color()),
                     );
                     // Short windows scroll the reference instead of
@@ -1001,7 +1001,7 @@ impl StudioShell {
                     ui.separator();
                     ui.label(
                         RichText::new(l.text(Msg::ShortcutsFooter))
-                            .size(10.5)
+                            .size(crate::theme::legible(10.5))
                             .color(muted_color()),
                     );
                 },
@@ -1052,7 +1052,7 @@ impl StudioShell {
                             Msg::AboutLicense,
                             &[("license", Arg::Str(env!("CARGO_PKG_LICENSE")))],
                         ))
-                        .size(11.0)
+                        .size(crate::theme::legible(11.0))
                         .color(muted_color()),
                     );
                 },
@@ -1080,7 +1080,10 @@ pub(crate) fn help_modal(
         .frame(
             egui::Frame::new()
                 .fill(crate::theme::raised_color())
-                .stroke(egui::Stroke::new(1.0, crate::theme::border_strong_color()))
+                .stroke(egui::Stroke::new(
+                    crate::theme::line_width(),
+                    crate::theme::border_strong_color(),
+                ))
                 .corner_radius(egui::CornerRadius::same(8))
                 .inner_margin(egui::Margin::same(18)),
         )
@@ -1153,7 +1156,10 @@ fn key_cap(ui: &mut Ui, keys: &str) {
     painter.rect_stroke(
         cap,
         egui::CornerRadius::same(3),
-        egui::Stroke::new(1.0, crate::theme::border_strong_color()),
+        egui::Stroke::new(
+            crate::theme::line_width(),
+            crate::theme::border_strong_color(),
+        ),
         egui::StrokeKind::Inside,
     );
     painter.text(
@@ -1201,7 +1207,7 @@ fn lockable_item(
     if locked {
         button = button.shortcut_text(
             RichText::new(l.tr(LOCKED_MARK))
-                .size(10.0)
+                .size(crate::theme::legible(10.0))
                 .strong()
                 .color(Tone::Pending.color()),
         );
