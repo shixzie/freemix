@@ -3230,3 +3230,226 @@ mod titles {
         assert!(!overlays[1].active);
     }
 }
+
+mod playlists {
+    use fm_protocol::{
+        PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistRunState, PlaylistStart,
+        PlaylistTransitionKind,
+    };
+
+    use super::*;
+
+    fn wire(value: u128) -> WireInputId {
+        WireInputId::from_domain(input(value))
+    }
+
+    fn set_playlist() -> CommandPayload {
+        CommandPayload::SetPlaylist {
+            loop_mode: PlaylistLoopMode::Off,
+            entries: vec![
+                PlaylistEntrySpec {
+                    id: 1,
+                    input: wire(2),
+                    duration_frames: 10,
+                    transition: PlaylistTransitionKind::Cut,
+                    transition_frames: 0,
+                    enabled: true,
+                },
+                PlaylistEntrySpec {
+                    id: 2,
+                    input: wire(3),
+                    duration_frames: 10,
+                    transition: PlaylistTransitionKind::Fade,
+                    transition_frames: 4,
+                    enabled: true,
+                },
+            ],
+        }
+    }
+
+    fn start_after(frames: u64) -> CommandPayload {
+        CommandPayload::PlaylistControl {
+            operation: PlaylistOperation::Start {
+                at: PlaylistStart::AfterFrames(frames),
+                from: None,
+            },
+        }
+    }
+
+    fn denied(submission: &CommandSubmission) -> bool {
+        matches!(
+            &submission.output.result,
+            CommandResult::Rejected { code, .. } if code == "permission_denied"
+        )
+    }
+
+    fn accepted_frame(submission: &CommandSubmission) -> u64 {
+        let CommandResult::Accepted {
+            scheduled_frame: Some(frame),
+            ..
+        } = submission.output.result
+        else {
+            panic!("expected acceptance: {:?}", submission.output.result);
+        };
+        frame
+    }
+
+    fn submit_with_ticks(
+        control: &mut ControlService,
+        id: &str,
+        payload: CommandPayload,
+    ) -> (CommandSubmission, u64) {
+        let prepared = prepared(
+            control
+                .prepare_submit(&principal(Role::Admin), command(id, id, payload), 0)
+                .unwrap(),
+        );
+        let ticks = prepared.playlist_ticks();
+        (prepared.commit().unwrap(), ticks)
+    }
+
+    #[test]
+    fn authorization_matrix_covers_every_playlist_command() {
+        let cases = [
+            (Role::Viewer, set_playlist(), false),
+            (Role::Viewer, start_after(0), false),
+            (Role::Graphics, set_playlist(), true),
+            (Role::Graphics, start_after(0), false),
+            (Role::Operator, set_playlist(), false),
+            (Role::Operator, start_after(0), true),
+            (
+                Role::Operator,
+                CommandPayload::PlaylistAdvance { frame: 0 },
+                true,
+            ),
+            (Role::Audio, start_after(0), false),
+            (Role::Admin, set_playlist(), true),
+            (Role::Admin, start_after(0), true),
+        ];
+        for (index, (role, payload, allowed)) in cases.into_iter().enumerate() {
+            let mut control = service(8, 8);
+            let submission = control
+                .submit(
+                    &principal(role),
+                    command(&format!("c{index}"), &format!("k{index}"), payload.clone()),
+                    0,
+                )
+                .unwrap();
+            assert_eq!(
+                !denied(&submission),
+                allowed,
+                "{role:?} {payload:?}: {:?}",
+                submission.output.result
+            );
+        }
+    }
+
+    #[test]
+    fn scheduled_go_cuts_and_fades_program_on_the_exact_frames() {
+        let mut control = service(16, 16);
+        let (set, ticks) = submit_with_ticks(&mut control, "set", set_playlist());
+        assert_eq!(ticks, 1);
+        let EventPayload::PlaylistChanged {
+            frame,
+            loop_mode,
+            entries,
+            state,
+            program,
+            preview,
+        } = &set.output.events[0].payload
+        else {
+            panic!("expected playlist_changed: {:?}", set.output.events);
+        };
+        assert_eq!(
+            (*frame, *loop_mode, entries.len(), *state),
+            (0, PlaylistLoopMode::Off, 2, PlaylistRunState::Stopped)
+        );
+        assert_eq!((*program, *preview), (wire(1), wire(2)));
+        control.tick(&server_identity()).unwrap();
+
+        let (start, ticks) = submit_with_ticks(&mut control, "start", start_after(4));
+        assert_eq!((accepted_frame(&start), ticks), (1, 1));
+        assert!(matches!(
+            start.output.events[0].payload,
+            EventPayload::PlaylistChanged {
+                state: PlaylistRunState::Armed {
+                    start_frame: 5,
+                    from: None
+                },
+                ..
+            }
+        ));
+        control.tick(&server_identity()).unwrap();
+        assert_eq!(control.engine.playlist_advance_frame(), Some(5));
+
+        let wrong = control
+            .submit(
+                &principal(Role::Admin),
+                command(
+                    "early",
+                    "early",
+                    CommandPayload::PlaylistAdvance { frame: 4 },
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(!wrong.is_accepted());
+
+        // Accepted ahead at frame 2, realized on exactly frame 5.
+        let (go, ticks) = submit_with_ticks(
+            &mut control,
+            "go-1",
+            CommandPayload::PlaylistAdvance { frame: 5 },
+        );
+        assert_eq!((accepted_frame(&go), ticks), (5, 4));
+        let EventPayload::PlaylistChanged {
+            frame,
+            state,
+            program,
+            ..
+        } = &go.output.events[0].payload
+        else {
+            panic!("expected playlist_changed");
+        };
+        assert_eq!((*frame, *program), (5, wire(2)));
+        assert!(matches!(
+            state,
+            PlaylistRunState::Playing {
+                entry: 1,
+                started_frame: 5,
+                ..
+            }
+        ));
+        for expected_frame in 2..5 {
+            let tick = control.tick(&server_identity()).unwrap();
+            assert_eq!(tick.frame.frame.get(), expected_frame);
+            assert_eq!(tick.frame.program.primary, input(1));
+            assert_eq!(tick.runtime_events, Vec::new());
+        }
+        let tick = control.tick(&server_identity()).unwrap();
+        assert_eq!(tick.frame.frame.get(), 5);
+        assert_eq!(tick.frame.program.primary, input(2));
+        assert_eq!(tick.runtime_events.len(), 1);
+        assert!(control.idle_engine_snapshot().is_ok());
+
+        // The second entry fades in from frame 15 for four frames.
+        for _ in 6..15 {
+            control.tick(&server_identity()).unwrap();
+        }
+        assert_eq!(control.engine.playlist_advance_frame(), Some(15));
+        let (go, ticks) = submit_with_ticks(
+            &mut control,
+            "go-2",
+            CommandPayload::PlaylistAdvance { frame: 15 },
+        );
+        assert_eq!((accepted_frame(&go), ticks), (15, 4));
+        let mut realized = Vec::new();
+        for _ in 0..ticks {
+            let tick = control.tick(&server_identity()).unwrap();
+            realized.extend(tick.runtime_events);
+        }
+        assert_eq!(realized.len(), 1);
+        assert_eq!(control.engine.realized_switcher().program(), input(3));
+        assert!(control.idle_engine_snapshot().is_ok());
+    }
+}

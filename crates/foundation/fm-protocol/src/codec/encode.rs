@@ -7,13 +7,17 @@ use crate::{
     EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload, FadeToBlackState,
     HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
     HeartbeatMessage, InputAudioStripStatus, LiveInputSource, MAX_AUDIO_METER_CHANNELS,
-    ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, ResumeCursor,
-    RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
-    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
-    StingerReadiness, StingerStatus, StreamStatusMessage, StructuredError, TitleFieldUpdate,
-    TitleStateMessage, WireMessage,
+    ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage, OverlayStatus,
+    PlaylistOperation, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
+    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
+    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
+    StructuredError, TitleFieldUpdate, TitleStateMessage, WireMessage,
 };
 
+use super::playlist::{
+    encode_optional_entry, encode_playlist_entries, encode_playlist_start, encode_playlist_state,
+    playlist_loop,
+};
 use super::title::{
     encode_title_field_names, encode_title_fields, encode_title_summaries, title_air_requirement,
     validate_title_name,
@@ -188,6 +192,9 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         payload @ (CommandPayload::SetTitleFields { .. }
         | CommandPayload::TakeTitle { .. }
         | CommandPayload::TitleOffAir { .. }) => encode_title_command(record, payload)?,
+        payload @ (CommandPayload::SetPlaylist { .. }
+        | CommandPayload::PlaylistControl { .. }
+        | CommandPayload::PlaylistAdvance { .. }) => encode_playlist_command(record, payload)?,
         payload @ CommandPayload::SetInputAudioStrip { .. } => {
             encode_input_audio_strip_command(record, payload)?;
         }
@@ -329,6 +336,41 @@ fn encode_title_command(record: &mut Record, payload: &CommandPayload) -> Result
             record.field("input", input)
         }
         _ => unreachable!("only title commands are delegated"),
+    }
+}
+
+fn encode_playlist_command(
+    record: &mut Record,
+    payload: &CommandPayload,
+) -> Result<(), CodecError> {
+    match payload {
+        CommandPayload::SetPlaylist { loop_mode, entries } => {
+            let entries = encode_playlist_entries(entries)?;
+            record.field("payload", "playlist_set")?;
+            record.field("loop", playlist_loop(*loop_mode))?;
+            record.field_string("entries", entries)
+        }
+        CommandPayload::PlaylistControl { operation } => match *operation {
+            PlaylistOperation::Start { at, from } => {
+                record.field("payload", "playlist_start")?;
+                record.field_string("start", encode_playlist_start(at))?;
+                record.field_string("from", encode_optional_entry(from))
+            }
+            PlaylistOperation::Stop => record.field("payload", "playlist_stop"),
+            PlaylistOperation::Pause => record.field("payload", "playlist_pause"),
+            PlaylistOperation::Resume => record.field("payload", "playlist_resume"),
+            PlaylistOperation::Next => record.field("payload", "playlist_next"),
+            PlaylistOperation::Previous => record.field("payload", "playlist_previous"),
+            PlaylistOperation::Jump { entry } => {
+                record.field("payload", "playlist_jump")?;
+                record.field("entry", entry)
+            }
+        },
+        CommandPayload::PlaylistAdvance { frame } => {
+            record.field("payload", "playlist_advance")?;
+            record.field("frame", frame)
+        }
+        _ => unreachable!("only playlist commands are delegated"),
     }
 }
 
@@ -968,8 +1010,31 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field_string("fields", fields)?;
             encode_overlays(record, "overlays", overlays)?;
         }
+        payload @ EventPayload::PlaylistChanged { .. } => encode_playlist_changed(record, payload)?,
     }
     encode_edit_history(record, &message.edit_history, message.cursor.revision)
+}
+
+fn encode_playlist_changed(record: &mut Record, payload: &EventPayload) -> Result<(), CodecError> {
+    let EventPayload::PlaylistChanged {
+        frame,
+        loop_mode,
+        entries,
+        state,
+        program,
+        preview,
+    } = payload
+    else {
+        unreachable!("only playlist_changed is delegated");
+    };
+    let entries = encode_playlist_entries(entries)?;
+    record.field("event", "playlist_changed")?;
+    record.field("frame", frame)?;
+    record.field("loop", playlist_loop(*loop_mode))?;
+    record.field_string("entries", entries)?;
+    record.field_string("state", encode_playlist_state(*state))?;
+    record.field("program", program)?;
+    record.field("preview", preview)
 }
 
 fn encode_server_identity(

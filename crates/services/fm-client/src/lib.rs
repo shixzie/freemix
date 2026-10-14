@@ -996,7 +996,10 @@ impl Client {
             | CommandPayload::SetEditLock { .. }
             | CommandPayload::SetTitleFields { .. }
             | CommandPayload::TakeTitle { .. }
-            | CommandPayload::TitleOffAir { .. } => None,
+            | CommandPayload::TitleOffAir { .. }
+            | CommandPayload::SetPlaylist { .. }
+            | CommandPayload::PlaylistControl { .. }
+            | CommandPayload::PlaylistAdvance { .. } => None,
         };
         self.model
             .track_command(CommandId::new(command.id.clone()), optimistic)?;

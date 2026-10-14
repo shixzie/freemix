@@ -393,6 +393,11 @@ pub fn playlist_from_model(model: &fm_model::Playlist) -> Result<Playlist, Playl
 }
 
 /// The persisted form of a live playlist.
+///
+/// # Panics
+///
+/// Never for a playlist the engine built: its durations are fixed and its
+/// transitions bounded.
 #[must_use]
 pub fn playlist_to_model(playlist: &Playlist) -> fm_model::Playlist {
     let snapshot = playlist.snapshot();

@@ -882,6 +882,113 @@ pub enum CommandPayload {
     TitleOffAir {
         input: WireInputId,
     },
+    /// Replaces the playlist's entries and loop mode while it is stopped or
+    /// finished. A project edit.
+    SetPlaylist {
+        loop_mode: PlaylistLoopMode,
+        entries: Vec<PlaylistEntrySpec>,
+    },
+    /// Controls the playlist on the command's target frame.
+    PlaylistControl {
+        operation: PlaylistOperation,
+    },
+    /// The authority's playlist clock: takes the entry due on `frame` to
+    /// Program on exactly that frame. Accepted only for the frame the
+    /// playlist is due on (or the next frame when that has passed).
+    PlaylistAdvance {
+        frame: u64,
+    },
+}
+
+/// Most entries one playlist may hold; one `entries` list fits one record.
+pub const MAX_PLAYLIST_ENTRIES: usize = 256;
+/// Longest playlist entry in frames.
+pub const MAX_PLAYLIST_ENTRY_FRAMES: u64 = 7 * 24 * 60 * 60 * 1000;
+/// Longest playlist transition in frames.
+pub const MAX_PLAYLIST_TRANSITION_FRAMES: u32 = 3_600;
+
+/// What happens when the on-air playlist entry ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaylistLoopMode {
+    Off,
+    All,
+    One,
+}
+
+/// The Program transition that brings a playlist entry on air.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaylistTransitionKind {
+    Cut,
+    Fade,
+    AlphaFade,
+    Wipe,
+    Slide,
+    Zoom,
+}
+
+/// One playlist row. Durations are in frames; a cut has zero transition
+/// frames and every other kind between one and
+/// [`MAX_PLAYLIST_TRANSITION_FRAMES`], no longer than the entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PlaylistEntrySpec {
+    pub id: u64,
+    pub input: WireInputId,
+    pub duration_frames: u64,
+    pub transition: PlaylistTransitionKind,
+    pub transition_frames: u32,
+    pub enabled: bool,
+}
+
+/// When a started playlist puts its first entry on air.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaylistStart {
+    /// On the command's target frame.
+    Now,
+    /// This many frames after the command's target frame.
+    AfterFrames(u64),
+    /// On this absolute frame.
+    AtFrame(u64),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaylistOperation {
+    Start {
+        at: PlaylistStart,
+        from: Option<u64>,
+    },
+    Stop,
+    Pause,
+    Resume,
+    Next,
+    Previous,
+    Jump {
+        entry: u64,
+    },
+}
+
+/// The playlist's automation state. Frames are engine frame numbers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlaylistRunState {
+    Stopped,
+    Armed {
+        start_frame: u64,
+        from: Option<u64>,
+    },
+    Playing {
+        entry: u64,
+        take: u64,
+        cycle: u64,
+        started_frame: u64,
+    },
+    Paused {
+        entry: u64,
+        take: u64,
+        cycle: u64,
+        elapsed_frames: u64,
+    },
+    Finished {
+        last: Option<u64>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1060,6 +1167,17 @@ pub enum EventPayload {
         field_revision: u64,
         fields: Vec<TitleFieldUpdate>,
         overlays: Vec<OverlayStatus>,
+    },
+    /// A playlist command was accepted for `frame`: the complete playlist
+    /// afterwards and the desired Program and Preview. When the command put
+    /// an entry on air, its input reaches Program on exactly `frame`.
+    PlaylistChanged {
+        frame: u64,
+        loop_mode: PlaylistLoopMode,
+        entries: Vec<PlaylistEntrySpec>,
+        state: PlaylistRunState,
+        program: WireInputId,
+        preview: WireInputId,
     },
 }
 

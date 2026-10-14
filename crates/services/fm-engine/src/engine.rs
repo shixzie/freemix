@@ -795,6 +795,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn execute_immediate(
         &mut self,
         envelope: CommandEnvelope<EngineCommand>,

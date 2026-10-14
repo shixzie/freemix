@@ -10,14 +10,18 @@ use crate::{
     HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioMeters, InputAudioStripStatus,
     LiveInputSource, MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin,
-    MonitorTap, OverlayStatus, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
-    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
-    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
-    StreamStatusMessage, StreamStatusSample, StructuredError, TitleFieldStatus, TitleStateMessage,
-    WireInputId, WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot,
-    WireStingerSlotId, WireStreamTargetId,
+    MonitorTap, OverlayStatus, PlaylistOperation, ResumeCursor, RuntimeEventMessage,
+    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
+    StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample, StructuredError,
+    TitleFieldStatus, TitleStateMessage, WireInputId, WireMessage, WireOutputId,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 
+use super::playlist::{
+    decode_optional_entry, decode_playlist_entries, decode_playlist_start, decode_playlist_state,
+    parse_playlist_loop,
+};
 use super::title::{
     decode_title_field_names, decode_title_fields, decode_title_summaries,
     parse_title_air_requirement, validate_title_name,
@@ -412,6 +416,7 @@ fn decode_command_payload(
         title @ ("title_fields" | "title_take" | "title_off_air") => {
             decode_title_command(fields, title)?
         }
+        name if name.starts_with("playlist_") => decode_playlist_command(fields, name)?,
         _ => {
             return Err(CodecError::InvalidField {
                 field: "payload",
@@ -419,6 +424,43 @@ fn decode_command_payload(
             });
         }
     })
+}
+
+/// Decodes the playlist commands: list edit, controls, and clock advance.
+fn decode_playlist_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
+    let operation = match name {
+        "playlist_set" => {
+            return Ok(CommandPayload::SetPlaylist {
+                loop_mode: parse_playlist_loop(fields.required("loop")?)?,
+                entries: decode_playlist_entries(&fields.required("entries")?)?,
+            });
+        }
+        "playlist_advance" => {
+            return Ok(CommandPayload::PlaylistAdvance {
+                frame: fields.canonical_required("frame")?,
+            });
+        }
+        "playlist_start" => {
+            let at = decode_playlist_start(fields.required("start")?)?;
+            let from = decode_optional_entry("from", fields.required("from")?)?;
+            PlaylistOperation::Start { at, from }
+        }
+        "playlist_stop" => PlaylistOperation::Stop,
+        "playlist_pause" => PlaylistOperation::Pause,
+        "playlist_resume" => PlaylistOperation::Resume,
+        "playlist_next" => PlaylistOperation::Next,
+        "playlist_previous" => PlaylistOperation::Previous,
+        "playlist_jump" => PlaylistOperation::Jump {
+            entry: fields.canonical_required("entry")?,
+        },
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "payload",
+                value: name.to_owned(),
+            });
+        }
+    };
+    Ok(CommandPayload::PlaylistControl { operation })
 }
 
 /// Decodes the title commands: field save, take, and off-air.
@@ -1176,6 +1218,14 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             field_revision: fields.canonical_required("field_revision")?,
             fields: decode_title_fields(&fields.required("fields")?)?,
             overlays: decode_overlays(fields, "overlays")?,
+        },
+        "playlist_changed" => EventPayload::PlaylistChanged {
+            frame: fields.canonical_required("frame")?,
+            loop_mode: parse_playlist_loop(fields.required("loop")?)?,
+            entries: decode_playlist_entries(&fields.required("entries")?)?,
+            state: decode_playlist_state(fields.required("state")?)?,
+            program: fields.canonical_input("program")?,
+            preview: fields.canonical_input("preview")?,
         },
         _ => {
             return Err(CodecError::InvalidField {

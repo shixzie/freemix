@@ -104,9 +104,12 @@ pub fn execute(
 ) -> RemoteResult<()> {
     let completion = CommandCompletion::for_payload(&payload);
     let role = match completion {
-        CommandCompletion::Project | CommandCompletion::Padlock => Role::Graphics,
+        CommandCompletion::Project
+        | CommandCompletion::Padlock
+        | CommandCompletion::Playlist { edit: true } => Role::Graphics,
         CommandCompletion::Audio => Role::Audio,
         CommandCompletion::Switcher
+        | CommandCompletion::Playlist { edit: false }
         | CommandCompletion::TitleTake {
             edits_fields: false,
         } => Role::Operator,
@@ -139,6 +142,11 @@ enum CommandCompletion {
     TitleTake {
         edits_fields: bool,
     },
+    /// A playlist edit (`project`) or control (`switcher`): completes on
+    /// `playlist_changed` and that domain's realization.
+    Playlist {
+        edit: bool,
+    },
 }
 
 impl CommandCompletion {
@@ -155,15 +163,21 @@ impl CommandCompletion {
             CommandPayload::TakeTitle { fields, .. } => Self::TitleTake {
                 edits_fields: !fields.is_empty(),
             },
+            CommandPayload::SetPlaylist { .. } => Self::Playlist { edit: true },
+            CommandPayload::PlaylistControl { .. } | CommandPayload::PlaylistAdvance { .. } => {
+                Self::Playlist { edit: false }
+            }
             _ => Self::Switcher,
         }
     }
 
     fn realizes(self, domain: &str) -> bool {
         match self {
-            Self::Project | Self::Padlock => domain == "project",
+            Self::Project | Self::Padlock | Self::Playlist { edit: true } => domain == "project",
             Self::Audio => domain == "audio",
-            Self::Switcher | Self::TitleTake { .. } => domain == "switcher",
+            Self::Switcher | Self::TitleTake { .. } | Self::Playlist { edit: false } => {
+                domain == "switcher"
+            }
             Self::History => matches!(domain, "project" | "switcher"),
         }
     }
@@ -374,7 +388,11 @@ impl Remote {
                             CommandCompletion::Project
                                 | CommandCompletion::Padlock
                                 | CommandCompletion::TitleTake { .. }
+                                | CommandCompletion::Playlist { .. }
                         ),
+                        EventPayload::PlaylistChanged { .. } => {
+                            matches!(completion, CommandCompletion::Playlist { .. })
+                        }
                     };
                     if matches_revision && !expected_event {
                         return Err(RemoteFailure(
@@ -443,6 +461,15 @@ impl Remote {
             format_edit_history(state.edit_history()),
             format_titles(state.titles()),
         );
+        if let Some(playlist) = state.playlist() {
+            println!(
+                "Playlist(frame={}, loop={:?}, state={:?}, entries={})",
+                playlist.frame,
+                playlist.loop_mode,
+                playlist.state,
+                playlist.entries.len()
+            );
+        }
         if let Some(status) = &self.latest_stream_status {
             for sample in &status.samples {
                 println!(

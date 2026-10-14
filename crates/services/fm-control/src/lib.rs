@@ -16,6 +16,7 @@ use std::{
 };
 
 mod automation;
+mod playlist;
 
 pub use automation::{
     ArmTimeAuthority, AuthorityResolver, AutomationBinding, AutomationError, AutomationIdentity,
@@ -364,6 +365,33 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
             .overlay_channels_showing(input)
             .next();
         channel.map_or(1, |channel| self.overlay_transition_ticks(channel))
+    }
+
+    /// Returns the number of frames needed to realize a playlist command:
+    /// up to and including its target frame (a playlist advance may target
+    /// a later frame), plus the rest of any Program transition it started.
+    /// A refusal needs one frame.
+    #[must_use]
+    pub fn playlist_ticks(&self) -> u64 {
+        let Some(accepted) = &self.submission.accepted else {
+            return 1;
+        };
+        let Some(acceptance) = accepted.receipt.accepted() else {
+            return 1;
+        };
+        let cursor = self.control.engine.frame_cursor().get();
+        let target = acceptance.result.target_frame.get();
+        let transition = accepted
+            .events
+            .iter()
+            .find_map(|event| match &event.payload {
+                EngineEvent::PlaylistChanged { cue: Some(cue), .. } => {
+                    Some(cue.transition.duration_ms)
+                }
+                _ => None,
+            })
+            .unwrap_or(0);
+        target.saturating_sub(cursor) + transition.max(1)
     }
 
     /// Atomically installs the staged decision and then applies control side effects.
@@ -727,6 +755,13 @@ impl<A: AuthorizationHook> ControlService<A> {
     /// Returns an engine pacing error when the next deadline is not representable.
     pub fn next_frame_deadline(&self) -> Result<fm_clock::ClockTime, ControlError> {
         self.engine.next_frame_deadline().map_err(Into::into)
+    }
+
+    /// Returns the only frame a `playlist_advance` is accepted for, or
+    /// `None` while no playlist boundary is pending.
+    #[must_use]
+    pub fn playlist_advance_frame(&self) -> Option<u64> {
+        self.engine.playlist_advance_frame()
     }
 
     /// Projects the next deterministic frame without advancing authority state.
@@ -1241,7 +1276,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::AddInput { .. }
         | EngineCommand::RemoveInput { .. }
         | EngineCommand::SetEditLock { .. }
-        | EngineCommand::SetTitleFields { .. } => "project",
+        | EngineCommand::SetTitleFields { .. }
+        | EngineCommand::SetPlaylist { .. } => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         _ => "switcher",
     }
@@ -1270,7 +1306,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::Undo { .. }
         | CommandPayload::Redo { .. }
         | CommandPayload::SetEditLock { .. }
-        | CommandPayload::SetTitleFields { .. } => CommandClass::EditProject,
+        | CommandPayload::SetTitleFields { .. }
+        | CommandPayload::SetPlaylist { .. } => CommandClass::EditProject,
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
@@ -1301,7 +1338,9 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::StreamStart { .. }
         | CommandPayload::StreamStop { .. }
         | CommandPayload::RecordStart { .. }
-        | CommandPayload::RecordStop { .. } => CommandClass::Transition,
+        | CommandPayload::RecordStop { .. }
+        | CommandPayload::PlaylistControl { .. }
+        | CommandPayload::PlaylistAdvance { .. } => CommandClass::Transition,
     }
 }
 
@@ -1412,6 +1451,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::SetTitleFields { .. }
         | CommandPayload::TakeTitle { .. }
         | CommandPayload::TitleOffAir { .. }) => title_engine_command(payload),
+        payload @ (CommandPayload::SetPlaylist { .. }
+        | CommandPayload::PlaylistControl { .. }
+        | CommandPayload::PlaylistAdvance { .. }) => playlist::playlist_engine_command(payload),
     }
 }
 
@@ -1902,6 +1944,11 @@ const fn is_program_transition(command: &EngineCommand) -> bool {
             | EngineCommand::Zoom { .. }
             | EngineCommand::Stinger { .. }
             | EngineCommand::Wipe { .. }
+            // A playlist operation may take an entry to Program with a
+            // transition; it is realized once the realized switcher matches
+            // the desired one, which is immediate when it cut or took nothing.
+            | EngineCommand::PlaylistControl(_)
+            | EngineCommand::PlaylistAdvance { .. }
     )
 }
 
@@ -2001,6 +2048,14 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
         })
     {
         return title_changed(engine, input);
+    }
+    if let Some(frame) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::PlaylistChanged { frame, .. } = &event.payload else {
+            return None;
+        };
+        Some(*frame)
+    }) {
+        return playlist::playlist_changed(engine, frame);
     }
     if let Some((scope, locked)) = outcome.events.iter().find_map(|event| {
         let EngineEvent::EditLockChanged { scope, locked } = &event.payload else {

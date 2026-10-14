@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.24 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.25 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -253,6 +253,50 @@ Protocol 2.24 adds live title field state:
   names exceed the `title_state` bounds, or whose persisted values do not
   match it stops the daemon at startup naming the input.
 - Clients apply no optimistic change for title commands.
+
+Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
+
+- Every playlist time is an engine frame: `duration_frames` (1..=604800000),
+  `transition_frames`, and the frames in `start` and `state`. Entries are
+  `<id>:<input>:<duration frames>:<cut|fade|alpha_fade|wipe|slide|zoom>:<transition frames>:<0|1>`
+  (the last item is `enabled`), comma-separated, unique IDs, at most 256. A
+  cut has zero transition frames; every other kind 1..=3600, no longer than
+  its entry.
+- `payload=playlist_set` carries `loop=off|all|one` and `entries` (possibly
+  empty). It replaces the list while the playlist is stopped or finished, is
+  a project edit (`EditProject`) without an undo entry, and realizes in
+  `project`. Entries must name show inputs, and an input a playlist entry
+  names cannot be removed.
+- `payload=playlist_start start=now|after:<frames>|at:<frame> from=-|<entry>`,
+  `playlist_stop`, `playlist_pause`, `playlist_resume`, `playlist_next`,
+  `playlist_previous`, and `playlist_jump entry=<id>` are transitions
+  (Operator, Admin) taking effect on the command's target frame. An
+  operation that puts an entry on air selects its input and takes it to
+  Program with the entry's transition on that frame, as the same revision.
+- `payload=playlist_advance frame=<frame>` is the authority's playlist clock:
+  it processes every boundary up to `frame` and takes the entry then on air
+  to Program on exactly that frame. The engine accepts it only for the due
+  boundary (or the next frame once that has passed), ahead of time, and
+  accepts no other command until it is realized. Clients may not send it:
+  `freemixd` refuses it with `unavailable`. The simulated daemon's clock
+  anchors the engine frame cursor to wall time once a boundary is pending,
+  journals the advance under the key `playlist-clock-<revision>-<frame>` when
+  wall time reaches the boundary, and renders the frames up to it and
+  through the entry's transition, so journal replay reproduces the exact
+  frames. After a refusal it retries only once another command changed the
+  revision. A native-media daemon refuses playlist control with
+  `unavailable`; it still accepts `playlist_set`.
+- Every accepted playlist command publishes `event=playlist_changed` with
+  `frame` (its target frame), `loop`, the complete `entries`, `state`
+  (`stopped`, `armed:<start frame>:<from|->`,
+  `playing:<entry>:<take>:<cycle>:<started frame>`,
+  `paused:<entry>:<take>:<cycle>:<elapsed frames>`, or `finished:<last|->`),
+  and the desired `program` and `preview`.
+- Snapshots do not carry the playlist; a client learns it from the next
+  `playlist_changed`.
+- Durability: the project (schema 28) persists the playlist with its
+  automation state, and a restored daemon resumes it on the same frames.
+- Clients apply no optimistic change for playlist commands.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

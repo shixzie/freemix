@@ -99,6 +99,7 @@ mod monitor_tap;
 #[cfg(feature = "native-media")]
 mod native_titles;
 mod non_native_sessions;
+mod playlist_clock;
 // The network preflight is wired only into the native daemon; every helper
 // still compiles (and is unit-tested) in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
@@ -8934,6 +8935,7 @@ fn restore_engine_with_titles(
     restore_overlays(&mut show, &mut realized, project.runtime_overlays())?;
     restore_edit_locks(&mut show, canonical)?;
     restore_titles(&mut show, canonical, title_templates)?;
+    show.set_playlist(fm_engine::playlist_from_model(canonical.playlist())?)?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -9525,7 +9527,11 @@ fn execute_session_command(
     Ok(delivery)
 }
 
-#[allow(clippy::too_many_arguments, clippy::used_underscore_binding)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::used_underscore_binding
+)]
 fn execute_admitted_command(
     control: &SharedControl,
     store: &dyn DurableStore,
@@ -9539,6 +9545,19 @@ fn execute_admitted_command(
 ) -> AppResult<CommandDelivery> {
     let execution = {
         let mut control = control.borrow_mut();
+        if let Some(result) = playlist_clock::playlist_command_refusal(
+            command,
+            native.is_some(),
+            control.diagnostics().current_revision,
+        ) {
+            return Ok(CommandDelivery {
+                result,
+                #[cfg(test)]
+                events: Vec::new(),
+                #[cfg(test)]
+                runtime_events: Vec::new(),
+            });
+        }
         if let Some(native) = native {
             if matches!(
                 command.payload,
@@ -10220,7 +10239,7 @@ fn execute_durable_command_with_ticks(
     // live input addition both know the input kind they persist.
     let journaled = prepared.replay_command(command);
     let staged = prepared
-        .project(u64::from(ticks))
+        .project(ticks)
         .map_err(Into::into)
         .and_then(|projected| {
             stored_project_from_snapshot(
@@ -10279,8 +10298,18 @@ fn execute_durable_command_with_ticks(
 fn command_ticks(
     command: &CommandMessage,
     prepared: &fm_control::PreparedSubmission<'_, Policy>,
-) -> u32 {
-    match command.payload {
+) -> u64 {
+    // A playlist command may target a later frame and start a Program
+    // transition there.
+    if matches!(
+        command.payload,
+        CommandPayload::SetPlaylist { .. }
+            | CommandPayload::PlaylistControl { .. }
+            | CommandPayload::PlaylistAdvance { .. }
+    ) {
+        return prepared.playlist_ticks();
+    }
+    u64::from(match command.payload {
         CommandPayload::Fade { duration_frames }
         | CommandPayload::AlphaFade { duration_frames }
         | CommandPayload::Slide { duration_frames }
@@ -10332,8 +10361,11 @@ fn command_ticks(
         | CommandPayload::Redo { .. }
         | CommandPayload::SetEditLock { .. }
         | CommandPayload::AddInput { .. }
-        | CommandPayload::RemoveInput { .. } => 1,
-    }
+        | CommandPayload::RemoveInput { .. }
+        | CommandPayload::SetPlaylist { .. }
+        | CommandPayload::PlaylistControl { .. }
+        | CommandPayload::PlaylistAdvance { .. } => 1,
+    })
 }
 
 fn stored_project_from_snapshot(
@@ -10463,6 +10495,7 @@ fn stored_project_with_receipts(
     sync_project_recording(&mut project, desired);
     sync_project_edit_locks(&mut project, show)?;
     sync_project_titles(&mut project, show)?;
+    project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {

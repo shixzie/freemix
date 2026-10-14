@@ -673,6 +673,13 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// A playlist edit or control sent to a running daemon.
+    RemotePlaylist {
+        address: SocketAddr,
+        payload: fm_protocol::CommandPayload,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     RemoteUndo {
         address: SocketAddr,
         redo: bool,
@@ -1141,6 +1148,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-input-remove" => parse_remote_input_remove(arguments),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
+        "remote-playlist" => parse_remote_playlist(arguments),
         "remote-undo" => parse_remote_history(false, arguments),
         "remote-redo" => parse_remote_history(true, arguments),
         "remote-lock" => parse_remote_lock(arguments),
@@ -3012,6 +3020,131 @@ fn parse_remote_cut(mut arguments: impl Iterator<Item = String>) -> Result<Comma
     })
 }
 
+/// Parses `remote-playlist <address> <operation> ...`:
+///
+/// * `set <off|all|one> <entries>` where `<entries>` is a comma-separated
+///   list of `<id>:<input>:<frames>:<cut|fade|alpha_fade|wipe|slide|zoom>:<transition frames>:<0|1>`
+///   (empty with `-`);
+/// * `start [now|after:<frames>|at:<frame>] [--from <entry>]`;
+/// * `stop`, `pause`, `resume`, `next`, `previous`, or `jump <entry>`.
+fn parse_remote_playlist(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    use fm_protocol::{CommandPayload, PlaylistLoopMode, PlaylistOperation, PlaylistStart};
+
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let operation = required(&mut arguments, "playlist operation")?;
+    let control = |operation| CommandPayload::PlaylistControl { operation };
+    let mut rest = Vec::new();
+    let payload = match operation.as_str() {
+        "set" => {
+            let loop_mode = match required(&mut arguments, "loop mode")?.as_str() {
+                "off" => PlaylistLoopMode::Off,
+                "all" => PlaylistLoopMode::All,
+                "one" => PlaylistLoopMode::One,
+                other => {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "loop mode",
+                        value: other.to_owned(),
+                    });
+                }
+            };
+            let entries = required(&mut arguments, "playlist entries")?;
+            CommandPayload::SetPlaylist {
+                loop_mode,
+                entries: playlist_entries(&entries)?,
+            }
+        }
+        "start" => {
+            let mut at = PlaylistStart::Now;
+            let mut from = None;
+            while let Some(argument) = arguments.next() {
+                if argument == "--from" {
+                    from = Some(number(&required(&mut arguments, "entry")?, "entry")?);
+                } else if argument == "now" {
+                    at = PlaylistStart::Now;
+                } else if let Some(frames) = argument.strip_prefix("after:") {
+                    at = PlaylistStart::AfterFrames(number(frames, "start frames")?);
+                } else if let Some(frame) = argument.strip_prefix("at:") {
+                    at = PlaylistStart::AtFrame(number(frame, "start frame")?);
+                } else {
+                    rest.push(argument);
+                    rest.extend(arguments.by_ref());
+                }
+            }
+            control(PlaylistOperation::Start { at, from })
+        }
+        "stop" => control(PlaylistOperation::Stop),
+        "pause" => control(PlaylistOperation::Pause),
+        "resume" => control(PlaylistOperation::Resume),
+        "next" => control(PlaylistOperation::Next),
+        "previous" => control(PlaylistOperation::Previous),
+        "jump" => control(PlaylistOperation::Jump {
+            entry: number(&required(&mut arguments, "entry")?, "entry")?,
+        }),
+        other => {
+            return Err(ArgsError::InvalidChoice {
+                field: "playlist operation",
+                value: other.to_owned(),
+            });
+        }
+    };
+    rest.extend(arguments);
+    let (key, expected_revision) = command_options(rest.into_iter())?;
+    Ok(Command::RemotePlaylist {
+        address,
+        payload,
+        key,
+        expected_revision,
+    })
+}
+
+fn playlist_entries(value: &str) -> Result<Vec<fm_protocol::PlaylistEntrySpec>, ArgsError> {
+    use fm_protocol::PlaylistTransitionKind;
+
+    if value == "-" {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(|item| {
+            let invalid = || ArgsError::InvalidChoice {
+                field: "playlist entry",
+                value: item.to_owned(),
+            };
+            let parts: Vec<_> = item.split(':').collect();
+            let [id, input, frames, transition, transition_frames, enabled] = parts[..] else {
+                return Err(invalid());
+            };
+            Ok(fm_protocol::PlaylistEntrySpec {
+                id: id.parse().map_err(|_| invalid())?,
+                input: input
+                    .parse::<u128>()
+                    .ok()
+                    .and_then(core::num::NonZeroU128::new)
+                    .map(fm_protocol::WireInputId::new)
+                    .ok_or_else(invalid)?,
+                duration_frames: frames.parse().map_err(|_| invalid())?,
+                transition: match transition {
+                    "cut" => PlaylistTransitionKind::Cut,
+                    "fade" => PlaylistTransitionKind::Fade,
+                    "alpha_fade" => PlaylistTransitionKind::AlphaFade,
+                    "wipe" => PlaylistTransitionKind::Wipe,
+                    "slide" => PlaylistTransitionKind::Slide,
+                    "zoom" => PlaylistTransitionKind::Zoom,
+                    _ => return Err(invalid()),
+                },
+                transition_frames: transition_frames.parse().map_err(|_| invalid())?,
+                enabled: match enabled {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(invalid()),
+                },
+            })
+        })
+        .collect()
+}
+
 /// Parses `remote-undo|remote-redo <address> [--edit <revision>] [--key <key>]
 /// [--expect <revision>]`. `--edit` names the edit the operator expects to
 /// revert so a concurrent editor's newer edit is refused, not reverted.
@@ -4168,6 +4301,99 @@ mod tests {
             ArgsError::InvalidRecorder("nope".into()).to_string(),
             "invalid value for --recorder `nope`; expected 1 or 2"
         );
+    }
+
+    #[test]
+    fn parses_remote_playlist_operations() {
+        use fm_protocol::{
+            CommandPayload, PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistStart,
+            PlaylistTransitionKind, WireInputId,
+        };
+
+        let address: SocketAddr = "127.0.0.1:9123".parse().unwrap();
+        let playlist = |payload, key: Option<&str>| {
+            Ok(Command::RemotePlaylist {
+                address,
+                payload,
+                key: key.map(Into::into),
+                expected_revision: None,
+            })
+        };
+        let wire = |value| WireInputId::new(core::num::NonZeroU128::new(value).unwrap());
+        assert_eq!(
+            parse(strings(&[
+                "remote-playlist",
+                "127.0.0.1:9123",
+                "set",
+                "all",
+                "1:2:250:cut:0:1,2:3:100:fade:12:0",
+            ])),
+            playlist(
+                CommandPayload::SetPlaylist {
+                    loop_mode: PlaylistLoopMode::All,
+                    entries: vec![
+                        PlaylistEntrySpec {
+                            id: 1,
+                            input: wire(2),
+                            duration_frames: 250,
+                            transition: PlaylistTransitionKind::Cut,
+                            transition_frames: 0,
+                            enabled: true,
+                        },
+                        PlaylistEntrySpec {
+                            id: 2,
+                            input: wire(3),
+                            duration_frames: 100,
+                            transition: PlaylistTransitionKind::Fade,
+                            transition_frames: 12,
+                            enabled: false,
+                        },
+                    ],
+                },
+                None
+            )
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-playlist",
+                "127.0.0.1:9123",
+                "start",
+                "after:50",
+                "--from",
+                "2",
+                "--key",
+                "go",
+            ])),
+            playlist(
+                CommandPayload::PlaylistControl {
+                    operation: PlaylistOperation::Start {
+                        at: PlaylistStart::AfterFrames(50),
+                        from: Some(2),
+                    },
+                },
+                Some("go")
+            )
+        );
+        assert_eq!(
+            parse(strings(&["remote-playlist", "127.0.0.1:9123", "jump", "7"])),
+            playlist(
+                CommandPayload::PlaylistControl {
+                    operation: PlaylistOperation::Jump { entry: 7 },
+                },
+                None
+            )
+        );
+        assert!(
+            parse(strings(&[
+                "remote-playlist",
+                "127.0.0.1:9123",
+                "set",
+                "off",
+                "1:0:250:cut:0:1",
+            ]))
+            .is_err()
+        );
+        assert!(parse(strings(&["remote-playlist", "127.0.0.1:9123", "rewind"])).is_err());
     }
 
     #[test]

@@ -4673,11 +4673,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.24.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 24));
+    // The previous protocol is refused; the current one is 2.25.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 25));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 23),
+        protocol: ProtocolVersion::new(2, 24),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -4693,7 +4693,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 24)
+        ProtocolVersion::new(2, 25)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -4983,4 +4983,187 @@ fn undo_and_redo_need_the_targeted_edit_permission_through_the_daemon() {
     let settled = snapshot_of(&daemon, Role::Viewer);
     assert_eq!(input_name(&settled, 1), "Input 1");
     assert_eq!(settled.stingers, []);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery() {
+    use fm_protocol::{
+        PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistRunState, PlaylistStart,
+        PlaylistTransitionKind,
+    };
+
+    fn playlist_event(
+        client: &mut Client,
+        revision: u64,
+    ) -> (u64, PlaylistRunState, WireInputId, WireInputId) {
+        match durable_event_at(client, revision).payload {
+            EventPayload::PlaylistChanged {
+                frame,
+                state,
+                program,
+                preview,
+                ..
+            } => (frame, state, program, preview),
+            other => panic!("expected playlist_changed at {revision}, got {other:?}"),
+        }
+    }
+
+    let directory = TestDirectory::new("playlist-clock");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let store = ProjectStore::new(&project_path).unwrap();
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+
+    let entries = vec![
+        PlaylistEntrySpec {
+            id: 1,
+            input: input(2),
+            duration_frames: 10,
+            transition: PlaylistTransitionKind::Cut,
+            transition_frames: 0,
+            enabled: true,
+        },
+        PlaylistEntrySpec {
+            id: 2,
+            input: input(1),
+            duration_frames: 10,
+            transition: PlaylistTransitionKind::Fade,
+            transition_frames: 5,
+            enabled: true,
+        },
+    ];
+    admin.send(&command(
+        "set-playlist",
+        "set-playlist-key",
+        CommandPayload::SetPlaylist {
+            loop_mode: PlaylistLoopMode::Off,
+            entries: entries.clone(),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set-playlist"), 1);
+    match durable_event_at(&mut admin, 1).payload {
+        EventPayload::PlaylistChanged {
+            frame: 0,
+            loop_mode: PlaylistLoopMode::Off,
+            entries: replicated,
+            state: PlaylistRunState::Stopped,
+            ..
+        } => assert_eq!(replicated, entries),
+        other => panic!("expected the stopped playlist, got {other:?}"),
+    }
+
+    // Only the daemon's clock may advance the playlist.
+    admin.send(&command(
+        "client-advance",
+        "client-advance-key",
+        CommandPayload::PlaylistAdvance { frame: 11 },
+    ));
+    assert!(matches!(
+        admin.next_result(),
+        CommandResult::Rejected { code, current_revision: 1, .. } if code == "unavailable"
+    ));
+
+    // Started on frame 1, the first entry is due ten frames later.
+    let started_at = Instant::now();
+    admin.send(&command(
+        "start-playlist",
+        "start-playlist-key",
+        CommandPayload::PlaylistControl {
+            operation: PlaylistOperation::Start {
+                at: PlaylistStart::AfterFrames(10),
+                from: None,
+            },
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "start-playlist"), 2);
+    assert_eq!(
+        playlist_event(&mut admin, 2),
+        (
+            1,
+            PlaylistRunState::Armed {
+                start_frame: 11,
+                from: None
+            },
+            input(1),
+            input(2)
+        )
+    );
+
+    // The clock takes each entry to Program on exactly its frame, paced by
+    // wall time (25 fps), and finishes after the last one.
+    let (frame, state, program, preview) = playlist_event(&mut admin, 3);
+    assert!(
+        started_at.elapsed() >= Duration::from_millis(300),
+        "the first entry aired after {:?}",
+        started_at.elapsed()
+    );
+    assert_eq!((frame, program, preview), (11, input(2), input(1)));
+    assert!(matches!(
+        state,
+        PlaylistRunState::Playing {
+            entry: 1,
+            started_frame: 11,
+            ..
+        }
+    ));
+    let (frame, state, program, preview) = playlist_event(&mut admin, 4);
+    assert_eq!((frame, program, preview), (21, input(1), input(2)));
+    assert!(matches!(
+        state,
+        PlaylistRunState::Playing {
+            entry: 2,
+            started_frame: 21,
+            ..
+        }
+    ));
+    assert_eq!(
+        playlist_event(&mut admin, 5),
+        (
+            31,
+            PlaylistRunState::Finished { last: Some(2) },
+            input(1),
+            input(2)
+        )
+    );
+    let finished = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(finished.revision, 5);
+    assert_eq!(finished.realized_program, input(1));
+    drop(admin);
+    daemon.stop();
+
+    // The clock's advances are journaled like any command, so replay
+    // reproduces the exact frames and the finished playlist.
+    assert_eq!(store.scan_journal().unwrap().batches().len(), 5);
+    let daemon = Daemon::start(&project_path);
+    let recovered = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(recovered.revision, 5);
+    assert_eq!(recovered.desired_program, input(1));
+    daemon.wait_success();
+
+    let checkpointed = store.load().unwrap();
+    assert_eq!(checkpointed.position().revision, 5);
+    let playlist = checkpointed.project().playlist();
+    assert_eq!(playlist.loop_mode, fm_model::PlaylistLoop::Off);
+    assert_eq!(
+        playlist
+            .entries
+            .iter()
+            .map(|entry| (entry.id, entry.input, entry.duration_frames))
+            .collect::<Vec<_>>(),
+        vec![(1, domain_input(2), 10), (2, domain_input(1), 10)]
+    );
+    assert_eq!(
+        playlist.state,
+        fm_model::PlaylistRunState::Finished { last: Some(2) }
+    );
 }

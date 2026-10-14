@@ -469,6 +469,7 @@ pub(super) fn run(
         process_shutdown,
     };
     let mut native = native;
+    let mut playlist_clock = crate::playlist_clock::PlaylistClock::default();
     // Simulated monitor frames are composed off this loop so a slow Scene
     // composition never delays command results, heartbeats, or events.
     let mut simulated_monitor = if native.is_none() {
@@ -600,6 +601,13 @@ pub(super) fn run(
         }
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
+        }
+        if native.is_none()
+            && let Err(error) =
+                playlist_clock.poll(control, store, durable, authority, Instant::now())
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
         }
         if let Some(native) = native.as_deref_mut() {
             if let Err(error) = native.tick_if_due(&mut control.borrow_mut(), authority) {

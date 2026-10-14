@@ -14,10 +14,11 @@ pub use fm_protocol::EditHistoryStatus;
 use fm_protocol::{
     CommandResult, EditLockScope, EngineIdentity, EventCursor, EventMessage, EventPayload,
     FadeToBlackState, FieldIssue, ManualTransitionKind, ManualTransitionPosition,
-    ManualTransitionStatus as ProtocolManualTransitionStatus, RecordingStatus, ResumeCursor,
-    ServerHello, ServerIdentity, SnapshotMessage, StingerAudioPolicy, StingerMissingMediaFallback,
-    StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
-    TitleFieldUpdate, TitleStateMessage, WireRecorderSlot,
+    ManualTransitionStatus as ProtocolManualTransitionStatus, PlaylistEntrySpec, PlaylistLoopMode,
+    PlaylistRunState, RecordingStatus, ResumeCursor, ServerHello, ServerIdentity, SnapshotMessage,
+    StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
+    StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus, TitleFieldUpdate,
+    TitleStateMessage, WireRecorderSlot,
 };
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
@@ -441,6 +442,24 @@ pub enum DurableChange {
         fields: Vec<TitleFieldUpdate>,
         overlays: Vec<OverlayStatus>,
     },
+    /// The complete playlist after a playlist command, with the desired
+    /// Program and Preview (an entry taken on air reaches Program on the
+    /// playlist's `frame`).
+    PlaylistChanged {
+        selection: BusSelection,
+        playlist: PlaylistStatus,
+    },
+}
+
+/// The replicated playlist as of its last `playlist_changed`. Durations and
+/// frames are engine frames.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlaylistStatus {
+    /// The frame the last playlist command took effect on.
+    pub frame: u64,
+    pub loop_mode: PlaylistLoopMode,
+    pub entries: Vec<PlaylistEntrySpec>,
+    pub state: PlaylistRunState,
 }
 
 /// One globally ordered project event.
@@ -526,6 +545,22 @@ impl DurableProjectEvent {
                 fields,
                 overlays: protocol_overlays(overlays),
             },
+            EventPayload::PlaylistChanged {
+                frame,
+                loop_mode,
+                entries,
+                state,
+                program,
+                preview,
+            } => DurableChange::PlaylistChanged {
+                selection: BusSelection::new(program.to_domain(), preview.to_domain()),
+                playlist: PlaylistStatus {
+                    frame,
+                    loop_mode,
+                    entries,
+                    state,
+                },
+            },
         };
         Self {
             cursor: ProjectCursor {
@@ -593,9 +628,17 @@ pub struct ProjectState {
     edit_locks: EditLocks,
     edit_history: EditHistoryStatus,
     titles: Vec<TitleStatus>,
+    playlist: Option<PlaylistStatus>,
 }
 
 impl ProjectState {
+    /// Returns the playlist from the last `playlist_changed` applied since
+    /// the snapshot; snapshots do not carry the playlist.
+    #[must_use]
+    pub const fn playlist(&self) -> Option<&PlaylistStatus> {
+        self.playlist.as_ref()
+    }
+
     /// Returns every replicated title input, ascending by input.
     #[must_use]
     pub fn titles(&self) -> &[TitleStatus] {
@@ -1324,6 +1367,7 @@ impl ClientModel {
     /// Rejects the snapshot when its project or expected engine identity does
     /// not match, its engine identity is incomplete, or routing references an
     /// absent or duplicate input.
+    #[allow(clippy::too_many_lines)]
     pub fn install_snapshot(
         &mut self,
         snapshot: ProjectSnapshot,
@@ -1423,6 +1467,7 @@ impl ClientModel {
             edit_locks: snapshot.edit_locks,
             edit_history: snapshot.edit_history,
             titles: snapshot.titles,
+            playlist: None,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -2068,6 +2113,23 @@ fn validate_title_change(change: &DurableChange, state: &ProjectState) -> Result
     validate_overlays(overlays, &input_set, &output_set)
 }
 
+/// Checks that a `playlist_changed` names only show inputs.
+fn validate_playlist_change(
+    selection: BusSelection,
+    playlist: &PlaylistStatus,
+    state: &ProjectState,
+) -> Result<(), ModelError> {
+    for input in [selection.program, selection.preview]
+        .into_iter()
+        .chain(playlist.entries.iter().map(|entry| entry.input.to_domain()))
+    {
+        if !state.inputs.contains(&input) {
+            return Err(ModelError::UnknownInput(input));
+        }
+    }
+    Ok(())
+}
+
 fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), ModelError> {
     let (selection, manual_transition, stingers, overlays, input_audio_strips) = match change {
         DurableChange::InputOrderChanged { inputs } => {
@@ -2102,6 +2164,10 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             return validate_input_catalogue_change(change, state);
         }
         DurableChange::TitleChanged { .. } => return validate_title_change(change, state),
+        DurableChange::PlaylistChanged {
+            selection,
+            playlist,
+        } => return validate_playlist_change(*selection, playlist, state),
         DurableChange::DesiredSwitcher {
             selection,
             manual_transition,
@@ -2358,6 +2424,13 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 current.value = update.value;
             }
             state.desired_overlays = overlays;
+        }
+        DurableChange::PlaylistChanged {
+            selection,
+            playlist,
+        } => {
+            state.switcher.desired = selection;
+            state.playlist = Some(playlist);
         }
     }
 }

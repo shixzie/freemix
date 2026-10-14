@@ -2491,7 +2491,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.24\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.25\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2500,7 +2500,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.24\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.25\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -2825,7 +2825,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.24\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.25\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2835,7 +2835,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.24\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.25\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3012,7 +3012,7 @@ mod titles {
         TitleFieldUpdate, TitleFieldValue, TitleStateMessage, TitleSummary, WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.24\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.25\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3060,7 +3060,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 24));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 25));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3114,7 +3114,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.24\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.25\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3693,5 +3693,409 @@ mod titles {
             decode_line("title_status\trevision=1\n"),
             Err(CodecError::UnknownMessage("title_status".to_owned()))
         );
+    }
+}
+
+/// Protocol 2.25 playlists: `playlist_set`, the playlist control commands,
+/// the authority's `playlist_advance`, and `playlist_changed`.
+mod playlists {
+    use super::*;
+    use fm_protocol::{
+        MAX_PLAYLIST_ENTRIES, PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation,
+        PlaylistRunState, PlaylistStart, PlaylistTransitionKind,
+    };
+
+    const PREFIX: &str = "command\tprotocol=2.25\tid=a\tidempotency_key=k";
+    const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
+    const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
+
+    fn entry(
+        id: u64,
+        value: u128,
+        duration_frames: u64,
+        transition: PlaylistTransitionKind,
+        transition_frames: u32,
+    ) -> PlaylistEntrySpec {
+        PlaylistEntrySpec {
+            id,
+            input: input(value),
+            duration_frames,
+            transition,
+            transition_frames,
+            enabled: true,
+        }
+    }
+
+    fn sample_entries() -> Vec<PlaylistEntrySpec> {
+        vec![
+            entry(1, 42, 90, PlaylistTransitionKind::Cut, 0),
+            PlaylistEntrySpec {
+                enabled: false,
+                ..entry(u64::MAX, 7, 3_600, PlaylistTransitionKind::AlphaFade, 3_600)
+            },
+            entry(3, 8, 10, PlaylistTransitionKind::Wipe, 1),
+        ]
+    }
+
+    const SAMPLE_ENTRIES_WIRE: &str = "1%3A42%3A90%3Acut%3A0%3A1%2C18446744073709551615%3A7%3A3600%3Aalpha_fade%3A3600%3A0%2C3%3A8%3A10%3Awipe%3A1%3A1";
+
+    fn control(operation: PlaylistOperation) -> CommandPayload {
+        CommandPayload::PlaylistControl { operation }
+    }
+
+    #[test]
+    fn protocol_2_25_playlist_commands_are_exact() {
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 25));
+        let cases = [
+            (
+                CommandPayload::SetPlaylist {
+                    loop_mode: PlaylistLoopMode::All,
+                    entries: sample_entries(),
+                },
+                format!("\tpayload=playlist_set\tloop=all\tentries={SAMPLE_ENTRIES_WIRE}\n"),
+            ),
+            (
+                CommandPayload::SetPlaylist {
+                    loop_mode: PlaylistLoopMode::Off,
+                    entries: Vec::new(),
+                },
+                "\tpayload=playlist_set\tloop=off\tentries=\n".to_owned(),
+            ),
+            (
+                control(PlaylistOperation::Start {
+                    at: PlaylistStart::Now,
+                    from: None,
+                }),
+                "\tpayload=playlist_start\tstart=now\tfrom=-\n".to_owned(),
+            ),
+            (
+                control(PlaylistOperation::Start {
+                    at: PlaylistStart::AfterFrames(75),
+                    from: Some(3),
+                }),
+                "\tpayload=playlist_start\tstart=after%3A75\tfrom=3\n".to_owned(),
+            ),
+            (
+                control(PlaylistOperation::Start {
+                    at: PlaylistStart::AtFrame(u64::MAX),
+                    from: None,
+                }),
+                "\tpayload=playlist_start\tstart=at%3A18446744073709551615\tfrom=-\n".to_owned(),
+            ),
+            (
+                control(PlaylistOperation::Stop),
+                "\tpayload=playlist_stop\n".to_owned(),
+            ),
+            (
+                control(PlaylistOperation::Pause),
+                "\tpayload=playlist_pause\n".to_owned(),
+            ),
+            (
+                control(PlaylistOperation::Resume),
+                "\tpayload=playlist_resume\n".to_owned(),
+            ),
+            (
+                control(PlaylistOperation::Next),
+                "\tpayload=playlist_next\n".to_owned(),
+            ),
+            (
+                control(PlaylistOperation::Previous),
+                "\tpayload=playlist_previous\n".to_owned(),
+            ),
+            (
+                control(PlaylistOperation::Jump { entry: 0 }),
+                "\tpayload=playlist_jump\tentry=0\n".to_owned(),
+            ),
+            (
+                CommandPayload::PlaylistAdvance { frame: 1_250 },
+                "\tpayload=playlist_advance\tframe=1250\n".to_owned(),
+            ),
+        ];
+        for (payload, tail) in cases {
+            let message = WireMessage::Command(edit_command(payload));
+            let encoded = encode_line(&message).unwrap();
+            assert_eq!(
+                encoded,
+                format!(
+                    "command\tprotocol=2.25\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                )
+            );
+            assert_eq!(decode_line(&encoded).unwrap(), message);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn playlist_commands_reject_out_of_contract_records() {
+        let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
+            field,
+            value: value.to_owned(),
+        };
+        for (tail, expected) in [
+            (
+                "\tpayload=playlist_set\tentries=",
+                CodecError::MissingField("loop"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=forever\tentries=",
+                invalid("loop", "forever"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off",
+                CodecError::MissingField("entries"),
+            ),
+            // Zero duration, a cut with frames, a fade without frames or
+            // longer than its entry, an unknown kind, and a duplicate id.
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A0%3Acut%3A0%3A1",
+                invalid("entries", "1"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A1%3A1",
+                invalid("entries", "1"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Afade%3A0%3A1",
+                invalid("entries", "1"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Afade%3A6%3A1",
+                invalid("entries", "1"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5000%3Afade%3A3601%3A1",
+                invalid("entries", "1"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Astinger%3A2%3A1",
+                invalid("entries", "1:2:5:stinger:2:1"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A0%3A1%2C1%3A3%3A5%3Acut%3A0%3A1",
+                invalid("entries", "1"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A0%3Ayes",
+                invalid("entries", "1:2:5:cut:0:yes"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A0%3A5%3Acut%3A0%3A1",
+                invalid("entries", "1:0:5:cut:0:1"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=01%3A2%3A5%3Acut%3A0%3A1",
+                invalid("entries", "01:2:5:cut:0:1"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A0",
+                invalid("entries", "1:2:5:cut:0"),
+            ),
+            (
+                "\tpayload=playlist_start\tfrom=-",
+                CodecError::MissingField("start"),
+            ),
+            (
+                "\tpayload=playlist_start\tstart=now",
+                CodecError::MissingField("from"),
+            ),
+            (
+                "\tpayload=playlist_start\tstart=soon\tfrom=-",
+                invalid("start", "soon"),
+            ),
+            (
+                "\tpayload=playlist_start\tstart=after%3A%2B5\tfrom=-",
+                invalid("start", "after:+5"),
+            ),
+            (
+                "\tpayload=playlist_start\tstart=now\tfrom=none",
+                invalid("from", "none"),
+            ),
+            ("\tpayload=playlist_jump", CodecError::MissingField("entry")),
+            (
+                "\tpayload=playlist_stop\tentry=1",
+                CodecError::UnknownField("entry".to_owned()),
+            ),
+            (
+                "\tpayload=playlist_advance\tframe=-1",
+                invalid("frame", "-1"),
+            ),
+            (
+                "\tpayload=playlist_rewind",
+                invalid("payload", "playlist_rewind"),
+            ),
+        ] {
+            assert_eq!(
+                decode_line(&format!("{PREFIX}{tail}\n")),
+                Err(expected),
+                "{tail}"
+            );
+        }
+
+        // The encoder refuses what the decoder rejects, and the list bound.
+        let mut too_many = Vec::new();
+        for id in 0..=MAX_PLAYLIST_ENTRIES {
+            too_many.push(entry(
+                u64::try_from(id).unwrap(),
+                1,
+                1,
+                PlaylistTransitionKind::Cut,
+                0,
+            ));
+        }
+        for entries in [
+            too_many,
+            vec![entry(1, 1, 5, PlaylistTransitionKind::Fade, 6)],
+        ] {
+            assert!(
+                encode_line(&WireMessage::Command(edit_command(
+                    CommandPayload::SetPlaylist {
+                        loop_mode: PlaylistLoopMode::Off,
+                        entries,
+                    }
+                )))
+                .is_err()
+            );
+        }
+        // The largest playlist fits one record.
+        let largest = (0..MAX_PLAYLIST_ENTRIES)
+            .map(|index| PlaylistEntrySpec {
+                id: u64::MAX - u64::try_from(index).unwrap(),
+                input: WireInputId::new(NonZeroU128::MAX),
+                duration_frames: fm_protocol::MAX_PLAYLIST_ENTRY_FRAMES,
+                transition: PlaylistTransitionKind::AlphaFade,
+                transition_frames: fm_protocol::MAX_PLAYLIST_TRANSITION_FRAMES,
+                enabled: false,
+            })
+            .collect::<Vec<_>>();
+        let message = WireMessage::Event(EventMessage {
+            cursor: cursor(),
+            payload: EventPayload::PlaylistChanged {
+                frame: u64::MAX,
+                loop_mode: PlaylistLoopMode::One,
+                entries: largest,
+                state: PlaylistRunState::Paused {
+                    entry: u64::MAX,
+                    take: u64::MAX,
+                    cycle: u64::MAX,
+                    elapsed_frames: u64::MAX,
+                },
+                program: WireInputId::new(NonZeroU128::MAX),
+                preview: WireInputId::new(NonZeroU128::MAX),
+            },
+            edit_history: EditHistoryStatus::EMPTY,
+        });
+        let encoded = encode_line(&message).unwrap();
+        assert!(encoded.len() <= MAX_LINE_BYTES);
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+    }
+
+    fn changed(state: PlaylistRunState) -> WireMessage {
+        WireMessage::Event(EventMessage {
+            cursor: cursor(),
+            payload: EventPayload::PlaylistChanged {
+                frame: 120,
+                loop_mode: PlaylistLoopMode::All,
+                entries: sample_entries(),
+                state,
+                program: input(42),
+                preview: input(7),
+            },
+            edit_history: EditHistoryStatus::EMPTY,
+        })
+    }
+
+    #[test]
+    fn playlist_changed_events_are_exact_for_every_state_and_strict() {
+        for (state, wire) in [
+            (PlaylistRunState::Stopped, "stopped"),
+            (
+                PlaylistRunState::Armed {
+                    start_frame: 200,
+                    from: None,
+                },
+                "armed%3A200%3A-",
+            ),
+            (
+                PlaylistRunState::Armed {
+                    start_frame: 200,
+                    from: Some(3),
+                },
+                "armed%3A200%3A3",
+            ),
+            (
+                PlaylistRunState::Playing {
+                    entry: 1,
+                    take: 4,
+                    cycle: 2,
+                    started_frame: 120,
+                },
+                "playing%3A1%3A4%3A2%3A120",
+            ),
+            (
+                PlaylistRunState::Paused {
+                    entry: 1,
+                    take: 4,
+                    cycle: 2,
+                    elapsed_frames: 0,
+                },
+                "paused%3A1%3A4%3A2%3A0",
+            ),
+            (PlaylistRunState::Finished { last: Some(3) }, "finished%3A3"),
+            (PlaylistRunState::Finished { last: None }, "finished%3A-"),
+        ] {
+            let message = changed(state);
+            let encoded = encode_line(&message).unwrap();
+            assert_eq!(
+                encoded,
+                format!(
+                    "{EVENT}\tevent=playlist_changed\tframe=120\tloop=all\tentries={SAMPLE_ENTRIES_WIRE}\tstate={wire}\tprogram=42\tpreview=7{HISTORY}"
+                )
+            );
+            assert_eq!(decode_line(&encoded).unwrap(), message);
+        }
+
+        let valid = "\tevent=playlist_changed\tframe=1\tloop=off\tentries=\tstate=stopped\tprogram=1\tpreview=2";
+        assert!(decode_line(&format!("{EVENT}{valid}{HISTORY}")).is_ok());
+        for (body, expected) in [
+            (
+                valid.replace("\tframe=1", ""),
+                CodecError::MissingField("frame"),
+            ),
+            (
+                valid.replace("state=stopped", "state=playing%3A1%3A2%3A3"),
+                CodecError::InvalidField {
+                    field: "state",
+                    value: "playing:1:2:3".to_owned(),
+                },
+            ),
+            (
+                valid.replace("state=stopped", "state=finished"),
+                CodecError::InvalidField {
+                    field: "state",
+                    value: "finished".to_owned(),
+                },
+            ),
+            (
+                valid.replace("state=stopped", "state=armed%3A01%3A-"),
+                CodecError::InvalidField {
+                    field: "state",
+                    value: "armed:01:-".to_owned(),
+                },
+            ),
+            (
+                valid.replace("\tpreview=2", ""),
+                CodecError::MissingField("preview"),
+            ),
+            (
+                format!("{valid}\textra=1"),
+                CodecError::UnknownField("extra".to_owned()),
+            ),
+        ] {
+            assert_eq!(
+                decode_line(&format!("{EVENT}{body}{HISTORY}")),
+                Err(expected),
+                "{body}"
+            );
+        }
     }
 }

@@ -988,6 +988,12 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::RemotePlaylist {
+            address,
+            payload,
+            key,
+            expected_revision,
+        } => remote::execute(address, payload, key, expected_revision)?,
         Command::RemoteUndo {
             address,
             redo,
@@ -4052,6 +4058,10 @@ Usage:
   freemix-cli remote-input-reorder <127.0.0.1:port> <input> [<input>...] [--key <key>] [--expect <revision>]
   freemix-cli remote-preview <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-cut <127.0.0.1:port> [--key <key>] [--expect <revision>]
+  freemix-cli remote-playlist <127.0.0.1:port> set <off|all|one> <-|id:input:frames:cut|fade|alpha_fade|wipe|slide|zoom:transition-frames:0|1[,...]> [--key <key>] [--expect <revision>]
+  freemix-cli remote-playlist <127.0.0.1:port> start [now|after:<frames>|at:<frame>] [--from <entry>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-playlist <127.0.0.1:port> <stop|pause|resume|next|previous> [--key <key>] [--expect <revision>]
+  freemix-cli remote-playlist <127.0.0.1:port> jump <entry> [--key <key>] [--expect <revision>]
   freemix-cli remote-undo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-redo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
   freemix-cli remote-lock <127.0.0.1:port> <on|off> [--input <input>] [--key <key>] [--expect <revision>]

@@ -100,6 +100,10 @@ impl ShowState {
     ///
     /// Returns a [`ShowError`] for an invalid show/input name, an empty or
     /// duplicate input set, or unavailable initial switcher selections.
+    ///
+    /// # Panics
+    ///
+    /// Never: the initial playlist is empty, which is always valid.
     pub fn new(
         name: impl Into<String>,
         inputs: Vec<(InputId, String)>,

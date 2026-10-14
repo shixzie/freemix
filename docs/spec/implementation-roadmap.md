@@ -2129,11 +2129,26 @@ media-ended reports run against a scratch copy, so failed commands change
 nothing. Entry boundaries fire at their exact scheduled times regardless of
 poll rate, with gaps collapsing into bounded skipped/looped events. A versioned
 tab-separated snapshot round-trips, and restore rejects inconsistent state.
-Remaining gaps: no engine, daemon, protocol, vMix API, Studio, or project-bundle
-wiring; no switcher consumes the emitted transitions; no real media length or
-end-of-media detection; millisecond rather than frame timing; no per-entry hard
-starts, calendar recurrence, or on-air list editing; and no idempotency,
-permissions, or as-run log. `OR-015` remains planned.
+The product slice drives it from the engine frame cursor: the project
+(schema 28) persists one playlist with its automation state; `fm-engine` runs
+playlist edits, controls, and a clock-driven `PlaylistAdvance` as ordinary
+idempotent commands, so an entry that comes on air selects its input and cuts
+or transitions Program (cut, fade, alpha fade, wipe, slide, zoom) on exactly
+its scheduled frame; Protocol 2.25 carries `playlist_set`, the
+`playlist_start/stop/pause/resume/next/previous/jump` controls (project-edit
+and transition permissions), the clock's `playlist_advance`, and the
+`playlist_changed` event that `fm-ui-model` reduces; and simulated `freemixd`
+journals the clock's advances as wall time reaches each boundary, so replay and
+restart reproduce the exact frames (`freemix-cli remote-playlist` drives it).
+Remaining gaps: the native-media daemon refuses playlist control (no native
+playlist clock); simulated pacing anchors to the wall clock when a boundary
+becomes pending, so it is approximate across commands and the catch-up frames
+render synchronously; snapshots do not carry the playlist (late joiners learn
+it from the next `playlist_changed`); fixed durations only, with no media
+length, end-of-media detection, or media-ended reports; no stinger
+transitions; no enable/disable, loop change, or list editing while the
+playlist runs; no per-entry hard starts or calendar recurrence; no Studio UI,
+vMix API, or as-run log. `OR-015` remains planned.
 
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame

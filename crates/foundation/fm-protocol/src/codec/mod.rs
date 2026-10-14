@@ -1,5 +1,6 @@
 mod decode;
 mod encode;
+mod playlist;
 mod title;
 mod value;
 

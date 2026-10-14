@@ -335,13 +335,13 @@ fn operations_edits_and_input_removal_respect_the_playlist() {
         EngineCommand::RemoveInput { input: input(3) },
     );
     assert_eq!(rejected(&removal), RejectionCode::Conflict);
-    assert!(
-        removal.receipt.rejected().unwrap().rejection.message
-            == InputCatalogueError::InPlaylist {
-                input: input(3),
-                entry: 2
-            }
-            .to_string()
+    assert_eq!(
+        removal.receipt.rejected().unwrap().rejection.message,
+        InputCatalogueError::InPlaylist {
+            input: input(3),
+            entry: 2
+        }
+        .to_string()
     );
 
     accepted(&submit(

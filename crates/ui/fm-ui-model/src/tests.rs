@@ -1619,3 +1619,77 @@ mod titles {
         assert_eq!(state.inputs(), snapshot_inputs.as_slice());
     }
 }
+
+#[test]
+fn playlist_changed_replicates_the_playlist_and_desired_selection() {
+    use fm_protocol::{PlaylistEntrySpec, PlaylistLoopMode, PlaylistRunState, WireInputId};
+
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(snapshot(project_id, 7)).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    assert_eq!(model.state().unwrap().playlist(), None);
+
+    let entry = |input_value: u128| PlaylistEntrySpec {
+        id: 4,
+        input: WireInputId::from_domain(input(input_value)),
+        duration_frames: 50,
+        transition: fm_protocol::PlaylistTransitionKind::Fade,
+        transition_frames: 5,
+        enabled: true,
+    };
+    let message = |revision: u64, entry_input: u128| EventMessage {
+        cursor: EventCursor {
+            engine: identity.clone(),
+            revision,
+        },
+        payload: EventPayload::PlaylistChanged {
+            frame: 120,
+            loop_mode: PlaylistLoopMode::All,
+            entries: vec![entry(entry_input)],
+            state: PlaylistRunState::Playing {
+                entry: 4,
+                take: 1,
+                cycle: 0,
+                started_frame: 120,
+            },
+            program: WireInputId::from_domain(input(3)),
+            preview: WireInputId::from_domain(input(1)),
+        },
+        edit_history: EditHistoryStatus::EMPTY,
+    };
+
+    // An entry naming an unknown input is refused without applying.
+    let unknown = DurableProjectEvent::from_protocol(project_id, message(8, 99));
+    assert_eq!(
+        model.apply_event(unknown),
+        Err(ModelError::UnknownInput(input(99)))
+    );
+    assert_eq!(model.state().unwrap().playlist(), None);
+
+    let changed = DurableProjectEvent::from_protocol(project_id, message(8, 3));
+    model.apply_event(changed).unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(
+        state.playlist(),
+        Some(&PlaylistStatus {
+            frame: 120,
+            loop_mode: PlaylistLoopMode::All,
+            entries: vec![entry(3)],
+            state: PlaylistRunState::Playing {
+                entry: 4,
+                take: 1,
+                cycle: 0,
+                started_frame: 120,
+            },
+        })
+    );
+    assert_eq!(
+        state.switcher().desired,
+        BusSelection::new(input(3), input(1))
+    );
+    assert_eq!(
+        state.switcher().realized,
+        BusSelection::new(input(1), input(2))
+    );
+}
