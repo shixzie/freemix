@@ -1462,6 +1462,26 @@ simultaneously, or exposes tap or timecode state on the wire, and per-camera
 storage roots, ISO/MultiCorder graph taps, and `OR-004` acceptance remain
 planned, so item 5 remains incomplete.
 
+Current implementation boundary for item 7: native `freemixd` can expose a
+bounded loopback operator status listener (`--status-listen`, guarded by
+`FREEMIXD_STATUS_TOKEN`) that answers `/healthz` and `/readyz` from an atomic
+snapshot the control loop republishes every pass, and serves a capped
+`/v1/support-bundle`. The bundle carries retained observability events, metric
+series, health checks, and capability state, and now also a bounded operator
+state section: every configured stream target's id, sanitized name, and desired
+flag plus its native realized label; both recorder slots' desired flags and, in
+native mode, which slots are configured and which are running; and the disk
+alert state with free bytes. The control loop publishes that text with one
+bounded copy at most once per second, never blocking the render thread, and
+oversized text truncates with an explicit marker; no stream URL, key, path,
+host, or device identity reaches the bundle. The listener owns no engine state,
+its accept thread never touches the bundle cell, and probes read only the
+atomic snapshot. This is health and diagnostics, not service mode: there is no
+systemd/launchd unit, no TLS or non-loopback binding, no media- or
+service-level readiness claim beyond process readiness, no bundle upload or
+retention policy, and no authentication beyond the bearer token. Item 7
+remains incomplete.
+
 Current implementation boundary for item 9: native `freemixd` performs a
 fail-closed disk preflight for configured program recording and reports
 free-space alert edges while recording. Any configured recorder output
