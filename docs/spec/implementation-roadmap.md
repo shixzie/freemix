@@ -583,6 +583,23 @@ persistence in the project schema, no daemon effect mapping, no GPU/WGSL effect
 execution, no deinterlace, and no `fm-color` grading integration. Item 8
 therefore remains incomplete, and `SW-007`/`SW-010` remain planned.
 
+Current implementation boundary for item 7: `fm-compositor` now carries a
+bounded reference multiview layout. A validated definition selects program,
+preview, or full-width input cells into a 1x1 through 4x4 grid with a
+confidence mode (none, inputs-only, or one selected input) and label, tally,
+clock, and audio-meter placement intent. Planning uses exact integer division
+with deterministic leftmost/topmost remainder allocation, emits row-major
+half-open cells that tile the canvas without gaps or overlaps, and hit-tests a
+pixel back to its cell for click-to-preview. The compiler resolves every cell to
+a compositor source and builds an ordinary operator scene with one
+inset-bordered layer per cell, so the existing CPU and native scene paths
+rasterize the tiles; unresolved cells are rejected instead of silently skipped.
+This is a definition and planning model, not the product: labels, tally, clocks,
+and meters are non-rasterized intent, and the Mix selector, a second independent
+multiview, selection persistence, protocol or wire state, daemon multiview
+outputs, confidence-mode behavior, and click/touch dispatch to the engine all
+remain absent, so item 7 and `SW-011` remain planned.
+
 Current implementation boundary for item 6: the switcher and engine now own
 eight independently addressed overlay channels with a retained source, exact
 on/off state, source update, a deduplicated set of included output IDs, and an
