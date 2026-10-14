@@ -5,9 +5,12 @@
 //! in integration crates.
 
 mod adapters;
+mod bind;
 mod cache;
+mod format;
 mod mapping;
 mod parse;
+mod preview;
 mod retry;
 mod schema;
 mod secret;
@@ -18,9 +21,21 @@ mod transform;
 mod value;
 
 pub use adapters::{AdapterError, CsvRowsAdapter, DataAdapter, JsonObjectAdapter};
+pub use bind::{
+    BindingConfigError, BindingError, BindingFieldReport, BindingKind, BindingReport, BindingSet,
+    BindingStatus, BoundValue, BoundValueKind, CompareOp, DataBinding, ImageUriError,
+    ImageUriPolicy, RowBindingError, TruthyRule, VisibilityError, VisibilityRule,
+};
 pub use cache::{BoundedCache, CacheError, Clock, ManualClock};
+pub use format::{
+    DateInput, DatePattern, DateTimeFormat, DecimalRounding, FormatError, NumberFormat, SignStyle,
+    Timestamp, UtcOffset,
+};
 pub use mapping::{FieldBinding, FieldMappingReport, Mapper, MappingReport, MappingStatus};
 pub use parse::{CsvOptions, ParseError, ParseErrorKind, ParseLimits, parse_csv, parse_json};
+pub use preview::{
+    CommitOutcome, FieldChange, PreviewError, PreviewState, StagePolicy, StagedPreview, diff_values,
+};
 pub use retry::{RetryError, RetryOutcome, RetryPolicy, RetryRecord, RetryState};
 pub use schema::{
     DataPath, PathError, PathSegment, Schema, SchemaExtractError, SchemaType, TypeError,
