@@ -3,6 +3,7 @@
 mod cadence;
 mod clock;
 mod mapping;
+pub mod production;
 
 pub use cadence::{CadenceError, FrameCadence};
 pub use clock::{
