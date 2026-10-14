@@ -2,20 +2,24 @@
 //!
 //! Every action item maps to an existing [`StudioIntent`] under that intent's
 //! usual gate; gated items are disabled with the blocking reason as tooltip.
+//! Output covers transitions, Fade to black, the manual T-bar, per-slot
+//! recorders, per-target stream Start/Stop, and Stinger slot assignment.
 //! View items only change local layout state.
 
 use egui::{Button, RichText, Ui, Vec2};
-use fm_protocol::WireRecorderSlot;
+use fm_protocol::{WireRecorderSlot, WireStingerSlotId};
 use fm_types::InputId;
 
 use crate::gating::{Capability, unavailable_reason};
 use crate::input_bank::project_editing_available;
 use crate::panels::SideTab;
+use crate::stream_control::{stream_action_text, stream_unavailable_reason};
 use crate::theme::{ACCENT, MUTED, TEXT, TEXT_DIM, mono, section_label};
 use crate::{
     InputMoveDirection, ManualTransitionAvailability, RECORDER_SLOT_COUNT, RecordingAction,
-    RenameDraft, STUDIO_SHORTCUTS, ShortcutGroup, StudioIntent, StudioShell, StudioUiState,
-    TransitionGate, fade_to_black, preview_selection_available, recording_action,
+    RenameDraft, STUDIO_SHORTCUTS, ShortcutGroup, StreamAction, StudioIntent, StudioShell,
+    StudioUiState, TransitionGate, fade_to_black, preview_selection_available, recording_action,
+    stinger_assign_intent, stinger_configuration_available, stinger_remove_intent, stream_action,
     transition_availability,
 };
 
@@ -401,10 +405,118 @@ impl StudioShell {
         }
         ui.separator();
         heading(ui, "Streams");
-        ui.add_enabled(false, Button::new("Start or stop a stream target"))
-            .on_disabled_hover_text(
-                "Studio monitors stream targets read-only. Use freemix-cli remote-stream-start / remote-stream-stop against the daemon.",
+        if state.streams.is_empty() {
+            ui.add_enabled(false, Button::new("No stream targets"))
+                .on_disabled_hover_text(if state.view.is_some() {
+                    "Unavailable: the show has no configured stream targets"
+                } else {
+                    "Unavailable: project state is not synchronized yet"
+                });
+        }
+        for stream in &state.streams {
+            let requested = StreamAction::for_stream(stream);
+            let allowed = stream_action(state, requested);
+            let label = format!(
+                "{} {}",
+                if requested.starts() { "Start" } else { "Stop" },
+                stream.name
             );
+            if ui
+                .add_enabled(allowed.is_some(), Button::new(label))
+                .on_hover_text(stream_action_text(requested, &stream.name))
+                .on_disabled_hover_text(format!(
+                    "Unavailable: {}",
+                    stream_unavailable_reason(state, stream)
+                ))
+                .clicked()
+                && let Some(action) = allowed
+            {
+                intents.push(StudioIntent::Stream(action));
+            }
+        }
+        ui.separator();
+        heading(ui, "Stingers");
+        self.stinger_menu(ui, state, reason, intents);
+    }
+
+    /// Output ▸ Stingers: assign the Preview input to a slot, or clear a slot.
+    fn stinger_menu(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        reason: &str,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let available = stinger_configuration_available(state);
+        let preview = preview_input(state).map(|(_, input)| input);
+        let assign_reason = if available {
+            "no input is selected on Preview"
+        } else {
+            reason
+        };
+        let duration_frames = self.transition_duration_frames;
+        ui.add_enabled_ui(available && preview.is_some(), |ui| {
+            ui.menu_button("Assign Preview as stinger media", |ui| {
+                for number in 1..=8_u8 {
+                    let slot =
+                        WireStingerSlotId::new(number).expect("Studio lists slots 1 through 8");
+                    let intent = preview.and_then(|preview| {
+                        stinger_assign_intent(state, slot, preview, duration_frames)
+                    });
+                    if item(
+                        ui,
+                        intent.is_some(),
+                        &format!("Slot S{number}"),
+                        None,
+                        assign_reason,
+                    ) && let Some(intent) = intent
+                    {
+                        intents.push(intent);
+                    }
+                }
+            })
+        })
+        .response
+        .on_hover_text("Use the Preview input as a slot's media; other slot settings are kept")
+        .on_disabled_hover_text(format!("Unavailable: {assign_reason}"));
+        let configured = state
+            .view
+            .as_ref()
+            .is_some_and(|view| !view.stingers.is_empty());
+        let clear_reason = if available {
+            "no Stinger slot is configured"
+        } else {
+            reason
+        };
+        ui.add_enabled_ui(available && configured, |ui| {
+            ui.menu_button("Clear stinger slot", |ui| {
+                for number in 1..=8_u8 {
+                    let slot =
+                        WireStingerSlotId::new(number).expect("Studio lists slots 1 through 8");
+                    let intent = stinger_remove_intent(state, slot);
+                    if item(
+                        ui,
+                        intent.is_some(),
+                        &format!("Slot S{number}"),
+                        None,
+                        "this Stinger slot is not configured",
+                    ) && let Some(intent) = intent
+                    {
+                        intents.push(intent);
+                    }
+                }
+            })
+        })
+        .response
+        .on_disabled_hover_text(format!("Unavailable: {clear_reason}"));
+        if ui
+            .add_enabled(self.layout.show_side_panel, Button::new("Stinger slots…"))
+            .on_hover_text("Open the Stingers tab to pick any input as slot media")
+            .on_disabled_hover_text("Unavailable: the side panel is hidden")
+            .clicked()
+        {
+            self.side_tab = SideTab::Stingers;
+        }
     }
 
     fn help_menu(&mut self, ui: &mut Ui) {

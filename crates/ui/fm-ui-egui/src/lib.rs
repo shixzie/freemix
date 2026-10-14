@@ -9,7 +9,9 @@
 //! tiles), `mixer` (channel strips), `panels`/`overlays` (side panel),
 //! `menu` (menu bar and Help windows), `connection_overlay` (the status card
 //! over the monitors), and `toasts` (transient notices). Pure helpers live in
-//! `gating` (disabled-control reasons) and `meter_ballistics` (peak hold).
+//! `gating` (disabled-control reasons), `meter_ballistics` (peak hold),
+//! `stream_control` (per-target stream Start/Stop gating), and
+//! `stinger_config` (Stinger slot assignment and clearing).
 
 use egui::{
     Align, CentralPanel, Event, Frame, Key, Layout, Margin, Modifiers, Panel, ScrollArea, Stroke,
@@ -17,7 +19,7 @@ use egui::{
 };
 use fm_protocol::{
     AudioMetersMessage, ManualTransitionKind, ManualTransitionPosition, StreamStatusMessage,
-    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_types::{InputId, OutputId};
 use fm_ui_model::{ClientView, ManualTransitionStatus, StreamStatus, SwitcherState};
@@ -34,12 +36,19 @@ mod monitors;
 mod overlay_status;
 mod overlays;
 mod panels;
+mod stinger_config;
+mod stream_control;
 mod theme;
 mod toasts;
 mod transitions;
 
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
 pub use menu::ConsoleLayout;
+pub use stinger_config::{
+    default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
+    stinger_remove_intent,
+};
+pub use stream_control::{StreamAction, stream_action, stream_command_pending};
 
 use panels::SideTab;
 use theme::{BORDER, GRAPHITE, PANEL};
@@ -138,6 +147,19 @@ pub enum StudioIntent {
     ToggleFadeToBlack { duration_frames: u32 },
     /// Starts or stops the configured program recorder.
     Recording(RecordingAction),
+    /// Starts or stops one configured stream target.
+    Stream(StreamAction),
+    /// Assigns one input as a Stinger slot's media. A configured slot keeps
+    /// its other settings; an unconfigured slot is preloaded, mixes with
+    /// Program audio, falls back to Cut, and uses
+    /// `default_cut_point_frames` as its cut point.
+    AssignStingerMedia {
+        slot: WireStingerSlotId,
+        media_input: InputId,
+        default_cut_point_frames: u32,
+    },
+    /// Clears one configured Stinger slot.
+    RemoveStinger { slot: WireStingerSlotId },
     /// Starts a held manual Fade, Wipe, `AlphaFade`, or Slide transition.
     StartManualTransition { kind: ManualTransitionKind },
     /// Sets the exact manual-transition position in basis points.
@@ -246,6 +268,8 @@ pub struct StudioUiState {
     pub recording_desired: [bool; RECORDER_SLOT_COUNT],
     /// Whether one recorder slot's record command is still unresolved.
     pub recording_pending: [bool; RECORDER_SLOT_COUNT],
+    /// Stream targets whose start/stop command is still unresolved.
+    pub stream_pending: Vec<WireStreamTargetId>,
     /// Reconnect attempt and delay while the connection is in backoff.
     pub reconnect: Option<ReconnectStatus>,
 }
@@ -271,6 +295,7 @@ impl StudioUiState {
             stream_status: None,
             recording_desired: [false; RECORDER_SLOT_COUNT],
             recording_pending: [false; RECORDER_SLOT_COUNT],
+            stream_pending: Vec::new(),
             reconnect: None,
         }
     }
@@ -867,6 +892,7 @@ pub struct StudioShell {
     fade_to_black_duration_frames: u32,
     rename_draft: Option<RenameDraft>,
     side_tab: SideTab,
+    stinger_editor: stinger_config::StingerEditor,
     layout: ConsoleLayout,
     show_shortcuts: bool,
     show_about: bool,
@@ -1200,6 +1226,7 @@ impl Default for StudioShell {
             fade_to_black_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
             rename_draft: None,
             side_tab: SideTab::default(),
+            stinger_editor: stinger_config::StingerEditor::default(),
             layout: ConsoleLayout::default(),
             show_shortcuts: false,
             show_about: false,
@@ -1971,6 +1998,210 @@ mod tests {
             ),
             None
         );
+    }
+
+    fn stream_target(value: u128) -> WireStreamTargetId {
+        WireStreamTargetId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn stream_state(roster: Vec<StreamStatus>) -> StudioUiState {
+        let mut view = recording_view([false, false]);
+        view.streams.clone_from(&roster);
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(view)
+            .with_switcher_permissions(true, true);
+        state.streams = roster;
+        state
+    }
+
+    #[test]
+    fn stream_controls_require_ready_view_transition_permission_and_a_roster_entry() {
+        let roster = vec![stream_roster_entry(40, "RTMP Primary", false)];
+        let start = StreamAction::Start(stream_target(40));
+        assert_eq!(
+            stream_action(&stream_state(roster.clone()), start),
+            Some(start)
+        );
+        let mut no_permission = stream_state(roster.clone());
+        no_permission.can_transition = false;
+        let mut no_view = stream_state(roster.clone());
+        no_view.view = None;
+        let mut connecting = stream_state(roster.clone());
+        connecting.connection_status = StudioConnectionStatus::Backoff;
+        for state in [no_permission, no_view, connecting] {
+            assert_eq!(stream_action(&state, start), None);
+        }
+        // A target missing from the replicated roster is never offered.
+        assert_eq!(
+            stream_action(
+                &stream_state(roster),
+                StreamAction::Start(stream_target(41))
+            ),
+            None
+        );
+        assert_eq!(
+            gating::unavailable_reason(
+                &StudioUiState::new(StudioConnectionStatus::Ready)
+                    .with_view(recording_view([false, false])),
+                gating::Capability::Transition
+            ),
+            "this session lacks the transition permission"
+        );
+    }
+
+    #[test]
+    fn stream_action_follows_the_desired_flag_and_pending_target() {
+        let state = stream_state(vec![
+            stream_roster_entry(40, "RTMP Primary", true),
+            stream_roster_entry(41, "HLS", false),
+        ]);
+        assert_eq!(
+            StreamAction::for_stream(&state.streams[0]),
+            StreamAction::Stop(stream_target(40))
+        );
+        assert_eq!(
+            StreamAction::for_stream(&state.streams[1]),
+            StreamAction::Start(stream_target(41))
+        );
+        assert_eq!(
+            stream_action(&state, StreamAction::Start(stream_target(40))),
+            None
+        );
+        assert_eq!(
+            stream_action(&state, StreamAction::Stop(stream_target(41))),
+            None
+        );
+        let mut pending = state.clone();
+        pending.stream_pending = vec![stream_target(40)];
+        assert!(stream_command_pending(&pending, stream_target(40)));
+        assert_eq!(
+            stream_action(&pending, StreamAction::Stop(stream_target(40))),
+            None
+        );
+        // A pending target does not block another target.
+        assert_eq!(
+            stream_action(&pending, StreamAction::Start(stream_target(41))),
+            Some(StreamAction::Start(stream_target(41)))
+        );
+        assert_eq!(
+            crate::stream_control::stream_unavailable_reason(&pending, &pending.streams[0]),
+            "an earlier command for this stream target is still pending"
+        );
+        assert_eq!(
+            crate::stream_control::stream_action_text(
+                StreamAction::Stop(stream_target(40)),
+                "RTMP Primary"
+            ),
+            "Stop stream target \"RTMP Primary\""
+        );
+        assert!(StreamAction::Start(stream_target(1)).starts());
+        assert_eq!(
+            StreamAction::Stop(stream_target(9)).target(),
+            stream_target(9)
+        );
+    }
+
+    fn stinger_state(stingers: Vec<fm_ui_model::StingerStatus>) -> StudioUiState {
+        let mut view = recording_view([false, false]);
+        view.inputs = vec![input(1), input(2)];
+        view.input_names = vec!["Camera".to_owned(), "Clip".to_owned()];
+        view.switcher = switcher((1, 2), (1, 2));
+        view.stingers = stingers;
+        StudioUiState::new(StudioConnectionStatus::Ready)
+            .with_view(view)
+            .with_switcher_permissions(true, true)
+    }
+
+    fn configured_slot(slot: u8, media: u128) -> fm_ui_model::StingerStatus {
+        fm_ui_model::StingerStatus {
+            slot,
+            media_input: input(media),
+            preload: true,
+            cut_point_frames: 10,
+            audio_policy: fm_protocol::StingerAudioPolicy::StingerOnly,
+            missing_media_fallback: fm_protocol::StingerMissingMediaFallback::Fade,
+            readiness: StingerReadiness::Ready,
+        }
+    }
+
+    const S3: WireStingerSlotId = WireStingerSlotId::new(3).expect("slot three exists");
+
+    #[test]
+    fn stinger_configuration_requires_transition_gates_and_known_media() {
+        let state = stinger_state(Vec::new());
+        assert!(stinger_configuration_available(&state));
+        assert_eq!(default_stinger_cut_point_frames(30), 15);
+        assert_eq!(
+            stinger_assign_intent(&state, S3, input(2), 30),
+            Some(StudioIntent::AssignStingerMedia {
+                slot: S3,
+                media_input: input(2),
+                default_cut_point_frames: 15,
+            })
+        );
+        // Media that is not in the replicated view is never offered.
+        assert_eq!(stinger_assign_intent(&state, S3, input(9), 30), None);
+        let mut no_permission = state.clone();
+        no_permission.can_transition = false;
+        let mut not_ready = state.clone();
+        not_ready.connection_status = StudioConnectionStatus::Synchronizing;
+        let mut manual = state;
+        if let Some(view) = manual.view.as_mut() {
+            view.switcher.desired_manual_transition =
+                ManualTransitionStatus::Active(ActiveManualTransition {
+                    kind: ManualTransitionKind::Fade,
+                    from: input(1),
+                    to: input(2),
+                    interval_start: ManualTransitionPosition::START,
+                    position: ManualTransitionPosition::START,
+                });
+        }
+        for blocked in [no_permission, not_ready, manual] {
+            assert!(!stinger_configuration_available(&blocked));
+            assert_eq!(stinger_assign_intent(&blocked, S3, input(2), 30), None);
+        }
+    }
+
+    #[test]
+    fn stinger_clear_requires_a_configured_slot() {
+        let state = stinger_state(vec![configured_slot(3, 2)]);
+        assert_eq!(
+            stinger_remove_intent(&state, S3),
+            Some(StudioIntent::RemoveStinger { slot: S3 })
+        );
+        assert_eq!(
+            stinger_remove_intent(&state, WireStingerSlotId::new(4).unwrap()),
+            None
+        );
+        let mut no_permission = state;
+        no_permission.can_transition = false;
+        assert_eq!(stinger_remove_intent(&no_permission, S3), None);
+    }
+
+    #[test]
+    fn stinger_editor_media_prefers_choice_then_slot_media_then_preview() {
+        use crate::stinger_config::{StingerEditor, stinger_editor_media, stinger_summary};
+        let state = stinger_state(vec![configured_slot(3, 1)]);
+        let view = state.view.as_ref().unwrap();
+        let editor = |slot, media| StingerEditor { slot, media };
+        // Unconfigured slot without a choice: the desired Preview input.
+        assert_eq!(stinger_editor_media(view, editor(1, None)), Some(input(2)));
+        // Configured slot without a choice: its current media.
+        assert_eq!(stinger_editor_media(view, editor(3, None)), Some(input(1)));
+        // An explicit choice wins while it still exists.
+        assert_eq!(
+            stinger_editor_media(view, editor(3, Some(input(2)))),
+            Some(input(2))
+        );
+        assert_eq!(
+            stinger_editor_media(view, editor(3, Some(input(9)))),
+            Some(input(1))
+        );
+        assert_eq!(
+            stinger_summary(view, 3),
+            "S3: Camera · cut 10 fr · preload · stinger-only audio · fallback fade"
+        );
+        assert_eq!(stinger_summary(view, 4), "S4 is not configured");
     }
 
     #[test]

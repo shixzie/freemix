@@ -6,18 +6,21 @@ use core::num::NonZeroU128;
 use egui::{Button, Color32, RichText, ScrollArea, Stroke, Ui, Vec2};
 use fm_protocol::{
     StingerReadiness, StreamRealizedState, StreamStatusMessage, StreamStatusSample,
-    WireRecorderSlot, WireStingerSlotId,
+    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_ui_model::{StingerStatus, StreamStatus};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::stinger_config;
+use crate::stream_control::{stream_action_text, stream_unavailable_reason};
 use crate::theme::{
     ACCENT, AMBER, BORDER, ERROR, GRAPHITE_RAISED, MUTED, PREVIEW, PROGRAM, PROGRAM_FILL, TEXT,
     TEXT_DIM, card, mono, pill, section_header, section_label,
 };
 use crate::{
-    RecordingAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
-    TransitionGate, overlays, recording_action, transition_availability,
+    RecordingAction, StreamAction, StudioConnectionStatus, StudioIntent, StudioShell,
+    StudioUiState, TransitionGate, overlays, recording_action, stream_action,
+    stream_command_pending, transition_availability,
 };
 
 /// Tabs of the lower side panel.
@@ -44,7 +47,7 @@ impl StudioShell {
                 intents.push(StudioIntent::Recording(action));
             }
             ui.add_space(4.0);
-            draw_streams(ui, state);
+            draw_streams(ui, state, intents);
         });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -97,6 +100,13 @@ impl StudioShell {
                 }
                 SideTab::Stingers => {
                     draw_stingers(ui, state, self.transition_duration_frames, intents);
+                    stinger_config::draw_stinger_configuration(
+                        ui,
+                        state,
+                        &mut self.stinger_editor,
+                        self.transition_duration_frames,
+                        intents,
+                    );
                 }
             });
     }
@@ -183,7 +193,7 @@ pub(crate) const fn recording_status_label(desired: bool) -> &'static str {
     if desired { "RECORDING" } else { "STOPPED" }
 }
 
-fn draw_streams(ui: &mut Ui, state: &StudioUiState) {
+fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
     section_header(ui, "Streams", |ui| {
         ui.label(
             mono(format!("{}", state.streams.len()))
@@ -219,6 +229,12 @@ fn draw_streams(ui: &mut Ui, state: &StudioUiState) {
                     egui::Label::new(RichText::new(&stream.name).size(12.0).color(TEXT)).truncate(),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(action) = stream_button(ui, state, stream) {
+                        intents.push(StudioIntent::Stream(action));
+                    }
+                    if stream_command_pending(state, WireStreamTargetId::new(stream.target)) {
+                        pill(ui, "PENDING", AMBER, false);
+                    }
                     // The latest lossy sample wins; otherwise the replicated
                     // last-confirmed realized state is shown.
                     let realized = sample.map_or(stream.realized, |sample| sample.realized);
@@ -261,6 +277,36 @@ fn draw_streams(ui: &mut Ui, state: &StudioUiState) {
             );
         }
     }
+}
+
+/// Draws the one Start/Stop key offered for a stream row and returns the
+/// gated action when clicked.
+fn stream_button(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    stream: &StreamStatus,
+) -> Option<StreamAction> {
+    let requested = StreamAction::for_stream(stream);
+    let allowed = stream_action(state, requested);
+    let (label, fill, stroke) = if requested.starts() {
+        ("START", PROGRAM_FILL, PROGRAM.gamma_multiply(0.6))
+    } else {
+        ("STOP", crate::theme::WIDGET, crate::theme::BORDER_STRONG)
+    };
+    ui.add_enabled(
+        allowed.is_some(),
+        Button::new(RichText::new(label).size(11.0).strong())
+            .fill(fill)
+            .stroke(Stroke::new(1.0, stroke))
+            .min_size(Vec2::new(58.0, 22.0)),
+    )
+    .hint(
+        &stream_action_text(requested, &stream.name),
+        stream_unavailable_reason(state, stream),
+    )
+    .clicked()
+    .then_some(allowed)
+    .flatten()
 }
 
 const fn stream_state_color(state: StreamRealizedState) -> Color32 {

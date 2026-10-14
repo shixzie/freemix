@@ -16,13 +16,14 @@ use fm_client::{
 };
 use fm_protocol::{
     CommandPayload, CommandResult, DurableGap, OverlayBorderPreset, OverlayPositionPreset,
-    OverlayTransitionKind, WireInputId, WireMessage, WireOutputId, WireRecorderSlot,
+    OverlayTransitionKind, StingerAudioPolicy, StingerMissingMediaFallback, WireInputId,
+    WireMessage, WireOutputId, WireRecorderSlot, WireStreamTargetId,
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
     ExternalStudioAction, InputAudioStripUpdate, InputMoveDirection, ReconnectStatus,
-    RecordingAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
-    TerminalUncertaintyNotice, external_intent,
+    RecordingAction, StreamAction, StudioConnectionStatus, StudioIntent, StudioShell,
+    StudioUiState, TerminalUncertaintyNotice, external_intent,
 };
 use fm_ui_model::ClientView;
 
@@ -1323,6 +1324,64 @@ fn resolve_input_move(
     })
 }
 
+/// Resolves a stream action against the latest confirmed roster so a target
+/// removed after the click is reported instead of sent.
+fn resolve_stream_action(
+    view: Option<&ClientView>,
+    action: StreamAction,
+) -> Result<CommandPayload, String> {
+    let view = view
+        .ok_or_else(|| "Cannot control a stream before project state is synchronized".to_owned())?;
+    let target = action.target();
+    if !view
+        .streams
+        .iter()
+        .any(|stream| stream.target == target.get())
+    {
+        return Err("Stream target no longer exists".to_owned());
+    }
+    Ok(match action {
+        StreamAction::Start(target) => CommandPayload::StreamStart { target },
+        StreamAction::Stop(target) => CommandPayload::StreamStop { target },
+    })
+}
+
+/// Studio's descriptor for a Stinger slot that has no configuration yet.
+const DEFAULT_STINGER_PRELOAD: bool = true;
+const DEFAULT_STINGER_AUDIO_POLICY: StingerAudioPolicy = StingerAudioPolicy::MixWithProgram;
+const DEFAULT_STINGER_FALLBACK: StingerMissingMediaFallback = StingerMissingMediaFallback::Cut;
+
+/// Resolves a media assignment from the latest confirmed slot: a configured
+/// slot keeps every other setting, an unconfigured slot gets Studio defaults.
+fn resolve_stinger_assignment(
+    view: Option<&ClientView>,
+    slot: fm_protocol::WireStingerSlotId,
+    media_input: fm_types::InputId,
+    default_cut_point_frames: u32,
+) -> Result<CommandPayload, String> {
+    let view = view.ok_or_else(|| {
+        "Cannot configure a Stinger slot before project state is synchronized".to_owned()
+    })?;
+    if !view.inputs.contains(&media_input) {
+        return Err("Stinger media input no longer exists".to_owned());
+    }
+    let current = view
+        .stingers
+        .iter()
+        .find(|status| status.slot == slot.number());
+    Ok(CommandPayload::ConfigureStinger {
+        slot,
+        media_input: WireInputId::from_domain(media_input),
+        preload: current.map_or(DEFAULT_STINGER_PRELOAD, |status| status.preload),
+        cut_point_frames: current
+            .map_or(default_cut_point_frames, |status| status.cut_point_frames),
+        audio_policy: current.map_or(DEFAULT_STINGER_AUDIO_POLICY, |status| status.audio_policy),
+        missing_media_fallback: current.map_or(DEFAULT_STINGER_FALLBACK, |status| {
+            status.missing_media_fallback
+        }),
+    })
+}
+
 fn desired_overlay(
     view: Option<&ClientView>,
     channel: fm_protocol::WireOverlayChannelId,
@@ -1789,6 +1848,25 @@ fn intent_payload(
             RecordingAction::Start(recorder) => CommandPayload::RecordStart { recorder },
             RecordingAction::Stop(recorder) => CommandPayload::RecordStop { recorder },
         },
+        StudioIntent::Stream(action) => return resolve_stream_action(view, action),
+        StudioIntent::AssignStingerMedia {
+            slot,
+            media_input,
+            default_cut_point_frames,
+        } => return resolve_stinger_assignment(view, slot, media_input, default_cut_point_frames),
+        StudioIntent::RemoveStinger { slot } => {
+            let view = view.ok_or_else(|| {
+                "Cannot clear a Stinger slot before project state is synchronized".to_owned()
+            })?;
+            if !view
+                .stingers
+                .iter()
+                .any(|status| status.slot == slot.number())
+            {
+                return Err(format!("Stinger slot {slot} is not configured"));
+            }
+            CommandPayload::RemoveStinger { slot }
+        }
         StudioIntent::StartManualTransition { kind } => {
             CommandPayload::StartManualTransition { kind }
         }
@@ -1869,6 +1947,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
     }
     state.pending_commands = client.model().pending_commands().len();
     state.recording_pending = recording_command_pending(client);
+    state.stream_pending = stream_command_pending_targets(client);
     state.error = error.or(lifecycle_error);
     state
 }
@@ -1903,6 +1982,28 @@ fn recording_command_pending(client: &Client) -> [bool; 2] {
         let slot = usize::from(recorder.get()) - 1;
         if let Some(flag) = pending.get_mut(slot) {
             *flag = true;
+        }
+    }
+    pending
+}
+
+/// Stream targets with an unresolved `stream_start`/`stream_stop` command, in
+/// first-pending order without duplicates. Like the recorder flags, a target
+/// clears exactly when its command resolves.
+fn stream_command_pending_targets(client: &Client) -> Vec<WireStreamTargetId> {
+    let mut pending = Vec::new();
+    for command in client.model().pending_commands() {
+        let Some(record) = client.command(command.id.as_str()) else {
+            continue;
+        };
+        let target = match &record.command.payload {
+            CommandPayload::StreamStart { target } | CommandPayload::StreamStop { target } => {
+                *target
+            }
+            _ => continue,
+        };
+        if !pending.contains(&target) {
+            pending.push(target);
         }
     }
     pending
@@ -3117,6 +3218,173 @@ mod tests {
         server.join().unwrap();
     }
 
+    fn stream_target_40() -> WireStreamTargetId {
+        WireStreamTargetId::new(NonZeroU128::new(40).unwrap())
+    }
+
+    fn streams_event(revision: u64, desired_running: bool) -> EventMessage {
+        EventMessage {
+            cursor: EventCursor {
+                engine: EngineIdentity {
+                    engine_id: "e".into(),
+                    state_epoch: 1,
+                    log_id: "l".into(),
+                },
+                revision,
+            },
+            payload: EventPayload::StreamsChanged {
+                streams: vec![fm_protocol::StreamStatus {
+                    target: stream_target_40(),
+                    name: "rtmp-primary".into(),
+                    desired_running,
+                    realized: StreamRealizedState::Starting,
+                    detail: None,
+                }],
+            },
+        }
+    }
+
+    /// Answers a scripted stop then start of stream target 40, holding each
+    /// result open until the test observed that target pending.
+    fn serve_worker_streams(
+        listener: &TcpListener,
+        command_seen: &SyncSender<()>,
+        release: &Receiver<()>,
+    ) {
+        let mut peer = HeartbeatPeer::accept(listener);
+        peer.handshake_request();
+        peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+            HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            },
+        )));
+        peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+        let mut revision = heartbeat_snapshot().revision;
+        let mut script = [false, true].into_iter();
+        let mut next = script.next();
+        loop {
+            let mut line = String::new();
+            if peer.reader.read_line(&mut line).unwrap() == 0 {
+                return;
+            }
+            match decode_line(&line).unwrap() {
+                WireMessage::Heartbeat(heartbeat) => {
+                    let acknowledgement = encode_line(&WireMessage::HeartbeatAcknowledgement(
+                        HeartbeatAcknowledgementMessage {
+                            server: heartbeat.server,
+                            heartbeat_sequence: heartbeat.sequence,
+                            received_at_ms: heartbeat.sent_at_ms,
+                        },
+                    ))
+                    .unwrap();
+                    // The test may shut down while heartbeats are in flight.
+                    if peer.writer.write_all(acknowledgement.as_bytes()).is_err() {
+                        return;
+                    }
+                }
+                WireMessage::Command(command) => {
+                    let start = next.expect("no more scripted stream commands");
+                    let expected = if start {
+                        CommandPayload::StreamStart {
+                            target: stream_target_40(),
+                        }
+                    } else {
+                        CommandPayload::StreamStop {
+                            target: stream_target_40(),
+                        }
+                    };
+                    assert_eq!(command.payload, expected);
+                    assert_eq!(command.expected_revision, Some(revision));
+                    command_seen.send(()).unwrap();
+                    release.recv_timeout(HEARTBEAT_TEST_TIMEOUT).unwrap();
+                    revision += 1;
+                    peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                        id: command.id,
+                        revision,
+                        scheduled_frame: None,
+                    }));
+                    peer.send(&WireMessage::Event(streams_event(revision, start)));
+                    peer.send(&WireMessage::RuntimeEvent(recording_runtime_event(
+                        revision,
+                        revision - heartbeat_snapshot().revision,
+                    )));
+                    next = script.next();
+                }
+                other => panic!("unexpected peer message: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn worker_stream_intents_send_target_payloads_and_track_pending_per_target() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (command_seen, command_seen_receiver) = sync_channel(2);
+        let (release, release_receiver) = sync_channel(2);
+        let server = thread::spawn(move || {
+            serve_worker_streams(&listener, &command_seen, &release_receiver);
+        });
+        let (request_sender, updates, worker) =
+            spawn_existing_worker(address, "stream-intent-test");
+
+        receive_connection_state(&updates, StudioConnectionStatus::Ready);
+        for start in [false, true] {
+            let action = if start {
+                StreamAction::Start(stream_target_40())
+            } else {
+                StreamAction::Stop(stream_target_40())
+            };
+            request_sender
+                .send(WorkerRequest::Intent(StudioIntent::Stream(action)))
+                .unwrap();
+            command_seen_receiver
+                .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
+                .unwrap();
+            let dispatched =
+                receive_state_where(&updates, |state| !state.stream_pending.is_empty());
+            assert_eq!(dispatched.stream_pending, vec![stream_target_40()]);
+            // The scripted session grants no permissions; with `transition`
+            // granted, the pending target still blocks a second action.
+            let permitted = dispatched.clone().with_switcher_permissions(true, true);
+            assert_eq!(fm_ui_egui::stream_action(&permitted, action), None);
+            assert_eq!(dispatched.streams[0].desired_running, !start);
+            assert!(
+                dispatched.error.is_none(),
+                "stream dispatch carried an error: {:?}",
+                dispatched.error
+            );
+            release.send(()).unwrap();
+            let resolved = receive_state_where(&updates, |state| {
+                state.stream_pending.is_empty()
+                    && state.pending_commands == 0
+                    && state
+                        .streams
+                        .first()
+                        .is_some_and(|stream| stream.desired_running == start)
+            });
+            assert!(
+                resolved.error.is_none(),
+                "stream resolution carried an error: {:?}",
+                resolved.error
+            );
+            // The confirmed roster now offers the opposite action.
+            let opposite = if start {
+                StreamAction::Stop(stream_target_40())
+            } else {
+                StreamAction::Start(stream_target_40())
+            };
+            let permitted = resolved.with_switcher_permissions(true, true);
+            assert_eq!(
+                fm_ui_egui::stream_action(&permitted, opposite),
+                Some(opposite)
+            );
+        }
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
     #[test]
     fn queued_audio_edits_merge_with_the_latest_confirmed_strip() {
         let project = ProjectId::new(NonZeroU128::new(7).unwrap());
@@ -3246,6 +3514,123 @@ mod tests {
             Ok(CommandPayload::RecordStop {
                 recorder: wire_recorder(2)
             })
+        );
+    }
+
+    #[test]
+    fn stream_intents_map_to_target_payloads_from_the_confirmed_roster() {
+        let project = ProjectId::new(NonZeroU128::new(7).unwrap());
+        let mut model = ClientModel::new(project);
+        model
+            .install_snapshot(ProjectSnapshot::from_protocol(
+                project,
+                heartbeat_snapshot(),
+            ))
+            .unwrap();
+        let view = model.view().unwrap();
+        assert_eq!(
+            intent_payload(
+                StudioIntent::Stream(StreamAction::Start(stream_target_40())),
+                Some(&view)
+            ),
+            Ok(CommandPayload::StreamStart {
+                target: stream_target_40()
+            })
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::Stream(StreamAction::Stop(stream_target_40())),
+                Some(&view)
+            ),
+            Ok(CommandPayload::StreamStop {
+                target: stream_target_40()
+            })
+        );
+        let missing = WireStreamTargetId::new(NonZeroU128::new(41).unwrap());
+        assert_eq!(
+            intent_payload(
+                StudioIntent::Stream(StreamAction::Start(missing)),
+                Some(&view)
+            ),
+            Err("Stream target no longer exists".to_owned())
+        );
+        assert!(
+            intent_payload(
+                StudioIntent::Stream(StreamAction::Start(stream_target_40())),
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stinger_intents_keep_confirmed_settings_or_use_studio_defaults() {
+        let project = ProjectId::new(NonZeroU128::new(7).unwrap());
+        let mut snapshot = heartbeat_snapshot();
+        let first = snapshot.inputs[0].input;
+        let second = WireInputId::new(NonZeroU128::new(3).unwrap());
+        snapshot.inputs.push(InputStatus {
+            input: second,
+            name: "clip".into(),
+        });
+        snapshot.input_audio_strips.push(InputAudioStripStatus {
+            input: second,
+            ..snapshot.input_audio_strips[0]
+        });
+        let slot = |number| fm_protocol::WireStingerSlotId::new(number).unwrap();
+        snapshot.stingers = vec![fm_protocol::StingerStatus {
+            slot: slot(2),
+            media_input: first,
+            preload: false,
+            cut_point_frames: 12,
+            audio_policy: StingerAudioPolicy::Muted,
+            missing_media_fallback: StingerMissingMediaFallback::KeepProgram,
+            readiness: fm_protocol::StingerReadiness::NotRequested,
+        }];
+        let mut model = ClientModel::new(project);
+        model
+            .install_snapshot(ProjectSnapshot::from_protocol(project, snapshot))
+            .unwrap();
+        let view = model.view().unwrap();
+        let assign = |number, media: WireInputId| StudioIntent::AssignStingerMedia {
+            slot: slot(number),
+            media_input: media.to_domain(),
+            default_cut_point_frames: 15,
+        };
+        // A configured slot changes only its media.
+        assert_eq!(
+            intent_payload(assign(2, second), Some(&view)),
+            Ok(CommandPayload::ConfigureStinger {
+                slot: slot(2),
+                media_input: second,
+                preload: false,
+                cut_point_frames: 12,
+                audio_policy: StingerAudioPolicy::Muted,
+                missing_media_fallback: StingerMissingMediaFallback::KeepProgram,
+            })
+        );
+        // An unconfigured slot gets the Studio defaults.
+        assert_eq!(
+            intent_payload(assign(5, second), Some(&view)),
+            Ok(CommandPayload::ConfigureStinger {
+                slot: slot(5),
+                media_input: second,
+                preload: true,
+                cut_point_frames: 15,
+                audio_policy: StingerAudioPolicy::MixWithProgram,
+                missing_media_fallback: StingerMissingMediaFallback::Cut,
+            })
+        );
+        let gone = WireInputId::new(NonZeroU128::new(99).unwrap());
+        assert!(intent_payload(assign(1, gone), Some(&view)).is_err());
+        assert!(intent_payload(assign(1, second), None).is_err());
+        assert_eq!(
+            intent_payload(StudioIntent::RemoveStinger { slot: slot(2) }, Some(&view)),
+            Ok(CommandPayload::RemoveStinger { slot: slot(2) })
+        );
+        assert_eq!(
+            intent_payload(StudioIntent::RemoveStinger { slot: slot(3) }, Some(&view)),
+            Err("Stinger slot 3 is not configured".to_owned())
         );
     }
 

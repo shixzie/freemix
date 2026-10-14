@@ -459,7 +459,7 @@ fn optimistic_accept_remains_until_accepted_revision_is_applied() {
             reconciled_commands: vec![CommandId::new("select-3")],
         }
     );
-    assert!(model.pending_commands().is_empty());
+    assert_eq!(model.pending_commands(), []);
     assert_eq!(model.view().unwrap().switcher.desired.preview, input(3));
 }
 
@@ -487,7 +487,7 @@ fn optimistic_rejection_snaps_to_authoritative_state_and_retains_reason() {
         model.reconcile_command(&result).unwrap(),
         CommandReconciled::Rejected(_)
     ));
-    assert!(model.pending_commands().is_empty());
+    assert_eq!(model.pending_commands(), []);
     assert_eq!(model.view().unwrap().switcher.desired.preview, input(2));
     assert_eq!(model.last_rejection().unwrap().code, "permission_denied");
 }
