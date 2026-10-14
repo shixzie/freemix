@@ -5,7 +5,7 @@ use super::DecodeError;
 pub(super) const MAX_JSON_DEPTH: usize = 64;
 
 #[derive(Debug)]
-pub(super) enum Value {
+pub(crate) enum Value {
     Null,
     Bool(bool),
     Number(u128),
@@ -15,17 +15,17 @@ pub(super) enum Value {
     Object(BTreeMap<String, Self>),
 }
 
-pub(super) struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     source: &'a str,
     offset: usize,
 }
 
 impl<'a> Reader<'a> {
-    pub(super) const fn new(source: &'a str) -> Self {
+    pub(crate) const fn new(source: &'a str) -> Self {
         Self { source, offset: 0 }
     }
 
-    pub(super) fn document(mut self) -> Result<Value, DecodeError> {
+    pub(crate) fn document(mut self) -> Result<Value, DecodeError> {
         self.whitespace();
         let value = self.value(0)?;
         self.whitespace();

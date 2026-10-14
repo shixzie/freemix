@@ -779,7 +779,7 @@ const fn rotation(value: Rotation) -> &'static str {
     }
 }
 
-fn escape_string(output: &mut String, value: &str) {
+pub(crate) fn escape_string(output: &mut String, value: &str) {
     for character in value.chars() {
         match character {
             '"' => output.push_str("\\\""),

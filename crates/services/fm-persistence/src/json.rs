@@ -5,7 +5,8 @@ mod reader;
 use crate::ProjectValidationError;
 
 pub(crate) use decoder::decode;
-pub(crate) use encoder::encode;
+pub(crate) use encoder::{encode, escape_string};
+pub(crate) use reader::{Reader, Value};
 
 #[derive(Debug)]
 pub(crate) enum DecodeError {
