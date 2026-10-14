@@ -1,0 +1,247 @@
+//! Self-contained portable bundles and projects instantiated from templates.
+//!
+//! Both operations copy a source bundle's durable manifest and exactly the
+//! assets its media inputs reference into a brand-new destination bundle.
+//! The destination is assembled in a hidden staging sibling and published with
+//! one directory rename, so a failure never leaves a partial bundle at the
+//! destination, and an existing destination is never overwritten.
+
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
+
+use fm_model::InputKind;
+use fm_types::{InputId, ProjectId};
+
+use crate::{
+    BundleError, ProjectStore, StoredProject,
+    asset::asset_uri_key,
+    fsutil,
+    media::{FoldedKeys, asset_uri, portable_key, suffixed_key},
+    store::{next_temp_sequence, parent_directory, sync_directory},
+};
+
+const MAX_PORTABLE_SUFFIX: u32 = 10_000;
+
+/// One asset copied into a new bundle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BundledAsset {
+    /// URI in the source project.
+    pub source_uri: String,
+    /// URI in the new bundle; differs when the key had to be made portable.
+    pub bundled_uri: String,
+    pub bytes: u64,
+}
+
+/// The project written to a new bundle and how its media got there.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BundleExport {
+    pub project: StoredProject,
+    /// Distinct assets copied, sorted by source URI.
+    pub assets: Vec<BundledAsset>,
+    /// Media inputs whose URI was rewritten, sorted.
+    pub rewritten_inputs: Vec<InputId>,
+}
+
+impl ProjectStore {
+    /// Writes a self-contained copy of this bundle to `destination`.
+    ///
+    /// Only `project.json` and the referenced assets are copied: the journal,
+    /// autosaves, and unreferenced files are not. Each distinct asset is
+    /// copied once, symlinked assets are materialized as regular files, and
+    /// keys are rewritten when needed so they are legal and distinct on
+    /// case-insensitive and Windows filesystems (`Logo.png` and `logo.png`
+    /// become `Logo.png` and `logo-2.png`). Runtime state and history are kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BundleError::DestinationExists`],
+    /// [`BundleError::DestinationInsideSource`],
+    /// [`BundleError::UnappliedJournal`], [`BundleError::UnresolvedAssets`]
+    /// (including assets that resolve outside `assets/`), or store, validation,
+    /// and I/O errors. Nothing is left at `destination` on error.
+    pub fn export_portable_bundle(
+        &self,
+        destination: &ProjectStore,
+    ) -> Result<BundleExport, BundleError> {
+        export_bundle(self, destination, Ok)
+    }
+
+    /// Creates a new project bundle at `destination` from this template
+    /// bundle.
+    ///
+    /// The new project gets `project_id` and `name`; its durable position is
+    /// reset to the origin and idempotency receipts are dropped, because the
+    /// template's command history does not belong to the new project.
+    /// Project-local input, scene, bus, and output ids are kept. Media is
+    /// copied exactly as for [`ProjectStore::export_portable_bundle`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BundleError::TemplateIdentityReused`] when `project_id`
+    /// equals the template's id, [`BundleError::EmptyName`] for a blank name,
+    /// and every error of [`ProjectStore::export_portable_bundle`].
+    pub fn instantiate_template(
+        &self,
+        destination: &ProjectStore,
+        project_id: ProjectId,
+        name: &str,
+    ) -> Result<BundleExport, BundleError> {
+        export_bundle(self, destination, |stored| {
+            if stored.project().id() == project_id {
+                return Err(BundleError::TemplateIdentityReused);
+            }
+            let mut project = stored.project().clone().with_id(project_id);
+            project
+                .rename_project(name.to_owned())
+                .map_err(|_| BundleError::EmptyName)?;
+            Ok(stored.without_history().with_project(project)?)
+        })
+    }
+}
+
+fn export_bundle(
+    source: &ProjectStore,
+    destination: &ProjectStore,
+    transform: impl FnOnce(StoredProject) -> Result<StoredProject, BundleError>,
+) -> Result<BundleExport, BundleError> {
+    let stored = source.load()?;
+    let journal = source.scan_journal()?;
+    if !journal.batches().is_empty() {
+        return Err(BundleError::UnappliedJournal {
+            batches: journal.batches().len(),
+        });
+    }
+    let stored = transform(stored)?;
+    let issues = source.audit_assets(&stored);
+    if !issues.is_empty() {
+        return Err(BundleError::UnresolvedAssets(issues));
+    }
+
+    let target = destination.root();
+    if fs::symlink_metadata(target).is_ok() {
+        return Err(BundleError::DestinationExists(target.to_path_buf()));
+    }
+    let parent = parent_directory(target);
+    fs::create_dir_all(parent)?;
+    if fs::canonicalize(parent)?.starts_with(fs::canonicalize(source.root())?) {
+        return Err(BundleError::DestinationInsideSource(target.to_path_buf()));
+    }
+
+    let mapping = portable_mapping(&stored)?;
+    let mut project = stored.project().clone();
+    let mut rewritten_inputs = Vec::new();
+    for input in stored.project().inputs() {
+        if let InputKind::Media { asset_uri: uri } = &input.kind
+            && let Some(bundled) = mapping.get(uri.as_str())
+            && bundled != uri
+        {
+            project
+                .relink_media_input(input.id, bundled.clone())
+                .map_err(|_| BundleError::StalePlan { input: input.id })?;
+            rewritten_inputs.push(input.id);
+        }
+    }
+    let project = stored.with_project(project)?;
+    rewritten_inputs.sort_unstable();
+
+    let staging = StagingDirectory::new(target);
+    let staging_store = ProjectStore::new(staging.path.clone())?;
+    fs::create_dir(&staging.path)?;
+    let mut assets = Vec::with_capacity(mapping.len());
+    for (source_uri, bundled_uri) in &mapping {
+        let resolved = source
+            .resolve_asset_uri(source_uri)
+            .map_err(|_| BundleError::UnresolvedAssets(source.audit_assets(&stored)))?;
+        let key = asset_uri_key(bundled_uri).map_err(|_| BundleError::NoAvailableKey {
+            key: bundled_uri.clone(),
+        })?;
+        let destination = fsutil::create_parents_within(&staging_store.assets_root(), key)?;
+        let bytes = fsutil::copy_new_file(&resolved, &destination)?;
+        assets.push(BundledAsset {
+            source_uri: source_uri.clone(),
+            bundled_uri: bundled_uri.clone(),
+            bytes,
+        });
+    }
+    staging_store.save(&project)?;
+    staging.publish(target)?;
+    Ok(BundleExport {
+        project,
+        assets,
+        rewritten_inputs,
+    })
+}
+
+/// Maps each distinct referenced URI to its portable URI. Keys are processed
+/// in sorted order, so the first of a case-folded clash keeps its name.
+fn portable_mapping(stored: &StoredProject) -> Result<BTreeMap<String, String>, BundleError> {
+    let mut uris = BTreeMap::new();
+    for input in stored.project().inputs() {
+        if let InputKind::Media { asset_uri: uri } = &input.kind {
+            uris.insert(uri.clone(), String::new());
+        }
+    }
+    let mut taken = FoldedKeys::default();
+    for (uri, bundled) in &mut uris {
+        let key =
+            asset_uri_key(uri).map_err(|_| BundleError::NoAvailableKey { key: uri.clone() })?;
+        let base = portable_key(key);
+        let chosen = (1..=MAX_PORTABLE_SUFFIX)
+            .map(|attempt| suffixed_key(&base, attempt))
+            .find(|candidate| {
+                !taken.conflicts(candidate) && asset_uri_key(&asset_uri(candidate)).is_ok()
+            })
+            .ok_or_else(|| BundleError::NoAvailableKey { key: base.clone() })?;
+        taken.insert(&chosen);
+        *bundled = asset_uri(&chosen);
+    }
+    Ok(uris)
+}
+
+/// A hidden sibling directory removed on drop unless published.
+struct StagingDirectory {
+    path: PathBuf,
+    published: bool,
+}
+
+impl StagingDirectory {
+    fn new(target: &Path) -> Self {
+        let name = target.file_name().map_or_else(
+            || "bundle".into(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        // The `.freemix` extension lets the staging path act as a store root.
+        let path = parent_directory(target).join(format!(
+            ".{name}.staging-{}-{}.freemix",
+            std::process::id(),
+            next_temp_sequence()
+        ));
+        Self {
+            path,
+            published: false,
+        }
+    }
+
+    fn publish(mut self, target: &Path) -> Result<(), BundleError> {
+        // `rename` would replace an empty directory created meanwhile, so the
+        // never-overwrite guarantee is rechecked immediately before it.
+        if fs::symlink_metadata(target).is_ok() {
+            return Err(BundleError::DestinationExists(target.to_path_buf()));
+        }
+        fs::rename(&self.path, target)?;
+        self.published = true;
+        sync_directory(parent_directory(target))?;
+        Ok(())
+    }
+}
+
+impl Drop for StagingDirectory {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}

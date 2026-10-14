@@ -6,8 +6,8 @@ use fm_types::InputId;
 use crate::{ProjectStore, StoredProject};
 
 const ASSETS_DIRECTORY: &str = "assets";
-const ASSET_URI_PREFIX: &str = "asset://";
-const MAX_ASSET_URI_BYTES: usize = 1024;
+pub(crate) const ASSET_URI_PREFIX: &str = "asset://";
+pub(crate) const MAX_ASSET_URI_BYTES: usize = 1024;
 
 impl ProjectStore {
     /// Returns the assets directory beneath the project bundle root.
@@ -115,7 +115,7 @@ pub fn validate_asset_uri(uri: &str) -> Result<(), AssetResolveError> {
     asset_uri_key(uri).map(|_| ())
 }
 
-fn asset_uri_key(uri: &str) -> Result<&str, AssetResolveError> {
+pub(crate) fn asset_uri_key(uri: &str) -> Result<&str, AssetResolveError> {
     if uri.len() > MAX_ASSET_URI_BYTES {
         return Err(AssetResolveError::InvalidUri);
     }

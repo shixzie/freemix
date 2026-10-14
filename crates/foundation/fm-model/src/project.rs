@@ -790,6 +790,15 @@ impl Project {
         self.id
     }
 
+    /// Returns this project under a different identity, for example when a
+    /// new project is instantiated from a template bundle. Every other field,
+    /// including the project-local input, scene, bus, and output ids, is kept.
+    #[must_use]
+    pub const fn with_id(mut self, id: ProjectId) -> Self {
+        self.id = id;
+        self
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name

@@ -99,23 +99,7 @@ impl ProjectStore {
     /// No partial project is returned. At most [`MAX_MANIFEST_BYTES`] plus one
     /// byte is read, including if the file grows while it is being loaded.
     pub fn load(&self) -> Result<StoredProject, StoreError> {
-        let file = File::open(self.manifest_path()).map_err(StoreError::Io)?;
-        let size = file.metadata().map_err(StoreError::Io)?.len();
-        enforce_manifest_size(size)?;
-
-        let mut bytes = Vec::with_capacity(usize::try_from(size).unwrap_or_default());
-        file.take(MAX_MANIFEST_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(StoreError::Io)?;
-        enforce_manifest_size(bytes.len().try_into().unwrap_or(u64::MAX))?;
-        let source = String::from_utf8(bytes)
-            .map_err(|error| StoreError::Io(io::Error::new(io::ErrorKind::InvalidData, error)))?;
-        json::decode(&source).map_err(|error| match error {
-            json::DecodeError::Syntax { offset, message } => {
-                StoreError::MalformedManifest { offset, message }
-            }
-            json::DecodeError::Validation(error) => StoreError::Validation(error),
-        })
+        read_manifest_file(&self.manifest_path())
     }
 
     fn temp_path(&self) -> PathBuf {
@@ -127,7 +111,28 @@ impl ProjectStore {
     }
 }
 
-fn enforce_manifest_size(size: u64) -> Result<(), StoreError> {
+/// Reads, strictly parses, and validates one manifest-format file.
+pub(crate) fn read_manifest_file(path: &Path) -> Result<StoredProject, StoreError> {
+    let file = File::open(path).map_err(StoreError::Io)?;
+    let size = file.metadata().map_err(StoreError::Io)?.len();
+    enforce_manifest_size(size)?;
+
+    let mut bytes = Vec::with_capacity(usize::try_from(size).unwrap_or_default());
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(StoreError::Io)?;
+    enforce_manifest_size(bytes.len().try_into().unwrap_or(u64::MAX))?;
+    let source = String::from_utf8(bytes)
+        .map_err(|error| StoreError::Io(io::Error::new(io::ErrorKind::InvalidData, error)))?;
+    json::decode(&source).map_err(|error| match error {
+        json::DecodeError::Syntax { offset, message } => {
+            StoreError::MalformedManifest { offset, message }
+        }
+        json::DecodeError::Validation(error) => StoreError::Validation(error),
+    })
+}
+
+pub(crate) fn enforce_manifest_size(size: u64) -> Result<(), StoreError> {
     if size > MAX_MANIFEST_BYTES {
         Err(StoreError::ManifestTooLarge {
             size,
@@ -138,7 +143,7 @@ fn enforce_manifest_size(size: u64) -> Result<(), StoreError> {
     }
 }
 
-fn parent_directory(path: &Path) -> &Path {
+pub(crate) fn parent_directory(path: &Path) -> &Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."))
@@ -157,17 +162,17 @@ pub(crate) fn sync_directory(_path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
-struct TempGuard {
+pub(crate) struct TempGuard {
     path: PathBuf,
     armed: bool,
 }
 
 impl TempGuard {
-    const fn new(path: PathBuf) -> Self {
+    pub(crate) const fn new(path: PathBuf) -> Self {
         Self { path, armed: true }
     }
 
-    const fn disarm(&mut self) {
+    pub(crate) const fn disarm(&mut self) {
         self.armed = false;
     }
 }

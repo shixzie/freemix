@@ -1,19 +1,37 @@
 //! Durable, engine-independent `FreeMix` project manifests.
 
+mod append;
 mod asset;
+mod autosave;
+mod bundle;
+mod fsutil;
 mod journal;
 mod journal_db;
 mod json;
+mod media;
 mod model;
+mod recent;
 mod settings_export;
 mod settings_import;
 mod store;
 
+pub use append::{
+    AppendReport, AppendedAsset, AppendedAssetDisposition, RenamedEntity, SkippedContent,
+};
 pub use asset::{AssetAuditIssue, AssetAuditReason, AssetResolveError, validate_asset_uri};
+pub use autosave::{
+    AutosaveError, AutosaveGeneration, AutosaveRecovery, AutosaveRejection, AutosaveWrite,
+    DEFAULT_AUTOSAVE_GENERATIONS, MAX_AUTOSAVE_GENERATIONS,
+};
+pub use bundle::{BundleExport, BundledAsset};
 pub use journal::{
     AbandonedJournal, CompactionReport, JournalError, JournalObservation, JournalScan,
     JournalWriter, MAX_JOURNAL_RECORD_BYTES, MAX_UNAPPLIED_JOURNAL_BATCHES,
     MAX_UNAPPLIED_JOURNAL_BYTES, MutationBatch,
+};
+pub use media::{
+    AssetDisposition, BundleError, ImportedAsset, RelinkEntry, RelinkOutcome, RelinkPlan,
+    RelinkResolution, RelinkSearch,
 };
 pub use model::{
     CURRENT_SCHEMA_VERSION, FadeToBlackState, IdempotencyReceipt,
@@ -22,6 +40,11 @@ pub use model::{
     RuntimeFadeToBlack, RuntimeManualTransitions, RuntimeOverlayBorder, RuntimeOverlayChannel,
     RuntimeOverlayPosition, RuntimeOverlayTransition, RuntimeOverlays, RuntimeRouting,
     StoredProject,
+};
+pub use recent::{
+    DEFAULT_RECENT_PROJECTS, MAX_RECENT_PROJECTS, MAX_RECENT_PROJECTS_BYTES,
+    RECENT_PROJECTS_CONTRACT, RecentProject, RecentProjectStatus, RecentProjects,
+    RecentProjectsError,
 };
 pub use settings_export::{
     EntityKey, MAX_SECRET_BYTES, MAX_SETTING_KEY_BYTES, MAX_SETTING_KEY_SEGMENT_BYTES,

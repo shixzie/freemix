@@ -382,6 +382,34 @@ impl StoredProject {
         Ok(stored)
     }
 
+    /// Returns this manifest with `project` substituted and every runtime
+    /// checkpoint, position, and receipt kept unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectValidationError`] when the substituted project breaks
+    /// a manifest invariant, for example by dropping a routed input.
+    pub fn with_project(&self, project: Project) -> Result<Self, ProjectValidationError> {
+        let stored = Self {
+            project,
+            ..self.clone()
+        };
+        stored.validate()?;
+        Ok(stored)
+    }
+
+    /// Returns this manifest positioned at the origin with no idempotency
+    /// receipts: the durable history of the project it came from is not
+    /// carried into a new project.
+    #[must_use]
+    pub fn without_history(&self) -> Self {
+        Self {
+            position: ProjectPosition::default(),
+            idempotency_receipts: Vec::new(),
+            ..self.clone()
+        }
+    }
+
     /// Revalidates all manifest invariants.
     ///
     /// # Errors
