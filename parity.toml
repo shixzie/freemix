@@ -195,8 +195,9 @@ id = "accept-gx-009"
 state = "planned"
 [[tests]]
 id = "accept-gx-010"
-state = "planned"
-
+state = "present"
+paths = ["crates/features/fm-social/tests/moderation_desk.rs"]
+commands = ["cargo test -p fm-social --test moderation_desk"]
 [[tests]]
 id = "accept-au-001"
 state = "planned"
