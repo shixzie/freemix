@@ -11,6 +11,12 @@
 //! usable directory, and [`recover_interrupted`] repairs any session a crash
 //! left open before the daemon records again.
 //!
+//! With `--record-wav` every segment also gets a WAV session of the same name
+//! ([`SegmentFormat::Wav`]): `program.wav` first, `<stem>-NNNN.wav` after a
+//! failover, and a `<stem>.wav.fmsession` manifest, under the same primary,
+//! fallback, and free-space policy as the video session. Its records name the
+//! session `<stem>.wav`.
+//!
 //! Every record this module renders is path-free apart from the session name,
 //! which is the operator's own file stem.
 
@@ -22,12 +28,17 @@ use std::{
     time::Duration,
 };
 
-use fm_codec_ffmpeg::record::{ResilientOutput, ResilientOutputState, ResilientOutputStatus};
+use fm_codec_ffmpeg::record::{
+    ResilientOutput, ResilientOutputState, ResilientOutputStatus, ResilientWavOutput,
+    ResilientWavOutputState, ResilientWavOutputStatus,
+};
 use fm_record::{
-    FileStorage, MAX_SESSION_NAME_BYTES, RecordingSession, ResilientWriterConfig,
-    SESSION_MANIFEST_EXTENSION, SegmentOutcome, SessionConfig, SessionErrorRecord, SessionManifest,
-    SessionRecovery, SessionState, SpaceLevel, SpacePreflight, SpaceThresholds,
-    preflight_recording_space, recover_session,
+    FileStorage, MAX_SESSION_NAME_BYTES, RecordingSession, ResilientWavConfig,
+    ResilientWriterConfig, SESSION_MANIFEST_EXTENSION, SESSION_WAV_SEGMENT_EXTENSION,
+    SegmentFormat, SegmentOutcome, SessionConfig, SessionErrorRecord, SessionManifest,
+    SessionRecovery, SessionSnapshot, SessionState, SpaceLevel, SpacePreflight, SpaceThresholds,
+    WavSegmentOutcome, WavSessionRecovery, preflight_recording_space, recover_session,
+    recover_wav_session,
 };
 
 use crate::disk;
@@ -76,6 +87,19 @@ fn manifest_file_name(name: &str) -> String {
     format!("{name}.{SESSION_MANIFEST_EXTENSION}")
 }
 
+fn wav_manifest_file_name(name: &str) -> String {
+    format!("{name}.{SESSION_WAV_SEGMENT_EXTENSION}.{SESSION_MANIFEST_EXTENSION}")
+}
+
+fn wav_file_name(name: &str) -> String {
+    format!("{name}.{SESSION_WAV_SEGMENT_EXTENSION}")
+}
+
+/// The name WAV session records carry: `<stem>.wav`.
+fn wav_record_name(name: &str) -> String {
+    wav_file_name(name)
+}
+
 /// Segment-name bookkeeping shared by every recorder slot: the optional
 /// fallback directory and the names whose sessions are still being started
 /// off the daemon loop.
@@ -97,9 +121,10 @@ impl SegmentNames {
         self.fallback.as_deref()
     }
 
-    /// Whether `candidate` cannot name a new segment: its file exists in the
-    /// primary or fallback directory, a session manifest of that name exists
-    /// in either, or a session of that name is still starting.
+    /// Whether `candidate` cannot name a new segment: its file or its
+    /// `<stem>.wav` sidecar exists in the primary or fallback directory, a
+    /// video or WAV session manifest of that name exists in either, or a
+    /// session of that name is still starting.
     pub(crate) fn taken(&self, candidate: &Path) -> bool {
         if candidate.exists() {
             return true;
@@ -107,19 +132,23 @@ impl SegmentNames {
         let Some(name) = session_name(candidate) else {
             return false;
         };
-        let manifest = manifest_file_name(name);
         let primary = candidate
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        if primary.join(&manifest).exists() {
+        let mut files = vec![
+            manifest_file_name(name),
+            wav_manifest_file_name(name),
+            wav_file_name(name),
+        ];
+        if any_exists(primary, &files) {
             return true;
         }
+        if let Some(file) = candidate.file_name().and_then(|file| file.to_str()) {
+            files.push(file.to_owned());
+        }
         if let Some(fallback) = &self.fallback
-            && (fallback.join(&manifest).exists()
-                || candidate
-                    .file_name()
-                    .is_some_and(|file| fallback.join(file).exists()))
+            && any_exists(fallback, &files)
         {
             return true;
         }
@@ -141,6 +170,11 @@ impl SegmentNames {
     }
 }
 
+/// Whether any of `files` exists in `directory`.
+fn any_exists(directory: &Path, files: &[String]) -> bool {
+    files.iter().any(|file| directory.join(file).exists())
+}
+
 /// Holds a segment name until its session manifest exists on disk.
 #[derive(Debug)]
 struct Reservation {
@@ -157,14 +191,17 @@ impl Drop for Reservation {
     }
 }
 
-/// Builds the session configuration for segments under `primary`.
+/// Builds the session configuration for `format` segments under `primary`.
+/// Video and WAV sessions share every placement rule.
 fn session_config(
     name: &str,
     primary: &Path,
     fallback: Option<&Path>,
+    format: SegmentFormat,
 ) -> Result<SessionConfig, String> {
     let mut config = SessionConfig::new(name, primary)
         .map_err(|error| error.to_string())?
+        .with_segment_format(format)
         .with_bare_first_segment()
         .with_min_free_bytes(disk::RECORDING_MINIMUM_FREE_BYTES);
     if let Some(fallback) = fallback.filter(|fallback| !same_directory(primary, fallback)) {
@@ -188,6 +225,8 @@ fn same_directory(left: &Path, right: &Path) -> bool {
 #[derive(Debug)]
 pub(crate) struct PlannedSession {
     config: SessionConfig,
+    /// The WAV sidecar session, with `--record-wav`.
+    wav: Option<SessionConfig>,
     slot: usize,
     bitrate_bits_per_second: u64,
     _reservation: Reservation,
@@ -198,9 +237,15 @@ impl PlannedSession {
     pub(crate) fn config(&self) -> &SessionConfig {
         &self.config
     }
+
+    pub(crate) fn wav_config(&self) -> Option<&SessionConfig> {
+        self.wav.as_ref()
+    }
 }
 
 /// Plans the session for `segment`, whose canonical parent is `primary`.
+/// `wav_bits_per_second` (see [`wav_bitrate`]) adds a WAV sidecar session of
+/// the same name, and its rate to the free-space preflight.
 ///
 /// # Errors
 ///
@@ -211,15 +256,28 @@ pub(crate) fn plan(
     names: &SegmentNames,
     slot: usize,
     bitrate_bits_per_second: u64,
+    wav_bits_per_second: Option<u64>,
 ) -> Result<PlannedSession, String> {
     let name = session_name(segment).ok_or("recording output stem is not valid Unicode")?;
-    let config = session_config(name, primary, names.fallback())?;
+    let config = session_config(name, primary, names.fallback(), SegmentFormat::Fmp4)?;
+    let wav = wav_bits_per_second
+        .map(|_| session_config(name, primary, names.fallback(), SegmentFormat::Wav))
+        .transpose()?;
     Ok(PlannedSession {
         config,
+        wav,
         slot,
-        bitrate_bits_per_second,
+        bitrate_bits_per_second: bitrate_bits_per_second
+            .saturating_add(wav_bits_per_second.unwrap_or(0)),
         _reservation: names.reserve(segment),
     })
+}
+
+/// Bit rate of the 16-bit linear-PCM WAV sidecar.
+pub(crate) fn wav_bitrate(sample_rate: u32, channels: usize) -> u64 {
+    u64::from(sample_rate)
+        .saturating_mul(channels.max(1) as u64)
+        .saturating_mul(16)
 }
 
 /// Estimated recording bitrate in bits per second, including a small
@@ -255,50 +313,127 @@ fn probe(directory: &Path) -> io::Result<u64> {
     disk::available_bytes(disk::existing_ancestor(directory).unwrap_or(directory))
 }
 
-/// Runs the free-space preflight, starts the session, and wraps it in the
-/// fault-tolerant recorder output. Reports the preflight on stderr.
+/// The started outputs of one planned segment and their shared status.
+pub(crate) struct OpenedSession {
+    pub(crate) output: ResilientOutput<SessionStorage>,
+    /// The WAV sidecar sink, with `--record-wav`.
+    pub(crate) wav: Option<ResilientWavOutput<SessionStorage>>,
+    pub(crate) status: SessionStatus,
+}
+
+/// Runs the free-space preflight, starts the session (and its WAV sidecar
+/// session), and wraps each in its fault-tolerant recorder output. Reports
+/// the preflight on stderr.
 ///
 /// # Errors
 ///
 /// Refuses when every root with a known free-space figure is exhausted, or
-/// when the session cannot start (no usable directory, an existing manifest
-/// of the same name, or a manifest that reaches no directory).
-pub(crate) fn open(
-    planned: PlannedSession,
-) -> Result<
-    (
-        ResilientOutput<SessionStorage>,
-        ResilientOutputStatus,
-        SessionConfig,
-    ),
-    String,
-> {
+/// when a session cannot start (no usable directory, an existing manifest
+/// of the same name, or a manifest that reaches no directory). A refused WAV
+/// session discards the video session it would have accompanied.
+pub(crate) fn open(planned: PlannedSession) -> Result<OpenedSession, String> {
+    // The reservation is held until both manifests exist.
+    let PlannedSession {
+        config,
+        wav,
+        slot,
+        bitrate_bits_per_second,
+        _reservation,
+    } = planned;
     let mut space_probe = probe;
     let preflight = preflight_recording_space(
         &mut space_probe,
-        planned.config.roots(),
-        planned.bitrate_bits_per_second,
+        config.roots(),
+        bitrate_bits_per_second,
         PREFLIGHT_MINIMUM,
         &SpaceThresholds::default(),
     );
     eprintln!(
         "{}",
-        space_record(
-            planned.slot,
-            planned.config.name(),
-            planned.bitrate_bits_per_second,
-            &preflight
-        )
+        space_record(slot, config.name(), bitrate_bits_per_second, &preflight)
     );
     if preflight_refuses(&preflight) {
         return Err("preflight:no recording directory has usable free space".to_owned());
     }
     let storage: SessionStorage = FileStorage::new(disk::available_bytes);
-    let session = RecordingSession::start(planned.config.clone(), storage)
+    let session = RecordingSession::start(config.clone(), storage)
         .map_err(|error| format!("session:{error}"))?;
     let output = ResilientOutput::new(session, ResilientWriterConfig::default());
-    let status = output.status();
-    Ok((output, status, planned.config))
+    let mut status = SessionStatus {
+        config,
+        video: output.status(),
+        wav: None,
+    };
+    let Some(wav_config) = wav else {
+        return Ok(OpenedSession {
+            output,
+            wav: None,
+            status,
+        });
+    };
+    let storage: SessionStorage = FileStorage::new(disk::available_bytes);
+    match RecordingSession::start(wav_config.clone(), storage) {
+        Ok(session) => {
+            let wav = ResilientWavOutput::new(session, ResilientWavConfig::default());
+            status.wav = Some(WavStatus {
+                config: wav_config,
+                status: wav.status(),
+            });
+            Ok(OpenedSession {
+                output,
+                wav: Some(wav),
+                status,
+            })
+        }
+        Err(error) => {
+            drop(output);
+            discard_unused(&status);
+            Err(format!("wav_session:{error}"))
+        }
+    }
+}
+
+/// The WAV half of a [`SessionStatus`].
+#[derive(Clone, Debug)]
+struct WavStatus {
+    config: SessionConfig,
+    status: ResilientWavOutputStatus,
+}
+
+/// Read handle on one open segment's video session and, with
+/// `--record-wav`, its WAV sidecar session.
+#[derive(Clone, Debug)]
+pub(crate) struct SessionStatus {
+    config: SessionConfig,
+    video: ResilientOutputStatus,
+    wav: Option<WavStatus>,
+}
+
+/// A consistent copy of each session's latest state.
+#[derive(Clone, Debug)]
+pub(crate) struct SessionStates {
+    pub(crate) video: ResilientOutputState,
+    pub(crate) wav: Option<ResilientWavOutputState>,
+}
+
+impl SessionStatus {
+    /// The session name: the segment's file stem.
+    pub(crate) fn name(&self) -> &str {
+        self.config.name()
+    }
+
+    /// The video session's configuration.
+    #[cfg(test)]
+    pub(crate) fn config(&self) -> &SessionConfig {
+        &self.config
+    }
+
+    pub(crate) fn get(&self) -> SessionStates {
+        SessionStates {
+            video: self.video.get(),
+            wav: self.wav.as_ref().map(|wav| wav.status.get()),
+        }
+    }
 }
 
 /// Unknown free space never blocks; a start is refused only when every
@@ -343,51 +478,124 @@ fn space_record(slot: usize, name: &str, bitrate: u64, preflight: &SpacePrefligh
     )
 }
 
-/// Removes the manifests of a session that never created a segment, so a
-/// refused start leaves nothing behind and its name stays free.
-pub(crate) fn discard_unused(config: &SessionConfig, status: &ResilientOutputStatus) {
-    if !status.get().segments.is_empty() {
-        return;
+/// Removes the manifests of every session (video and WAV) that never
+/// created a segment, so a refused start leaves nothing behind and its name
+/// stays free.
+pub(crate) fn discard_unused(status: &SessionStatus) {
+    if status.video.get().segments.is_empty() {
+        remove_manifests(&status.config);
     }
+    if let Some(wav) = &status.wav
+        && wav.status.get().segments.is_empty()
+    {
+        remove_manifests(&wav.config);
+    }
+}
+
+fn remove_manifests(config: &SessionConfig) {
     let manifest = config.manifest_file_name();
     for root in config.roots() {
         let _ = fs::remove_file(root.join(&manifest));
     }
 }
 
-/// Live failover detection for one open session.
+/// Live failover detection for one open session and its WAV sidecar.
 #[derive(Debug, Default)]
 pub(crate) struct FailoverWatch {
     disabled: usize,
+    wav_disabled: usize,
 }
 
 impl FailoverWatch {
-    /// Returns a `FREEMIXD_RECORDER_FAILOVER` record when a directory was
-    /// disabled since the last observation.
+    /// Returns a `FREEMIXD_RECORDER_FAILOVER` record for each session (video,
+    /// then the WAV sidecar as `<name>.wav`) that disabled a directory since
+    /// the last observation, one per line.
     pub(crate) fn observe(
         &mut self,
         slot: usize,
         name: &str,
-        state: &ResilientOutputState,
+        state: &SessionStates,
     ) -> Option<String> {
-        let disabled = state.snapshot.disabled_roots.len();
-        if disabled <= self.disabled {
-            return None;
+        let video = failover_record(slot, name, &state.video.snapshot, &mut self.disabled);
+        let wav = state.wav.as_ref().and_then(|wav| {
+            failover_record(
+                slot,
+                &wav_record_name(name),
+                &wav.snapshot,
+                &mut self.wav_disabled,
+            )
+        });
+        match (video, wav) {
+            (Some(video), Some(wav)) => Some(format!("{video}\n{wav}")),
+            (video, wav) => video.or(wav),
         }
-        self.disabled = disabled;
-        Some(format!(
-            "FREEMIXD_RECORDER_FAILOVER\tv=1\tslot={slot}\tsession={}\tstate={:?}\tactive_root={}\tdisabled_roots={}\tcause={}",
-            field(name),
-            state.snapshot.state,
-            state.snapshot.active_root,
-            root_list(&state.snapshot.disabled_roots),
-            error_field(state.snapshot.errors.last()),
-        ))
     }
 }
 
-/// One `FREEMIXD_RECORDER_SESSION` record for a finished segment's session.
-pub(crate) fn session_report(slot: usize, name: &str, state: &ResilientOutputState) -> String {
+fn failover_record(
+    slot: usize,
+    name: &str,
+    snapshot: &SessionSnapshot,
+    seen: &mut usize,
+) -> Option<String> {
+    let disabled = snapshot.disabled_roots.len();
+    if disabled <= *seen {
+        return None;
+    }
+    *seen = disabled;
+    Some(format!(
+        "FREEMIXD_RECORDER_FAILOVER\tv=1\tslot={slot}\tsession={}\tstate={:?}\tactive_root={}\tdisabled_roots={}\tcause={}",
+        field(name),
+        snapshot.state,
+        snapshot.active_root,
+        root_list(&snapshot.disabled_roots),
+        error_field(snapshot.errors.last()),
+    ))
+}
+
+/// One `FREEMIXD_RECORDER_SESSION` record for a finished segment's session,
+/// followed on the next line by a `FREEMIXD_RECORDER_WAV_SESSION` record for
+/// its WAV sidecar session, if any.
+pub(crate) fn session_report(slot: usize, name: &str, state: &SessionStates) -> String {
+    let video = video_session_report(slot, name, &state.video);
+    match &state.wav {
+        Some(wav) => format!("{video}\n{}", wav_session_report(slot, name, wav)),
+        None => video,
+    }
+}
+
+/// One `FREEMIXD_RECORDER_WAV_SESSION` record, naming the session
+/// `<name>.wav`.
+fn wav_session_report(slot: usize, name: &str, state: &ResilientWavOutputState) -> String {
+    let counters = state.stats;
+    format!(
+        "FREEMIXD_RECORDER_WAV_SESSION\tv=1\tslot={slot}\tsession={}\tstate={:?}\tfinished={}\tsegments={}\tframes={}\tdata_bytes={}\tbytes={}\tfailovers={}\tretries={}\trewritten_bytes={}\theader_patch_failures={}\tactive_root={}\tdisabled_roots={}\terrors={}\terrors_dropped={}\tlast_error={}\tdiscarded_tail_bytes={}\tmanifest_stale={}\tfailure={}",
+        field(&wav_record_name(name)),
+        state.snapshot.state,
+        state.finished,
+        state.segments.len(),
+        counters.frames_written,
+        counters.data_bytes,
+        counters.bytes_written,
+        counters.failovers,
+        counters.retries,
+        counters.bytes_rewritten,
+        counters.header_patch_failures,
+        state.snapshot.active_root,
+        root_list(&state.snapshot.disabled_roots),
+        state.snapshot.errors.len(),
+        state.snapshot.errors_dropped,
+        error_field(state.snapshot.errors.last()),
+        state.discarded_tail_bytes,
+        state.snapshot.manifest_stale,
+        state
+            .error
+            .as_deref()
+            .map_or_else(|| "none".to_owned(), field),
+    )
+}
+
+fn video_session_report(slot: usize, name: &str, state: &ResilientOutputState) -> String {
     let counters = state.stats;
     format!(
         "FREEMIXD_RECORDER_SESSION\tv=1\tslot={slot}\tsession={}\tstate={:?}\tfinished={}\tsegments={}\tfragments={}\tbytes={}\tfailovers={}\tretries={}\trewritten_fragments={}\tactive_root={}\tdisabled_roots={}\terrors={}\terrors_dropped={}\tlast_error={}\tdiscarded_tail_bytes={}\tmanifest_stale={}\tfailure={}",
@@ -504,29 +712,29 @@ pub(crate) fn recover_interrupted(
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         let primary = fs::canonicalize(primary).unwrap_or_else(|_| primary.to_path_buf());
-        let mut names: Vec<String> = [Some(primary.as_path()), fallback]
+        let mut names: Vec<(String, SegmentFormat)> = [Some(primary.as_path()), fallback]
             .into_iter()
             .flatten()
             .filter_map(|directory| fs::read_dir(directory).ok())
             .flat_map(Iterator::flatten)
             .filter_map(|entry| {
                 let file_name = entry.file_name().into_string().ok()?;
-                let name = file_name
-                    .strip_suffix(SESSION_MANIFEST_EXTENSION)?
-                    .strip_suffix('.')?;
-                derives_from(name, stem).then(|| name.to_owned())
+                manifest_session(&file_name, stem)
             })
             .collect();
-        names.sort();
+        names.sort_by(|(left, left_format), (right, right_format)| {
+            (left, *left_format == SegmentFormat::Wav)
+                .cmp(&(right, *right_format == SegmentFormat::Wav))
+        });
         names.dedup();
-        for name in names {
-            if !seen.insert((primary.clone(), name.clone())) {
+        for (name, format) in names {
+            if !seen.insert((primary.clone(), name.clone(), format)) {
                 continue;
             }
-            let config = match session_config(&name, &primary, fallback) {
+            let config = match session_config(&name, &primary, fallback, format) {
                 Ok(config) => config,
                 Err(error) => {
-                    records.push(recovery_failure(scope.slot, &name, &error));
+                    records.push(recovery_failure(scope.slot, &name, format, &error));
                     continue;
                 }
             };
@@ -537,22 +745,84 @@ pub(crate) fn recover_interrupted(
             {
                 continue;
             }
-            match recover_session(&config) {
-                Ok(recovery) => records.push(recovery_record(scope.slot, &name, &recovery)),
-                Err(error) => {
-                    records.push(recovery_failure(scope.slot, &name, &error.to_string()));
-                }
-            }
+            let record = match format {
+                SegmentFormat::Fmp4 => recover_session(&config)
+                    .map(|recovery| recovery_record(scope.slot, &name, &recovery)),
+                // A WAV session is never handed to the MP4 scanner.
+                SegmentFormat::Wav => recover_wav_session(&config)
+                    .map(|recovery| wav_recovery_record(scope.slot, &name, &recovery)),
+            };
+            records.push(record.unwrap_or_else(|error| {
+                recovery_failure(scope.slot, &name, format, &error.to_string())
+            }));
         }
     }
     records
 }
 
-fn recovery_failure(slot: usize, name: &str, error: &str) -> String {
+/// The session a manifest file belongs to, when it is one of `stem`'s:
+/// `<name>.wav.fmsession` is a WAV session (checked first), and
+/// `<name>.fmsession` a video session.
+fn manifest_session(file_name: &str, stem: &str) -> Option<(String, SegmentFormat)> {
+    let name = file_name
+        .strip_suffix(SESSION_MANIFEST_EXTENSION)?
+        .strip_suffix('.')?;
+    if let Some(wav) = name
+        .strip_suffix(SESSION_WAV_SEGMENT_EXTENSION)
+        .and_then(|name| name.strip_suffix('.'))
+        && derives_from(wav, stem)
+    {
+        return Some((wav.to_owned(), SegmentFormat::Wav));
+    }
+    derives_from(name, stem).then(|| (name.to_owned(), SegmentFormat::Fmp4))
+}
+
+fn recovery_failure(slot: usize, name: &str, format: SegmentFormat, error: &str) -> String {
+    let (record, name) = match format {
+        SegmentFormat::Fmp4 => ("FREEMIXD_RECORDING_RECOVERY", name.to_owned()),
+        SegmentFormat::Wav => ("FREEMIXD_RECORDING_WAV_RECOVERY", wav_record_name(name)),
+    };
     format!(
-        "FREEMIXD_RECORDING_RECOVERY\tv=1\tslot={slot}\tsession={}\tstatus=failed\tfailure={}",
-        field(name),
+        "{record}\tv=1\tslot={slot}\tsession={}\tstatus=failed\tfailure={}",
+        field(&name),
         field(error)
+    )
+}
+
+/// One `FREEMIXD_RECORDING_WAV_RECOVERY` record, naming the session
+/// `<name>.wav`: what a WAV sidecar crash recovery kept and what it lost.
+pub(crate) fn wav_recovery_record(
+    slot: usize,
+    name: &str,
+    recovery: &WavSessionRecovery,
+) -> String {
+    let mut intact = 0;
+    let mut repaired = 0;
+    let mut unrecoverable = 0;
+    let mut missing = 0;
+    for segment in &recovery.segments {
+        match segment.outcome {
+            WavSegmentOutcome::Intact { .. } => intact += 1,
+            WavSegmentOutcome::Repaired { .. } => repaired += 1,
+            WavSegmentOutcome::Unrecoverable { .. } => unrecoverable += 1,
+            WavSegmentOutcome::Missing | WavSegmentOutcome::Unreadable { .. } => missing += 1,
+            WavSegmentOutcome::NeverCreated => {}
+        }
+    }
+    format!(
+        "FREEMIXD_RECORDING_WAV_RECOVERY\tv=1\tslot={slot}\tsession={}\tstatus=recovered\tprevious_state={}\tsegments={}\tintact={intact}\trepaired={repaired}\tunrecoverable={unrecoverable}\tmissing={missing}\tkept_bytes={}\tdiscarded_bytes={}\trecovered_ms={}\tunknown_loss_segments={}\tmanifest_generation={}",
+        field(&wav_record_name(name)),
+        recovery
+            .previous_state()
+            .map_or_else(|| "unknown".to_owned(), |state| format!("{state:?}")),
+        recovery.segments.len(),
+        recovery.kept_bytes(),
+        recovery.discarded_bytes(),
+        recovery.recovered_duration_nanos() / 1_000_000,
+        recovery.segments_with_unknown_loss(),
+        recovery
+            .rewritten_generation
+            .map_or_else(|| "none".to_owned(), |generation| generation.to_string()),
     )
 }
 
@@ -651,7 +921,15 @@ mod tests {
         let fallback = directory.path().join("fallback");
         fs::create_dir_all(&primary).unwrap();
         let names = SegmentNames::new(Some(fallback.clone()));
-        let planned = plan(&primary.join("program-002.mp4"), &primary, &names, 1, 1).unwrap();
+        let planned = plan(
+            &primary.join("program-002.mp4"),
+            &primary,
+            &names,
+            1,
+            1,
+            None,
+        )
+        .unwrap();
         assert_eq!(planned.config().name(), "program-002");
         assert_eq!(planned.config().roots(), [primary.clone(), fallback]);
         assert_eq!(
@@ -662,7 +940,7 @@ mod tests {
 
         // A fallback that is the primary directory itself adds nothing.
         let same = SegmentNames::new(Some(primary.clone()));
-        let planned = plan(&primary.join("program.mp4"), &primary, &same, 1, 1).unwrap();
+        let planned = plan(&primary.join("program.mp4"), &primary, &same, 1, 1, None).unwrap();
         assert_eq!(planned.config().roots(), [primary]);
     }
 
@@ -751,7 +1029,7 @@ mod tests {
 
         // A crashed session: open manifest, one segment holding garbage that
         // never became a fragmented MP4.
-        let planned = plan(&output, &primary, &names, 1, 1).unwrap();
+        let planned = plan(&output, &primary, &names, 1, 1, None).unwrap();
         let config = planned.config().clone();
         let storage: SessionStorage = FileStorage::new(disk::available_bytes);
         let mut session = RecordingSession::start(config.clone(), storage).unwrap();
@@ -762,14 +1040,20 @@ mod tests {
         drop(planned);
 
         // A cleanly stopped sibling session is left alone.
-        let stopped = session_config("program-002", &primary, Some(&fallback)).unwrap();
+        let stopped = session_config(
+            "program-002",
+            &primary,
+            Some(&fallback),
+            SegmentFormat::Fmp4,
+        )
+        .unwrap();
         let storage: SessionStorage = FileStorage::new(disk::available_bytes);
         RecordingSession::start(stopped.clone(), storage)
             .unwrap()
             .stop()
             .unwrap();
         // Another recorder's open session in the same directory is ignored.
-        let other = session_config("other", &primary, None).unwrap();
+        let other = session_config("other", &primary, None, SegmentFormat::Fmp4).unwrap();
         let storage: SessionStorage = FileStorage::new(disk::available_bytes);
         drop(RecordingSession::start(other, storage).unwrap());
 
@@ -812,14 +1096,181 @@ mod tests {
         fs::create_dir_all(&primary).unwrap();
         let names = SegmentNames::new(Some(fallback.clone()));
         let output = primary.join("program.mp4");
-        let planned = plan(&output, &primary, &names, 1, 1).unwrap();
-        let (sink, status, config) = open(planned).unwrap();
+        let planned = plan(&output, &primary, &names, 1, 1, Some(1)).unwrap();
+        let opened = open(planned).unwrap();
+        assert!(primary.join("program.fmsession").exists());
+        assert!(primary.join("program.wav.fmsession").exists());
         assert!(names.taken(&output), "the manifest takes the name");
-        drop(sink);
-        discard_unused(&config, &status);
-        assert!(!primary.join("program.fmsession").exists());
-        assert!(!fallback.join("program.fmsession").exists());
+        drop(opened.output);
+        drop(opened.wav);
+        discard_unused(&opened.status);
+        for directory in [&primary, &fallback] {
+            assert!(!directory.join("program.fmsession").exists());
+            assert!(!directory.join("program.wav.fmsession").exists());
+        }
         assert!(!names.taken(&output));
+    }
+
+    #[test]
+    fn wav_sidecar_sessions_share_the_name_and_placement() {
+        let directory = tempfile::tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        let fallback = directory.path().join("fallback");
+        fs::create_dir_all(&primary).unwrap();
+        let names = SegmentNames::new(Some(fallback.clone()));
+        let output = primary.join("program-002.mp4");
+        let wav_bps = wav_bitrate(48_000, 2);
+        assert_eq!(wav_bps, 1_536_000);
+        let planned = plan(&output, &primary, &names, 1, 1_000, Some(wav_bps)).unwrap();
+        assert_eq!(planned.bitrate_bits_per_second, 1_000 + wav_bps);
+        let wav = planned.wav_config().unwrap();
+        assert_eq!(wav.name(), "program-002");
+        assert_eq!(wav.segment_format(), SegmentFormat::Wav);
+        assert_eq!(wav.roots(), planned.config().roots());
+        assert_eq!(wav.manifest_file_name(), "program-002.wav.fmsession");
+        assert_eq!(
+            wav.segment_path(0, 1).unwrap(),
+            primary.join("program-002.wav")
+        );
+        assert_eq!(wav.segment_file_name(2), "program-002-0002.wav");
+        drop(planned);
+        assert!(
+            plan(&output, &primary, &names, 1, 1, None)
+                .unwrap()
+                .wav_config()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn names_are_taken_by_wav_sidecars_and_their_manifests() {
+        let directory = tempfile::tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        let fallback = directory.path().join("fallback");
+        fs::create_dir_all(&primary).unwrap();
+        fs::create_dir_all(&fallback).unwrap();
+        let names = SegmentNames::new(Some(fallback.clone()));
+        let candidate = primary.join("program.mp4");
+        for root in [&primary, &fallback] {
+            for file in ["program.wav", "program.wav.fmsession"] {
+                fs::write(root.join(file), b"").unwrap();
+                assert!(names.taken(&candidate), "{file} takes the name");
+                fs::remove_file(root.join(file)).unwrap();
+            }
+        }
+        // Failover fragments of another session never block a name.
+        fs::write(primary.join("program-0002.wav"), b"").unwrap();
+        assert!(!names.taken(&candidate));
+    }
+
+    #[test]
+    fn a_refused_wav_session_discards_its_video_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        fs::create_dir_all(&primary).unwrap();
+        let names = SegmentNames::new(None);
+        let output = primary.join("program.mp4");
+        let planned = plan(&output, &primary, &names, 1, 1, Some(1)).unwrap();
+        // A stale WAV manifest of the same name refuses the WAV session.
+        fs::write(primary.join("program.wav.fmsession"), b"stale").unwrap();
+        let Err(error) = open(planned) else {
+            panic!("a stale WAV manifest refuses the start");
+        };
+        assert!(error.starts_with("wav_session:"), "{error}");
+        assert!(!primary.join("program.fmsession").exists());
+        assert_eq!(
+            fs::read(primary.join("program.wav.fmsession")).unwrap(),
+            b"stale"
+        );
+    }
+
+    #[test]
+    fn startup_recovery_repairs_open_wav_sessions_with_the_wav_scanner() {
+        let directory = tempfile::tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        let fallback = directory.path().join("fallback");
+        fs::create_dir_all(&primary).unwrap();
+        fs::create_dir_all(&fallback).unwrap();
+        let output = primary.join("program.mp4");
+        let config =
+            session_config("program", &primary, Some(&fallback), SegmentFormat::Wav).unwrap();
+        let storage: SessionStorage = FileStorage::new(disk::available_bytes);
+        let mut session = RecordingSession::start(config.clone(), storage).unwrap();
+        let mut opened = session.open_segment().unwrap();
+        // A streamed header with placeholder sizes, 3 stereo s16 frames, and
+        // half a frame torn by the crash.
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&u32::MAX.to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&2_u16.to_le_bytes());
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&192_000_u32.to_le_bytes());
+        wav.extend_from_slice(&4_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&u32::MAX.to_le_bytes());
+        wav.extend_from_slice(&[1; 14]);
+        io::Write::write_all(&mut opened.sink, &wav).unwrap();
+        drop(opened);
+        drop(session);
+        assert!(primary.join("program.wav").exists());
+
+        let records = recover_interrupted(
+            &[RecoveryScope {
+                slot: 1,
+                output: &output,
+            }],
+            Some(&fallback),
+        );
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert!(
+            records[0].starts_with(
+                "FREEMIXD_RECORDING_WAV_RECOVERY\tv=1\tslot=1\tsession=program.wav\tstatus=recovered\tprevious_state=Recording\tsegments=1\tintact=0\trepaired=1\tunrecoverable=0\tmissing=0\tkept_bytes=56\tdiscarded_bytes=2\t"
+            ),
+            "{records:?}"
+        );
+        assert_eq!(fs::metadata(primary.join("program.wav")).unwrap().len(), 56);
+        assert_eq!(
+            newest_manifest(&config).unwrap().state,
+            SessionState::Recovered
+        );
+        assert_eq!(
+            recover_interrupted(
+                &[RecoveryScope {
+                    slot: 1,
+                    output: &output,
+                }],
+                Some(&fallback),
+            ),
+            Vec::<String>::new(),
+            "a second startup finds nothing left to recover"
+        );
+    }
+
+    #[test]
+    fn manifests_map_to_their_session_format() {
+        assert_eq!(
+            manifest_session("program.wav.fmsession", "program"),
+            Some(("program".to_owned(), SegmentFormat::Wav))
+        );
+        assert_eq!(
+            manifest_session("program-002.wav.fmsession", "program"),
+            Some(("program-002".to_owned(), SegmentFormat::Wav))
+        );
+        assert_eq!(
+            manifest_session("program.fmsession", "program"),
+            Some(("program".to_owned(), SegmentFormat::Fmp4))
+        );
+        // A stem that itself ends in `.wav` keeps its video session.
+        assert_eq!(
+            manifest_session("show.wav.fmsession", "show.wav"),
+            Some(("show.wav".to_owned(), SegmentFormat::Fmp4))
+        );
+        assert_eq!(manifest_session("other.wav.fmsession", "program"), None);
+        assert_eq!(manifest_session("program.wav", "program"), None);
     }
 
     #[test]
@@ -828,10 +1279,10 @@ mod tests {
         let primary = directory.path().join("primary");
         fs::create_dir_all(&primary).unwrap();
         let names = SegmentNames::new(None);
-        let planned = plan(&primary.join("program.mp4"), &primary, &names, 2, 1).unwrap();
-        let (sink, status, _) = open(planned).unwrap();
-        drop(sink);
-        let mut state = status.get();
+        let planned = plan(&primary.join("program.mp4"), &primary, &names, 2, 1, None).unwrap();
+        let opened = open(planned).unwrap();
+        drop(opened.output);
+        let mut state = opened.status.get();
         let record = session_report(2, "program", &state);
         assert_eq!(
             record,
@@ -841,22 +1292,71 @@ mod tests {
 
         let mut watch = FailoverWatch::default();
         assert_eq!(watch.observe(2, "program", &state), None);
-        state.snapshot.disabled_roots = vec![0];
-        state.snapshot.active_root = 1;
-        state.snapshot.errors.push(SessionErrorRecord {
+        let error = SessionErrorRecord {
             sequence: 1,
             segment: Some(1),
             root: 0,
             op: fm_record::FailureOp::Write,
             kind: fm_record::FailureKind::StorageFull,
             count: 1,
-        });
+        };
+        state.video.snapshot.disabled_roots = vec![0];
+        state.video.snapshot.active_root = 1;
+        state.video.snapshot.errors.push(error);
         assert_eq!(
             watch.observe(2, "program", &state).as_deref(),
             Some(
                 "FREEMIXD_RECORDER_FAILOVER\tv=1\tslot=2\tsession=program\tstate=Stopped\tactive_root=1\tdisabled_roots=0\tcause=Write:StorageFull@0x1"
             )
         );
+        assert_eq!(watch.observe(2, "program", &state), None, "reported once");
+    }
+
+    #[test]
+    fn wav_session_and_failover_records_name_the_sidecar() {
+        let directory = tempfile::tempdir().unwrap();
+        let primary = directory.path().join("primary");
+        fs::create_dir_all(&primary).unwrap();
+        let names = SegmentNames::new(None);
+        let planned = plan(
+            &primary.join("program.mp4"),
+            &primary,
+            &names,
+            2,
+            1,
+            Some(1),
+        )
+        .unwrap();
+        let opened = open(planned).unwrap();
+        drop(opened.output);
+        drop(opened.wav);
+        let mut state = opened.status.get();
+        let report = session_report(2, "program", &state);
+        let lines: Vec<&str> = report.lines().collect();
+        assert_eq!(lines.len(), 2, "{report}");
+        assert!(lines[0].starts_with("FREEMIXD_RECORDER_SESSION\tv=1\tslot=2\tsession=program\t"));
+        assert_eq!(
+            lines[1],
+            "FREEMIXD_RECORDER_WAV_SESSION\tv=1\tslot=2\tsession=program.wav\tstate=Stopped\tfinished=true\tsegments=0\tframes=0\tdata_bytes=0\tbytes=0\tfailovers=0\tretries=0\trewritten_bytes=0\theader_patch_failures=0\tactive_root=0\tdisabled_roots=none\terrors=0\terrors_dropped=0\tlast_error=none\tdiscarded_tail_bytes=0\tmanifest_stale=false\tfailure=none"
+        );
+        assert!(!report.contains(&*directory.path().to_string_lossy()));
+
+        let mut watch = FailoverWatch::default();
+        assert_eq!(watch.observe(2, "program", &state), None);
+        let wav = state.wav.as_mut().unwrap();
+        wav.snapshot.disabled_roots = vec![0];
+        wav.snapshot.active_root = 1;
+        assert_eq!(
+            watch.observe(2, "program", &state).as_deref(),
+            Some(
+                "FREEMIXD_RECORDER_FAILOVER\tv=1\tslot=2\tsession=program.wav\tstate=Stopped\tactive_root=1\tdisabled_roots=0\tcause=none"
+            )
+        );
+        state.video.snapshot.disabled_roots = vec![0];
+        let wav = state.wav.as_mut().unwrap();
+        wav.snapshot.disabled_roots = vec![0, 1];
+        let both = watch.observe(2, "program", &state).unwrap();
+        assert_eq!(both.lines().count(), 2, "{both}");
         assert_eq!(watch.observe(2, "program", &state), None, "reported once");
     }
 }

@@ -25,7 +25,7 @@ use fm_model::{
     SimulatedInput, SimulatedVideo, SolidColor,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
-use fm_record::{Fmp4Integrity, SessionManifest, SessionState, scan_fmp4_file};
+use fm_record::{Fmp4Integrity, SessionManifest, SessionState, read_wav_info, scan_fmp4_file};
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
     SampleFormat, SampleRate, ScanMode, VideoDimensions, VideoFormat,
@@ -224,17 +224,65 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 fn mp4_files(directory: &Path) -> Vec<PathBuf> {
+    files_with_extension(directory, "mp4")
+}
+
+fn wav_files(directory: &Path) -> Vec<PathBuf> {
+    files_with_extension(directory, "wav")
+}
+
+fn files_with_extension(directory: &Path, wanted: &str) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(directory)
         .map(|entries| {
             entries
                 .flatten()
                 .map(|entry| entry.path())
-                .filter(|path| path.extension().is_some_and(|extension| extension == "mp4"))
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == wanted)
+                })
                 .collect()
         })
         .unwrap_or_default();
     files.sort();
     files
+}
+
+/// Sample frames in a WAV segment, after proving its header describes the
+/// file exactly (the RIFF and data sizes were fixed on close or by
+/// recovery) and that it decodes as the program's 48 kHz stereo audio.
+fn wav_frames(path: &Path) -> u64 {
+    let info = read_wav_info(&mut fs::File::open(path).unwrap())
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let length = file_len(path);
+    assert!(!info.rf64, "{}", path.display());
+    assert_eq!(info.riff_size + 8, length, "{} RIFF size", path.display());
+    assert_eq!(
+        info.data_offset + info.data_bytes + info.data_bytes % 2,
+        length,
+        "{} data size",
+        path.display()
+    );
+    assert_eq!(
+        (info.spec.channels, info.spec.sample_rate),
+        (2, 48_000),
+        "{}",
+        path.display()
+    );
+    let decode = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-f", "null", "-"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        decode.status.success() && decode.stderr.is_empty(),
+        "{} does not decode cleanly: {}",
+        path.display(),
+        String::from_utf8_lossy(&decode.stderr)
+    );
+    info.frames()
 }
 
 fn file_len(path: &Path) -> u64 {
@@ -308,7 +356,9 @@ fn os(values: &[&str]) -> Vec<OsString> {
 /// The primary recording directory turns read-only mid-show. The segment
 /// already open keeps writing (its descriptor stays valid), and every later
 /// segment fails over to `--record-fallback-dir`: the recording continues,
-/// every segment on both directories decodes, and every session closes.
+/// every segment on both directories decodes, and every session closes. The
+/// `--record-wav` sidecars fail over with the video, and every sidecar on
+/// either directory has a header whose sizes describe it exactly.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
@@ -324,6 +374,7 @@ fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
     let mut arguments = os(&["--record-program"]);
     arguments.push(primary.join("program.mp4").into());
     arguments.extend(os(&[
+        "--record-wav",
         "--record-segment-seconds",
         "1",
         "--record-fallback-dir",
@@ -340,12 +391,12 @@ fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
     fs::set_permissions(&primary, fs::Permissions::from_mode(0o555)).unwrap();
     let permissions_bind = fs::File::create(primary.join("probe")).is_err();
     if permissions_bind {
-        wait_until("two fallback segments with data", || {
-            mp4_files(&fallback)
-                .iter()
-                .filter(|path| file_len(path) > 0)
-                .count()
-                >= 2
+        wait_until("two fallback segments and sidecars with data", || {
+            // Sidecars must hold sample data, not just a header.
+            let with_data = |files: Vec<PathBuf>, minimum: u64| {
+                files.iter().filter(|path| file_len(path) > minimum).count()
+            };
+            with_data(mp4_files(&fallback), 0) >= 2 && with_data(wav_files(&fallback), 4_096) >= 2
         });
     }
     let stderr = daemon.stop();
@@ -362,6 +413,10 @@ fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
             report.contains("\toutcome=Clean\t") && report.contains("\tfailure=none"),
             "a failover is not a recorder failure: {report}\n{stderr}"
         );
+        assert!(
+            !report.contains("\twav_bytes=0\t"),
+            "every segment streamed its sidecar: {report}"
+        );
     }
     let failovers = lines(&stderr, "FREEMIXD_RECORDER_FAILOVER");
     assert!(
@@ -370,6 +425,13 @@ fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
             .any(|line| line.contains("\tactive_root=1\tdisabled_roots=0\t")
                 && line.contains("PermissionDenied")),
         "{stderr}"
+    );
+    assert!(
+        failovers
+            .iter()
+            .any(|line| line.contains(".wav\t")
+                && line.contains("\tactive_root=1\tdisabled_roots=0\t")),
+        "the WAV sessions fail over too: {stderr}"
     );
     assert!(
         lines(&stderr, "FREEMIXD_RECORDER_FAILURE").is_empty(),
@@ -382,6 +444,22 @@ fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
             .iter()
             .all(|line| line.contains("\tstate=Stopped\tfinished=true\t")),
         "{stderr}"
+    );
+    let wav_sessions = lines(&stderr, "FREEMIXD_RECORDER_WAV_SESSION");
+    assert_eq!(wav_sessions.len(), reports.len(), "{stderr}");
+    assert!(
+        wav_sessions.iter().all(|line| {
+            line.contains(".wav\tstate=Stopped\tfinished=true\t")
+                && line.contains("\theader_patch_failures=0\t")
+                && line.ends_with("\tfailure=none")
+        }),
+        "{stderr}"
+    );
+    assert!(
+        wav_sessions
+            .iter()
+            .any(|line| line.contains("\tactive_root=1\tdisabled_roots=0\t")),
+        "a WAV session moved to the fallback: {stderr}"
     );
     assert!(
         !lines(&stderr, "FREEMIXD_RECORDER_SPACE").is_empty(),
@@ -403,6 +481,24 @@ fn a_primary_made_unwritable_mid_recording_continues_in_the_fallback() {
     assert!(
         fallback_frames >= 25,
         "the recording continued in the fallback for at least a second: {fallback_frames}"
+    );
+
+    // The sidecars followed the video: complete, size-correct WAVs on both
+    // directories, at least a second of audio in the fallback.
+    let primary_sidecars = wav_files(&primary);
+    let fallback_sidecars = wav_files(&fallback);
+    assert!(primary_sidecars.len() >= 2, "{primary_sidecars:?}");
+    assert!(fallback_sidecars.len() >= 2, "{fallback_sidecars:?}");
+    let mut fallback_audio_frames = 0;
+    for sidecar in primary_sidecars.iter().chain(&fallback_sidecars) {
+        let frames = wav_frames(sidecar);
+        if sidecar.starts_with(&fallback) {
+            fallback_audio_frames += frames;
+        }
+    }
+    assert!(
+        fallback_audio_frames >= 48_000,
+        "the sidecar continued in the fallback for at least a second: {fallback_audio_frames}"
     );
 
     // Every session's newest manifest copy is closed, whichever directory
@@ -528,5 +624,104 @@ fn startup_recovery_repairs_a_segment_torn_by_a_daemon_crash() {
     assert!(
         lines(&stderr, "FREEMIXD_RECORDING_RECOVERY").is_empty(),
         "{stderr}"
+    );
+}
+
+/// The daemon dies mid-recording with `--record-wav`. The streamed sidecar
+/// still carries `FFmpeg`'s placeholder sizes and ends in a torn sample frame.
+/// The next start recovers it as a WAV session (never with the MP4 scanner):
+/// the sizes are rewritten from the data, the torn frame is cut, the
+/// manifest says recovered, and the restarted daemon records a new,
+/// size-correct sidecar beside the next segment.
+#[test]
+fn startup_recovery_repairs_a_wav_sidecar_left_open_by_a_daemon_crash() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("crash.freemix");
+    save_recording_project(&project);
+    let output = directory.path().join("program.mp4");
+    let sidecar = directory.path().join("program.wav");
+    let mut arguments = os(&["--record-wav", "--record-program"]);
+    arguments.push(output.clone().into());
+    let Some(daemon) = DaemonProcess::start(&project, &arguments) else {
+        return;
+    };
+    // Over a second of audio (48 kHz stereo s16) reaches the sidecar.
+    wait_until("a second of sidecar audio", || {
+        directory.path().join("program.wav.fmsession").exists()
+            && file_len(&sidecar) > 48_000 * 4 + 4_096
+    });
+    let crashed = daemon.crash();
+    assert!(
+        lines(&crashed, "FREEMIXD_RECORDER").is_empty(),
+        "a crashed daemon reports nothing: {crashed}"
+    );
+    assert_eq!(
+        newest_manifest("program.wav", &[directory.path()]).state,
+        SessionState::Recording,
+        "the crash left the WAV session open"
+    );
+    // The crash tore the write in flight: one byte of a 4-byte frame.
+    let mut file = fs::OpenOptions::new().append(true).open(&sidecar).unwrap();
+    file.write_all(&[0x7f]).unwrap();
+    drop(file);
+    let torn_length = file_len(&sidecar);
+
+    let Some(daemon) = DaemonProcess::start(&project, &arguments) else {
+        return;
+    };
+    let stderr = daemon.stop();
+    let recovery = lines(&stderr, "FREEMIXD_RECORDING_WAV_RECOVERY");
+    assert_eq!(recovery.len(), 1, "{stderr}");
+    let record = recovery[0];
+    for field in [
+        "\tslot=1\t",
+        "\tsession=program.wav\t",
+        "\tstatus=recovered\t",
+        "\tprevious_state=Recording\t",
+        "\tsegments=1\t",
+        "\trepaired=1\t",
+        "\tunrecoverable=0\t",
+        "\tmissing=0\t",
+    ] {
+        assert!(record.contains(field), "missing {field:?} in {record}");
+    }
+    // The video session was recovered by its own scanner, by name.
+    assert!(
+        lines(&stderr, "FREEMIXD_RECORDING_RECOVERY")
+            .iter()
+            .any(|line| line.contains("\tsession=program\tstatus=recovered\t")),
+        "{stderr}"
+    );
+    // Recovery runs before the restarted daemon records anything.
+    let recovery_at = stderr.find("FREEMIXD_RECORDING_WAV_RECOVERY").unwrap();
+    let space_at = stderr.find("FREEMIXD_RECORDER_SPACE").unwrap();
+    assert!(recovery_at < space_at, "{stderr}");
+
+    let length = file_len(&sidecar);
+    assert!(length < torn_length, "the torn frame was cut");
+    assert!(
+        record.contains(&format!("\tkept_bytes={length}\t")),
+        "{record}"
+    );
+    assert!(wav_frames(&sidecar) >= 48_000);
+    assert_eq!(
+        newest_manifest("program.wav", &[directory.path()]).state,
+        SessionState::Recovered
+    );
+    // The restarted daemon recorded into new names and closed both.
+    let next = directory.path().join("program-002.wav");
+    assert!(wav_frames(&next) > 0);
+    assert_eq!(
+        newest_manifest("program-002.wav", &[directory.path()]).state,
+        SessionState::Stopped
+    );
+    let report = lines(&stderr, "FREEMIXD_RECORDER");
+    assert_eq!(report.len(), 1, "{stderr}");
+    assert!(
+        report[0].contains(&format!("\twav_bytes={}\t", file_len(&next))),
+        "wav_bytes counts the stream the sidecar session accepted: {stderr}"
     );
 }

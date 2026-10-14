@@ -1877,6 +1877,9 @@ struct NativeProgramRecorder {
     audio_bitrate_kbps: Option<u32>,
     /// Estimated recording bitrate, for the free-space preflight.
     bitrate_bits_per_second: u64,
+    /// WAV sidecar bitrate with `--record-wav`, which also gives the segment
+    /// its WAV session.
+    wav_bits_per_second: Option<u64>,
     /// The crash-safe session the open recorder writes into; reported in
     /// `FREEMIXD_RECORDER_SESSION` and watched for failovers.
     session: Option<RecorderSession>,
@@ -1886,7 +1889,7 @@ struct NativeProgramRecorder {
 #[cfg(feature = "native-media")]
 struct RecorderSession {
     name: String,
-    status: fm_codec_ffmpeg::record::ResilientOutputStatus,
+    status: recording_session::SessionStatus,
     failover: recording_session::FailoverWatch,
 }
 
@@ -1903,23 +1906,33 @@ struct OpenedRecorder {
 /// configured startup recording. A refused recorder start removes the
 /// session's manifests again when no segment was written, so the refused
 /// name is reused by the next start exactly like the former refused file.
+/// With `--record-wav` the WAV sidecar streams into its own session through
+/// [`Recorder::start_with_sinks`], so it fails over with the video.
 #[cfg(feature = "native-media")]
 fn start_session_recorder(
     planned: recording_session::PlannedSession,
     config: RecordConfig,
 ) -> Result<OpenedRecorder, String> {
-    let (output, status, session) = recording_session::open(planned)?;
-    match Recorder::start_with_sink(Box::new(output), config) {
+    let recording_session::OpenedSession {
+        output,
+        wav,
+        status,
+    } = recording_session::open(planned)?;
+    let started = match wav {
+        Some(wav) => Recorder::start_with_sinks(Box::new(output), Box::new(wav), config),
+        None => Recorder::start_with_sink(Box::new(output), config),
+    };
+    match started {
         Ok(recorder) => Ok(OpenedRecorder {
             recorder,
             session: RecorderSession {
-                name: session.name().to_owned(),
+                name: status.name().to_owned(),
                 status,
                 failover: recording_session::FailoverWatch::default(),
             },
         }),
         Err(error) => {
-            recording_session::discard_unused(&session, &status);
+            recording_session::discard_unused(&status);
             Err(error.to_string())
         }
     }
@@ -1999,17 +2012,6 @@ impl RecorderCapturePolicy {
             app_capture_failure,
         ))
     }
-}
-
-#[cfg(feature = "native-media")]
-/// The linear-PCM sidecar that accompanies one program MP4 segment when
-/// `--record-wav` is configured.
-///
-/// The sidecar shares the segment's stem, so `program-002.mp4` is accompanied
-/// by `program-002.wav` and live-start derivation stays in lockstep.
-#[cfg(feature = "native-media")]
-fn record_wav_path(segment: &Path) -> PathBuf {
-    segment.with_extension("wav")
 }
 
 /// Minimum positive frame count covering at least `seconds` at `rate`:
@@ -2116,6 +2118,7 @@ impl NativeProgramRecorder {
             names,
             self.slot,
             self.bitrate_bits_per_second,
+            self.wav_bits_per_second,
         )
         .map_err(|error| AppFailure(error).into())
     }
@@ -2220,7 +2223,13 @@ impl NativeProgramRecorder {
         let mut config = RecordConfig::new(format.clone());
         config.limits.stop_timeout = PROGRAM_RECORDER_STOP_TIMEOUT;
         config.limits.kill_timeout = PROGRAM_RECORDER_KILL_TIMEOUT;
-        config.wav = wav.then(|| record_wav_path(path));
+        // The WAV sidecar goes to its own session sink, never to a path.
+        let wav_bits_per_second = wav.then(|| {
+            recording_session::wav_bitrate(
+                format.sample_rate().hertz(),
+                format.channel_layout().channels().len(),
+            )
+        });
         config.video_bitrate_kbps = video_bitrate_kbps;
         config.audio_bitrate_kbps = audio_bitrate_kbps;
         config.timecode = timecode;
@@ -2256,6 +2265,7 @@ impl NativeProgramRecorder {
                 video_bitrate_kbps,
                 audio_bitrate_kbps,
                 bitrate_bits_per_second,
+                wav_bits_per_second,
                 session: None,
             },
             config,
@@ -11130,7 +11140,7 @@ Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
---record-wav additionally writes a linear-PCM WAV sidecar for each segment of every configured recorder, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`); the sidecar follows the same channel layout as the program and is final only after a clean stop.\n\
+--record-wav additionally writes a 16-bit linear-PCM WAV sidecar for each segment of every configured recorder, sharing its stem (`program-002.mp4` is accompanied by `program-002.wav`) and following the program's channel layout. The sidecar is its own crash-safe session (<stem>.wav.fmsession) that fails over with the video: a write or sync failure continues whole sample frames in <stem>-<NNNN>.wav on the same directory or on --record-fallback-dir. Header sizes are fixed when each file closes, and startup recovery repairs the sizes of sidecars a crash left open; FREEMIXD_RECORDER_WAV_SESSION and FREEMIXD_RECORDING_WAV_RECOVERY report them, and a sidecar failure is reported as failure=WavOutput(...).\n\
 --record-segment-seconds and --record-segment-seconds-2 rotate the active --record-program and --record-program-2 slot respectively to its next <stem>-<NNN>.mp4 segment on a frame boundary after at least the configured number of seconds; each accepts <option> <value> or <option>=<value> and requires its own recorder, and a slot without its own duration never rotates automatically.\n\
 --record-bitrate-kbps and --record-bitrate-kbps-2 set each slot's libx264 video bitrate in kbps (1000..=100000), and --record-audio-bitrate-kbps and --record-audio-bitrate-kbps-2 set its AAC audio bitrate in kbps (8..=1024); each accepts <option> <value> or <option>=<value>, applies only to its own --record-program/--record-program-2 slot, and leaves that slot's encoder defaults untouched when unset.\n\
 Every program segment is a crash-safe recording session with a <stem>.fmsession manifest beside it, so output stems must be 1 to 60 ASCII letters, digits, `-`, `_`, or `.`. A write or sync failure re-homes the fragment in flight into <stem>-<NNNN>.mp4 on the same directory, or, when that directory is full, read-only, missing, or forbidden, on --record-fallback-dir (accepts <option> <value> or <option>=<value>, applies to every slot, must differ from each output directory, and is unavailable with --fullscreen-program); the recording continues instead of failing. Startup recovers every session of the configured slots that a crash left open, cutting torn segments back to their last complete fragment, before anything records. FREEMIXD_RECORDER_SPACE reports each segment's free-space preflight (a start is refused only when every measured directory is exhausted), FREEMIXD_RECORDER_FAILOVER each failover, FREEMIXD_RECORDER_SESSION each finished session, and FREEMIXD_RECORDING_RECOVERY what each recovery kept and lost.\n\
@@ -13919,20 +13929,26 @@ mod tests {
     #[cfg(feature = "native-media")]
     #[test]
     fn record_wav_sidecar_shares_each_segment_stem() {
-        assert_eq!(
-            record_wav_path(Path::new("/srv/shows/program.mp4")),
-            Path::new("/srv/shows/program.wav")
-        );
-        assert_eq!(
-            record_wav_path(Path::new("/srv/shows/program-002.mp4")),
-            Path::new("/srv/shows/program-002.wav")
-        );
-        // A configured name without the MP4 extension still gets a WAV
-        // sidecar rather than overwriting the segment itself.
-        assert_eq!(
-            record_wav_path(Path::new("/srv/shows/program")),
-            Path::new("/srv/shows/program.wav")
-        );
+        let directory = tempfile::tempdir().unwrap();
+        let names = recording_session::SegmentNames::new(None);
+        for (segment, sidecar) in [
+            ("program.mp4", "program.wav"),
+            ("program-002.mp4", "program-002.wav"),
+        ] {
+            let planned = recording_session::plan(
+                &directory.path().join(segment),
+                directory.path(),
+                &names,
+                1,
+                1,
+                Some(1),
+            )
+            .unwrap();
+            assert_eq!(
+                planned.wav_config().unwrap().segment_path(0, 1).unwrap(),
+                directory.path().join(sidecar)
+            );
+        }
     }
 
     #[cfg(feature = "native-media")]
@@ -14694,20 +14710,20 @@ mod tests {
         names: &recording_session::SegmentNames,
     ) -> recording_session::PlannedSession {
         let parent = record_output_parent(path).unwrap();
-        recording_session::plan(path, &parent, names, 1, 1_000_000).unwrap()
+        recording_session::plan(path, &parent, names, 1, 1_000_000, None).unwrap()
     }
 
-    /// A recorder that refuses to start after its session was created must
-    /// not leave the session behind: here a stale WAV sidecar makes the real
-    /// recorder refuse with `AlreadyExists`, and the next start may reuse the
-    /// same name.
+    /// A recorder that refuses to start after its sessions were created must
+    /// not leave the video or WAV session behind: here an out-of-range
+    /// bitrate makes the real recorder refuse, and the next start may reuse
+    /// the same name. A stale WAV sidecar never reaches a start: it takes
+    /// the name.
     #[cfg(feature = "native-media")]
     #[test]
     fn refused_recorder_start_removes_the_created_session() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("show.mp4");
-        let wav = record_wav_path(&path);
-        fs::write(&wav, b"stale").unwrap();
+        let wav = directory.path().join("show.wav");
         let mut config = RecordConfig::new(
             RecordFormat::new(
                 64,
@@ -14719,20 +14735,32 @@ mod tests {
             )
             .unwrap(),
         );
-        config.wav = Some(wav.clone());
+        config.video_bitrate_kbps = Some(1);
         let names = recording_session::SegmentNames::new(None);
+        let parent = record_output_parent(&path).unwrap();
+        let planned =
+            recording_session::plan(&path, &parent, &names, 1, 1_000_000, Some(1)).unwrap();
 
-        let Err(error) = start_session_recorder(planned_session(&path, &names), config) else {
-            panic!("a stale sidecar refuses the recorder start");
-        };
-
-        assert!(error.contains("AlreadyExists"), "{error}");
-        assert!(!path.exists(), "the refused start left its segment behind");
         assert!(
-            !directory.path().join("show.fmsession").exists(),
-            "the refused start left its session manifest behind"
+            start_session_recorder(planned, config).is_err(),
+            "an invalid bitrate refuses the recorder start"
         );
+        assert!(!path.exists(), "the refused start left its segment behind");
+        assert!(!wav.exists(), "the refused start left its sidecar behind");
+        for manifest in ["show.fmsession", "show.wav.fmsession"] {
+            assert!(
+                !directory.path().join(manifest).exists(),
+                "the refused start left {manifest} behind"
+            );
+        }
         assert!(!names.taken(&path), "the refused name is free again");
+
+        fs::write(&wav, b"stale").unwrap();
+        assert!(names.taken(&path), "a stale sidecar takes the name");
+        assert_eq!(
+            next_record_segment_path(&path, |candidate| names.taken(candidate)).unwrap(),
+            directory.path().join("show-002.mp4")
+        );
         assert_eq!(fs::read(wav).unwrap(), b"stale");
     }
 
@@ -14751,10 +14779,10 @@ mod tests {
         );
         // ...and a session forced onto it never overwrites: segment creation
         // is exclusive, so the session moves on to its next segment name.
-        let (output, status, config) =
-            recording_session::open(planned_session(&path, &names)).unwrap();
-        drop(output);
-        assert_eq!(status.get().segments.len(), 0);
+        let opened = recording_session::open(planned_session(&path, &names)).unwrap();
+        drop(opened.output);
+        let (status, config) = (&opened.status, opened.status.config().clone());
+        assert_eq!(status.get().video.segments.len(), 0);
         let second = fm_record::RecordingSession::start(
             config.clone(),
             fm_record::FileStorage::new(fm_record::UnknownSpace),
@@ -14766,7 +14794,7 @@ mod tests {
             ),
             "a second session of the same name is refused while its manifest exists"
         );
-        recording_session::discard_unused(&config, &status);
+        recording_session::discard_unused(status);
         let mut session = fm_record::RecordingSession::start(
             config,
             fm_record::FileStorage::new(fm_record::UnknownSpace),
@@ -14799,12 +14827,11 @@ mod tests {
         symlink(&target, &output).unwrap();
         let names = recording_session::SegmentNames::new(None);
         assert!(names.taken(&output));
-        let (sink, status, config) =
-            recording_session::open(planned_session(&output, &names)).unwrap();
-        drop(sink);
-        recording_session::discard_unused(&config, &status);
+        let opened = recording_session::open(planned_session(&output, &names)).unwrap();
+        drop(opened.output);
+        recording_session::discard_unused(&opened.status);
         let mut session = fm_record::RecordingSession::start(
-            config,
+            opened.status.config().clone(),
             fm_record::FileStorage::new(fm_record::UnknownSpace),
         )
         .unwrap();
@@ -14829,7 +14856,7 @@ mod tests {
             next_record_segment_path(&path, |candidate| names.taken(candidate)).unwrap(),
             directory.path().join("capture-002.mp4")
         );
-        let (sink, _, _) = recording_session::open(planned).unwrap();
+        let sink = recording_session::open(planned).unwrap().output;
         assert!(names.taken(&path), "the manifest keeps the name taken");
         drop(sink);
         assert!(names.taken(&path), "a stopped session keeps its name");
