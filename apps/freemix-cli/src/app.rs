@@ -952,6 +952,45 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::RemoteUndo {
+            address,
+            redo,
+            expected_edit,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            if redo {
+                fm_protocol::CommandPayload::Redo { expected_edit }
+            } else {
+                fm_protocol::CommandPayload::Undo { expected_edit }
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteLock {
+            address,
+            locked,
+            input,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetEditLock {
+                scope: match input {
+                    None => fm_protocol::EditLockScope::Project,
+                    Some(input) => {
+                        fm_protocol::EditLockScope::Input(fm_protocol::WireInputId::new(
+                            NonZeroU128::new(input)
+                                .ok_or_else(|| AppFailure("input ID must be nonzero".into()))?,
+                        ))
+                    }
+                },
+                locked,
+            },
+            key,
+            expected_revision,
+        )?,
         Command::RemoteFade {
             address,
             frames,
@@ -3945,6 +3984,9 @@ Usage:
   freemix-cli remote-input-reorder <127.0.0.1:port> <input> [<input>...] [--key <key>] [--expect <revision>]
   freemix-cli remote-preview <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-cut <127.0.0.1:port> [--key <key>] [--expect <revision>]
+  freemix-cli remote-undo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-redo <127.0.0.1:port> [--edit <revision>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-lock <127.0.0.1:port> <on|off> [--input <input>] [--key <key>] [--expect <revision>]
   freemix-cli remote-fade <127.0.0.1:port> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-alpha-fade <127.0.0.1:port> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-slide <127.0.0.1:port> <frames> [--key <key>] [--expect <revision>]

@@ -30,9 +30,74 @@ pub const MAX_STREAM_LOCAL_SEGMENTS: u32 = 4_096;
 pub const MAX_STREAM_LOCAL_TARGET_DURATION_MS: u32 = 3_600_000;
 
 use crate::{
-    MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS,
-    MAX_MONITOR_FRAME_WIDTH,
+    EditHistoryStatus, MAX_EDIT_HISTORY_DEPTH, MAX_MONITOR_FRAME_HEIGHT,
+    MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS, MAX_MONITOR_FRAME_WIDTH, WireInputId,
 };
+
+/// Enforces the undo/redo summary invariants shared by the encoder and
+/// decoder: each depth is at most [`MAX_EDIT_HISTORY_DEPTH`], each top edit
+/// is present exactly when its depth is nonzero, names a revision in
+/// `1..=revision` of the carrying record, and the two tops differ.
+fn validate_edit_history(history: &EditHistoryStatus, revision: u64) -> Result<(), CodecError> {
+    let side = |field: &'static str, depth: u16, edit: Option<u64>| {
+        let valid = depth <= MAX_EDIT_HISTORY_DEPTH
+            && match edit {
+                None => depth == 0,
+                Some(edit) => depth > 0 && (1..=revision).contains(&edit),
+            };
+        if valid {
+            Ok(())
+        } else {
+            Err(CodecError::InvalidField {
+                field,
+                value: format!(
+                    "{depth}:{}",
+                    edit.map_or_else(|| "none".to_owned(), |edit| edit.to_string())
+                ),
+            })
+        }
+    };
+    side("undo_edit", history.undo_depth, history.next_undo)?;
+    side("redo_edit", history.redo_depth, history.next_redo)?;
+    if history.next_undo.is_some() && history.next_undo == history.next_redo {
+        return Err(CodecError::InvalidField {
+            field: "redo_edit",
+            value: history.next_redo.unwrap_or_default().to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Enforces the locked-input list invariants shared by the encoder and
+/// decoder: strictly ascending identifiers, each one an input of the same
+/// snapshot.
+fn validate_locked_inputs(
+    locked: &[WireInputId],
+    inputs: &[WireInputId],
+) -> Result<(), CodecError> {
+    if locked.len() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("locked_inputs"));
+    }
+    let ascending = locked.windows(2).all(|pair| pair[0].get() < pair[1].get());
+    if let Some(unknown) = locked.iter().find(|input| !inputs.contains(input)) {
+        return Err(CodecError::InvalidField {
+            field: "locked_inputs",
+            value: unknown.to_string(),
+        });
+    }
+    if ascending {
+        Ok(())
+    } else {
+        Err(CodecError::InvalidField {
+            field: "locked_inputs",
+            value: locked
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        })
+    }
+}
 
 /// Enforces the `monitor_frame` bounds shared by the encoder and decoder.
 fn validate_monitor_frame(

@@ -1050,6 +1050,46 @@ fn malformed_post_handshake_record_does_not_stop_daemon() {
     daemon.stop();
 }
 
+/// Regression: a command whose staged result the project schema refuses
+/// (a blank idempotency key, which no persisted receipt may carry) stopped the
+/// whole daemon. It is answered with a rejection and the same session, and
+/// the daemon, keep serving commands.
+#[test]
+fn a_command_that_cannot_be_persisted_is_rejected_and_the_daemon_keeps_serving() {
+    let directory = TestDirectory::new("unpersistable-command");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    client.handshake(None);
+    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+
+    client.send(&command("blank-key", "   ", CommandPayload::Cut));
+    assert!(matches!(
+        client.next_result(),
+        CommandResult::Rejected {
+            id,
+            code,
+            current_revision: 0,
+            retryable: false,
+            ..
+        } if id == "blank-key" && code == "invalid_command"
+    ));
+
+    client.send(&command("after", "after-key", CommandPayload::Cut));
+    assert!(matches!(
+        client.next_result(),
+        CommandResult::Accepted { id, revision: 1, .. } if id == "after"
+    ));
+    drop(client);
+    daemon.stop();
+}
+
 #[test]
 fn idle_viewer_receives_operator_events_without_blocking() {
     let directory = TestDirectory::new("idle-viewer-live-events");
@@ -3541,4 +3581,236 @@ fn studio_stinger_assignment_is_acknowledged_while_a_scene_monitor_composes() {
         "the replicated view holds the assigned slot"
     );
     daemon.stop();
+}
+
+/// Reads until the durable event at `revision`, skipping runtime records.
+fn durable_event_at(client: &mut Client, revision: u64) -> fm_protocol::EventMessage {
+    loop {
+        match client.receive() {
+            WireMessage::Event(event) if event.cursor.revision == revision => return event,
+            WireMessage::Event(event) => {
+                assert!(
+                    event.cursor.revision < revision,
+                    "skipped past revision {revision}: {event:?}"
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn accepted_revision(client: &mut Client, expected_id: &str) -> u64 {
+    match client.next_result() {
+        CommandResult::Accepted { id, revision, .. } if id == expected_id => revision,
+        other => panic!("expected {expected_id} to be accepted, got {other:?}"),
+    }
+}
+
+fn snapshot_of(daemon: &Daemon, role: Role) -> fm_protocol::SnapshotMessage {
+    let mut client = daemon.connect();
+    client.handshake_as(role, None);
+    let WireMessage::Snapshot(snapshot) = client.receive() else {
+        panic!("expected snapshot");
+    };
+    snapshot
+}
+
+fn input_name(snapshot: &fm_protocol::SnapshotMessage, id: u128) -> String {
+    snapshot
+        .inputs
+        .iter()
+        .find(|status| status.input == input(id))
+        .unwrap()
+        .name
+        .clone()
+}
+
+/// Protocol 2.22 undo/redo and the edit padlock, end to end through the
+/// daemon: a rename is undone and redone (each carrying the post-revision
+/// history summary), the padlock refuses project edits with a stable reason
+/// while live switching still cuts, and the journaled history survives a
+/// kill plus recovery as the resolved edits (session history does not).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn undo_redo_and_padlock_round_trip_through_the_daemon() {
+    use fm_protocol::{EditHistoryStatus, EditLockScope};
+
+    let directory = TestDirectory::new("undo-redo-padlock");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let initial = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(initial.edit_history, EditHistoryStatus::EMPTY);
+    assert!(!initial.edit_locks.project);
+
+    let mut admin = daemon.connect();
+    admin.handshake_as(Role::Admin, None);
+    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+
+    // An empty history refuses undo with the stable engine code.
+    admin.send(&command(
+        "undo-empty",
+        "undo-empty-key",
+        CommandPayload::Undo {
+            expected_edit: None,
+        },
+    ));
+    assert!(matches!(
+        admin.next_result(),
+        CommandResult::Rejected { fields, .. }
+            if fields.first().map(|field| field.code.as_str()) == Some("nothing_to_undo")
+    ));
+
+    admin.send(&command(
+        "rename",
+        "rename-key",
+        CommandPayload::RenameInput {
+            input: input(1),
+            name: "Camera Left".into(),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "rename"), 1);
+    let renamed = durable_event_at(&mut admin, 1);
+    assert_eq!(
+        renamed.edit_history,
+        EditHistoryStatus {
+            undo_depth: 1,
+            next_undo: Some(1),
+            redo_depth: 0,
+            next_redo: None,
+        }
+    );
+
+    admin.send(&command(
+        "undo",
+        "undo-key",
+        CommandPayload::Undo {
+            expected_edit: Some(1),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "undo"), 2);
+    let undone = durable_event_at(&mut admin, 2);
+    assert!(matches!(
+        undone.payload,
+        EventPayload::InputRenamed { input: id, ref name } if id == input(1) && name == "Input 1"
+    ));
+    assert_eq!(
+        undone.edit_history,
+        EditHistoryStatus {
+            undo_depth: 0,
+            next_undo: None,
+            redo_depth: 1,
+            next_redo: Some(1),
+        }
+    );
+
+    admin.send(&command(
+        "redo",
+        "redo-key",
+        CommandPayload::Redo {
+            expected_edit: Some(1),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "redo"), 3);
+    let redone = durable_event_at(&mut admin, 3);
+    assert!(matches!(
+        redone.payload,
+        EventPayload::InputRenamed { input: id, ref name }
+            if id == input(1) && name == "Camera Left"
+    ));
+    assert_eq!(redone.edit_history.undo_depth, 1);
+    assert_eq!(redone.edit_history.redo_depth, 0);
+
+    admin.send(&command(
+        "lock",
+        "lock-key",
+        CommandPayload::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: true,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "lock"), 4);
+    let locked = durable_event_at(&mut admin, 4);
+    assert!(matches!(
+        locked.payload,
+        EventPayload::EditLockChanged {
+            scope: EditLockScope::Project,
+            locked: true,
+        }
+    ));
+    let locked_snapshot = snapshot_of(&daemon, Role::Viewer);
+    assert!(locked_snapshot.edit_locks.project);
+    assert_eq!(locked_snapshot.edit_history.undo_depth, 1);
+
+    // The padlock refuses project edits and history with stable codes...
+    for (id, payload) in [
+        (
+            "rename-locked",
+            CommandPayload::RenameInput {
+                input: input(1),
+                name: "Refused".into(),
+            },
+        ),
+        (
+            "undo-locked",
+            CommandPayload::Undo {
+                expected_edit: None,
+            },
+        ),
+    ] {
+        admin.send(&command(id, &format!("{id}-key"), payload));
+        assert!(matches!(
+            admin.next_result(),
+            CommandResult::Rejected { fields, current_revision: 4, .. }
+                if fields.first().map(|field| field.code.as_str()) == Some("project_locked")
+        ));
+    }
+
+    // ...but never live switching.
+    admin.send(&command(
+        "cut-locked",
+        "cut-locked-key",
+        CommandPayload::Cut,
+    ));
+    assert_eq!(accepted_revision(&mut admin, "cut-locked"), 5);
+    durable_event_at(&mut admin, 5);
+
+    admin.send(&command(
+        "unlock",
+        "unlock-key",
+        CommandPayload::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: false,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "unlock"), 6);
+    durable_event_at(&mut admin, 6);
+    admin.send(&command(
+        "rename-unlocked",
+        "rename-unlocked-key",
+        CommandPayload::RenameInput {
+            input: input(2),
+            name: "Slides".into(),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "rename-unlocked"), 7);
+    drop(admin);
+
+    let settled = snapshot_of(&daemon, Role::Viewer);
+    assert!(!settled.edit_locks.project);
+    assert_eq!(input_name(&settled, 1), "Camera Left");
+    assert_eq!(input_name(&settled, 2), "Slides");
+    assert_eq!(settled.edit_history.next_undo, Some(7));
+    daemon.stop();
+
+    // Journal recovery replays the undo and redo as the edits they resolved
+    // to; session history itself starts empty after restart.
+    let daemon = Daemon::start(&project_path);
+    let recovered = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(input_name(&recovered, 1), "Camera Left");
+    assert_eq!(input_name(&recovered, 2), "Slides");
+    assert_eq!(recovered.edit_history, EditHistoryStatus::EMPTY);
+    assert!(!recovered.edit_locks.project);
+    daemon.wait_success();
 }

@@ -28,6 +28,7 @@ use fm_ui_model::{ClientView, ManualTransitionStatus, StreamStatus, SwitcherStat
 
 mod chrome;
 mod connection_overlay;
+mod edit_history;
 mod fade_to_black;
 mod gating;
 mod input_bank;
@@ -45,6 +46,11 @@ mod theme;
 mod toasts;
 mod transitions;
 
+pub use edit_history::{
+    EditHistoryAvailability, HistoryActionAvailability, PadlockToggle, REDO_SHORTCUT,
+    UNDO_SHORTCUT, command_rejection_message, edit_history_availability, input_edit_lock_reason,
+    padlock_toggle,
+};
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
 pub use menu::ConsoleLayout;
 pub use stinger_config::{
@@ -171,6 +177,14 @@ pub enum StudioIntent {
     CommitManualTransition,
     /// Cancels the active manual transition and restores its starting routing.
     CancelManualTransition,
+    /// Reverts the shared history's top project edit, which must be the edit
+    /// first accepted at `expected_edit` (the one the operator saw).
+    Undo { expected_edit: u64 },
+    /// Reapplies the most recently undone project edit, which must be the
+    /// edit first accepted at `expected_edit`.
+    Redo { expected_edit: u64 },
+    /// Engages or releases the project-wide edit padlock.
+    SetProjectLock { locked: bool },
 }
 
 /// External control actions accepted by native Studio ingress.
@@ -632,6 +646,7 @@ const fn numbered_preview_index(key: Key) -> Option<usize> {
 pub(crate) enum ShortcutGroup {
     Switching,
     Transitions,
+    Editing,
     InputBank,
 }
 
@@ -640,6 +655,7 @@ impl ShortcutGroup {
         match self {
             Self::Switching => "Switching",
             Self::Transitions => "Transitions",
+            Self::Editing => "Editing",
             Self::InputBank => "Input bank (pointer and focus)",
         }
     }
@@ -657,7 +673,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 9] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 11] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -687,6 +703,18 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 9] = [
         keys: "Esc",
         action: "Cancel the active manual T-bar transition",
         key: Some(Key::Escape),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Editing,
+        keys: UNDO_SHORTCUT,
+        action: "Undo the last project edit (shared history)",
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Editing,
+        keys: REDO_SHORTCUT,
+        action: "Redo the last undone project edit",
+        key: None,
     },
     ShortcutEntry {
         group: ShortcutGroup::InputBank,
@@ -972,6 +1000,34 @@ impl StudioShell {
         self.layout = layout;
     }
 
+    /// Collects this frame's global keyboard shortcuts in UI order: switcher
+    /// shortcuts first, then edit history (Ctrl+Z / Ctrl+Shift+Z).
+    fn keyboard_intents(
+        &self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        manual_transition_controls: ManualTransitionAvailability,
+    ) -> Vec<StudioIntent> {
+        let inputs = state
+            .view
+            .as_ref()
+            .map_or(&[] as &[InputId], |view| view.inputs.as_slice());
+        let mut intents = studio_shortcuts(
+            ui,
+            TransitionGate::from_state(state),
+            state.can_select_preview,
+            manual_transition_controls.active_controls,
+            inputs,
+            self.transition_duration_frames,
+            self.fade_to_black_duration_frames,
+        );
+        intents.extend(edit_history::history_shortcuts(
+            ui,
+            edit_history_availability(state),
+        ));
+        intents
+    }
+
     /// Draws one complete shell frame and returns operator intents in UI order.
     ///
     /// The UI must belong to an active `egui` pass, as is customary for
@@ -987,10 +1043,6 @@ impl StudioShell {
         self.set_transition_duration_frames(self.transition_duration_frames);
         self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
 
-        let inputs = state
-            .view
-            .as_ref()
-            .map_or(&[] as &[InputId], |view| view.inputs.as_slice());
         self.reconcile_rename_draft(state);
         let manual_transition_controls = manual_transition_availability(
             ManualTransitionGate::from_state(state),
@@ -1001,15 +1053,7 @@ impl StudioShell {
                 )
             }),
         );
-        let mut intents = studio_shortcuts(
-            ui,
-            TransitionGate::from_state(state),
-            state.can_select_preview,
-            manual_transition_controls.active_controls,
-            inputs,
-            self.transition_duration_frames,
-            self.fade_to_black_duration_frames,
-        );
+        let mut intents = self.keyboard_intents(ui, state, manual_transition_controls);
         let dt_ms = meter_ballistics::frame_dt_ms(ui.input(|input| input.stable_dt));
         self.toasts.observe(state);
         self.toasts.tick(dt_ms);
@@ -1031,7 +1075,7 @@ impl StudioShell {
         Panel::top("studio-top-bar")
             .exact_size(46.0)
             .frame(bar_frame)
-            .show(ui, |ui| chrome::draw_top_bar(ui, state));
+            .show(ui, |ui| chrome::draw_top_bar(ui, state, &mut intents));
         if self.layout.show_status_bar {
             Panel::bottom("studio-status-bar")
                 .exact_size(26.0)
@@ -1918,6 +1962,8 @@ mod tests {
             desired_overlays: Vec::new(),
             realized_overlays: Vec::new(),
             switcher: switcher((1, 1), (1, 1)),
+            edit_locks: fm_ui_model::EditLocks::default(),
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         }
     }
 

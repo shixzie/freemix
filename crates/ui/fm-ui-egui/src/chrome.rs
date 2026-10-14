@@ -13,7 +13,7 @@ use crate::theme::{
     TEXT_DIM, connection_color, mono, pill, status_dot,
 };
 use crate::toasts::{Toast, ToastKind};
-use crate::{StudioConnectionStatus, StudioUiState};
+use crate::{PadlockToggle, StudioConnectionStatus, StudioIntent, StudioUiState, padlock_toggle};
 
 /// On-air indicator facts for the top bar, derived only from replicated state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -56,7 +56,58 @@ fn utc_now_seconds() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState) {
+/// The top-bar edit padlock with its hover explanation and toggle intent.
+fn padlock_control(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+    let padlock = padlock_toggle(state);
+    let response = padlock_button(ui, padlock);
+    let response = if padlock.enabled {
+        response.on_hover_text(padlock.hover())
+    } else {
+        response.on_hover_text(format!(
+            "{}\nUnavailable: {}",
+            padlock.hover(),
+            padlock.reason
+        ))
+    };
+    if response.clicked()
+        && let Some(intent) = padlock.intent()
+    {
+        intents.push(intent);
+    }
+}
+
+/// The show name, ellipsized so on-air badges and the clock keep their place.
+fn show_name_label(ui: &mut Ui, state: &StudioUiState) {
+    match state.view.as_ref().map(|view| view.show_name.as_str()) {
+        Some(name) => {
+            let name = if name.is_empty() {
+                "Untitled show"
+            } else {
+                name
+            };
+            // Long show names end in an ellipsis (full name on hover)
+            // so the on-air badges and clock keep their place.
+            let max_width = (ui.available_width() * 0.35).max(120.0);
+            ui.scope(|ui| {
+                ui.set_max_width(max_width);
+                ui.add(
+                    egui::Label::new(RichText::new(name).size(15.0).strong().color(TEXT))
+                        .truncate(),
+                );
+            });
+        }
+        None => {
+            ui.label(
+                RichText::new("No synchronized show")
+                    .size(15.0)
+                    .color(MUTED),
+            )
+            .on_hover_text("The show name appears once project state is synchronized");
+        }
+    }
+}
+
+pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         // Wordmark.
@@ -74,33 +125,7 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState) {
                 .color(MUTED),
         );
         divider(ui);
-        match state.view.as_ref().map(|view| view.show_name.as_str()) {
-            Some(name) => {
-                let name = if name.is_empty() {
-                    "Untitled show"
-                } else {
-                    name
-                };
-                // Long show names end in an ellipsis (full name on hover)
-                // so the on-air badges and clock keep their place.
-                let max_width = (ui.available_width() * 0.35).max(120.0);
-                ui.scope(|ui| {
-                    ui.set_max_width(max_width);
-                    ui.add(
-                        egui::Label::new(RichText::new(name).size(15.0).strong().color(TEXT))
-                            .truncate(),
-                    );
-                });
-            }
-            None => {
-                ui.label(
-                    RichText::new("No synchronized show")
-                        .size(15.0)
-                        .color(MUTED),
-                )
-                .on_hover_text("The show name appears once project state is synchronized");
-            }
-        }
+        show_name_label(ui, state);
         let status = state.connection_status;
         pill(ui, status.operator_label(), connection_color(status), false)
             .on_hover_text("Control connection lifecycle");
@@ -119,6 +144,9 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState) {
                 AMBER,
                 false,
             );
+        }
+        if state.view.is_some() {
+            padlock_control(ui, state, intents);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -160,6 +188,62 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState) {
                 .request_repaint_after(std::time::Duration::from_millis(500));
         });
     });
+}
+
+/// The project edit padlock: a painted lock glyph plus its state, amber
+/// while locked. Clicks are reported only when toggling is available.
+fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
+    let size = Vec2::new(104.0, 24.0);
+    let sense = if padlock.enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    if ui.is_rect_visible(rect) {
+        let color = if padlock.locked { AMBER } else { MUTED };
+        let painter = ui.painter();
+        let fill = if response.hovered() && padlock.enabled {
+            GRAPHITE_RAISED
+        } else {
+            GRAPHITE
+        };
+        painter.rect_filled(rect, CornerRadius::same(4), fill);
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(4),
+            Stroke::new(
+                1.0,
+                color.gamma_multiply(if padlock.enabled { 0.8 } else { 0.4 }),
+            ),
+            StrokeKind::Inside,
+        );
+        // Shackle: a rounded loop above the body, lifted and offset when open.
+        let body = egui::Rect::from_center_size(
+            rect.left_center() + Vec2::new(14.0, 3.0),
+            Vec2::new(11.0, 8.0),
+        );
+        let lift = if padlock.locked { 0.0 } else { 3.0 };
+        let shackle = egui::Rect::from_min_max(
+            egui::pos2(body.left() + 2.0 + lift, body.top() - 6.0 - lift),
+            egui::pos2(body.right() - 2.0 + lift, body.top() + 3.0 - lift),
+        );
+        painter.rect_stroke(
+            shackle,
+            CornerRadius::same(3),
+            Stroke::new(1.6, color),
+            StrokeKind::Middle,
+        );
+        painter.rect_filled(body, CornerRadius::same(1), color);
+        painter.text(
+            rect.left_center() + Vec2::new(28.0, 0.0),
+            Align2::LEFT_CENTER,
+            padlock.label(),
+            FontId::new(10.5, FontFamily::Proportional),
+            if padlock.enabled { color } else { TEXT_DIM },
+        );
+    }
+    response
 }
 
 fn divider(ui: &mut Ui) {

@@ -20,7 +20,7 @@ use crate::theme::{
 };
 use crate::{
     InputMoveDirection, RenameDraft, StudioIntent, StudioShell, StudioUiState, TransitionGate,
-    preview_selection_available, tally_state, transition_availability,
+    input_edit_lock_reason, preview_selection_available, tally_state, transition_availability,
 };
 
 pub(crate) const MIN_TILE_WIDTH: f32 = 156.0;
@@ -224,7 +224,8 @@ impl StudioShell {
                                         }),
                                         enabled,
                                         cut_enabled,
-                                        reorder_enabled,
+                                        reorder_enabled: reorder_enabled
+                                            && input_edit_lock_reason(state, input).is_none(),
                                     },
                                     intents,
                                 );
@@ -261,7 +262,9 @@ impl StudioShell {
         } else {
             preview_reason
         };
-        let edit_reason = unavailable_reason(state, Capability::EditProject);
+        let edit_reason = input_edit_lock_reason(state, input)
+            .filter(|_| project_editing_available(state))
+            .unwrap_or_else(|| unavailable_reason(state, Capability::EditProject));
         let thumb_height = (width * 9.0 / 16.0).round();
         // Tiles always sense clicks so hover, focus, and the context menu work;
         // the Preview and transition gates still decide which intents result.

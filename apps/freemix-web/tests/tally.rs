@@ -167,6 +167,8 @@ fn snapshot(revision: u64, program: u128, preview: u128) -> WireMessage {
             .collect(),
         desired_overlays: OverlayStatus::empty_channels(),
         realized_overlays: OverlayStatus::empty_channels(),
+        edit_locks: fm_protocol::EditLockStatus::default(),
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
     }))
 }
 
@@ -181,6 +183,7 @@ fn switcher_event_with(
     manual_transition: ManualTransitionStatus,
 ) -> WireMessage {
     on_wire(WireMessage::Event(EventMessage {
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         cursor: EventCursor {
             engine: engine(),
             revision,
@@ -216,6 +219,7 @@ fn realized(
 
 fn rename(revision: u64, value: u128, name: &str) -> WireMessage {
     on_wire(WireMessage::Event(EventMessage {
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         cursor: EventCursor {
             engine: engine(),
             revision,

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.21 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.22 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -109,6 +109,40 @@ Rules:
   positive balance attenuates the left destination, and non-stereo destination
   labels remain at unity. Snapshots and durable events always carry one complete
   strip for every show input; partial audio-strip patches are not accepted.
+
+Protocol 2.22 adds session undo/redo and the edit padlock:
+
+- `payload=undo` and `payload=redo` take an optional `expected_edit` (the
+  nonzero revision of the edit the operator expects to revert or reapply;
+  canonical decimal, `0` is rejected). A mismatch is refused with
+  `history_conflict` instead of reverting a concurrent editor's newer edit.
+  Undoable edits are input rename/reorder, stinger slot configure/remove, and
+  overlay transition/appearance/output-inclusion configuration; live switching,
+  audio, streams, recording, and the padlock itself are not recorded. History
+  holds at most 100 edits, is per engine session, and is empty after restart,
+  restore, or project replacement. An accepted undo/redo publishes the ordinary
+  durable event of the edit it resolved to (`input_renamed`,
+  `stinger_slots_changed`, ...) and realizes in that edit's domain. The journal
+  records the resolved edit, not the undo request, so recovery reproduces the
+  state without session history.
+- `payload=edit_lock` carries `scope=project|input` (`input=` only with
+  `scope=input`) and `locked=0|1`. It publishes the durable
+  `event=edit_lock_changed` with the same fields and realizes in `project`.
+  A locked project refuses every undoable edit and undo/redo; a locked input
+  refuses its rename and any reorder that moves it. Live switching (cut, transitions, T-bar, FTB,
+  stingers, overlay take/off), audio, streams, and recording are never locked.
+- Refusals use top-level `conflict` or `not_found` with a stable first field
+  issue code: `project_locked`, `input_locked` (field `edit_lock`),
+  `nothing_to_undo`, `nothing_to_redo`, `history_conflict`, or
+  `history_drift` (field `history`). Clients key UI messages on the field code.
+- Every durable `event` record ends with the post-revision history summary
+  `undo_depth`, optional `undo_edit`, `redo_depth`, optional `redo_edit`
+  (depth `0..=100`; an edit revision is present exactly when its depth is
+  nonzero, lies in `1..=revision`, and undo/redo edits differ). Snapshots carry
+  the same summary plus `project_locked=0|1` and `locked_inputs` (a strictly
+  ascending, possibly empty, comma list of snapshot input IDs). Command IDs are
+  not exposed. The padlock is session state: it is not yet persisted in the
+  project bundle, so a daemon restart or checkpoint recovery clears it.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
@@ -247,6 +281,13 @@ Suggested roles:
 - `replay`: replay record/events/playback;
 - `operator`: switcher and show controls;
 - `admin`: projects, devices, users, secrets, plugins, updates.
+
+Undo, redo, and the edit padlock require `edit_project`. Undo and redo
+additionally require the class of the edit they target (for example
+`transition` for a stinger slot edit), so history never escalates a role. The
+padlock is an operator guard against accidental edits, not access control:
+anyone who may edit may engage or release it, and roles remain the
+access-control mechanism.
 
 Tokens are short-lived and scoped. Streaming keys, TURN credentials, and vendor
 tokens are returned only as redacted references.

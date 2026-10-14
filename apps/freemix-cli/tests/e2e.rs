@@ -375,6 +375,7 @@ fn serve_peer_event_interleave(listener: &TcpListener) {
     write_message(
         &mut writer,
         &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine.clone(),
                 revision: 2,
@@ -449,6 +450,7 @@ fn serve_fade_to_black(listener: &TcpListener) {
     write_message(
         &mut writer,
         &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine.clone(),
                 revision: 1,
@@ -546,6 +548,7 @@ fn serve_stream_start(listener: &TcpListener) {
     write_message(
         &mut writer,
         &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine.clone(),
                 revision: 1,
@@ -643,6 +646,7 @@ fn serve_record_start(listener: &TcpListener) {
     write_message(
         &mut writer,
         &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine.clone(),
                 revision: 1,
@@ -729,6 +733,8 @@ fn serve_streams_snapshot_peer(
             recordings,
             desired_overlays: OverlayStatus::empty_channels(),
             realized_overlays: OverlayStatus::empty_channels(),
+            edit_locks: fm_protocol::EditLockStatus::default(),
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         }),
     );
 }
@@ -791,6 +797,7 @@ fn serve_audio_strip(listener: &TcpListener) {
     write_message(
         &mut writer,
         &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine.clone(),
                 revision: 1,
@@ -907,6 +914,7 @@ fn serve_stinger_configuration(listener: &TcpListener) {
         write_message(
             &mut writer,
             &WireMessage::Event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
                 cursor,
                 payload: EventPayload::StingerSlotsChanged {
                     program: input(1),
@@ -977,6 +985,7 @@ fn serve_automatic_transition(
     write_message(
         &mut writer,
         &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine.clone(),
                 revision: 1,
@@ -1073,6 +1082,7 @@ fn serve_manual_start(
     write_message(
         &mut writer,
         &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine.clone(),
                 revision: 1,
@@ -1160,6 +1170,7 @@ fn serve_manual_position(listener: &TcpListener) {
     write_message(
         &mut writer,
         &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine.clone(),
                 revision: 1,
@@ -1271,6 +1282,8 @@ fn write_handshake_version_with_manual(
             recordings: recording_roster([false, false]),
             desired_overlays: OverlayStatus::empty_channels(),
             realized_overlays: OverlayStatus::empty_channels(),
+            edit_locks: fm_protocol::EditLockStatus::default(),
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         }),
     );
 }
@@ -1341,6 +1354,8 @@ fn write_handshake_version_with_fade_to_black(
             realized_fade_to_black: fade_to_black,
             desired_overlays: OverlayStatus::empty_channels(),
             realized_overlays: OverlayStatus::empty_channels(),
+            edit_locks: fm_protocol::EditLockStatus::default(),
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             stingers: Vec::new(),
             streams: Vec::new(),
             recordings: recording_roster([false, false]),
@@ -1383,6 +1398,7 @@ fn write_command_events(
     write_message(
         writer,
         &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor,
             payload: EventPayload::DesiredSwitcher {
                 program,

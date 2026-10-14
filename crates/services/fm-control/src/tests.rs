@@ -1949,6 +1949,7 @@ fn stream_commands_require_transition_permission_and_project_full_status() {
     assert_eq!(
         accepted.output.events,
         vec![EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: control.identity().clone(),
                 revision: 1,
@@ -2086,6 +2087,7 @@ fn record_commands_require_transition_permission_and_project_both_slots() {
     assert_eq!(
         accepted.output.events,
         vec![EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: control.identity().clone(),
                 revision: 1,
@@ -2182,5 +2184,465 @@ fn record_command_replays_and_stops_only_the_addressed_slot() {
     assert_eq!(
         control.snapshot().snapshot.recordings,
         [recording_status(1, false), recording_status(2, true)]
+    );
+}
+
+fn rename(id: &str, input_value: u128, name: &str) -> CommandMessage {
+    command(
+        id,
+        &format!("{id}-key"),
+        CommandPayload::RenameInput {
+            input: WireInputId::from_domain(input(input_value)),
+            name: name.to_owned(),
+        },
+    )
+}
+
+fn undo(id: &str, expected_edit: Option<u64>) -> CommandMessage {
+    command(
+        id,
+        &format!("{id}-key"),
+        CommandPayload::Undo { expected_edit },
+    )
+}
+
+fn redo(id: &str, expected_edit: Option<u64>) -> CommandMessage {
+    command(
+        id,
+        &format!("{id}-key"),
+        CommandPayload::Redo { expected_edit },
+    )
+}
+
+fn lock(id: &str, scope: fm_protocol::EditLockScope, locked: bool) -> CommandMessage {
+    command(
+        id,
+        &format!("{id}-key"),
+        CommandPayload::SetEditLock { scope, locked },
+    )
+}
+
+fn rejection_field_code(submission: &CommandSubmission) -> Option<&str> {
+    match &submission.output.result {
+        CommandResult::Rejected { fields, .. } => fields.first().map(|field| field.code.as_str()),
+        CommandResult::Accepted { .. } => None,
+    }
+}
+
+fn rejection_code(submission: &CommandSubmission) -> Option<&str> {
+    match &submission.output.result {
+        CommandResult::Rejected { code, .. } => Some(code.as_str()),
+        CommandResult::Accepted { .. } => None,
+    }
+}
+
+fn assert_wire_exact(control: &ControlService, submission: &CommandSubmission) {
+    for message in submission.output.clone().into_wire_messages() {
+        let line = fm_protocol::encode_line(&message).unwrap();
+        assert_eq!(fm_protocol::decode_line(&line).unwrap(), message);
+    }
+    let snapshot = WireMessage::Snapshot(control.snapshot().snapshot.clone());
+    let line = fm_protocol::encode_line(&snapshot).unwrap();
+    assert_eq!(fm_protocol::decode_line(&line).unwrap(), snapshot);
+}
+
+#[test]
+fn history_and_padlock_commands_follow_the_edit_project_authorization_matrix() {
+    let roles = [
+        (Role::Viewer, false),
+        (Role::Graphics, true),
+        (Role::Audio, false),
+        (Role::Operator, false),
+        (Role::Admin, true),
+    ];
+    let payloads = [
+        CommandPayload::Undo {
+            expected_edit: None,
+        },
+        CommandPayload::Redo {
+            expected_edit: None,
+        },
+        CommandPayload::SetEditLock {
+            scope: fm_protocol::EditLockScope::Project,
+            locked: true,
+        },
+        CommandPayload::SetEditLock {
+            scope: fm_protocol::EditLockScope::Input(WireInputId::from_domain(input(2))),
+            locked: true,
+        },
+    ];
+    for (role, permitted) in roles {
+        for payload in &payloads {
+            let mut control = service(8, 8);
+            // Give undo something to revert so a permitted undo is accepted.
+            assert!(
+                control
+                    .submit(&principal(Role::Admin), rename("seed", 1, "Seed"), 0)
+                    .unwrap()
+                    .is_accepted()
+            );
+            let submission = control
+                .submit(
+                    &principal(role),
+                    command("probe", "probe-key", payload.clone()),
+                    0,
+                )
+                .unwrap();
+            let denied = rejection_code(&submission) == Some("permission_denied");
+            assert_eq!(
+                denied, !permitted,
+                "{role:?} {payload:?}: {:?}",
+                submission.output.result
+            );
+            if permitted && !matches!(payload, CommandPayload::Redo { .. }) {
+                assert!(submission.is_accepted(), "{role:?} {payload:?}");
+            }
+            if denied {
+                // A denial is target-free and changes nothing.
+                assert_eq!(control.snapshot().snapshot.revision, 1);
+                assert_eq!(control.snapshot().snapshot.edit_history.undo_depth, 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn undo_of_a_transition_class_edit_also_requires_the_transition_permission() {
+    let mut control = service(8, 8);
+    let configure = CommandPayload::ConfigureStinger {
+        slot: WireStingerSlotId::new(2).unwrap(),
+        media_input: WireInputId::from_domain(input(3)),
+        preload: false,
+        cut_point_frames: 6,
+        audio_policy: ProtocolStingerAudioPolicy::StingerOnly,
+        missing_media_fallback: ProtocolStingerFallback::Cut,
+    };
+    assert!(
+        control
+            .submit(
+                &principal(Role::Operator),
+                command("configure", "configure-key", configure),
+                0
+            )
+            .unwrap()
+            .is_accepted()
+    );
+    control.tick(&server_identity()).unwrap();
+
+    // Graphics may edit the project but may not change Stinger slots, so it
+    // may not revert a Stinger slot change through history either.
+    let denied = control
+        .submit(&principal(Role::Graphics), undo("graphics-undo", None), 0)
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    // Operator may change Stinger slots but may not use project history.
+    let denied = control
+        .submit(&principal(Role::Operator), undo("operator-undo", None), 0)
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    assert_eq!(control.snapshot().snapshot.stingers.len(), 1);
+
+    let undone = control
+        .submit(&principal(Role::Admin), undo("admin-undo", Some(1)), 0)
+        .unwrap();
+    assert!(undone.is_accepted());
+    assert!(matches!(
+        undone.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::StingerSlotsChanged { stingers, .. },
+            edit_history: EditHistoryStatus {
+                undo_depth: 0,
+                next_undo: None,
+                redo_depth: 1,
+                next_redo: Some(1),
+            },
+            ..
+        }] if stingers.is_empty()
+    ));
+    assert_wire_exact(&control, &undone);
+}
+
+#[test]
+fn undo_and_redo_project_history_events_snapshots_and_a_replayable_command() {
+    let mut control = service(8, 8);
+    let admin = principal(Role::Admin);
+    let renamed = control
+        .submit(&admin, rename("rename", 1, "Host"), 0)
+        .unwrap();
+    assert!(matches!(
+        renamed.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputRenamed { name, .. },
+            edit_history: EditHistoryStatus {
+                undo_depth: 1,
+                next_undo: Some(1),
+                redo_depth: 0,
+                next_redo: None,
+            },
+            ..
+        }] if name == "Host"
+    ));
+    control.tick(&server_identity()).unwrap();
+
+    // A live operation leaves the history unchanged but still carries it.
+    let cut = control
+        .submit(&admin, command("cut", "cut-key", CommandPayload::Cut), 0)
+        .unwrap();
+    assert_eq!(
+        cut.output.events[0].edit_history,
+        EditHistoryStatus {
+            undo_depth: 1,
+            next_undo: Some(1),
+            redo_depth: 0,
+            next_redo: None,
+        }
+    );
+    control.tick(&server_identity()).unwrap();
+
+    // Naming another edit is a conflict, not a silent revert.
+    let conflict = control
+        .submit(&admin, undo("undo-stale", Some(2)), 0)
+        .unwrap();
+    assert_eq!(rejection_field_code(&conflict), Some("history_conflict"));
+
+    // The journal records the resolved edit, never the history command.
+    let message = undo("undo", Some(1));
+    let prepared = prepared(control.prepare_submit(&admin, message.clone(), 0).unwrap());
+    let replay = prepared.replay_command(&message);
+    assert_eq!(
+        replay,
+        CommandMessage {
+            payload: CommandPayload::RenameInput {
+                input: WireInputId::from_domain(input(1)),
+                name: "Input 1".to_owned(),
+            },
+            ..message.clone()
+        }
+    );
+    let undone = prepared.commit().unwrap();
+    assert!(matches!(
+        undone.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputRenamed { name, .. },
+            edit_history: EditHistoryStatus {
+                undo_depth: 0,
+                next_undo: None,
+                redo_depth: 1,
+                next_redo: Some(1),
+            },
+            ..
+        }] if name == "Input 1"
+    ));
+    assert_wire_exact(&control, &undone);
+    // The undo realizes in the project domain like the edit it resolved to.
+    let tick = control.tick(&server_identity()).unwrap();
+    assert!(matches!(
+        tick.runtime_events.as_slice(),
+        [RuntimeEventMessage {
+            revision: 3,
+            event: RuntimeLifecycleEvent::Realized { domain, .. },
+            ..
+        }] if domain == "project"
+    ));
+    assert_eq!(control.snapshot().snapshot.edit_history.redo_depth, 1);
+
+    let nothing = control.submit(&admin, undo("undo-again", None), 0).unwrap();
+    assert_eq!(rejection_field_code(&nothing), Some("nothing_to_undo"));
+    // A rejected undo is journaled as itself.
+    let again = undo("undo-third", None);
+    let rejected = prepared_or_replayed_replay(&mut control, &admin, &again);
+    assert_eq!(rejected, again);
+
+    let redone = control.submit(&admin, redo("redo", Some(1)), 0).unwrap();
+    assert!(matches!(
+        redone.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::InputRenamed { name, .. },
+            edit_history: EditHistoryStatus {
+                undo_depth: 1,
+                next_undo: Some(1),
+                redo_depth: 0,
+                next_redo: None,
+            },
+            ..
+        }] if name == "Host"
+    ));
+    assert_wire_exact(&control, &redone);
+    let snapshot = &control.snapshot().snapshot;
+    assert_eq!(snapshot.inputs[0].name, "Host");
+    assert_eq!(snapshot.edit_history.next_undo, Some(1));
+}
+
+fn prepared_or_replayed_replay(
+    control: &mut ControlService,
+    principal: &Principal,
+    message: &CommandMessage,
+) -> CommandMessage {
+    let prepared = prepared(
+        control
+            .prepare_submit(principal, message.clone(), 0)
+            .unwrap(),
+    );
+    let replay = prepared.replay_command(message);
+    prepared.abort();
+    replay
+}
+
+#[test]
+fn padlock_blocks_project_edits_and_history_but_never_live_switching() {
+    let mut control = service(8, 8);
+    let admin = principal(Role::Admin);
+    let graphics = principal(Role::Graphics);
+    assert!(
+        control
+            .submit(&admin, rename("rename", 1, "Host"), 0)
+            .unwrap()
+            .is_accepted()
+    );
+    control.tick(&server_identity()).unwrap();
+
+    let locked = control
+        .submit(
+            &graphics,
+            lock("lock", fm_protocol::EditLockScope::Project, true),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        locked.output.events.as_slice(),
+        [EventMessage {
+            payload: EventPayload::EditLockChanged {
+                scope: fm_protocol::EditLockScope::Project,
+                locked: true,
+            },
+            edit_history: EditHistoryStatus { undo_depth: 1, .. },
+            ..
+        }]
+    ));
+    assert_wire_exact(&control, &locked);
+    let tick = control.tick(&server_identity()).unwrap();
+    assert!(matches!(
+        tick.runtime_events.as_slice(),
+        [RuntimeEventMessage {
+            event: RuntimeLifecycleEvent::Realized { domain, .. },
+            ..
+        }] if domain == "project"
+    ));
+    assert!(control.snapshot().snapshot.edit_locks.project);
+
+    let refused = control
+        .submit(&admin, rename("locked-rename", 2, "Guest"), 0)
+        .unwrap();
+    assert_eq!(rejection_field_code(&refused), Some("project_locked"));
+    let refused = control
+        .submit(&admin, undo("locked-undo", None), 0)
+        .unwrap();
+    assert_eq!(rejection_field_code(&refused), Some("project_locked"));
+
+    let cut = control
+        .submit(&admin, command("cut", "cut-key", CommandPayload::Cut), 0)
+        .unwrap();
+    assert!(cut.is_accepted());
+    control.tick(&server_identity()).unwrap();
+
+    // Swap the project padlock for one input's padlock.
+    let input_two = fm_protocol::EditLockScope::Input(WireInputId::from_domain(input(2)));
+    let input_locked = control
+        .submit(&graphics, lock("lock-two", input_two, true), 0)
+        .unwrap();
+    assert_wire_exact(&control, &input_locked);
+    control.tick(&server_identity()).unwrap();
+    let unlocked = control
+        .submit(
+            &graphics,
+            lock("unlock", fm_protocol::EditLockScope::Project, false),
+            0,
+        )
+        .unwrap();
+    assert!(unlocked.is_accepted());
+    control.tick(&server_identity()).unwrap();
+    let snapshot = &control.snapshot().snapshot;
+    assert_eq!(
+        snapshot.edit_locks,
+        EditLockStatus {
+            project: false,
+            inputs: vec![WireInputId::from_domain(input(2))],
+        }
+    );
+    let refused = control
+        .submit(&admin, rename("rename-two", 2, "Guest"), 0)
+        .unwrap();
+    assert_eq!(rejection_field_code(&refused), Some("input_locked"));
+    assert!(
+        control
+            .submit(&admin, rename("rename-three", 3, "Wide"), 0)
+            .unwrap()
+            .is_accepted()
+    );
+    // Locking an input outside the show is refused by the engine.
+    let unknown = control
+        .submit(
+            &graphics,
+            lock(
+                "lock-unknown",
+                fm_protocol::EditLockScope::Input(WireInputId::from_domain(input(9))),
+                true,
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&unknown), Some("not_found"));
+}
+
+#[test]
+fn wire_edit_payload_round_trips_every_undoable_engine_edit() {
+    use fm_switcher::{OverlayBorderPreset, OverlayPositionPreset, OverlayTransitionKind};
+    let overlay = OverlayChannelId::new(3).unwrap();
+    let edits = [
+        EngineCommand::RenameInput {
+            input: input(2),
+            name: "Two".to_owned(),
+        },
+        EngineCommand::ReorderInputs {
+            inputs: vec![input(3), input(1), input(2)],
+        },
+        EngineCommand::ConfigureStinger {
+            slot: StingerSlotId::new(4).unwrap(),
+            descriptor: StingerDescriptor::new(
+                input(3),
+                true,
+                9,
+                StingerAudioPolicy::MixWithProgram,
+                MissingMediaFallback::Fade,
+            ),
+        },
+        EngineCommand::RemoveStinger {
+            slot: StingerSlotId::new(4).unwrap(),
+        },
+        EngineCommand::ConfigureOverlayTransition {
+            channel: overlay,
+            transition: OverlayTransitionKind::Fade,
+            duration_frames: 12,
+        },
+        EngineCommand::ConfigureOverlayAppearance {
+            channel: overlay,
+            position: OverlayPositionPreset::BottomRight,
+            border: OverlayBorderPreset::ThickWhite,
+        },
+        EngineCommand::SetOverlayOutputInclusion {
+            channel: overlay,
+            output: output(5),
+            included: true,
+        },
+    ];
+    for edit in edits {
+        assert_eq!(edit.kind(), fm_engine::EngineCommandKind::ProjectEdit);
+        let payload = wire_edit_payload(&edit).unwrap();
+        assert_eq!(engine_command(&payload), edit);
+    }
+    assert_eq!(wire_edit_payload(&EngineCommand::Cut), None);
+    assert_eq!(
+        usize::from(fm_protocol::MAX_EDIT_HISTORY_DEPTH),
+        fm_engine::MAX_EDIT_HISTORY
     );
 }

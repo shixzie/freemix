@@ -104,9 +104,12 @@ pub fn execute(
 ) -> RemoteResult<()> {
     let completion = CommandCompletion::for_payload(&payload);
     let role = match completion {
-        CommandCompletion::Project => Role::Graphics,
+        CommandCompletion::Project | CommandCompletion::Padlock => Role::Graphics,
         CommandCompletion::Audio => Role::Audio,
         CommandCompletion::Switcher => Role::Operator,
+        // Undo and redo additionally require the class of the edit they
+        // revert, which the CLI cannot know before the daemon resolves it.
+        CommandCompletion::History => Role::Admin,
     };
     let mut remote = Remote::connect(address, role)?;
     let key = match key {
@@ -121,6 +124,10 @@ enum CommandCompletion {
     Project,
     Audio,
     Switcher,
+    /// Undo or redo: the durable event and realized domain follow the edit
+    /// the daemon resolves, so any project or switcher edit event completes it.
+    History,
+    Padlock,
 }
 
 impl CommandCompletion {
@@ -130,15 +137,18 @@ impl CommandCompletion {
                 Self::Project
             }
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
+            CommandPayload::Undo { .. } | CommandPayload::Redo { .. } => Self::History,
+            CommandPayload::SetEditLock { .. } => Self::Padlock,
             _ => Self::Switcher,
         }
     }
 
-    const fn domain(self) -> &'static str {
+    fn realizes(self, domain: &str) -> bool {
         match self {
-            Self::Project => "project",
-            Self::Audio => "audio",
-            Self::Switcher => "switcher",
+            Self::Project | Self::Padlock => domain == "project",
+            Self::Audio => domain == "audio",
+            Self::Switcher => domain == "switcher",
+            Self::History => matches!(domain, "project" | "switcher"),
         }
     }
 }
@@ -325,15 +335,20 @@ impl Remote {
                     let matches_revision = event.cursor.revision == revision;
                     let expected_event = match &event.payload {
                         EventPayload::InputRenamed { .. }
-                        | EventPayload::InputOrderChanged { .. } => {
-                            completion == CommandCompletion::Project
+                        | EventPayload::InputOrderChanged { .. } => matches!(
+                            completion,
+                            CommandCompletion::Project | CommandCompletion::History
+                        ),
+                        EventPayload::EditLockChanged { .. } => {
+                            completion == CommandCompletion::Padlock
                         }
                         EventPayload::DesiredSwitcher { .. }
                         | EventPayload::StingerSlotsChanged { .. }
                         | EventPayload::StreamsChanged { .. }
-                        | EventPayload::RecordingChanged { .. } => {
-                            completion != CommandCompletion::Project
-                        }
+                        | EventPayload::RecordingChanged { .. } => !matches!(
+                            completion,
+                            CommandCompletion::Project | CommandCompletion::Padlock
+                        ),
                     };
                     if matches_revision && !expected_event {
                         return Err(RemoteFailure(
@@ -349,7 +364,7 @@ impl Remote {
                         && matches!(
                             &runtime.event,
                             RuntimeLifecycleEvent::Realized { domain, .. }
-                                if domain == completion.domain()
+                                if completion.realizes(domain)
                         );
                     self.client.intake(WireMessage::RuntimeEvent(runtime))?;
                     realized |= matches_realization;
@@ -379,7 +394,7 @@ impl Remote {
             .ok_or_else(|| RemoteFailure("remote project cursor is unavailable".into()))?;
         let switcher = state.switcher();
         println!(
-            "project_id={} show={:?} revision={} frame=unavailable Program(desired={}, realized={}) Preview(desired={}, realized={}) TBar(desired={}, realized={}) FTB(desired={}, realized={}) AudioStrips={} Streams={} Recording=desired={} Overlays(desired={}, realized={}) Inputs={} Outputs={}",
+            "project_id={} show={:?} revision={} frame=unavailable Program(desired={}, realized={}) Preview(desired={}, realized={}) TBar(desired={}, realized={}) FTB(desired={}, realized={}) AudioStrips={} Streams={} Recording=desired={} Overlays(desired={}, realized={}) Inputs={} Outputs={} EditLocks={} History={}",
             self.project_id,
             state.show_name(),
             cursor.revision,
@@ -398,6 +413,8 @@ impl Remote {
             format_overlays(state.realized_overlays()),
             format_input_roster(state),
             format_output_roster(state),
+            format_edit_locks(state.edit_locks()),
+            format_edit_history(state.edit_history()),
         );
         if let Some(status) = &self.latest_stream_status {
             for sample in &status.samples {
@@ -503,6 +520,29 @@ impl Remote {
             }
         }
     }
+}
+
+fn format_edit_locks(locks: &fm_ui_model::EditLocks) -> String {
+    format!(
+        "project:{},inputs:[{}]",
+        if locks.project { "on" } else { "off" },
+        locks
+            .inputs
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    )
+}
+
+fn format_edit_history(history: fm_protocol::EditHistoryStatus) -> String {
+    format!(
+        "undo:{}@{},redo:{}@{}",
+        history.undo_depth,
+        optional_number(history.next_undo),
+        history.redo_depth,
+        optional_number(history.next_redo),
+    )
 }
 
 fn format_input_audio_strips(state: &fm_ui_model::ProjectState) -> String {

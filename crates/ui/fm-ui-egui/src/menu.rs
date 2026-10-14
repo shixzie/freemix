@@ -28,6 +28,9 @@ use crate::{
     stinger_assign_intent, stinger_configuration_available, stinger_remove_intent, stream_action,
     stream_command_pending, transition_availability,
 };
+use crate::{
+    REDO_SHORTCUT, UNDO_SHORTCUT, edit_history_availability, input_edit_lock_reason, padlock_toggle,
+};
 
 /// Which console regions are visible; stored in the shell between frames.
 #[allow(clippy::struct_excessive_bools)] // each flag is one independent panel toggle
@@ -171,9 +174,25 @@ impl StudioShell {
 
     fn edit_menu(&mut self, ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
         ui.set_min_width(260.0);
-        let editing = project_editing_available(state);
-        let reason = unavailable_reason(state, Capability::EditProject);
+        history_menu_items(ui, state, intents);
+        ui.separator();
+        self.preview_input_menu_items(ui, state, intents);
+    }
+
+    fn preview_input_menu_items(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
         let preview = preview_input(state);
+        let lock_reason = preview.and_then(|(_, input)| input_edit_lock_reason(state, input));
+        let editing = project_editing_available(state) && lock_reason.is_none();
+        let reason = if project_editing_available(state) {
+            lock_reason.unwrap_or("")
+        } else {
+            unavailable_reason(state, Capability::EditProject)
+        };
         let count = state.view.as_ref().map_or(0, |view| view.inputs.len());
         heading(ui, "Preview input");
         let name = preview.and_then(|(index, _)| {
@@ -621,6 +640,7 @@ impl StudioShell {
                     for group in [
                         ShortcutGroup::Switching,
                         ShortcutGroup::Transitions,
+                        ShortcutGroup::Editing,
                         ShortcutGroup::InputBank,
                     ] {
                         ui.add_space(10.0);
@@ -789,6 +809,43 @@ pub(crate) fn shortcut_status(state: &StudioUiState) -> (String, Tone) {
             ),
             Tone::Pending,
         )
+    }
+}
+
+/// Edit-menu History items: Undo/Redo with shortcut hints and the padlock.
+fn history_menu_items(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+    let history = edit_history_availability(state);
+    heading(ui, "History");
+    if item(
+        ui,
+        history.undo.enabled(),
+        "Undo",
+        Some(UNDO_SHORTCUT),
+        history.undo.reason,
+    ) && let Some(intent) = history.undo_intent()
+    {
+        intents.push(intent);
+    }
+    if item(
+        ui,
+        history.redo.enabled(),
+        "Redo",
+        Some(REDO_SHORTCUT),
+        history.redo.reason,
+    ) && let Some(intent) = history.redo_intent()
+    {
+        intents.push(intent);
+    }
+    let padlock = padlock_toggle(state);
+    if item(
+        ui,
+        padlock.enabled,
+        padlock.menu_label(),
+        None,
+        padlock.reason,
+    ) && let Some(intent) = padlock.intent()
+    {
+        intents.push(intent);
     }
 }
 

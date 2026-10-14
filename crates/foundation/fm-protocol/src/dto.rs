@@ -524,6 +524,74 @@ pub struct RecordingStatus {
     pub desired_active: bool,
 }
 
+/// Largest undo or redo depth carried on the wire; equals the engine's
+/// retained edit-history bound.
+pub const MAX_EDIT_HISTORY_DEPTH: u16 = 100;
+
+/// The padlock target of an edit lock.
+///
+/// Wire encoding: `scope=project`, or `scope=input` plus `input=<id>`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum EditLockScope {
+    /// Locks every project edit, including undo and redo.
+    Project,
+    /// Locks edits that change one input's name or position.
+    Input(WireInputId),
+}
+
+/// Engaged edit padlocks at one revision.
+///
+/// `inputs` is in strictly ascending identifier order and names only inputs
+/// of the same snapshot.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EditLockStatus {
+    pub project: bool,
+    pub inputs: Vec<WireInputId>,
+}
+
+impl EditLockStatus {
+    /// Returns whether `input` has its own padlock engaged.
+    #[must_use]
+    pub fn is_input_locked(&self, input: WireInputId) -> bool {
+        self.inputs.contains(&input)
+    }
+}
+
+/// The server's shared undo/redo history after one revision.
+///
+/// History is session state on the server: it is never persisted, and a
+/// daemon restart starts it empty. `next_undo`/`next_redo` carry the
+/// revision at which the top entry's edit was first accepted, which is the
+/// value a client passes as `expected_edit` to refuse reverting someone
+/// else's later edit. Each is present exactly when its depth is nonzero.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EditHistoryStatus {
+    pub undo_depth: u16,
+    pub next_undo: Option<u64>,
+    pub redo_depth: u16,
+    pub next_redo: Option<u64>,
+}
+
+impl EditHistoryStatus {
+    /// No undoable and no redoable edit.
+    pub const EMPTY: Self = Self {
+        undo_depth: 0,
+        next_undo: None,
+        redo_depth: 0,
+        next_redo: None,
+    };
+
+    #[must_use]
+    pub const fn can_undo(&self) -> bool {
+        self.undo_depth > 0
+    }
+
+    #[must_use]
+    pub const fn can_redo(&self) -> bool {
+        self.redo_depth > 0
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommandPayload {
     ReorderInputs {
@@ -632,6 +700,22 @@ pub enum CommandPayload {
     },
     RecordStop {
         recorder: WireRecorderSlot,
+    },
+    /// Reverts the server's most recent undoable project edit.
+    ///
+    /// `expected_edit` names the edit revision the caller means to revert
+    /// ([`EditHistoryStatus::next_undo`]); another top entry is refused.
+    Undo {
+        expected_edit: Option<u64>,
+    },
+    /// Reapplies the server's most recently undone project edit.
+    Redo {
+        expected_edit: Option<u64>,
+    },
+    /// Engages or releases one edit padlock. Live switching is never locked.
+    SetEditLock {
+        scope: EditLockScope,
+        locked: bool,
     },
 }
 
@@ -747,6 +831,8 @@ pub struct SnapshotMessage {
     pub recordings: Vec<RecordingStatus>,
     pub desired_overlays: Vec<OverlayStatus>,
     pub realized_overlays: Vec<OverlayStatus>,
+    pub edit_locks: EditLockStatus,
+    pub edit_history: EditHistoryStatus,
 }
 
 /// A durable state change. Runtime progress uses [`RuntimeEventMessage`].
@@ -783,12 +869,23 @@ pub enum EventPayload {
         recorder: WireRecorderSlot,
         active: bool,
     },
+    EditLockChanged {
+        scope: EditLockScope,
+        locked: bool,
+    },
 }
 
+/// One durable revision.
+///
+/// `edit_history` is the server's undo/redo summary *after* this revision.
+/// It rides every event because any accepted edit, undo, or redo changes it
+/// while live operations leave it unchanged, so the newest applied event
+/// always carries the current history.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventMessage {
     pub cursor: EventCursor,
     pub payload: EventPayload,
+    pub edit_history: EditHistoryStatus,
 }
 
 /// One durable event within a single-revision transaction.
@@ -1094,6 +1191,9 @@ pub struct DiagnosticsResponse {
     pub subscriber_queue_limit: u32,
 }
 
+// A snapshot is sent once per (re)connection, so its inline size is not worth
+// boxing every exact-contract construction site for.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WireMessage {
     Command(CommandMessage),

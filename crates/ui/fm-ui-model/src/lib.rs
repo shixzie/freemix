@@ -10,9 +10,10 @@ use core::{cmp::Ordering, fmt, num::NonZeroU128};
 use std::collections::{HashMap, HashSet};
 
 use fm_command::{CommandId, Revision};
+pub use fm_protocol::EditHistoryStatus;
 use fm_protocol::{
-    CommandResult, EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackState,
-    FieldIssue, ManualTransitionKind, ManualTransitionPosition,
+    CommandResult, EditLockScope, EngineIdentity, EventCursor, EventMessage, EventPayload,
+    FadeToBlackState, FieldIssue, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionStatus as ProtocolManualTransitionStatus, RecordingStatus, ResumeCursor,
     ServerHello, ServerIdentity, SnapshotMessage, StingerAudioPolicy, StingerMissingMediaFallback,
     StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, WireRecorderSlot,
@@ -196,6 +197,73 @@ impl ManualTransitionStatus {
     }
 }
 
+/// The padlock target of one replicated edit lock.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum EditLockTarget {
+    Project,
+    Input(InputId),
+}
+
+impl EditLockTarget {
+    #[must_use]
+    pub const fn from_protocol(scope: EditLockScope) -> Self {
+        match scope {
+            EditLockScope::Project => Self::Project,
+            EditLockScope::Input(input) => Self::Input(input.to_domain()),
+        }
+    }
+}
+
+/// Replicated engaged edit padlocks; `inputs` is in ascending identifier order.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct EditLocks {
+    pub project: bool,
+    pub inputs: Vec<InputId>,
+}
+
+impl EditLocks {
+    #[must_use]
+    pub fn from_protocol(status: fm_protocol::EditLockStatus) -> Self {
+        Self {
+            project: status.project,
+            inputs: status
+                .inputs
+                .into_iter()
+                .map(fm_protocol::WireInputId::to_domain)
+                .collect(),
+        }
+    }
+
+    /// Returns whether `input` has its own padlock engaged.
+    #[must_use]
+    pub fn is_input_locked(&self, input: InputId) -> bool {
+        self.inputs.contains(&input)
+    }
+
+    /// Returns whether an edit of `input` (rename or move) is blocked by
+    /// either the project padlock or the input's own padlock.
+    #[must_use]
+    pub fn blocks_input_edit(&self, input: InputId) -> bool {
+        self.project || self.is_input_locked(input)
+    }
+
+    fn set(&mut self, target: EditLockTarget, locked: bool) {
+        match target {
+            EditLockTarget::Project => self.project = locked,
+            EditLockTarget::Input(input) => {
+                let position = self.inputs.binary_search(&input);
+                match (position, locked) {
+                    (Err(index), true) => self.inputs.insert(index, input),
+                    (Ok(index), false) => {
+                        self.inputs.remove(index);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
 /// An authoritative project snapshot suitable for the UI reducer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectSnapshot {
@@ -211,6 +279,8 @@ pub struct ProjectSnapshot {
     pub desired_overlays: Vec<OverlayStatus>,
     pub realized_overlays: Vec<OverlayStatus>,
     pub switcher: SwitcherState,
+    pub edit_locks: EditLocks,
+    pub edit_history: EditHistoryStatus,
 }
 
 impl ProjectSnapshot {
@@ -270,6 +340,8 @@ impl ProjectSnapshot {
                 realized_fade_to_black: fade_to_black_from_protocol(message.realized_fade_to_black),
                 runtime_generation: None,
             },
+            edit_locks: EditLocks::from_protocol(message.edit_locks),
+            edit_history: message.edit_history,
         }
     }
 }
@@ -306,13 +378,20 @@ pub enum DurableChange {
         recorder: WireRecorderSlot,
         active: bool,
     },
+    EditLockChanged {
+        target: EditLockTarget,
+        locked: bool,
+    },
 }
 
 /// One globally ordered project event.
+///
+/// `edit_history` is the server's undo/redo summary after this revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DurableProjectEvent {
     pub cursor: ProjectCursor,
     pub change: DurableChange,
+    pub edit_history: EditHistoryStatus,
 }
 
 impl DurableProjectEvent {
@@ -366,6 +445,10 @@ impl DurableProjectEvent {
             EventPayload::RecordingChanged { recorder, active } => {
                 DurableChange::RecordingChanged { recorder, active }
             }
+            EventPayload::EditLockChanged { scope, locked } => DurableChange::EditLockChanged {
+                target: EditLockTarget::from_protocol(scope),
+                locked,
+            },
         };
         Self {
             cursor: ProjectCursor {
@@ -374,6 +457,7 @@ impl DurableProjectEvent {
                 revision: Revision::new(message.cursor.revision),
             },
             change,
+            edit_history: message.edit_history,
         }
     }
 
@@ -390,10 +474,12 @@ impl DurableProjectEvent {
         project_id: ProjectId,
         cursor: ResumeCursor,
         change: DurableChange,
+        edit_history: EditHistoryStatus,
     ) -> Result<Self, ModelError> {
         Ok(Self {
             cursor: ProjectCursor::from_resume_cursor(project_id, cursor)?,
             change,
+            edit_history,
         })
     }
 }
@@ -427,9 +513,23 @@ pub struct ProjectState {
     desired_overlays: Vec<OverlayStatus>,
     realized_overlays: Vec<OverlayStatus>,
     switcher: SwitcherState,
+    edit_locks: EditLocks,
+    edit_history: EditHistoryStatus,
 }
 
 impl ProjectState {
+    /// Returns the replicated engaged edit padlocks.
+    #[must_use]
+    pub const fn edit_locks(&self) -> &EditLocks {
+        &self.edit_locks
+    }
+
+    /// Returns the server's undo/redo summary at the applied cursor.
+    #[must_use]
+    pub const fn edit_history(&self) -> EditHistoryStatus {
+        self.edit_history
+    }
+
     #[must_use]
     pub fn show_name(&self) -> &str {
         &self.show_name
@@ -516,6 +616,8 @@ pub struct ClientView {
     pub desired_overlays: Vec<OverlayStatus>,
     pub realized_overlays: Vec<OverlayStatus>,
     pub switcher: SwitcherState,
+    pub edit_locks: EditLocks,
+    pub edit_history: EditHistoryStatus,
 }
 
 impl ClientView {
@@ -732,17 +834,16 @@ pub enum ModelError {
     DuplicateCommand(CommandId),
     UnknownCommand(CommandId),
     StateUnavailable,
+    InvalidEditLocks,
 }
 
 impl fmt::Display for ModelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ProjectMismatch { expected, observed } => {
-                write!(
-                    formatter,
-                    "project identity changed from {expected} to {observed}"
-                )
-            }
+            Self::ProjectMismatch { expected, observed } => write!(
+                formatter,
+                "project identity changed from {expected} to {observed}"
+            ),
             Self::ProtocolProjectMismatch { expected, observed } => write!(
                 formatter,
                 "protocol project identity changed from {expected} to {observed}"
@@ -750,12 +851,10 @@ impl fmt::Display for ModelError {
             Self::EngineMismatch { .. } => formatter.write_str("engine cursor identity changed"),
             Self::InvalidEngineIdentity => formatter.write_str("engine identity is incomplete"),
             Self::SnapshotRequired => formatter.write_str("a fresh snapshot is required"),
-            Self::RevisionGap { expected, observed } => {
-                write!(
-                    formatter,
-                    "event gap: expected revision {expected}, got {observed}"
-                )
-            }
+            Self::RevisionGap { expected, observed } => write!(
+                formatter,
+                "event gap: expected revision {expected}, got {observed}"
+            ),
             Self::OutOfOrder { current, observed } => write!(
                 formatter,
                 "out-of-order event revision {observed}; current revision is {current}"
@@ -833,6 +932,9 @@ impl fmt::Display for ModelError {
             Self::DuplicateCommand(id) => write!(formatter, "command {id} is already pending"),
             Self::UnknownCommand(id) => write!(formatter, "command {id} is not pending"),
             Self::StateUnavailable => formatter.write_str("no project snapshot is installed"),
+            Self::InvalidEditLocks => formatter.write_str(
+                "locked inputs must be unique show inputs in ascending identifier order",
+            ),
         }
     }
 }
@@ -971,6 +1073,8 @@ impl ClientModel {
             desired_overlays: state.desired_overlays.clone(),
             realized_overlays: state.realized_overlays.clone(),
             switcher,
+            edit_locks: state.edit_locks.clone(),
+            edit_history: state.edit_history,
         })
     }
 
@@ -1149,6 +1253,8 @@ impl ClientModel {
             desired_overlays: snapshot.desired_overlays,
             realized_overlays: snapshot.realized_overlays,
             switcher: snapshot.switcher,
+            edit_locks: snapshot.edit_locks,
+            edit_history: snapshot.edit_history,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -1219,6 +1325,7 @@ impl ClientModel {
         validate_change(&event.change, state)?;
         let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
         apply_change(state, event.change.clone());
+        state.edit_history = event.edit_history;
 
         let revision = event.cursor.revision;
         self.desired_by_revision.insert(
@@ -1548,6 +1655,19 @@ fn validate_snapshot_inputs(snapshot: &ProjectSnapshot) -> Result<(), ModelError
         }
     }
     validate_stingers(&snapshot.stingers, &inputs)?;
+    if !snapshot
+        .edit_locks
+        .inputs
+        .windows(2)
+        .all(|pair| pair[0] < pair[1])
+        || snapshot
+            .edit_locks
+            .inputs
+            .iter()
+            .any(|input| !inputs.contains(input))
+    {
+        return Err(ModelError::InvalidEditLocks);
+    }
     validate_streams(&snapshot.streams)?;
     validate_recordings(&snapshot.recordings)?;
     validate_input_audio_strips(&snapshot.input_audio_strips, &inputs)?;
@@ -1755,7 +1875,21 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             validate_streams(streams)?;
             return Ok(());
         }
-        DurableChange::RecordingChanged { .. } => return Ok(()),
+        DurableChange::RecordingChanged { .. }
+        | DurableChange::EditLockChanged {
+            target: EditLockTarget::Project,
+            ..
+        } => return Ok(()),
+        DurableChange::EditLockChanged {
+            target: EditLockTarget::Input(input),
+            ..
+        } => {
+            return if state.inputs.contains(input) {
+                Ok(())
+            } else {
+                Err(ModelError::UnknownInput(*input))
+            };
+        }
     };
     let inputs = &state.inputs;
     for input in [selection.program, selection.preview] {
@@ -1847,6 +1981,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 .expect("validated recorder roster contains every slot");
             status.desired_active = active;
         }
+        DurableChange::EditLockChanged { target, locked } => state.edit_locks.set(target, locked),
     }
 }
 

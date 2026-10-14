@@ -4,30 +4,30 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     AudioMeterChannel, AudioMetersMessage, CapabilityReportMessage, CapabilityReportSummary,
     CodecError, CommandMessage, CommandPayload, CommandResult, DiagnosticsRequest,
-    DiagnosticsResponse, DurableEventBatch, DurableGap, EngineIdentity, ErrorMessage, EventCursor,
-    EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, HandshakeOutcome,
-    HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage,
-    InputAudioMeters, InputAudioStripStatus, MAX_AUDIO_METER_CHANNELS, ManualTransitionKind,
-    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage,
-    MonitorFrameOrigin, MonitorTap, OverlayStatus, ResumeCursor, RuntimeEventMessage,
-    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
-    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
-    StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample, StructuredError,
-    WireInputId, WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot,
-    WireStingerSlotId, WireStreamTargetId,
+    DiagnosticsResponse, DurableEventBatch, DurableGap, EditHistoryStatus, EditLockScope,
+    EditLockStatus, EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload,
+    FadeToBlackPosition, FadeToBlackState, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
+    HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioMeters, InputAudioStripStatus,
+    MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionPosition,
+    ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin,
+    MonitorTap, OverlayStatus, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
+    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
+    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
+    StreamStatusMessage, StreamStatusSample, StructuredError, WireInputId, WireMessage,
+    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 
 use super::value::{
-    parse_client_type, parse_durable_events, parse_field_issues, parse_input_ids,
-    parse_input_statuses, parse_output_statuses, parse_recording_statuses, parse_role,
-    parse_runtime_domains, parse_stream_realized_state, parse_stream_statuses, parse_string_list,
-    parse_version, unescape,
+    parse_canonical_input, parse_canonical_u64, parse_client_type, parse_durable_events,
+    parse_field_issues, parse_input_ids, parse_input_statuses, parse_output_statuses,
+    parse_recording_statuses, parse_role, parse_runtime_domains, parse_stream_realized_state,
+    parse_stream_statuses, parse_string_list, parse_version, unescape,
 };
 use super::{
     MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES, MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES,
     MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH, MAX_STREAM_LOCAL_SEGMENTS,
-    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_overlay_duration,
-    validate_request_id,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_edit_history,
+    validate_locked_inputs, validate_overlay_duration, validate_request_id,
 };
 
 /// Decodes exactly one newline-terminated wire record.
@@ -214,6 +214,21 @@ impl Fields {
         }
     }
 
+    /// Parses an optional canonical decimal (no sign, no leading zero).
+    fn canonical_optional(&mut self, name: &'static str) -> Result<Option<u64>, CodecError> {
+        self.optional(name)
+            .map(|value| {
+                parse_canonical_u64(&value).ok_or(CodecError::InvalidField { field: name, value })
+            })
+            .transpose()
+    }
+
+    /// Parses a required canonical decimal (no sign, no leading zero).
+    fn canonical_required(&mut self, name: &'static str) -> Result<u64, CodecError> {
+        let value = self.required(name)?;
+        parse_canonical_u64(&value).ok_or(CodecError::InvalidField { field: name, value })
+    }
+
     fn input(&mut self, name: &'static str) -> Result<WireInputId, CodecError> {
         let value = self.required(name)?;
         parse_input(&value).ok_or(CodecError::InvalidField { field: name, value })
@@ -360,12 +375,109 @@ fn decode_command_payload(
         }
         "manual_commit" => CommandPayload::CommitManualTransition,
         "manual_cancel" => CommandPayload::CancelManualTransition,
+        edit @ ("undo" | "redo" | "edit_lock") => decode_edit_command(fields, edit)?,
         _ => {
             return Err(CodecError::InvalidField {
                 field: "payload",
                 value: payload_name,
             });
         }
+    })
+}
+
+fn decode_edit_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
+    Ok(match name {
+        "undo" => CommandPayload::Undo {
+            expected_edit: decode_expected_edit(fields)?,
+        },
+        "redo" => CommandPayload::Redo {
+            expected_edit: decode_expected_edit(fields)?,
+        },
+        "edit_lock" => CommandPayload::SetEditLock {
+            scope: decode_edit_lock_scope(fields)?,
+            locked: fields.boolean("locked")?,
+        },
+        _ => unreachable!("only edit-history and padlock command names are delegated"),
+    })
+}
+
+fn decode_expected_edit(fields: &mut Fields) -> Result<Option<u64>, CodecError> {
+    match fields.canonical_optional("expected_edit")? {
+        Some(0) => Err(CodecError::InvalidField {
+            field: "expected_edit",
+            value: "0".to_owned(),
+        }),
+        expected => Ok(expected),
+    }
+}
+
+fn decode_edit_lock_scope(fields: &mut Fields) -> Result<EditLockScope, CodecError> {
+    let scope = fields.required("scope")?;
+    match scope.as_str() {
+        "project" => Ok(EditLockScope::Project),
+        "input" => {
+            let value = fields.required("input")?;
+            parse_canonical_input(&value)
+                .map(EditLockScope::Input)
+                .ok_or(CodecError::InvalidField {
+                    field: "input",
+                    value,
+                })
+        }
+        _ => Err(CodecError::InvalidField {
+            field: "scope",
+            value: scope,
+        }),
+    }
+}
+
+fn decode_edit_history(
+    fields: &mut Fields,
+    revision: u64,
+) -> Result<EditHistoryStatus, CodecError> {
+    let depth = |fields: &mut Fields, name: &'static str| -> Result<u16, CodecError> {
+        let value = fields.canonical_required(name)?;
+        u16::try_from(value).map_err(|_| CodecError::InvalidField {
+            field: name,
+            value: value.to_string(),
+        })
+    };
+    let history = EditHistoryStatus {
+        undo_depth: depth(fields, "undo_depth")?,
+        next_undo: fields.canonical_optional("undo_edit")?,
+        redo_depth: depth(fields, "redo_depth")?,
+        next_redo: fields.canonical_optional("redo_edit")?,
+    };
+    validate_edit_history(&history, revision)?;
+    Ok(history)
+}
+
+fn decode_edit_locks(
+    fields: &mut Fields,
+    inputs: &[crate::InputStatus],
+) -> Result<EditLockStatus, CodecError> {
+    let project = fields.boolean("project_locked")?;
+    let value = fields.required("locked_inputs")?;
+    let locked = if value.is_empty() {
+        Vec::new()
+    } else {
+        if value.split(',').take(MAX_LIST_ITEMS + 1).count() > MAX_LIST_ITEMS {
+            return Err(CodecError::TooManyItems("locked_inputs"));
+        }
+        value
+            .split(',')
+            .map(parse_canonical_input)
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| CodecError::InvalidField {
+                field: "locked_inputs",
+                value: value.clone(),
+            })?
+    };
+    let inputs = inputs.iter().map(|status| status.input).collect::<Vec<_>>();
+    validate_locked_inputs(&locked, &inputs)?;
+    Ok(EditLockStatus {
+        project,
+        inputs: locked,
     })
 }
 
@@ -571,9 +683,12 @@ fn decode_result(fields: &mut Fields) -> Result<CommandResult, CodecError> {
 
 fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
     let inputs = parse_input_statuses(&fields.required("inputs")?)?;
+    let revision = fields.parse_required("revision")?;
+    let edit_locks = decode_edit_locks(fields, &inputs)?;
+    let edit_history = decode_edit_history(fields, revision)?;
     Ok(SnapshotMessage {
         engine: decode_identity(fields)?,
-        revision: fields.parse_required("revision")?,
+        revision,
         show_name: fields.required("show_name")?,
         inputs,
         outputs: parse_output_statuses(&fields.required("outputs")?)?,
@@ -594,6 +709,8 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         recordings: parse_recording_statuses(&fields.required("recordings")?)?,
         desired_overlays: decode_overlays(fields, "desired_overlays")?,
         realized_overlays: decode_overlays(fields, "realized_overlays")?,
+        edit_locks,
+        edit_history,
     })
 }
 
@@ -929,6 +1046,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             recorder: decode_recorder_slot(fields)?,
             active: fields.boolean("active")?,
         },
+        "edit_lock_changed" => EventPayload::EditLockChanged {
+            scope: decode_edit_lock_scope(fields)?,
+            locked: fields.boolean("locked")?,
+        },
         _ => {
             return Err(CodecError::InvalidField {
                 field: "event",
@@ -936,9 +1057,12 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             });
         }
     };
+    let cursor = decode_cursor(fields)?;
+    let edit_history = decode_edit_history(fields, cursor.revision)?;
     Ok(EventMessage {
-        cursor: decode_cursor(fields)?,
+        cursor,
         payload,
+        edit_history,
     })
 }
 

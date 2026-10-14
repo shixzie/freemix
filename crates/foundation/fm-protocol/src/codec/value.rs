@@ -102,6 +102,29 @@ pub(super) fn parse_version(value: &str) -> Option<ProtocolVersion> {
     ))
 }
 
+/// Parses a canonical unsigned decimal: ASCII digits only, without a sign
+/// or a leading zero, exactly as `u64::to_string` writes it.
+pub(super) fn parse_canonical_u64(value: &str) -> Option<u64> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return None;
+    }
+    value.parse().ok()
+}
+
+/// Parses a canonical nonzero input identifier as written by its `Display`.
+pub(super) fn parse_canonical_input(value: &str) -> Option<crate::WireInputId> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || value.starts_with('0')
+    {
+        return None;
+    }
+    core::num::NonZeroU128::new(value.parse().ok()?).map(crate::WireInputId::new)
+}
+
 /// Encodes the permission list. An empty permission is refused because the
 /// one-item list `[""]` would encode to the empty list.
 pub(super) fn string_list(values: &[String]) -> Result<String, CodecError> {

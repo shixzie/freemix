@@ -134,6 +134,8 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         recordings: recordings(),
         desired_overlays: fm_protocol::OverlayStatus::empty_channels(),
         realized_overlays: fm_protocol::OverlayStatus::empty_channels(),
+        edit_locks: fm_protocol::EditLockStatus::default(),
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
     }
 }
 
@@ -246,6 +248,7 @@ fn connect_snapshot_resume_and_reconnect_are_deterministic() {
     client.accept_handshake(handshake(5, Some(cursor))).unwrap();
     client
         .apply_event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine(),
                 revision: 5,
@@ -288,6 +291,7 @@ fn current_contract_reduces_exact_fade_to_black_state() {
 
     client
         .apply_event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine(),
                 revision: 5,
@@ -747,6 +751,7 @@ fn event_gap_requests_snapshot_resync() {
     let mut client = ready_client(2);
     let error = client
         .apply_event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine(),
                 revision: 6,
@@ -841,6 +846,7 @@ fn reconnecting_second_client_reduces_exact_desired_and_realized_manual_state() 
 
     second
         .apply_event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine(),
                 revision: 5,
@@ -954,6 +960,7 @@ fn runtime_sequence_gap_does_not_request_durable_resync() {
 
     client
         .apply_event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine(),
                 revision: 5,
@@ -1118,6 +1125,7 @@ fn streams_changed_events_retain_the_latest_projection() {
 
     client
         .apply_event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine(),
                 revision: 5,
@@ -1160,6 +1168,7 @@ fn recording_changed_events_update_only_the_addressed_slot() {
 
     client
         .apply_event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine(),
                 revision: 5,
@@ -1194,6 +1203,7 @@ fn recording_changed_events_update_only_the_addressed_slot() {
 
     client
         .apply_event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine(),
                 revision: 6,
@@ -1210,6 +1220,7 @@ fn recording_changed_events_update_only_the_addressed_slot() {
 
     client
         .apply_event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine(),
                 revision: 7,
@@ -1223,4 +1234,119 @@ fn recording_changed_events_update_only_the_addressed_slot() {
     let state = client.model().state().unwrap();
     assert!(!state.recording_desired(recorder_slot(1)));
     assert!(state.recording_desired(recorder_slot(2)));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn edit_lock_events_and_history_summaries_reduce_into_the_client_model() {
+    let mut client = Client::new(config(4)).unwrap();
+    client.start_connect().unwrap();
+    client.transport_connected().unwrap();
+    client.accept_handshake(handshake(4, None)).unwrap();
+    let mut base = snapshot(4);
+    base.edit_locks = fm_protocol::EditLockStatus {
+        project: true,
+        inputs: vec![input(1)],
+    };
+    base.edit_history = fm_protocol::EditHistoryStatus {
+        undo_depth: 1,
+        next_undo: Some(3),
+        redo_depth: 0,
+        next_redo: None,
+    };
+    // The snapshot crosses the exact wire before it is reduced.
+    let line = fm_protocol::encode_line(&WireMessage::Snapshot(base)).unwrap();
+    assert_eq!(
+        client
+            .intake(fm_protocol::decode_line(&line).unwrap())
+            .unwrap(),
+        Intake::SnapshotApplied
+    );
+    let view = client.model().view().unwrap();
+    assert!(view.edit_locks.project);
+    assert_eq!(view.edit_locks.inputs, [input(1).to_domain()]);
+    assert_eq!(view.edit_history.next_undo, Some(3));
+
+    let unlocked = WireMessage::Event(EventMessage {
+        cursor: EventCursor {
+            engine: engine(),
+            revision: 5,
+        },
+        payload: EventPayload::EditLockChanged {
+            scope: fm_protocol::EditLockScope::Project,
+            locked: false,
+        },
+        edit_history: view.edit_history,
+    });
+    let line = fm_protocol::encode_line(&unlocked).unwrap();
+    assert_eq!(
+        client
+            .intake(fm_protocol::decode_line(&line).unwrap())
+            .unwrap(),
+        Intake::EventApplied
+    );
+    let locked_input = WireMessage::Event(EventMessage {
+        cursor: EventCursor {
+            engine: engine(),
+            revision: 6,
+        },
+        payload: EventPayload::EditLockChanged {
+            scope: fm_protocol::EditLockScope::Input(input(2)),
+            locked: true,
+        },
+        edit_history: view.edit_history,
+    });
+    client.intake(locked_input).unwrap();
+    // An undo arrives as the edit it resolved to plus the new summary.
+    client
+        .intake(WireMessage::Event(EventMessage {
+            cursor: EventCursor {
+                engine: engine(),
+                revision: 7,
+            },
+            payload: EventPayload::InputRenamed {
+                input: input(1),
+                name: "Camera".to_owned(),
+            },
+            edit_history: fm_protocol::EditHistoryStatus {
+                undo_depth: 0,
+                next_undo: None,
+                redo_depth: 1,
+                next_redo: Some(3),
+            },
+        }))
+        .unwrap();
+    let state = client.model().state().unwrap();
+    assert!(!state.edit_locks().project);
+    assert_eq!(
+        state.edit_locks().inputs,
+        [input(1).to_domain(), input(2).to_domain()]
+    );
+    assert!(!state.edit_history().can_undo());
+    assert_eq!(state.edit_history().next_redo, Some(3));
+    assert_eq!(state.input_name(input(1).to_domain()), Some("Camera"));
+
+    // Undo, redo, and padlock commands carry no optimistic intent.
+    for payload in [
+        CommandPayload::Undo {
+            expected_edit: None,
+        },
+        CommandPayload::Redo {
+            expected_edit: Some(3),
+        },
+        CommandPayload::SetEditLock {
+            scope: fm_protocol::EditLockScope::Project,
+            locked: true,
+        },
+    ] {
+        let key = format!("{payload:?}");
+        let command = client.queue_command(payload, key, None, None).unwrap();
+        let pending = client
+            .model()
+            .pending_commands()
+            .iter()
+            .find(|pending| pending.id.as_str() == command.id)
+            .unwrap();
+        assert_eq!(pending.optimistic, None);
+    }
 }

@@ -918,7 +918,10 @@ impl Client {
             | CommandPayload::StreamStart { .. }
             | CommandPayload::StreamStop { .. }
             | CommandPayload::RecordStart { .. }
-            | CommandPayload::RecordStop { .. } => None,
+            | CommandPayload::RecordStop { .. }
+            | CommandPayload::Undo { .. }
+            | CommandPayload::Redo { .. }
+            | CommandPayload::SetEditLock { .. } => None,
         };
         self.model
             .track_command(CommandId::new(command.id.clone()), optimistic)?;

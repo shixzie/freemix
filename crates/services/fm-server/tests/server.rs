@@ -104,9 +104,12 @@ fn control() -> FakeControl {
         ],
         desired_overlays: fm_protocol::OverlayStatus::empty_channels(),
         realized_overlays: fm_protocol::OverlayStatus::empty_channels(),
+        edit_locks: fm_protocol::EditLockStatus::default(),
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
     };
     let events = [3, 4]
         .map(|revision| EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: engine.clone(),
                 revision,

@@ -171,9 +171,13 @@ impl Session {
         self.ensure_connected()?;
 
         let class = match command.payload {
-            CommandPayload::RenameInput { .. } | CommandPayload::ReorderInputs { .. } => {
-                CommandClass::EditProject
-            }
+            // Undo, redo, and the edit padlock are project edits; fm-control
+            // additionally authorizes the class of the edit undo/redo targets.
+            CommandPayload::RenameInput { .. }
+            | CommandPayload::ReorderInputs { .. }
+            | CommandPayload::Undo { .. }
+            | CommandPayload::Redo { .. }
+            | CommandPayload::SetEditLock { .. } => CommandClass::EditProject,
             CommandPayload::SetInputAudioStrip { .. } => CommandClass::ControlAudio,
             CommandPayload::SelectPreview { .. } => CommandClass::SelectPreview,
             CommandPayload::Cut

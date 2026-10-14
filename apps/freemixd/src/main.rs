@@ -9271,7 +9271,17 @@ fn execute_native_stinger_mutation(
     native: &mut NativeDaemon,
     process_shutdown: Option<&ProcessShutdown>,
 ) -> AppResult<Result<DurableExecution, NativeMutationFailure>> {
-    let first_preparation = control.prepare_submit(principal, command.clone(), now_millis)?;
+    // Every step before a `record` only stages; failures there refuse the
+    // command as `staging_refusal` classifies them (dropping the staged
+    // native resources), failures from a commit on are fatal.
+    let current_revision = control.diagnostics().current_revision;
+    let first_preparation = match control.prepare_submit(principal, command.clone(), now_millis) {
+        Ok(preparation) => preparation,
+        Err(error) => {
+            return refuse_staged_command(command, current_revision, error.into(), Vec::new())
+                .map(Ok);
+        }
+    };
     let first_prepared = match first_preparation {
         PrepareSubmitOutcome::Replayed(submission) => {
             return Ok(Ok(DurableExecution {
@@ -9282,13 +9292,24 @@ fn execute_native_stinger_mutation(
         PrepareSubmitOutcome::Prepared(prepared) => prepared,
     };
     if !first_prepared.submission().is_accepted() {
-        let projected = first_prepared.project(0)?;
-        let updated = stored_project_from_snapshot(
-            durable,
-            &projected,
-            command,
-            &first_prepared.output().result,
-        )?;
+        let staged = first_prepared
+            .project(0)
+            .map_err(Into::into)
+            .and_then(|projected| {
+                stored_project_from_snapshot(
+                    durable,
+                    &projected,
+                    command,
+                    &first_prepared.output().result,
+                )
+            });
+        let updated = match staged {
+            Ok(updated) => updated,
+            Err(error) => {
+                drop(first_prepared);
+                return refuse_staged_command(command, current_revision, error, Vec::new()).map(Ok);
+            }
+        };
         // A durability failure refuses the command; it does not take the daemon
         // down. Dropping the preparation abandons it without touching the
         // engine, exactly as the simulated path does.
@@ -9312,14 +9333,24 @@ fn execute_native_stinger_mutation(
         }));
     }
 
-    let first_projected = first_prepared.project(1)?;
-    let candidate = stored_project_from_snapshot(
-        durable,
-        &first_projected,
-        command,
-        &first_prepared.output().result,
-    )?;
+    let staged = first_prepared
+        .project(1)
+        .map_err(Into::into)
+        .and_then(|projected| {
+            stored_project_from_snapshot(
+                durable,
+                &projected,
+                command,
+                &first_prepared.output().result,
+            )
+        });
     drop(first_prepared);
+    let candidate = match staged {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            return refuse_staged_command(command, current_revision, error, Vec::new()).map(Ok);
+        }
+    };
 
     let (mutation, mut preflight_runtime_events) = match native
         .preflight_stinger_mutation_with_ticks(
@@ -9342,7 +9373,19 @@ fn execute_native_stinger_mutation(
         }));
     };
 
-    let second_preparation = control.prepare_submit(principal, command.clone(), now_millis)?;
+    let second_preparation = match control.prepare_submit(principal, command.clone(), now_millis) {
+        Ok(preparation) => preparation,
+        Err(error) => {
+            native.stinger_retirements.discard(mutation)?;
+            return refuse_staged_command(
+                command,
+                current_revision,
+                error.into(),
+                preflight_runtime_events,
+            )
+            .map(Ok);
+        }
+    };
     let second_prepared = match second_preparation {
         PrepareSubmitOutcome::Replayed(submission) => {
             native.stinger_retirements.discard(mutation)?;
@@ -9355,13 +9398,30 @@ fn execute_native_stinger_mutation(
     };
     if !second_prepared.submission().is_accepted() {
         native.stinger_retirements.discard(mutation)?;
-        let projected = second_prepared.project(0)?;
-        let updated = stored_project_from_snapshot(
-            durable,
-            &projected,
-            command,
-            &second_prepared.output().result,
-        )?;
+        let staged = second_prepared
+            .project(0)
+            .map_err(Into::into)
+            .and_then(|projected| {
+                stored_project_from_snapshot(
+                    durable,
+                    &projected,
+                    command,
+                    &second_prepared.output().result,
+                )
+            });
+        let updated = match staged {
+            Ok(updated) => updated,
+            Err(error) => {
+                drop(second_prepared);
+                return refuse_staged_command(
+                    command,
+                    current_revision,
+                    error,
+                    preflight_runtime_events,
+                )
+                .map(Ok);
+            }
+        };
         if let Err(error) = store.record(command, now_millis, durable, &updated) {
             drop(second_prepared);
             return Ok(Ok(DurableExecution {
@@ -9382,13 +9442,31 @@ fn execute_native_stinger_mutation(
         }));
     }
 
-    let projected = second_prepared.project(1)?;
-    let updated = stored_project_from_snapshot(
-        durable,
-        &projected,
-        command,
-        &second_prepared.output().result,
-    )?;
+    let staged = second_prepared
+        .project(1)
+        .map_err(Into::into)
+        .and_then(|projected| {
+            stored_project_from_snapshot(
+                durable,
+                &projected,
+                command,
+                &second_prepared.output().result,
+            )
+        });
+    let updated = match staged {
+        Ok(updated) => updated,
+        Err(error) => {
+            drop(second_prepared);
+            native.stinger_retirements.discard(mutation)?;
+            return refuse_staged_command(
+                command,
+                current_revision,
+                error,
+                preflight_runtime_events,
+            )
+            .map(Ok);
+        }
+    };
     if candidate.project().stingers() != updated.project().stingers()
         || native
             .playback
@@ -9485,17 +9563,33 @@ fn refused_submission(
     current_revision: u64,
     error: &dyn Error,
 ) -> CommandSubmission {
+    rejected_submission(
+        command,
+        current_revision,
+        &CommandRefusal {
+            code: RejectionCode::Unavailable,
+            retryable: true,
+            message: format!("command was refused because it could not be made durable: {error}"),
+        },
+    )
+}
+
+/// The answer to a command refused before anything about it was recorded:
+/// no receipt, no revision, no events, so resubmitting it runs it afresh.
+fn rejected_submission(
+    command: &CommandMessage,
+    current_revision: u64,
+    refusal: &CommandRefusal,
+) -> CommandSubmission {
     CommandSubmission {
         output: ResultBeforeEvents {
             result: CommandResult::Rejected {
                 id: command.id.clone(),
-                code: RejectionCode::Unavailable.as_str().to_owned(),
-                message: format!(
-                    "command was refused because it could not be made durable: {error}"
-                ),
+                code: refusal.code.as_str().to_owned(),
+                message: refusal.message.clone(),
                 fields: Vec::new(),
                 current_revision,
-                retryable: true,
+                retryable: refusal.retryable,
             },
             events: Vec::new(),
         },
@@ -9503,6 +9597,123 @@ fn refused_submission(
         accepted: None,
         subscriber_failures: Vec::new(),
     }
+}
+
+/// A command refused while it was being staged, before anything about it was
+/// made durable or committed to the engine.
+///
+/// Raised directly where the refusal is decided (a Stinger slot still
+/// realizing) or derived by [`staging_refusal`] from a staging error.
+#[derive(Debug)]
+struct CommandRefusal {
+    code: RejectionCode,
+    retryable: bool,
+    message: String,
+}
+
+impl fmt::Display for CommandRefusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code.as_str(), self.message)
+    }
+}
+
+impl Error for CommandRefusal {}
+
+/// Classifies an error raised while staging a command, before
+/// `DurableStore::record`, into a refusal of that command, or returns the
+/// error itself when it must stay fatal.
+///
+/// Every staging step only works on a preparation, which the caller drops on
+/// failure, so a refusal leaves the engine, its receipts and event log, the
+/// journal, and the in-memory project exactly as they were: refusing is
+/// always safe for durability. What stays fatal is what says the daemon's
+/// own state can no longer be trusted, so it fails closed:
+///
+/// * Refused, the daemon keeps running:
+///   - [`CommandRefusal`]: decided where it was raised (for example a Stinger
+///     slot whose desired and realized state still differ: `conflict`,
+///     retryable once realization settles);
+///   - the engine could not settle this command's realization to an idle
+///     frame within the ticks it was given (`SnapshotError`): `conflict`,
+///     retryable;
+///   - the engine's scheduler could not take the command's action
+///     (`EngineError::Schedule`): `resource_exhausted`, retryable;
+///   - the realized switcher refused the command's action while it was
+///     projected (`EngineError::RuntimeSwitcher`): `conflict`;
+///   - the persisted-project schema refused the staged project
+///     (`ProjectValidationError`), for example a receipt with a blank command
+///     id: the command cannot be made durable, so it is `invalid_command`.
+/// * Fatal, the daemon stops:
+///   - an engine that cannot advance or whose authority is stale (clock,
+///     tick, counter exhaustion, stale preparation, runtime identity or
+///     sequencing errors): every later command would fail the same way;
+///   - the stored project disagreeing with the engine about state the command
+///     did not stage (a missing staged receipt, audio strip, or stream target,
+///     a rename or reorder the project refuses after the engine accepted it):
+///     the durable project no longer describes the engine, and anything
+///     persisted from it would be corrupt.
+///
+/// Anything that fails after `record` returned is outside this function and
+/// always fatal: the command is journaled, so it must never be reported as
+/// rejected, and a restart replays it.
+fn staging_refusal(error: Box<dyn Error>) -> Result<CommandRefusal, Box<dyn Error>> {
+    let error = match error.downcast::<CommandRefusal>() {
+        Ok(refusal) => return Ok(*refusal),
+        Err(error) => error,
+    };
+    if let Some(validation) = error.downcast_ref::<fm_persistence::ProjectValidationError>() {
+        return Ok(CommandRefusal {
+            code: RejectionCode::InvalidCommand,
+            retryable: false,
+            message: format!(
+                "command was refused because its result cannot be persisted: {validation}"
+            ),
+        });
+    }
+    let Some(fm_control::ControlError::Engine(engine)) =
+        error.downcast_ref::<fm_control::ControlError>()
+    else {
+        return Err(error);
+    };
+    let (code, retryable, reason) = match engine {
+        fm_engine::EngineError::Snapshot(_) => (
+            RejectionCode::Conflict,
+            true,
+            "its realization does not settle to an idle frame",
+        ),
+        fm_engine::EngineError::Schedule(_) => (
+            RejectionCode::ResourceExhausted,
+            true,
+            "the engine scheduler cannot take its action",
+        ),
+        fm_engine::EngineError::RuntimeSwitcher(_) => (
+            RejectionCode::Conflict,
+            false,
+            "the realized switcher refuses its action",
+        ),
+        // Clock, tick, counter exhaustion, stale preparation, and anything
+        // added later: fail closed.
+        _ => return Err(error),
+    };
+    Ok(CommandRefusal {
+        code,
+        retryable,
+        message: format!("command was refused because {reason}: {engine}"),
+    })
+}
+
+/// Answers a staging failure: a refused command, or the fatal error.
+fn refuse_staged_command(
+    command: &CommandMessage,
+    current_revision: u64,
+    error: Box<dyn Error>,
+    runtime_events: Vec<RuntimeEventMessage>,
+) -> AppResult<DurableExecution> {
+    let refusal = staging_refusal(error)?;
+    Ok(DurableExecution {
+        submission: rejected_submission(command, current_revision, &refusal),
+        runtime_events,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9527,6 +9738,11 @@ fn execute_durable_command(
     )
 }
 
+/// Stages, records, commits, and realizes one command.
+///
+/// Failures before `store.record` refuse the command as classified by
+/// [`staging_refusal`]; a failing `record` refuses it as undurable; failures
+/// from the commit on are fatal because the command is already journaled.
 #[allow(clippy::too_many_arguments)]
 fn execute_durable_command_with_ticks(
     control: &mut ControlService<Policy>,
@@ -9541,7 +9757,14 @@ fn execute_durable_command_with_ticks(
         &ServerIdentity,
     ) -> AppResult<Vec<RuntimeEventMessage>>,
 ) -> AppResult<DurableExecution> {
-    let preparation = control.prepare_submit(principal, command.clone(), now_millis)?;
+    // Nothing commits before `record`, so a refusal reports this revision.
+    let current_revision = control.diagnostics().current_revision;
+    let preparation = match control.prepare_submit(principal, command.clone(), now_millis) {
+        Ok(preparation) => preparation,
+        Err(error) => {
+            return refuse_staged_command(command, current_revision, error.into(), Vec::new());
+        }
+    };
     let prepared = match preparation {
         PrepareSubmitOutcome::Replayed(submission) => {
             return Ok(DurableExecution {
@@ -9557,13 +9780,28 @@ fn execute_durable_command_with_ticks(
     } else {
         0
     };
-    let projected = prepared.project(u64::from(ticks))?;
-    let updated =
-        stored_project_from_snapshot(durable, &projected, command, &prepared.output().result)?;
+    let staged = prepared
+        .project(u64::from(ticks))
+        .map_err(Into::into)
+        .and_then(|projected| {
+            stored_project_from_snapshot(durable, &projected, command, &prepared.output().result)
+        });
+    let updated = match staged {
+        Ok(updated) => updated,
+        Err(error) => {
+            // Dropping the preparation abandons it without touching the
+            // engine, exactly as a failed `record` does below.
+            drop(prepared);
+            return refuse_staged_command(command, current_revision, error, Vec::new());
+        }
+    };
     // Durability comes first: the mutation survives a crash before the engine
     // commits it, before its events are published, and before the acceptance is
     // returned to the caller for acknowledgement.
-    if let Err(error) = store.record(command, now_millis, durable, &updated) {
+    // An accepted undo or redo is journaled as the edit it resolved to:
+    // replay restores an engine whose session history is empty.
+    let journaled = prepared.replay_command(command);
+    if let Err(error) = store.record(&journaled, now_millis, durable, &updated) {
         // Nothing was made durable, so nothing may be acknowledged. Dropping
         // the preparation abandons it without touching the engine: no revision,
         // no receipt, no events, so the same command may simply be sent again.
@@ -9644,7 +9882,10 @@ fn command_ticks(
         | CommandPayload::StreamStart { .. }
         | CommandPayload::StreamStop { .. }
         | CommandPayload::RecordStart { .. }
-        | CommandPayload::RecordStop { .. } => 1,
+        | CommandPayload::RecordStop { .. }
+        | CommandPayload::Undo { .. }
+        | CommandPayload::Redo { .. }
+        | CommandPayload::SetEditLock { .. } => 1,
     }
 }
 
@@ -9968,9 +10209,18 @@ fn sync_project_stingers(
         let slot = StingerSlotId::new(number).expect("Stinger slot number is bounded");
         let desired_state = desired.stinger(slot);
         if desired_state != realized.stinger(slot) {
-            return Err(AppFailure(format!(
-                "cannot persist divergent desired and realized Stinger slot {number}"
-            ))
+            // Realization has not caught up with the desired slot yet. That
+            // is runtime state, not corruption: refuse the command so it can
+            // be retried once the slot settles, instead of persisting a slot
+            // that was never realized.
+            return Err(CommandRefusal {
+                code: RejectionCode::Conflict,
+                retryable: true,
+                message: format!(
+                    "command was refused because Stinger slot {number} has not finished \
+                     realizing; retry once it has"
+                ),
+            }
             .into());
         }
         let _ = project.remove_stinger(model_slot);
@@ -14774,6 +15024,148 @@ mod tests {
             .prepared()
             .expect("failed save must not install a receipt");
         prepared.abort();
+    }
+
+    /// Regression: a command whose staged result the project schema refuses
+    /// (here a blank idempotency key, which a receipt may not carry) stopped
+    /// the whole daemon. It is refused, nothing is recorded or committed, and
+    /// the next command runs normally.
+    #[test]
+    fn a_command_whose_result_cannot_be_persisted_is_refused_not_fatal() {
+        let mut durable = test_project();
+        let mut control = test_control(&durable);
+        let server = test_server(&control);
+        let before_durable = durable.clone();
+        let before_engine = live_engine_snapshot(&mut control);
+        let subscription = control.subscribe().unwrap();
+        let saver = CountingSaver::default();
+
+        let refused = execute_durable_command(
+            &mut control,
+            &saver,
+            &mut durable,
+            &operator(),
+            &server,
+            &test_command("blank-key", "   ", CommandPayload::Cut),
+            0,
+        )
+        .expect("a command-caused staging failure refuses the command");
+
+        assert!(matches!(
+            &refused.submission.output.result,
+            CommandResult::Rejected {
+                id,
+                code,
+                retryable: false,
+                current_revision: 0,
+                ..
+            } if id == "blank-key" && code == "invalid_command"
+        ));
+        assert!(refused.submission.accepted.is_none());
+        assert_eq!(refused.submission.output.events, []);
+        assert_eq!(refused.runtime_events, []);
+        assert_eq!(saver.0.get(), 0, "nothing was journaled");
+        assert_eq!(durable, before_durable);
+        assert_eq!(live_engine_snapshot(&mut control), before_engine);
+        assert_eq!(subscription.try_recv(), Err(TryRecvError::Empty));
+
+        let accepted = execute_durable_command(
+            &mut control,
+            &saver,
+            &mut durable,
+            &operator(),
+            &server,
+            &test_command("after", "after-key", CommandPayload::Cut),
+            0,
+        )
+        .unwrap();
+        assert!(matches!(
+            accepted.submission.output.result,
+            CommandResult::Accepted { revision: 1, .. }
+        ));
+        assert_eq!(saver.0.get(), 1);
+    }
+
+    /// Regression: persisting a Stinger slot whose realization had not caught
+    /// up stopped the daemon. It is a retryable conflict.
+    #[test]
+    fn a_divergent_stinger_slot_refuses_the_command_as_a_retryable_conflict() {
+        let durable = test_project();
+        let inputs = vec![test_input_id(1), test_input_id(2)];
+        let mut desired =
+            SwitcherState::new(inputs.clone(), test_input_id(1), test_input_id(2)).unwrap();
+        let realized = SwitcherState::new(inputs, test_input_id(1), test_input_id(2)).unwrap();
+        let slot = StingerSlotId::new(2).unwrap();
+        desired
+            .configure_stinger(
+                slot,
+                StingerDescriptor::new(
+                    test_input_id(2),
+                    false,
+                    5,
+                    StingerAudioPolicy::Muted,
+                    MissingMediaFallback::Cut,
+                ),
+            )
+            .unwrap();
+        let mut project = durable.project().clone();
+
+        let error = sync_project_stingers(&mut project, &desired, &realized).unwrap_err();
+        let refusal = staging_refusal(error).expect("divergence is not fatal");
+        assert_eq!(refusal.code, RejectionCode::Conflict);
+        assert!(refusal.retryable);
+        assert!(refusal.message.contains("Stinger slot 2"));
+
+        // Once realization matches, the slot persists.
+        let mut settled = realized.clone();
+        settled
+            .configure_stinger(slot, *desired.stinger(slot).descriptor().unwrap())
+            .unwrap();
+        sync_project_stingers(&mut project, &desired, &settled).unwrap();
+        assert_eq!(project.stingers().len(), 1);
+    }
+
+    /// The classification boundary: staging failures caused by the command or
+    /// by recoverable runtime state refuse it; failures that mean the daemon's
+    /// own state can no longer be trusted stay fatal.
+    #[test]
+    fn staging_failures_are_classified_into_refusals_and_fatal_errors() {
+        let refused = |error: Box<dyn Error>| staging_refusal(error).unwrap();
+        let fatal = |error: Box<dyn Error>| staging_refusal(error).unwrap_err().to_string();
+
+        let in_flight = refused(
+            fm_control::ControlError::Engine(fm_engine::EngineError::Snapshot(
+                fm_engine::SnapshotError::WorkInFlight,
+            ))
+            .into(),
+        );
+        assert_eq!(
+            (in_flight.code, in_flight.retryable),
+            (RejectionCode::Conflict, true)
+        );
+        let unpersistable =
+            refused(fm_persistence::ProjectValidationError::EmptyIdempotencyKey.into());
+        assert_eq!(
+            (unpersistable.code, unpersistable.retryable),
+            (RejectionCode::InvalidCommand, false)
+        );
+
+        // An engine that cannot advance or holds stale authority.
+        assert_ne!(
+            fatal(
+                fm_control::ControlError::Engine(fm_engine::EngineError::StalePreparation).into()
+            ),
+            ""
+        );
+        assert_ne!(
+            fatal(fm_control::ControlError::RuntimeSequenceExhausted.into()),
+            ""
+        );
+        // The stored project disagreeing with the engine.
+        assert_eq!(
+            fatal(AppFailure("project is missing audio strip for input 9".into()).into()),
+            "project is missing audio strip for input 9"
+        );
     }
 
     /// An admitted command whose execution fails must still release its

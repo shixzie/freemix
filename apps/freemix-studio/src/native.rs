@@ -15,7 +15,7 @@ use fm_client::{
     Client, ClientError, CommandStatus, CommandUncertainty, SessionEvent, SyncMode, TcpSessionError,
 };
 use fm_protocol::{
-    CommandPayload, CommandResult, DurableGap, MonitorTap, OverlayBorderPreset,
+    CommandPayload, CommandResult, DurableGap, EditLockScope, MonitorTap, OverlayBorderPreset,
     OverlayPositionPreset, OverlayTransitionKind, StingerAudioPolicy, StingerMissingMediaFallback,
     WireInputId, WireMessage, WireOutputId, WireRecorderSlot, WireStreamTargetId,
 };
@@ -1458,10 +1458,15 @@ fn consume_command_sequence(
     }
     let accepted_revision = match &result {
         CommandResult::Accepted { revision, .. } => *revision,
-        CommandResult::Rejected { code, message, .. } => {
+        CommandResult::Rejected {
+            code,
+            message,
+            fields,
+            ..
+        } => {
             publication.rejection(
                 runtime,
-                format!("Command rejected ({code}): {message}"),
+                fm_ui_egui::command_rejection_message(code, message, fields),
                 *deferred_rejections,
             );
             return Ok(());
@@ -1890,6 +1895,18 @@ fn intent_payload(
         }
         StudioIntent::CommitManualTransition => CommandPayload::CommitManualTransition,
         StudioIntent::CancelManualTransition => CommandPayload::CancelManualTransition,
+        // History commands name the edit the operator saw, so a concurrent
+        // editor's later edit is refused rather than silently reverted.
+        StudioIntent::Undo { expected_edit } => CommandPayload::Undo {
+            expected_edit: Some(expected_edit),
+        },
+        StudioIntent::Redo { expected_edit } => CommandPayload::Redo {
+            expected_edit: Some(expected_edit),
+        },
+        StudioIntent::SetProjectLock { locked } => CommandPayload::SetEditLock {
+            scope: EditLockScope::Project,
+            locked,
+        },
     };
     Ok(payload)
 }
@@ -2372,6 +2389,8 @@ mod tests {
             recordings: recording_roster([false, false]),
             desired_overlays: OverlayStatus::empty_channels(),
             realized_overlays: OverlayStatus::empty_channels(),
+            edit_locks: fm_protocol::EditLockStatus::default(),
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         }
     }
 
@@ -2420,6 +2439,7 @@ mod tests {
         let snapshot = heartbeat_snapshot();
         let input = snapshot.inputs[0].input;
         EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: EngineIdentity {
                     engine_id: "e".into(),
@@ -2466,6 +2486,7 @@ mod tests {
 
     fn recording_event(revision: u64, recorder: u8, active: bool) -> EventMessage {
         EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: EngineIdentity {
                     engine_id: "e".into(),
@@ -3525,6 +3546,7 @@ mod tests {
 
     fn streams_event(revision: u64, desired_running: bool) -> EventMessage {
         EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: EventCursor {
                 engine: EngineIdentity {
                     engine_id: "e".into(),
@@ -3718,6 +3740,7 @@ mod tests {
         cursor.revision = cursor.revision.checked_next().unwrap();
         model
             .apply_event(DurableProjectEvent {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
                 cursor,
                 change: DurableChange::DesiredSwitcher {
                     selection: confirmed.switcher.desired,
@@ -3943,6 +3966,7 @@ mod tests {
         cursor.revision = cursor.revision.checked_next().unwrap();
         model
             .apply_event(DurableProjectEvent {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
                 cursor,
                 change: DurableChange::DesiredSwitcher {
                     selection: view.switcher.desired,
@@ -4252,6 +4276,7 @@ mod tests {
         cursor.revision = cursor.revision.checked_next().unwrap();
         model
             .apply_event(DurableProjectEvent {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
                 cursor,
                 change: DurableChange::DesiredSwitcher {
                     selection: confirmed.switcher.desired,

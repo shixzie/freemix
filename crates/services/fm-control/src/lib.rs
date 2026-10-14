@@ -25,21 +25,22 @@ pub use automation::{
 };
 
 use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
-use fm_command::{CommandReceipt, DurableEvent, IdempotencyKey, RejectionCode};
+use fm_command::{CommandReceipt, DurableEvent, IdempotencyKey, RejectionCode, Revision};
 use fm_engine::{
-    Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineError, EngineEvent,
-    EngineFadeToBlackState, EngineInputAudioStripState, EngineManualTransitionKind,
-    EngineManualTransitionPosition, EngineManualTransitionState, EnginePrepareOutcome,
-    EngineSnapshot, FrameResult, PreparedEngineExecution, SnapshotError,
+    EditLockScope as EngineEditLockScope, Engine, EngineAcceptance, EngineCommand,
+    EngineCommandOutcome, EngineError, EngineEvent, EngineFadeToBlackState,
+    EngineInputAudioStripState, EngineManualTransitionKind, EngineManualTransitionPosition,
+    EngineManualTransitionState, EnginePrepareOutcome, EngineSnapshot, FrameResult,
+    PreparedEngineExecution, SnapshotError,
 };
 use fm_protocol::{
-    CommandMessage, CommandPayload, CommandResult, EngineIdentity, EventCursor, EventMessage,
-    EventPayload, FadeToBlackPosition, FadeToBlackState, FieldIssue, InputAudioStripStatus,
-    InputStatus, ManualTransitionKind, ManualTransitionPosition, ManualTransitionState,
-    ManualTransitionStatus, OutputStatus, OverlayBorderPreset as ProtocolOverlayBorder,
-    OverlayPositionPreset as ProtocolOverlayPosition, OverlayStatus,
-    OverlayTransitionKind as ProtocolOverlayTransition, RecordingStatus, RuntimeEventMessage,
-    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    CommandMessage, CommandPayload, CommandResult, EditHistoryStatus, EditLockScope,
+    EditLockStatus, EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackPosition,
+    FadeToBlackState, FieldIssue, InputAudioStripStatus, InputStatus, ManualTransitionKind,
+    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, OutputStatus,
+    OverlayBorderPreset as ProtocolOverlayBorder, OverlayPositionPreset as ProtocolOverlayPosition,
+    OverlayStatus, OverlayTransitionKind as ProtocolOverlayTransition, RecordingStatus,
+    RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
     StingerAudioPolicy as ProtocolStingerAudioPolicy,
     StingerMissingMediaFallback as ProtocolStingerFallback, StingerReadiness, StingerStatus,
     StreamRealizedState, StreamStatus, WireInputId, WireMessage, WireOutputId,
@@ -183,7 +184,13 @@ impl<'a, A> PrepareSubmitOutcome<'a, A> {
 enum PreparedSubmissionKind {
     Engine {
         execution: Box<PreparedEngineExecution>,
+        /// The command the engine executes: for undo and redo, the stored
+        /// project edit they resolve to rather than the history command.
         command: EngineCommand,
+        /// The wire payload that replays this acceptance on a fresh engine:
+        /// the resolved edit for undo and redo, which a restored engine with
+        /// empty history could not resolve again.
+        replay_payload: Option<CommandPayload>,
     },
     AuthorizationDenial {
         /// False when the key already owns a durable engine receipt, which a
@@ -218,6 +225,31 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
     #[must_use]
     pub const fn idempotency_key(&self) -> &IdempotencyKey {
         &self.idempotency_key
+    }
+
+    /// Returns the command a durable journal must record so that replaying
+    /// it against a freshly restored engine reproduces this acceptance.
+    ///
+    /// This is `message` itself except for an accepted undo or redo: undo
+    /// history is session state and a restored engine starts with none, so
+    /// the journal records the exact project edit the history command
+    /// resolved to, under the same id, idempotency key, expected revision,
+    /// and deadline. Replaying it lands on the same revision, events, and
+    /// receipt; only the restored session's history differs, which starts
+    /// from the replayed edits instead of the pre-crash stack.
+    #[must_use]
+    pub fn replay_command(&self, message: &CommandMessage) -> CommandMessage {
+        match &self.kind {
+            PreparedSubmissionKind::Engine {
+                replay_payload: Some(payload),
+                ..
+            } if self.submission.is_accepted() => CommandMessage {
+                payload: payload.clone(),
+                ..message.clone()
+            },
+            PreparedSubmissionKind::Engine { .. }
+            | PreparedSubmissionKind::AuthorizationDenial { .. } => message.clone(),
+        }
     }
 
     /// Projects the post-commit engine by an exact number of deterministic ticks.
@@ -267,7 +299,9 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
         } = self;
 
         match kind {
-            PreparedSubmissionKind::Engine { execution, command } => {
+            PreparedSubmissionKind::Engine {
+                execution, command, ..
+            } => {
                 let _ = control.engine.commit_execute(*execution)?;
 
                 if submission.accepted.is_some() {
@@ -741,10 +775,23 @@ impl<A: AuthorizationHook> ControlService<A> {
             }));
         }
 
-        if let Err(denial) = self
+        // Undo and redo need EditProject and also the permission the edit
+        // they would revert or reapply needed, so history never lets a role
+        // change configuration it could not change directly.
+        let history_target = history_target(&self.engine, &message.payload);
+        let authorization = self
             .authorizer
             .authorize(principal, command_class(&message.payload))
-        {
+            .and_then(|()| {
+                history_target
+                    .as_ref()
+                    .and_then(wire_edit_payload)
+                    .map_or(Ok(()), |payload| {
+                        self.authorizer
+                            .authorize(principal, command_class(&payload))
+                    })
+            });
+        if let Err(denial) = authorization {
             // A cached denial must never shadow a durable engine receipt.
             let remember = self.engine.receipt(&idempotency_key).is_none();
             let result = CommandResult::Rejected {
@@ -772,9 +819,11 @@ impl<A: AuthorizationHook> ControlService<A> {
         }
 
         let command = engine_command(&message.payload);
+        let replay_payload = history_target.as_ref().and_then(wire_edit_payload);
+        let executed = history_target.unwrap_or_else(|| command.clone());
         match self
             .engine
-            .prepare_execute(message.domain_envelope(command.clone()), now_millis)?
+            .prepare_execute(message.domain_envelope(command), now_millis)?
         {
             EnginePrepareOutcome::Replayed(outcome) => Ok(PrepareSubmitOutcome::Replayed(
                 engine_submission(&self.identity, idempotency_key, &self.engine, &outcome),
@@ -790,7 +839,11 @@ impl<A: AuthorizationHook> ControlService<A> {
                     control: self,
                     idempotency_key,
                     submission,
-                    kind: PreparedSubmissionKind::Engine { execution, command },
+                    kind: PreparedSubmissionKind::Engine {
+                        execution,
+                        command: executed,
+                        replay_payload,
+                    },
                 }))
             }
         }
@@ -1091,17 +1144,28 @@ impl<A: AuthorizationHook> ControlService<A> {
 
 const fn runtime_domain(command: &EngineCommand) -> &'static str {
     match command {
-        EngineCommand::ReorderInputs { .. } | EngineCommand::RenameInput { .. } => "project",
+        EngineCommand::ReorderInputs { .. }
+        | EngineCommand::RenameInput { .. }
+        | EngineCommand::SetEditLock { .. } => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         _ => "switcher",
     }
 }
 
+/// Returns the target-free authorization class of one wire command.
+///
+/// Undo and redo are project edits. The edit padlock is also `EditProject`:
+/// it is an operator guard against accidental edits, not an access-control
+/// boundary, so anyone who may edit may also guard (or release) their edits.
+/// Roles remain the access-control mechanism; a Viewer or an Operator without
+/// `edit_project` can neither edit nor toggle the padlock.
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
-        CommandPayload::ReorderInputs { .. } | CommandPayload::RenameInput { .. } => {
-            CommandClass::EditProject
-        }
+        CommandPayload::ReorderInputs { .. }
+        | CommandPayload::RenameInput { .. }
+        | CommandPayload::Undo { .. }
+        | CommandPayload::Redo { .. }
+        | CommandPayload::SetEditLock { .. } => CommandClass::EditProject,
         CommandPayload::SetInputAudioStrip { .. } => CommandClass::ControlAudio,
         CommandPayload::SelectPreview { .. } => CommandClass::SelectPreview,
         CommandPayload::Cut
@@ -1223,6 +1287,159 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         CommandPayload::RecordStop { recorder } => EngineCommand::RecordStop {
             recorder: domain_recorder_slot(*recorder),
         },
+        payload @ (CommandPayload::Undo { .. }
+        | CommandPayload::Redo { .. }
+        | CommandPayload::SetEditLock { .. }) => edit_engine_command(payload),
+    }
+}
+
+fn edit_engine_command(payload: &CommandPayload) -> EngineCommand {
+    match payload {
+        CommandPayload::Undo { expected_edit } => EngineCommand::Undo {
+            expected_edit: expected_edit.map(Revision::new),
+        },
+        CommandPayload::Redo { expected_edit } => EngineCommand::Redo {
+            expected_edit: expected_edit.map(Revision::new),
+        },
+        CommandPayload::SetEditLock { scope, locked } => EngineCommand::SetEditLock {
+            scope: match scope {
+                EditLockScope::Project => EngineEditLockScope::Project,
+                EditLockScope::Input(input) => EngineEditLockScope::Input(input.to_domain()),
+            },
+            locked: *locked,
+        },
+        _ => unreachable!("only edit-history and padlock commands are delegated"),
+    }
+}
+
+/// Returns the project edit an undo or redo would execute if accepted: the
+/// top undo entry's inverse or the top redo entry's forward command.
+///
+/// `None` for every other payload and for an empty stack, which the engine
+/// rejects without executing anything.
+fn history_target(engine: &Engine, payload: &CommandPayload) -> Option<EngineCommand> {
+    match payload {
+        CommandPayload::Undo { .. } => engine
+            .undo_entries()
+            .last()
+            .map(|entry| entry.inverse().clone()),
+        CommandPayload::Redo { .. } => engine
+            .redo_entries()
+            .last()
+            .map(|entry| entry.forward().clone()),
+        _ => None,
+    }
+}
+
+/// Maps an undoable engine project edit back to its exact wire payload.
+///
+/// Returns `None` for commands that are not project edits; history entries
+/// only ever hold project edits.
+fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
+    Some(match command {
+        EngineCommand::RenameInput { input, name } => CommandPayload::RenameInput {
+            input: WireInputId::from_domain(*input),
+            name: name.clone(),
+        },
+        EngineCommand::ReorderInputs { inputs } => CommandPayload::ReorderInputs {
+            inputs: inputs
+                .iter()
+                .copied()
+                .map(WireInputId::from_domain)
+                .collect(),
+        },
+        EngineCommand::ConfigureStinger { slot, descriptor } => CommandPayload::ConfigureStinger {
+            slot: WireStingerSlotId::new(slot.number()).expect("domain Stinger slots are bounded"),
+            media_input: WireInputId::from_domain(descriptor.media_input),
+            preload: descriptor.preload,
+            cut_point_frames: descriptor.cut_point_frames,
+            audio_policy: match descriptor.audio_policy {
+                StingerAudioPolicy::Muted => ProtocolStingerAudioPolicy::Muted,
+                StingerAudioPolicy::StingerOnly => ProtocolStingerAudioPolicy::StingerOnly,
+                StingerAudioPolicy::MixWithProgram => ProtocolStingerAudioPolicy::MixWithProgram,
+            },
+            missing_media_fallback: match descriptor.missing_media_fallback {
+                MissingMediaFallback::Cut => ProtocolStingerFallback::Cut,
+                MissingMediaFallback::Fade => ProtocolStingerFallback::Fade,
+                MissingMediaFallback::KeepProgram => ProtocolStingerFallback::KeepProgram,
+            },
+        },
+        EngineCommand::RemoveStinger { slot } => CommandPayload::RemoveStinger {
+            slot: WireStingerSlotId::new(slot.number()).expect("domain Stinger slots are bounded"),
+        },
+        EngineCommand::ConfigureOverlayTransition {
+            channel,
+            transition,
+            duration_frames,
+        } => CommandPayload::ConfigureOverlayTransition {
+            channel: wire_overlay_channel(*channel),
+            transition: match transition {
+                SwitcherOverlayTransition::Cut => ProtocolOverlayTransition::Cut,
+                SwitcherOverlayTransition::Fade => ProtocolOverlayTransition::Fade,
+            },
+            duration_frames: *duration_frames,
+        },
+        EngineCommand::ConfigureOverlayAppearance {
+            channel,
+            position,
+            border,
+        } => CommandPayload::ConfigureOverlayAppearance {
+            channel: wire_overlay_channel(*channel),
+            position: protocol_overlay_position(*position),
+            border: protocol_overlay_border(*border),
+        },
+        EngineCommand::SetOverlayOutputInclusion {
+            channel,
+            output,
+            included,
+        } => CommandPayload::SetOverlayOutputInclusion {
+            channel: wire_overlay_channel(*channel),
+            output: WireOutputId::from_domain(*output),
+            included: *included,
+        },
+        _ => return None,
+    })
+}
+
+fn wire_overlay_channel(channel: OverlayChannelId) -> WireOverlayChannelId {
+    WireOverlayChannelId::new(channel.number()).expect("domain overlay channels are bounded")
+}
+
+/// Projects the engine's session undo/redo history onto the wire summary.
+fn protocol_edit_history(engine: &Engine) -> EditHistoryStatus {
+    let depth = |count: usize| {
+        u16::try_from(count)
+            .unwrap_or(u16::MAX)
+            .min(fm_protocol::MAX_EDIT_HISTORY_DEPTH)
+    };
+    let undo = engine.undo_entries();
+    let redo = engine.redo_entries();
+    EditHistoryStatus {
+        undo_depth: depth(undo.len()),
+        next_undo: undo.last().map(|entry| entry.edit().get()),
+        redo_depth: depth(redo.len()),
+        next_redo: redo.last().map(|entry| entry.edit().get()),
+    }
+}
+
+/// Projects the engaged padlocks onto the wire status, inputs ascending.
+fn protocol_edit_locks(engine: &Engine) -> EditLockStatus {
+    EditLockStatus {
+        project: engine.show().is_project_locked(),
+        inputs: engine
+            .show()
+            .locked_inputs()
+            .iter()
+            .copied()
+            .map(WireInputId::from_domain)
+            .collect(),
+    }
+}
+
+fn protocol_edit_lock_scope(scope: EngineEditLockScope) -> EditLockScope {
+    match scope {
+        EngineEditLockScope::Project => EditLockScope::Project,
+        EngineEditLockScope::Input(input) => EditLockScope::Input(WireInputId::from_domain(input)),
     }
 }
 
@@ -1415,6 +1632,7 @@ fn engine_submission(
                 revision: engine.revision().get(),
             },
             payload: accepted_event_payload(engine, outcome),
+            edit_history: protocol_edit_history(engine),
         }]
     } else {
         Vec::new()
@@ -1438,6 +1656,17 @@ fn engine_submission(
 
 #[allow(clippy::too_many_lines)]
 fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> EventPayload {
+    if let Some((scope, locked)) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::EditLockChanged { scope, locked } = &event.payload else {
+            return None;
+        };
+        Some((*scope, *locked))
+    }) {
+        return EventPayload::EditLockChanged {
+            scope: protocol_edit_lock_scope(scope),
+            locked,
+        };
+    }
     let streams_changed = outcome
         .events
         .iter()
@@ -1572,6 +1801,8 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
             .collect(),
         desired_overlays: protocol_overlays(engine.show().desired_switcher().overlays()),
         realized_overlays: protocol_overlays(engine.realized_switcher().overlays()),
+        edit_locks: protocol_edit_locks(engine),
+        edit_history: protocol_edit_history(engine),
     };
     SnapshotRecord {
         cursor: EventCursor {
@@ -1616,18 +1847,8 @@ fn protocol_overlays(overlays: &[OverlayChannelState; 8]) -> Vec<OverlayStatus> 
                 SwitcherOverlayTransition::Fade => ProtocolOverlayTransition::Fade,
             },
             duration_frames: overlay.duration_frames(),
-            position: match overlay.position() {
-                SwitcherOverlayPosition::FullFrame => ProtocolOverlayPosition::FullFrame,
-                SwitcherOverlayPosition::TopLeft => ProtocolOverlayPosition::TopLeft,
-                SwitcherOverlayPosition::TopRight => ProtocolOverlayPosition::TopRight,
-                SwitcherOverlayPosition::BottomLeft => ProtocolOverlayPosition::BottomLeft,
-                SwitcherOverlayPosition::BottomRight => ProtocolOverlayPosition::BottomRight,
-            },
-            border: match overlay.border() {
-                SwitcherOverlayBorder::None => ProtocolOverlayBorder::None,
-                SwitcherOverlayBorder::ThinWhite => ProtocolOverlayBorder::ThinWhite,
-                SwitcherOverlayBorder::ThickWhite => ProtocolOverlayBorder::ThickWhite,
-            },
+            position: protocol_overlay_position(overlay.position()),
+            border: protocol_overlay_border(overlay.border()),
             queued_sources: overlay
                 .queued_sources()
                 .iter()
@@ -1642,6 +1863,24 @@ fn protocol_overlays(overlays: &[OverlayChannelState; 8]) -> Vec<OverlayStatus> 
                 .collect(),
         })
         .collect()
+}
+
+const fn protocol_overlay_position(position: SwitcherOverlayPosition) -> ProtocolOverlayPosition {
+    match position {
+        SwitcherOverlayPosition::FullFrame => ProtocolOverlayPosition::FullFrame,
+        SwitcherOverlayPosition::TopLeft => ProtocolOverlayPosition::TopLeft,
+        SwitcherOverlayPosition::TopRight => ProtocolOverlayPosition::TopRight,
+        SwitcherOverlayPosition::BottomLeft => ProtocolOverlayPosition::BottomLeft,
+        SwitcherOverlayPosition::BottomRight => ProtocolOverlayPosition::BottomRight,
+    }
+}
+
+const fn protocol_overlay_border(border: SwitcherOverlayBorder) -> ProtocolOverlayBorder {
+    match border {
+        SwitcherOverlayBorder::None => ProtocolOverlayBorder::None,
+        SwitcherOverlayBorder::ThinWhite => ProtocolOverlayBorder::ThinWhite,
+        SwitcherOverlayBorder::ThickWhite => ProtocolOverlayBorder::ThickWhite,
+    }
 }
 
 fn protocol_stingers(engine: &Engine) -> Vec<StingerStatus> {

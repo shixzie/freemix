@@ -117,6 +117,8 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
             },
             runtime_generation: Some(4),
         },
+        edit_locks: EditLocks::default(),
+        edit_history: EditHistoryStatus::EMPTY,
     }
 }
 
@@ -133,6 +135,7 @@ fn event(
             revision: Revision::new(revision),
         },
         change,
+        edit_history: EditHistoryStatus::EMPTY,
     }
 }
 
@@ -993,5 +996,110 @@ fn recording_changed_events_update_only_the_addressed_slot() {
     assert!(
         model.state().unwrap().recording_desired(recorder_slot(2)),
         "stopping slot one must leave slot two running"
+    );
+}
+
+#[test]
+fn edit_locks_and_history_reduce_from_snapshots_and_events() {
+    let project = project(1);
+    let mut model = ClientModel::new(project);
+    let mut base = snapshot(project, 4);
+    base.edit_locks = EditLocks {
+        project: false,
+        inputs: vec![input(3)],
+    };
+    base.edit_history = EditHistoryStatus {
+        undo_depth: 2,
+        next_undo: Some(4),
+        redo_depth: 0,
+        next_redo: None,
+    };
+    model.install_snapshot(base.clone()).unwrap();
+    let view = model.view().unwrap();
+    assert!(view.edit_locks.is_input_locked(input(3)));
+    assert!(view.edit_locks.blocks_input_edit(input(3)));
+    assert!(!view.edit_locks.blocks_input_edit(input(1)));
+    assert_eq!(view.edit_history.next_undo, Some(4));
+
+    let engine = base.cursor.engine.clone();
+    let mut locked = event(
+        project,
+        engine.clone(),
+        5,
+        DurableChange::EditLockChanged {
+            target: EditLockTarget::Input(input(1)),
+            locked: true,
+        },
+    );
+    locked.edit_history = base.edit_history;
+    model.apply_event(locked).unwrap();
+    let mut project_lock = event(
+        project,
+        engine.clone(),
+        6,
+        DurableChange::EditLockChanged {
+            target: EditLockTarget::Project,
+            locked: true,
+        },
+    );
+    project_lock.edit_history = base.edit_history;
+    model.apply_event(project_lock).unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.edit_locks().inputs, [input(1), input(3)]);
+    assert!(state.edit_locks().project);
+    assert!(state.edit_locks().blocks_input_edit(input(2)));
+
+    // Any event replaces the history summary with the post-revision one.
+    let mut undone = event(
+        project,
+        engine.clone(),
+        7,
+        DurableChange::InputRenamed {
+            input: input(2),
+            name: "Slides 2".into(),
+        },
+    );
+    undone.edit_history = EditHistoryStatus {
+        undo_depth: 1,
+        next_undo: Some(2),
+        redo_depth: 1,
+        next_redo: Some(4),
+    };
+    model.apply_event(undone).unwrap();
+    let mut unlocked = event(
+        project,
+        engine.clone(),
+        8,
+        DurableChange::EditLockChanged {
+            target: EditLockTarget::Input(input(3)),
+            locked: false,
+        },
+    );
+    unlocked.edit_history = model.state().unwrap().edit_history();
+    model.apply_event(unlocked).unwrap();
+    let view = model.view().unwrap();
+    assert_eq!(view.edit_locks.inputs, [input(1)]);
+    assert_eq!(view.edit_history.next_redo, Some(4));
+    assert!(view.edit_history.can_undo() && view.edit_history.can_redo());
+
+    // Unknown inputs are refused for snapshots and events alike.
+    let unknown = event(
+        project,
+        engine,
+        9,
+        DurableChange::EditLockChanged {
+            target: EditLockTarget::Input(input(9)),
+            locked: true,
+        },
+    );
+    assert_eq!(
+        model.apply_event(unknown),
+        Err(ModelError::UnknownInput(input(9)))
+    );
+    let mut invalid = snapshot(project, 20);
+    invalid.edit_locks.inputs = vec![input(2), input(1)];
+    assert_eq!(
+        ClientModel::new(project).install_snapshot(invalid),
+        Err(ModelError::InvalidEditLocks)
     );
 }

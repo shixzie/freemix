@@ -651,6 +651,20 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    RemoteUndo {
+        address: SocketAddr,
+        redo: bool,
+        expected_edit: Option<u64>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteLock {
+        address: SocketAddr,
+        locked: bool,
+        input: Option<u128>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     RemoteFade {
         address: SocketAddr,
         frames: u32,
@@ -1094,6 +1108,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-input-reorder" => parse_reorder(arguments, true),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
+        "remote-undo" => parse_remote_history(false, arguments),
+        "remote-redo" => parse_remote_history(true, arguments),
+        "remote-lock" => parse_remote_lock(arguments),
         "remote-fade" | "remote-alpha-fade" | "remote-slide" | "remote-zoom" | "remote-wipe" => {
             parse_remote_timed_transition(&command, arguments)
         }
@@ -2864,6 +2881,72 @@ fn parse_remote_cut(mut arguments: impl Iterator<Item = String>) -> Result<Comma
     })
 }
 
+/// Parses `remote-undo|remote-redo <address> [--edit <revision>] [--key <key>]
+/// [--expect <revision>]`. `--edit` names the edit the operator expects to
+/// revert so a concurrent editor's newer edit is refused, not reverted.
+fn parse_remote_history(
+    redo: bool,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let (expected_edit, rest) = take_numeric_option(arguments, "--edit", "expected edit")?;
+    if expected_edit == Some(0) {
+        return Err(ArgsError::InvalidNumber {
+            field: "expected edit",
+            value: "0".to_owned(),
+        });
+    }
+    let (key, expected_revision) = command_options(rest.into_iter())?;
+    Ok(Command::RemoteUndo {
+        address,
+        redo,
+        expected_edit,
+        key,
+        expected_revision,
+    })
+}
+
+/// Parses `remote-lock <address> on|off [--input <id>] [--key <key>]
+/// [--expect <revision>]`.
+fn parse_remote_lock(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let locked = boolean_choice(&required(&mut arguments, "lock state")?, "lock state")?;
+    let (input, rest) = take_numeric_option(arguments, "--input", "input")?;
+    let (key, expected_revision) = command_options(rest.into_iter())?;
+    Ok(Command::RemoteLock {
+        address,
+        locked,
+        input,
+        key,
+        expected_revision,
+    })
+}
+
+/// Removes one optional `<flag> <number>` pair from the remaining options,
+/// returning the value and the untouched arguments.
+fn take_numeric_option<T: core::str::FromStr>(
+    mut arguments: impl Iterator<Item = String>,
+    flag: &str,
+    field: &'static str,
+) -> Result<(Option<T>, Vec<String>), ArgsError> {
+    let mut value = None;
+    let mut rest = Vec::new();
+    while let Some(argument) = arguments.next() {
+        if argument == flag {
+            if value.is_some() {
+                return Err(ArgsError::UnexpectedArgument(argument));
+            }
+            value = Some(number(&required(&mut arguments, field)?, field)?);
+        } else {
+            rest.push(argument);
+            if let Some(next) = arguments.next() {
+                rest.push(next);
+            }
+        }
+    }
+    Ok((value, rest))
+}
+
 fn parse_remote_timed_transition(
     command: &str,
     mut arguments: impl Iterator<Item = String>,
@@ -3975,5 +4058,79 @@ mod tests {
                 expected_revision: Some(7),
             })
         );
+    }
+
+    #[test]
+    fn parses_remote_history_and_padlock_commands() {
+        let address: SocketAddr = "127.0.0.1:9123".parse().unwrap();
+        assert_eq!(
+            parse(strings(&["remote-undo", "127.0.0.1:9123"])),
+            Ok(Command::RemoteUndo {
+                address,
+                redo: false,
+                expected_edit: None,
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-redo",
+                "127.0.0.1:9123",
+                "--key",
+                "redo-1",
+                "--edit",
+                "12",
+                "--expect",
+                "14",
+            ])),
+            Ok(Command::RemoteUndo {
+                address,
+                redo: true,
+                expected_edit: Some(12),
+                key: Some("redo-1".into()),
+                expected_revision: Some(14),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["remote-lock", "127.0.0.1:9123", "on"])),
+            Ok(Command::RemoteLock {
+                address,
+                locked: true,
+                input: None,
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-lock",
+                "127.0.0.1:9123",
+                "off",
+                "--input",
+                "3"
+            ])),
+            Ok(Command::RemoteLock {
+                address,
+                locked: false,
+                input: Some(3),
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert!(parse(strings(&["remote-undo", "127.0.0.1:9123", "--edit", "0"])).is_err());
+        assert!(
+            parse(strings(&[
+                "remote-undo",
+                "127.0.0.1:9123",
+                "--edit",
+                "1",
+                "--edit",
+                "2"
+            ]))
+            .is_err()
+        );
+        assert!(parse(strings(&["remote-lock", "127.0.0.1:9123", "maybe"])).is_err());
+        assert!(parse(strings(&["remote-lock", "127.0.0.1:9123"])).is_err());
     }
 }

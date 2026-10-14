@@ -3,14 +3,14 @@ use std::collections::BTreeSet;
 use crate::{
     AudioMeterChannel, AudioMetersMessage, CapabilityReportMessage, CapabilityReportSummary,
     CommandMessage, CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse,
-    DurableEventBatch, DurableGap, EngineIdentity, ErrorMessage, EventCursor, EventMessage,
-    EventPayload, FadeToBlackState, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
-    HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioStripStatus,
-    MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage,
-    OverlayStatus, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
-    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
-    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
-    StructuredError, WireMessage,
+    DurableEventBatch, DurableGap, EditHistoryStatus, EditLockScope, EditLockStatus,
+    EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload, FadeToBlackState,
+    HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
+    HeartbeatMessage, InputAudioStripStatus, MAX_AUDIO_METER_CHANNELS, ManualTransitionKind,
+    ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, ResumeCursor, RuntimeEventMessage,
+    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
+    StingerStatus, StreamStatusMessage, StructuredError, WireMessage,
 };
 
 use super::value::{
@@ -20,8 +20,8 @@ use super::value::{
 };
 use super::{
     CodecError, MAX_FIELD_VALUE_BYTES, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_STREAM_LOCAL_SEGMENTS,
-    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_overlay_duration,
-    validate_request_id,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_edit_history,
+    validate_locked_inputs, validate_overlay_duration, validate_request_id,
 };
 
 /// Encodes one message as a single newline-terminated record.
@@ -237,6 +237,19 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("active", u8::from(*active))?;
             record.field("duration_frames", duration_frames)?;
         }
+        payload @ (CommandPayload::StartManualTransition { .. }
+        | CommandPayload::SetManualTransitionPosition { .. }
+        | CommandPayload::CommitManualTransition
+        | CommandPayload::CancelManualTransition) => encode_manual_command(record, payload)?,
+        payload @ (CommandPayload::Undo { .. }
+        | CommandPayload::Redo { .. }
+        | CommandPayload::SetEditLock { .. }) => encode_edit_command(record, payload)?,
+    }
+    Ok(())
+}
+
+fn encode_manual_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
+    match payload {
         CommandPayload::StartManualTransition { kind } => {
             record.field("payload", "manual_start")?;
             record.field(
@@ -255,8 +268,78 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         }
         CommandPayload::CommitManualTransition => record.field("payload", "manual_commit")?,
         CommandPayload::CancelManualTransition => record.field("payload", "manual_cancel")?,
+        _ => unreachable!("only manual transition commands are delegated"),
     }
     Ok(())
+}
+
+fn encode_edit_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
+    match payload {
+        CommandPayload::Undo { expected_edit } | CommandPayload::Redo { expected_edit } => {
+            record.field(
+                "payload",
+                if matches!(payload, CommandPayload::Undo { .. }) {
+                    "undo"
+                } else {
+                    "redo"
+                },
+            )?;
+            if *expected_edit == Some(0) {
+                return Err(CodecError::InvalidField {
+                    field: "expected_edit",
+                    value: "0".to_owned(),
+                });
+            }
+            record.optional("expected_edit", *expected_edit)
+        }
+        CommandPayload::SetEditLock { scope, locked } => {
+            record.field("payload", "edit_lock")?;
+            encode_edit_lock_scope(record, *scope)?;
+            record.field("locked", u8::from(*locked))
+        }
+        _ => unreachable!("only edit-history and padlock commands are delegated"),
+    }
+}
+
+fn encode_edit_lock_scope(record: &mut Record, scope: EditLockScope) -> Result<(), CodecError> {
+    match scope {
+        EditLockScope::Project => record.field("scope", "project"),
+        EditLockScope::Input(input) => {
+            record.field("scope", "input")?;
+            record.field("input", input)
+        }
+    }
+}
+
+fn encode_edit_history(
+    record: &mut Record,
+    history: &EditHistoryStatus,
+    revision: u64,
+) -> Result<(), CodecError> {
+    validate_edit_history(history, revision)?;
+    record.field("undo_depth", history.undo_depth)?;
+    record.optional("undo_edit", history.next_undo)?;
+    record.field("redo_depth", history.redo_depth)?;
+    record.optional("redo_edit", history.next_redo)
+}
+
+fn encode_edit_locks(
+    record: &mut Record,
+    locks: &EditLockStatus,
+    inputs: &[crate::InputStatus],
+) -> Result<(), CodecError> {
+    let inputs = inputs.iter().map(|status| status.input).collect::<Vec<_>>();
+    validate_locked_inputs(&locks.inputs, &inputs)?;
+    record.field("project_locked", u8::from(locks.project))?;
+    record.field_string(
+        "locked_inputs",
+        locks
+            .inputs
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+    )
 }
 
 fn encode_input_audio_strip_command(
@@ -485,7 +568,9 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     record.field_string("streams", stream_statuses(&message.streams)?)?;
     record.field_string("recordings", recording_statuses(&message.recordings)?)?;
     encode_overlays(record, "desired_overlays", &message.desired_overlays)?;
-    encode_overlays(record, "realized_overlays", &message.realized_overlays)
+    encode_overlays(record, "realized_overlays", &message.realized_overlays)?;
+    encode_edit_locks(record, &message.edit_locks, &message.inputs)?;
+    encode_edit_history(record, &message.edit_history, message.revision)
 }
 
 fn encode_overlays(
@@ -742,8 +827,13 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("recorder", recorder.get())?;
             record.field("active", u8::from(*active))?;
         }
+        EventPayload::EditLockChanged { scope, locked } => {
+            record.field("event", "edit_lock_changed")?;
+            encode_edit_lock_scope(record, *scope)?;
+            record.field("locked", u8::from(*locked))?;
+        }
     }
-    Ok(())
+    encode_edit_history(record, &message.edit_history, message.cursor.revision)
 }
 
 fn encode_server_identity(

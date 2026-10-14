@@ -157,11 +157,14 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         recordings: recording_roster([false, false]),
         desired_overlays: OverlayStatus::empty_channels(),
         realized_overlays: OverlayStatus::empty_channels(),
+        edit_locks: fm_protocol::EditLockStatus::default(),
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
     }
 }
 
 fn event(revision: u64) -> EventMessage {
     EventMessage {
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         cursor: EventCursor {
             engine: engine(),
             revision,

@@ -5,21 +5,22 @@ use fm_protocol::{
     AudioMeterChannel, AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CapabilityReportMessage,
     CapabilityReportSummary, CodecError, CommandMessage, CommandPayload, CommandResult,
     DiagnosticsRequest, DiagnosticsResponse, DurableEvent, DurableEventBatch, DurableGap,
-    EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload, FadeToBlackPosition,
-    FadeToBlackState, FieldIssue, HandshakeOutcome, HeartbeatAcknowledgementMessage,
-    HeartbeatMessage, InputAudioMeters, InputAudioStripStatus, InputStatus, LineDecoder,
-    MAX_FIELD_VALUE_BYTES, MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS,
-    MAX_MESSAGES_PER_PUSH, MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES,
-    MAX_MONITOR_FRAME_PARTS, MAX_MONITOR_FRAME_WIDTH, ManualTransitionKind,
-    ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus, MonitorFrameAssembler,
-    MonitorFrameMessage, MonitorFrameOrigin, MonitorTap, OutputStatus, OverlayStatus,
-    OverlayTransitionKind, ProtocolVersion, RecordingStatus, ResumeCursor, RuntimeDomainBoundary,
-    RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
-    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
-    StingerReadiness, StingerStatus, StreamRealizedState, StreamStatus, StructuredError,
-    WireInputId, WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot,
-    WireStingerSlotId, WireStreamTargetId, choose_handshake_outcome, decode_line, decode_qoi_rgb,
-    encode_line, encode_qoi_rgb, monitor_frame_parts,
+    EditHistoryStatus, EditLockScope, EditLockStatus, EngineIdentity, ErrorMessage, EventCursor,
+    EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, FieldIssue,
+    HandshakeOutcome, HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioMeters,
+    InputAudioStripStatus, InputStatus, LineDecoder, MAX_EDIT_HISTORY_DEPTH, MAX_FIELD_VALUE_BYTES,
+    MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH,
+    MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS,
+    MAX_MONITOR_FRAME_WIDTH, ManualTransitionKind, ManualTransitionPosition, ManualTransitionState,
+    ManualTransitionStatus, MonitorFrameAssembler, MonitorFrameMessage, MonitorFrameOrigin,
+    MonitorTap, OutputStatus, OverlayStatus, OverlayTransitionKind, ProtocolVersion,
+    RecordingStatus, ResumeCursor, RuntimeDomainBoundary, RuntimeEventMessage,
+    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
+    StingerStatus, StreamRealizedState, StreamStatus, StructuredError, WireInputId, WireMessage,
+    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    choose_handshake_outcome, decode_line, decode_qoi_rgb, encode_line, encode_qoi_rgb,
+    monitor_frame_parts,
 };
 
 fn input(value: u128) -> WireInputId {
@@ -173,6 +174,8 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
         ],
         desired_overlays: OverlayStatus::empty_channels(),
         realized_overlays: OverlayStatus::empty_channels(),
+        edit_locks: EditLockStatus::default(),
+        edit_history: EditHistoryStatus::EMPTY,
     })
 }
 
@@ -415,6 +418,7 @@ fn every_message_variant_round_trips() {
         }),
         snapshot(input_statuses(&[(1, "Camera, A"), (2, "Slides ~ Main")])),
         WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: cursor(),
             payload: EventPayload::DesiredSwitcher {
                 program: input(2),
@@ -429,6 +433,7 @@ fn every_message_variant_round_trips() {
             },
         }),
         WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: cursor(),
             payload: EventPayload::InputOrderChanged {
                 inputs: vec![input(2), input(1)],
@@ -609,6 +614,7 @@ fn overlay_included_outputs_reject_duplicates() {
 fn input_audio_strip_status_rejects_duplicates_and_out_of_range_controls() {
     let strip_event = |input_audio_strips| {
         WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: cursor(),
             payload: EventPayload::DesiredSwitcher {
                 program: input(1),
@@ -710,6 +716,7 @@ fn stinger_slot_mutations_round_trip_exact_configuration() {
     }
 
     let event = WireMessage::Event(EventMessage {
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         cursor: cursor(),
         payload: EventPayload::StingerSlotsChanged {
             program: input(1),
@@ -749,6 +756,7 @@ fn stinger_encoder_rejects_too_many_or_duplicate_slots() {
     };
     let event = |stingers| {
         WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: cursor(),
             payload: EventPayload::StingerSlotsChanged {
                 program: input(1),
@@ -984,6 +992,7 @@ fn snapshot_stream_text_bounds_are_enforced_in_both_directions() {
 fn streams_changed_event_round_trips_every_realized_state() {
     let event = |streams| {
         WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: cursor(),
             payload: EventPayload::StreamsChanged { streams },
         })
@@ -1231,6 +1240,7 @@ fn snapshot_recordings_roster_round_trips_and_rejects_missing_duplicate_out_of_r
 fn recording_changed_event_round_trips_both_slots_and_states() {
     for (recorder, active) in [(1, true), (1, false), (2, true), (2, false)] {
         let message = WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             cursor: cursor(),
             payload: EventPayload::RecordingChanged {
                 recorder: recorder_slot(recorder),
@@ -1245,6 +1255,7 @@ fn recording_changed_event_round_trips_both_slots_and_states() {
     }
 
     let populated = encode_line(&WireMessage::Event(EventMessage {
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         cursor: cursor(),
         payload: EventPayload::RecordingChanged {
             recorder: recorder_slot(2),
@@ -1320,6 +1331,7 @@ fn manual_slide_codec_preserves_exact_current_kind_and_interval() {
         position: ManualTransitionPosition::new(2_500).unwrap(),
     });
     let event = WireMessage::Event(EventMessage {
+        edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         cursor: cursor(),
         payload: EventPayload::DesiredSwitcher {
             program: input(1),
@@ -2052,7 +2064,7 @@ fn monitor_frame(data: Vec<u8>) -> MonitorFrameMessage {
 
 #[test]
 fn protocol_2_21_monitor_frame_codec_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 21));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 22));
     let qoi = encode_qoi_rgb(2, 1, &[0, 0, 0, 255, 0, 0], 6, 3).unwrap();
     let message = WireMessage::MonitorFrame(monitor_frame(qoi.clone()));
     let encoded = encode_line(&message).unwrap();
@@ -2389,4 +2401,384 @@ fn handshake_permissions_reject_empty_entries_in_both_directions() {
             })
         ));
     }
+}
+
+fn edit_command(payload: CommandPayload) -> CommandMessage {
+    CommandMessage {
+        expected_revision: None,
+        deadline_ms: None,
+        payload,
+        ..command()
+    }
+}
+
+fn history(undo: (u16, Option<u64>), redo: (u16, Option<u64>)) -> EditHistoryStatus {
+    EditHistoryStatus {
+        undo_depth: undo.0,
+        next_undo: undo.1,
+        redo_depth: redo.0,
+        next_redo: redo.1,
+    }
+}
+
+fn edit_lock_event(scope: EditLockScope, edit_history: EditHistoryStatus) -> WireMessage {
+    WireMessage::Event(EventMessage {
+        cursor: cursor(),
+        payload: EventPayload::EditLockChanged {
+            scope,
+            locked: true,
+        },
+        edit_history,
+    })
+}
+
+fn locked_snapshot(edit_locks: EditLockStatus, edit_history: EditHistoryStatus) -> WireMessage {
+    let WireMessage::Snapshot(mut snapshot) =
+        snapshot(input_statuses(&[(1, "Cam 1"), (2, "Cam 2")]))
+    else {
+        unreachable!("the fixture is a snapshot")
+    };
+    snapshot.edit_locks = edit_locks;
+    snapshot.edit_history = edit_history;
+    WireMessage::Snapshot(snapshot)
+}
+
+#[test]
+fn protocol_2_22_edit_history_and_padlock_commands_are_exact() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 22));
+    let cases = [
+        (
+            CommandPayload::Undo {
+                expected_edit: None,
+            },
+            "\tpayload=undo\n",
+        ),
+        (
+            CommandPayload::Undo {
+                expected_edit: Some(1_840),
+            },
+            "\tpayload=undo\texpected_edit=1840\n",
+        ),
+        (
+            CommandPayload::Redo {
+                expected_edit: Some(7),
+            },
+            "\tpayload=redo\texpected_edit=7\n",
+        ),
+        (
+            CommandPayload::Redo {
+                expected_edit: None,
+            },
+            "\tpayload=redo\n",
+        ),
+        (
+            CommandPayload::SetEditLock {
+                scope: EditLockScope::Project,
+                locked: true,
+            },
+            "\tpayload=edit_lock\tscope=project\tlocked=1\n",
+        ),
+        (
+            CommandPayload::SetEditLock {
+                scope: EditLockScope::Input(input(42)),
+                locked: false,
+            },
+            "\tpayload=edit_lock\tscope=input\tinput=42\tlocked=0\n",
+        ),
+    ];
+    for (payload, tail) in cases {
+        let message = WireMessage::Command(edit_command(payload));
+        let encoded = encode_line(&message).unwrap();
+        assert_eq!(
+            encoded,
+            format!(
+                "command\tprotocol=2.22\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+            )
+        );
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+    }
+}
+
+#[test]
+fn edit_commands_reject_out_of_contract_records() {
+    let prefix = "command\tprotocol=2.22\tid=a\tidempotency_key=k";
+    for (tail, expected) in [
+        (
+            "\tpayload=undo\texpected_edit=0",
+            CodecError::InvalidField {
+                field: "expected_edit",
+                value: "0".to_owned(),
+            },
+        ),
+        (
+            "\tpayload=redo\texpected_edit=%2B5",
+            CodecError::InvalidField {
+                field: "expected_edit",
+                value: "+5".to_owned(),
+            },
+        ),
+        (
+            "\tpayload=undo\texpected_edit=05",
+            CodecError::InvalidField {
+                field: "expected_edit",
+                value: "05".to_owned(),
+            },
+        ),
+        (
+            "\tpayload=undo\tscope=project",
+            CodecError::UnknownField("scope".to_owned()),
+        ),
+        (
+            "\tpayload=edit_lock\tlocked=1",
+            CodecError::MissingField("scope"),
+        ),
+        (
+            "\tpayload=edit_lock\tscope=project",
+            CodecError::MissingField("locked"),
+        ),
+        (
+            "\tpayload=edit_lock\tscope=input\tlocked=1",
+            CodecError::MissingField("input"),
+        ),
+        (
+            "\tpayload=edit_lock\tscope=project\tinput=3\tlocked=1",
+            CodecError::UnknownField("input".to_owned()),
+        ),
+        (
+            "\tpayload=edit_lock\tscope=show\tlocked=1",
+            CodecError::InvalidField {
+                field: "scope",
+                value: "show".to_owned(),
+            },
+        ),
+        (
+            "\tpayload=edit_lock\tscope=input\tinput=0\tlocked=1",
+            CodecError::InvalidField {
+                field: "input",
+                value: "0".to_owned(),
+            },
+        ),
+        (
+            "\tpayload=edit_lock\tscope=input\tinput=03\tlocked=1",
+            CodecError::InvalidField {
+                field: "input",
+                value: "03".to_owned(),
+            },
+        ),
+        (
+            "\tpayload=edit_lock\tscope=project\tlocked=2",
+            CodecError::InvalidField {
+                field: "locked",
+                value: "2".to_owned(),
+            },
+        ),
+    ] {
+        assert_eq!(
+            decode_line(&format!("{prefix}{tail}\n")),
+            Err(expected),
+            "{tail}"
+        );
+    }
+    // The encoder refuses what the decoder refuses.
+    for payload in [
+        CommandPayload::Undo {
+            expected_edit: Some(0),
+        },
+        CommandPayload::Redo {
+            expected_edit: Some(0),
+        },
+    ] {
+        assert_eq!(
+            encode_line(&WireMessage::Command(edit_command(payload))),
+            Err(CodecError::InvalidField {
+                field: "expected_edit",
+                value: "0".to_owned(),
+            })
+        );
+    }
+}
+
+#[test]
+fn edit_lock_changed_event_carries_the_post_revision_history() {
+    let message = edit_lock_event(
+        EditLockScope::Input(input(5)),
+        history((3, Some(1_840)), (1, Some(1_841))),
+    );
+    let encoded = encode_line(&message).unwrap();
+    assert_eq!(
+        encoded,
+        "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842\t\
+         event=edit_lock_changed\tscope=input\tinput=5\tlocked=1\t\
+         undo_depth=3\tundo_edit=1840\tredo_depth=1\tredo_edit=1841\n"
+    );
+    assert_eq!(decode_line(&encoded).unwrap(), message);
+
+    let project = edit_lock_event(EditLockScope::Project, EditHistoryStatus::EMPTY);
+    let encoded = encode_line(&project).unwrap();
+    assert!(encoded.ends_with(
+        "\tevent=edit_lock_changed\tscope=project\tlocked=1\tundo_depth=0\tredo_depth=0\n"
+    ));
+    assert_eq!(decode_line(&encoded).unwrap(), project);
+
+    // Every event kind carries the summary; it is never optional.
+    let without = encoded.replace("\tundo_depth=0", "");
+    assert_eq!(
+        decode_line(&without),
+        Err(CodecError::MissingField("undo_depth"))
+    );
+    let without = encoded.replace("\tredo_depth=0", "");
+    assert_eq!(
+        decode_line(&without),
+        Err(CodecError::MissingField("redo_depth"))
+    );
+}
+
+#[test]
+fn edit_history_summary_is_strict_in_both_directions() {
+    let invalid = [
+        (
+            history((MAX_EDIT_HISTORY_DEPTH + 1, Some(1)), (0, None)),
+            "undo_edit",
+        ),
+        (
+            history((0, None), (MAX_EDIT_HISTORY_DEPTH + 1, Some(1))),
+            "redo_edit",
+        ),
+        (history((1, None), (0, None)), "undo_edit"),
+        (history((0, Some(4)), (0, None)), "undo_edit"),
+        (history((0, None), (2, None)), "redo_edit"),
+        (history((1, Some(0)), (0, None)), "undo_edit"),
+        (history((1, Some(1_843)), (0, None)), "undo_edit"),
+        (history((0, None), (1, Some(1_843))), "redo_edit"),
+        (history((1, Some(9)), (1, Some(9))), "redo_edit"),
+    ];
+    for (status, field) in invalid {
+        let message = edit_lock_event(EditLockScope::Project, status);
+        assert!(
+            matches!(
+                encode_line(&message),
+                Err(CodecError::InvalidField { field: refused, .. }) if refused == field
+            ),
+            "encoder accepted {status:?}"
+        );
+    }
+    let valid = edit_lock_event(
+        EditLockScope::Project,
+        history((MAX_EDIT_HISTORY_DEPTH, Some(1_842)), (1, Some(1))),
+    );
+    let encoded = encode_line(&valid).unwrap();
+    assert_eq!(decode_line(&encoded).unwrap(), valid);
+
+    for (from, to, field) in [
+        ("undo_depth=100", "undo_depth=101", "undo_edit"),
+        ("undo_depth=100", "undo_depth=0", "undo_edit"),
+        ("undo_edit=1842", "undo_edit=1843", "undo_edit"),
+        ("redo_edit=1", "redo_edit=0", "redo_edit"),
+        ("redo_edit=1", "redo_edit=1842", "redo_edit"),
+        ("undo_depth=100", "undo_depth=0100", "undo_depth"),
+        ("undo_depth=100", "undo_depth=%2B100", "undo_depth"),
+        ("undo_depth=100", "undo_depth=65636", "undo_depth"),
+        ("redo_edit=1", "redo_edit=01", "redo_edit"),
+    ] {
+        let tampered = encoded.replace(from, to);
+        assert!(
+            matches!(
+                decode_line(&tampered),
+                Err(CodecError::InvalidField { field: refused, .. }) if refused == field
+            ),
+            "decoder accepted {to}: {:?}",
+            decode_line(&tampered)
+        );
+    }
+    let missing_edit = encoded.replace("\tredo_edit=1", "");
+    assert!(matches!(
+        decode_line(&missing_edit),
+        Err(CodecError::InvalidField {
+            field: "redo_edit",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
+    let message = locked_snapshot(
+        EditLockStatus {
+            project: true,
+            inputs: vec![input(1), input(2)],
+        },
+        history((2, Some(9)), (0, None)),
+    );
+    let encoded = encode_line(&message).unwrap();
+    assert!(encoded.ends_with(
+        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\n"
+    ));
+    assert_eq!(decode_line(&encoded).unwrap(), message);
+
+    let unlocked = locked_snapshot(EditLockStatus::default(), EditHistoryStatus::EMPTY);
+    let encoded_unlocked = encode_line(&unlocked).unwrap();
+    assert!(
+        encoded_unlocked
+            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\n")
+    );
+    assert_eq!(decode_line(&encoded_unlocked).unwrap(), unlocked);
+
+    // The encoder refuses lock lists the decoder refuses.
+    for inputs in [
+        vec![input(2), input(1)],
+        vec![input(1), input(1)],
+        vec![input(3)],
+    ] {
+        let message = locked_snapshot(
+            EditLockStatus {
+                project: false,
+                inputs,
+            },
+            EditHistoryStatus::EMPTY,
+        );
+        assert!(matches!(
+            encode_line(&message),
+            Err(CodecError::InvalidField {
+                field: "locked_inputs",
+                ..
+            })
+        ));
+    }
+    for tampered in [
+        encoded.replace("locked_inputs=1%2C2", "locked_inputs=2%2C1"),
+        encoded.replace("locked_inputs=1%2C2", "locked_inputs=1%2C1"),
+        encoded.replace("locked_inputs=1%2C2", "locked_inputs=3"),
+        encoded.replace("locked_inputs=1%2C2", "locked_inputs=01"),
+        encoded.replace("locked_inputs=1%2C2", "locked_inputs=1%2C"),
+        encoded.replace("locked_inputs=1%2C2", "locked_inputs=0"),
+    ] {
+        assert!(
+            matches!(
+                decode_line(&tampered),
+                Err(CodecError::InvalidField {
+                    field: "locked_inputs",
+                    ..
+                })
+            ),
+            "{tampered}"
+        );
+    }
+    assert_eq!(
+        decode_line(&encoded.replace("project_locked=1", "project_locked=yes")),
+        Err(CodecError::InvalidField {
+            field: "project_locked",
+            value: "yes".to_owned(),
+        })
+    );
+    assert_eq!(
+        decode_line(&encoded.replace("\tproject_locked=1", "")),
+        Err(CodecError::MissingField("project_locked"))
+    );
+    assert_eq!(
+        decode_line(&encoded.replace("\tundo_edit=9", "\tundo_edit=10")),
+        Err(CodecError::InvalidField {
+            field: "undo_edit",
+            value: "2:10".to_owned(),
+        })
+    );
 }
