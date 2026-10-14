@@ -659,10 +659,18 @@ ramps and next-sample mute/solo/follow-video/delay changes, before checkpointing
 canonical project. The local and remote CLI expose the command, exact status,
 and input labels; Studio renders persisted names with Ready- and
 permission-gated per-input controls; Web exposes the equivalent
-transport-free semantic controls. Device audio and clocks, drift correction,
-channel mapping, native EQ/gate/compressor/limiter, meters, and hardware
-acceptance remain. This is still a partial item 3 slice and does not
-complete or change the status of any `AU-*` parity row.
+transport-free semantic controls. Device audio and device clocks, device-level
+drift correction and channel-mapping realization, meter/UI delivery, and
+hardware acceptance remain. `fm-audio` separately provides the `AU-005`
+reference DSP chain: exact polarity, an RBJ high-pass plus up to four peaking EQ
+bands, a soft-knee compressor with makeup gain, an instant-attack ceiling
+limiter, a hold/attack/release downward gate, and a peak/RMS window meter,
+composed per channel by a preallocated `StripDsp` that processes planar
+`AudioBlock`s in place without steady-state allocation and rejects mismatched
+formats or non-finite samples before mutating state. No persisted strip DSP
+state, protocol command, daemon mixer realization, Studio/Web surface, or
+hardware acceptance consumes those primitives yet. This is still a partial item
+3 slice and does not complete or change the status of any `AU-*` parity row.
 
 Current implementation boundary for item 1: `fm-io-macos` is the first native
 platform leaf. An isolated Swift helper uses `AVFoundation` to enumerate camera
