@@ -497,3 +497,101 @@ fn alpha_mode_is_canonical_and_working_metadata_is_exact() {
     assert_eq!(metadata.alpha_mode(), Some(AlphaMode::Premultiplied));
     assert_eq!(metadata.validate_for(PixelFormat::Rgba16Float), Ok(()));
 }
+
+fn decode_single_yuv_frame(
+    format: PixelFormat,
+    planes: Vec<CpuVideoPlane>,
+    range: SignalRange,
+) -> Vec<LinearRgba> {
+    let dimensions = VideoDimensions::new(2, 2).unwrap();
+    let payload = CpuVideoPayload::new(format, dimensions, planes).unwrap();
+    let yuv_metadata = metadata(
+        ColorPrimaries::Bt2020,
+        TransferFunction::Linear,
+        MatrixCoefficients::Bt709,
+        range,
+    );
+    ColorPipeline::new(yuv_metadata, working_color_metadata())
+        .decode_cpu_payload(&payload)
+        .unwrap()
+        .frame
+        .pixels()
+        .to_vec()
+}
+
+fn assert_gray(pixels: &[LinearRgba], expected: f32) {
+    for pixel in pixels {
+        close(pixel.r, expected, EPSILON);
+        close(pixel.g, expected, EPSILON);
+        close(pixel.b, expected, EPSILON);
+        close(pixel.a, 1.0, EPSILON);
+    }
+}
+
+#[test]
+fn limited_range_yuv_payloads_expand_range_exactly_once() {
+    let expected = (126.0 - 16.0) / 219.0;
+    let nv12 = decode_single_yuv_frame(
+        PixelFormat::Nv12,
+        vec![
+            CpuVideoPlane::new(2, vec![126; 4]).unwrap(),
+            CpuVideoPlane::new(2, vec![128, 128]).unwrap(),
+        ],
+        SignalRange::Limited,
+    );
+    assert_gray(&nv12, expected);
+    let yuyv = decode_single_yuv_frame(
+        PixelFormat::Yuv422,
+        vec![CpuVideoPlane::new(4, vec![126, 128, 126, 128, 126, 128, 126, 128]).unwrap()],
+        SignalRange::Limited,
+    );
+    assert_gray(&yuyv, expected);
+}
+
+#[test]
+fn p010_limited_range_uses_ten_bit_code_points() {
+    let p010 = |luma: u16, chroma: u16| {
+        let luma = (luma << 6).to_le_bytes();
+        let chroma = (chroma << 6).to_le_bytes();
+        decode_single_yuv_frame(
+            PixelFormat::P010,
+            vec![
+                CpuVideoPlane::new(4, luma.repeat(4)).unwrap(),
+                CpuVideoPlane::new(4, chroma.repeat(2)).unwrap(),
+            ],
+            SignalRange::Limited,
+        )
+    };
+    assert_gray(&p010(64, 512), 0.0);
+    assert_gray(&p010(502, 512), (502.0 - 64.0) / 876.0);
+    assert_gray(&p010(940, 512), 1.0);
+}
+
+#[test]
+fn full_range_yuv_payloads_center_chroma_on_the_midpoint_code() {
+    let nv12 = decode_single_yuv_frame(
+        PixelFormat::Nv12,
+        vec![
+            CpuVideoPlane::new(2, vec![128; 4]).unwrap(),
+            CpuVideoPlane::new(2, vec![128, 128]).unwrap(),
+        ],
+        SignalRange::Full,
+    );
+    assert_gray(&nv12, 128.0 / 255.0);
+    let yuyv = decode_single_yuv_frame(
+        PixelFormat::Yuv422,
+        vec![CpuVideoPlane::new(4, vec![128; 8]).unwrap()],
+        SignalRange::Full,
+    );
+    assert_gray(&yuyv, 128.0 / 255.0);
+    let luma = (512_u16 << 6).to_le_bytes();
+    let p010 = decode_single_yuv_frame(
+        PixelFormat::P010,
+        vec![
+            CpuVideoPlane::new(4, luma.repeat(4)).unwrap(),
+            CpuVideoPlane::new(4, luma.repeat(2)).unwrap(),
+        ],
+        SignalRange::Full,
+    );
+    assert_gray(&p010, 512.0 / 1023.0);
+}

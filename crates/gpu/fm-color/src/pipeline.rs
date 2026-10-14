@@ -156,6 +156,7 @@ impl ColorPipeline<'_> {
                         f32::from(pixel.b) / 255.0,
                     ),
                     f32::from(pixel.a) / 255.0,
+                    self.source.range,
                 )?);
             }
         }
@@ -177,10 +178,16 @@ impl ColorPipeline<'_> {
     pub fn decode_cpu_payload(&self, source: &CpuVideoPayload) -> Result<DecodedFrame, ColorError> {
         let dimensions = source.dimensions();
         let mut pixels = Vec::with_capacity(pixel_count(dimensions.width(), dimensions.height())?);
+        // YUV readers expand the signal range during matrix conversion, so
+        // their RGB output is already full range.
+        let rgb_range = match source.format() {
+            PixelFormat::Rgba8 | PixelFormat::Bgra8 | PixelFormat::Rgba16Float => self.source.range,
+            PixelFormat::Nv12 | PixelFormat::P010 | PixelFormat::Yuv422 => SignalRange::Full,
+        };
         for y in 0..dimensions.height() {
             for x in 0..dimensions.width() {
                 let (rgb, alpha) = read_payload_pixel(source, x, y, self.source)?;
-                pixels.push(self.decode_rgba(rgb, alpha)?);
+                pixels.push(self.decode_rgba(rgb, alpha, rgb_range)?);
             }
         }
         Ok(DecodedFrame {
@@ -269,9 +276,14 @@ impl ColorPipeline<'_> {
         Ok(())
     }
 
-    fn decode_rgba(&self, encoded: Rgb, alpha: f32) -> Result<LinearRgba, ColorError> {
+    fn decode_rgba(
+        &self,
+        encoded: Rgb,
+        alpha: f32,
+        range: SignalRange,
+    ) -> Result<LinearRgba, ColorError> {
         let alpha = alpha.clamp(0.0, 1.0);
-        let mut encoded = decode_rgb_range(encoded, self.source.range)?;
+        let mut encoded = decode_rgb_range(encoded, range)?;
         if self.source_alpha == AlphaMode::Premultiplied {
             if alpha == 0.0 {
                 encoded = Rgb::default();
@@ -492,9 +504,9 @@ fn read_payload_pixel(
                 .ok_or(ColorError::MalformedPayload)?;
             let rgb = yuv_to_rgb(
                 crate::Yuv::new(
-                    f32::from(y_value) / 255.0,
-                    f32::from(uv[0]) / 255.0,
-                    f32::from(uv[1]) / 255.0,
+                    normalize_luma(u16::from(y_value), 8, metadata.range),
+                    normalize_chroma(u16::from(uv[0]), 8, metadata.range),
+                    normalize_chroma(u16::from(uv[1]), 8, metadata.range),
                 ),
                 metadata.matrix,
                 metadata.range,
@@ -514,13 +526,12 @@ fn read_payload_pixel(
                 .bytes()
                 .get(uv_offset..uv_offset + 4)
                 .ok_or(ColorError::MalformedPayload)?;
-            let component =
-                |low: u8, high: u8| f32::from(u16::from_le_bytes([low, high]) >> 6) / 1023.0;
+            let code = |low: u8, high: u8| u16::from_le_bytes([low, high]) >> 6;
             let rgb = yuv_to_rgb(
                 crate::Yuv::new(
-                    component(y_bytes[0], y_bytes[1]),
-                    component(uv[0], uv[1]),
-                    component(uv[2], uv[3]),
+                    normalize_luma(code(y_bytes[0], y_bytes[1]), 10, metadata.range),
+                    normalize_chroma(code(uv[0], uv[1]), 10, metadata.range),
+                    normalize_chroma(code(uv[2], uv[3]), 10, metadata.range),
                 ),
                 metadata.matrix,
                 metadata.range,
@@ -541,15 +552,37 @@ fn read_payload_pixel(
             };
             let rgb = yuv_to_rgb(
                 crate::Yuv::new(
-                    f32::from(y_value) / 255.0,
-                    f32::from(bytes[1]) / 255.0,
-                    f32::from(bytes[3]) / 255.0,
+                    normalize_luma(u16::from(y_value), 8, metadata.range),
+                    normalize_chroma(u16::from(bytes[1]), 8, metadata.range),
+                    normalize_chroma(u16::from(bytes[3]), 8, metadata.range),
                 ),
                 metadata.matrix,
                 metadata.range,
             )?;
             Ok((rgb, 1.0))
         }
+    }
+}
+
+/// Normalizes an integer luma code so that [`yuv_to_rgb`]'s 8-bit-scaled
+/// limited-range offsets (16/255 and 219/255) apply at any bit depth.
+fn normalize_luma(code: u16, bit_depth: u32, range: SignalRange) -> f32 {
+    match range {
+        SignalRange::Full => f32::from(code) / f32::from((1_u16 << bit_depth) - 1),
+        SignalRange::Limited => f32::from(code) / (255.0 * f32::from(1_u16 << (bit_depth - 8))),
+    }
+}
+
+/// Normalizes an integer chroma code so that the zero-chroma midpoint code
+/// (`2^(bit_depth - 1)`) maps exactly to `yuv_to_rgb`'s neutral value.
+fn normalize_chroma(code: u16, bit_depth: u32, range: SignalRange) -> f32 {
+    match range {
+        SignalRange::Full => {
+            (f32::from(code) - f32::from(1_u16 << (bit_depth - 1)))
+                / f32::from((1_u16 << bit_depth) - 1)
+                + 0.5
+        }
+        SignalRange::Limited => normalize_luma(code, bit_depth, range),
     }
 }
 
