@@ -59,6 +59,23 @@ fn input_audio_strips() -> Vec<InputAudioStripStatus> {
         .collect()
 }
 
+fn recorder_slot(value: u8) -> WireRecorderSlot {
+    WireRecorderSlot::new(value).unwrap()
+}
+
+fn recordings() -> Vec<RecordingStatus> {
+    vec![
+        RecordingStatus {
+            recorder: recorder_slot(1),
+            desired_active: false,
+        },
+        RecordingStatus {
+            recorder: recorder_slot(2),
+            desired_active: false,
+        },
+    ]
+}
+
 fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
     ProjectSnapshot {
         cursor: ProjectCursor {
@@ -82,7 +99,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         input_audio_strips: input_audio_strips(),
         stingers: Vec::new(),
         streams: Vec::new(),
-        record_desired_active: false,
+        recordings: recordings(),
         desired_overlays: overlays(),
         realized_overlays: overlays(),
         switcher: SwitcherState {
@@ -845,19 +862,37 @@ fn streams_changed_events_replace_the_latest_replicated_projection() {
 }
 
 #[test]
-fn snapshot_record_desired_active_projects_into_state_and_view() {
+fn snapshot_recordings_project_per_slot_into_state_and_view() {
     let project_id = project(10);
     let inactive = snapshot(project_id, 1);
-    assert!(!inactive.record_desired_active);
+    assert_eq!(inactive.recordings, recordings());
     let mut model = ClientModel::new(project_id);
     model.install_snapshot(inactive.clone()).unwrap();
-    assert!(!model.state().unwrap().record_desired_active());
-    assert!(!model.view().unwrap().record_desired_active);
+    for recorder in [recorder_slot(1), recorder_slot(2)] {
+        assert!(!model.state().unwrap().recording_desired(recorder));
+        assert!(!model.view().unwrap().recording_desired(recorder));
+    }
 
     let mut active = snapshot(project_id, 2);
-    active.record_desired_active = true;
-    model.install_snapshot(active).unwrap();
-    assert!(model.state().unwrap().record_desired_active());
+    active.recordings = vec![
+        RecordingStatus {
+            recorder: recorder_slot(1),
+            desired_active: true,
+        },
+        RecordingStatus {
+            recorder: recorder_slot(2),
+            desired_active: false,
+        },
+    ];
+    model.install_snapshot(active.clone()).unwrap();
+    assert!(model.state().unwrap().recording_desired(recorder_slot(1)));
+    assert!(!model.state().unwrap().recording_desired(recorder_slot(2)));
+    assert!(model.view().unwrap().recording_desired(recorder_slot(1)));
+    assert!(!model.view().unwrap().recording_desired(recorder_slot(2)));
+    assert_eq!(
+        model.state().unwrap().recordings(),
+        active.recordings.as_slice()
+    );
     assert_eq!(
         model.view().unwrap().streams,
         inactive.streams,
@@ -866,10 +901,46 @@ fn snapshot_record_desired_active_projects_into_state_and_view() {
 }
 
 #[test]
-fn recording_changed_events_replace_the_latest_replicated_projection() {
+fn snapshot_recording_validation_rejects_missing_duplicate_extra_and_reordered_slots() {
     let project_id = project(10);
-    let mut initial = snapshot(project_id, 4);
-    initial.record_desired_active = false;
+    let mut model = ClientModel::new(project_id);
+
+    let mut missing = snapshot(project_id, 1);
+    missing.recordings.truncate(1);
+    assert_eq!(
+        model.install_snapshot(missing),
+        Err(ModelError::InvalidRecordingCount(1))
+    );
+
+    let mut duplicate = snapshot(project_id, 1);
+    duplicate.recordings[1].recorder = recorder_slot(1);
+    assert_eq!(
+        model.install_snapshot(duplicate),
+        Err(ModelError::DuplicateRecorderSlot(1))
+    );
+
+    let mut extra = snapshot(project_id, 1);
+    extra.recordings.push(RecordingStatus {
+        recorder: recorder_slot(1),
+        desired_active: false,
+    });
+    assert_eq!(
+        model.install_snapshot(extra),
+        Err(ModelError::InvalidRecordingCount(3))
+    );
+
+    let mut reversed = snapshot(project_id, 1);
+    reversed.recordings.reverse();
+    assert_eq!(
+        model.install_snapshot(reversed),
+        Err(ModelError::InvalidRecordingOrder)
+    );
+}
+
+#[test]
+fn recording_changed_events_update_only_the_addressed_slot() {
+    let project_id = project(10);
+    let initial = snapshot(project_id, 4);
     let mut model = ClientModel::new(project_id);
     model.install_snapshot(initial).unwrap();
     let identity = model.reconnect_cursor().unwrap().engine.clone();
@@ -879,20 +950,48 @@ fn recording_changed_events_replace_the_latest_replicated_projection() {
             project_id,
             identity.clone(),
             5,
-            DurableChange::RecordingChanged { active: true },
+            DurableChange::RecordingChanged {
+                recorder: recorder_slot(1),
+                active: true,
+            },
         ))
         .unwrap();
-    assert!(model.state().unwrap().record_desired_active());
-    assert!(model.view().unwrap().record_desired_active);
+    assert!(model.state().unwrap().recording_desired(recorder_slot(1)));
+    assert!(
+        !model.state().unwrap().recording_desired(recorder_slot(2)),
+        "slot one must not change slot two"
+    );
+    assert!(model.view().unwrap().recording_desired(recorder_slot(1)));
     assert_eq!(model.sync_status(), &SyncStatus::Current);
 
     model
         .apply_event(event(
             project_id,
-            identity,
+            identity.clone(),
             6,
-            DurableChange::RecordingChanged { active: false },
+            DurableChange::RecordingChanged {
+                recorder: recorder_slot(2),
+                active: true,
+            },
         ))
         .unwrap();
-    assert!(!model.state().unwrap().record_desired_active());
+    assert!(model.state().unwrap().recording_desired(recorder_slot(1)));
+    assert!(model.state().unwrap().recording_desired(recorder_slot(2)));
+
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            7,
+            DurableChange::RecordingChanged {
+                recorder: recorder_slot(1),
+                active: false,
+            },
+        ))
+        .unwrap();
+    assert!(!model.state().unwrap().recording_desired(recorder_slot(1)));
+    assert!(
+        model.state().unwrap().recording_desired(recorder_slot(2)),
+        "stopping slot one must leave slot two running"
+    );
 }

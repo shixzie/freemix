@@ -8,14 +8,14 @@ use fm_model::{
     MAX_STREAM_LADDER_HEIGHT, MAX_STREAM_LADDER_RUNGS, MAX_STREAM_LADDER_WIDTH,
     MAX_VIDEO_BITRATE_KBPS, MIN_STREAM_LADDER_DIMENSION, MIN_STREAM_LADDER_RUNGS,
     MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project, ProjectSettings,
-    REDACTED_STREAM_KEY, RectMask, RemoveAudioBusError, RemoveInputError, RemoveOutputError,
-    RemoveSceneError, RenameSceneError, RestartPolicy, Rgba8, Rotation, Scene, SceneLayerError,
-    SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
-    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
-    StingerSlotNumber, StreamEndpoint, StreamEndpointError, StreamKey, StreamKeyError,
-    StreamLadder, StreamLadderError, StreamLadderRung, StreamProtocol, StreamTarget,
-    StreamTargetError, StreamTargetId, StreamVideoBitrateError, ValidationError,
-    ValidationErrorKind,
+    RECORDER_SLOT_COUNT, REDACTED_STREAM_KEY, RecorderSlot, RecorderSlotError, RectMask,
+    RemoveAudioBusError, RemoveInputError, RemoveOutputError, RemoveSceneError, RenameSceneError,
+    RestartPolicy, Rgba8, Rotation, Scene, SceneLayerError, SetStingerError, SimulatedAudio,
+    SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy,
+    StingerConfig, StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint,
+    StreamEndpointError, StreamKey, StreamKeyError, StreamLadder, StreamLadderError,
+    StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetError, StreamTargetId,
+    StreamVideoBitrateError, ValidationError, ValidationErrorKind,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, MAX_INPUT_NAME_BYTES,
@@ -1578,15 +1578,40 @@ fn stream_ladders_are_hls_only_and_group_under_the_top_rung() {
 }
 
 #[test]
-fn projects_author_recording_desired_active_off_by_default() {
-    let project = valid_project();
-    assert!(!project.recording_desired_active());
+fn recorder_slots_are_one_based_within_bounds_and_round_trip() {
+    assert_eq!(RECORDER_SLOT_COUNT, 2);
+    assert_eq!(RecorderSlot::ALL.map(RecorderSlot::get), [1, 2]);
+    assert_eq!(RecorderSlot::new(1).unwrap().get(), 1);
+    assert_eq!(RecorderSlot::new(2).unwrap().get(), 2);
+    assert_eq!(RecorderSlot::new(0), Err(RecorderSlotError::OutOfRange));
+    assert_eq!(RecorderSlot::new(3), Err(RecorderSlotError::OutOfRange));
+    assert_eq!(
+        RecorderSlotError::OutOfRange.to_string(),
+        "recorder slot must be between 1 and 2"
+    );
+}
 
-    let mut recording =
-        Project::new(project_id(9), "Recording", settings()).with_recording_desired_active(true);
-    assert!(recording.recording_desired_active());
-    recording.set_recording_desired_active(false);
-    assert!(!recording.recording_desired_active());
+#[test]
+fn projects_author_recording_desired_per_slot_off_by_default() {
+    let mut project = valid_project();
+    assert_eq!(project.recording_desired_slots(), [false, false]);
+    for slot in RecorderSlot::ALL {
+        assert!(!project.recording_desired(slot));
+    }
+
+    project.set_recording_desired(RecorderSlot::new(1).unwrap(), true);
+    assert!(project.recording_desired(RecorderSlot::new(1).unwrap()));
+    assert!(!project.recording_desired(RecorderSlot::new(2).unwrap()));
+    assert_eq!(project.recording_desired_slots(), [true, false]);
+
+    project.set_recording_desired(RecorderSlot::new(2).unwrap(), true);
+    assert_eq!(project.recording_desired_slots(), [true, true]);
+
+    let mut recording = Project::new(project_id(9), "Recording", settings())
+        .with_recording_desired(RecorderSlot::new(2).unwrap(), true);
+    assert_eq!(recording.recording_desired_slots(), [false, true]);
+    recording.set_recording_desired(RecorderSlot::new(2).unwrap(), false);
+    assert_eq!(recording.recording_desired_slots(), [false, false]);
 }
 
 #[test]

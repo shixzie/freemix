@@ -1996,13 +1996,37 @@ fn admin_can_stop_streams_and_snapshots_carry_the_desired_projection() {
     assert!(!control.snapshot().snapshot.streams[0].desired_running);
 }
 
+fn recorder_slot(value: u8) -> WireRecorderSlot {
+    WireRecorderSlot::new(value).unwrap()
+}
+
+fn recording_status(recorder: u8, desired_active: bool) -> RecordingStatus {
+    RecordingStatus {
+        recorder: recorder_slot(recorder),
+        desired_active,
+    }
+}
+
+fn record_command(id: &str, key: &str, recorder: u8, start: bool) -> CommandMessage {
+    let recorder = recorder_slot(recorder);
+    command(
+        id,
+        key,
+        if start {
+            CommandPayload::RecordStart { recorder }
+        } else {
+            CommandPayload::RecordStop { recorder }
+        },
+    )
+}
+
 #[test]
-fn record_commands_require_transition_permission_and_project_the_desired_flag() {
+fn record_commands_require_transition_permission_and_project_both_slots() {
     let mut control = streamed_service();
     let denied = control
         .submit(
             &principal(Role::Viewer),
-            command("denied", "denied-key", CommandPayload::RecordStart),
+            record_command("denied", "denied-key", 1, true),
             0,
         )
         .unwrap();
@@ -2011,12 +2035,15 @@ fn record_commands_require_transition_permission_and_project_the_desired_flag() 
         CommandResult::Rejected { ref code, .. } if code == "permission_denied"
     ));
     assert_eq!(control.diagnostics().current_revision, 0);
-    assert!(!control.snapshot().snapshot.record_desired_active);
+    assert_eq!(
+        control.snapshot().snapshot.recordings,
+        [recording_status(1, false), recording_status(2, false)]
+    );
 
     let accepted = control
         .submit(
             &principal(Role::Operator),
-            command("rec-on", "rec-on-key", CommandPayload::RecordStart),
+            record_command("rec-one-on", "rec-one-on-key", 1, true),
             0,
         )
         .unwrap();
@@ -2028,15 +2055,73 @@ fn record_commands_require_transition_permission_and_project_the_desired_flag() 
                 engine: control.identity().clone(),
                 revision: 1,
             },
-            payload: EventPayload::RecordingChanged { active: true },
+            payload: EventPayload::RecordingChanged {
+                recorder: recorder_slot(1),
+                active: true,
+            },
         }]
     );
-    assert!(control.snapshot().snapshot.record_desired_active);
+    assert_eq!(
+        control.snapshot().snapshot.recordings,
+        [recording_status(1, true), recording_status(2, false)]
+    );
+
+    let second = control
+        .submit(
+            &principal(Role::Operator),
+            record_command("rec-two-on", "rec-two-on-key", 2, true),
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        second.output.events[0].payload,
+        EventPayload::RecordingChanged {
+            recorder: recorder_slot(2),
+            active: true,
+        }
+    );
+    assert_eq!(
+        control.snapshot().snapshot.recordings,
+        [recording_status(1, true), recording_status(2, true)]
+    );
+
+    let viewer_denied_stop = control
+        .submit(
+            &principal(Role::Viewer),
+            record_command("viewer-off", "viewer-off-key", 2, false),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        viewer_denied_stop.output.result,
+        CommandResult::Rejected { ref code, .. } if code == "permission_denied"
+    ));
+}
+
+#[test]
+fn record_command_replays_and_stops_only_the_addressed_slot() {
+    let mut control = streamed_service();
+    let accepted = control
+        .submit(
+            &principal(Role::Operator),
+            record_command("rec-one-on", "rec-one-key", 1, true),
+            0,
+        )
+        .unwrap();
+    assert!(accepted.is_accepted());
+    let second = control
+        .submit(
+            &principal(Role::Operator),
+            record_command("rec-two-on", "rec-two-key", 2, true),
+            0,
+        )
+        .unwrap();
+    assert!(second.is_accepted());
 
     let replay = control
         .submit(
             &principal(Role::Operator),
-            command("again", "rec-on-key", CommandPayload::RecordStart),
+            record_command("again", "rec-one-key", 1, true),
             0,
         )
         .unwrap();
@@ -2046,27 +2131,21 @@ fn record_commands_require_transition_permission_and_project_the_desired_flag() 
     let stopped = control
         .submit(
             &principal(Role::Operator),
-            command("rec-off", "rec-off-key", CommandPayload::RecordStop),
+            record_command("rec-one-off", "rec-one-off-key", 1, false),
             0,
         )
         .unwrap();
     assert!(stopped.is_accepted());
     assert_eq!(
         stopped.output.events[0].payload,
-        EventPayload::RecordingChanged { active: false }
+        EventPayload::RecordingChanged {
+            recorder: recorder_slot(1),
+            active: false,
+        }
     );
     control.tick(&server_identity()).unwrap();
-    assert!(!control.snapshot().snapshot.record_desired_active);
-
-    let viewer_denied_stop = control
-        .submit(
-            &principal(Role::Viewer),
-            command("viewer-off", "viewer-off-key", CommandPayload::RecordStop),
-            0,
-        )
-        .unwrap();
-    assert!(matches!(
-        viewer_denied_stop.output.result,
-        CommandResult::Rejected { ref code, .. } if code == "permission_denied"
-    ));
+    assert_eq!(
+        control.snapshot().snapshot.recordings,
+        [recording_status(1, false), recording_status(2, true)]
+    );
 }

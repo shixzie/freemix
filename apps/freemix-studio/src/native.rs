@@ -16,7 +16,7 @@ use fm_client::{
 };
 use fm_protocol::{
     CommandPayload, CommandResult, DurableGap, OverlayBorderPreset, OverlayPositionPreset,
-    OverlayTransitionKind, WireInputId, WireMessage, WireOutputId,
+    OverlayTransitionKind, WireInputId, WireMessage, WireOutputId, WireRecorderSlot,
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
@@ -1786,8 +1786,8 @@ fn intent_payload(
             }
         }
         StudioIntent::Recording(action) => match action {
-            RecordingAction::Start => CommandPayload::RecordStart,
-            RecordingAction::Stop => CommandPayload::RecordStop,
+            RecordingAction::Start(recorder) => CommandPayload::RecordStart { recorder },
+            RecordingAction::Stop(recorder) => CommandPayload::RecordStop { recorder },
         },
         StudioIntent::StartManualTransition { kind } => {
             CommandPayload::StartManualTransition { kind }
@@ -1846,7 +1846,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
         if let Some(view) = &view {
             state.audio_meters = runtime.session().latest_audio_meters().cloned();
             state.stream_status = runtime.session().latest_stream_status().cloned();
-            state.recording_desired = view.record_desired_active;
+            state.recording_desired = recording_desired_slots(view);
         }
         state.view = view;
     }
@@ -1856,19 +1856,39 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
     state
 }
 
-/// Whether an unresolved `record_start`/`record_stop` command still owns the
-/// recording panel. The replicated model keeps an accepted command pending
-/// until its durable revision is applied and removes a rejected one at its
-/// result, so this clears exactly when the command resolves.
-fn recording_command_pending(client: &Client) -> bool {
-    client.model().pending_commands().iter().any(|pending| {
-        client.command(pending.id.as_str()).is_some_and(|record| {
-            matches!(
-                record.command.payload,
-                CommandPayload::RecordStart | CommandPayload::RecordStop
-            )
-        })
+/// Projects the replicated two-slot recording roster into the fixed per-slot
+/// desired flags the UI renders, in slot order.
+fn recording_desired_slots(view: &ClientView) -> [bool; 2] {
+    std::array::from_fn(|index| {
+        view.recording_desired(
+            WireRecorderSlot::new(u8::try_from(index + 1).expect("two recorder slots fit in u8"))
+                .expect("recorder slots are 1 or 2"),
+        )
     })
+}
+
+/// Per-slot pending flags for unresolved `record_start`/`record_stop`
+/// commands. The replicated model keeps an accepted command pending until its
+/// durable revision is applied and removes a rejected one at its result, so a
+/// slot's flag clears exactly when that slot's command resolves.
+fn recording_command_pending(client: &Client) -> [bool; 2] {
+    let mut pending = [false; 2];
+    for command in client.model().pending_commands() {
+        let Some(record) = client.command(command.id.as_str()) else {
+            continue;
+        };
+        let recorder = match &record.command.payload {
+            CommandPayload::RecordStart { recorder } | CommandPayload::RecordStop { recorder } => {
+                *recorder
+            }
+            _ => continue,
+        };
+        let slot = usize::from(recorder.get()) - 1;
+        if let Some(flag) = pending.get_mut(slot) {
+            *flag = true;
+        }
+    }
+    pending
 }
 
 fn switcher_permissions(permissions: Option<&[String]>) -> (bool, bool) {
@@ -2134,10 +2154,29 @@ mod tests {
                 realized: StreamRealizedState::Starting,
                 detail: None,
             }],
-            record_desired_active: false,
+            recordings: recording_roster([false, false]),
             desired_overlays: OverlayStatus::empty_channels(),
             realized_overlays: OverlayStatus::empty_channels(),
         }
+    }
+
+    /// The fixed two-slot recorder roster for test snapshots, in slot order.
+    fn recording_roster(desired: [bool; 2]) -> Vec<fm_protocol::RecordingStatus> {
+        desired
+            .into_iter()
+            .enumerate()
+            .map(|(index, desired_active)| fm_protocol::RecordingStatus {
+                recorder: wire_recorder(
+                    u8::try_from(index + 1).expect("two recorder slots fit in u8"),
+                ),
+                desired_active,
+            })
+            .collect()
+    }
+
+    /// The wire recorder slot for `number`, which tests only call with 1 or 2.
+    fn wire_recorder(number: u8) -> WireRecorderSlot {
+        WireRecorderSlot::new(number).expect("test recorder slots are 1 or 2")
     }
 
     fn stream_status_message(sequence: u64) -> StreamStatusMessage {
@@ -2210,7 +2249,7 @@ mod tests {
         }
     }
 
-    fn recording_event(revision: u64, active: bool) -> EventMessage {
+    fn recording_event(revision: u64, recorder: u8, active: bool) -> EventMessage {
         EventMessage {
             cursor: EventCursor {
                 engine: EngineIdentity {
@@ -2220,7 +2259,10 @@ mod tests {
                 },
                 revision,
             },
-            payload: EventPayload::RecordingChanged { active },
+            payload: EventPayload::RecordingChanged {
+                recorder: wire_recorder(recorder),
+                active,
+            },
         }
     }
 
@@ -2875,9 +2917,9 @@ mod tests {
         }
     }
 
-    /// Answers one scripted `record_start` and one `record_stop` command in
-    /// order, holding each result open until the test confirmed that the
-    /// dispatched intent was observed pending.
+    /// Answers one scripted start/stop pair per recorder slot in order,
+    /// holding each result open until the test confirmed that the dispatched
+    /// intent was observed pending for exactly the addressed slot.
     fn serve_worker_recording(
         listener: &TcpListener,
         command_seen: &SyncSender<()>,
@@ -2892,10 +2934,9 @@ mod tests {
         )));
         peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
         let mut revision = heartbeat_snapshot().revision;
-        for (sequence, expected) in [
-            (1, CommandPayload::RecordStart),
-            (2, CommandPayload::RecordStop),
-        ] {
+        for (sequence, recorder, active) in
+            [(1, 1_u8, true), (2, 1, false), (3, 2, true), (4, 2, false)]
+        {
             loop {
                 let mut line = String::new();
                 if peer.reader.read_line(&mut line).unwrap() == 0 {
@@ -2912,6 +2953,15 @@ mod tests {
                         ));
                     }
                     WireMessage::Command(command) => {
+                        let expected = if active {
+                            CommandPayload::RecordStart {
+                                recorder: wire_recorder(recorder),
+                            }
+                        } else {
+                            CommandPayload::RecordStop {
+                                recorder: wire_recorder(recorder),
+                            }
+                        };
                         assert_eq!(command.payload, expected);
                         assert_eq!(command.expected_revision, Some(revision));
                         command_seen.send(()).unwrap();
@@ -2923,8 +2973,7 @@ mod tests {
                             scheduled_frame: None,
                         }));
                         peer.send(&WireMessage::Event(recording_event(
-                            revision,
-                            expected == CommandPayload::RecordStart,
+                            revision, recorder, active,
                         )));
                         peer.send(&WireMessage::RuntimeEvent(recording_runtime_event(
                             revision, sequence,
@@ -2935,7 +2984,7 @@ mod tests {
                 }
             }
         }
-        // The test shuts the worker down as soon as both commands resolved, so
+        // The test shuts the worker down as soon as every command resolved, so
         // a closed pipe while answering the final heartbeats simply ends this
         // scripted peer instead of failing the join.
         loop {
@@ -2967,11 +3016,11 @@ mod tests {
     }
 
     #[test]
-    fn worker_recording_intents_send_payloads_and_clear_pending_at_the_durable_event() {
+    fn worker_recording_intents_send_slot_payloads_and_track_pending_per_slot() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
-        let (command_seen, command_seen_receiver) = sync_channel(2);
-        let (release, release_receiver) = sync_channel(2);
+        let (command_seen, command_seen_receiver) = sync_channel(4);
+        let (release, release_receiver) = sync_channel(4);
         let server = thread::spawn(move || {
             serve_worker_recording(&listener, &command_seen, &release_receiver);
         });
@@ -2979,19 +3028,28 @@ mod tests {
             spawn_existing_worker(address, "recording-intent-test");
 
         receive_connection_state(&updates, StudioConnectionStatus::Ready);
-        for (action, desired_after_resolution) in [
-            (RecordingAction::Start, true),
-            (RecordingAction::Stop, false),
-        ] {
+        let mut desired = [false, false];
+        for (slot, active) in [(1_u8, true), (1, false), (2, true), (2, false)] {
+            let index = usize::from(slot) - 1;
+            let action = if active {
+                RecordingAction::Start(wire_recorder(slot))
+            } else {
+                RecordingAction::Stop(wire_recorder(slot))
+            };
             request_sender
                 .send(WorkerRequest::Intent(StudioIntent::Recording(action)))
                 .unwrap();
             command_seen_receiver
                 .recv_timeout(HEARTBEAT_TEST_TIMEOUT)
                 .unwrap();
-            let dispatched = receive_state_where(&updates, |state| state.recording_pending);
+            // Only the addressed slot reports pending while its command is
+            // unresolved; the confirmed roster is unchanged.
+            let mut expected_pending = [false, false];
+            expected_pending[index] = true;
+            let dispatched = receive_state_where(&updates, |state| state.recording_pending[index]);
             assert_eq!(dispatched.connection_status, StudioConnectionStatus::Ready);
-            assert_eq!(dispatched.recording_desired, !desired_after_resolution);
+            assert_eq!(dispatched.recording_pending, expected_pending);
+            assert_eq!(dispatched.recording_desired, desired);
             assert_eq!(dispatched.pending_commands, 1);
             assert!(
                 dispatched.error.is_none(),
@@ -2999,14 +3057,16 @@ mod tests {
                 dispatched.error
             );
             release.send(()).unwrap();
+            desired[index] = active;
             let resolved = receive_state_where(&updates, |state| {
-                !state.recording_pending
+                !state.recording_pending.iter().any(|pending| *pending)
                     && state.pending_commands == 0
                     && state
                         .view
                         .as_ref()
-                        .is_some_and(|view| view.record_desired_active == desired_after_resolution)
+                        .is_some_and(|view| view.recordings == recording_roster(desired))
             });
+            assert_eq!(resolved.recording_desired, desired);
             assert_eq!(resolved.connection_status, StudioConnectionStatus::Ready);
             assert!(
                 resolved.error.is_none(),
@@ -3131,14 +3191,24 @@ mod tests {
     }
 
     #[test]
-    fn recording_intents_map_to_field_free_record_payloads() {
+    fn recording_intents_map_to_slot_qualified_record_payloads() {
         assert_eq!(
-            intent_payload(StudioIntent::Recording(RecordingAction::Start), None),
-            Ok(CommandPayload::RecordStart)
+            intent_payload(
+                StudioIntent::Recording(RecordingAction::Start(wire_recorder(1))),
+                None
+            ),
+            Ok(CommandPayload::RecordStart {
+                recorder: wire_recorder(1)
+            })
         );
         assert_eq!(
-            intent_payload(StudioIntent::Recording(RecordingAction::Stop), None),
-            Ok(CommandPayload::RecordStop)
+            intent_payload(
+                StudioIntent::Recording(RecordingAction::Stop(wire_recorder(2))),
+                None
+            ),
+            Ok(CommandPayload::RecordStop {
+                recorder: wire_recorder(2)
+            })
         );
     }
 

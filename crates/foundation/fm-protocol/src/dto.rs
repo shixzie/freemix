@@ -297,6 +297,32 @@ impl fmt::Display for WireStingerSlotId {
     }
 }
 
+/// One independently controllable program recorder, numbered 1..=2.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct WireRecorderSlot(u8);
+
+impl WireRecorderSlot {
+    #[must_use]
+    pub const fn new(value: u8) -> Option<Self> {
+        if value >= 1 && value <= 2 {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl fmt::Display for WireRecorderSlot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManualTransitionKind {
     Fade,
@@ -491,6 +517,13 @@ pub struct StreamStatus {
     pub detail: Option<String>,
 }
 
+/// Desired recording state of one program recorder at one snapshot revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecordingStatus {
+    pub recorder: WireRecorderSlot,
+    pub desired_active: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommandPayload {
     ReorderInputs {
@@ -594,8 +627,12 @@ pub enum CommandPayload {
     StreamStop {
         target: WireStreamTargetId,
     },
-    RecordStart,
-    RecordStop,
+    RecordStart {
+        recorder: WireRecorderSlot,
+    },
+    RecordStop {
+        recorder: WireRecorderSlot,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -707,7 +744,7 @@ pub struct SnapshotMessage {
     pub realized_fade_to_black: FadeToBlackState,
     pub stingers: Vec<StingerStatus>,
     pub streams: Vec<StreamStatus>,
-    pub record_desired_active: bool,
+    pub recordings: Vec<RecordingStatus>,
     pub desired_overlays: Vec<OverlayStatus>,
     pub realized_overlays: Vec<OverlayStatus>,
 }
@@ -743,6 +780,7 @@ pub enum EventPayload {
         streams: Vec<StreamStatus>,
     },
     RecordingChanged {
+        recorder: WireRecorderSlot,
         active: bool,
     },
 }

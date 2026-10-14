@@ -4,10 +4,10 @@ use fm_switcher::{
     FADE_TO_BLACK_POSITION_DENOMINATOR, FadeToBlackError, FadeToBlackPosition, FadeToBlackTarget,
     MAX_FADE_TO_BLACK_DURATION_FRAMES, MAX_STREAM_COUNT, MAX_STREAM_NAME_BYTES,
     MissingMediaFallback, OVERLAY_CHANNEL_COUNT, OverlayBorderPreset, OverlayChannelId,
-    OverlayPositionPreset, OverlayTransitionKind, STINGER_SLOT_COUNT, StingerAudioPolicy,
-    StingerDescriptor, StingerPlaybackDecision, StingerPreloadState, StingerSlotId, StreamTargetId,
-    SwitcherCommand, SwitcherError, SwitcherEvent, SwitcherState, TBarPosition, TBarState,
-    TransitionKind,
+    OverlayPositionPreset, OverlayTransitionKind, RECORDER_SLOT_COUNT, RecorderSlot,
+    STINGER_SLOT_COUNT, StingerAudioPolicy, StingerDescriptor, StingerPlaybackDecision,
+    StingerPreloadState, StingerSlotId, StreamTargetId, SwitcherCommand, SwitcherError,
+    SwitcherEvent, SwitcherState, TBarPosition, TBarState, TransitionKind,
 };
 use fm_types::{InputId, OutputId};
 
@@ -1016,30 +1016,64 @@ fn stream_running_flags_validate_targets_and_preserve_insertion_order() {
 }
 
 #[test]
-fn recording_desired_flags_emit_only_on_transition_and_apply_through_commands() {
+fn recording_desired_flags_are_per_slot_isolated_and_emit_only_on_change() {
+    let slot_one = RecorderSlot::new(1).unwrap();
+    let slot_two = RecorderSlot::new(2).unwrap();
+    assert_eq!(RECORDER_SLOT_COUNT, 2);
+    assert_eq!(RecorderSlot::ALL.map(RecorderSlot::get), [1, 2]);
+    assert_eq!(RecorderSlot::new(0), None);
+    assert_eq!(RecorderSlot::new(3), None);
+
     let mut switcher = state();
-    assert!(!switcher.recording_desired());
+    assert!(!switcher.recording_desired(slot_one));
+    assert!(!switcher.recording_desired(slot_two));
     assert_eq!(
-        switcher.set_recording_desired(true),
+        switcher.set_recording_desired(slot_one, true),
         Ok(vec![SwitcherEvent::RecordingDesiredChanged {
+            slot: slot_one,
             active: true
         }])
     );
-    assert!(switcher.recording_desired());
+    assert!(switcher.recording_desired(slot_one));
+    assert!(
+        !switcher.recording_desired(slot_two),
+        "slot one must not affect slot two"
+    );
 
     assert_eq!(
-        switcher.set_recording_desired(true),
+        switcher.set_recording_desired(slot_one, true),
         Ok(Vec::<SwitcherEvent>::new())
     );
     assert_eq!(
-        switcher.apply(SwitcherCommand::SetRecordingDesired(false)),
+        switcher.set_recording_desired(slot_two, true),
         Ok(vec![SwitcherEvent::RecordingDesiredChanged {
+            slot: slot_two,
+            active: true
+        }])
+    );
+    assert!(switcher.recording_desired(slot_one));
+    assert!(switcher.recording_desired(slot_two));
+
+    assert_eq!(
+        switcher.apply(SwitcherCommand::SetRecordingDesired {
+            slot: slot_one,
+            active: false,
+        }),
+        Ok(vec![SwitcherEvent::RecordingDesiredChanged {
+            slot: slot_one,
             active: false
         }])
     );
-    assert!(!switcher.recording_desired());
+    assert!(!switcher.recording_desired(slot_one));
+    assert!(
+        switcher.recording_desired(slot_two),
+        "stopping slot one must leave slot two running"
+    );
     assert_eq!(
-        switcher.apply(SwitcherCommand::SetRecordingDesired(false)),
+        switcher.apply(SwitcherCommand::SetRecordingDesired {
+            slot: slot_one,
+            active: false,
+        }),
         Ok(Vec::<SwitcherEvent>::new())
     );
 
@@ -1051,10 +1085,15 @@ fn recording_desired_flags_emit_only_on_transition_and_apply_through_commands() 
         })
         .unwrap();
     assert_eq!(
-        mid_transition.apply(SwitcherCommand::SetRecordingDesired(true)),
+        mid_transition.apply(SwitcherCommand::SetRecordingDesired {
+            slot: slot_two,
+            active: true,
+        }),
         Ok(vec![SwitcherEvent::RecordingDesiredChanged {
+            slot: slot_two,
             active: true
         }])
     );
-    assert!(mid_transition.recording_desired());
+    assert!(mid_transition.recording_desired(slot_two));
+    assert!(!mid_transition.recording_desired(slot_one));
 }

@@ -2,8 +2,8 @@ use fm_types::{InputId, OutputId};
 
 use crate::{
     FadeToBlackPosition, FadeToBlackTarget, MissingMediaFallback, OverlayBorderPreset,
-    OverlayChannelId, OverlayPositionPreset, OverlayTransitionKind, StingerPreloadState,
-    StingerSlotId, StreamTargetId, TBarPosition, TransitionKind,
+    OverlayChannelId, OverlayPositionPreset, OverlayTransitionKind, RecorderSlot,
+    StingerPreloadState, StingerSlotId, StreamTargetId, TBarPosition, TransitionKind,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -56,7 +56,10 @@ pub enum SwitcherCommand {
         target: StreamTargetId,
         running: bool,
     },
-    SetRecordingDesired(bool),
+    SetRecordingDesired {
+        slot: RecorderSlot,
+        active: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -155,6 +158,7 @@ pub enum SwitcherEvent {
         running: bool,
     },
     RecordingDesiredChanged {
+        slot: RecorderSlot,
         active: bool,
     },
 }

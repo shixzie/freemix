@@ -13,13 +13,14 @@ use crate::{
     ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
     StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
     StreamStatusMessage, StreamStatusSample, StructuredError, WireInputId, WireMessage,
-    WireOutputId, WireOverlayChannelId, WireStingerSlotId, WireStreamTargetId,
+    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 
 use super::value::{
     parse_client_type, parse_durable_events, parse_field_issues, parse_input_ids,
-    parse_input_statuses, parse_output_statuses, parse_role, parse_runtime_domains,
-    parse_stream_realized_state, parse_stream_statuses, parse_string_list, parse_version, unescape,
+    parse_input_statuses, parse_output_statuses, parse_recording_statuses, parse_role,
+    parse_runtime_domains, parse_stream_realized_state, parse_stream_statuses, parse_string_list,
+    parse_version, unescape,
 };
 use super::{
     MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES, MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES,
@@ -316,8 +317,7 @@ fn decode_command_payload(
         | "overlay_transition" | "overlay_appearance" | "overlay_queue"
         | "overlay_next") => decode_overlay_command(fields, overlay)?,
         stream @ ("stream_start" | "stream_stop") => decode_stream_command(fields, stream)?,
-        "record_start" => CommandPayload::RecordStart,
-        "record_stop" => CommandPayload::RecordStop,
+        record @ ("record_start" | "record_stop") => decode_record_command(fields, record)?,
         "wipe" => CommandPayload::Wipe {
             duration_frames: fields.parse_required("duration_frames")?,
         },
@@ -537,6 +537,23 @@ fn decode_stream_command(fields: &mut Fields, name: &str) -> Result<CommandPaylo
     })
 }
 
+fn decode_record_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
+    let recorder = decode_recorder_slot(fields)?;
+    Ok(match name {
+        "record_start" => CommandPayload::RecordStart { recorder },
+        "record_stop" => CommandPayload::RecordStop { recorder },
+        _ => unreachable!("only record command names are delegated"),
+    })
+}
+
+fn decode_recorder_slot(fields: &mut Fields) -> Result<WireRecorderSlot, CodecError> {
+    let number: u8 = fields.parse_required("recorder")?;
+    WireRecorderSlot::new(number).ok_or(CodecError::InvalidField {
+        field: "recorder",
+        value: number.to_string(),
+    })
+}
+
 fn decode_result(fields: &mut Fields) -> Result<CommandResult, CodecError> {
     let status = fields.required("status")?;
     match status.as_str() {
@@ -582,7 +599,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         )?,
         stingers: decode_stingers(fields)?,
         streams: parse_stream_statuses(&fields.required("streams")?)?,
-        record_desired_active: fields.boolean("record_desired_active")?,
+        recordings: parse_recording_statuses(&fields.required("recordings")?)?,
         desired_overlays: decode_overlays(fields, "desired_overlays")?,
         realized_overlays: decode_overlays(fields, "realized_overlays")?,
     })
@@ -917,6 +934,7 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             streams: parse_stream_statuses(&fields.required("streams")?)?,
         },
         "recording_changed" => EventPayload::RecordingChanged {
+            recorder: decode_recorder_slot(fields)?,
             active: fields.boolean("active")?,
         },
         _ => {

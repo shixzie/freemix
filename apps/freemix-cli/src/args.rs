@@ -213,9 +213,13 @@ pub enum Command {
     },
     RecordStart {
         path: PathBuf,
+        /// One-based recorder slot, validated to `1..=2` while parsing.
+        recorder: u8,
     },
     RecordStop {
         path: PathBuf,
+        /// One-based recorder slot, validated to `1..=2` while parsing.
+        recorder: u8,
     },
     Streams {
         path: PathBuf,
@@ -759,11 +763,15 @@ pub enum Command {
     },
     RemoteRecordStart {
         address: SocketAddr,
+        /// One-based recorder slot, validated to `1..=2` while parsing.
+        recorder: u8,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
     RemoteRecordStop {
         address: SocketAddr,
+        /// One-based recorder slot, validated to `1..=2` while parsing.
+        recorder: u8,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
@@ -800,6 +808,8 @@ pub enum ArgsError {
         field: &'static str,
         value: String,
     },
+    /// The `--recorder` value is not one of the two program recorder slots.
+    InvalidRecorder(String),
     OutOfRange {
         field: &'static str,
         minimum: u16,
@@ -827,6 +837,10 @@ impl core::fmt::Display for ArgsError {
             Self::InvalidNumber { field, value } | Self::InvalidChoice { field, value } => {
                 write!(formatter, "invalid {field} value `{value}`")
             }
+            Self::InvalidRecorder(value) => write!(
+                formatter,
+                "invalid value for --recorder `{value}`; expected 1 or 2"
+            ),
             Self::OutOfRange {
                 field,
                 minimum,
@@ -1208,16 +1222,38 @@ fn parse_stream_running(
     })
 }
 
+/// Parses one `--recorder <1|2>` value into its one-based slot.
+///
+/// The value must parse to a nonzero slot `1..=2`; zero, a slot past the
+/// second recorder, and any non-numeric string are refused with the same
+/// message, because the flag addresses exactly the two program recorder
+/// slots.
+fn recorder_slot(value: &str) -> Result<u8, ArgsError> {
+    value
+        .parse::<u8>()
+        .ok()
+        .filter(|slot| (1..=2).contains(slot))
+        .ok_or_else(|| ArgsError::InvalidRecorder(value.to_owned()))
+}
+
 fn parse_record_desired(
     mut arguments: impl Iterator<Item = String>,
     active: bool,
 ) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
-    reject_extra(&mut arguments)?;
+    let mut recorder = 1;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--recorder" => {
+                recorder = recorder_slot(&required(&mut arguments, "--recorder")?)?;
+            }
+            _ => return Err(ArgsError::UnexpectedArgument(option)),
+        }
+    }
     Ok(if active {
-        Command::RecordStart { path }
+        Command::RecordStart { path, recorder }
     } else {
-        Command::RecordStop { path }
+        Command::RecordStop { path, recorder }
     })
 }
 
@@ -1250,16 +1286,41 @@ fn parse_remote_record_desired(
     active: bool,
 ) -> Result<Command, ArgsError> {
     let address = socket_address(&required(&mut arguments, "address")?)?;
-    let (key, expected_revision) = command_options(arguments)?;
+    let mut recorder = 1;
+    let mut key = None;
+    let mut expected_revision = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--recorder" => {
+                recorder = recorder_slot(&required(&mut arguments, "--recorder")?)?;
+            }
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            "--expect" => {
+                expected_revision = Some(number(
+                    &required(&mut arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
     Ok(if active {
         Command::RemoteRecordStart {
             address,
+            recorder,
             key,
             expected_revision,
         }
     } else {
         Command::RemoteRecordStop {
             address,
+            recorder,
             key,
             expected_revision,
         }
@@ -3388,6 +3449,40 @@ mod tests {
             parse(strings(&["record-start", "show.freemix"])),
             Ok(Command::RecordStart {
                 path: "show.freemix".into(),
+                recorder: 1,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "record-start",
+                "show.freemix",
+                "--recorder",
+                "2"
+            ])),
+            Ok(Command::RecordStart {
+                path: "show.freemix".into(),
+                recorder: 2,
+            })
+        );
+        assert_eq!(
+            parse(strings(&["record-stop", "show.freemix", "--recorder", "2"])),
+            Ok(Command::RecordStop {
+                path: "show.freemix".into(),
+                recorder: 2,
+            })
+        );
+        // Any value that parses to slot 1 or 2 is accepted, like every other
+        // numeric CLI value.
+        assert_eq!(
+            parse(strings(&[
+                "record-start",
+                "show.freemix",
+                "--recorder",
+                "02"
+            ])),
+            Ok(Command::RecordStart {
+                path: "show.freemix".into(),
+                recorder: 2,
             })
         );
         assert_eq!(
@@ -3398,6 +3493,8 @@ mod tests {
             parse(strings(&[
                 "remote-record-stop",
                 "127.0.0.1:9123",
+                "--recorder",
+                "2",
                 "--key",
                 "remote-record-stop",
                 "--expect",
@@ -3405,6 +3502,7 @@ mod tests {
             ])),
             Ok(Command::RemoteRecordStop {
                 address: "127.0.0.1:9123".parse().unwrap(),
+                recorder: 2,
                 key: Some("remote-record-stop".into()),
                 expected_revision: Some(4),
             })
@@ -3413,9 +3511,53 @@ mod tests {
             parse(strings(&["remote-record-start", "127.0.0.1:9123"])),
             Ok(Command::RemoteRecordStart {
                 address: "127.0.0.1:9123".parse().unwrap(),
+                recorder: 1,
                 key: None,
                 expected_revision: None,
             })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-record-start",
+                "127.0.0.1:9123",
+                "--recorder",
+                "2",
+            ])),
+            Ok(Command::RemoteRecordStart {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                recorder: 2,
+                key: None,
+                expected_revision: None,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_recorder_values_outside_the_two_program_slots() {
+        for value in ["0", "3", "-1", "one", "1.0", ""] {
+            for command in ["record-start", "record-stop"] {
+                assert_eq!(
+                    parse(strings(&[command, "show.freemix", "--recorder", value])),
+                    Err(ArgsError::InvalidRecorder(value.into())),
+                    "{command} accepted --recorder {value:?}"
+                );
+            }
+            for command in ["remote-record-start", "remote-record-stop"] {
+                assert_eq!(
+                    parse(strings(&[command, "127.0.0.1:9123", "--recorder", value])),
+                    Err(ArgsError::InvalidRecorder(value.into())),
+                    "{command} accepted --recorder {value:?}"
+                );
+            }
+        }
+        // The exact operator-facing message names the flag and the two slots.
+        assert_eq!(
+            ArgsError::InvalidRecorder("3".into()).to_string(),
+            "invalid value for --recorder `3`; expected 1 or 2"
+        );
+        assert_eq!(
+            ArgsError::InvalidRecorder("nope".into()).to_string(),
+            "invalid value for --recorder `nope`; expected 1 or 2"
         );
     }
 

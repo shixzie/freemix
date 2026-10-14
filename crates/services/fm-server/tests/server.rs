@@ -92,7 +92,16 @@ fn control() -> FakeControl {
         },
         stingers: Vec::new(),
         streams: Vec::new(),
-        record_desired_active: false,
+        recordings: vec![
+            fm_protocol::RecordingStatus {
+                recorder: fm_protocol::WireRecorderSlot::new(1).unwrap(),
+                desired_active: false,
+            },
+            fm_protocol::RecordingStatus {
+                recorder: fm_protocol::WireRecorderSlot::new(2).unwrap(),
+                desired_active: false,
+            },
+        ],
         desired_overlays: fm_protocol::OverlayStatus::empty_channels(),
         realized_overlays: fm_protocol::OverlayStatus::empty_channels(),
     };

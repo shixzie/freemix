@@ -48,8 +48,8 @@ use fm_engine::{
 };
 use fm_model::{
     InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, MainMix,
-    StingerAudioPolicy as ModelStingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
-    StingerSlotNumber,
+    RecorderSlot as ModelRecorderSlot, StingerAudioPolicy as ModelStingerAudioPolicy,
+    StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
 };
 use fm_persistence::{
     FadeToBlackState as PersistedFadeToBlackState, IdempotencyReceipt,
@@ -81,9 +81,9 @@ use fm_server::{
 };
 use fm_switcher::{
     MissingMediaFallback, OverlayBorderPreset, OverlayChannelId, OverlayChannelState,
-    OverlayPositionPreset, OverlayTransitionKind, StingerAudioPolicy, StingerDescriptor,
-    StingerSlotId, StreamTargetId as SwitcherStreamTargetId, SwitcherState, TBarPosition,
-    TBarState, TransitionKind,
+    OverlayPositionPreset, OverlayTransitionKind, RecorderSlot, StingerAudioPolicy,
+    StingerDescriptor, StingerSlotId, StreamTargetId as SwitcherStreamTargetId, SwitcherState,
+    TBarPosition, TBarState, TransitionKind,
 };
 use fm_types::{InputId, ProjectId};
 use freemixd::{ReadinessRecord, StatusReadinessRecord};
@@ -2019,10 +2019,41 @@ impl ProgramRecording {
 
 /// The daemon's fixed number of recorder slots: slot 0 is `--record-program`
 /// and slot 1 is `--record-program-2`. A second slot doubles the independent
-/// destinations without changing the engine's single desired recording flag.
-/// The count also sizes the per-slot CLI configuration arrays, so it stays
+/// destinations behind the engine's per-slot desired recording flags. The
+/// count also sizes the per-slot CLI configuration arrays, so it stays
 /// available in every build.
 const RECORDER_SLOTS: usize = 2;
+
+/// Selects the configured recorder slots whose restored desired flag asks for
+/// an open segment at startup.
+///
+/// A slot is selected only when it is both configured and desired: an
+/// unconfigured slot has no destination to open, and a configured slot whose
+/// persisted flag is false stays closed even when the other slot is
+/// recording. Runtime `RecordStart` commands open a slot later regardless of
+/// this startup decision.
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+fn startup_recording_slots(
+    configured: [bool; RECORDER_SLOTS],
+    desired: [bool; RECORDER_SLOTS],
+) -> [bool; RECORDER_SLOTS] {
+    std::array::from_fn(|slot| configured[slot] && desired[slot])
+}
+
+/// Resolves an accepted recording command to its addressed slot.
+///
+/// Returns `(active, slot_index)` for a `RecordStart`/`RecordStop` and `None`
+/// for every other command. `WireRecorderSlot` only constructs in `1..=2`, so
+/// the index always names exactly one of the daemon's two recorder slots and
+/// realization never touches the other one.
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+fn recording_command_slot(payload: &CommandPayload) -> Option<(bool, usize)> {
+    match payload {
+        CommandPayload::RecordStart { recorder } => Some((true, usize::from(recorder.get()) - 1)),
+        CommandPayload::RecordStop { recorder } => Some((false, usize::from(recorder.get()) - 1)),
+        _ => None,
+    }
+}
 
 /// One segment handed off the render path for bounded finalization.
 ///
@@ -3731,13 +3762,15 @@ impl NativeDaemon {
         self.record_program.is_some() || self.record_program_2.is_some()
     }
 
-    /// Starts and primes every configured recorder slot for daemon startup.
+    /// Starts and primes every configured recorder slot whose restored
+    /// desired flag is true for daemon startup.
     ///
     /// Startup recording is fail-closed exactly like the single-slot daemon:
     /// the first slot that cannot start or reach mux readiness fails startup,
     /// and the caller finalizes whatever already started through the regular
-    /// shutdown path. `Ok(false)` means a requested shutdown interrupted a
-    /// barrier.
+    /// shutdown path. A configured slot whose restored flag is false stays
+    /// closed even when the other slot is recording. `Ok(false)` means a
+    /// requested shutdown interrupted a barrier.
     fn start_and_prime_configured_recorders(
         &mut self,
         stored: &StoredProject,
@@ -3745,11 +3778,17 @@ impl NativeDaemon {
         server: &ServerIdentity,
         shutdown: Option<&ProcessShutdown>,
     ) -> AppResult<bool> {
-        let configured = [self.record_program.clone(), self.record_program_2.clone()];
-        for (slot, path) in configured.into_iter().enumerate() {
+        let paths = [self.record_program.clone(), self.record_program_2.clone()];
+        let configured = paths.each_ref().map(Option::is_some);
+        let selected =
+            startup_recording_slots(configured, stored.project().recording_desired_slots());
+        for (slot, path) in paths.into_iter().enumerate() {
             let Some(path) = path else {
                 continue;
             };
+            if !selected[slot] {
+                continue;
+            }
             self.start_recorder(slot, stored, &path)?;
         }
         for slot in 0..RECORDER_SLOTS {
@@ -4293,20 +4332,23 @@ impl NativeDaemon {
         Ok(())
     }
 
-    /// Schedules recording realization for an accepted RecordStart/RecordStop.
+    /// Schedules recording realization for an accepted RecordStart/RecordStop
+    /// addressed to one recorder slot.
     ///
-    /// A start opens the next segment of every configured slot immediately and
-    /// holds the session until the same bounded prime barrier used at startup
-    /// confirms mux readiness; durability and the engine commit have already
-    /// settled, so a client is merely delayed, never acknowledged for
-    /// unrealized state. Each slot is realized independently: a failure latches
-    /// only that slot's attempt unavailable and reports its own sanitized
-    /// notice without aborting the show or the other slot.
+    /// A start opens the next segment of the addressed configured slot
+    /// immediately and holds the session until the same bounded prime barrier
+    /// used at startup confirms mux readiness; durability and the engine
+    /// commit have already settled, so a client is merely delayed, never
+    /// acknowledged for unrealized state. The addressed slot is realized
+    /// independently of the other: a failure latches only that slot's attempt
+    /// unavailable and reports its own sanitized notice without aborting the
+    /// show or the other slot.
     ///
-    /// A stop retires every open segment off the hot path: each slot drops to
-    /// [`ProgramRecording::Off`] at once and finalization runs on a dedicated
-    /// worker, exactly like stinger retirement, with shutdown joining within
-    /// the recorder's own stop budget.
+    /// A stop retires only the addressed slot's open segment off the hot path:
+    /// the slot drops to [`ProgramRecording::Off`] at once and finalization
+    /// runs on a dedicated worker, exactly like stinger retirement, with
+    /// shutdown joining within the recorder's own stop budget. The other
+    /// slot's segment keeps running.
     #[allow(clippy::too_many_arguments)]
     fn observe_recording_command(
         &mut self,
@@ -4317,21 +4359,17 @@ impl NativeDaemon {
         server: &ServerIdentity,
         process_shutdown: Option<&ProcessShutdown>,
     ) {
-        let active = match command.payload {
-            CommandPayload::RecordStart => true,
-            CommandPayload::RecordStop => false,
-            _ => return,
+        let Some((active, slot)) = recording_command_slot(&command.payload) else {
+            return;
         };
         if !matches!(result, CommandResult::Accepted { .. }) {
             return;
         }
         self.reap_finished_recording_finalizers();
-        for slot in 0..RECORDER_SLOTS {
-            if active {
-                self.open_pending_recording(slot, stored, control, server, process_shutdown);
-            } else {
-                self.retire_running_recording(slot);
-            }
+        if active {
+            self.open_pending_recording(slot, stored, control, server, process_shutdown);
+        } else {
+            self.retire_running_recording(slot);
         }
     }
 
@@ -7148,11 +7186,18 @@ fn serve_inner(
             record_bitrate_kbps_2,
             record_audio_bitrate_kbps_2,
         );
-        // Startup reconciliation is deliberate: a configured recorder only
-        // auto-starts when the restored project's desired flag says so. The
-        // capability digest below keeps advertising configured support either
-        // way; runtime RecordStart commands open segments later on demand.
-        if durable.project().recording_desired_active() {
+        // Startup reconciliation is deliberate: each configured recorder only
+        // auto-starts when its own restored desired flag says so, so a slot
+        // whose flag is false stays closed even when the other is recording.
+        // The capability digest below keeps advertising configured support
+        // either way; runtime RecordStart commands open segments later on
+        // demand.
+        if durable
+            .project()
+            .recording_desired_slots()
+            .iter()
+            .any(|&active| active)
+        {
             let primed = native.start_and_prime_configured_recorders(
                 &durable,
                 &mut control.borrow_mut(),
@@ -7512,6 +7557,14 @@ fn replay_journal(manifest: &StoredProject, batches: &[MutationBatch]) -> AppRes
     Ok(durable)
 }
 
+/// Maps one validated model recorder slot onto the switcher's slot domain.
+///
+/// Both domains cover exactly `1..=2`, so this conversion cannot fail for a
+/// slot the model itself constructed.
+fn switcher_recorder_slot(slot: ModelRecorderSlot) -> RecorderSlot {
+    RecorderSlot::new(slot.get()).expect("model recorder slots are in the switcher range")
+}
+
 fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
     let canonical = project.project();
     let inputs = canonical
@@ -7568,13 +7621,17 @@ fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
         // realization itself is daemon-side runtime work, not engine history.
         realized.set_stream_running(target_id, true)?;
     }
-    // The recording flag is engine-owned desired state, so it is seeded into
-    // BOTH switchers: idle restore demands desired/realized agreement, while
-    // realization of the desire is daemon-side recorder work.
-    let recording_desired = canonical.recording_desired_active();
-    show.desired_switcher_mut()
-        .set_recording_desired(recording_desired)?;
-    realized.set_recording_desired(recording_desired)?;
+    // The recording flags are engine-owned desired state, so they are seeded
+    // into BOTH switchers slot by slot: idle restore demands desired/realized
+    // agreement, while realization of each desire is daemon-side recorder
+    // work.
+    for slot in ModelRecorderSlot::ALL {
+        let active = canonical.recording_desired(slot);
+        let recorder = switcher_recorder_slot(slot);
+        show.desired_switcher_mut()
+            .set_recording_desired(recorder, active)?;
+        realized.set_recording_desired(recorder, active)?;
+    }
     for config in canonical.stingers() {
         restore_stinger(&mut show, &mut realized, *config)?;
     }
@@ -8647,8 +8704,8 @@ fn command_ticks(
         | CommandPayload::CancelManualTransition
         | CommandPayload::StreamStart { .. }
         | CommandPayload::StreamStop { .. }
-        | CommandPayload::RecordStart
-        | CommandPayload::RecordStop => 1,
+        | CommandPayload::RecordStart { .. }
+        | CommandPayload::RecordStop { .. } => 1,
     }
 }
 
@@ -8732,6 +8789,7 @@ fn stored_project_with_receipts(
     }
     sync_project_stingers(&mut project, desired, realized)?;
     sync_project_streams(&mut project, desired)?;
+    sync_project_recording(&mut project, desired);
     StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {
@@ -8762,15 +8820,13 @@ fn stored_project_with_receipts(
     .map_err(Into::into)
 }
 
-/// Folds the desired stream running flags and the desired recording flag into
-/// the stored project.
+/// Folds the desired stream running flags into the stored project.
 ///
-/// StreamStart/StreamStop and RecordStart/RecordStop are engine commands, so
-/// the projected snapshot's desired switcher is the authority; mirroring them
-/// here makes an accepted command survive restart through journal replay and
-/// checkpoint, exactly as renames and audio strips do.
+/// StreamStart/StreamStop are engine commands, so the projected snapshot's
+/// desired switcher is the authority; mirroring them here makes an accepted
+/// command survive restart through journal replay and checkpoint, exactly as
+/// renames and audio strips do.
 fn sync_project_streams(project: &mut fm_model::Project, desired: &SwitcherState) -> AppResult<()> {
-    project.set_recording_desired_active(desired.recording_desired());
     let updates = project
         .stream_targets()
         .iter()
@@ -8796,6 +8852,22 @@ fn sync_project_streams(project: &mut fm_model::Project, desired: &SwitcherState
         }
     }
     Ok(())
+}
+
+/// Folds both slots' desired recording flags into the stored project before
+/// the accepted command is acknowledged.
+///
+/// RecordStart/RecordStop are engine commands, so the projected snapshot's
+/// desired switcher is the authority for every slot; mirroring the whole
+/// roster here makes an accepted command survive restart through journal
+/// replay and checkpoint, exactly as the stream roster does. A slot the
+/// command did not address keeps its previously projected flag, so one
+/// slot's start never rewrites the other's stop.
+fn sync_project_recording(project: &mut fm_model::Project, desired: &SwitcherState) {
+    for slot in ModelRecorderSlot::ALL {
+        let active = desired.recording_desired(switcher_recorder_slot(slot));
+        project.set_recording_desired(slot, active);
+    }
 }
 
 fn persisted_overlays(desired: &SwitcherState, realized: &SwitcherState) -> RuntimeOverlays {
@@ -14970,11 +15042,14 @@ mod tests {
         assert_eq!(live_engine_snapshot(&mut control), restored);
     }
 
-    /// A plain project whose authored desired recording flag is `active`.
-    fn test_project_with_recording(active: bool) -> StoredProject {
+    /// A plain project whose authored per-slot desired recording flags are
+    /// `desired` (slot 1 then slot 2).
+    fn test_project_with_recording(desired: [bool; 2]) -> StoredProject {
         let baseline = test_project();
         let mut project = baseline.project().clone();
-        project.set_recording_desired_active(active);
+        for (slot, active) in ModelRecorderSlot::ALL.into_iter().zip(desired) {
+            project.set_recording_desired(slot, active);
+        }
         StoredProject::from_project(
             project,
             baseline.runtime_routing(),
@@ -14984,35 +15059,121 @@ mod tests {
         .unwrap()
     }
 
+    /// The wire recorder slot for `number`, which tests only call with 1 or 2.
+    fn wire_recorder(number: u8) -> fm_protocol::WireRecorderSlot {
+        fm_protocol::WireRecorderSlot::new(number).expect("test recorder slots are 1 or 2")
+    }
+
     #[test]
-    fn restore_engine_seeds_recording_desired_into_both_switchers() {
-        for active in [true, false] {
-            let durable = test_project_with_recording(active);
+    fn startup_reconcile_opens_only_slots_with_a_true_desired_flag() {
+        // An unconfigured slot is never selected, even when desired.
+        assert_eq!(
+            startup_recording_slots([false, false], [true, true]),
+            [false, false]
+        );
+        // A configured slot whose own flag is false stays closed even when
+        // the other slot is recording.
+        assert_eq!(
+            startup_recording_slots([true, true], [false, false]),
+            [false, false]
+        );
+        assert_eq!(
+            startup_recording_slots([true, true], [true, false]),
+            [true, false]
+        );
+        assert_eq!(
+            startup_recording_slots([true, true], [false, true]),
+            [false, true]
+        );
+        assert_eq!(
+            startup_recording_slots([true, true], [true, true]),
+            [true, true]
+        );
+        // An unconfigured slot cannot be selected by its desired flag alone.
+        assert_eq!(
+            startup_recording_slots([true, false], [true, true]),
+            [true, false]
+        );
+    }
+
+    #[test]
+    fn recording_commands_route_to_only_the_addressed_slot() {
+        assert_eq!(
+            recording_command_slot(&CommandPayload::RecordStart {
+                recorder: wire_recorder(1),
+            }),
+            Some((true, 0))
+        );
+        assert_eq!(
+            recording_command_slot(&CommandPayload::RecordStop {
+                recorder: wire_recorder(1),
+            }),
+            Some((false, 0))
+        );
+        assert_eq!(
+            recording_command_slot(&CommandPayload::RecordStart {
+                recorder: wire_recorder(2),
+            }),
+            Some((true, 1))
+        );
+        assert_eq!(
+            recording_command_slot(&CommandPayload::RecordStop {
+                recorder: wire_recorder(2),
+            }),
+            Some((false, 1))
+        );
+        // Every other command family leaves recording realization untouched.
+        assert_eq!(recording_command_slot(&CommandPayload::Cut), None);
+        assert_eq!(
+            recording_command_slot(&CommandPayload::StreamStart {
+                target: fm_protocol::WireStreamTargetId::new(NonZeroU128::new(7).unwrap()),
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn restore_engine_seeds_each_recording_desired_flag_into_both_switchers() {
+        for desired_flags in [[false, false], [true, false], [false, true], [true, true]] {
+            let durable = test_project_with_recording(desired_flags);
             let snapshot = restore_engine(&durable).unwrap().snapshot().unwrap();
             // Idle restore demands desired/realized agreement, so BOTH
-            // switchers must carry the persisted flag or startup would fail.
-            let desired = snapshot.show().desired_switcher().recording_desired();
-            let realized = snapshot.realized_switcher().recording_desired();
-            assert_eq!(
-                (desired, realized),
-                (active, active),
-                "recording flag {active} was not seeded into both switchers"
-            );
+            // switchers must carry every persisted slot flag or startup would
+            // fail.
+            for (index, slot) in ModelRecorderSlot::ALL.into_iter().enumerate() {
+                let recorder = switcher_recorder_slot(slot);
+                assert_eq!(
+                    snapshot
+                        .show()
+                        .desired_switcher()
+                        .recording_desired(recorder),
+                    desired_flags[index],
+                    "slot {} desired flag was not seeded into the show switcher",
+                    slot.get()
+                );
+                assert_eq!(
+                    snapshot.realized_switcher().recording_desired(recorder),
+                    desired_flags[index],
+                    "slot {} desired flag was not seeded into the realized switcher",
+                    slot.get()
+                );
+            }
         }
     }
 
     #[test]
-    fn record_commands_persist_desired_active_across_replay_and_checkpoint() {
+    fn record_commands_project_both_slot_flags_across_replay_and_checkpoint() {
         use journal::DurableJournal;
 
         let directory = tempfile::tempdir().unwrap();
         let project_path = directory.path().join("record-roundtrip.freemix");
         let store = ProjectStore::new(&project_path).unwrap();
-        let durable = test_project_with_recording(true);
+        let durable = test_project_with_recording([true, false]);
         store.save(&durable).unwrap();
 
-        // An accepted RecordStop flips the durable flag to false and stays
-        // only in the journal: a crash right now must still restart stopped.
+        // An accepted RecordStop for slot 1 flips only that slot's durable
+        // flag and stays only in the journal: a crash right now must still
+        // restart with slot 1 stopped and slot 2 untouched.
         let mut control = test_control(&durable);
         let server = test_server(&control);
         let mut durable = durable;
@@ -15024,7 +15185,13 @@ mod tests {
                 &mut durable,
                 &operator(),
                 &server,
-                &test_command("rec-stop", "rec-stop-key", CommandPayload::RecordStop),
+                &test_command(
+                    "rec-stop",
+                    "rec-stop-key",
+                    CommandPayload::RecordStop {
+                        recorder: wire_recorder(1),
+                    },
+                ),
                 0,
             )
             .unwrap();
@@ -15032,21 +15199,22 @@ mod tests {
                 stopped.submission.output.result,
                 CommandResult::Accepted { revision: 1, .. }
             ));
-            assert!(!durable.project().recording_desired_active());
+            assert_eq!(durable.project().recording_desired_slots(), [false, false]);
         }
         assert_eq!(store.load().unwrap().position().revision, 0);
 
-        // Journal replay alone reproduces the stopped state.
+        // Journal replay alone reproduces the per-slot stopped state.
         let reloaded = ProjectStore::new(&project_path).unwrap();
         let manifest = reloaded.load().unwrap();
         let scan = reloaded.scan_journal().unwrap();
         assert_eq!(scan.batches().len(), 1);
         let replayed = replay_journal(&manifest, scan.batches()).unwrap();
         assert_eq!(replayed.position().revision, 1);
-        assert!(!replayed.project().recording_desired_active());
+        assert_eq!(replayed.project().recording_desired_slots(), [false, false]);
 
-        // A later RecordStart persists true and survives a full checkpoint;
-        // the restored engine matches the live one either way.
+        // A later RecordStart for slot 2 leaves slot 1 stopped, and both flags
+        // survive a full checkpoint: the durable mirror never rewrites a slot
+        // the command did not address.
         let mut control = test_control(&replayed);
         let server = test_server(&control);
         let mut durable = replayed;
@@ -15058,7 +15226,13 @@ mod tests {
                 &mut durable,
                 &operator(),
                 &server,
-                &test_command("rec-start", "rec-start-key", CommandPayload::RecordStart),
+                &test_command(
+                    "rec-start",
+                    "rec-start-key",
+                    CommandPayload::RecordStart {
+                        recorder: wire_recorder(2),
+                    },
+                ),
                 0,
             )
             .unwrap();
@@ -15066,7 +15240,7 @@ mod tests {
                 started.submission.output.result,
                 CommandResult::Accepted { revision: 2, .. }
             ));
-            assert!(durable.project().recording_desired_active());
+            assert_eq!(durable.project().recording_desired_slots(), [false, true]);
             journal.settle(&durable).unwrap();
         }
         let checkpointed = ProjectStore::new(&project_path).unwrap();
@@ -15077,10 +15251,20 @@ mod tests {
             0,
             "checkpoint must have compacted the journal"
         );
-        assert!(final_state.project().recording_desired_active());
+        assert_eq!(
+            final_state.project().recording_desired_slots(),
+            [false, true]
+        );
         let restored = restore_engine(&final_state).unwrap().snapshot().unwrap();
         assert_eq!(live_engine_snapshot(&mut control), restored);
-        assert!(restored.show().desired_switcher().recording_desired());
+        let desired = restored.show().desired_switcher();
+        assert_eq!(
+            (
+                desired.recording_desired(switcher_recorder_slot(ModelRecorderSlot::ALL[0])),
+                desired.recording_desired(switcher_recorder_slot(ModelRecorderSlot::ALL[1])),
+            ),
+            (false, true)
+        );
     }
 
     #[cfg(feature = "native-media")]

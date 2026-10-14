@@ -21,7 +21,7 @@ use std::{
 
 #[cfg(target_os = "macos")]
 use fm_io_macos::{CameraIdKind, deterministic_camera_id};
-use fm_model::{Input, InputKind, MainMix, Project, ProjectSettings};
+use fm_model::{Input, InputKind, MainMix, Project, ProjectSettings, RecorderSlot};
 #[cfg(target_os = "macos")]
 use fm_model::{
     Layer, LayerGeometry, RectMask, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput,
@@ -33,8 +33,8 @@ use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProjec
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     HandshakeRequest, ManualTransitionKind, ManualTransitionPosition, Role, RuntimeLifecycleEvent,
-    SnapshotMessage, StingerStatus, WireInputId, WireMessage, WireStingerSlotId, decode_line,
-    encode_line,
+    SnapshotMessage, StingerStatus, WireInputId, WireMessage, WireRecorderSlot, WireStingerSlotId,
+    decode_line, encode_line,
 };
 #[cfg(target_os = "macos")]
 use fm_types::SceneId;
@@ -1216,7 +1216,7 @@ fn recording_desired_false_configures_support_without_recorder_activity() {
         capabilities_digest,
         "native-media-bounded-video-audio-master-meters-camera-record-program-telemetry-v4"
     );
-    assert!(!initial.record_desired_active);
+    assert!(!recording_desired(&initial, 1));
     thread::sleep(Duration::from_millis(1_000));
     daemon.signal_terminate();
 
@@ -1266,13 +1266,15 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
         capabilities_digest,
         "native-media-bounded-video-audio-master-meters-camera-record-program-telemetry-v4"
     );
-    assert!(initial.record_desired_active);
+    assert!(recording_desired(&initial, 1));
     thread::sleep(Duration::from_millis(1_500));
 
     let stopped = client.command(
         "record-seg-stop",
         "record-seg-stop-key",
-        CommandPayload::RecordStop,
+        CommandPayload::RecordStop {
+            recorder: wire_recorder(1),
+        },
     );
     assert_eq!(stopped.revision, 1);
     // The finalizer drains within the recorder's stop budget; this wait only
@@ -1289,13 +1291,15 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
     let mut client = StudioClient::connect(daemon.address);
     let (_, snapshot) = client.handshake_with_digest();
     assert_eq!(snapshot.revision, 1);
-    assert!(!snapshot.record_desired_active);
+    assert!(!recording_desired(&snapshot, 1));
 
     // RecordStart opens the next deterministic segment.
     let started = client.command(
         "record-seg-start",
         "record-seg-start-key",
-        CommandPayload::RecordStart,
+        CommandPayload::RecordStart {
+            recorder: wire_recorder(1),
+        },
     );
     assert_eq!(started.revision, 2);
     thread::sleep(Duration::from_millis(1_500));
@@ -1308,7 +1312,9 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
     let stopped_again = client.command(
         "record-seg-stop-2",
         "record-seg-stop-2-key",
-        CommandPayload::RecordStop,
+        CommandPayload::RecordStop {
+            recorder: wire_recorder(1),
+        },
     );
     assert_eq!(stopped_again.revision, 3);
     // The detached finalizer drains within the recorder's own stop budget,
@@ -1350,7 +1356,7 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
         "native-media-bounded-video-audio-master-meters-camera-record-program-telemetry-v4"
     );
     assert_eq!(snapshot.revision, 3);
-    assert!(!snapshot.record_desired_active);
+    assert!(!recording_desired(&snapshot, 1));
     thread::sleep(Duration::from_millis(1_000));
     restarted.signal_terminate();
 
@@ -4434,6 +4440,23 @@ fn save_camera_project(path: &Path) {
     ProjectStore::new(path).unwrap().save(&stored).unwrap();
 }
 
+/// The wire recorder slot for `number`, which tests only call with 1 or 2.
+#[cfg(target_os = "macos")]
+fn wire_recorder(number: u8) -> WireRecorderSlot {
+    WireRecorderSlot::new(number).expect("test recorder slots are 1 or 2")
+}
+
+/// Reads one slot's replicated desired flag out of a snapshot roster.
+#[cfg(target_os = "macos")]
+fn recording_desired(snapshot: &SnapshotMessage, number: u8) -> bool {
+    snapshot
+        .recordings
+        .iter()
+        .find(|status| status.recorder.get() == number)
+        .unwrap_or_else(|| panic!("snapshot is missing recorder slot {number}"))
+        .desired_active
+}
+
 fn save_media_project(path: &Path, first_uri: &str, second_uri: &str, recording_desired: bool) {
     let rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
@@ -4469,7 +4492,10 @@ fn save_media_project(path: &Path, first_uri: &str, second_uri: &str, recording_
     // The authored desired recording flag decides whether a daemon started
     // with --record-program auto-opens a segment; startup failures earlier
     // than recorder priming are unaffected by it.
-    project.set_recording_desired_active(recording_desired);
+    project.set_recording_desired(
+        RecorderSlot::new(1).expect("fixture recorder slot is 1"),
+        recording_desired,
+    );
     let stored = StoredProject::from_project(
         project,
         RuntimeRouting {
@@ -4603,8 +4629,11 @@ fn save_generator_project_with_sources_and_dimensions(
     }
     project.set_main_mix(MainMix::new(input(1), input(2)));
     // Recorder daemons start with --record-program against these generator
-    // fixtures, so their authored desired recording flag is active.
-    project.set_recording_desired_active(true);
+    // fixtures, so slot 1's authored desired recording flag is active.
+    project.set_recording_desired(
+        RecorderSlot::new(1).expect("fixture recorder slot is 1"),
+        true,
+    );
     let stored = StoredProject::from_project(
         project,
         RuntimeRouting {

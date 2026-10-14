@@ -198,8 +198,8 @@ impl Session {
             | CommandPayload::CancelManualTransition
             | CommandPayload::StreamStart { .. }
             | CommandPayload::StreamStop { .. }
-            | CommandPayload::RecordStart
-            | CommandPayload::RecordStop => CommandClass::Transition,
+            | CommandPayload::RecordStart { .. }
+            | CommandPayload::RecordStop { .. } => CommandClass::Transition,
         };
         self.policy.authorize(&self.principal, class)?;
 

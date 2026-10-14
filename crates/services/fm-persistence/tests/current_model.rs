@@ -8,11 +8,11 @@ use std::{
 use fm_model::{
     AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, Input, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerGeometry,
-    MainMix, Output, Project, ProjectSettings, RectMask, RestartPolicy, Rgba8, Rotation, Scene,
-    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
-    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
-    StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol, StreamTarget,
-    StreamTargetId,
+    MainMix, Output, Project, ProjectSettings, RecorderSlot, RectMask, RestartPolicy, Rgba8,
+    Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
+    StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol,
+    StreamTarget, StreamTargetId,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
@@ -590,7 +590,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 22"));
+    assert!(encoded.contains("\"schema_version\": 23"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -660,7 +660,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 22"));
+    assert!(encoded.contains("\"schema_version\": 23"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -816,7 +816,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 22"));
+    assert!(valid.contains("\"schema_version\": 23"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -832,7 +832,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 22", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 23", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -844,9 +844,11 @@ fn recording_intent_and_video_bitrate_round_trip_at_the_current_schema() {
     let temp = TestDirectory::new("recording-bitrate");
     let store = temp.store("show");
 
-    for recording_desired_active in [true, false] {
+    for recording_desired in [[true, false], [false, true]] {
         let mut project = rich_project();
-        project.set_recording_desired_active(recording_desired_active);
+        for (slot, active) in RecorderSlot::ALL.into_iter().zip(recording_desired) {
+            project.set_recording_desired(slot, active);
+        }
         let expected = StoredProject::from_project(
             project,
             RuntimeRouting::default(),
@@ -857,9 +859,7 @@ fn recording_intent_and_video_bitrate_round_trip_at_the_current_schema() {
 
         store.save(&expected).unwrap();
         let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-        assert!(encoded.contains(&format!(
-            "\"recording_desired_active\": {recording_desired_active}"
-        )));
+        assert!(encoded.contains(&format!("\"recording_desired\": {recording_desired:?}")));
         assert!(
             encoded.contains("\"video_bitrate_kbps\": 9000"),
             "authored video bitrate must be written verbatim"
@@ -868,8 +868,8 @@ fn recording_intent_and_video_bitrate_round_trip_at_the_current_schema() {
         let loaded = store.load().unwrap();
         assert_eq!(loaded, expected);
         assert_eq!(
-            loaded.project().recording_desired_active(),
-            recording_desired_active
+            loaded.project().recording_desired_slots(),
+            recording_desired
         );
         assert_eq!(
             loaded.project().stream_targets()[0].video_bitrate_kbps(),
@@ -878,19 +878,36 @@ fn recording_intent_and_video_bitrate_round_trip_at_the_current_schema() {
     }
 
     // Both fields belong to the current contract: missing or wrong-typed
-    // values are refused as malformed manifests.
+    // values are refused as malformed manifests. The recorder slot array is
+    // exactly two booleans in slot order.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(valid.contains("\"recording_desired\": [false, false]"));
     for malformed in [
-        valid.replacen(",\n    \"recording_desired_active\": false", "", 1),
+        valid.replacen(",\n    \"recording_desired\": [false, false]", "", 1),
         valid.replacen(
-            "\"recording_desired_active\": false",
-            "\"recording_desired_active\": \"false\"",
+            "\"recording_desired\": [false, false]",
+            "\"recording_desired\": false",
             1,
         ),
         valid.replacen(
-            "\"recording_desired_active\": false",
-            "\"recording_desired_active\": 0",
+            "\"recording_desired\": [false, false]",
+            "\"recording_desired\": [false]",
+            1,
+        ),
+        valid.replacen(
+            "\"recording_desired\": [false, false]",
+            "\"recording_desired\": [false, false, false]",
+            1,
+        ),
+        valid.replacen(
+            "\"recording_desired\": [false, false]",
+            "\"recording_desired\": [\"false\", false]",
+            1,
+        ),
+        valid.replacen(
+            "\"recording_desired\": [false, false]",
+            "\"recording_desired\": [0, false]",
             1,
         ),
         valid.replacen(",\n        \"video_bitrate_kbps\": 9000", "", 1),

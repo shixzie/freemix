@@ -87,12 +87,14 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
             .expect("writing to a string cannot fail");
         }
     }
-    write!(
-        output,
-        ",\n    \"recording_desired_active\": {}",
-        project.recording_desired_active()
-    )
-    .expect("writing to a string cannot fail");
+    output.push_str(",\n    \"recording_desired\": [");
+    for (index, desired) in project.recording_desired_slots().iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(output, "{desired}").expect("writing to a string cannot fail");
+    }
+    output.push(']');
     output.push_str("\n  },");
 }
 

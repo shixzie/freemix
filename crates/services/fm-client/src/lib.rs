@@ -889,8 +889,8 @@ impl Client {
             | CommandPayload::CancelManualTransition
             | CommandPayload::StreamStart { .. }
             | CommandPayload::StreamStop { .. }
-            | CommandPayload::RecordStart
-            | CommandPayload::RecordStop => None,
+            | CommandPayload::RecordStart { .. }
+            | CommandPayload::RecordStop { .. } => None,
         };
         self.model
             .track_command(CommandId::new(command.id.clone()), optimistic)?;

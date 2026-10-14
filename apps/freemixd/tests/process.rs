@@ -19,9 +19,9 @@ use fm_client::{
 };
 use fm_model::{
     AudioBus, Input, InputAudioStripState, InputGainMilliDb, InputKind, Layer, LayerGeometry,
-    MainMix, Output, Project, ProjectSettings, RectMask, RestartPolicy, Rgba8, Rotation, Scene,
-    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
-    StreamEndpoint, StreamKey, StreamProtocol, StreamTarget, StreamTargetId,
+    MainMix, Output, Project, ProjectSettings, RecorderSlot, RectMask, RestartPolicy, Rgba8,
+    Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    StartupPolicy, StreamEndpoint, StreamKey, StreamProtocol, StreamTarget, StreamTargetId,
 };
 use fm_persistence::{
     ManualTransitionKind as PersistedManualTransitionKind, ProjectPosition, ProjectStore,
@@ -3041,7 +3041,7 @@ fn canonical_project() -> Project {
     // Recorder process tests start daemons with --record-program against this
     // fixture, so its authored desired recording flag is active. Without a
     // configured recorder the flag is inert durable state.
-    .with_recording_desired_active(true);
+    .with_recording_desired(RecorderSlot::new(1).unwrap(), true);
     for (index, input) in [
         SimulatedInput::new(
             SimulatedVideo::Solid(SolidColor::new(12, 34, 56, 255)),

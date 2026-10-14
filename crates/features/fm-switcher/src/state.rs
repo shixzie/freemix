@@ -8,9 +8,10 @@ use crate::{
     FadeToBlackPosition, FadeToBlackRequest, FadeToBlackTarget,
     MAX_OVERLAY_TRANSITION_DURATION_FRAMES, MissingMediaFallback, OVERLAY_CHANNEL_COUNT,
     OverlayBorderPreset, OverlayChannelId, OverlayChannelState, OverlayPositionPreset,
-    OverlayTransitionKind, STINGER_SLOT_COUNT, StingerDescriptor, StingerPlaybackDecision,
-    StingerPreloadState, StingerSlotId, StingerSlotState, SwitcherCommand, SwitcherError,
-    SwitcherEvent, TBarPosition, TBarState, TransitionKind, TransitionState,
+    OverlayTransitionKind, RECORDER_SLOT_COUNT, RecorderSlot, STINGER_SLOT_COUNT,
+    StingerDescriptor, StingerPlaybackDecision, StingerPreloadState, StingerSlotId,
+    StingerSlotState, SwitcherCommand, SwitcherError, SwitcherEvent, TBarPosition, TBarState,
+    TransitionKind, TransitionState,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,7 +40,7 @@ pub struct SwitcherState {
     stingers: [StingerSlotState; STINGER_SLOT_COUNT],
     streams: Vec<DesiredStream>,
     streams_running: BTreeSet<StreamTargetId>,
-    recording_desired: bool,
+    recording_desired: [bool; RECORDER_SLOT_COUNT],
 }
 
 impl SwitcherState {
@@ -64,7 +65,7 @@ impl SwitcherState {
             stingers: std::array::from_fn(|_| StingerSlotState::empty()),
             streams: Vec::new(),
             streams_running: BTreeSet::new(),
-            recording_desired: false,
+            recording_desired: [false; RECORDER_SLOT_COUNT],
         };
         state.require_input(program)?;
         state.require_input(preview)?;
@@ -235,11 +236,11 @@ impl SwitcherState {
     }
 
     #[must_use]
-    pub const fn recording_desired(&self) -> bool {
-        self.recording_desired
+    pub const fn recording_desired(&self, slot: RecorderSlot) -> bool {
+        self.recording_desired[slot.index()]
     }
 
-    /// Sets the engine-owned desired recording flag.
+    /// Sets the engine-owned desired recording flag for one recorder slot.
     ///
     /// Repeating the current value is accepted and emits no events. This
     /// operation is instant and never conflicts with transition state.
@@ -250,13 +251,17 @@ impl SwitcherState {
     /// setters for uniform call sites.
     pub fn set_recording_desired(
         &mut self,
+        slot: RecorderSlot,
         active: bool,
     ) -> Result<Vec<SwitcherEvent>, SwitcherError> {
-        if self.recording_desired == active {
+        if self.recording_desired(slot) == active {
             return Ok(Vec::new());
         }
-        self.recording_desired = active;
-        Ok(vec![SwitcherEvent::RecordingDesiredChanged { active }])
+        self.recording_desired[slot.index()] = active;
+        Ok(vec![SwitcherEvent::RecordingDesiredChanged {
+            slot,
+            active,
+        }])
     }
 
     /// Applies one operator command atomically to desired switcher state.
@@ -327,7 +332,9 @@ impl SwitcherState {
             SwitcherCommand::SetStreamRunning { target, running } => {
                 self.set_stream_running(target, running)
             }
-            SwitcherCommand::SetRecordingDesired(active) => self.set_recording_desired(active),
+            SwitcherCommand::SetRecordingDesired { slot, active } => {
+                self.set_recording_desired(slot, active)
+            }
         }
     }
 

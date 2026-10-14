@@ -585,12 +585,30 @@ fn serve_stream_start(listener: &TcpListener) {
             realized: fm_protocol::StreamRealizedState::Live,
             detail: None,
         }],
-        false,
+        recording_roster([false, false]),
     );
 }
 
+/// The fixed two-slot recorder roster carried by test snapshots, in slot
+/// order: slot 1 first, then slot 2.
+fn recording_roster(desired: [bool; 2]) -> Vec<fm_protocol::RecordingStatus> {
+    desired
+        .into_iter()
+        .enumerate()
+        .map(|(index, desired_active)| fm_protocol::RecordingStatus {
+            recorder: wire_recorder(u8::try_from(index + 1).expect("two recorder slots fit in u8")),
+            desired_active,
+        })
+        .collect()
+}
+
+/// The wire recorder slot for `number`, which tests only call with 1 or 2.
+fn wire_recorder(number: u8) -> fm_protocol::WireRecorderSlot {
+    fm_protocol::WireRecorderSlot::new(number).expect("test recorder slots are 1 or 2")
+}
+
 /// Serves one Operator `RecordStart` command session followed by one Viewer
-/// session whose snapshot carries the durable recording flag.
+/// session whose snapshot carries the durable per-slot recording roster.
 fn serve_record_start(listener: &TcpListener) {
     let engine = EngineIdentity {
         engine_id: "project-42".into(),
@@ -608,7 +626,9 @@ fn serve_record_start(listener: &TcpListener) {
     };
     assert_command(
         &command,
-        &CommandPayload::RecordStart,
+        &CommandPayload::RecordStart {
+            recorder: wire_recorder(1),
+        },
         "remote-record-start",
         0,
     );
@@ -627,7 +647,10 @@ fn serve_record_start(listener: &TcpListener) {
                 engine: engine.clone(),
                 revision: 1,
             },
-            payload: EventPayload::RecordingChanged { active: true },
+            payload: EventPayload::RecordingChanged {
+                recorder: wire_recorder(1),
+                active: true,
+            },
         }),
     );
     write_message(
@@ -644,16 +667,21 @@ fn serve_record_start(listener: &TcpListener) {
             },
         }),
     );
-    serve_streams_snapshot_peer(listener, &engine, Vec::new(), true);
+    serve_streams_snapshot_peer(
+        listener,
+        &engine,
+        Vec::new(),
+        recording_roster([true, false]),
+    );
 }
 
 /// Serves a Viewer session whose initial snapshot reports the durable streams
-/// roster and recording flag.
+/// roster and per-slot recording roster.
 fn serve_streams_snapshot_peer(
     listener: &TcpListener,
     engine: &EngineIdentity,
     streams: Vec<fm_protocol::StreamStatus>,
-    record_desired_active: bool,
+    recordings: Vec<fm_protocol::RecordingStatus>,
 ) {
     let (stream, _) = listener.accept().unwrap();
     let mut writer = stream.try_clone().unwrap();
@@ -698,7 +726,7 @@ fn serve_streams_snapshot_peer(
             realized_fade_to_black: live_fade_to_black(),
             stingers: Vec::new(),
             streams,
-            record_desired_active,
+            recordings,
             desired_overlays: OverlayStatus::empty_channels(),
             realized_overlays: OverlayStatus::empty_channels(),
         }),
@@ -1240,7 +1268,7 @@ fn write_handshake_version_with_manual(
             realized_fade_to_black: live_fade_to_black(),
             stingers: Vec::new(),
             streams: Vec::new(),
-            record_desired_active: false,
+            recordings: recording_roster([false, false]),
             desired_overlays: OverlayStatus::empty_channels(),
             realized_overlays: OverlayStatus::empty_channels(),
         }),
@@ -1315,7 +1343,7 @@ fn write_handshake_version_with_fade_to_black(
             realized_overlays: OverlayStatus::empty_channels(),
             stingers: Vec::new(),
             streams: Vec::new(),
-            record_desired_active: false,
+            recordings: recording_roster([false, false]),
         }),
     );
 }
@@ -3127,13 +3155,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        22
+        23
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 22);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 23);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -3146,7 +3174,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 22);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 23);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -3216,48 +3244,73 @@ fn remote_stream_start_is_accepted_and_replicates_the_streams_roster() {
 }
 
 #[test]
-fn local_record_start_stop_round_trip_persists_recording_desired_active() {
+fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let context = ContractContext::new();
     assert_success(&invoke_bounded(&["new", context.project_path()]));
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        22
+        23
     );
-    assert!(manifest(&context.project).contains("\"recording_desired_active\": false"));
+    assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
+    // The default slot is recorder 1, and only its flag flips.
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 22);
-    assert!(started_manifest.contains("\"recording_desired_active\": true"));
-    assert!(!started_manifest.contains("\"recording_desired_active\": false"));
-    assert!(stdout(&started).contains("recording_desired=true"));
+    assert_eq!(json_number(&started_manifest, "schema_version"), 23);
+    assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
+    assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
 
+    // Recorder 2 starts without touching recorder 1, proving the checkpoint
+    // mirror writes both slots' flags.
+    let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
+    assert_success(&second);
+    let second_manifest = manifest(&context.project);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 23);
+    assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
+    assert!(stdout(&second).contains("recording_desired=[true,true]"));
+
+    // Stopping recorder 1 leaves recorder 2 recording.
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 22);
-    assert!(stopped_manifest.contains("\"recording_desired_active\": false"));
-    assert!(!stopped_manifest.contains("\"recording_desired_active\": true"));
-    assert!(stdout(&stopped).contains("recording_desired=false"));
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 23);
+    assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
+    assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
 
     // A refusal must leave both the manifest and the journal byte-identical.
     store
-        .append_batch(&MutationBatch::new(1, 2, 3, b"unapplied".to_vec()))
+        .append_batch(&MutationBatch::new(1, 3, 4, b"unapplied".to_vec()))
         .unwrap();
     let manifest_before_failure = fs::read(context.project.join("project.json")).unwrap();
     let journal_before = journal_bytes(&store);
     for arguments in [
         vec!["record-start", context.project_path()],
         vec!["record-stop", context.project_path()],
+        vec!["record-start", context.project_path(), "--recorder", "2"],
     ] {
         let failure = invoke_bounded(&arguments);
         assert_failure_contains(
             &failure,
             "project has unapplied journal batches that freemix-cli cannot safely interpret",
+        );
+        assert_eq!(
+            fs::read(context.project.join("project.json")).unwrap(),
+            manifest_before_failure
+        );
+        assert_eq!(journal_bytes(&store), journal_before);
+    }
+
+    // An out-of-range recorder is refused before the bundle is touched.
+    for value in ["0", "3", "two"] {
+        let failure =
+            invoke_bounded(&["record-start", context.project_path(), "--recorder", value]);
+        assert_failure_contains(
+            &failure,
+            &format!("invalid value for --recorder `{value}`; expected 1 or 2"),
         );
         assert_eq!(
             fs::read(context.project.join("project.json")).unwrap(),
@@ -3349,8 +3402,8 @@ fn repeated_no_op_commands_keep_the_checkpoint_restartable() {
         assert_success(&invoke_bounded(&arguments));
     }
     let status_output = status(&context.project);
-    assert!(status_output.contains("recording_desired=false"));
-    assert!(manifest(&context.project).contains("\"recording_desired_active\": false"));
+    assert!(status_output.contains("recording_desired=[false,false]"));
+    assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
     fs::remove_dir_all(context.root).unwrap();
 }
@@ -3371,17 +3424,17 @@ fn remote_record_start_is_accepted_and_replicates_the_recording_flag() {
     let status = stdout(&output);
     assert_remote_status(&status, 1, 1, 1, 2, 2);
     assert!(
-        status.contains("Recording=desired=true"),
-        "status output should surface the durable recording flag: {status}"
+        status.contains("Recording=desired=[true,false]"),
+        "status output should surface the durable per-slot recording roster: {status}"
     );
 
-    // A second Viewer client reconnecting to the daemon observes the flag.
+    // A second Viewer client reconnecting to the daemon observes the roster.
     let observed = invoke_bounded(&["remote-status", &address]);
     assert_success(&observed);
     let observed_status = stdout(&observed);
     assert!(
-        observed_status.contains("Recording=desired=true"),
-        "reconnecting viewer should see the replicated recording flag: {observed_status}"
+        observed_status.contains("Recording=desired=[true,false]"),
+        "reconnecting viewer should see the replicated per-slot recording roster: {observed_status}"
     );
     server.finish();
 }

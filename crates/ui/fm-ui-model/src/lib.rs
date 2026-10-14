@@ -13,9 +13,9 @@ use fm_command::{CommandId, Revision};
 use fm_protocol::{
     CommandResult, EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackState,
     FieldIssue, ManualTransitionKind, ManualTransitionPosition,
-    ManualTransitionStatus as ProtocolManualTransitionStatus, ResumeCursor, ServerHello,
-    ServerIdentity, SnapshotMessage, StingerAudioPolicy, StingerMissingMediaFallback,
-    StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState,
+    ManualTransitionStatus as ProtocolManualTransitionStatus, RecordingStatus, ResumeCursor,
+    ServerHello, ServerIdentity, SnapshotMessage, StingerAudioPolicy, StingerMissingMediaFallback,
+    StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, WireRecorderSlot,
 };
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
@@ -23,6 +23,8 @@ use fm_types::{InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 pub const MAX_STREAM_STATUSES: usize = 64;
 /// Largest replicated stream status label in bytes.
 pub const MAX_STREAM_NAME_BYTES: usize = 128;
+/// Number of independently replicated program recorder slots.
+pub const RECORDER_SLOT_COUNT: usize = 2;
 
 /// A project-aware cursor used at the UI/protocol boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -205,7 +207,7 @@ pub struct ProjectSnapshot {
     pub input_audio_strips: Vec<InputAudioStripStatus>,
     pub stingers: Vec<StingerStatus>,
     pub streams: Vec<StreamStatus>,
-    pub record_desired_active: bool,
+    pub recordings: Vec<RecordingStatus>,
     pub desired_overlays: Vec<OverlayStatus>,
     pub realized_overlays: Vec<OverlayStatus>,
     pub switcher: SwitcherState,
@@ -246,7 +248,7 @@ impl ProjectSnapshot {
             input_audio_strips,
             stingers,
             streams,
-            record_desired_active: message.record_desired_active,
+            recordings: message.recordings,
             desired_overlays,
             realized_overlays,
             switcher: SwitcherState {
@@ -301,6 +303,7 @@ pub enum DurableChange {
         streams: Vec<StreamStatus>,
     },
     RecordingChanged {
+        recorder: WireRecorderSlot,
         active: bool,
     },
 }
@@ -360,7 +363,9 @@ impl DurableProjectEvent {
             EventPayload::StreamsChanged { streams } => DurableChange::StreamsChanged {
                 streams: protocol_streams(streams),
             },
-            EventPayload::RecordingChanged { active } => DurableChange::RecordingChanged { active },
+            EventPayload::RecordingChanged { recorder, active } => {
+                DurableChange::RecordingChanged { recorder, active }
+            }
         };
         Self {
             cursor: ProjectCursor {
@@ -418,7 +423,7 @@ pub struct ProjectState {
     input_audio_strips: Vec<InputAudioStripStatus>,
     stingers: Vec<StingerStatus>,
     streams: Vec<StreamStatus>,
-    record_desired_active: bool,
+    recordings: Vec<RecordingStatus>,
     desired_overlays: Vec<OverlayStatus>,
     realized_overlays: Vec<OverlayStatus>,
     switcher: SwitcherState,
@@ -463,10 +468,21 @@ impl ProjectState {
         &self.streams
     }
 
-    /// Returns the latest replicated engine-owned recording-desired flag.
+    /// Returns the latest replicated two-slot recorder roster in canonical order.
     #[must_use]
-    pub const fn record_desired_active(&self) -> bool {
-        self.record_desired_active
+    pub fn recordings(&self) -> &[RecordingStatus] {
+        &self.recordings
+    }
+
+    /// Returns the replicated engine-owned recording-desired flag for one slot.
+    ///
+    /// Returns `false` when the slot is absent from the validated roster.
+    #[must_use]
+    pub fn recording_desired(&self, recorder: WireRecorderSlot) -> bool {
+        self.recordings
+            .iter()
+            .find(|status| status.recorder == recorder)
+            .is_some_and(|status| status.desired_active)
     }
 
     #[must_use]
@@ -496,10 +512,23 @@ pub struct ClientView {
     pub input_audio_strips: Vec<InputAudioStripStatus>,
     pub stingers: Vec<StingerStatus>,
     pub streams: Vec<StreamStatus>,
-    pub record_desired_active: bool,
+    pub recordings: Vec<RecordingStatus>,
     pub desired_overlays: Vec<OverlayStatus>,
     pub realized_overlays: Vec<OverlayStatus>,
     pub switcher: SwitcherState,
+}
+
+impl ClientView {
+    /// Returns the replicated engine-owned recording-desired flag for one slot.
+    ///
+    /// Returns `false` when the slot is absent from the validated roster.
+    #[must_use]
+    pub fn recording_desired(&self, recorder: WireRecorderSlot) -> bool {
+        self.recordings
+            .iter()
+            .find(|status| status.recorder == recorder)
+            .is_some_and(|status| status.desired_active)
+    }
 }
 
 /// A local change displayed while its command is outstanding.
@@ -682,6 +711,9 @@ pub enum ModelError {
     InvalidStreamCount(usize),
     DuplicateStreamTarget(NonZeroU128),
     InvalidStreamNames,
+    InvalidRecordingCount(usize),
+    DuplicateRecorderSlot(u8),
+    InvalidRecordingOrder,
     InvalidOverlayCount(usize),
     InvalidOverlayChannel(u8),
     InvalidOverlayTransitionDuration {
@@ -782,6 +814,10 @@ impl fmt::Display for ModelError {
             Self::InvalidStreamNames => formatter.write_str(
                 "stream names must contain one unique, nonblank label within the byte limit",
             ),
+            Self::InvalidRecordingCount(_)
+            | Self::DuplicateRecorderSlot(_)
+            | Self::InvalidRecordingOrder => write_recording_message(self, formatter)
+                .expect("recording errors always format"),
             Self::InvalidOverlayCount(_)
             | Self::InvalidOverlayChannel(_)
             | Self::InvalidOverlayTransitionDuration { .. }
@@ -835,6 +871,25 @@ fn write_overlay_message(
             formatter,
             "overlay channel {channel} repeats an output"
         )),
+        _ => None,
+    }
+}
+
+fn write_recording_message(
+    error: &ModelError,
+    formatter: &mut fmt::Formatter<'_>,
+) -> Option<fmt::Result> {
+    match error {
+        ModelError::InvalidRecordingCount(count) => Some(write!(
+            formatter,
+            "snapshot contains {count} recorder statuses; expected {RECORDER_SLOT_COUNT}"
+        )),
+        ModelError::DuplicateRecorderSlot(slot) => {
+            Some(write!(formatter, "snapshot repeats recorder slot {slot}"))
+        }
+        ModelError::InvalidRecordingOrder => {
+            Some(formatter.write_str("recorder statuses must be in canonical slot order"))
+        }
         _ => None,
     }
 }
@@ -912,7 +967,7 @@ impl ClientModel {
             input_audio_strips: state.input_audio_strips.clone(),
             stingers: state.stingers.clone(),
             streams: state.streams.clone(),
-            record_desired_active: state.record_desired_active,
+            recordings: state.recordings.clone(),
             desired_overlays: state.desired_overlays.clone(),
             realized_overlays: state.realized_overlays.clone(),
             switcher,
@@ -1090,7 +1145,7 @@ impl ClientModel {
             input_audio_strips: snapshot.input_audio_strips,
             stingers: snapshot.stingers,
             streams: snapshot.streams,
-            record_desired_active: snapshot.record_desired_active,
+            recordings: snapshot.recordings,
             desired_overlays: snapshot.desired_overlays,
             realized_overlays: snapshot.realized_overlays,
             switcher: snapshot.switcher,
@@ -1494,6 +1549,7 @@ fn validate_snapshot_inputs(snapshot: &ProjectSnapshot) -> Result<(), ModelError
     }
     validate_stingers(&snapshot.stingers, &inputs)?;
     validate_streams(&snapshot.streams)?;
+    validate_recordings(&snapshot.recordings)?;
     validate_input_audio_strips(&snapshot.input_audio_strips, &inputs)?;
     validate_overlays(&snapshot.desired_overlays, &inputs, &outputs)?;
     validate_overlays(&snapshot.realized_overlays, &inputs, &outputs)?;
@@ -1597,6 +1653,22 @@ fn validate_streams(streams: &[StreamStatus]) -> Result<(), ModelError> {
         }
         if !targets.insert(stream.target) {
             return Err(ModelError::DuplicateStreamTarget(stream.target));
+        }
+    }
+    Ok(())
+}
+
+fn validate_recordings(recordings: &[RecordingStatus]) -> Result<(), ModelError> {
+    if recordings.len() != RECORDER_SLOT_COUNT {
+        return Err(ModelError::InvalidRecordingCount(recordings.len()));
+    }
+    let mut slots = HashSet::with_capacity(recordings.len());
+    for (index, status) in recordings.iter().enumerate() {
+        if !slots.insert(status.recorder) {
+            return Err(ModelError::DuplicateRecorderSlot(status.recorder.get()));
+        }
+        if usize::from(status.recorder.get()) != index + 1 {
+            return Err(ModelError::InvalidRecordingOrder);
         }
     }
     Ok(())
@@ -1767,8 +1839,13 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::StreamsChanged { streams } => {
             state.streams = streams;
         }
-        DurableChange::RecordingChanged { active } => {
-            state.record_desired_active = active;
+        DurableChange::RecordingChanged { recorder, active } => {
+            let status = state
+                .recordings
+                .iter_mut()
+                .find(|status| status.recorder == recorder)
+                .expect("validated recorder roster contains every slot");
+            status.desired_active = active;
         }
     }
 }

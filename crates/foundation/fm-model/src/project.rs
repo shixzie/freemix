@@ -678,7 +678,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(22);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(23);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -708,7 +708,7 @@ pub struct Project {
     outputs: Vec<Output>,
     stream_targets: Vec<StreamTarget>,
     main_mix: Option<MainMix>,
-    recording_desired_active: bool,
+    recording_desired: [bool; RECORDER_SLOT_COUNT],
     stingers: Vec<StingerConfig>,
     restart_policy: RestartPolicy,
 }
@@ -728,7 +728,7 @@ impl Project {
             outputs: Vec::new(),
             stream_targets: Vec::new(),
             main_mix: None,
-            recording_desired_active: false,
+            recording_desired: [false; RECORDER_SLOT_COUNT],
             stingers: Vec::new(),
             restart_policy: RestartPolicy::default(),
         }
@@ -810,11 +810,17 @@ impl Project {
         self.main_mix
     }
 
-    /// Whether recording is desired to be active. Authored intent persisted
-    /// with the project, not a live recorder status.
+    /// Whether recording is desired to be active for `slot`. Authored intent
+    /// persisted with the project, not a live recorder status.
     #[must_use]
-    pub const fn recording_desired_active(&self) -> bool {
-        self.recording_desired_active
+    pub const fn recording_desired(&self, slot: RecorderSlot) -> bool {
+        self.recording_desired[slot.index()]
+    }
+
+    /// Every slot's desired recording flag, in slot order.
+    #[must_use]
+    pub const fn recording_desired_slots(&self) -> [bool; RECORDER_SLOT_COUNT] {
+        self.recording_desired
     }
 
     #[must_use]
@@ -2228,13 +2234,13 @@ impl Project {
         self.main_mix = Some(main_mix);
     }
 
-    pub fn set_recording_desired_active(&mut self, recording_desired_active: bool) {
-        self.recording_desired_active = recording_desired_active;
+    pub fn set_recording_desired(&mut self, slot: RecorderSlot, active: bool) {
+        self.recording_desired[slot.index()] = active;
     }
 
     #[must_use]
-    pub const fn with_recording_desired_active(mut self, recording_desired_active: bool) -> Self {
-        self.recording_desired_active = recording_desired_active;
+    pub const fn with_recording_desired(mut self, slot: RecorderSlot, active: bool) -> Self {
+        self.recording_desired[slot.index()] = active;
         self
     }
 
@@ -2878,3 +2884,60 @@ pub enum StartupPolicy {
     Stopped,
     ReconcileDesiredState,
 }
+
+/// Number of independently controllable program recorder slots.
+pub const RECORDER_SLOT_COUNT: usize = 2;
+
+/// One independently controllable program recorder, numbered 1..=2.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct RecorderSlot(u8);
+
+impl RecorderSlot {
+    /// Every recorder slot in ascending slot order.
+    pub const ALL: [Self; RECORDER_SLOT_COUNT] = [Self(1), Self(2)];
+
+    /// Creates a recorder slot from its one-based number.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RecorderSlotError::OutOfRange`] when the number is not in
+    /// `1..=2`.
+    pub const fn new(value: u8) -> Result<Self, RecorderSlotError> {
+        if value >= 1 && value <= 2 {
+            Ok(Self(value))
+        } else {
+            Err(RecorderSlotError::OutOfRange)
+        }
+    }
+
+    /// The one-based slot number.
+    #[must_use]
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    /// Zero-based array index for this slot.
+    const fn index(self) -> usize {
+        (self.0 - 1) as usize
+    }
+}
+
+/// Failure to construct a [`RecorderSlot`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecorderSlotError {
+    /// The slot number is outside `1..=2`.
+    OutOfRange,
+}
+
+impl std::fmt::Display for RecorderSlotError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OutOfRange => write!(
+                formatter,
+                "recorder slot must be between 1 and {RECORDER_SLOT_COUNT}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RecorderSlotError {}

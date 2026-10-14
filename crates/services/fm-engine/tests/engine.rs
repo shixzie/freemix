@@ -16,8 +16,8 @@ use fm_scheduler::FrameNumber;
 use fm_switcher::{
     FadeToBlackPosition, FadeToBlackTarget, MAX_STREAM_COUNT, MissingMediaFallback,
     OverlayBorderPreset, OverlayChannelId, OverlayPositionPreset, OverlayTransitionKind,
-    StingerAudioPolicy, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherError,
-    SwitcherEvent, SwitcherState, TBarPosition, TBarState, TransitionKind,
+    RecorderSlot, StingerAudioPolicy, StingerDescriptor, StingerSlotId, StreamTargetId,
+    SwitcherError, SwitcherEvent, SwitcherState, TBarPosition, TBarState, TransitionKind,
 };
 use fm_types::{
     FrameRate, InputId, InputOrderError, MAX_INPUT_NAME_BYTES, OutputId, validate_input_order,
@@ -2485,68 +2485,159 @@ fn snapshot_and_restore_preserve_desired_stream_running_state_exactly() {
     );
 }
 
+fn slot(value: u8) -> RecorderSlot {
+    RecorderSlot::new(value).unwrap()
+}
+
 #[test]
-fn record_commands_emit_changed_events_per_acceptance() {
+fn record_commands_are_per_slot_and_emit_changed_events_per_acceptance() {
     let mut engine = streamed_engine();
     let started = engine
-        .execute(envelope("rec-on", EngineCommand::RecordStart), 0)
+        .execute(
+            envelope(
+                "rec-one-on",
+                EngineCommand::RecordStart { recorder: slot(1) },
+            ),
+            0,
+        )
         .unwrap();
     assert!(started.receipt.accepted().is_some());
     assert_eq!(
         started.events[0].payload,
-        EngineEvent::RecordingChanged { active: true }
+        EngineEvent::RecordingChanged {
+            recorder: slot(1),
+            active: true
+        }
     );
-    assert!(engine.show().desired_switcher().recording_desired());
+    assert!(engine.show().desired_switcher().recording_desired(slot(1)));
+    assert!(
+        !engine.show().desired_switcher().recording_desired(slot(2)),
+        "slot one must not change slot two"
+    );
     engine.tick().unwrap();
-    assert!(engine.realized_switcher().recording_desired());
+    assert!(engine.realized_switcher().recording_desired(slot(1)));
+    assert!(!engine.realized_switcher().recording_desired(slot(2)));
 
-    // A command that leaves the flag unchanged is still an acceptance, and
-    // its event keeps the revision, event sequence, and runtime generation
-    // advancing together so the project stays restorable.
+    // A command that leaves the addressed slot unchanged is still an
+    // acceptance, and its event keeps the revision, event sequence, and
+    // runtime generation advancing together so the project stays restorable.
     let repeated = engine
-        .execute(envelope("rec-on-again", EngineCommand::RecordStart), 0)
+        .execute(
+            envelope(
+                "rec-one-on-again",
+                EngineCommand::RecordStart { recorder: slot(1) },
+            ),
+            0,
+        )
         .unwrap();
     assert!(repeated.receipt.accepted().is_some());
     assert_eq!(
         repeated.events[0].payload,
-        EngineEvent::RecordingChanged { active: true }
+        EngineEvent::RecordingChanged {
+            recorder: slot(1),
+            active: true
+        }
     );
     assert_eq!(engine.event_sequence(), EventSequence::new(2));
 
+    let second = engine
+        .execute(
+            envelope(
+                "rec-two-on",
+                EngineCommand::RecordStart { recorder: slot(2) },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        second.events[0].payload,
+        EngineEvent::RecordingChanged {
+            recorder: slot(2),
+            active: true
+        }
+    );
+    assert!(engine.show().desired_switcher().recording_desired(slot(1)));
+    assert!(engine.show().desired_switcher().recording_desired(slot(2)));
+
     let stopped = engine
-        .execute(envelope("rec-off", EngineCommand::RecordStop), 0)
+        .execute(
+            envelope(
+                "rec-one-off",
+                EngineCommand::RecordStop { recorder: slot(1) },
+            ),
+            0,
+        )
         .unwrap();
     assert_eq!(
         stopped.events[0].payload,
-        EngineEvent::RecordingChanged { active: false }
+        EngineEvent::RecordingChanged {
+            recorder: slot(1),
+            active: false
+        }
     );
-    assert!(!engine.show().desired_switcher().recording_desired());
+    assert!(!engine.show().desired_switcher().recording_desired(slot(1)));
+    assert!(
+        engine.show().desired_switcher().recording_desired(slot(2)),
+        "stopping slot one must leave slot two running"
+    );
 }
 
 #[test]
 fn repeated_record_commands_keep_snapshot_restore_exact() {
     let mut engine = streamed_engine();
-    for key in ["rec-on", "rec-on-again"] {
+    for key in ["rec-one-on", "rec-one-on-again"] {
         engine
-            .execute(envelope(key, EngineCommand::RecordStart), 0)
+            .execute(
+                envelope(key, EngineCommand::RecordStart { recorder: slot(1) }),
+                0,
+            )
             .unwrap();
     }
-    for key in ["rec-off", "rec-off-again"] {
+    for key in ["rec-two-on", "rec-two-on-again"] {
         engine
-            .execute(envelope(key, EngineCommand::RecordStop), 0)
+            .execute(
+                envelope(key, EngineCommand::RecordStart { recorder: slot(2) }),
+                0,
+            )
+            .unwrap();
+    }
+    for key in ["rec-one-off", "rec-one-off-again"] {
+        engine
+            .execute(
+                envelope(key, EngineCommand::RecordStop { recorder: slot(1) }),
+                0,
+            )
             .unwrap();
     }
     while engine.snapshot().is_err() {
         engine.tick().unwrap();
     }
     let snapshot = engine.snapshot().unwrap();
-    assert!(!snapshot.show().desired_switcher().recording_desired());
-    let restored = Engine::restore(snapshot).unwrap();
-    assert!(!restored.show().desired_switcher().recording_desired());
-    assert_eq!(
-        restored.realized_switcher().recording_desired(),
-        restored.show().desired_switcher().recording_desired()
+    assert!(
+        !snapshot
+            .show()
+            .desired_switcher()
+            .recording_desired(slot(1))
     );
+    assert!(
+        snapshot
+            .show()
+            .desired_switcher()
+            .recording_desired(slot(2))
+    );
+    let restored = Engine::restore(snapshot).unwrap();
+    for recorder in RecorderSlot::ALL {
+        assert_eq!(
+            restored.realized_switcher().recording_desired(recorder),
+            restored
+                .show()
+                .desired_switcher()
+                .recording_desired(recorder)
+        );
+    }
+    assert_eq!(restored.revision(), Revision::new(6));
+    assert_eq!(restored.event_sequence(), EventSequence::new(6));
+    assert_eq!(restored.runtime_generation(), RuntimeGeneration::new(6));
 }
 
 #[test]
@@ -2559,7 +2650,10 @@ fn record_commands_are_instant_and_replay_receipts_atomically() {
         )
         .unwrap();
     let accepted = engine
-        .execute(envelope("rec", EngineCommand::RecordStart), 0)
+        .execute(
+            envelope("rec", EngineCommand::RecordStart { recorder: slot(2) }),
+            0,
+        )
         .unwrap();
     assert!(accepted.receipt.accepted().is_some());
     assert_eq!(engine.snapshot(), Err(SnapshotError::WorkInFlight));
@@ -2568,7 +2662,10 @@ fn record_commands_are_instant_and_replay_receipts_atomically() {
     }
 
     let replay = engine
-        .execute(envelope("rec", EngineCommand::RecordStart), 0)
+        .execute(
+            envelope("rec", EngineCommand::RecordStart { recorder: slot(2) }),
+            0,
+        )
         .unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.receipt, accepted.receipt);
@@ -2577,63 +2674,114 @@ fn record_commands_are_instant_and_replay_receipts_atomically() {
 }
 
 #[test]
-fn snapshot_and_restore_preserve_recording_desired_exactly() {
+fn snapshot_and_restore_preserve_recording_desired_per_slot_exactly() {
     let mut engine = streamed_engine();
     engine
-        .execute(envelope("rec-on", EngineCommand::RecordStart), 0)
+        .execute(
+            envelope(
+                "rec-one-on",
+                EngineCommand::RecordStart { recorder: slot(1) },
+            ),
+            0,
+        )
         .unwrap();
+    engine
+        .execute(
+            envelope(
+                "rec-two-on",
+                EngineCommand::RecordStart { recorder: slot(2) },
+            ),
+            0,
+        )
+        .unwrap();
+    engine.tick().unwrap();
     engine.tick().unwrap();
 
     let snapshot = engine.snapshot().unwrap();
-    assert!(snapshot.show().desired_switcher().recording_desired());
-    let mut restored = Engine::restore(snapshot.clone()).unwrap();
-    assert!(restored.show().desired_switcher().recording_desired());
-    assert_eq!(
-        restored.realized_switcher().recording_desired(),
-        restored.show().desired_switcher().recording_desired()
+    assert!(
+        snapshot
+            .show()
+            .desired_switcher()
+            .recording_desired(slot(1))
     );
+    assert!(
+        snapshot
+            .show()
+            .desired_switcher()
+            .recording_desired(slot(2))
+    );
+    let mut restored = Engine::restore(snapshot.clone()).unwrap();
+    for recorder in RecorderSlot::ALL {
+        assert!(
+            restored
+                .show()
+                .desired_switcher()
+                .recording_desired(recorder)
+        );
+        assert_eq!(
+            restored.realized_switcher().recording_desired(recorder),
+            restored
+                .show()
+                .desired_switcher()
+                .recording_desired(recorder)
+        );
+    }
     let next = restored
-        .execute(envelope("rec-off", EngineCommand::RecordStop), 0)
+        .execute(
+            envelope(
+                "rec-one-off",
+                EngineCommand::RecordStop { recorder: slot(1) },
+            ),
+            0,
+        )
         .unwrap();
     assert_eq!(
         next.receipt.accepted().unwrap().result.target_frame,
-        FrameNumber::new(1)
+        FrameNumber::new(2)
     );
     assert_eq!(
         next.events[0].payload,
-        EngineEvent::RecordingChanged { active: false }
+        EngineEvent::RecordingChanged {
+            recorder: slot(1),
+            active: false
+        }
     );
 }
 
 #[test]
-fn idle_restore_rejects_divergent_desired_and_realized_recording_flags() {
-    let mut engine = streamed_engine();
-    engine
-        .execute(envelope("rec-on", EngineCommand::RecordStart), 0)
-        .unwrap();
-    engine.tick().unwrap();
-    let snapshot = engine.snapshot().unwrap();
+fn idle_restore_rejects_divergent_desired_and_realized_recording_flags_per_slot() {
+    for recorder in RecorderSlot::ALL {
+        let mut engine = streamed_engine();
+        engine
+            .execute(
+                envelope("rec-on", EngineCommand::RecordStart { recorder }),
+                0,
+            )
+            .unwrap();
+        engine.tick().unwrap();
+        let snapshot = engine.snapshot().unwrap();
 
-    let pristine_realized = streamed_engine().realized_switcher().clone();
-    assert!(!pristine_realized.recording_desired());
-    let restore_state = EngineRestoreState {
-        state_epoch: snapshot.state_epoch(),
-        revision: snapshot.revision(),
-        event_sequence: snapshot.event_sequence(),
-        runtime_generation: snapshot.runtime_generation(),
-        clock_time: snapshot.clock_time(),
-        frame_cursor: FrameNumber::new(snapshot.frames_rendered()),
-        receipts: snapshot.receipts().to_vec(),
-    };
-    assert_eq!(
-        Engine::restore_persisted(
-            snapshot.show().clone(),
-            pristine_realized,
-            snapshot.frame_rate(),
-            snapshot.clock_domain(),
-            restore_state,
-        )
-        .unwrap_err(),
-        SnapshotError::MismatchedSwitcherRouting
-    );
+        let pristine_realized = streamed_engine().realized_switcher().clone();
+        assert!(!pristine_realized.recording_desired(recorder));
+        let restore_state = EngineRestoreState {
+            state_epoch: snapshot.state_epoch(),
+            revision: snapshot.revision(),
+            event_sequence: snapshot.event_sequence(),
+            runtime_generation: snapshot.runtime_generation(),
+            clock_time: snapshot.clock_time(),
+            frame_cursor: FrameNumber::new(snapshot.frames_rendered()),
+            receipts: snapshot.receipts().to_vec(),
+        };
+        assert_eq!(
+            Engine::restore_persisted(
+                snapshot.show().clone(),
+                pristine_realized,
+                snapshot.frame_rate(),
+                snapshot.clock_domain(),
+                restore_state,
+            )
+            .unwrap_err(),
+            SnapshotError::MismatchedSwitcherRouting
+        );
+    }
 }

@@ -11,15 +11,20 @@ use fm_protocol::{
     MAX_FIELD_VALUE_BYTES, MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS,
     MAX_MESSAGES_PER_PUSH, ManualTransitionKind, ManualTransitionPosition, ManualTransitionState,
     ManualTransitionStatus, OutputStatus, OverlayStatus, OverlayTransitionKind, ProtocolVersion,
-    ResumeCursor, RuntimeDomainBoundary, RuntimeEventMessage, RuntimeFailureDisposition,
-    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
-    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamRealizedState,
-    StreamStatus, StructuredError, WireInputId, WireMessage, WireOutputId, WireOverlayChannelId,
-    WireStingerSlotId, WireStreamTargetId, choose_handshake_outcome, decode_line, encode_line,
+    RecordingStatus, ResumeCursor, RuntimeDomainBoundary, RuntimeEventMessage,
+    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
+    StingerStatus, StreamRealizedState, StreamStatus, StructuredError, WireInputId, WireMessage,
+    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    choose_handshake_outcome, decode_line, encode_line,
 };
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
+}
+
+fn recorder_slot(value: u8) -> WireRecorderSlot {
+    WireRecorderSlot::new(value).unwrap()
 }
 
 fn stream_target(value: u128) -> WireStreamTargetId {
@@ -153,15 +158,24 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
         },
         stingers: Vec::new(),
         streams: Vec::new(),
-        record_desired_active: false,
+        recordings: vec![
+            RecordingStatus {
+                recorder: recorder_slot(1),
+                desired_active: false,
+            },
+            RecordingStatus {
+                recorder: recorder_slot(2),
+                desired_active: false,
+            },
+        ],
         desired_overlays: OverlayStatus::empty_channels(),
         realized_overlays: OverlayStatus::empty_channels(),
     })
 }
 
 #[test]
-fn protocol_2_19_heartbeat_acknowledgement_codec_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 19));
+fn protocol_2_20_heartbeat_acknowledgement_codec_is_exact() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 20));
     let acknowledgement = WireMessage::HeartbeatAcknowledgement(HeartbeatAcknowledgementMessage {
         server: server_identity(),
         heartbeat_sequence: 88,
@@ -996,10 +1010,36 @@ fn streams_changed_event_round_trips_every_realized_state() {
 }
 
 #[test]
-fn record_start_and_stop_commands_round_trip_and_reject_extra_fields() {
-    for (expected_payload, payload) in [
-        ("payload=record_start", CommandPayload::RecordStart),
-        ("payload=record_stop", CommandPayload::RecordStop),
+fn record_start_and_stop_commands_round_trip_for_each_slot_and_reject_invalid_slots() {
+    for (expected_payload, recorder, payload) in [
+        (
+            "payload=record_start",
+            1,
+            CommandPayload::RecordStart {
+                recorder: recorder_slot(1),
+            },
+        ),
+        (
+            "payload=record_start",
+            2,
+            CommandPayload::RecordStart {
+                recorder: recorder_slot(2),
+            },
+        ),
+        (
+            "payload=record_stop",
+            1,
+            CommandPayload::RecordStop {
+                recorder: recorder_slot(1),
+            },
+        ),
+        (
+            "payload=record_stop",
+            2,
+            CommandPayload::RecordStop {
+                recorder: recorder_slot(2),
+            },
+        ),
     ] {
         let message = WireMessage::Command(CommandMessage {
             protocol: CURRENT_PROTOCOL_VERSION,
@@ -1008,14 +1048,39 @@ fn record_start_and_stop_commands_round_trip_and_reject_extra_fields() {
         });
         let encoded = encode_line(&message).unwrap();
         assert!(encoded.contains(expected_payload));
+        assert!(encoded.contains(&format!("\trecorder={recorder}")));
         assert_eq!(decode_line(&encoded).unwrap(), message);
     }
 
     let start = encode_line(&WireMessage::Command(CommandMessage {
-        payload: CommandPayload::RecordStart,
+        payload: CommandPayload::RecordStart {
+            recorder: recorder_slot(1),
+        },
         ..command()
     }))
     .unwrap();
+    assert!(start.contains("recorder=1"));
+    for malformed in [
+        start.replace("\trecorder=1", ""),
+        start.replace("recorder=1", "recorder=0"),
+        start.replace("recorder=1", "recorder=3"),
+        start.replace("recorder=1", "recorder=two"),
+    ] {
+        if malformed.contains("recorder=") {
+            assert!(matches!(
+                decode_line(&malformed),
+                Err(CodecError::InvalidField {
+                    field: "recorder",
+                    ..
+                })
+            ));
+        } else {
+            assert_eq!(
+                decode_line(&malformed),
+                Err(CodecError::MissingField("recorder"))
+            );
+        }
+    }
     let extra = start.replace('\n', "\ttarget=9\n");
     assert_eq!(
         decode_line(&extra),
@@ -1032,56 +1097,163 @@ fn record_start_and_stop_commands_round_trip_and_reject_extra_fields() {
 }
 
 #[test]
-fn snapshot_record_desired_active_round_trips_and_rejects_missing_and_invalid() {
+fn recorder_slot_constructor_bounds_are_exact() {
+    for value in 1..=2 {
+        assert_eq!(recorder_slot(value).get(), value);
+    }
+    for value in [0, 3, 4, u8::MAX] {
+        assert_eq!(WireRecorderSlot::new(value), None);
+    }
+}
+
+#[test]
+fn snapshot_recordings_roster_round_trips_and_rejects_missing_duplicate_out_of_range_and_extra_entries()
+ {
     let mut message = snapshot(input_statuses(&[(1, "camera"), (2, "slides")]));
     let WireMessage::Snapshot(snapshot_message) = &mut message else {
         unreachable!();
     };
-    snapshot_message.record_desired_active = true;
+    snapshot_message.recordings = vec![
+        RecordingStatus {
+            recorder: recorder_slot(1),
+            desired_active: true,
+        },
+        RecordingStatus {
+            recorder: recorder_slot(2),
+            desired_active: false,
+        },
+    ];
     let encoded = encode_line(&message).unwrap();
-    assert!(encoded.contains("record_desired_active=1"));
+    let roster = "recordings=1%3A1%2C2%3A0";
+    assert!(encoded.contains(roster));
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
-    assert_eq!(
-        decode_line(&encoded.replace("\trecord_desired_active=1", "")),
-        Err(CodecError::MissingField("record_desired_active"))
-    );
-    let invalid = encoded.replace("record_desired_active=1", "record_desired_active=true");
+    let mut missing = message.clone();
+    let WireMessage::Snapshot(snapshot_message) = &mut missing else {
+        unreachable!();
+    };
+    snapshot_message.recordings.truncate(1);
     assert!(matches!(
-        decode_line(&invalid),
+        encode_line(&missing),
         Err(CodecError::InvalidField {
-            field: "record_desired_active",
+            field: "recordings",
             ..
         })
     ));
+    assert!(matches!(
+        decode_line(&encoded.replace(roster, "recordings=1%3A1")),
+        Err(CodecError::InvalidField {
+            field: "recordings",
+            ..
+        })
+    ));
+
+    let mut duplicate = message.clone();
+    let WireMessage::Snapshot(snapshot_message) = &mut duplicate else {
+        unreachable!();
+    };
+    snapshot_message.recordings[1].recorder = recorder_slot(1);
+    assert!(matches!(
+        encode_line(&duplicate),
+        Err(CodecError::InvalidField {
+            field: "recordings",
+            ..
+        })
+    ));
+    assert!(matches!(
+        decode_line(&encoded.replace(roster, "recordings=1%3A1%2C1%3A0")),
+        Err(CodecError::InvalidField {
+            field: "recordings",
+            ..
+        })
+    ));
+
+    assert!(matches!(
+        decode_line(&encoded.replace(roster, "recordings=1%3A1%2C3%3A0")),
+        Err(CodecError::InvalidField {
+            field: "recordings",
+            ..
+        })
+    ));
+
+    let mut extra = message.clone();
+    let WireMessage::Snapshot(snapshot_message) = &mut extra else {
+        unreachable!();
+    };
+    snapshot_message.recordings.push(RecordingStatus {
+        recorder: recorder_slot(2),
+        desired_active: true,
+    });
+    assert!(matches!(
+        encode_line(&extra),
+        Err(CodecError::InvalidField {
+            field: "recordings",
+            ..
+        })
+    ));
+    assert!(matches!(
+        decode_line(&encoded.replace(roster, "recordings=1%3A1%2C2%3A0%2C1%3A0")),
+        Err(CodecError::InvalidField {
+            field: "recordings",
+            ..
+        })
+    ));
+
+    // The roster is canonical slot order in both directions.
+    let mut reversed = message.clone();
+    let WireMessage::Snapshot(snapshot_message) = &mut reversed else {
+        unreachable!();
+    };
+    snapshot_message.recordings.reverse();
+    assert_eq!(encode_line(&reversed).unwrap(), encoded);
+    assert_eq!(
+        decode_line(&encoded.replace(roster, "recordings=2%3A0%2C1%3A1")).unwrap(),
+        message
+    );
 }
 
 #[test]
-fn recording_changed_event_round_trips_both_values_and_rejects_unknown_names() {
-    for active in [true, false] {
+fn recording_changed_event_round_trips_both_slots_and_states() {
+    for (recorder, active) in [(1, true), (1, false), (2, true), (2, false)] {
         let message = WireMessage::Event(EventMessage {
             cursor: cursor(),
-            payload: EventPayload::RecordingChanged { active },
+            payload: EventPayload::RecordingChanged {
+                recorder: recorder_slot(recorder),
+                active,
+            },
         });
         let encoded = encode_line(&message).unwrap();
         assert!(encoded.contains("event=recording_changed"));
-        assert!(encoded.contains(&format!("active={}", u8::from(active))));
+        assert!(encoded.contains(&format!("\trecorder={recorder}")));
+        assert!(encoded.contains(&format!("\tactive={}", u8::from(active))));
         assert_eq!(decode_line(&encoded).unwrap(), message);
     }
 
     let populated = encode_line(&WireMessage::Event(EventMessage {
         cursor: cursor(),
-        payload: EventPayload::RecordingChanged { active: true },
+        payload: EventPayload::RecordingChanged {
+            recorder: recorder_slot(2),
+            active: true,
+        },
     }))
     .unwrap();
-    let missing = populated.replace("\tactive=1", "");
     assert_eq!(
-        decode_line(&missing),
+        decode_line(&populated.replace("\trecorder=2", "")),
+        Err(CodecError::MissingField("recorder"))
+    );
+    assert!(matches!(
+        decode_line(&populated.replace("recorder=2", "recorder=3")),
+        Err(CodecError::InvalidField {
+            field: "recorder",
+            ..
+        })
+    ));
+    assert_eq!(
+        decode_line(&populated.replace("\tactive=1", "")),
         Err(CodecError::MissingField("active"))
     );
-    let invalid = populated.replace("active=1", "active=yes");
     assert!(matches!(
-        decode_line(&invalid),
+        decode_line(&populated.replace("active=1", "active=yes")),
         Err(CodecError::InvalidField {
             field: "active",
             ..

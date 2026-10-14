@@ -19,11 +19,11 @@ use fm_engine::{
 };
 use fm_model::{
     AudioBus, CropRect, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
-    InputGainMilliDb, InputKind, Layer, LayerGeometry, MainMix, Project, ProjectSettings, RectMask,
-    Rgba8 as ModelRgba8, Rotation, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
-    SourceRef, StartupPolicy, StingerAudioPolicy as ModelStingerAudioPolicy, StingerConfig,
-    StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamProtocol,
-    StreamTarget, StreamTargetId,
+    InputGainMilliDb, InputKind, Layer, LayerGeometry, MainMix, Project, ProjectSettings,
+    RecorderSlot as ModelRecorderSlot, RectMask, Rgba8 as ModelRgba8, Rotation, SimulatedAudio,
+    SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
+    StingerAudioPolicy as ModelStingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
+    StingerSlotNumber, StreamEndpoint, StreamKey, StreamProtocol, StreamTarget, StreamTargetId,
 };
 use fm_persistence::validate_asset_uri;
 use fm_persistence::{
@@ -191,8 +191,8 @@ pub fn run(command: Command) -> AppResult<()> {
                 false,
             )?;
         }
-        Command::RecordStart { path } => set_recording_desired(&path, true)?,
-        Command::RecordStop { path } => set_recording_desired(&path, false)?,
+        Command::RecordStart { path, recorder } => set_recording_desired(&path, recorder, true)?,
+        Command::RecordStop { path, recorder } => set_recording_desired(&path, recorder, false)?,
         Command::Streams { path } => {
             let stored = inspect_stored_project(&path)?;
             print_stream_targets(stored.project());
@@ -1221,21 +1221,27 @@ pub fn run(command: Command) -> AppResult<()> {
         )?,
         Command::RemoteRecordStart {
             address,
+            recorder,
             key,
             expected_revision,
         } => remote::execute(
             address,
-            fm_protocol::CommandPayload::RecordStart,
+            fm_protocol::CommandPayload::RecordStart {
+                recorder: wire_recorder(recorder)?,
+            },
             key,
             expected_revision,
         )?,
         Command::RemoteRecordStop {
             address,
+            recorder,
             key,
             expected_revision,
         } => remote::execute(
             address,
-            fm_protocol::CommandPayload::RecordStop,
+            fm_protocol::CommandPayload::RecordStop {
+                recorder: wire_recorder(recorder)?,
+            },
             key,
             expected_revision,
         )?,
@@ -1601,12 +1607,17 @@ fn sync_stream_running(project: &mut Project, show: &ShowState) -> AppResult<()>
     Ok(())
 }
 
-/// Copies the engine's desired recording flag into the authored project so the
-/// checkpoint persists it like every other desired switcher field.
+/// Copies each recorder slot's desired flag from the engine into the authored
+/// project so the checkpoint persists it like every other desired switcher
+/// field.
 fn sync_recording_desired(project: &mut Project, show: &ShowState) {
-    let active = show.desired_switcher().recording_desired();
-    if active != project.recording_desired_active() {
-        project.set_recording_desired_active(active);
+    for slot in ModelRecorderSlot::ALL {
+        let active = show
+            .desired_switcher()
+            .recording_desired(switcher_recorder_slot(slot));
+        if active != project.recording_desired(slot) {
+            project.set_recording_desired(slot, active);
+        }
     }
 }
 
@@ -1999,20 +2010,21 @@ fn set_stream_running(
     Ok(())
 }
 
-/// Starts or stops program recording.
+/// Starts or stops program recording for one recorder slot.
 ///
 /// This is an instant switcher mutation: it restores the engine checkpoint,
-/// applies [`EngineCommand::RecordStart`] or [`EngineCommand::RecordStop`]
-/// through the same path as every other instant command, checkpoints, and only
-/// then persists. The command carries no target field, so it is effect-free on
-/// unknown state and an idempotent replay returns the same receipt without
-/// touching the bundle.
-fn set_recording_desired(path: &Path, active: bool) -> AppResult<()> {
+/// applies [`EngineCommand::RecordStart`] or [`EngineCommand::RecordStop`] for
+/// the addressed slot through the same path as every other instant command,
+/// checkpoints, and only then persists. The command carries only the
+/// addressed slot, so the other slot's desired flag is untouched and an
+/// idempotent replay returns the same receipt without touching the bundle.
+fn set_recording_desired(path: &Path, recorder: u8, active: bool) -> AppResult<()> {
+    let recorder = switcher_recorder(recorder)?;
     let mut project_engine = load_engine(path)?;
     let command = if active {
-        EngineCommand::RecordStart
+        EngineCommand::RecordStart { recorder }
     } else {
-        EngineCommand::RecordStop
+        EngineCommand::RecordStop { recorder }
     };
     let result = execute(&mut project_engine.engine, command, 1, None, None)?;
     if let Some(rejection) = result.rejection {
@@ -2660,9 +2672,14 @@ fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
     {
         realized.set_stream_running(switcher_stream_target(target.id()), true)?;
     }
-    if project.recording_desired_active() {
-        let _ = show.desired_switcher_mut().set_recording_desired(true);
-        let _ = realized.set_recording_desired(true);
+    for slot in ModelRecorderSlot::ALL {
+        if project.recording_desired(slot) {
+            let recorder = switcher_recorder_slot(slot);
+            let _ = show
+                .desired_switcher_mut()
+                .set_recording_desired(recorder, true);
+            let _ = realized.set_recording_desired(recorder, true);
+        }
     }
     for config in project.stingers() {
         restore_stinger(&mut show, &mut realized, *config)?;
@@ -3216,8 +3233,47 @@ fn print_status(project: &ProjectEngine) {
         format_overlays(realized.overlays()),
         format_audio_strips(&project.project),
         format_stingers(project.project.stingers()),
-        desired.recording_desired(),
+        format_recording_desired(desired),
     );
+}
+
+/// Maps one validated CLI recorder slot onto the switcher's slot domain.
+///
+/// Both domains cover exactly `1..=2`, so the argument layer's validated
+/// value always converts.
+fn switcher_recorder(recorder: u8) -> AppResult<fm_switcher::RecorderSlot> {
+    fm_switcher::RecorderSlot::new(recorder)
+        .ok_or_else(|| AppFailure(format!("recorder slot {recorder} is out of range")).into())
+}
+
+/// Maps one validated model recorder slot onto the switcher's slot domain.
+fn switcher_recorder_slot(slot: ModelRecorderSlot) -> fm_switcher::RecorderSlot {
+    fm_switcher::RecorderSlot::new(slot.get())
+        .expect("model recorder slots are in the switcher range")
+}
+
+/// Converts one validated CLI recorder slot into its wire representation.
+fn wire_recorder(recorder: u8) -> AppResult<fm_protocol::WireRecorderSlot> {
+    fm_protocol::WireRecorderSlot::new(recorder)
+        .ok_or_else(|| AppFailure(format!("recorder slot {recorder} is out of range")).into())
+}
+
+/// Renders both recorder slots' desired flags in slot order, for example
+/// `[false,true]` for slot 1 stopped and slot 2 recording.
+fn format_recording_desired(desired: &SwitcherState) -> String {
+    let mut formatted = String::from("[");
+    for (index, slot) in ModelRecorderSlot::ALL.into_iter().enumerate() {
+        if index != 0 {
+            formatted.push(',');
+        }
+        formatted.push_str(
+            &desired
+                .recording_desired(switcher_recorder_slot(slot))
+                .to_string(),
+        );
+    }
+    formatted.push(']');
+    formatted
 }
 
 fn print_inputs(project: &Project) {
@@ -3526,8 +3582,8 @@ Usage:
   freemix-cli stream-remove <show.freemix> <existing-stream-id>
   freemix-cli stream-start <show.freemix> <existing-stream-id>
   freemix-cli stream-stop <show.freemix> <existing-stream-id>
-  freemix-cli record-start <show.freemix>
-  freemix-cli record-stop <show.freemix>
+  freemix-cli record-start <show.freemix> [--recorder <1|2>]
+  freemix-cli record-stop <show.freemix> [--recorder <1|2>]
       The stream key is a positional argument and is therefore visible in this
       machine's process list. It is stored in plaintext in project.json, like
       every other authored field, so protect the bundle accordingly. It is
@@ -3635,8 +3691,8 @@ Usage:
   freemix-cli remote-ftb <127.0.0.1:port> <live|black> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-start <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-stop <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
-  freemix-cli remote-record-start <127.0.0.1:port> [--key <key>] [--expect <revision>]
-  freemix-cli remote-record-stop <127.0.0.1:port> [--key <key>] [--expect <revision>]
+  freemix-cli remote-record-start <127.0.0.1:port> [--recorder <1|2>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-record-stop <127.0.0.1:port> [--recorder <1|2>] [--key <key>] [--expect <revision>]
   freemix-cli render <show.freemix> <output.ppm> [--width <px>] [--height <px>]
   freemix-cli demo <show.freemix> [output.ppm]"
     );

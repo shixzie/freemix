@@ -38,17 +38,18 @@ use fm_protocol::{
     InputStatus, ManualTransitionKind, ManualTransitionPosition, ManualTransitionState,
     ManualTransitionStatus, OutputStatus, OverlayBorderPreset as ProtocolOverlayBorder,
     OverlayPositionPreset as ProtocolOverlayPosition, OverlayStatus,
-    OverlayTransitionKind as ProtocolOverlayTransition, RuntimeEventMessage, RuntimeLifecycleEvent,
-    ServerIdentity, SnapshotMessage, StingerAudioPolicy as ProtocolStingerAudioPolicy,
+    OverlayTransitionKind as ProtocolOverlayTransition, RecordingStatus, RuntimeEventMessage,
+    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    StingerAudioPolicy as ProtocolStingerAudioPolicy,
     StingerMissingMediaFallback as ProtocolStingerFallback, StingerReadiness, StingerStatus,
     StreamRealizedState, StreamStatus, WireInputId, WireMessage, WireOutputId,
-    WireOverlayChannelId, WireStingerSlotId, WireStreamTargetId,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_switcher::{
     MissingMediaFallback, OverlayBorderPreset as SwitcherOverlayBorder, OverlayChannelId,
     OverlayChannelState, OverlayPositionPreset as SwitcherOverlayPosition,
-    OverlayTransitionKind as SwitcherOverlayTransition, StingerAudioPolicy, StingerDescriptor,
-    StingerPreloadState, StingerSlotId, StreamTargetId,
+    OverlayTransitionKind as SwitcherOverlayTransition, RecorderSlot, StingerAudioPolicy,
+    StingerDescriptor, StingerPreloadState, StingerSlotId, StreamTargetId,
 };
 
 /// Target-free authorization called before an engine command is constructed or validated.
@@ -1113,8 +1114,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::CancelManualTransition
         | CommandPayload::StreamStart { .. }
         | CommandPayload::StreamStop { .. }
-        | CommandPayload::RecordStart
-        | CommandPayload::RecordStop => CommandClass::Transition,
+        | CommandPayload::RecordStart { .. }
+        | CommandPayload::RecordStop { .. } => CommandClass::Transition,
     }
 }
 
@@ -1202,9 +1203,21 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         CommandPayload::StreamStop { target } => EngineCommand::StreamStop {
             target: domain_stream_target(*target),
         },
-        CommandPayload::RecordStart => EngineCommand::RecordStart,
-        CommandPayload::RecordStop => EngineCommand::RecordStop,
+        CommandPayload::RecordStart { recorder } => EngineCommand::RecordStart {
+            recorder: domain_recorder_slot(*recorder),
+        },
+        CommandPayload::RecordStop { recorder } => EngineCommand::RecordStop {
+            recorder: domain_recorder_slot(*recorder),
+        },
     }
+}
+
+fn domain_recorder_slot(recorder: WireRecorderSlot) -> RecorderSlot {
+    RecorderSlot::new(recorder.get()).expect("wire recorder slots are bounded")
+}
+
+fn wire_recorder_slot(recorder: RecorderSlot) -> WireRecorderSlot {
+    WireRecorderSlot::new(recorder.get()).expect("domain recorder slots are bounded")
 }
 
 fn domain_stream_target(target: WireStreamTargetId) -> StreamTargetId {
@@ -1415,18 +1428,20 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
         .events
         .iter()
         .any(|event| matches!(&event.payload, EngineEvent::StreamsChanged { .. }));
-    let recording_changed = outcome
-        .events
-        .iter()
-        .any(|event| matches!(&event.payload, EngineEvent::RecordingChanged { .. }));
     if streams_changed {
         return EventPayload::StreamsChanged {
             streams: protocol_streams(engine),
         };
     }
-    if recording_changed {
+    if let Some((recorder, active)) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::RecordingChanged { recorder, active } = &event.payload else {
+            return None;
+        };
+        Some((*recorder, *active))
+    }) {
         return EventPayload::RecordingChanged {
-            active: engine.show().desired_switcher().recording_desired(),
+            recorder: wire_recorder_slot(recorder),
+            active,
         };
     }
     if let Some((input, name)) = outcome.events.iter().find_map(|event| {
@@ -1534,7 +1549,13 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
         realized_fade_to_black: protocol_fade_to_black_state(engine.realized_fade_to_black()),
         stingers: protocol_stingers(engine),
         streams: protocol_streams(engine),
-        record_desired_active: engine.show().desired_switcher().recording_desired(),
+        recordings: RecorderSlot::ALL
+            .into_iter()
+            .map(|recorder| RecordingStatus {
+                recorder: wire_recorder_slot(recorder),
+                desired_active: engine.show().desired_switcher().recording_desired(recorder),
+            })
+            .collect(),
         desired_overlays: protocol_overlays(engine.show().desired_switcher().overlays()),
         realized_overlays: protocol_overlays(engine.realized_switcher().overlays()),
     };

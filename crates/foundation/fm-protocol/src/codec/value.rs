@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::{
     ClientType, CodecError, DurableEvent, FieldIssue, InputStatus, OutputStatus, ProtocolVersion,
-    Role, RuntimeDomainBoundary, StreamRealizedState, StreamStatus,
+    RecordingStatus, Role, RuntimeDomainBoundary, StreamRealizedState, StreamStatus,
+    WireRecorderSlot,
 };
 
 use super::{
@@ -534,6 +535,72 @@ fn parse_stream_detail(detail: &str) -> Result<Option<String>, CodecError> {
         });
     }
     Ok(Some(detail))
+}
+
+/// Encodes the fixed two-recorder roster in slot order.
+pub(super) fn recording_statuses(values: &[RecordingStatus]) -> Result<String, CodecError> {
+    if values.len() != 2 {
+        return Err(CodecError::InvalidField {
+            field: "recordings",
+            value: format!("expected 2 recorders, found {}", values.len()),
+        });
+    }
+    let mut seen = [false; 2];
+    for status in values {
+        let index = usize::from(status.recorder.get() - 1);
+        if seen[index] {
+            return Err(CodecError::InvalidField {
+                field: "recordings",
+                value: status.recorder.to_string(),
+            });
+        }
+        seen[index] = true;
+    }
+    let mut ordered = values.iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|status| status.recorder.get());
+    Ok(ordered
+        .into_iter()
+        .map(|status| format!("{}:{}", status.recorder, u8::from(status.desired_active)))
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+/// Parses the fixed two-recorder roster and returns it in slot order.
+pub(super) fn parse_recording_statuses(value: &str) -> Result<Vec<RecordingStatus>, CodecError> {
+    let invalid = || CodecError::InvalidField {
+        field: "recordings",
+        value: value.to_owned(),
+    };
+    let entries = value.split(',').collect::<Vec<_>>();
+    if entries.len() != 2 {
+        return Err(invalid());
+    }
+    let mut seen = [false; 2];
+    let mut statuses = Vec::with_capacity(2);
+    for entry in entries {
+        let (recorder, active) = entry.split_once(':').ok_or_else(invalid)?;
+        let recorder = recorder
+            .parse::<u8>()
+            .ok()
+            .and_then(WireRecorderSlot::new)
+            .ok_or_else(invalid)?;
+        let desired_active = match active {
+            "0" => false,
+            "1" => true,
+            _ => return Err(invalid()),
+        };
+        let index = usize::from(recorder.get() - 1);
+        if seen[index] {
+            return Err(invalid());
+        }
+        seen[index] = true;
+        statuses.push(RecordingStatus {
+            recorder,
+            desired_active,
+        });
+    }
+    statuses.sort_by_key(|status| status.recorder.get());
+    Ok(statuses)
 }
 
 fn check_items(

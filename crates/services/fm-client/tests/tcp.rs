@@ -17,10 +17,10 @@ use fm_protocol::{
     ClientType, CodecError, CommandPayload, CommandResult, EngineIdentity, EventCursor,
     EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, HandshakeOutcome,
     HandshakeRequest, HandshakeResponse, InputAudioMeters, LineDecoder, MAX_LINE_BYTES,
-    ManualTransitionStatus, OverlayStatus, ProtocolVersion, ResumeCursor, Role,
+    ManualTransitionStatus, OverlayStatus, ProtocolVersion, RecordingStatus, ResumeCursor, Role,
     RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason,
     StreamRealizedState, StreamStatusMessage, StreamStatusSample, WireInputId, WireMessage,
-    WireStreamTargetId, encode_line,
+    WireRecorderSlot, WireStreamTargetId, encode_line,
 };
 use fm_types::ProjectId;
 use fm_ui_model::ModelError;
@@ -37,6 +37,16 @@ fn input_statuses() -> Vec<fm_protocol::InputStatus> {
         .map(|(value, name)| fm_protocol::InputStatus {
             input: input(value),
             name: name.into(),
+        })
+        .collect()
+}
+
+fn recordings() -> Vec<RecordingStatus> {
+    [1, 2]
+        .into_iter()
+        .map(|slot| RecordingStatus {
+            recorder: WireRecorderSlot::new(slot).unwrap(),
+            desired_active: false,
         })
         .collect()
 }
@@ -131,7 +141,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         },
         stingers: Vec::new(),
         streams: Vec::new(),
-        record_desired_active: false,
+        recordings: recordings(),
         desired_overlays: OverlayStatus::empty_channels(),
         realized_overlays: OverlayStatus::empty_channels(),
     }

@@ -14,7 +14,7 @@ use fm_protocol::{
     StreamStatusMessage, WireMessage, decode_line, encode_line,
 };
 use fm_types::ProjectId;
-use fm_ui_model::ManualTransitionStatus;
+use fm_ui_model::{ManualTransitionStatus, ProjectState};
 
 type RemoteResult<T> = Result<T, Box<dyn Error>>;
 
@@ -393,7 +393,7 @@ impl Remote {
             format_fade_to_black(switcher.realized_fade_to_black),
             format_input_audio_strips(state),
             format_streams(state.streams()),
-            state.record_desired_active(),
+            format_recording_desired(state),
             format_overlays(state.desired_overlays()),
             format_overlays(state.realized_overlays()),
             format_input_roster(state),
@@ -571,6 +571,22 @@ fn format_streams(streams: &[fm_ui_model::StreamStatus]) -> String {
             .collect::<Vec<_>>()
             .join(",")
     )
+}
+
+/// Renders both recorder slots' desired flags in slot order, for example
+/// `[false,true]` for slot 1 stopped and slot 2 recording.
+fn format_recording_desired(state: &ProjectState) -> String {
+    let mut formatted = String::from("[");
+    for (index, slot) in fm_model::RecorderSlot::ALL.into_iter().enumerate() {
+        if index != 0 {
+            formatted.push(',');
+        }
+        let recorder = fm_protocol::WireRecorderSlot::new(slot.get())
+            .expect("model recorder slots are wire recorder slots");
+        formatted.push_str(&state.recording_desired(recorder).to_string());
+    }
+    formatted.push(']');
+    formatted
 }
 
 const fn stream_realized_name(state: fm_protocol::StreamRealizedState) -> &'static str {

@@ -3,11 +3,11 @@ use std::{collections::BTreeMap, num::NonZeroU128};
 use fm_model::{
     AudioBus, BusSend, CropRect, Input, InputAudioStrip, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerGeometry,
-    MainMix, Output, Project, ProjectSettings, RectMask, RestartPolicy, Rgba8, Rotation, Scene,
-    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
-    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
-    StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol, StreamTarget,
-    StreamTargetId,
+    MainMix, Output, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RectMask,
+    RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo,
+    SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
+    StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
+    StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetId,
 };
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, ChromaLocation, ColorMetadata, ColorPrimaries,
@@ -65,7 +65,7 @@ struct ProjectDto {
     outputs: Vec<Output>,
     stream_targets: Vec<StreamTarget>,
     main_mix: Option<MainMix>,
-    recording_desired_active: bool,
+    recording_desired: [bool; RECORDER_SLOT_COUNT],
     stingers: Vec<StingerConfig>,
     restart_policy: RestartPolicy,
 }
@@ -96,7 +96,7 @@ impl ProjectDto {
                 parse_stream_target,
             )?,
             main_mix: parse_optional(object.take("main_mix")?, parse_main_mix)?,
-            recording_desired_active: object.boolean("recording_desired_active")?,
+            recording_desired: parse_recording_desired(object.take("recording_desired")?)?,
             stingers: parse_array(object.take("stingers")?, "stingers", parse_stinger)?,
             restart_policy: parse_restart_policy(object.take("restart_policy")?)?,
         };
@@ -153,7 +153,9 @@ impl ProjectDto {
         if let Some(main_mix) = self.main_mix {
             project.set_main_mix(main_mix);
         }
-        project.set_recording_desired_active(self.recording_desired_active);
+        for (slot, active) in RecorderSlot::ALL.into_iter().zip(self.recording_desired) {
+            project.set_recording_desired(slot, active);
+        }
         for stinger in self.stingers {
             project.add_stinger(stinger);
         }
@@ -658,6 +660,26 @@ fn parse_main_mix(value: Value) -> Result<MainMix, DecodeError> {
     );
     object.finish()?;
     Ok(mix)
+}
+
+/// Parses the desired recording flags for every recorder slot.
+///
+/// The field is an array of exactly [`RECORDER_SLOT_COUNT`] booleans in slot
+/// order: a missing field, a non-array, any other length, and non-boolean
+/// entries are all malformed.
+fn parse_recording_desired(value: Value) -> Result<[bool; RECORDER_SLOT_COUNT], DecodeError> {
+    let desired = parse_array(value, "recording_desired", |value| {
+        let Value::Bool(value) = value else {
+            return Err(syntax("recording_desired entries must be booleans"));
+        };
+        Ok(value)
+    })?;
+    desired.try_into().map_err(|desired: Vec<bool>| {
+        syntax(format!(
+            "expected {RECORDER_SLOT_COUNT} recording_desired entries, found {}",
+            desired.len()
+        ))
+    })
 }
 
 fn parse_restart_policy(value: Value) -> Result<RestartPolicy, DecodeError> {

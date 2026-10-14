@@ -8,10 +8,10 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CapabilityReportSummary, ClientType, CommandPayload, CommandResult,
     EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState,
     HandshakeOutcome, HandshakeResponse, ManualTransitionKind, ManualTransitionPosition,
-    ManualTransitionState, ManualTransitionStatus, ProtocolVersion, ResumeCursor, Role,
-    RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason,
-    StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness, StingerStatus, WireInputId,
-    WireMessage, WireStingerSlotId,
+    ManualTransitionState, ManualTransitionStatus, ProtocolVersion, RecordingStatus, ResumeCursor,
+    Role, RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
+    StingerStatus, WireInputId, WireMessage, WireRecorderSlot, WireStingerSlotId,
 };
 use fm_types::ProjectId;
 use fm_ui_model::ManualTransitionStatus as ModelManualTransitionStatus;
@@ -28,6 +28,23 @@ fn input_statuses() -> Vec<fm_protocol::InputStatus> {
             name: name.into(),
         })
         .collect()
+}
+
+fn recorder_slot(value: u8) -> WireRecorderSlot {
+    WireRecorderSlot::new(value).unwrap()
+}
+
+fn recordings() -> Vec<RecordingStatus> {
+    vec![
+        RecordingStatus {
+            recorder: recorder_slot(1),
+            desired_active: false,
+        },
+        RecordingStatus {
+            recorder: recorder_slot(2),
+            desired_active: false,
+        },
+    ]
 }
 
 fn project_id() -> ProjectId {
@@ -114,7 +131,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         realized_fade_to_black: live_fade_to_black(),
         stingers: Vec::new(),
         streams: Vec::new(),
-        record_desired_active: false,
+        recordings: recordings(),
         desired_overlays: fm_protocol::OverlayStatus::empty_channels(),
         realized_overlays: fm_protocol::OverlayStatus::empty_channels(),
     }
@@ -1078,20 +1095,22 @@ fn streams_changed_events_retain_the_latest_projection() {
 }
 
 #[test]
-fn snapshots_intake_the_record_desired_projection() {
+fn snapshots_intake_the_per_slot_recording_projection() {
     let mut client = Client::new(config(4)).unwrap();
     client.start_connect().unwrap();
     client.transport_connected().unwrap();
     client.accept_handshake(handshake(4, None)).unwrap();
 
     let mut message = snapshot_with_streams(4, Vec::new());
-    message.record_desired_active = true;
+    message.recordings[0].desired_active = true;
     client.apply_snapshot(message).unwrap();
-    assert!(client.model().state().unwrap().record_desired_active());
+    let state = client.model().state().unwrap();
+    assert!(state.recording_desired(recorder_slot(1)));
+    assert!(!state.recording_desired(recorder_slot(2)));
 }
 
 #[test]
-fn recording_changed_events_retain_the_latest_desired_flag() {
+fn recording_changed_events_update_only_the_addressed_slot() {
     let mut client = Client::new(config(4)).unwrap();
     connect_snapshot(&mut client, 4);
 
@@ -1101,15 +1120,32 @@ fn recording_changed_events_retain_the_latest_desired_flag() {
                 engine: engine(),
                 revision: 5,
             },
-            payload: EventPayload::RecordingChanged { active: true },
+            payload: EventPayload::RecordingChanged {
+                recorder: recorder_slot(1),
+                active: true,
+            },
         })
         .unwrap();
-    assert!(client.model().state().unwrap().record_desired_active());
+    let state = client.model().state().unwrap();
+    assert!(state.recording_desired(recorder_slot(1)));
+    assert!(!state.recording_desired(recorder_slot(2)));
 
     let command = client
-        .queue_command(CommandPayload::RecordStop, "rec-off", None, None)
+        .queue_command(
+            CommandPayload::RecordStart {
+                recorder: recorder_slot(2),
+            },
+            "rec-two-on",
+            None,
+            None,
+        )
         .unwrap();
-    assert_eq!(command.payload, CommandPayload::RecordStop);
+    assert_eq!(
+        command.payload,
+        CommandPayload::RecordStart {
+            recorder: recorder_slot(2)
+        }
+    );
     assert_eq!(client.model().pending_commands().len(), 1);
 
     client
@@ -1118,8 +1154,29 @@ fn recording_changed_events_retain_the_latest_desired_flag() {
                 engine: engine(),
                 revision: 6,
             },
-            payload: EventPayload::RecordingChanged { active: false },
+            payload: EventPayload::RecordingChanged {
+                recorder: recorder_slot(2),
+                active: true,
+            },
         })
         .unwrap();
-    assert!(!client.model().state().unwrap().record_desired_active());
+    let state = client.model().state().unwrap();
+    assert!(state.recording_desired(recorder_slot(1)));
+    assert!(state.recording_desired(recorder_slot(2)));
+
+    client
+        .apply_event(EventMessage {
+            cursor: EventCursor {
+                engine: engine(),
+                revision: 7,
+            },
+            payload: EventPayload::RecordingChanged {
+                recorder: recorder_slot(1),
+                active: false,
+            },
+        })
+        .unwrap();
+    let state = client.model().state().unwrap();
+    assert!(!state.recording_desired(recorder_slot(1)));
+    assert!(state.recording_desired(recorder_slot(2)));
 }

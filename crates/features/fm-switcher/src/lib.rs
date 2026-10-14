@@ -3,6 +3,7 @@
 mod command;
 mod fade_to_black;
 mod overlay;
+mod recorder;
 mod state;
 mod stinger;
 mod stream;
@@ -19,6 +20,7 @@ pub use overlay::{
     OverlayBorderPreset, OverlayChannelId, OverlayChannelState, OverlayPositionPreset,
     OverlayTransitionAdvance, OverlayTransitionKind,
 };
+pub use recorder::{RECORDER_SLOT_COUNT, RecorderSlot};
 pub use state::{ProgramFrame, SwitcherState};
 pub use stinger::{
     MissingMediaFallback, STINGER_SLOT_COUNT, StingerAudioPolicy, StingerDescriptor,

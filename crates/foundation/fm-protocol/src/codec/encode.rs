@@ -15,7 +15,8 @@ use crate::{
 
 use super::value::{
     client_type, durable_events, escape_stream_failure, field_issues, input_ids, input_statuses,
-    output_statuses, role, runtime_domains, stream_realized_state, stream_statuses, string_list,
+    output_statuses, recording_statuses, role, runtime_domains, stream_realized_state,
+    stream_statuses, string_list,
 };
 use super::{
     CodecError, MAX_FIELD_VALUE_BYTES, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_STREAM_LOCAL_SEGMENTS,
@@ -214,8 +215,9 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         payload @ (CommandPayload::StreamStart { .. } | CommandPayload::StreamStop { .. }) => {
             encode_stream_command(record, payload)?;
         }
-        CommandPayload::RecordStart => record.field("payload", "record_start")?,
-        CommandPayload::RecordStop => record.field("payload", "record_stop")?,
+        payload @ (CommandPayload::RecordStart { .. } | CommandPayload::RecordStop { .. }) => {
+            encode_record_command(record, payload)?;
+        }
         CommandPayload::Wipe { duration_frames } => {
             record.field("payload", "wipe")?;
             record.field("duration_frames", duration_frames)?;
@@ -396,6 +398,16 @@ fn encode_stream_command(record: &mut Record, payload: &CommandPayload) -> Resul
     record.field("target", *target)
 }
 
+fn encode_record_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
+    let (name, recorder) = match payload {
+        CommandPayload::RecordStart { recorder } => ("record_start", recorder),
+        CommandPayload::RecordStop { recorder } => ("record_stop", recorder),
+        _ => unreachable!("only record commands are delegated"),
+    };
+    record.field("payload", name)?;
+    record.field("recorder", recorder.get())
+}
+
 fn encode_result(record: &mut Record, message: &CommandResult) -> Result<(), CodecError> {
     record.kind("command_result");
     match message {
@@ -463,10 +475,7 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     )?;
     encode_stingers(record, &message.stingers)?;
     record.field_string("streams", stream_statuses(&message.streams)?)?;
-    record.field(
-        "record_desired_active",
-        u8::from(message.record_desired_active),
-    )?;
+    record.field_string("recordings", recording_statuses(&message.recordings)?)?;
     encode_overlays(record, "desired_overlays", &message.desired_overlays)?;
     encode_overlays(record, "realized_overlays", &message.realized_overlays)
 }
@@ -704,8 +713,9 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field("event", "streams_changed")?;
             record.field_string("streams", stream_statuses(streams)?)?;
         }
-        EventPayload::RecordingChanged { active } => {
+        EventPayload::RecordingChanged { recorder, active } => {
             record.field("event", "recording_changed")?;
+            record.field("recorder", recorder.get())?;
             record.field("active", u8::from(*active))?;
         }
     }

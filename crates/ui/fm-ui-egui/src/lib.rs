@@ -12,7 +12,7 @@ use fm_protocol::{
     AudioMeterChannel, AudioMetersMessage, ManualTransitionKind, ManualTransitionPosition,
     OverlayBorderPreset, OverlayPositionPreset, OverlayTransitionKind, StingerReadiness,
     StreamRealizedState, StreamStatusMessage, StreamStatusSample, WireOverlayChannelId,
-    WireStingerSlotId,
+    WireRecorderSlot, WireStingerSlotId,
 };
 use fm_types::MAX_INPUT_NAME_BYTES;
 use fm_types::{InputId, OutputId};
@@ -222,8 +222,10 @@ pub struct StudioUiState {
     pub audio_meters: Option<AudioMetersMessage>,
     pub streams: Vec<StreamStatus>,
     pub stream_status: Option<StreamStatusMessage>,
-    pub recording_desired: bool,
-    pub recording_pending: bool,
+    /// Authoritative desired recording flag per recorder slot, slot order.
+    pub recording_desired: [bool; RECORDER_SLOT_COUNT],
+    /// Whether one recorder slot's record command is still unresolved.
+    pub recording_pending: [bool; RECORDER_SLOT_COUNT],
 }
 
 impl StudioUiState {
@@ -245,8 +247,8 @@ impl StudioUiState {
             audio_meters: None,
             streams: Vec::new(),
             stream_status: None,
-            recording_desired: false,
-            recording_pending: false,
+            recording_desired: [false; RECORDER_SLOT_COUNT],
+            recording_pending: [false; RECORDER_SLOT_COUNT],
         }
     }
 
@@ -284,29 +286,53 @@ impl StudioUiState {
     }
 }
 
+/// The daemon's fixed number of independently controllable recorder slots.
+pub const RECORDER_SLOT_COUNT: usize = 2;
+
 /// Recording operator actions emitted by the compact recording panel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecordingAction {
-    /// Starts the configured program recorder.
-    Start,
-    /// Stops the configured program recorder.
-    Stop,
+    /// Starts the addressed configured program recorder.
+    Start(WireRecorderSlot),
+    /// Stops the addressed configured program recorder.
+    Stop(WireRecorderSlot),
+}
+
+impl RecordingAction {
+    /// The recorder slot this action addresses.
+    #[must_use]
+    pub const fn recorder(self) -> WireRecorderSlot {
+        match self {
+            Self::Start(recorder) | Self::Stop(recorder) => recorder,
+        }
+    }
+
+    /// Whether this action starts (`true`) or stops the addressed recorder.
+    #[must_use]
+    pub const fn starts(self) -> bool {
+        matches!(self, Self::Start(_))
+    }
+
+    const fn slot_index(self) -> usize {
+        self.recorder().get() as usize - 1
+    }
 }
 
 /// Validates one requested recording action against the session gates and the
-/// authoritative desired flag, returning it only when the current state permits
-/// exactly that action.
+/// addressed slot's authoritative desired flag, returning it only when the
+/// current state permits exactly that action.
 #[must_use]
 pub const fn recording_action(
     state: &StudioUiState,
     requested: RecordingAction,
 ) -> Option<RecordingAction> {
+    let slot = requested.slot_index();
     let enabled = state.connection_status.controls_enabled()
         && state.view.is_some()
         && state.can_transition
-        && !state.recording_pending;
-    match (enabled, state.recording_desired, requested) {
-        (true, false, RecordingAction::Start) | (true, true, RecordingAction::Stop) => {
+        && !state.recording_pending[slot];
+    match (enabled, state.recording_desired[slot], requested) {
+        (true, false, RecordingAction::Start(_)) | (true, true, RecordingAction::Stop(_)) => {
             Some(requested)
         }
         _ => None,
@@ -919,52 +945,65 @@ impl StudioShell {
         ui: &mut Ui,
         state: &StudioUiState,
     ) -> Option<RecordingAction> {
-        let requested = if state.recording_desired {
-            RecordingAction::Stop
-        } else {
-            RecordingAction::Start
-        };
         let mut selected = None;
         Frame::new()
             .fill(GRAPHITE_RAISED)
             .stroke(Stroke::new(1.0, Color32::from_rgb(67, 61, 44)))
             .inner_margin(Margin::symmetric(10, 8))
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("RECORDING").small().strong().color(AMBER));
-                    ui.label(
-                        RichText::new(recording_status_label(state.recording_desired))
-                            .small()
-                            .strong()
-                            .color(if state.recording_desired {
-                                PROGRAM
-                            } else {
-                                MUTED
-                            }),
-                    );
-                    if state.recording_pending {
-                        ui.label(RichText::new("PENDING").small().color(AMBER));
-                    }
-                    let (label, fill) = match requested {
-                        RecordingAction::Start => ("START", Color32::from_rgb(92, 28, 32)),
-                        RecordingAction::Stop => ("STOP", Color32::from_rgb(98, 66, 17)),
+                ui.label(RichText::new("RECORDING").small().strong().color(AMBER));
+                for slot in 1..=RECORDER_SLOT_COUNT {
+                    let recorder = WireRecorderSlot::new(
+                        u8::try_from(slot).expect("two recorder slots fit u8"),
+                    )
+                    .expect("panel renders only the two recorder slots");
+                    let desired = state.recording_desired[slot - 1];
+                    let requested = if desired {
+                        RecordingAction::Stop(recorder)
+                    } else {
+                        RecordingAction::Start(recorder)
                     };
-                    if ui
-                        .add_enabled(
-                            recording_action(state, requested).is_some(),
-                            Button::new(RichText::new(label).strong())
-                                .fill(fill)
-                                .min_size(Vec2::new(92.0, 28.0)),
-                        )
-                        .on_hover_text(match requested {
-                            RecordingAction::Start => "Start the configured program recorder",
-                            RecordingAction::Stop => "Stop the configured program recorder",
-                        })
-                        .clicked()
-                    {
-                        selected = recording_action(state, requested);
-                    }
-                });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(format!("REC {slot}"))
+                                .small()
+                                .strong()
+                                .color(MUTED),
+                        );
+                        ui.label(
+                            RichText::new(recording_status_label(desired))
+                                .small()
+                                .strong()
+                                .color(if desired { PROGRAM } else { MUTED }),
+                        );
+                        if state.recording_pending[slot - 1] {
+                            ui.label(RichText::new("PENDING").small().color(AMBER));
+                        }
+                        let (label, fill) = match requested {
+                            RecordingAction::Start(_) => ("START", Color32::from_rgb(92, 28, 32)),
+                            RecordingAction::Stop(_) => ("STOP", Color32::from_rgb(98, 66, 17)),
+                        };
+                        if ui
+                            .add_enabled(
+                                recording_action(state, requested).is_some(),
+                                Button::new(RichText::new(label).strong())
+                                    .fill(fill)
+                                    .min_size(Vec2::new(92.0, 28.0)),
+                            )
+                            .on_hover_text(match requested {
+                                RecordingAction::Start(_) => {
+                                    format!("Start configured program recorder {slot}")
+                                }
+                                RecordingAction::Stop(_) => {
+                                    format!("Stop configured program recorder {slot}")
+                                }
+                            })
+                            .clicked()
+                        {
+                            selected = recording_action(state, requested);
+                        }
+                    });
+                }
             });
         selected
     }
@@ -2709,7 +2748,7 @@ mod tests {
         ));
     }
 
-    fn recording_view(record_desired_active: bool) -> ClientView {
+    fn recording_view(recordings: [bool; RECORDER_SLOT_COUNT]) -> ClientView {
         ClientView {
             cursor: ProjectCursor::from_resume_cursor(
                 fm_types::ProjectId::new(NonZeroU128::new(1).unwrap()),
@@ -2731,82 +2770,122 @@ mod tests {
             input_audio_strips: Vec::new(),
             stingers: Vec::new(),
             streams: Vec::new(),
-            record_desired_active,
+            recordings: vec![
+                fm_protocol::RecordingStatus {
+                    recorder: REC_1,
+                    desired_active: recordings[0],
+                },
+                fm_protocol::RecordingStatus {
+                    recorder: REC_2,
+                    desired_active: recordings[1],
+                },
+            ],
             desired_overlays: Vec::new(),
             realized_overlays: Vec::new(),
             switcher: switcher((1, 1), (1, 1)),
         }
     }
 
-    fn recording_state(desired: bool, pending: bool) -> StudioUiState {
+    fn recording_state(desired: [bool; RECORDER_SLOT_COUNT], pending: bool) -> StudioUiState {
         let mut state = StudioUiState::new(StudioConnectionStatus::Ready)
             .with_view(recording_view(desired))
             .with_switcher_permissions(true, true);
         state.recording_desired = desired;
-        state.recording_pending = pending;
+        state.recording_pending = [pending; RECORDER_SLOT_COUNT];
         state
     }
 
+    const REC_1: WireRecorderSlot = WireRecorderSlot::new(1).expect("slot one exists");
+    const REC_2: WireRecorderSlot = WireRecorderSlot::new(2).expect("slot two exists");
+
     #[test]
     fn recording_controls_require_ready_view_and_transition_permission() {
-        let available = recording_state(false, false);
+        let available = recording_state([false, false], false);
         assert_eq!(
-            recording_action(&available, RecordingAction::Start),
-            Some(RecordingAction::Start)
+            recording_action(&available, RecordingAction::Start(REC_1)),
+            Some(RecordingAction::Start(REC_1))
         );
         let denied = [
             // The transition permission is missing.
             StudioUiState::new(StudioConnectionStatus::Ready)
-                .with_view(recording_view(false))
+                .with_view(recording_view([false, false]))
                 .with_switcher_permissions(true, false),
             // No replicated view is present.
             StudioUiState::new(StudioConnectionStatus::Ready).with_switcher_permissions(true, true),
             // The lifecycle is not ready.
             StudioUiState::new(StudioConnectionStatus::Connecting)
-                .with_view(recording_view(false))
+                .with_view(recording_view([false, false]))
                 .with_switcher_permissions(true, true),
         ];
         for state in denied {
-            assert_eq!(recording_action(&state, RecordingAction::Start), None);
-            assert_eq!(recording_action(&state, RecordingAction::Stop), None);
+            assert_eq!(
+                recording_action(&state, RecordingAction::Start(REC_1)),
+                None
+            );
+            assert_eq!(recording_action(&state, RecordingAction::Stop(REC_2)), None);
         }
     }
 
     #[test]
-    fn recording_action_follows_the_authoritative_desired_flag() {
+    fn recording_action_follows_the_authoritative_desired_flag_per_slot() {
+        let state = recording_state([false, true], false);
         assert_eq!(
-            recording_action(&recording_state(false, false), RecordingAction::Start),
-            Some(RecordingAction::Start)
+            recording_action(&state, RecordingAction::Start(REC_1)),
+            Some(RecordingAction::Start(REC_1))
         );
         assert_eq!(
-            recording_action(&recording_state(true, false), RecordingAction::Stop),
-            Some(RecordingAction::Stop)
+            recording_action(&state, RecordingAction::Stop(REC_2)),
+            Some(RecordingAction::Stop(REC_2))
+        );
+        // Slot two is recording, so its Start is wrong; slot one is stopped,
+        // so its Stop is wrong.
+        assert_eq!(recording_action(&state, RecordingAction::Stop(REC_1)), None);
+        assert_eq!(
+            recording_action(&state, RecordingAction::Start(REC_2)),
+            None
         );
         assert_eq!(recording_status_label(false), "STOPPED");
         assert_eq!(recording_status_label(true), "RECORDING");
     }
 
     #[test]
-    fn recording_pending_blocks_a_second_intent() {
+    fn recording_pending_blocks_a_second_intent_per_slot() {
         for (desired, action) in [
-            (false, RecordingAction::Start),
-            (true, RecordingAction::Stop),
+            ([false, false], RecordingAction::Start(REC_1)),
+            ([true, true], RecordingAction::Stop(REC_2)),
         ] {
             assert_eq!(
                 recording_action(&recording_state(desired, true), action),
                 None
             );
         }
+        // A pending slot does not disable the other slot's action.
+        let mut state = recording_state([false, false], false);
+        state.recording_pending = [true, false];
+        assert_eq!(
+            recording_action(&state, RecordingAction::Start(REC_1)),
+            None
+        );
+        assert_eq!(
+            recording_action(&state, RecordingAction::Start(REC_2)),
+            Some(RecordingAction::Start(REC_2))
+        );
     }
 
     #[test]
     fn recording_click_must_match_the_authoritative_desired_flag() {
         assert_eq!(
-            recording_action(&recording_state(false, false), RecordingAction::Stop),
+            recording_action(
+                &recording_state([false, false], false),
+                RecordingAction::Stop(REC_1)
+            ),
             None
         );
         assert_eq!(
-            recording_action(&recording_state(true, false), RecordingAction::Start),
+            recording_action(
+                &recording_state([true, false], false),
+                RecordingAction::Start(REC_1)
+            ),
             None
         );
     }

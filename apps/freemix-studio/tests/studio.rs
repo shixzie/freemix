@@ -21,7 +21,8 @@ use fm_protocol::{
     FadeToBlackPosition, FadeToBlackState, HandshakeOutcome, HandshakeResponse,
     HeartbeatAcknowledgementMessage, HeartbeatMessage, LineDecoder, ManualTransitionStatus,
     OverlayStatus, ProtocolVersion, Role, RuntimeEventMessage, RuntimeLifecycleEvent,
-    ServerIdentity, SnapshotMessage, SnapshotReason, WireInputId, WireMessage, encode_line,
+    ServerIdentity, SnapshotMessage, SnapshotReason, WireInputId, WireMessage, WireRecorderSlot,
+    encode_line,
 };
 use fm_types::{InputId, ProjectId};
 use freemix_studio::{
@@ -106,6 +107,22 @@ fn handshake_version(
     }
 }
 
+/// The fixed two-slot recorder roster carried by test snapshots, in slot
+/// order: slot 1 first, then slot 2.
+fn recording_roster(desired: [bool; 2]) -> Vec<fm_protocol::RecordingStatus> {
+    desired
+        .into_iter()
+        .enumerate()
+        .map(|(index, desired_active)| fm_protocol::RecordingStatus {
+            recorder: WireRecorderSlot::new(
+                u8::try_from(index + 1).expect("two recorder slots fit in u8"),
+            )
+            .expect("test recorder slots are 1 or 2"),
+            desired_active,
+        })
+        .collect()
+}
+
 fn snapshot(revision: u64) -> SnapshotMessage {
     SnapshotMessage {
         engine: engine(),
@@ -130,7 +147,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         },
         stingers: Vec::new(),
         streams: Vec::new(),
-        record_desired_active: false,
+        recordings: recording_roster([false, false]),
         desired_overlays: OverlayStatus::empty_channels(),
         realized_overlays: OverlayStatus::empty_channels(),
     }
