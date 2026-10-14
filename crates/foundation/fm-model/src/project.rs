@@ -243,6 +243,8 @@ pub enum ReplaceInputError {
     UnknownInput(InputId),
     /// A scene source names a scene that does not exist.
     MissingScene(SceneId),
+    /// An alias source names an input that does not exist.
+    MissingInput(InputId),
     /// The replacement would make the input's scene graph reach itself.
     SourceCycle,
 }
@@ -513,6 +515,7 @@ impl std::fmt::Display for ReplaceInputError {
         match self {
             Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
             Self::MissingScene(scene) => write!(formatter, "unknown scene {scene}"),
+            Self::MissingInput(target) => write!(formatter, "unknown alias target input {target}"),
             Self::SourceCycle => formatter.write_str("input source would create a cycle"),
         }
     }
@@ -724,7 +727,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(24);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(25);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -931,20 +934,40 @@ impl Project {
     ///
     /// Returns [`RemoveInputError::UnknownInput`] when the input does not
     /// exist and [`RemoveInputError::DomainReference`] when it is referenced
-    /// by the main mix, a stinger, a scene layer, or another input's audio
-    /// source.
+    /// by the main mix, a stinger, a scene layer, another input's audio
+    /// source, or an alias input's target.
     pub fn remove_input(&mut self, input: InputId) -> Result<(), RemoveInputError> {
         if !self.inputs.iter().any(|candidate| candidate.id == input) {
             return Err(RemoveInputError::UnknownInput(input));
         }
-        let referenced = self.main_mix.is_some_and(|mix| {
-            mix.desired_program == input || mix.desired_preview == input
-        }) || self.stingers.iter().any(|stinger| stinger.media_input == input)
+        let referenced = self
+            .main_mix
+            .is_some_and(|mix| mix.desired_program == input || mix.desired_preview == input)
+            || self
+                .stingers
+                .iter()
+                .any(|stinger| stinger.media_input == input)
             || self.scenes.iter().any(|scene| {
-                scene.layers.iter().any(|layer| layer.source == SourceRef::Input(input))
+                scene
+                    .layers
+                    .iter()
+                    .any(|layer| layer.source == SourceRef::Input(input))
             })
-            || self.inputs.iter().any(|candidate| {
-                matches!(candidate.kind, InputKind::Scene { audio_source: Some(source), .. } if source == input)
+            || self.inputs.iter().any(|candidate| match candidate.kind {
+                InputKind::Scene {
+                    audio_source: Some(source),
+                    ..
+                }
+                | InputKind::Alias { target: source, .. } => source == input,
+                InputKind::Scene {
+                    audio_source: None, ..
+                }
+                | InputKind::Color
+                | InputKind::Media { .. }
+                | InputKind::Device { .. }
+                | InputKind::Network { .. }
+                | InputKind::MixFeed(_)
+                | InputKind::Simulated(_) => false,
             });
         if referenced {
             return Err(RemoveInputError::DomainReference(input));
@@ -1002,6 +1025,11 @@ impl Project {
             && !self.scenes.iter().any(|scene| scene.id == scene_id)
         {
             return Err(ReplaceInputError::MissingScene(scene_id));
+        }
+        if let InputKind::Alias { target, .. } = kind
+            && !self.inputs.iter().any(|candidate| candidate.id == target)
+        {
+            return Err(ReplaceInputError::MissingInput(target));
         }
         let mut candidate = self.clone();
         candidate.inputs[index].kind = kind;
@@ -2763,6 +2791,28 @@ pub enum InputKind {
         audio_source: Option<InputId>,
     },
     Simulated(SimulatedInput),
+    /// A virtual input: it renders and hears exactly what `target` renders
+    /// and hears, under its own id, name, list position, and audio strip.
+    ///
+    /// `crop` is the alias's own crop in project pixels of the concrete
+    /// source. It is independent: neither inherited from an alias the target
+    /// chain passes through nor applied to the target itself.
+    Alias {
+        target: InputId,
+        crop: Option<CropRect>,
+    },
+    /// The Program or Preview bus fed back as a source, delayed by exactly one
+    /// frame: on tick `n` it shows the bus frame committed at the end of tick
+    /// `n - 1`, and black before any frame has been committed. The delay is
+    /// what lets this input appear on its own bus without a dependency cycle.
+    MixFeed(MixFeed),
+}
+
+/// The switcher bus a [`InputKind::MixFeed`] input re-enters.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum MixFeed {
+    Program,
+    Preview,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

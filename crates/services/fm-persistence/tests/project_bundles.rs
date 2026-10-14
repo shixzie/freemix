@@ -723,6 +723,54 @@ fn appending_a_project_into_itself_duplicates_with_fresh_ids() {
     assert_eq!(tree(&store.assets_root()), ["a.mov"]);
 }
 
+#[test]
+fn append_remaps_alias_targets_and_keeps_mix_feeds() {
+    let temp = TestDirectory::new("append-alias");
+    let store = temp.store("show.freemix");
+    let mut project = media_project(1, &[(1, "asset://a.mov")]);
+    project.add_input(Input {
+        id: input_id(2),
+        name: "Alias".into(),
+        kind: InputKind::Alias {
+            target: input_id(1),
+            crop: Some(fm_model::CropRect::new(1, 2, 3, 4)),
+        },
+        required_capabilities: Vec::new(),
+    });
+    project.add_input(Input {
+        id: input_id(3),
+        name: "Program feed".into(),
+        kind: InputKind::MixFeed(fm_model::MixFeed::Program),
+        required_capabilities: Vec::new(),
+    });
+    let project = stored(project);
+    store.save(&project).unwrap();
+    write_asset(&store, "a.mov", b"a");
+
+    let (appended, report) = store.append_project(&project, &store).unwrap();
+    assert_eq!(
+        report.inputs,
+        [
+            (input_id(1), input_id(4)),
+            (input_id(2), input_id(5)),
+            (input_id(3), input_id(6)),
+        ]
+    );
+    let inputs = appended.project().inputs();
+    assert_eq!(
+        inputs[4].kind,
+        InputKind::Alias {
+            target: input_id(4),
+            crop: Some(fm_model::CropRect::new(1, 2, 3, 4)),
+        }
+    );
+    assert_eq!(
+        inputs[5].kind,
+        InputKind::MixFeed(fm_model::MixFeed::Program)
+    );
+    assert!(appended.project().validate().is_ok());
+}
+
 // ---------------------------------------------------------------------------
 // Media import
 // ---------------------------------------------------------------------------

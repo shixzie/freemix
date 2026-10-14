@@ -6202,6 +6202,12 @@ fn resolve_native_sources(
                 input.id
             ))
             .into()),
+            // Model-only so far: refuse rather than play some other picture.
+            InputKind::Alias { .. } | InputKind::MixFeed(_) => Err(AppFailure(format!(
+                "native alias or program/preview feed input {} is not yet realized",
+                input.id
+            ))
+            .into()),
         }?;
         sources.push(source);
     }

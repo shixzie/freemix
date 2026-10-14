@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
+use fm_types::InputId;
+
 use crate::{EntityRef, InputKind, Project, SourceRef, ValidationError, ValidationErrorKind};
 
 // A project decoded from `project.json` can chain thousands of entities, so
@@ -12,6 +14,8 @@ pub(crate) fn mark_scene_cycles(project: &Project, errors: &mut Vec<ValidationEr
     let scene_index = first_index(scenes.iter().map(|scene| scene.id));
     let inputs = project.inputs();
     let input_index = first_index(inputs.iter().map(|input| input.id));
+    // A layer naming an alias depends on whatever the alias chain ends at.
+    let terminals = alias_terminals(project, &input_index);
     // A scene's edges come from the first scene carrying its id, which is the
     // scene any lookup by id resolves to.
     let edges = scenes
@@ -26,14 +30,21 @@ pub(crate) fn mark_scene_cycles(project: &Project, errors: &mut Vec<ValidationEr
                 .iter()
                 .filter_map(|layer| match layer.source {
                     SourceRef::Scene(next) => Some(next),
-                    SourceRef::Input(input) => {
-                        input_index
-                            .get(&input)
-                            .and_then(|&input| match inputs[input].kind {
-                                InputKind::Scene { scene_id, .. } => Some(scene_id),
-                                _ => None,
-                            })
-                    }
+                    SourceRef::Input(input) => input_index
+                        .get(&input)
+                        .and_then(|&input| terminals[input])
+                        .and_then(|input| match inputs[input].kind {
+                            InputKind::Scene { scene_id, .. } => Some(scene_id),
+                            // Leaves end the walk; a mix feed is the explicit
+                            // one-frame delay node, so it never closes a cycle.
+                            InputKind::Color
+                            | InputKind::Media { .. }
+                            | InputKind::Device { .. }
+                            | InputKind::Network { .. }
+                            | InputKind::Simulated(_)
+                            | InputKind::MixFeed(_)
+                            | InputKind::Alias { .. } => None,
+                        }),
                 })
                 .filter_map(|next| scene_index.get(&next).copied())
                 .collect()
@@ -61,18 +72,39 @@ pub(crate) fn mark_audio_input_cycles(project: &Project, errors: &mut Vec<Valida
             if input_index.get(&input.id) != Some(&index) {
                 return Vec::new();
             }
+            // An alias hears its target, so it carries the audio dependency.
             match input.kind {
                 InputKind::Scene {
                     audio_source: Some(source),
                     ..
-                } => input_index.get(&source).copied().into_iter().collect(),
-                _ => Vec::new(),
+                }
+                | InputKind::Alias { target: source, .. } => {
+                    input_index.get(&source).copied().into_iter().collect()
+                }
+                InputKind::Scene {
+                    audio_source: None, ..
+                }
+                | InputKind::Color
+                | InputKind::Media { .. }
+                | InputKind::Device { .. }
+                | InputKind::Network { .. }
+                | InputKind::Simulated(_)
+                | InputKind::MixFeed(_) => Vec::new(),
             }
         })
         .collect::<Vec<_>>();
     let on_cycle = nodes_on_cycles(&edges);
+    // Every audio cycle passes through a scene's audio source; a cycle made
+    // only of aliases is reported once, by `mark_alias_cycles`.
     for input in inputs {
-        if on_cycle[input_index[&input.id]] {
+        let has_audio_source = matches!(
+            input.kind,
+            InputKind::Scene {
+                audio_source: Some(_),
+                ..
+            }
+        );
+        if has_audio_source && on_cycle[input_index[&input.id]] {
             errors.push(ValidationError {
                 entity: Some(EntityRef::Input(input.id)),
                 field: "kind.scene.audio_source",
@@ -80,6 +112,92 @@ pub(crate) fn mark_audio_input_cycles(project: &Project, errors: &mut Vec<Valida
             });
         }
     }
+}
+
+pub(crate) fn mark_alias_cycles(project: &Project, errors: &mut Vec<ValidationError>) {
+    let inputs = project.inputs();
+    let input_index = first_index(inputs.iter().map(|input| input.id));
+    let edges = inputs
+        .iter()
+        .enumerate()
+        .map(|(index, input)| {
+            if input_index.get(&input.id) != Some(&index) {
+                return Vec::new();
+            }
+            alias_target(&input.kind)
+                .and_then(|target| input_index.get(&target).copied())
+                .into_iter()
+                .collect()
+        })
+        .collect::<Vec<_>>();
+    let on_cycle = nodes_on_cycles(&edges);
+    for input in inputs {
+        if on_cycle[input_index[&input.id]] {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(input.id)),
+                field: "kind.alias.target",
+                kind: ValidationErrorKind::Cycle,
+            });
+        }
+    }
+}
+
+fn alias_target(kind: &InputKind) -> Option<InputId> {
+    match kind {
+        InputKind::Alias { target, .. } => Some(*target),
+        InputKind::Color
+        | InputKind::Media { .. }
+        | InputKind::Device { .. }
+        | InputKind::Network { .. }
+        | InputKind::Scene { .. }
+        | InputKind::Simulated(_)
+        | InputKind::MixFeed(_) => None,
+    }
+}
+
+/// For each input position, the position of the non-alias input its alias
+/// chain ends at (itself when it is not an alias), or `None` when the chain
+/// reaches a missing input or an alias cycle.
+///
+/// Iterative and memoized, so the total cost is linear in the input count.
+fn alias_terminals(project: &Project, input_index: &HashMap<InputId, usize>) -> Vec<Option<usize>> {
+    let inputs = project.inputs();
+    let mut terminal: Vec<Option<Option<usize>>> = vec![None; inputs.len()];
+    let mut on_path = vec![false; inputs.len()];
+    let mut path = Vec::new();
+    for root in 0..inputs.len() {
+        let mut current = Some(root);
+        let result = loop {
+            let Some(node) = current else {
+                break None;
+            };
+            if let Some(known) = terminal[node] {
+                break known;
+            }
+            if on_path[node] {
+                break None;
+            }
+            match alias_target(&inputs[node].kind) {
+                Some(target) => {
+                    on_path[node] = true;
+                    path.push(node);
+                    current = input_index.get(&target).copied();
+                }
+                None => break Some(node),
+            }
+        };
+        if path.is_empty() && terminal[root].is_none() {
+            terminal[root] = Some(result);
+        }
+        for node in path.drain(..) {
+            on_path[node] = false;
+            terminal[node] = Some(result);
+        }
+    }
+    terminal
+        .into_iter()
+        .map(|known| known.expect("every input position was resolved"))
+        .collect()
 }
 
 pub(crate) fn mark_bus_cycles(project: &Project, errors: &mut Vec<ValidationError>) {

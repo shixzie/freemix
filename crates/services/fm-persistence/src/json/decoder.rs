@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, num::NonZeroU128};
 use fm_model::{
     AudioBus, BusSend, CropRect, Input, InputAudioStrip, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerEffect,
-    LayerGeometry, MainMix, Output, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot,
-    RectMask, RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput,
+    LayerGeometry, MainMix, MixFeed, Output, Project, ProjectSettings, RECORDER_SLOT_COUNT,
+    RecorderSlot, RectMask, RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput,
     SimulatedVideo, SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
     StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
     StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetId,
@@ -408,6 +408,15 @@ fn parse_input_kind(value: Value) -> Result<InputKind, DecodeError> {
             parse_simulated_video(object.take("video")?)?,
             parse_simulated_audio(object.take("audio")?)?,
         )),
+        "alias" => InputKind::Alias {
+            target: InputId::new(object.nonzero_u128("target")?),
+            crop: parse_optional(object.take("crop")?, parse_crop)?,
+        },
+        "mix_feed" => InputKind::MixFeed(match object.string("feed")?.as_str() {
+            "program" => MixFeed::Program,
+            "preview" => MixFeed::Preview,
+            value => return Err(unknown_enum("mix feed", value)),
+        }),
         value => return Err(unknown_enum("input kind", value)),
     };
     object.finish()?;

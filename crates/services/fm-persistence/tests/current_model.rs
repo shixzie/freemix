@@ -8,7 +8,7 @@ use std::{
 use fm_model::{
     AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, Input, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerEffect,
-    LayerGeometry, MainMix, Output, Project, ProjectSettings, RecorderSlot, RectMask,
+    LayerGeometry, MainMix, MixFeed, Output, Project, ProjectSettings, RecorderSlot, RectMask,
     RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo,
     SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
     StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
@@ -594,7 +594,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 24"));
+    assert!(encoded.contains("\"schema_version\": 25"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -664,7 +664,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 24"));
+    assert!(encoded.contains("\"schema_version\": 25"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -820,7 +820,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 24"));
+    assert!(valid.contains("\"schema_version\": 25"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -836,7 +836,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 24", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 25", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1252,7 +1252,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 24"));
+    assert!(encoded.contains("\"schema_version\": 25"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1526,5 +1526,127 @@ fn malformed_discrete_channel_labels_are_rejected() {
             matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
             "{malformed}"
         );
+    }
+}
+
+/// A project with two virtual inputs (one cropped alias and one alias of that
+/// alias) and both bus feeds, the Program feed being on Program itself.
+fn virtual_input_project() -> Project {
+    let mut project = Project::new(project_id(1), "Virtual", rich_settings())
+        .with_main_mix(MainMix::new(input_id(5), input_id(4)));
+    for value in [1_u128, 2] {
+        project.add_input(Input {
+            id: input_id(value),
+            name: format!("Input {value}"),
+            kind: InputKind::Simulated(SimulatedInput::new(
+                SimulatedVideo::Bars,
+                SimulatedAudio::Silence,
+            )),
+            required_capabilities: Vec::new(),
+        });
+    }
+    for (value, name, kind) in [
+        (
+            3_u128,
+            "Close-up",
+            InputKind::Alias {
+                target: input_id(1),
+                crop: Some(CropRect::new(10, 20, 640, 360)),
+            },
+        ),
+        (
+            4,
+            "Close-up 2",
+            InputKind::Alias {
+                target: input_id(3),
+                crop: None,
+            },
+        ),
+        (5, "Program feed", InputKind::MixFeed(MixFeed::Program)),
+        (6, "Preview feed", InputKind::MixFeed(MixFeed::Preview)),
+    ] {
+        project.add_input(Input {
+            id: input_id(value),
+            name: name.into(),
+            kind,
+            required_capabilities: Vec::new(),
+        });
+    }
+    project
+}
+
+#[test]
+fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
+    let temp = TestDirectory::new("virtual-inputs");
+    let store = temp.store("show");
+    let expected = StoredProject::from_project(
+        virtual_input_project(),
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(encoded.contains("\"schema_version\": 25"));
+    assert!(encoded.contains(
+        "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
+         \"height\": 360}}"
+    ));
+    assert!(encoded.contains("{\"type\": \"alias\", \"target\": 3, \"crop\": null}"));
+    assert!(encoded.contains("{\"type\": \"mix_feed\", \"feed\": \"program\"}"));
+    assert!(encoded.contains("{\"type\": \"mix_feed\", \"feed\": \"preview\"}"));
+
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded, expected);
+    assert_eq!(
+        loaded.project().inputs()[2].kind,
+        InputKind::Alias {
+            target: input_id(1),
+            crop: Some(CropRect::new(10, 20, 640, 360)),
+        }
+    );
+    assert_eq!(
+        loaded.project().inputs()[4].kind,
+        InputKind::MixFeed(MixFeed::Program)
+    );
+    // Every alias and feed keeps its own audio strip.
+    assert_eq!(loaded.project().input_audio_strips().len(), 6);
+
+    // Field presence, types, and enum spellings are exact.
+    for malformed in [
+        encoded.replacen(", \"crop\": null}", "}", 1),
+        encoded.replacen("\"target\": 3", "\"target\": 0", 1),
+        encoded.replacen("\"target\": 3", "\"target\": \"3\"", 1),
+        encoded.replacen("\"feed\": \"program\"", "\"feed\": \"aux\"", 1),
+        encoded.replacen("\"feed\": \"program\"", "\"feed\": \"Program\"", 1),
+        encoded.replacen("\"type\": \"mix_feed\"", "\"type\": \"program\"", 1),
+    ] {
+        assert_ne!(malformed, encoded);
+        fs::write(store.manifest_path(), malformed).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(
+            matches!(error, StoreError::MalformedManifest { .. }),
+            "got {error:?}"
+        );
+    }
+
+    // Well-formed but invalid references are rejected by project validation.
+    for invalid in [
+        // Missing target.
+        encoded.replacen("\"target\": 3", "\"target\": 99", 1),
+        // Self reference.
+        encoded.replacen("\"target\": 3", "\"target\": 4", 1),
+        // Two-alias cycle: 3 -> 4 -> 3.
+        encoded.replacen("\"target\": 1", "\"target\": 4", 1),
+        // Empty and out-of-frame crops.
+        encoded.replacen("\"width\": 640", "\"width\": 0", 1),
+        encoded.replacen("\"x\": 10", "\"x\": 4294967295", 1),
+    ] {
+        assert_ne!(invalid, encoded);
+        fs::write(store.manifest_path(), invalid).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
     }
 }

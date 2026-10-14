@@ -1,7 +1,8 @@
 use std::fmt::Write as _;
 
 use fm_model::{
-    InputKind, RestartPolicy, Rotation, SimulatedAudio, SimulatedVideo, SourceRef, StartupPolicy,
+    InputKind, MixFeed, RestartPolicy, Rotation, SimulatedAudio, SimulatedVideo, SourceRef,
+    StartupPolicy,
 };
 use fm_types::{
     Channel, ChromaLocation, ColorPrimaries, DiscreteChannel, MatrixCoefficients, PixelFormat,
@@ -586,6 +587,32 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
                 }
             }
             output.push('}');
+        }
+        InputKind::Alias { target, crop } => {
+            write!(
+                output,
+                "{{\"type\": \"alias\", \"target\": {target}, \"crop\": "
+            )
+            .expect("writing to a string cannot fail");
+            if let Some(crop) = crop {
+                write!(
+                    output,
+                    "{{\"x\": {}, \"y\": {}, \"width\": {}, \"height\": {}}}",
+                    crop.x, crop.y, crop.width, crop.height,
+                )
+                .expect("writing to a string cannot fail");
+            } else {
+                output.push_str("null");
+            }
+            output.push('}');
+        }
+        InputKind::MixFeed(feed) => {
+            let feed = match feed {
+                MixFeed::Program => "program",
+                MixFeed::Preview => "preview",
+            };
+            write!(output, "{{\"type\": \"mix_feed\", \"feed\": \"{feed}\"}}")
+                .expect("writing to a string cannot fail");
         }
     }
 }

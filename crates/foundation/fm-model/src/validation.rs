@@ -1,9 +1,9 @@
 use fm_types::{BusId, InputId, MAX_INPUT_NAME_BYTES, OutputId, SceneId};
 
 use crate::{
-    InputKind, Layer, LayerEffect, MAX_STREAM_TARGET_NAME_BYTES, Project, ProjectSettings,
-    RestartPolicy, SimulatedAudio, SourceRef, StreamTargetId,
-    cycles::{mark_audio_input_cycles, mark_bus_cycles, mark_scene_cycles},
+    CropRect, InputKind, Layer, LayerEffect, MAX_STREAM_TARGET_NAME_BYTES, Project,
+    ProjectSettings, RestartPolicy, SimulatedAudio, SourceRef, StreamTargetId,
+    cycles::{mark_alias_cycles, mark_audio_input_cycles, mark_bus_cycles, mark_scene_cycles},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,6 +52,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_outputs(project, &mut errors);
     validate_stream_targets(project, &mut errors);
     mark_scene_cycles(project, &mut errors);
+    mark_alias_cycles(project, &mut errors);
     mark_audio_input_cycles(project, &mut errors);
     mark_bus_cycles(project, &mut errors);
     errors
@@ -242,7 +243,9 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
             });
         }
         match &input.kind {
-            InputKind::Color => {}
+            // A mix feed reads only the previous tick's committed bus frame,
+            // so it has no reference to validate and adds no graph edge.
+            InputKind::Color | InputKind::MixFeed(_) => {}
             InputKind::Media { asset_uri } => {
                 require_name(errors, entity, "asset_uri", asset_uri);
             }
@@ -285,6 +288,28 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                     }
                 }
             }
+            InputKind::Alias { target, crop } => {
+                if *target == input.id {
+                    errors.push(ValidationError {
+                        entity,
+                        field: "kind.alias.target",
+                        kind: ValidationErrorKind::SelfReference,
+                    });
+                } else if !project.inputs().iter().any(|other| other.id == *target) {
+                    errors.push(ValidationError {
+                        entity,
+                        field: "kind.alias.target",
+                        kind: ValidationErrorKind::MissingReference(EntityRef::Input(*target)),
+                    });
+                }
+                if crop.is_some_and(|crop| !crop_fits_project(project, crop)) {
+                    errors.push(ValidationError {
+                        entity,
+                        field: "kind.alias.crop",
+                        kind: ValidationErrorKind::OutOfRange,
+                    });
+                }
+            }
             InputKind::Simulated(simulated) => {
                 if let SimulatedAudio::Sine { frequency_hz } = simulated.audio {
                     let nyquist_hz = project.settings().audio.sample_rate.hertz() / 2;
@@ -307,6 +332,21 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
             input.required_capabilities.iter().map(String::as_str),
         );
     }
+}
+
+/// A crop is nonempty and lies inside a project-sized source frame.
+fn crop_fits_project(project: &Project, crop: CropRect) -> bool {
+    let dimensions = project.settings().video.dimensions;
+    crop.width != 0
+        && crop.height != 0
+        && crop
+            .x
+            .checked_add(crop.width)
+            .is_some_and(|right| right <= dimensions.width())
+        && crop
+            .y
+            .checked_add(crop.height)
+            .is_some_and(|bottom| bottom <= dimensions.height())
 }
 
 fn validate_main_mix(project: &Project, errors: &mut Vec<ValidationError>) {
@@ -359,18 +399,10 @@ fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
                     kind: ValidationErrorKind::OutOfRange,
                 });
             }
-            if layer.crop.is_some_and(|crop| {
-                crop.width == 0
-                    || crop.height == 0
-                    || crop
-                        .x
-                        .checked_add(crop.width)
-                        .is_none_or(|right| right > project.settings().video.dimensions.width())
-                    || crop
-                        .y
-                        .checked_add(crop.height)
-                        .is_none_or(|bottom| bottom > project.settings().video.dimensions.height())
-            }) {
+            if layer
+                .crop
+                .is_some_and(|crop| !crop_fits_project(project, crop))
+            {
                 errors.push(ValidationError {
                     entity,
                     field: "layers.crop",

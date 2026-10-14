@@ -293,7 +293,15 @@ fn append_inputs(
                 scene_id: maps.scenes[scene_id],
                 audio_source: audio_source.map(|id| maps.inputs[&id]),
             },
-            other => other.clone(),
+            InputKind::Alias { target, crop } => InputKind::Alias {
+                target: maps.inputs[target],
+                crop: *crop,
+            },
+            InputKind::Color
+            | InputKind::Device { .. }
+            | InputKind::Network { .. }
+            | InputKind::Simulated(_)
+            | InputKind::MixFeed(_) => input.kind.clone(),
         };
         let id = maps.inputs[&input.id];
         project.add_input(fm_model::Input {

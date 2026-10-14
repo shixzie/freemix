@@ -3689,6 +3689,9 @@ const fn input_kind_name(kind: &InputKind) -> &'static str {
         InputKind::Network { .. } => "network",
         InputKind::Scene { .. } => "scene",
         InputKind::Simulated(_) => "simulated",
+        InputKind::Alias { .. } => "alias",
+        InputKind::MixFeed(fm_model::MixFeed::Program) => "program-feed",
+        InputKind::MixFeed(fm_model::MixFeed::Preview) => "preview-feed",
     }
 }
 

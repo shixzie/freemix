@@ -1,5 +1,6 @@
 mod cycles;
 mod project;
+mod resolve;
 mod stream;
 mod validation;
 
@@ -10,7 +11,7 @@ pub use project::{
     AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DuplicateSceneInputError, Input,
     InputAudioStrip, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
     InputGainMilliDb, InputKind, Layer, LayerEffect, LayerEffectError, LayerGeometry, MainMix,
-    Output, OutputFormat, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot,
+    MixFeed, Output, OutputFormat, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot,
     RecorderSlotError, RectMask, RelinkMediaInputError, RemoveAudioBusError, RemoveInputError,
     RemoveOutputError, RemoveSceneError, RemoveStreamTargetError, RenameAudioBusError,
     RenameOutputError, RenameProjectError, RenameSceneError, ReplaceInputError, RestartPolicy,
@@ -19,6 +20,10 @@ pub use project::{
     SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
     StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
     UpdateStreamTargetError,
+};
+pub use resolve::{
+    AudioRoute, FrameContext, LayerSource, MixFeedHistory, MixSelection, RenderSource,
+    ResolveError, ResolvedInput, ResolvedLayer, ResolvedScene, SourceResolver,
 };
 pub use stream::{
     DEFAULT_VIDEO_BITRATE_KBPS, MAX_STREAM_ENDPOINT_BYTES, MAX_STREAM_KEY_BYTES,
