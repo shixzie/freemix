@@ -110,7 +110,7 @@ Total: 103 features. Status: planned=96, blocked=7. Priority: P0=24, P1=70, P2=9
 | RC-012 | P1 | 5 | planned | engine-control-persistence-security | accept-rc-012 (planned) |
 | RC-013 | P1 | 5 | planned | engine-control-persistence-security | accept-rc-013 (present) |
 | RC-014 | P1 | 5 | planned | studio-web-ux | accept-rc-014 (planned) |
-| RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (planned) |
+| RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (present) |
 | RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (planned) |
 | RC-017 | P1 | 5 | planned | graphics-data-automation-plugins | accept-rc-017 (planned) |
 
@@ -218,7 +218,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | RC-012 | P1 | 5 | planned | engine-control-persistence-security | accept-rc-012 (planned) |
 | RC-013 | P1 | 5 | planned | engine-control-persistence-security | accept-rc-013 (present) |
 | RC-014 | P1 | 5 | planned | studio-web-ux | accept-rc-014 (planned) |
-| RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (planned) |
+| RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (present) |
 | RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (planned) |
 | RC-017 | P1 | 5 | planned | graphics-data-automation-plugins | accept-rc-017 (planned) |
 
@@ -326,7 +326,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | RC-012 | P1 | 5 | planned | engine-control-persistence-security | accept-rc-012 (planned) |
 | RC-013 | P1 | 5 | planned | engine-control-persistence-security | accept-rc-013 (present) |
 | RC-014 | P1 | 5 | planned | studio-web-ux | accept-rc-014 (planned) |
-| RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (planned) |
+| RC-015 | P1 | 4 | planned | engine-control-persistence-security | accept-rc-015 (present) |
 | RC-016 | P2 | 9 | planned | studio-web-ux | accept-rc-016 (planned) |
 | RC-017 | P1 | 5 | planned | graphics-data-automation-plugins | accept-rc-017 (planned) |
 

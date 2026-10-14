@@ -394,7 +394,9 @@ id = "accept-rc-014"
 state = "planned"
 [[tests]]
 id = "accept-rc-015"
-state = "planned"
+state = "present"
+paths = ["crates/services/fm-observability/tests/statistics_alerts.rs"]
+commands = ["cargo test -p fm-observability --test statistics_alerts"]
 [[tests]]
 id = "accept-rc-016"
 state = "planned"
