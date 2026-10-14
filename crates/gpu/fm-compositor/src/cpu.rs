@@ -178,10 +178,21 @@ pub fn execute_cpu(
             source.clone()
         };
         frame = apply_key_and_mask(&frame, layer.key(), layer.mask(), layer.alpha_mode())?;
+        // Color effects are defined on straight color and never touch alpha;
+        // run on premultiplied bytes they could lift a channel above its alpha
+        // and the layer would be rejected as not premultiplied.
+        let straighten = layer.alpha_mode() == AlphaMode::Premultiplied
+            && layer
+                .effects()
+                .iter()
+                .any(|effect| !(effect.name() == "passthrough" && effect.parameters().is_empty()));
+        if straighten {
+            frame = unpremultiply_alpha(&frame)?;
+        }
         for (effect_index, effect) in layer.effects().iter().enumerate() {
             frame = apply_effect(plan_index, effect_index, effect, &frame)?;
         }
-        if layer.alpha_mode() == AlphaMode::Straight {
+        if layer.alpha_mode() == AlphaMode::Straight || straighten {
             frame = premultiply_alpha(&frame)?;
         }
         let transformed =
@@ -376,6 +387,37 @@ fn apply_key_and_mask(
                 }
             }
             bytes.extend_from_slice(&adjusted.to_bytes());
+        }
+    }
+    ImageFrame::new(
+        source.width(),
+        source.height(),
+        source.width() as usize * 4,
+        bytes,
+    )
+}
+
+/// Inverts `premultiply_alpha` with rounding. For every premultiplied pixel
+/// (`channel <= alpha`) premultiplying the result restores the input exactly;
+/// a zero-alpha pixel becomes transparent black.
+fn unpremultiply_alpha(source: &ImageFrame) -> Result<ImageFrame, FrameError> {
+    let unpremultiply = |channel: u8, alpha: u8| {
+        if alpha == 0 {
+            return 0;
+        }
+        let value = (u16::from(channel) * 255 + u16::from(alpha) / 2) / u16::from(alpha);
+        u8::try_from(value).unwrap_or(u8::MAX)
+    };
+    let mut bytes = Vec::with_capacity(source.pixels().len());
+    for y in 0..source.height() {
+        for x in 0..source.width() {
+            let pixel = source.pixel(x, y).ok_or(FrameError::LayoutOverflow)?;
+            bytes.extend_from_slice(&[
+                unpremultiply(pixel.r, pixel.a),
+                unpremultiply(pixel.g, pixel.a),
+                unpremultiply(pixel.b, pixel.a),
+                pixel.a,
+            ]);
         }
     }
     ImageFrame::new(

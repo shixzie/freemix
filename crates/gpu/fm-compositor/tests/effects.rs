@@ -738,3 +738,78 @@ fn repeated_execution_is_byte_identical() {
     assert_eq!(first, second);
     assert_eq!(first.pixels(), second.pixels());
 }
+
+fn execute_with_alpha_mode(
+    alpha_mode: fm_compositor::AlphaMode,
+    effects: &[Effect],
+    source: &ImageFrame,
+) -> Result<ImageFrame, CpuExecutionError> {
+    let mut scene = Scene::new(source.width(), source.height(), Rgba8::new(0, 0, 0, 255)).unwrap();
+    let mut layer = SourceLayer::new(
+        SourceId::new(1),
+        0,
+        Transform::new(0, 0, source.width(), source.height(), Rotation::Deg0),
+    )
+    .with_alpha_mode(alpha_mode);
+    for effect in effects {
+        layer = layer.with_effect(effect.clone());
+    }
+    scene.push_layer(layer);
+    let plan = compile_scene(&scene, OutputTarget::Program).unwrap().0;
+    execute_cpu(&plan, &[CpuSourceFrame::new(SourceId::new(1), source)])
+}
+
+#[test]
+fn premultiplied_layers_run_color_effects_on_straight_color() {
+    use fm_compositor::AlphaMode;
+
+    // The same visible content, once straight and once premultiplied. A
+    // brightening effect must not lift a transparent pixel's color above its
+    // zero alpha, and must treat a half-transparent pixel by its true color.
+    let straight = frame(
+        3,
+        1,
+        &[
+            Rgba8::new(0, 0, 0, 0),
+            Rgba8::new(128, 64, 0, 128),
+            Rgba8::new(10, 20, 30, 255),
+        ],
+    );
+    let premultiplied = frame(
+        3,
+        1,
+        &[
+            Rgba8::new(0, 0, 0, 0),
+            Rgba8::new(64, 32, 0, 128),
+            Rgba8::new(10, 20, 30, 255),
+        ],
+    );
+    let effects = [
+        Effect::new("brightness_contrast", vec![100, 0]),
+        Effect::new("levels", vec![0, 200]),
+    ];
+    let expected = execute_with_alpha_mode(AlphaMode::Straight, &effects, &straight).unwrap();
+    let actual =
+        execute_with_alpha_mode(AlphaMode::Premultiplied, &effects, &premultiplied).unwrap();
+    assert_eq!(pixels(&actual), pixels(&expected));
+    assert_eq!(actual.pixel(0, 0), Some(Rgba8::new(0, 0, 0, 255)));
+}
+
+#[test]
+fn premultiplied_layers_round_trip_every_pixel_through_identity_effects() {
+    use fm_compositor::AlphaMode;
+
+    let mut source = Vec::new();
+    for alpha in 0..=255_u8 {
+        for x in 0..=255_u8 {
+            let color = x.min(alpha);
+            source.push(Rgba8::new(color, alpha - color, color / 2, alpha));
+        }
+    }
+    let source = frame(256, 256, &source);
+    let identity = [Effect::new("saturation", vec![0])];
+    let with_effect =
+        execute_with_alpha_mode(AlphaMode::Premultiplied, &identity, &source).unwrap();
+    let without = execute_with_alpha_mode(AlphaMode::Premultiplied, &[], &source).unwrap();
+    assert_eq!(with_effect, without);
+}

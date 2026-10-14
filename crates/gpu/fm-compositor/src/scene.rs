@@ -206,7 +206,8 @@ pub enum Key {
 
 /// Backend-neutral effect descriptor. The CPU reference executor applies the
 /// parameterless `passthrough` effect as a no-op and executes the documented
-/// typed reference effects; the native backend currently rejects every
+/// typed reference effects on straight color (a premultiplied layer is
+/// unpremultiplied around its effect chain); the native backend rejects every
 /// non-`passthrough` descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Effect {
