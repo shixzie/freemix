@@ -1355,6 +1355,8 @@ portrait rungs; and the native GPU path is untested. `SW-015` remains
 planned.
 
 
+Current implementation boundary for IN-008 and IN-010: `fm-video::test_signal` generates 75%, 100%, and EBU bars plus a bars/ramp/PLUGE layout with exact BT.709/BT.601 narrow-range 8/10-bit Y'CbCr and full-range RGBA codes, and a static generator renders solid colour or bars once per setting instead of per frame. `fm-playback::image_sequence` discovers numbered sequences (padding, duplicate detection, reject/hold/skip gap policies), maps time or output frames to sequence frames exactly with Once/Loop/Hold ends, and bounds a prefetch cache; `fm-codec-image::ImageSequenceSource` decodes bounded PNG/JPEG frames of one size, preloads and pins a sequence, and suggests the first opaque frame as a stinger cut point. ICC conversion, still fit/fill and reload, GPU-side generation, RP 219 raster geometry, daemon/CLI/model wiring, asynchronous decode, alpha video, and Studio controls are not implemented, so `IN-008` and `IN-010` remain planned.
+
 Exit: `P0` switcher, composition, audio, display, record, and control rows pass.
 
 Current implementation boundary for automix and monitoring (`AU-007`,

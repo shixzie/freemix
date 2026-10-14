@@ -29,7 +29,9 @@ id = "accept-in-007"
 state = "planned"
 [[tests]]
 id = "accept-in-008"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-video/tests/test_signals.rs"]
+commands = ["cargo test -p fm-video --test test_signals"]
 [[tests]]
 id = "accept-in-009"
 state = "present"
@@ -37,7 +39,9 @@ paths = ["crates/media/fm-playback/tests/slideshow.rs"]
 commands = ["cargo test -p fm-playback --test slideshow"]
 [[tests]]
 id = "accept-in-010"
-state = "planned"
+state = "present"
+paths = ["crates/io/fm-codec-image/tests/sequence.rs", "crates/media/fm-playback/tests/image_sequence.rs"]
+commands = ["cargo test -p fm-playback --test image_sequence", "cargo test -p fm-codec-image --test sequence"]
 [[tests]]
 id = "accept-in-011"
 state = "planned"
