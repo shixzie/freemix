@@ -5,7 +5,7 @@
 //! center of the bottom-right pixel. Width is relative to the shorter render
 //! dimension.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error;
 use std::fmt;
 
@@ -133,6 +133,18 @@ pub enum StrokeKind {
     Arrow,
     Rectangle,
     Ellipse,
+    /// A freehand path that removes coverage from everything drawn before it
+    /// (destination-out). Its color channels are ignored; color alpha and
+    /// opacity scale the erase strength.
+    Eraser,
+}
+
+impl StrokeKind {
+    /// Whether a finalized stroke of this kind needs a start and end point.
+    #[must_use]
+    pub const fn requires_two_points(self) -> bool {
+        !matches!(self, Self::Freehand | Self::Eraser)
+    }
 }
 
 /// One drawable object. Geometric shapes use their first and last points.
@@ -208,7 +220,7 @@ impl Stroke {
         if self.points.len() > max_points {
             return Err(ModelError::PointLimitExceeded);
         }
-        if self.finalized && self.kind != StrokeKind::Freehand && self.points.len() < 2 {
+        if self.finalized && self.kind.requires_two_points() && self.points.len() < 2 {
             return Err(ModelError::NotEnoughPoints);
         }
         Ok(())
@@ -255,6 +267,9 @@ pub enum OperationKind {
     },
     Clear,
     Undo(UndoScope),
+    /// Reapplies the latest undone mutation in scope. A new mutation by an
+    /// author discards that author's pending redo records.
+    Redo(UndoScope),
 }
 
 /// A totally ordered operation for one board.
@@ -291,7 +306,13 @@ impl Operation {
 pub struct Limits {
     pub max_points_per_stroke: usize,
     pub max_strokes: usize,
+    /// Bound for the retained operation log and for each of the undo and redo
+    /// stacks.
     pub max_history: usize,
+    /// Maximum distinct authors (drawing devices) that may touch the board.
+    pub max_authors: usize,
+    /// How long a laser pointer stays visible after its last update.
+    pub laser_ttl_ms: u64,
 }
 
 impl Limits {
@@ -299,9 +320,11 @@ impl Limits {
         max_points_per_stroke: 4_096,
         max_strokes: 1_024,
         max_history: 4_096,
+        max_authors: 64,
+        laser_ttl_ms: 1_500,
     };
 
-    /// Creates non-zero state limits.
+    /// Creates non-zero state limits with default author and laser bounds.
     ///
     /// # Errors
     ///
@@ -311,14 +334,51 @@ impl Limits {
         max_strokes: usize,
         max_history: usize,
     ) -> Result<Self, ModelError> {
-        if max_points_per_stroke == 0 || max_strokes == 0 || max_history == 0 {
-            return Err(ModelError::InvalidLimits);
-        }
-        Ok(Self {
+        Self {
             max_points_per_stroke,
             max_strokes,
             max_history,
-        })
+            ..Self::DEFAULT
+        }
+        .validated()
+    }
+
+    /// Returns these limits with a different author bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::InvalidLimits`] if `max_authors` is zero.
+    pub fn with_max_authors(self, max_authors: usize) -> Result<Self, ModelError> {
+        Self {
+            max_authors,
+            ..self
+        }
+        .validated()
+    }
+
+    /// Returns these limits with a different laser pointer lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::InvalidLimits`] if `laser_ttl_ms` is zero.
+    pub fn with_laser_ttl_ms(self, laser_ttl_ms: u64) -> Result<Self, ModelError> {
+        Self {
+            laser_ttl_ms,
+            ..self
+        }
+        .validated()
+    }
+
+    fn validated(self) -> Result<Self, ModelError> {
+        if self.max_points_per_stroke == 0
+            || self.max_strokes == 0
+            || self.max_history == 0
+            || self.max_authors == 0
+            || self.laser_ttl_ms == 0
+        {
+            return Err(ModelError::InvalidLimits);
+        }
+        Ok(self)
     }
 }
 
@@ -333,6 +393,7 @@ pub enum ApplyOutcome {
     Applied,
     Duplicate,
     NothingToUndo,
+    NothingToRedo,
 }
 
 #[derive(Clone, Debug)]
@@ -350,6 +411,213 @@ struct UndoRecord {
     change: UndoChange,
 }
 
+#[derive(Clone, Debug)]
+enum RedoChange {
+    Add {
+        index: usize,
+        stroke: Stroke,
+    },
+    Update {
+        stroke_id: StrokeId,
+        points: Vec<Point>,
+    },
+    Finalize {
+        stroke_id: StrokeId,
+    },
+    Delete {
+        stroke_id: StrokeId,
+    },
+    Clear {
+        stroke_ids: Vec<StrokeId>,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct RedoRecord {
+    author: AuthorId,
+    change: RedoChange,
+}
+
+/// An ephemeral, non-undoable pointer shown on top of the strokes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaserPointer {
+    pub x: f32,
+    pub y: f32,
+    pub color: Color,
+    /// Diameter relative to the shorter render dimension, in `0.0..=1.0`.
+    pub width: f32,
+    /// Caller-supplied monotonic timestamp of this pointer sample.
+    pub at_ms: u64,
+}
+
+impl LaserPointer {
+    /// Creates a validated laser pointer sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::InvalidPoint`] or [`ModelError::InvalidWidth`]
+    /// for invalid normalized values.
+    pub fn new(x: f32, y: f32, color: Color, width: f32, at_ms: u64) -> Result<Self, ModelError> {
+        let laser = Self {
+            x,
+            y,
+            color,
+            width,
+            at_ms,
+        };
+        laser.validate()?;
+        Ok(laser)
+    }
+
+    fn validate(self) -> Result<(), ModelError> {
+        Point {
+            id: PointId(0),
+            x: self.x,
+            y: self.y,
+        }
+        .validate()?;
+        StrokeStyle {
+            color: self.color,
+            width: self.width,
+            opacity: 1.0,
+        }
+        .validate()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaserOutcome {
+    Updated,
+    /// The sample is older than the pointer already held for the author.
+    Stale,
+}
+
+/// Number of production shortcut buttons.
+pub const SHORTCUT_SLOTS: usize = 10;
+
+/// A tool selection bound to a shortcut button.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToolPreset {
+    pub kind: StrokeKind,
+    pub style: StrokeStyle,
+}
+
+impl ToolPreset {
+    /// Creates a preset with a validated style.
+    ///
+    /// # Errors
+    ///
+    /// Returns the style validation error.
+    pub fn new(kind: StrokeKind, style: StrokeStyle) -> Result<Self, ModelError> {
+        style.validate()?;
+        Ok(Self { kind, style })
+    }
+}
+
+/// Ten fixed shortcut buttons, each optionally bound to a tool preset.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShortcutBank {
+    slots: [Option<ToolPreset>; SHORTCUT_SLOTS],
+}
+
+impl Default for ShortcutBank {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl ShortcutBank {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            slots: [None; SHORTCUT_SLOTS],
+        }
+    }
+
+    /// The deterministic factory layout: four pens (red, yellow, white,
+    /// cyan), red and yellow arrows, a red ellipse, a yellow rectangle, a
+    /// white line, and an eraser.
+    #[must_use]
+    pub const fn production_default() -> Self {
+        const fn preset(kind: StrokeKind, color: Color, width: f32) -> ToolPreset {
+            ToolPreset {
+                kind,
+                style: StrokeStyle {
+                    color,
+                    width,
+                    opacity: 1.0,
+                },
+            }
+        }
+        const RED: Color = Color::rgba(255, 32, 32, 255);
+        const YELLOW: Color = Color::rgba(255, 220, 0, 255);
+        const WHITE: Color = Color::rgba(255, 255, 255, 255);
+        const CYAN: Color = Color::rgba(0, 200, 255, 255);
+        Self {
+            slots: [
+                Some(preset(StrokeKind::Freehand, RED, 0.008)),
+                Some(preset(StrokeKind::Freehand, YELLOW, 0.008)),
+                Some(preset(StrokeKind::Freehand, WHITE, 0.008)),
+                Some(preset(StrokeKind::Freehand, CYAN, 0.008)),
+                Some(preset(StrokeKind::Arrow, RED, 0.01)),
+                Some(preset(StrokeKind::Arrow, YELLOW, 0.01)),
+                Some(preset(StrokeKind::Ellipse, RED, 0.01)),
+                Some(preset(StrokeKind::Rectangle, YELLOW, 0.01)),
+                Some(preset(StrokeKind::Line, WHITE, 0.008)),
+                Some(preset(StrokeKind::Eraser, WHITE, 0.04)),
+            ],
+        }
+    }
+
+    /// Binds or unbinds one button.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::InvalidShortcutSlot`] for `slot >= 10` or the
+    /// style validation error of the preset.
+    pub fn assign(&mut self, slot: usize, preset: Option<ToolPreset>) -> Result<(), ModelError> {
+        if let Some(preset) = preset {
+            preset.style.validate()?;
+        }
+        *self
+            .slots
+            .get_mut(slot)
+            .ok_or(ModelError::InvalidShortcutSlot(slot))? = preset;
+        Ok(())
+    }
+
+    /// Returns the preset bound to `slot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::InvalidShortcutSlot`] for `slot >= 10`.
+    pub fn get(&self, slot: usize) -> Result<Option<ToolPreset>, ModelError> {
+        self.slots
+            .get(slot)
+            .copied()
+            .ok_or(ModelError::InvalidShortcutSlot(slot))
+    }
+
+    /// Starts a stroke using the preset bound to `slot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::InvalidShortcutSlot`],
+    /// [`ModelError::ShortcutUnassigned`], or a stroke validation error.
+    pub fn stroke(
+        &self,
+        slot: usize,
+        id: StrokeId,
+        author: AuthorId,
+        points: Vec<Point>,
+    ) -> Result<Stroke, ModelError> {
+        let preset = self
+            .get(slot)?
+            .ok_or(ModelError::ShortcutUnassigned(slot))?;
+        Stroke::new(id, author, preset.kind, preset.style, points)
+    }
+}
+
 /// The authoritative state of one collaborative board.
 #[derive(Clone, Debug)]
 pub struct Board {
@@ -359,6 +627,9 @@ pub struct Board {
     strokes: Vec<Stroke>,
     operations: VecDeque<Operation>,
     undo: VecDeque<UndoRecord>,
+    redo: VecDeque<RedoRecord>,
+    authors: BTreeSet<AuthorId>,
+    lasers: BTreeMap<AuthorId, LaserPointer>,
 }
 
 impl Board {
@@ -373,12 +644,7 @@ impl Board {
     ///
     /// Returns [`ModelError::InvalidLimits`] if any limit is zero.
     pub fn with_limits(id: BoardId, limits: Limits) -> Result<Self, ModelError> {
-        Limits::new(
-            limits.max_points_per_stroke,
-            limits.max_strokes,
-            limits.max_history,
-        )?;
-        Ok(Self::from_limits(id, limits))
+        Ok(Self::from_limits(id, limits.validated()?))
     }
 
     fn from_limits(id: BoardId, limits: Limits) -> Self {
@@ -389,6 +655,9 @@ impl Board {
             strokes: Vec::new(),
             operations: VecDeque::new(),
             undo: VecDeque::new(),
+            redo: VecDeque::new(),
+            authors: BTreeSet::new(),
+            lasers: BTreeMap::new(),
         }
     }
 
@@ -420,6 +689,84 @@ impl Board {
     #[must_use]
     pub fn undo_history_len(&self) -> usize {
         self.undo.len()
+    }
+
+    #[must_use]
+    pub fn redo_history_len(&self) -> usize {
+        self.redo.len()
+    }
+
+    #[must_use]
+    pub const fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    /// Authors that have successfully applied an operation or laser sample,
+    /// in ascending ID order.
+    #[must_use]
+    pub fn authors(&self) -> Vec<AuthorId> {
+        self.authors.iter().copied().collect()
+    }
+
+    fn admit_author(&self, author: AuthorId) -> Result<(), ModelError> {
+        if !self.authors.contains(&author) && self.authors.len() >= self.limits.max_authors {
+            return Err(ModelError::AuthorLimitExceeded);
+        }
+        Ok(())
+    }
+
+    /// Stores the latest laser pointer sample for `author`. Laser samples are
+    /// ephemeral: they are not sequenced, logged, or undoable.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation error or [`ModelError::AuthorLimitExceeded`].
+    pub fn set_laser(
+        &mut self,
+        author: AuthorId,
+        laser: LaserPointer,
+    ) -> Result<LaserOutcome, ModelError> {
+        laser.validate()?;
+        self.admit_author(author)?;
+        if self
+            .lasers
+            .get(&author)
+            .is_some_and(|current| current.at_ms > laser.at_ms)
+        {
+            return Ok(LaserOutcome::Stale);
+        }
+        self.authors.insert(author);
+        self.lasers.insert(author, laser);
+        Ok(LaserOutcome::Updated)
+    }
+
+    /// Hides `author`'s laser pointer. Returns whether one was present.
+    pub fn clear_laser(&mut self, author: AuthorId) -> bool {
+        self.lasers.remove(&author).is_some()
+    }
+
+    /// Laser pointers visible at `now_ms`, in ascending author order. A sample
+    /// is visible while `now_ms - at_ms < laser_ttl_ms` (saturating).
+    #[must_use]
+    pub fn active_lasers(&self, now_ms: u64) -> Vec<(AuthorId, LaserPointer)> {
+        self.lasers
+            .iter()
+            .filter(|(_, laser)| self.laser_active(laser, now_ms))
+            .map(|(author, laser)| (*author, *laser))
+            .collect()
+    }
+
+    /// Drops expired laser pointers and returns how many were removed.
+    pub fn prune_lasers(&mut self, now_ms: u64) -> usize {
+        let ttl = self.limits.laser_ttl_ms;
+        let before = self.lasers.len();
+        self.lasers
+            .retain(|_, laser| now_ms.saturating_sub(laser.at_ms) < ttl);
+        before - self.lasers.len()
+    }
+
+    fn laser_active(&self, laser: &LaserPointer, now_ms: u64) -> bool {
+        now_ms.saturating_sub(laser.at_ms) < self.limits.laser_ttl_ms
     }
 
     /// Applies exactly the next operation. Replaying an exactly equal retained
@@ -466,7 +813,9 @@ impl Board {
             return Err(ModelError::OperationTooOld(operation.sequence));
         }
 
+        self.admit_author(operation.author_id)?;
         let outcome = self.apply_kind(&operation)?;
+        self.authors.insert(operation.author_id);
         self.last_sequence = operation.sequence;
         self.operations.push_back(operation);
         if self.operations.len() > self.limits.max_history {
@@ -531,7 +880,7 @@ impl Board {
                 if stroke.finalized {
                     return Err(ModelError::StrokeFinalized(*stroke_id));
                 }
-                if stroke.kind != StrokeKind::Freehand && stroke.points.len() < 2 {
+                if stroke.kind.requires_two_points() && stroke.points.len() < 2 {
                     return Err(ModelError::NotEnoughPoints);
                 }
                 stroke.finalized = true;
@@ -566,6 +915,9 @@ impl Board {
             OperationKind::Undo(scope) => {
                 return self.apply_undo(*scope, operation.author_id);
             }
+            OperationKind::Redo(scope) => {
+                return self.apply_redo(*scope, operation.author_id);
+            }
         }
         Ok(ApplyOutcome::Applied)
     }
@@ -586,7 +938,14 @@ impl Board {
         Ok(stroke)
     }
 
+    /// Records a fresh mutation, discarding the author's pending redo records.
     fn push_undo(&mut self, record: UndoRecord) {
+        let author = record.author;
+        self.redo.retain(|redo| redo.author != author);
+        self.push_undo_keep_redo(record);
+    }
+
+    fn push_undo_keep_redo(&mut self, record: UndoRecord) {
         self.undo.push_back(record);
         if self.undo.len() > self.limits.max_history {
             self.undo.pop_front();
@@ -633,27 +992,45 @@ impl Board {
                     ));
                 }
             }
-            UndoChange::Add { stroke_id }
-            | UndoChange::Update { stroke_id, .. }
-            | UndoChange::Finalize { stroke_id } => {
+            UndoChange::Add { stroke_id } | UndoChange::Finalize { stroke_id } => {
                 if self.stroke(*stroke_id).is_none() {
+                    return Err(ModelError::UndoConflict(*stroke_id));
+                }
+            }
+            UndoChange::Update { stroke_id, old_len } => {
+                let stroke = self
+                    .stroke(*stroke_id)
+                    .ok_or(ModelError::UndoConflict(*stroke_id))?;
+                if stroke.points.len() < *old_len
+                    || (stroke.finalized && stroke.kind.requires_two_points() && *old_len < 2)
+                {
                     return Err(ModelError::UndoConflict(*stroke_id));
                 }
             }
         }
 
         let record = self.undo.remove(position).expect("position is in range");
-        match record.change {
+        let redo = match record.change {
             UndoChange::Add { stroke_id } => {
-                self.strokes.retain(|stroke| stroke.id != stroke_id);
+                let index = self
+                    .strokes
+                    .iter()
+                    .position(|stroke| stroke.id == stroke_id)
+                    .expect("undo target was validated");
+                RedoChange::Add {
+                    index,
+                    stroke: self.strokes.remove(index),
+                }
             }
             UndoChange::Update { stroke_id, old_len } => {
-                self.strokes
+                let points = self
+                    .strokes
                     .iter_mut()
                     .find(|stroke| stroke.id == stroke_id)
                     .expect("undo target was validated")
                     .points
-                    .truncate(old_len);
+                    .split_off(old_len);
+                RedoChange::Update { stroke_id, points }
             }
             UndoChange::Finalize { stroke_id } => {
                 self.strokes
@@ -661,14 +1038,145 @@ impl Board {
                     .find(|stroke| stroke.id == stroke_id)
                     .expect("undo target was validated")
                     .finalized = false;
+                RedoChange::Finalize { stroke_id }
             }
             UndoChange::Delete { index, stroke } => {
+                let stroke_id = stroke.id;
                 self.strokes.insert(index.min(self.strokes.len()), stroke);
+                RedoChange::Delete { stroke_id }
             }
             UndoChange::Clear { mut strokes } => {
+                let stroke_ids = strokes.iter().map(|stroke| stroke.id).collect();
                 strokes.append(&mut self.strokes);
                 self.strokes = strokes;
+                RedoChange::Clear { stroke_ids }
             }
+        };
+        self.redo.push_back(RedoRecord {
+            author: record.author,
+            change: redo,
+        });
+        if self.redo.len() > self.limits.max_history {
+            self.redo.pop_front();
+        }
+        Ok(ApplyOutcome::Applied)
+    }
+
+    /// Validates reapplication before the redo record is removed.
+    fn validate_redo(&self, change: &RedoChange) -> Result<(), ModelError> {
+        match change {
+            RedoChange::Add { stroke, .. } => {
+                if self.stroke(stroke.id).is_some() {
+                    return Err(ModelError::RedoConflict(stroke.id));
+                }
+                if self.strokes.len() == self.limits.max_strokes {
+                    return Err(ModelError::StrokeLimitExceeded);
+                }
+            }
+            RedoChange::Update { stroke_id, points } => {
+                let stroke = self
+                    .stroke(*stroke_id)
+                    .ok_or(ModelError::RedoConflict(*stroke_id))?;
+                if stroke.finalized
+                    || points
+                        .iter()
+                        .any(|point| stroke.points.iter().any(|old| old.id == point.id))
+                {
+                    return Err(ModelError::RedoConflict(*stroke_id));
+                }
+                if stroke.points.len().saturating_add(points.len())
+                    > self.limits.max_points_per_stroke
+                {
+                    return Err(ModelError::PointLimitExceeded);
+                }
+            }
+            RedoChange::Finalize { stroke_id } => {
+                let stroke = self
+                    .stroke(*stroke_id)
+                    .ok_or(ModelError::RedoConflict(*stroke_id))?;
+                if stroke.finalized
+                    || (stroke.kind.requires_two_points() && stroke.points.len() < 2)
+                {
+                    return Err(ModelError::RedoConflict(*stroke_id));
+                }
+            }
+            RedoChange::Delete { stroke_id } => {
+                if self.stroke(*stroke_id).is_none() {
+                    return Err(ModelError::RedoConflict(*stroke_id));
+                }
+            }
+            RedoChange::Clear { .. } => {}
+        }
+        Ok(())
+    }
+
+    fn apply_redo(
+        &mut self,
+        scope: UndoScope,
+        author: AuthorId,
+    ) -> Result<ApplyOutcome, ModelError> {
+        let position = self
+            .redo
+            .iter()
+            .rposition(|record| scope == UndoScope::Global || record.author == author);
+        let Some(position) = position else {
+            return Ok(ApplyOutcome::NothingToRedo);
+        };
+
+        self.validate_redo(&self.redo[position].change)?;
+
+        let record = self.redo.remove(position).expect("position is in range");
+        let undo = match record.change {
+            RedoChange::Add { index, stroke } => {
+                let stroke_id = stroke.id;
+                self.strokes.insert(index.min(self.strokes.len()), stroke);
+                Some(UndoChange::Add { stroke_id })
+            }
+            RedoChange::Update { stroke_id, points } => {
+                let stroke = self
+                    .strokes
+                    .iter_mut()
+                    .find(|stroke| stroke.id == stroke_id)
+                    .expect("redo target was validated");
+                let old_len = stroke.points.len();
+                stroke.points.extend(points);
+                Some(UndoChange::Update { stroke_id, old_len })
+            }
+            RedoChange::Finalize { stroke_id } => {
+                self.strokes
+                    .iter_mut()
+                    .find(|stroke| stroke.id == stroke_id)
+                    .expect("redo target was validated")
+                    .finalized = true;
+                Some(UndoChange::Finalize { stroke_id })
+            }
+            RedoChange::Delete { stroke_id } => {
+                let index = self
+                    .strokes
+                    .iter()
+                    .position(|stroke| stroke.id == stroke_id)
+                    .expect("redo target was validated");
+                Some(UndoChange::Delete {
+                    index,
+                    stroke: self.strokes.remove(index),
+                })
+            }
+            RedoChange::Clear { stroke_ids } => {
+                // Only strokes restored by the undone clear are removed again;
+                // strokes added since then by other authors are preserved.
+                let (cleared, kept) = std::mem::take(&mut self.strokes)
+                    .into_iter()
+                    .partition(|stroke| stroke_ids.contains(&stroke.id));
+                self.strokes = kept;
+                let strokes: Vec<Stroke> = cleared;
+                (!strokes.is_empty()).then_some(UndoChange::Clear { strokes })
+            }
+        };
+        if let Some(change) = undo {
+            self.push_undo_keep_redo(UndoRecord {
+                author: record.author,
+                change,
+            });
         }
         Ok(ApplyOutcome::Applied)
     }
@@ -684,6 +1192,35 @@ impl Board {
         let mut layer = RenderLayer::new(width, height)?;
         for stroke in &self.strokes {
             render_stroke(&mut layer, stroke);
+        }
+        Ok(layer)
+    }
+
+    /// Renders strokes, then laser pointers visible at `now_ms` in ascending
+    /// author order. Lasers are drawn as filled discs and are never erased.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Board::render`].
+    pub fn render_with_lasers(
+        &self,
+        width: u32,
+        height: u32,
+        now_ms: u64,
+    ) -> Result<RenderLayer, RenderError> {
+        let mut layer = self.render(width, height)?;
+        for (_, laser) in self.active_lasers(now_ms) {
+            let center = ScreenPoint {
+                x: f64::from(laser.x) * f64::from(width.saturating_sub(1)),
+                y: f64::from(laser.y) * f64::from(height.saturating_sub(1)),
+            };
+            let radius = f64::from(laser.width) * f64::from(width.min(height)) / 2.0;
+            let style = StrokeStyle {
+                color: laser.color,
+                width: laser.width,
+                opacity: 1.0,
+            };
+            paint_segment(&mut layer, center, center, radius, style, Blend::Over);
         }
         Ok(layer)
     }
@@ -704,6 +1241,10 @@ pub enum ModelError {
     SequenceExhausted,
     OperationTooOld(u64),
     OperationIdConflict(OperationId),
+    AuthorLimitExceeded,
+    RedoConflict(StrokeId),
+    InvalidShortcutSlot(usize),
+    ShortcutUnassigned(usize),
     DuplicateStroke(StrokeId),
     UnknownStroke(StrokeId),
     StrokeFinalized(StrokeId),
@@ -774,6 +1315,20 @@ impl RenderLayer {
             * 4;
         self.pixels[offset..offset + 4].try_into().ok()
     }
+
+    /// Returns the layer as premultiplied RGBA8 (`c * a / 255`, rounded to
+    /// nearest), the form expected by routed compositor layers.
+    #[must_use]
+    pub fn to_premultiplied_rgba(&self) -> Vec<u8> {
+        let mut out = self.pixels.clone();
+        for pixel in out.as_chunks_mut::<4>().0 {
+            let alpha = u32::from(pixel[3]);
+            for channel in &mut pixel[..3] {
+                *channel = u8::try_from(divide_255(u32::from(*channel) * alpha)).unwrap_or(u8::MAX);
+            }
+        }
+        out
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -789,6 +1344,12 @@ impl fmt::Display for RenderError {
 }
 
 impl Error for RenderError {}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Blend {
+    Over,
+    Erase,
+}
 
 #[derive(Clone, Copy)]
 struct ScreenPoint {
@@ -806,12 +1367,17 @@ fn render_stroke(layer: &mut RenderLayer, stroke: &Stroke) {
         })
         .collect();
     let radius = f64::from(stroke.style.width) * f64::from(layer.width.min(layer.height)) / 2.0;
+    let blend = if stroke.kind == StrokeKind::Eraser {
+        Blend::Erase
+    } else {
+        Blend::Over
+    };
     let paint = |layer: &mut RenderLayer, from, to| {
-        paint_segment(layer, from, to, radius, stroke.style);
+        paint_segment(layer, from, to, radius, stroke.style, blend);
     };
 
     match stroke.kind {
-        StrokeKind::Freehand => {
+        StrokeKind::Freehand | StrokeKind::Eraser => {
             if points.len() == 1 {
                 paint(layer, points[0], points[0]);
             } else {
@@ -885,6 +1451,7 @@ fn paint_segment(
     to: ScreenPoint,
     radius: f64,
     style: StrokeStyle,
+    blend: Blend,
 ) {
     let min_x = clipped_floor(from.x.min(to.x) - radius - 0.5, layer.width - 1);
     let max_x = clipped_ceil(from.x.max(to.x) + radius + 0.5, layer.width - 1);
@@ -908,7 +1475,7 @@ fn paint_segment(
             let nearest_y = dy.mul_add(projection, from.y);
             let distance = (pixel_x - nearest_x).hypot(pixel_y - nearest_y);
             let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
-            blend_pixel(layer, x, y, style, coverage);
+            blend_pixel(layer, x, y, style, coverage, blend);
         }
     }
 }
@@ -927,7 +1494,7 @@ fn paint_ellipse(
     let rx = (last.x - first.x).abs() / 2.0;
     let ry = (last.y - first.y).abs() / 2.0;
     if rx <= f64::EPSILON || ry <= f64::EPSILON {
-        paint_segment(layer, first, last, radius, style);
+        paint_segment(layer, first, last, radius, style, Blend::Over);
         return;
     }
 
@@ -947,12 +1514,19 @@ fn paint_ellipse(
                 (normalized - 1.0).abs() / gradient
             };
             let coverage = (radius + 0.5 - distance).clamp(0.0, 1.0);
-            blend_pixel(layer, x, y, style, coverage);
+            blend_pixel(layer, x, y, style, coverage, Blend::Over);
         }
     }
 }
 
-fn blend_pixel(layer: &mut RenderLayer, x: u32, y: u32, style: StrokeStyle, coverage: f64) {
+fn blend_pixel(
+    layer: &mut RenderLayer,
+    x: u32,
+    y: u32,
+    style: StrokeStyle,
+    coverage: f64,
+    blend: Blend,
+) {
     if coverage <= 0.0 {
         return;
     }
@@ -964,6 +1538,17 @@ fn blend_pixel(layer: &mut RenderLayer, x: u32, y: u32, style: StrokeStyle, cove
     let offset = (y as usize * layer.width as usize + x as usize) * 4;
     let destination_alpha = u32::from(layer.pixels[offset + 3]);
     let inverse = 255 - source_alpha;
+    if blend == Blend::Erase {
+        // Destination-out on a straight-alpha layer: colors are unchanged and
+        // fully erased pixels are normalized to transparent black.
+        let output_alpha = divide_255(destination_alpha * inverse);
+        if output_alpha == 0 {
+            layer.pixels[offset..offset + 4].fill(0);
+        } else {
+            layer.pixels[offset + 3] = u8::try_from(output_alpha).expect("alpha fits in u8");
+        }
+        return;
+    }
     let output_alpha = source_alpha + divide_255(destination_alpha * inverse);
 
     for (channel, source) in [style.color.red, style.color.green, style.color.blue]
@@ -1090,7 +1675,7 @@ mod tests {
                 },
             ))
             .unwrap();
-        assert!(board.strokes().is_empty());
+        assert_eq!(board.strokes(), []);
         board
             .apply(operation(
                 5,
@@ -1106,7 +1691,7 @@ mod tests {
         board
             .apply(operation(6, ALICE, OperationKind::Clear))
             .unwrap();
-        assert!(board.strokes().is_empty());
+        assert_eq!(board.strokes(), []);
     }
 
     #[test]
@@ -1169,7 +1754,7 @@ mod tests {
         board
             .apply(operation(4, ALICE, OperationKind::Undo(UndoScope::Global)))
             .unwrap();
-        assert!(board.strokes().is_empty());
+        assert_eq!(board.strokes(), []);
     }
 
     #[test]
@@ -1274,7 +1859,14 @@ mod tests {
                 ))
                 .unwrap();
             let layer = board.render(9, 9).unwrap();
-            assert!(layer.pixels().chunks_exact(4).any(|pixel| pixel[3] > 0));
+            assert!(
+                layer
+                    .pixels()
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|pixel| pixel[3] > 0)
+            );
             assert_eq!(layer.pixels().len(), 9 * 9 * 4);
             assert!(layer.pixel(0, 0).unwrap()[3] > 0);
         }
