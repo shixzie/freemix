@@ -10,6 +10,8 @@
 //!   `paused:<entry>:<take>:<cycle>:<elapsed frames>`, or
 //!   `finished:<last|->`.
 //! * `start` is `now`, `after:<frames>`, or `at:<frame>`.
+//! * A snapshot's `frame_rate` is `<numerator>/<denominator>`, both nonzero
+//!   and in lowest terms.
 //!
 //! Every number is a canonical unsigned decimal.
 
@@ -17,6 +19,8 @@ use crate::{
     CodecError, MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_FRAMES, MAX_PLAYLIST_TRANSITION_FRAMES,
     PlaylistEntrySpec, PlaylistLoopMode, PlaylistRunState, PlaylistStart, PlaylistTransitionKind,
 };
+
+use fm_types::FrameRate;
 
 use super::value::{parse_canonical_input, parse_canonical_u64};
 
@@ -256,4 +260,23 @@ pub(super) fn decode_optional_entry(
 
 pub(super) fn encode_optional_entry(value: Option<u64>) -> String {
     optional_id(value)
+}
+
+pub(super) fn encode_frame_rate(rate: FrameRate) -> String {
+    format!("{}/{}", rate.numerator(), rate.denominator())
+}
+
+/// Parses a canonical `<numerator>/<denominator>` frame rate in lowest terms.
+pub(super) fn decode_frame_rate(value: String) -> Result<FrameRate, CodecError> {
+    let parsed = value.split_once('/').and_then(|(numerator, denominator)| {
+        let numerator = u32::try_from(parse_canonical_u64(numerator)?).ok()?;
+        let denominator = u32::try_from(parse_canonical_u64(denominator)?).ok()?;
+        FrameRate::new(numerator, denominator)
+            .ok()
+            .filter(|rate| rate.numerator() == numerator && rate.denominator() == denominator)
+    });
+    parsed.ok_or(CodecError::InvalidField {
+        field: "frame_rate",
+        value,
+    })
 }

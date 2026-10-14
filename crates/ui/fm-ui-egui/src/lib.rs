@@ -46,6 +46,7 @@ mod outputs;
 mod overlay_status;
 mod overlays;
 mod panels;
+mod playlist;
 mod stinger_config;
 mod stream_control;
 mod theme;
@@ -66,6 +67,15 @@ pub use input_catalogue::{
     input_usage_reason, next_free_input_id, remove_input_availability, suggested_input_name,
 };
 pub use menu::ConsoleLayout;
+pub use playlist::{
+    Countdown, EntryForm, EntryRole, ListEdit, PlaylistIntent, PlaylistPhase,
+    TransportAvailability, control_block as playlist_control_block,
+    countdown as playlist_countdown, edit_block as playlist_edit_block,
+    entry_role as playlist_entry_role, list_edit as playlist_list_edit,
+    next_entry as playlist_next_entry, parse_duration as parse_playlist_duration,
+    row_take as playlist_row_take, timecode,
+    transport_availability as playlist_transport_availability,
+};
 pub use stinger_config::{
     default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
     stinger_remove_intent, stinger_setup_block_reason,
@@ -213,6 +223,8 @@ pub enum StudioIntent {
     /// The editor already marked the title pending; the worker answers with
     /// a [`TitleUpdate`] for `command.request`.
     Title(TitleCommand),
+    /// Sends one playlist command: a list edit or transport.
+    Playlist(PlaylistIntent),
 }
 
 impl StudioIntent {
@@ -1039,6 +1051,8 @@ pub struct StudioShell {
     locale: Locale,
     /// The Titles tab and its title editor.
     titles: titles::TitlesPanel,
+    /// The Playlist tab: selection, entry form, and countdown anchor.
+    playlist: playlist::PlaylistPanel,
     /// Meter and stream message arrival times for the status bar strip.
     health: health::HealthTracker,
     /// Whether the side panel's edge was being dragged last frame.
@@ -1257,6 +1271,7 @@ impl StudioShell {
         self.reconcile_rename_draft(state);
         self.reconcile_catalogue_dialogs(state);
         self.titles.sync(state);
+        self.playlist.sync(state, std::time::Instant::now());
     }
 
     /// Publishes the console locale to this frame's drawing code and to the
@@ -1623,6 +1638,7 @@ impl Default for StudioShell {
             catalogue: input_catalogue::CatalogueTracker::default(),
             locale: Locale::ENGLISH,
             titles: titles::TitlesPanel::default(),
+            playlist: playlist::PlaylistPanel::default(),
             health: health::HealthTracker::default(),
             side_panel_resizing: false,
         }

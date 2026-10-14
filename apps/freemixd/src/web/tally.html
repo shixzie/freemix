@@ -81,7 +81,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.25";
+  const PROTOCOL = "2.26";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -311,7 +311,8 @@
         if (revision !== link.revision + 1) { closeSocket(); return; } // gap: resynchronize
         link.revision = revision;
         const name = required(record, "event");
-        if (name === "desired_switcher" || name === "stinger_slots_changed") {
+        if (name === "desired_switcher" || name === "stinger_slots_changed"
+            || name === "playlist_changed") { // a playlist take moves Program too
           show.desired = { program: required(record, "program"), preview: required(record, "preview") };
           trackDesired(revision, show.desired.program, show.desired.preview);
         } else if (name === "input_renamed") {

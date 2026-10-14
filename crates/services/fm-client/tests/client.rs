@@ -137,6 +137,8 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         edit_locks: fm_protocol::EditLockStatus::default(),
         edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         titles: Vec::new(),
+        frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+        playlist_follows: false,
     }
 }
 
@@ -1703,5 +1705,184 @@ mod titles {
                 .field_revision,
             3
         );
+    }
+}
+
+/// Protocol 2.26: a snapshot announces its playlist and one `playlist_state`
+/// completes it after the title states.
+mod playlists {
+    use fm_protocol::{
+        PlaylistEntrySpec, PlaylistLoopMode, PlaylistRunState, PlaylistStateMessage,
+        PlaylistTransitionKind, TitleFieldStatus, TitleFieldValue, TitleStateMessage, TitleSummary,
+        WireTitleFieldId,
+    };
+
+    use super::*;
+
+    fn announced_snapshot(revision: u64, titles: bool) -> SnapshotMessage {
+        SnapshotMessage {
+            titles: if titles {
+                vec![TitleSummary {
+                    input: input(2),
+                    field_revision: 0,
+                }]
+            } else {
+                Vec::new()
+            },
+            playlist_follows: true,
+            ..snapshot(revision)
+        }
+    }
+
+    fn title_state(revision: u64) -> TitleStateMessage {
+        TitleStateMessage {
+            revision,
+            input: input(2),
+            name: "Lower third".into(),
+            field_revision: 0,
+            fields: vec![TitleFieldStatus {
+                field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                name: "Name".into(),
+                value: TitleFieldValue::Text("Ana".into()),
+            }],
+        }
+    }
+
+    fn playlist_state(revision: u64, entry_input: u128) -> PlaylistStateMessage {
+        PlaylistStateMessage {
+            revision,
+            frame: 900,
+            loop_mode: PlaylistLoopMode::All,
+            entries: vec![PlaylistEntrySpec {
+                id: 7,
+                input: input(entry_input),
+                duration_frames: 300,
+                transition: PlaylistTransitionKind::Fade,
+                transition_frames: 15,
+                enabled: true,
+            }],
+            state: PlaylistRunState::Playing {
+                entry: 7,
+                take: 1,
+                cycle: 0,
+                started_frame: 850,
+            },
+        }
+    }
+
+    fn synchronizing(snapshot: SnapshotMessage) -> Client {
+        let mut client = Client::new(config(4)).unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client.accept_handshake(handshake(4, None)).unwrap();
+        client.intake(WireMessage::Snapshot(snapshot)).unwrap();
+        client
+    }
+
+    #[test]
+    fn a_snapshot_without_a_playlist_implies_the_empty_one() {
+        let client = synchronizing(snapshot(4));
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let state = client.model().state().unwrap();
+        assert_eq!(state.frame_rate(), fm_types::FrameRate::new(30, 1).unwrap());
+        assert_eq!(
+            state.playlist(),
+            Some(&fm_ui_model::PlaylistStatus::empty())
+        );
+    }
+
+    #[test]
+    fn an_announced_playlist_completes_the_snapshot_after_its_titles() {
+        let mut client = synchronizing(announced_snapshot(4, true));
+        assert!(client.model().state().unwrap().playlist().is_none());
+        client
+            .intake(WireMessage::TitleState(title_state(4)))
+            .unwrap();
+        // Titles alone do not finish a snapshot that announced a playlist.
+        assert!(matches!(
+            client.state(),
+            ConnectionState::Synchronizing {
+                mode: SyncMode::Snapshot,
+                ..
+            }
+        ));
+        assert_eq!(
+            client
+                .intake(WireMessage::PlaylistState(playlist_state(4, 1)))
+                .unwrap(),
+            Intake::PlaylistStateApplied
+        );
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let playlist = client.model().state().unwrap().playlist().unwrap().clone();
+        assert_eq!(playlist.frame, 900);
+        assert_eq!(playlist.loop_mode, PlaylistLoopMode::All);
+        assert_eq!(playlist.entries.len(), 1);
+        assert!(matches!(
+            playlist.state,
+            PlaylistRunState::Playing {
+                started_frame: 850,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn out_of_order_or_unannounced_playlist_states_force_a_fresh_snapshot() {
+        let resync = |client: &mut Client, message: PlaylistStateMessage| {
+            let error = client
+                .intake(WireMessage::PlaylistState(message))
+                .unwrap_err();
+            assert!(
+                matches!(error, ClientError::ResyncRequired { .. }),
+                "{error:?}"
+            );
+        };
+        // Before the announced title states.
+        let mut client = synchronizing(announced_snapshot(4, true));
+        resync(&mut client, playlist_state(4, 1));
+        // At another revision.
+        let mut client = synchronizing(announced_snapshot(4, false));
+        resync(&mut client, playlist_state(3, 1));
+        // Naming an input the snapshot does not have.
+        let mut client = synchronizing(announced_snapshot(4, false));
+        resync(&mut client, playlist_state(4, 99));
+        // Not announced, so the client is already ready.
+        let mut client = synchronizing(snapshot(4));
+        resync(&mut client, playlist_state(4, 1));
+        // A second one after the first completed the snapshot.
+        let mut client = synchronizing(announced_snapshot(4, false));
+        client
+            .intake(WireMessage::PlaylistState(playlist_state(4, 1)))
+            .unwrap();
+        resync(&mut client, playlist_state(4, 1));
+    }
+
+    #[test]
+    fn an_incomplete_playlist_never_resumes_and_events_wait_for_it() {
+        let mut client = synchronizing(announced_snapshot(4, false));
+        let event = EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            cursor: EventCursor {
+                engine: engine(),
+                revision: 5,
+            },
+            payload: EventPayload::PlaylistChanged {
+                frame: 950,
+                loop_mode: PlaylistLoopMode::Off,
+                entries: Vec::new(),
+                state: PlaylistRunState::Stopped,
+                program: input(1),
+                preview: input(2),
+            },
+        };
+        let error = client.apply_event(event).unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+        let mut client = synchronizing(announced_snapshot(4, false));
+        let _ = client.transport_disconnected();
+        client.start_connect().unwrap();
+        assert_eq!(client.transport_connected().unwrap().resume_cursor, None);
     }
 }

@@ -1,5 +1,5 @@
 //! Right-hand side panel: on-air outputs (recording and streams) above a
-//! tabbed area for overlays, stingers, and titles.
+//! tabbed area for overlays, stingers, titles, and the playlist.
 
 use core::fmt::Write as _;
 use core::num::NonZeroU128;
@@ -30,6 +30,7 @@ pub(crate) enum SideTab {
     Overlays,
     Stingers,
     Titles,
+    Playlist,
 }
 
 pub(crate) const STREAMS_NONE_CONFIGURED: &str = Msg::StreamsNoneConfigured.en();
@@ -57,9 +58,10 @@ impl StudioShell {
                 (SideTab::Overlays, Msg::TabOverlays),
                 (SideTab::Stingers, Msg::TabStingers),
                 (SideTab::Titles, Msg::TabTitles),
+                (SideTab::Playlist, Msg::TabPlaylist),
             ];
             let spacing = ui.spacing().item_spacing.x;
-            #[allow(clippy::cast_precision_loss)] // three tabs
+            #[allow(clippy::cast_precision_loss)] // four tabs
             let tab_width = ((ui.available_width() - spacing * (tabs.len() - 1) as f32)
                 / tabs.len() as f32)
                 .floor()
@@ -126,6 +128,7 @@ impl StudioShell {
                     );
                 }
                 SideTab::Titles => self.titles.draw(ui, state, intents),
+                SideTab::Playlist => self.playlist.draw(ui, state, intents),
             });
     }
 

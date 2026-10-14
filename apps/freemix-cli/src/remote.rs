@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use fm_client::{Client, ClientConfig, Intake, Outbound};
+use fm_client::{Client, ClientConfig, ConnectionState, Intake, Outbound};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandPayload, CommandResult, DiagnosticsRequest,
     DiagnosticsResponse, EventPayload, FadeToBlackState, HandshakeOutcome, HandshakeRequest,
@@ -261,6 +261,21 @@ impl Remote {
                 return Err(
                     RemoteFailure("expected initial snapshot after handshake".into()).into(),
                 );
+            }
+        }
+        // The title and playlist states the snapshot announced complete it.
+        while client.state() != &ConnectionState::Ready {
+            match remote.read()? {
+                message @ (WireMessage::TitleState(_) | WireMessage::PlaylistState(_)) => {
+                    client.intake(message)?;
+                }
+                WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+                _ => {
+                    return Err(RemoteFailure(
+                        "expected the snapshot's title and playlist states".into(),
+                    )
+                    .into());
+                }
             }
         }
 

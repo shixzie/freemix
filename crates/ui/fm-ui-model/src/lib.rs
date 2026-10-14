@@ -15,12 +15,12 @@ use fm_protocol::{
     CommandResult, EditLockScope, EngineIdentity, EventCursor, EventMessage, EventPayload,
     FadeToBlackState, FieldIssue, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionStatus as ProtocolManualTransitionStatus, PlaylistEntrySpec, PlaylistLoopMode,
-    PlaylistRunState, RecordingStatus, ResumeCursor, ServerHello, ServerIdentity, SnapshotMessage,
-    StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
-    StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus, TitleFieldUpdate,
-    TitleStateMessage, WireRecorderSlot,
+    PlaylistRunState, PlaylistStateMessage, RecordingStatus, ResumeCursor, ServerHello,
+    ServerIdentity, SnapshotMessage, StingerAudioPolicy, StingerMissingMediaFallback,
+    StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
+    TitleFieldUpdate, TitleStateMessage, WireRecorderSlot,
 };
-use fm_types::{InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
+use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
 pub mod i18n;
 pub mod title_editor;
@@ -318,6 +318,11 @@ pub struct ProjectSnapshot {
     pub edit_history: EditHistoryStatus,
     /// Every title input, ascending by input, each incomplete.
     pub titles: Vec<TitleStatus>,
+    /// The engine's video frame rate; playlist frames count these frames.
+    pub frame_rate: FrameRate,
+    /// Whether a `playlist_state` completes this snapshot. Otherwise the
+    /// playlist is empty, stopped, and does not loop.
+    pub playlist_follows: bool,
 }
 
 impl ProjectSnapshot {
@@ -384,6 +389,8 @@ impl ProjectSnapshot {
                 .into_iter()
                 .map(|title| TitleStatus::announced(title.input.to_domain(), title.field_revision))
                 .collect(),
+            frame_rate: message.frame_rate,
+            playlist_follows: message.playlist_follows,
         }
     }
 }
@@ -451,15 +458,43 @@ pub enum DurableChange {
     },
 }
 
-/// The replicated playlist as of its last `playlist_changed`. Durations and
-/// frames are engine frames.
+/// The replicated playlist as of its snapshot's `playlist_state` or its last
+/// `playlist_changed`. Durations and frames are engine frames.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlaylistStatus {
-    /// The frame the last playlist command took effect on.
+    /// The engine frame this status was observed at: the target frame of
+    /// the last playlist command, or the frame cursor when the snapshot's
+    /// `playlist_state` was written (zero for a snapshot's implied empty
+    /// playlist).
     pub frame: u64,
     pub loop_mode: PlaylistLoopMode,
     pub entries: Vec<PlaylistEntrySpec>,
     pub state: PlaylistRunState,
+}
+
+impl PlaylistStatus {
+    /// The empty, stopped, non-looping playlist a snapshot implies when no
+    /// `playlist_state` follows it.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            frame: 0,
+            loop_mode: PlaylistLoopMode::Off,
+            entries: Vec::new(),
+            state: PlaylistRunState::Stopped,
+        }
+    }
+
+    /// The playlist a snapshot's `playlist_state` carries.
+    #[must_use]
+    pub fn from_protocol(message: PlaylistStateMessage) -> Self {
+        Self {
+            frame: message.frame,
+            loop_mode: message.loop_mode,
+            entries: message.entries,
+            state: message.state,
+        }
+    }
 }
 
 /// One globally ordered project event.
@@ -628,15 +663,31 @@ pub struct ProjectState {
     edit_locks: EditLocks,
     edit_history: EditHistoryStatus,
     titles: Vec<TitleStatus>,
+    frame_rate: FrameRate,
+    /// `None` while the snapshot's announced `playlist_state` is awaited.
     playlist: Option<PlaylistStatus>,
 }
 
 impl ProjectState {
-    /// Returns the playlist from the last `playlist_changed` applied since
-    /// the snapshot; snapshots do not carry the playlist.
+    /// Returns the replicated playlist: the snapshot's (its `playlist_state`,
+    /// or the empty playlist it implies) kept current by `playlist_changed`.
+    /// `None` only while an announced `playlist_state` has not arrived.
     #[must_use]
     pub const fn playlist(&self) -> Option<&PlaylistStatus> {
         self.playlist.as_ref()
+    }
+
+    /// Returns whether the snapshot's playlist is known (it announced none,
+    /// or its `playlist_state` arrived).
+    #[must_use]
+    pub const fn playlist_complete(&self) -> bool {
+        self.playlist.is_some()
+    }
+
+    /// Returns the engine's video frame rate from the snapshot.
+    #[must_use]
+    pub const fn frame_rate(&self) -> FrameRate {
+        self.frame_rate
     }
 
     /// Returns every replicated title input, ascending by input.
@@ -906,6 +957,7 @@ pub enum Action {
     ReconcileCommand(CommandResult),
     ObserveServer(ServerHello),
     ApplyTitleState(TitleStateMessage),
+    ApplyPlaylistState(PlaylistStateMessage),
 }
 
 /// The effect produced by [`ClientModel::reduce`].
@@ -918,6 +970,7 @@ pub enum Reduction {
     CommandReconciled(CommandReconciled),
     ServerObserved,
     TitleStateApplied,
+    PlaylistStateApplied,
 }
 
 /// Validation or ordering failure that leaves authoritative state unchanged.
@@ -1007,12 +1060,16 @@ pub enum ModelError {
     TitleStateMismatch(InputId),
     /// A title change arrived before the title's `title_state`.
     TitleIncomplete(InputId),
+    /// A `playlist_state` arrived that the applied snapshot did not announce
+    /// or still awaits at another revision.
+    PlaylistStateMismatch,
     /// A title change's fields are not the title's field set, or its field
     /// revision went backwards.
     InvalidTitleChange(InputId),
 }
 
 impl fmt::Display for ModelError {
+    #[allow(clippy::too_many_lines)] // one arm per error
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ProjectMismatch { expected, observed } => write!(
@@ -1112,6 +1169,7 @@ impl fmt::Display for ModelError {
             | Self::UnknownTitle(_)
             | Self::TitleStateMismatch(_)
             | Self::TitleIncomplete(_)
+            | Self::PlaylistStateMismatch
             | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
         }
     }
@@ -1142,6 +1200,9 @@ fn write_catalogue_message(error: &ModelError, formatter: &mut fmt::Formatter<'_
         }
         ModelError::InvalidTitleChange(input) => {
             write!(formatter, "title {input} change does not match its fields")
+        }
+        ModelError::PlaylistStateMismatch => {
+            formatter.write_str("playlist state does not match the snapshot it follows")
         }
         _ => Ok(()),
     }
@@ -1346,6 +1407,10 @@ impl ClientModel {
                 self.apply_title_state(message)?;
                 Ok(Reduction::TitleStateApplied)
             }
+            Action::ApplyPlaylistState(message) => {
+                self.apply_playlist_state(message)?;
+                Ok(Reduction::PlaylistStateApplied)
+            }
         }
     }
 
@@ -1467,7 +1532,8 @@ impl ClientModel {
             edit_locks: snapshot.edit_locks,
             edit_history: snapshot.edit_history,
             titles: snapshot.titles,
-            playlist: None,
+            frame_rate: snapshot.frame_rate,
+            playlist: (!snapshot.playlist_follows).then(PlaylistStatus::empty),
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -1610,6 +1676,43 @@ impl ClientModel {
         title.name = message.name;
         title.fields = message.fields;
         title.complete = true;
+        Ok(())
+    }
+
+    /// Completes the installed snapshot with the `playlist_state` it
+    /// announced.
+    ///
+    /// `message` must be at the applied revision (it follows its snapshot
+    /// before any event), the snapshot must still await it, and its entries
+    /// must name show inputs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot,
+    /// [`ModelError::UnknownInput`] for an entry naming no show input, and
+    /// [`ModelError::PlaylistStateMismatch`] otherwise; the model is then
+    /// unchanged and the caller must resynchronize.
+    pub fn apply_playlist_state(
+        &mut self,
+        message: PlaylistStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if Revision::new(message.revision) != revision || state.playlist.is_some() {
+            return Err(ModelError::PlaylistStateMismatch);
+        }
+        if let Some(entry) = message
+            .entries
+            .iter()
+            .find(|entry| !state.inputs.contains(&entry.input.to_domain()))
+        {
+            return Err(ModelError::UnknownInput(entry.input.to_domain()));
+        }
+        state.playlist = Some(PlaylistStatus::from_protocol(message));
         Ok(())
     }
 

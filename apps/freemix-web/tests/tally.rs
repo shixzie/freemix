@@ -184,6 +184,8 @@ fn snapshot_locked(
         edit_locks,
         edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         titles: Vec::new(),
+        frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+        playlist_follows: false,
     }))
 }
 

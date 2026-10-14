@@ -17,9 +17,9 @@ use fm_command::{CommandId, Revision};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     DurableGap, EngineIdentity, EventMessage, HandshakeOutcome, HandshakeRequest,
-    HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage, ProtocolVersion,
-    ResumeCursor, Role, RuntimeEventMessage, RuntimeLifecycleEvent, ServerHello, ServerIdentity,
-    SnapshotMessage, StructuredError, TitleStateMessage, WireMessage,
+    HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage, PlaylistStateMessage,
+    ProtocolVersion, ResumeCursor, Role, RuntimeEventMessage, RuntimeLifecycleEvent, ServerHello,
+    ServerIdentity, SnapshotMessage, StructuredError, TitleStateMessage, WireMessage,
 };
 use fm_types::ProjectId;
 use fm_ui_model::{
@@ -165,6 +165,8 @@ pub enum Intake {
     ResyncRequested,
     /// A `title_state` completed one title the snapshot announced.
     TitleStateApplied,
+    /// The `playlist_state` the snapshot announced completed it.
+    PlaylistStateApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -480,9 +482,9 @@ impl Client {
             build: self.config.build.clone(),
             client_type: self.config.client_type,
             desired_role: self.config.desired_role,
-            // A snapshot whose titles never completed cannot be resumed:
-            // resumed events carry no title states.
-            resume_cursor: if self.force_snapshot || !self.titles_complete() {
+            // A snapshot whose titles or playlist never completed cannot be
+            // resumed: resumed events carry no title or playlist states.
+            resume_cursor: if self.force_snapshot || !self.snapshot_complete() {
                 None
             } else {
                 self.last_applied_cursor()
@@ -554,6 +556,10 @@ impl Client {
             WireMessage::TitleState(state) => {
                 self.apply_title_state(state)?;
                 Ok(Intake::TitleStateApplied)
+            }
+            WireMessage::PlaylistState(state) => {
+                self.apply_playlist_state(state)?;
+                Ok(Intake::PlaylistStateApplied)
             }
             WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
@@ -697,9 +703,9 @@ impl Client {
             snapshot,
         ))?;
         // Every title the snapshot announced is completed by the
-        // `title_state` records that follow it; until then the client keeps
-        // synchronizing.
-        if self.titles_complete() {
+        // `title_state` records that follow it, and an announced playlist by
+        // its `playlist_state`; until then the client keeps synchronizing.
+        if self.snapshot_complete() {
             self.finish_sync();
         }
         Ok(())
@@ -736,7 +742,45 @@ impl Client {
         {
             return self.require_resync(target_revision, received_revision);
         }
-        if self.titles_complete() {
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
+    /// Completes the snapshot with the `playlist_state` it announced.
+    ///
+    /// The playlist state arrives only while synchronizing from a snapshot,
+    /// after the snapshot's title states and before any event.
+    ///
+    /// # Errors
+    ///
+    /// A playlist state in any other state, at another revision, that the
+    /// snapshot did not announce, or before every announced title state
+    /// forces a fresh-snapshot reconnect ([`ClientError::ResyncRequired`]).
+    pub fn apply_playlist_state(&mut self, state: PlaylistStateMessage) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !self.titles_complete()
+            || self.model.apply_playlist_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
             self.finish_sync();
         }
         Ok(())
@@ -746,6 +790,14 @@ impl Client {
         self.model
             .state()
             .is_none_or(fm_ui_model::ProjectState::titles_complete)
+    }
+
+    /// Whether the installed snapshot has every title and playlist state it
+    /// announced.
+    fn snapshot_complete(&self) -> bool {
+        self.model
+            .state()
+            .is_none_or(|state| state.titles_complete() && state.playlist_complete())
     }
 
     /// Applies exactly the next ordered event through [`ClientModel`].
@@ -760,12 +812,12 @@ impl Client {
                 target_revision,
             } => Some(target_revision),
             ConnectionState::Ready => None,
-            // An event before the snapshot's title states have all arrived
-            // breaks the snapshot's contiguity.
+            // An event before the snapshot's title and playlist states have
+            // all arrived breaks the snapshot's contiguity.
             ConnectionState::Synchronizing {
                 mode: SyncMode::Snapshot,
                 target_revision,
-            } if !self.titles_complete()
+            } if !self.snapshot_complete()
                 && self
                     .model
                     .reconnect_cursor()

@@ -42,8 +42,8 @@ use fm_protocol::{
     ManualTransitionKind, ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus,
     OutputStatus, OverlayBorderPreset as ProtocolOverlayBorder,
     OverlayPositionPreset as ProtocolOverlayPosition, OverlayStatus,
-    OverlayTransitionKind as ProtocolOverlayTransition, RecordingStatus, RuntimeEventMessage,
-    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    OverlayTransitionKind as ProtocolOverlayTransition, PlaylistStateMessage, RecordingStatus,
+    RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
     StingerAudioPolicy as ProtocolStingerAudioPolicy,
     StingerMissingMediaFallback as ProtocolStingerFallback, StingerReadiness, StingerStatus,
     StreamRealizedState, StreamStatus, TitleAirRequirement, TitleFieldStatus, TitleFieldUpdate,
@@ -740,6 +740,15 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn title_states(&self) -> Vec<TitleStateMessage> {
         title_states(&self.engine)
+    }
+
+    /// Returns the `playlist_state` a session writes after [`Self::snapshot`]
+    /// (and its title states) when the snapshot announces one
+    /// ([`SnapshotMessage::playlist_follows`]), at the current revision and
+    /// frame cursor.
+    #[must_use]
+    pub fn playlist_state(&self) -> Option<PlaylistStateMessage> {
+        playlist::playlist_state(&self.engine)
     }
 
     /// Returns the engine's next unrendered frame number (its frame cursor).
@@ -2229,6 +2238,8 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
                 field_revision: title.fields.revision(),
             })
             .collect(),
+        frame_rate: engine.frame_rate(),
+        playlist_follows: playlist::playlist_follows(engine),
     };
     SnapshotRecord {
         cursor: EventCursor {

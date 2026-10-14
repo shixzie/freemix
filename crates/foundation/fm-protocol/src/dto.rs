@@ -1,7 +1,7 @@
 use core::{fmt, num::NonZeroU128};
 
 use fm_command::{CommandEnvelope, Deadline, Revision, StateEpoch};
-use fm_types::{InputId, OutputId};
+use fm_types::{FrameRate, InputId, OutputId};
 
 use crate::ProtocolVersion;
 
@@ -1107,6 +1107,32 @@ pub struct SnapshotMessage {
     pub edit_history: EditHistoryStatus,
     /// Every title input in ascending input order with its field revision.
     pub titles: Vec<TitleSummary>,
+    /// The engine's video frame rate: every playlist duration and frame
+    /// counts these frames.
+    pub frame_rate: FrameRate,
+    /// Whether exactly one [`PlaylistStateMessage`] follows this snapshot
+    /// (after its title states). `false` means the playlist is empty,
+    /// stopped, and does not loop.
+    pub playlist_follows: bool,
+}
+
+/// The complete playlist at a snapshot's revision.
+///
+/// A session writes exactly one `playlist_state` after a snapshot whose
+/// [`SnapshotMessage::playlist_follows`] is set, after that snapshot's title
+/// states and before any event. Each entry is encoded at most once, so a
+/// maximal playlist (see [`MAX_PLAYLIST_ENTRIES`]) always fits one record
+/// independently of the size of the snapshot itself.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlaylistStateMessage {
+    /// The snapshot's revision.
+    pub revision: u64,
+    /// The engine's frame cursor (its next unrendered frame) at the
+    /// snapshot, so a client can place `state`'s frames in time.
+    pub frame: u64,
+    pub loop_mode: PlaylistLoopMode,
+    pub entries: Vec<PlaylistEntrySpec>,
+    pub state: PlaylistRunState,
 }
 
 /// A durable state change. Runtime progress uses [`RuntimeEventMessage`].
@@ -1521,4 +1547,5 @@ pub enum WireMessage {
     DiagnosticsResponse(DiagnosticsResponse),
     Error(ErrorMessage),
     TitleState(TitleStateMessage),
+    PlaylistState(PlaylistStateMessage),
 }

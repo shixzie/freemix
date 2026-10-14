@@ -7,7 +7,8 @@ use fm_automation::{
 use fm_engine::{Engine, EngineCommand, EnginePlaylistOperation, EnginePlaylistStart};
 use fm_protocol::{
     CommandPayload, EventPayload, PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation,
-    PlaylistRunState, PlaylistStart, PlaylistTransitionKind as WireTransitionKind, WireInputId,
+    PlaylistRunState, PlaylistStart, PlaylistStateMessage,
+    PlaylistTransitionKind as WireTransitionKind, WireInputId,
 };
 
 // The wire and the engine agree on every playlist bound.
@@ -87,16 +88,45 @@ const fn domain_operation(operation: PlaylistOperation) -> EnginePlaylistOperati
     }
 }
 
+/// Whether the engine's playlist differs from the empty, stopped,
+/// non-looping one a snapshot implies, so a `playlist_state` must follow it.
+pub fn playlist_follows(engine: &Engine) -> bool {
+    let playlist = engine.show().playlist();
+    !playlist.entries().is_empty()
+        || playlist.state() != PlaylistState::Stopped
+        || playlist.config().loop_mode != LoopMode::Off
+}
+
+/// The complete playlist at the engine's current revision, for the
+/// `playlist_state` after a snapshot that announced it; `None` when the
+/// snapshot implies the empty playlist.
+pub fn playlist_state(engine: &Engine) -> Option<PlaylistStateMessage> {
+    playlist_follows(engine).then(|| {
+        let playlist = engine.show().playlist();
+        PlaylistStateMessage {
+            revision: engine.revision().get(),
+            frame: engine.frame_cursor().get(),
+            loop_mode: wire_loop(playlist.config().loop_mode),
+            entries: playlist.entries().iter().map(wire_entry).collect(),
+            state: wire_state(playlist.state()),
+        }
+    })
+}
+
+const fn wire_loop(mode: LoopMode) -> PlaylistLoopMode {
+    match mode {
+        LoopMode::Off => PlaylistLoopMode::Off,
+        LoopMode::All => PlaylistLoopMode::All,
+        LoopMode::One => PlaylistLoopMode::One,
+    }
+}
+
 /// The complete post-command playlist with the desired Program and Preview.
 pub fn playlist_changed(engine: &Engine, frame: u64) -> EventPayload {
     let playlist = engine.show().playlist();
     EventPayload::PlaylistChanged {
         frame,
-        loop_mode: match playlist.config().loop_mode {
-            LoopMode::Off => PlaylistLoopMode::Off,
-            LoopMode::All => PlaylistLoopMode::All,
-            LoopMode::One => PlaylistLoopMode::One,
-        },
+        loop_mode: wire_loop(playlist.config().loop_mode),
         entries: playlist.entries().iter().map(wire_entry).collect(),
         state: wire_state(playlist.state()),
         program: WireInputId::from_domain(engine.show().desired_switcher().program()),

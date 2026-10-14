@@ -120,6 +120,8 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         edit_locks: EditLocks::default(),
         edit_history: EditHistoryStatus::EMPTY,
         titles: Vec::new(),
+        frame_rate: fm_types::FrameRate::new(25, 1).unwrap(),
+        playlist_follows: false,
     }
 }
 
@@ -1406,6 +1408,8 @@ mod titles {
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: EditHistoryStatus::EMPTY,
             titles: Vec::new(),
+            frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+            playlist_follows: false,
         }
     }
 
@@ -1628,7 +1632,11 @@ fn playlist_changed_replicates_the_playlist_and_desired_selection() {
     let mut model = ClientModel::new(project_id);
     model.install_snapshot(snapshot(project_id, 7)).unwrap();
     let identity = model.reconnect_cursor().unwrap().engine.clone();
-    assert_eq!(model.state().unwrap().playlist(), None);
+    // A snapshot that announces no playlist implies the empty one.
+    assert_eq!(
+        model.state().unwrap().playlist(),
+        Some(&PlaylistStatus::empty())
+    );
 
     let entry = |input_value: u128| PlaylistEntrySpec {
         id: 4,
@@ -1665,7 +1673,10 @@ fn playlist_changed_replicates_the_playlist_and_desired_selection() {
         model.apply_event(unknown),
         Err(ModelError::UnknownInput(input(99)))
     );
-    assert_eq!(model.state().unwrap().playlist(), None);
+    assert_eq!(
+        model.state().unwrap().playlist(),
+        Some(&PlaylistStatus::empty())
+    );
 
     let changed = DurableProjectEvent::from_protocol(project_id, message(8, 3));
     model.apply_event(changed).unwrap();
@@ -1691,5 +1702,72 @@ fn playlist_changed_replicates_the_playlist_and_desired_selection() {
     assert_eq!(
         state.switcher().realized,
         BusSelection::new(input(1), input(2))
+    );
+}
+
+#[test]
+fn an_announced_playlist_state_completes_the_snapshot() {
+    use fm_protocol::{
+        PlaylistEntrySpec, PlaylistLoopMode, PlaylistRunState, PlaylistStateMessage,
+        PlaylistTransitionKind, WireInputId,
+    };
+
+    let project_id = project(10);
+    let message = |revision: u64, entry_input: u128| PlaylistStateMessage {
+        revision,
+        frame: 400,
+        loop_mode: PlaylistLoopMode::One,
+        entries: vec![PlaylistEntrySpec {
+            id: 2,
+            input: WireInputId::from_domain(input(entry_input)),
+            duration_frames: 250,
+            transition: PlaylistTransitionKind::Cut,
+            transition_frames: 0,
+            enabled: true,
+        }],
+        state: PlaylistRunState::Paused {
+            entry: 2,
+            take: 3,
+            cycle: 1,
+            elapsed_frames: 100,
+        },
+    };
+    let mut model = ClientModel::new(project_id);
+    assert_eq!(
+        model.apply_playlist_state(message(7, 1)),
+        Err(ModelError::StateUnavailable)
+    );
+    let mut announced = snapshot(project_id, 7);
+    announced.playlist_follows = true;
+    model.install_snapshot(announced).unwrap();
+    let state = model.state().unwrap();
+    assert!(!state.playlist_complete());
+    assert_eq!(state.playlist(), None);
+    assert_eq!(state.frame_rate(), fm_types::FrameRate::new(25, 1).unwrap());
+
+    assert_eq!(
+        model.apply_playlist_state(message(6, 1)),
+        Err(ModelError::PlaylistStateMismatch)
+    );
+    assert_eq!(
+        model.apply_playlist_state(message(7, 99)),
+        Err(ModelError::UnknownInput(input(99)))
+    );
+    assert!(!model.state().unwrap().playlist_complete());
+    assert_eq!(
+        model.reduce(Action::ApplyPlaylistState(message(7, 3))),
+        Ok(Reduction::PlaylistStateApplied)
+    );
+    let playlist = model.state().unwrap().playlist().unwrap();
+    assert_eq!(playlist, &PlaylistStatus::from_protocol(message(7, 3)));
+    assert_eq!(playlist.frame, 400);
+    // Only the announced one completes the snapshot.
+    assert_eq!(
+        model.apply_playlist_state(message(7, 3)),
+        Err(ModelError::PlaylistStateMismatch)
+    );
+    assert_eq!(
+        ModelError::PlaylistStateMismatch.to_string(),
+        "playlist state does not match the snapshot it follows"
     );
 }

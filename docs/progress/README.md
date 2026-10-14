@@ -83,7 +83,7 @@ thinning, hold, decay, and latch logic are unit-tested.
 
 The console layout continues with a side panel
 whose outputs card lists one fixed-height status row per recorder slot and
-per stream target, above Overlays/Stingers/Titles tabs; and a bottom status
+per stream target, above Overlays/Stingers/Titles/Playlist tabs; and a bottom status
 bar with the latest result/notice, keyboard hints, and a health strip.
 
 The Overlays tab (UI round 8) draws its eight channels as compact 30 px rows
@@ -270,6 +270,7 @@ the counts and lock chips.
 | `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with amber `NOT LIVE` chips and amber-outlined `STOP` keys, and the Output menu with `NOT LIVE` beside both Stop items and `RECORDING` beside Stop recorder 2. |
 | `studio-console-stingers.png` | 1920x1080, Stingers tab after choosing Playback Clip in the Configure media picker and clicking `ASSIGN` for S1: the S1 card lit green `READY` with its media name, the Configure card's green `READY` chip, enabled `CLEAR`, and the replicated cut point (15 fr), preload, audio, and fallback. |
 | `studio-console-titles.png` | 1920x1080, Titles tab (Protocol 2.24) listing Lower Third (taken to O1, red `ON AIR` badge) and Score Bug (`OFF AIR`); the Lower Third editor with text, colour (swatch + `#RRGGBBAA`), and number fields, the edited Role and Bar colour fields marked `EDITED` with per-field `Discard` keys and an accent marker, the `PREVIEWED` frame showing the draft values to air, the `CHANNEL` picker, `UPDATE LIVE` and `OFF AIR` keys, and the disabled `TAKE` tooltip `Unavailable: the title is on air`. |
+| `studio-console-playlist.png` | 1920x1080 `--role admin`, Playlist tab (Protocol 2.26) after Studio restarted against a playlist already running in the simulated daemon (the late-join `playlist_state`): the `PLAYING` chip, the red `REMAINING` countdown in timecode with `of 00:00:45:00`, `ON AIR · Guest Remote` and the green `Next: Main Scene` line, loop `ALL`, the `START`/`STOP`/`PAUSE`/`PREVIOUS`/`NEXT` keys (Start disabled while running), five entries with transition and monospace duration, entry 04 lit red `ON AIR` with its row countdown, entry 05 lit green `NEXT`, the disabled entry 03 marked `SKIPPED`, and the New entry form disabled with "Unavailable: the playlist is running; stop it to change the list". |
 | `studio-console-top.png` | The default 1600x940 window, idle: the top-bar padlock (`UNLOCKED`) with disabled Undo/Redo keys (the operator session lacks `edit_project`), both recorder rows `STOPPED` with neutral `START` keys, overlays collapsed to one row per channel. |
 | `studio-console-stopped.png` | The compact 1280x800 layout: the side panel narrows to 320 px so the monitors keep their width; the input bank header keeps `7 SOURCES` and drops the gesture hint; the mixer scrolls inside its card and the Master strip stays pinned, its short scale dropping the crowded `-48` label. |
 | `studio-console-compact-720.png` | 1280x720: the same compact layout at the smallest supported height; the console scrolls to reach the lower row. |
@@ -300,6 +301,7 @@ the counts and lock chips.
 | `studio-console-spanish-transition.png` | 1920x1080 `--lang es` after manual `FUNDIDO` and a T-bar drag: the Spanish status card, `COMPLETAR`/`CANCELAR`, and the hover tooltip with requested/realized position. |
 | `studio-console-spanish-stingers.png` | 1920x1080 `--lang es` with Fade to Black on (`PROGRAMA EN NEGRO`) and the Stingers tab: the slot cards, the Configure card (`ASIGNAR`/`VACIAR`, cut point in `fr`, preload, audio, fallback), and the S4 card tooltip. |
 | `studio-console-spanish-titles.png` | 1920x1080 `--lang es`, Titles tab after a second Studio (`--connect`) changed the same Lower Third: the `CONFLICTO` banner, the `MÍO`/`SUYO` comparison for Name, `REBASAR` and `DESCARTAR TODO`, and the disabled `ACTUALIZAR EN VIVO` tooltip naming the server-side change. |
+| `studio-console-spanish-playlist.png` | 1920x1080 `--lang es --role admin`, the Lista tab after `remote-playlist … pause` and a Studio restart: `EN PAUSA`, the amber `RESTANTE` countdown held, `REANUDAR` lit amber in place of Pausa, `AL AIRE`/`SIGUIENTE`/`OMITIDO` row badges, and the Spanish editor and unavailable reason. |
 | `studio-console-spanish-compact.png` | 1280x800 `--lang es` with the Stingers tab: long Spanish labels and details ellipsize inside fixed-width keys and chips instead of overflowing; tooltips carry the full text. |
 | `studio-console-spanish-add-input.png` | 1920x1080 `--lang es --role admin`: the Añadir entrada dialog with `COLOR SÓLIDO`, the suggested name "Color sólido 1", the amber preset, and the preview tagged `ENTRADA 8` / `SIN AUDIO`. |
 | `studio-console-spanish-remove-input.png` | The Quitar entrada confirmation for "Color sólido 1" (entrada 8, posición 8) with the Spanish warning and the red `QUITAR` key. |
@@ -462,6 +464,23 @@ Colour 1 tile for `-input-added.png`; right-click Colour Bars 1 and choose
 `Remove…` and confirm for `-input-refused.png`; open `Inputs` and hover
 `Remove input` for `-inputs-menu.png`. `-add-input-disabled.png` uses the
 default operator role and hovers the `+` tile.
+
+The Playlist captures run Studio with `--role admin` against the demo show,
+then set and start a looping playlist from the CLI (entry 3 disabled):
+
+```sh
+freemix-cli remote-playlist 127.0.0.1:7000 set all \
+    1:1:1800:cut:0:1,2:2:1200:fade:30:1,3:3:900:wipe:20:0,4:4:2700:slide:24:1,5:7:3600:fade:45:1
+freemix-cli remote-playlist 127.0.0.1:7000 start
+```
+
+and click the `PLAYLIST` tab (x 1865, y 326 at 1920x1080). For both
+captures Studio was restarted on the same project while the playlist ran, so
+the tab shows the `playlist_state` that follows the snapshot; the Spanish
+capture first runs `remote-playlist 127.0.0.1:7000 pause` and adds `--lang
+es`. The simulated daemon executes Pause at its frame cursor, which lags wall
+time between playlist boundaries, so a paused entry can show less elapsed
+time than actually played.
 
 The UI round 7 captures build Studio with the `capture-meter-signal` feature
 (`cargo build -p freemix-studio --features capture-meter-signal`) and run it

@@ -736,6 +736,8 @@ fn serve_streams_snapshot_peer(
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             titles: Vec::new(),
+            frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+            playlist_follows: false,
         }),
     );
 }
@@ -1286,6 +1288,8 @@ fn write_handshake_version_with_manual(
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             titles: Vec::new(),
+            frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+            playlist_follows: false,
         }),
     );
 }
@@ -1362,6 +1366,8 @@ fn write_handshake_version_with_fade_to_black(
             streams: Vec::new(),
             recordings: recording_roster([false, false]),
             titles: Vec::new(),
+            frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+            playlist_follows: false,
         }),
     );
 }

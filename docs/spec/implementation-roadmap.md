@@ -2153,15 +2153,26 @@ and transition permissions), the clock's `playlist_advance`, and the
 `playlist_changed` event that `fm-ui-model` reduces; and simulated `freemixd`
 journals the clock's advances as wall time reaches each boundary, so replay and
 restart reproduce the exact frames (`freemix-cli remote-playlist` drives it).
+Protocol 2.26 completes snapshots with the playlist: a snapshot carries the
+show's `frame_rate` and announces with `playlist=1` a `playlist_state` record
+(revision, frame, loop mode, entries, run state) that follows its title
+states, and clients stay synchronizing until it arrives. Studio's Playlist
+side tab lists the entries with input, transition, and timecode duration,
+lights the on-air entry red and the next one green, counts the on-air entry
+down, offers Start/Stop/Pause-Resume/Previous/Next and a per-row jump or
+start-from key under the transition permission, and edits the list (add,
+remove, reorder, enable/skip, duration, transition, loop mode) under
+`edit_project` while the playlist is stopped or finished.
 Remaining gaps: the native-media daemon refuses playlist control (no native
 playlist clock); simulated pacing anchors to the wall clock when a boundary
 becomes pending, so it is approximate across commands and the catch-up frames
-render synchronously; snapshots do not carry the playlist (late joiners learn
-it from the next `playlist_changed`); fixed durations only, with no media
+render synchronously, and controls such as Pause or Next execute at the
+lagging frame cursor, so Studio's countdown is approximate on the simulated
+daemon; fixed durations only, with no media
 length, end-of-media detection, or media-ended reports; no stinger
 transitions; no enable/disable, loop change, or list editing while the
-playlist runs; no per-entry hard starts or calendar recurrence; no Studio UI,
-vMix API, or as-run log. `OR-015` remains planned.
+playlist runs; no scheduled starts from Studio; no per-entry hard starts or
+calendar recurrence; no vMix API or as-run log. `OR-015` remains planned.
 
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame

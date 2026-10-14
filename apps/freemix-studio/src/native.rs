@@ -16,15 +16,16 @@ use fm_client::{
 };
 use fm_protocol::{
     CommandPayload, CommandResult, DurableGap, EditLockScope, MonitorTap, OverlayBorderPreset,
-    OverlayPositionPreset, OverlayTransitionKind, StingerAudioPolicy, StingerMissingMediaFallback,
-    WireInputId, WireMessage, WireOutputId, WireRecorderSlot, WireStreamTargetId,
+    OverlayPositionPreset, OverlayTransitionKind, PlaylistOperation, PlaylistStart,
+    StingerAudioPolicy, StingerMissingMediaFallback, WireInputId, WireMessage, WireOutputId,
+    WireRecorderSlot, WireStreamTargetId,
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
     CatalogueRefusal, CatalogueRequest, ExternalStudioAction, InputAudioStripUpdate,
-    InputMoveDirection, ReconnectStatus, RecordingAction, StreamAction, StudioConnectionStatus,
-    StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice, TitleUpdate,
-    external_intent,
+    InputMoveDirection, PlaylistIntent, ReconnectStatus, RecordingAction, StreamAction,
+    StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice,
+    TitleUpdate, external_intent,
 };
 use fm_ui_model::ClientView;
 use fm_ui_model::title_editor::{TitleAccess, title_payload};
@@ -2056,6 +2057,7 @@ fn intent_payload(
         }
         StudioIntent::Title(command) => title_payload(&command)
             .map_err(|error| format!("Cannot send title command: {error}"))?,
+        StudioIntent::Playlist(intent) => playlist_payload(intent),
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
             if !view.inputs.contains(&input) {
@@ -2067,6 +2069,27 @@ fn intent_payload(
         }
     };
     Ok(payload)
+}
+
+/// The protocol command for one Playlist tab action. Starts are immediate;
+/// the tab offers no scheduled start.
+fn playlist_payload(intent: PlaylistIntent) -> CommandPayload {
+    let operation = match intent {
+        PlaylistIntent::Set { loop_mode, entries } => {
+            return CommandPayload::SetPlaylist { loop_mode, entries };
+        }
+        PlaylistIntent::Start { from } => PlaylistOperation::Start {
+            at: PlaylistStart::Now,
+            from,
+        },
+        PlaylistIntent::Stop => PlaylistOperation::Stop,
+        PlaylistIntent::Pause => PlaylistOperation::Pause,
+        PlaylistIntent::Resume => PlaylistOperation::Resume,
+        PlaylistIntent::Next => PlaylistOperation::Next,
+        PlaylistIntent::Previous => PlaylistOperation::Previous,
+        PlaylistIntent::Jump { entry } => PlaylistOperation::Jump { entry },
+    };
+    CommandPayload::PlaylistControl { operation }
 }
 
 /// The live input add or remove a command payload carries, if any.
@@ -2611,6 +2634,8 @@ mod tests {
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             titles: Vec::new(),
+            frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+            playlist_follows: false,
         }
     }
 
@@ -4247,6 +4272,63 @@ mod tests {
             scheduled_frame: None,
         };
         assert_eq!(catalogue_refusal(&client, &add.id, &accepted), None);
+    }
+
+    #[test]
+    fn playlist_intents_map_to_set_and_control_payloads() {
+        use fm_protocol::{PlaylistEntrySpec, PlaylistLoopMode, PlaylistTransitionKind};
+
+        let entries = vec![PlaylistEntrySpec {
+            id: 7,
+            input: WireInputId::new(NonZeroU128::new(2).unwrap()),
+            duration_frames: 250,
+            transition: PlaylistTransitionKind::Fade,
+            transition_frames: 12,
+            enabled: true,
+        }];
+        assert_eq!(
+            intent_payload(
+                StudioIntent::Playlist(PlaylistIntent::Set {
+                    loop_mode: PlaylistLoopMode::All,
+                    entries: entries.clone(),
+                }),
+                None
+            ),
+            Ok(CommandPayload::SetPlaylist {
+                loop_mode: PlaylistLoopMode::All,
+                entries
+            })
+        );
+        for (intent, operation) in [
+            (
+                PlaylistIntent::Start { from: None },
+                PlaylistOperation::Start {
+                    at: PlaylistStart::Now,
+                    from: None,
+                },
+            ),
+            (
+                PlaylistIntent::Start { from: Some(7) },
+                PlaylistOperation::Start {
+                    at: PlaylistStart::Now,
+                    from: Some(7),
+                },
+            ),
+            (PlaylistIntent::Stop, PlaylistOperation::Stop),
+            (PlaylistIntent::Pause, PlaylistOperation::Pause),
+            (PlaylistIntent::Resume, PlaylistOperation::Resume),
+            (PlaylistIntent::Next, PlaylistOperation::Next),
+            (PlaylistIntent::Previous, PlaylistOperation::Previous),
+            (
+                PlaylistIntent::Jump { entry: 7 },
+                PlaylistOperation::Jump { entry: 7 },
+            ),
+        ] {
+            assert_eq!(
+                intent_payload(StudioIntent::Playlist(intent), None),
+                Ok(CommandPayload::PlaylistControl { operation })
+            );
+        }
     }
 
     #[test]

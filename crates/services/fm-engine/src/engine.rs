@@ -641,6 +641,12 @@ impl Engine {
         self.runtime_generation
     }
 
+    /// The engine's video frame rate; frame numbers count these frames.
+    #[must_use]
+    pub const fn frame_rate(&self) -> FrameRate {
+        self.frame_rate
+    }
+
     #[must_use]
     pub const fn frame_cursor(&self) -> FrameNumber {
         self.scheduler.pacer().next_frame()

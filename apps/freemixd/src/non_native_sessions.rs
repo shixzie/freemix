@@ -467,9 +467,9 @@ pub(super) fn run(
         control,
         store,
         process_shutdown,
+        playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
     };
     let mut native = native;
-    let mut playlist_clock = crate::playlist_clock::PlaylistClock::default();
     // Simulated monitor frames are composed off this loop so a slow Scene
     // composition never delays command results, heartbeats, or events.
     let mut simulated_monitor = if native.is_none() {
@@ -603,8 +603,13 @@ pub(super) fn run(
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
         if native.is_none()
-            && let Err(error) =
-                playlist_clock.poll(control, store, durable, authority, Instant::now())
+            && let Err(error) = runtime.playlist_clock.borrow_mut().poll(
+                control,
+                store,
+                durable,
+                authority,
+                Instant::now(),
+            )
         {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
@@ -823,6 +828,8 @@ struct Runtime<'a> {
     control: &'a SharedControl,
     store: &'a dyn DurableStore,
     process_shutdown: &'a ProcessShutdown,
+    /// The simulated playlist clock; snapshots read its wall-clock frame.
+    playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
 }
 
 impl Runtime<'_> {
@@ -932,16 +939,29 @@ impl Runtime<'_> {
     }
 
     /// Completes a queued snapshot with one `title_state` per title input,
-    /// in input order, before anything else reaches the peer.
+    /// in input order, then the `playlist_state` it announced, before
+    /// anything else reaches the peer. The playlist state's frame is the
+    /// clock's wall-clock frame: the simulated engine renders only while it
+    /// executes commands, so its cursor lags wall time mid-entry.
     fn complete_snapshot(&self, peer: &mut Peer) {
         if matches!(peer.initial_sync.front(), Some(WireMessage::Snapshot(_))) {
+            let control = self.control.borrow();
             peer.initial_sync.extend(
-                self.control
-                    .borrow()
+                control
                     .title_states()
                     .into_iter()
                     .map(WireMessage::TitleState),
             );
+            let rate = control.snapshot().snapshot.frame_rate;
+            peer.initial_sync
+                .extend(control.playlist_state().map(|mut state| {
+                    state.frame = self.playlist_clock.borrow().observed_frame(
+                        state.frame,
+                        rate,
+                        Instant::now(),
+                    );
+                    WireMessage::PlaylistState(state)
+                }));
         }
     }
 

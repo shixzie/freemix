@@ -4605,6 +4605,27 @@ fn title_sync(
     (snapshot, states)
 }
 
+/// Joins as a viewer and reads the snapshot with the `playlist_state` it
+/// announces.
+fn playlist_sync(
+    daemon: &Daemon,
+) -> (
+    fm_protocol::SnapshotMessage,
+    fm_protocol::PlaylistStateMessage,
+) {
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Viewer, None);
+    let (snapshot, _) = title_sync(&mut client);
+    assert!(
+        snapshot.playlist_follows,
+        "the snapshot announces no playlist"
+    );
+    let WireMessage::PlaylistState(state) = client.receive() else {
+        panic!("expected playlist_state right after the snapshot");
+    };
+    (snapshot, state)
+}
+
 fn title_color(red: u8, green: u8, blue: u8) -> Vec<fm_protocol::TitleFieldUpdate> {
     vec![fm_protocol::TitleFieldUpdate {
         field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
@@ -4673,11 +4694,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.25.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 25));
+    // The previous protocol is refused; the current one is 2.26.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 26));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 24),
+        protocol: ProtocolVersion::new(2, 25),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -4693,7 +4714,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 25)
+        ProtocolVersion::new(2, 26)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -5135,9 +5156,31 @@ fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery()
             input(2)
         )
     );
-    let finished = snapshot_of(&daemon, Role::Viewer);
+    // A client joining late learns the whole playlist from the
+    // `playlist_state` that completes its snapshot (Protocol 2.26).
+    let (finished, playlist) = playlist_sync(&daemon);
     assert_eq!(finished.revision, 5);
     assert_eq!(finished.realized_program, input(1));
+    assert!(finished.playlist_follows);
+    assert_eq!(
+        finished.frame_rate,
+        fm_types::FrameRate::new(25, 1).unwrap()
+    );
+    assert_eq!(
+        (
+            playlist.revision,
+            playlist.loop_mode,
+            &playlist.entries,
+            playlist.state
+        ),
+        (
+            5,
+            PlaylistLoopMode::Off,
+            &entries,
+            PlaylistRunState::Finished { last: Some(2) }
+        )
+    );
+    assert!(playlist.frame >= 31, "{}", playlist.frame);
     drop(admin);
     daemon.stop();
 
@@ -5145,9 +5188,11 @@ fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery()
     // reproduces the exact frames and the finished playlist.
     assert_eq!(store.scan_journal().unwrap().batches().len(), 5);
     let daemon = Daemon::start(&project_path);
-    let recovered = snapshot_of(&daemon, Role::Viewer);
+    let (recovered, playlist) = playlist_sync(&daemon);
     assert_eq!(recovered.revision, 5);
     assert_eq!(recovered.desired_program, input(1));
+    assert_eq!(playlist.entries, entries);
+    assert_eq!(playlist.state, PlaylistRunState::Finished { last: Some(2) });
     daemon.wait_success();
 
     let checkpointed = store.load().unwrap();

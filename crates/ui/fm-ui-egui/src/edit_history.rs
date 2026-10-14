@@ -478,6 +478,8 @@ mod tests {
             edit_locks: fm_protocol::EditLockStatus::default(),
             edit_history: history,
             titles: Vec::new(),
+            frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+            playlist_follows: false,
         };
         snapshot.edit_locks.project = locks.project;
         snapshot.edit_locks.inputs = locks

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.25 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.26 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -292,11 +292,39 @@ Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
   `playing:<entry>:<take>:<cycle>:<started frame>`,
   `paused:<entry>:<take>:<cycle>:<elapsed frames>`, or `finished:<last|->`),
   and the desired `program` and `preview`.
-- Snapshots do not carry the playlist; a client learns it from the next
-  `playlist_changed`.
+- Snapshots carry the playlist from Protocol 2.26 (below).
 - Durability: the project (schema 28) persists the playlist with its
   automation state, and a restored daemon resumes it on the same frames.
 - Clients apply no optimistic change for playlist commands.
+
+Protocol 2.26 replicates the playlist to late-joining clients:
+
+- Snapshots end with `frame_rate=<numerator>/<denominator>` (both nonzero
+  canonical decimals in lowest terms: the engine frame rate that every
+  playlist frame counts) and `playlist=0|1`.
+- `playlist=1` announces exactly one `kind=playlist_state` record that
+  follows the snapshot after its `title_state` records and before any
+  event, carrying `revision` (the snapshot revision), `frame` (the engine's
+  frame cursor, its next unrendered frame, when the record was written, so a
+  client can place the state's frames in time), `loop`, the complete
+  `entries`, and `state`, encoded exactly as in `playlist_changed`.
+  `playlist=0` means the playlist is empty, stopped, and does not loop; the
+  server announces every other playlist.
+- The playlist rides its own record rather than the snapshot so it never
+  competes with the snapshot for the 64 KiB line budget: the snapshot alone
+  already grows with the input catalogue (names, audio strips, titles),
+  while a maximal 256-entry playlist with the widest identifiers, durations,
+  and transitions encodes to under 27 KiB, so one `playlist_state` always
+  fits a record. The existing entry bounds (count, duration, transition
+  frames) are enforced by model validation and wire decode; entries carry no
+  names.
+- A client stays synchronizing until the announced `playlist_state` arrives.
+  One at another revision, unannounced, before the announced title states,
+  naming an input the snapshot lacks, arriving at any other time, or an
+  event arriving before it forces a fresh snapshot, and an incomplete client
+  never resumes. Resumed event streams carry no playlist state;
+  `playlist_changed` keeps the replicated playlist current.
+- 2.25 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

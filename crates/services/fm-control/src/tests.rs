@@ -3452,4 +3452,75 @@ mod playlists {
         assert_eq!(control.engine.realized_switcher().program(), input(3));
         assert!(control.idle_engine_snapshot().is_ok());
     }
+
+    #[test]
+    fn snapshots_announce_the_playlist_that_follows_them() {
+        let mut control = service(16, 16);
+        // The empty playlist is implied: nothing follows the snapshot.
+        assert!(!control.snapshot().snapshot.playlist_follows);
+        assert_eq!(control.playlist_state(), None);
+        assert_eq!(
+            control.snapshot().snapshot.frame_rate,
+            fm_types::FrameRate::new(60, 1).unwrap()
+        );
+
+        submit_with_ticks(&mut control, "set", set_playlist());
+        control.tick(&server_identity()).unwrap();
+        submit_with_ticks(&mut control, "start", start_after(4));
+        control.tick(&server_identity()).unwrap();
+        let snapshot = &control.snapshot().snapshot;
+        assert!(snapshot.playlist_follows);
+        let state = control.playlist_state().expect("an armed playlist follows");
+        assert_eq!(state.revision, snapshot.revision);
+        assert_eq!(state.frame, control.frame_cursor());
+        assert_eq!(state.loop_mode, PlaylistLoopMode::Off);
+        assert_eq!(
+            state.entries,
+            match set_playlist() {
+                CommandPayload::SetPlaylist { entries, .. } => entries,
+                _ => unreachable!(),
+            }
+        );
+        assert_eq!(
+            state.state,
+            PlaylistRunState::Armed {
+                start_frame: 5,
+                from: None
+            }
+        );
+
+        // Clearing a stopped playlist returns to the implied empty one.
+        submit_with_ticks(
+            &mut control,
+            "stop",
+            CommandPayload::PlaylistControl {
+                operation: PlaylistOperation::Stop,
+            },
+        );
+        control.tick(&server_identity()).unwrap();
+        submit_with_ticks(
+            &mut control,
+            "clear",
+            CommandPayload::SetPlaylist {
+                loop_mode: PlaylistLoopMode::Off,
+                entries: Vec::new(),
+            },
+        );
+        assert!(!control.snapshot().snapshot.playlist_follows);
+        assert_eq!(control.playlist_state(), None);
+        // A looping empty playlist still differs from the implied one.
+        submit_with_ticks(
+            &mut control,
+            "loop",
+            CommandPayload::SetPlaylist {
+                loop_mode: PlaylistLoopMode::All,
+                entries: Vec::new(),
+            },
+        );
+        assert!(control.snapshot().snapshot.playlist_follows);
+        assert_eq!(
+            control.playlist_state().map(|state| state.loop_mode),
+            Some(PlaylistLoopMode::All)
+        );
+    }
 }

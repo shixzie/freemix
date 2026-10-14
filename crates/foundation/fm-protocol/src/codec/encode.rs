@@ -8,15 +8,16 @@ use crate::{
     HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
     HeartbeatMessage, InputAudioStripStatus, LiveInputSource, MAX_AUDIO_METER_CHANNELS,
     ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage, OverlayStatus,
-    PlaylistOperation, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
-    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
-    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
-    StructuredError, TitleFieldUpdate, TitleStateMessage, WireMessage,
+    PlaylistOperation, PlaylistStateMessage, ResumeCursor, RuntimeEventMessage,
+    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
+    StingerStatus, StreamStatusMessage, StructuredError, TitleFieldUpdate, TitleStateMessage,
+    WireMessage,
 };
 
 use super::playlist::{
-    encode_optional_entry, encode_playlist_entries, encode_playlist_start, encode_playlist_state,
-    playlist_loop,
+    encode_frame_rate, encode_optional_entry, encode_playlist_entries, encode_playlist_start,
+    encode_playlist_state, playlist_loop,
 };
 use super::title::{
     encode_title_field_names, encode_title_fields, encode_title_summaries, title_air_requirement,
@@ -70,6 +71,9 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         }
         WireMessage::Error(message) => encode_error_message(&mut record, message)?,
         WireMessage::TitleState(message) => encode_title_state(&mut record, message)?,
+        WireMessage::PlaylistState(message) => {
+            encode_playlist_state_record(&mut record, message)?;
+        }
     }
     record.finish()
 }
@@ -725,7 +729,24 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         .iter()
         .map(|input| input.input)
         .collect::<Vec<_>>();
-    record.field_string("titles", encode_title_summaries(&message.titles, &inputs)?)
+    record.field_string("titles", encode_title_summaries(&message.titles, &inputs)?)?;
+    record.field_string("frame_rate", encode_frame_rate(message.frame_rate))?;
+    record.field("playlist", u8::from(message.playlist_follows))
+}
+
+/// Encodes one `playlist_state` record: the complete playlist after a
+/// snapshot that announced it.
+fn encode_playlist_state_record(
+    record: &mut Record,
+    message: &PlaylistStateMessage,
+) -> Result<(), CodecError> {
+    let entries = encode_playlist_entries(&message.entries)?;
+    record.kind("playlist_state");
+    record.field("revision", message.revision)?;
+    record.field("frame", message.frame)?;
+    record.field("loop", playlist_loop(message.loop_mode))?;
+    record.field_string("entries", entries)?;
+    record.field_string("state", encode_playlist_state(message.state))
 }
 
 fn encode_overlays(

@@ -9131,6 +9131,14 @@ fn handle_client(
             for state in control.borrow().title_states() {
                 write_session_message(&mut writer, &mut session, &WireMessage::TitleState(state))?;
             }
+            let playlist = control.borrow().playlist_state();
+            if let Some(state) = playlist {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::PlaylistState(state),
+                )?;
+            }
         }
         SyncPayload::Resume(events) => {
             for event in events {

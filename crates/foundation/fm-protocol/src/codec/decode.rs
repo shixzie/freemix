@@ -10,17 +10,17 @@ use crate::{
     HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioMeters, InputAudioStripStatus,
     LiveInputSource, MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin,
-    MonitorTap, OverlayStatus, PlaylistOperation, ResumeCursor, RuntimeEventMessage,
-    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
-    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
-    StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample, StructuredError,
-    TitleFieldStatus, TitleStateMessage, WireInputId, WireMessage, WireOutputId,
+    MonitorTap, OverlayStatus, PlaylistOperation, PlaylistStateMessage, ResumeCursor,
+    RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
+    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
+    StingerReadiness, StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample,
+    StructuredError, TitleFieldStatus, TitleStateMessage, WireInputId, WireMessage, WireOutputId,
     WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 
 use super::playlist::{
-    decode_optional_entry, decode_playlist_entries, decode_playlist_start, decode_playlist_state,
-    parse_playlist_loop,
+    decode_frame_rate, decode_optional_entry, decode_playlist_entries, decode_playlist_start,
+    decode_playlist_state, parse_playlist_loop,
 };
 use super::title::{
     decode_title_field_names, decode_title_fields, decode_title_summaries,
@@ -96,6 +96,7 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         }
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
         "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
+        "playlist_state" => WireMessage::PlaylistState(decode_playlist_state_record(&mut fields)?),
         _ => return Err(CodecError::UnknownMessage(kind.to_owned())),
     };
     fields.finish()?;
@@ -841,6 +842,8 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         &fields.required("titles")?,
         &inputs.iter().map(|input| input.input).collect::<Vec<_>>(),
     )?;
+    let frame_rate = decode_frame_rate(fields.required("frame_rate")?)?;
+    let playlist_follows = fields.boolean("playlist")?;
     Ok(SnapshotMessage {
         engine: decode_identity(fields)?,
         revision,
@@ -867,6 +870,18 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         edit_locks,
         edit_history,
         titles,
+        frame_rate,
+        playlist_follows,
+    })
+}
+
+fn decode_playlist_state_record(fields: &mut Fields) -> Result<PlaylistStateMessage, CodecError> {
+    Ok(PlaylistStateMessage {
+        revision: fields.canonical_required("revision")?,
+        frame: fields.canonical_required("frame")?,
+        loop_mode: parse_playlist_loop(fields.required("loop")?)?,
+        entries: decode_playlist_entries(&fields.required("entries")?)?,
+        state: decode_playlist_state(fields.required("state")?)?,
     })
 }
 

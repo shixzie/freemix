@@ -177,6 +177,8 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
         edit_locks: EditLockStatus::default(),
         edit_history: EditHistoryStatus::EMPTY,
         titles: Vec::new(),
+        frame_rate: fm_types::FrameRate::new(30_000, 1_001).unwrap(),
+        playlist_follows: false,
     })
 }
 
@@ -2491,7 +2493,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.25\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.26\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2500,7 +2502,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.25\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.26\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -2710,7 +2712,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     );
     let encoded = encode_line(&message).unwrap();
     assert!(encoded.ends_with(
-        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\n"
+        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tframe_rate=30000%2F1001\tplaylist=0\n"
     ));
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -2718,7 +2720,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     let encoded_unlocked = encode_line(&unlocked).unwrap();
     assert!(
         encoded_unlocked
-            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\n")
+            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tframe_rate=30000%2F1001\tplaylist=0\n")
     );
     assert_eq!(decode_line(&encoded_unlocked).unwrap(), unlocked);
 
@@ -2825,7 +2827,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.25\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.26\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2835,7 +2837,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.25\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.26\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3012,7 +3014,7 @@ mod titles {
         TitleFieldUpdate, TitleFieldValue, TitleStateMessage, TitleSummary, WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.25\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.26\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3060,7 +3062,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 25));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 26));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3114,7 +3116,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.25\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.26\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3469,7 +3471,10 @@ mod titles {
             },
         ]);
         let encoded = encode_line(&message).unwrap();
-        assert!(encoded.ends_with("\ttitles=2%3A0%2C3%3A17\n"), "{encoded}");
+        assert!(
+            encoded.ends_with("\ttitles=2%3A0%2C3%3A17\tframe_rate=30000%2F1001\tplaylist=0\n"),
+            "{encoded}"
+        );
         assert_eq!(decode_line(&encoded).unwrap(), message);
 
         for titles in [vec![(3, 1), (2, 1)], vec![(2, 1), (2, 1)], vec![(9, 1)]] {
@@ -3697,15 +3702,16 @@ mod titles {
 }
 
 /// Protocol 2.25 playlists: `playlist_set`, the playlist control commands,
-/// the authority's `playlist_advance`, and `playlist_changed`.
+/// the authority's `playlist_advance`, and `playlist_changed`; Protocol 2.26
+/// adds the snapshot's `playlist_state` record and frame rate.
 mod playlists {
     use super::*;
     use fm_protocol::{
         MAX_PLAYLIST_ENTRIES, PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation,
-        PlaylistRunState, PlaylistStart, PlaylistTransitionKind,
+        PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.25\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.26\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -3745,7 +3751,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 25));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 26));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -3817,7 +3823,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.25\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.26\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3957,16 +3963,7 @@ mod playlists {
             );
         }
         // The largest playlist fits one record.
-        let largest = (0..MAX_PLAYLIST_ENTRIES)
-            .map(|index| PlaylistEntrySpec {
-                id: u64::MAX - u64::try_from(index).unwrap(),
-                input: WireInputId::new(NonZeroU128::MAX),
-                duration_frames: fm_protocol::MAX_PLAYLIST_ENTRY_FRAMES,
-                transition: PlaylistTransitionKind::AlphaFade,
-                transition_frames: fm_protocol::MAX_PLAYLIST_TRANSITION_FRAMES,
-                enabled: false,
-            })
-            .collect::<Vec<_>>();
+        let largest = largest_entries();
         let message = WireMessage::Event(EventMessage {
             cursor: cursor(),
             payload: EventPayload::PlaylistChanged {
@@ -3987,6 +3984,20 @@ mod playlists {
         let encoded = encode_line(&message).unwrap();
         assert!(encoded.len() <= MAX_LINE_BYTES);
         assert_eq!(decode_line(&encoded).unwrap(), message);
+    }
+
+    /// The longest possible entry list: every field at its widest encoding.
+    fn largest_entries() -> Vec<PlaylistEntrySpec> {
+        (0..MAX_PLAYLIST_ENTRIES)
+            .map(|index| PlaylistEntrySpec {
+                id: u64::MAX - u64::try_from(index).unwrap(),
+                input: WireInputId::new(NonZeroU128::MAX),
+                duration_frames: fm_protocol::MAX_PLAYLIST_ENTRY_FRAMES,
+                transition: PlaylistTransitionKind::AlphaFade,
+                transition_frames: fm_protocol::MAX_PLAYLIST_TRANSITION_FRAMES,
+                enabled: false,
+            })
+            .collect()
     }
 
     fn changed(state: PlaylistRunState) -> WireMessage {
@@ -4095,6 +4106,182 @@ mod playlists {
                 decode_line(&format!("{EVENT}{body}{HISTORY}")),
                 Err(expected),
                 "{body}"
+            );
+        }
+    }
+
+    fn playlist_state(entries: Vec<PlaylistEntrySpec>, state: PlaylistRunState) -> WireMessage {
+        WireMessage::PlaylistState(PlaylistStateMessage {
+            revision: 9,
+            frame: 4_321,
+            loop_mode: PlaylistLoopMode::One,
+            entries,
+            state,
+        })
+    }
+
+    #[test]
+    fn protocol_2_26_playlist_state_is_exact_and_strict() {
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 26));
+        let message = playlist_state(
+            sample_entries(),
+            PlaylistRunState::Playing {
+                entry: 3,
+                take: 2,
+                cycle: 0,
+                started_frame: 4_300,
+            },
+        );
+        let encoded = encode_line(&message).unwrap();
+        assert_eq!(
+            encoded,
+            format!(
+                "playlist_state\trevision=9\tframe=4321\tloop=one\tentries={SAMPLE_ENTRIES_WIRE}\tstate=playing%3A3%3A2%3A0%3A4300\n"
+            )
+        );
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+
+        let valid = "playlist_state\trevision=1\tframe=0\tloop=off\tentries=\tstate=stopped";
+        assert!(decode_line(&format!("{valid}\n")).is_ok());
+        for (line, expected) in [
+            (
+                valid.replace("\trevision=1", ""),
+                CodecError::MissingField("revision"),
+            ),
+            (
+                valid.replace("\tframe=0", ""),
+                CodecError::MissingField("frame"),
+            ),
+            (
+                valid.replace("frame=0", "frame=01"),
+                CodecError::InvalidField {
+                    field: "frame",
+                    value: "01".to_owned(),
+                },
+            ),
+            (
+                valid.replace("loop=off", "loop=twice"),
+                CodecError::InvalidField {
+                    field: "loop",
+                    value: "twice".to_owned(),
+                },
+            ),
+            (
+                valid.replace("entries=", "entries=1%3A2%3A0%3Acut%3A0%3A1"),
+                CodecError::InvalidField {
+                    field: "entries",
+                    value: "1".to_owned(),
+                },
+            ),
+            (
+                valid.replace("state=stopped", "state=paused%3A1"),
+                CodecError::InvalidField {
+                    field: "state",
+                    value: "paused:1".to_owned(),
+                },
+            ),
+            (
+                format!("{valid}\tprogram=1"),
+                CodecError::UnknownField("program".to_owned()),
+            ),
+        ] {
+            assert_eq!(decode_line(&format!("{line}\n")), Err(expected), "{line}");
+        }
+    }
+
+    /// The playlist rides its own record so it never competes with the
+    /// snapshot for the line budget: a maximal playlist fits one record.
+    #[test]
+    fn a_maximal_playlist_state_fits_one_record() {
+        let message = playlist_state(
+            largest_entries(),
+            PlaylistRunState::Paused {
+                entry: u64::MAX,
+                take: u64::MAX,
+                cycle: u64::MAX,
+                elapsed_frames: u64::MAX,
+            },
+        );
+        let encoded = encode_line(&message).unwrap();
+        assert!(encoded.len() <= MAX_LINE_BYTES, "{}", encoded.len());
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+        // The encoder refuses lists the decoder refuses.
+        let mut too_many = largest_entries();
+        too_many.push(entry(1, 1, 1, PlaylistTransitionKind::Cut, 0));
+        assert_eq!(
+            encode_line(&playlist_state(too_many, PlaylistRunState::Stopped)),
+            Err(CodecError::TooManyItems("entries"))
+        );
+    }
+
+    #[test]
+    fn snapshot_frame_rate_and_playlist_announcement_are_strict() {
+        let WireMessage::Snapshot(mut snapshot) =
+            snapshot(input_statuses(&[(1, "Camera"), (2, "Clip")]))
+        else {
+            unreachable!("the helper builds a snapshot");
+        };
+        snapshot.frame_rate = fm_types::FrameRate::new(50, 1).unwrap();
+        snapshot.playlist_follows = true;
+        let message = WireMessage::Snapshot(snapshot);
+        let encoded = encode_line(&message).unwrap();
+        assert!(
+            encoded.ends_with("\tframe_rate=50%2F1\tplaylist=1\n"),
+            "{encoded}"
+        );
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+        for (from, to, expected) in [
+            (
+                "frame_rate=50%2F1",
+                "frame_rate=100%2F2",
+                CodecError::InvalidField {
+                    field: "frame_rate",
+                    value: "100/2".to_owned(),
+                },
+            ),
+            (
+                "frame_rate=50%2F1",
+                "frame_rate=50%2F0",
+                CodecError::InvalidField {
+                    field: "frame_rate",
+                    value: "50/0".to_owned(),
+                },
+            ),
+            (
+                "frame_rate=50%2F1",
+                "frame_rate=50",
+                CodecError::InvalidField {
+                    field: "frame_rate",
+                    value: "50".to_owned(),
+                },
+            ),
+            (
+                "frame_rate=50%2F1",
+                "frame_rate=4294967296%2F1",
+                CodecError::InvalidField {
+                    field: "frame_rate",
+                    value: "4294967296/1".to_owned(),
+                },
+            ),
+            (
+                "\tframe_rate=50%2F1",
+                "",
+                CodecError::MissingField("frame_rate"),
+            ),
+            (
+                "playlist=1",
+                "playlist=yes",
+                CodecError::InvalidField {
+                    field: "playlist",
+                    value: "yes".to_owned(),
+                },
+            ),
+            ("\tplaylist=1", "", CodecError::MissingField("playlist")),
+        ] {
+            assert_eq!(
+                decode_line(&encoded.replace(from, to)),
+                Err(expected),
+                "{to}"
             );
         }
     }

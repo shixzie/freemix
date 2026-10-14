@@ -1338,6 +1338,8 @@ mod tests {
                 input: wire(input(TITLE)),
                 field_revision: 2,
             }],
+            frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
+            playlist_follows: false,
         };
         let mut model = ClientModel::new(project);
         model

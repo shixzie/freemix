@@ -1677,4 +1677,179 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Este campo admite {expected}, no {actual}."),
     ),
     (Msg::FieldErrRemoved, t("Este campo se eliminó del título.")),
+    // Playlist tab.
+    (Msg::TabPlaylist, t("Lista")),
+    (
+        Msg::PlaylistIntro,
+        t(
+            "Lleva las entradas a Programa en orden, cada una durante su duración y con su transición. La lista solo cambia con la reproducción detenida.",
+        ),
+    ),
+    (Msg::PlaylistNone, t("Sin elementos")),
+    (
+        Msg::PlaylistNoneDetail,
+        t("Añada una entrada abajo para crear la lista."),
+    ),
+    (
+        Msg::PlaylistNotSynced,
+        t("La lista aparece cuando el estado del proyecto está sincronizado."),
+    ),
+    (Msg::PlaylistWaiting, t("Esperando la lista del daemon")),
+    (Msg::PlaylistStateArmed, t("PREPARADA")),
+    (Msg::PlaylistStatePlaying, t("REPRODUCIENDO")),
+    (Msg::PlaylistStatePaused, t("EN PAUSA")),
+    (Msg::PlaylistStateFinished, t("TERMINADA")),
+    (Msg::PlaylistDisabledBadge, t("OMITIDO")),
+    (Msg::PlaylistRemaining, t("Restante")),
+    (Msg::PlaylistStartsIn, t("Empieza en")),
+    (Msg::PlaylistElapsedOf, t("de {duration}")),
+    (Msg::PlaylistNextName, t("Siguiente: {name}")),
+    (Msg::PlaylistNextEnd, t("Siguiente: fin de la lista")),
+    (Msg::PlaylistNextRepeat, t("Siguiente: repite {name}")),
+    (
+        Msg::PlaylistEntryCount,
+        plural("{count} elemento", "{count} elementos"),
+    ),
+    (Msg::PlaylistLoop, t("Repetir")),
+    (Msg::PlaylistLoopOff, t("No")),
+    (Msg::PlaylistLoopAll, t("Todo")),
+    (Msg::PlaylistLoopOne, t("Uno")),
+    (
+        Msg::PlaylistLoopOffHover,
+        t("Detenerse tras el último elemento activo"),
+    ),
+    (
+        Msg::PlaylistLoopAllHover,
+        t("Volver a empezar por el primer elemento activo tras el último"),
+    ),
+    (Msg::PlaylistLoopOneHover, t("Repetir el elemento al aire")),
+    (Msg::PlaylistStart, t("Iniciar")),
+    (
+        Msg::PlaylistStartHover,
+        t("Iniciar la lista ahora desde su primer elemento activo"),
+    ),
+    (Msg::PlaylistStop, t("Detener")),
+    (
+        Msg::PlaylistStopHover,
+        t("Detener la lista; Programa mantiene su fuente actual"),
+    ),
+    (Msg::PlaylistPause, t("Pausa")),
+    (
+        Msg::PlaylistPauseHover,
+        t("Retener el elemento al aire; su tiempo restante se detiene"),
+    ),
+    (Msg::PlaylistResume, t("Reanudar")),
+    (
+        Msg::PlaylistResumeHover,
+        t("Continuar el elemento al aire desde donde se pausó"),
+    ),
+    (Msg::PlaylistPrevious, t("Anterior")),
+    (
+        Msg::PlaylistPreviousHover,
+        t("Llevar ahora al aire el elemento activo anterior"),
+    ),
+    (Msg::PlaylistNext, t("Siguiente")),
+    (
+        Msg::PlaylistNextHover,
+        t("Llevar ahora al aire el siguiente elemento activo"),
+    ),
+    (Msg::PlaylistJumpHover, t("Llevar {name} al aire ahora")),
+    (
+        Msg::PlaylistStartFromHover,
+        t("Iniciar la lista desde {name}"),
+    ),
+    (Msg::PlaylistMoveUpHover, t("Mover este elemento antes")),
+    (Msg::PlaylistMoveDownHover, t("Mover este elemento después")),
+    (
+        Msg::PlaylistRemoveHover,
+        t("Quitar este elemento de la lista"),
+    ),
+    (
+        Msg::PlaylistEnableHover,
+        t("Incluir este elemento cuando la lista se reproduce"),
+    ),
+    (
+        Msg::PlaylistDisableHover,
+        t("Saltar este elemento cuando la lista se reproduce"),
+    ),
+    (
+        Msg::PlaylistRowHover,
+        t("{position}. {name} · {transition} · {duration}"),
+    ),
+    (Msg::PlaylistTransitionFrames, t("{transition} {frames} fr")),
+    (Msg::PlaylistEditorNew, t("Nuevo elemento")),
+    (Msg::PlaylistEditorEdit, t("Elemento {position}")),
+    (Msg::PlaylistInput, t("Entrada")),
+    (Msg::PlaylistInputPick, t("Elija una entrada")),
+    (
+        Msg::PlaylistDurationHint,
+        t("HH:MM:SS:FF, MM:SS o segundos"),
+    ),
+    (Msg::PlaylistFramesLabel, t("Fotogramas")),
+    (Msg::PlaylistAdd, t("Añadir")),
+    (
+        Msg::PlaylistAddHover,
+        t("Añadir este elemento al final de la lista"),
+    ),
+    (Msg::PlaylistUpdate, t("Actualizar")),
+    (
+        Msg::PlaylistUpdateHover,
+        t("Sustituir el elemento {position} por estos valores"),
+    ),
+    (Msg::PlaylistNewEntry, t("Nuevo")),
+    (
+        Msg::PlaylistNewEntryHover,
+        t("Vaciar el formulario para añadir un elemento nuevo"),
+    ),
+    (
+        Msg::PlaylistErrDuration,
+        t("Introduzca una duración de un fotograma a {max}."),
+    ),
+    (
+        Msg::PlaylistReasonRunning,
+        t("la lista se está reproduciendo; deténgala para cambiarla"),
+    ),
+    (
+        Msg::PlaylistReasonNotOnAir,
+        t("ningún elemento de la lista está al aire"),
+    ),
+    (
+        Msg::PlaylistReasonActive,
+        t("la lista ya se está reproduciendo"),
+    ),
+    (
+        Msg::PlaylistReasonNoEnabled,
+        t("la lista no tiene elementos activos"),
+    ),
+    (
+        Msg::PlaylistReasonNoNext,
+        t("no hay un siguiente elemento activo"),
+    ),
+    (
+        Msg::PlaylistReasonNoPrevious,
+        t("no hay un elemento activo anterior"),
+    ),
+    (
+        Msg::PlaylistReasonEntryDisabled,
+        t("este elemento está inactivo"),
+    ),
+    (Msg::PlaylistReasonOnAir, t("este elemento ya está al aire")),
+    (
+        Msg::PlaylistReasonFull,
+        t("la lista ya tiene el máximo de elementos"),
+    ),
+    (
+        Msg::PlaylistReasonInvalid,
+        t("corrija primero la duración del elemento"),
+    ),
+    (Msg::PlaylistReasonNoInput, t("elija primero una entrada")),
+    (
+        Msg::PlaylistReasonNoChange,
+        t("el elemento ya tiene estos valores"),
+    ),
+    (
+        Msg::PlaylistReasonFirst,
+        t("este elemento ya es el primero"),
+    ),
+    (Msg::PlaylistReasonLast, t("este elemento ya es el último")),
 ];

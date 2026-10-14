@@ -90,6 +90,16 @@ impl PlaylistClock {
     }
 }
 
+impl PlaylistClock {
+    /// The engine frame wall time has reached: the anchored wall-clock frame
+    /// while a boundary is pending (never behind `cursor`), else `cursor`.
+    pub(super) fn observed_frame(&self, cursor: u64, rate: FrameRate, now: Instant) -> u64 {
+        self.anchor.map_or(cursor, |(frame, at)| {
+            wall_frame(frame, at, now, rate).max(cursor)
+        })
+    }
+}
+
 /// The engine frame wall time has reached since the anchor.
 fn wall_frame(anchor_frame: u64, anchor_at: Instant, now: Instant, rate: FrameRate) -> u64 {
     let elapsed = now.saturating_duration_since(anchor_at).as_nanos();
@@ -151,5 +161,17 @@ mod tests {
             wall_frame(7, start + Duration::from_secs(1), start, rate),
             7
         );
+    }
+
+    #[test]
+    fn observed_frame_follows_the_anchor_and_never_trails_the_cursor() {
+        let rate = FrameRate::new(25, 1).unwrap();
+        let start = Instant::now();
+        let mut clock = PlaylistClock::default();
+        assert_eq!(clock.observed_frame(12, rate, start), 12);
+        clock.anchor = Some((10, start));
+        let later = start + Duration::from_secs(2);
+        assert_eq!(clock.observed_frame(12, rate, later), 60);
+        assert_eq!(clock.observed_frame(80, rate, later), 80);
     }
 }
