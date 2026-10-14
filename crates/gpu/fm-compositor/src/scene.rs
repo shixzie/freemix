@@ -169,8 +169,10 @@ pub enum Key {
     Luma(LumaKey),
 }
 
-/// Backend-neutral effect descriptor. The reference executor only accepts the
-/// named `passthrough` effect; production backends can bind other descriptors.
+/// Backend-neutral effect descriptor. The CPU reference executor applies the
+/// parameterless `passthrough` effect as a no-op and executes the documented
+/// typed reference effects; the native backend currently rejects every
+/// non-`passthrough` descriptor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Effect {
     name: String,
