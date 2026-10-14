@@ -9,14 +9,13 @@
 //! the current realized Preview and Program inputs on a wall-clock cadence.
 //! Simulated inputs render directly at the fitted monitor size. Scene inputs
 //! whose enabled layers all name simulated inputs are composed with the CPU
-//! reference compositor at the project size and downscaled to the fitted
-//! monitor size; each composition is cached per realized revision, frame
-//! cursor, and input so the steady cadence never recomposes an unchanged
-//! picture. Any other realized input (or a scene the CPU reference cannot
+//! reference compositor directly at the fitted monitor size (see
+//! [`scene_render::render_scene`]); each composition is cached per realized
+//! revision, frame cursor, and input so the steady cadence never recomposes
+//! an unchanged picture. Any other realized input (or a scene the CPU reference cannot
 //! render honestly) produces no frame, so a client keeps its placeholder
 //! instead of seeing invented video.
 
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -33,6 +32,10 @@ use fm_sim::{ImageFrame, Rgba8, SimulatedPipeline, SimulatedSource, SourcePatter
 use fm_types::InputId;
 
 use crate::scene_render;
+
+/// The order taps render within one cadence step: the cheap, latency-visible
+/// Preview first, so it is never queued behind a Program Scene composition.
+const MONITOR_TAP_ORDER: [MonitorTap; 2] = [MonitorTap::Preview, MonitorTap::Program];
 
 /// Steady simulated monitor cadence (5 fps).
 pub(crate) const SIMULATED_MONITOR_INTERVAL: Duration = Duration::from_millis(200);
@@ -184,11 +187,10 @@ struct ComposedScene {
 /// wall-clock cadence while at least one eligible peer wants frames.
 #[derive(Default)]
 pub(crate) struct SimulatedMonitorTap {
+    /// Every simulated input at the fitted monitor size; scenes compose
+    /// from these same sources.
     pipeline: Option<SimulatedPipeline>,
     built_revision: Option<u64>,
-    /// Project-size pipeline for scene composition, built only on demand.
-    scene_pipeline: Option<SimulatedPipeline>,
-    scene_built_revision: Option<u64>,
     composed: [Option<ComposedScene>; 2],
     /// Scene compositions performed, observed by tests to prove caching.
     #[cfg(test)]
@@ -200,6 +202,7 @@ pub(crate) struct SimulatedMonitorTap {
 
 impl SimulatedMonitorTap {
     /// Cadence and rendering against an explicit realized state.
+    #[cfg(test)]
     pub(crate) fn poll_state(
         &mut self,
         state: RealizedMonitorState,
@@ -208,9 +211,31 @@ impl SimulatedMonitorTap {
         now: Instant,
         demand: bool,
     ) -> Vec<(MonitorTap, Vec<u8>)> {
+        let mut frames = Vec::new();
+        self.poll_state_into(state, project, server, now, demand, &mut |tap, bytes| {
+            frames.push((tap, bytes));
+        });
+        frames
+    }
+
+    /// Cadence and rendering against an explicit realized state, handing
+    /// each tap's encoded group to `emit` as soon as it is ready.
+    ///
+    /// Preview renders and is emitted before Program, so a slow Program
+    /// Scene composition never holds back the Preview picture of the same
+    /// step.
+    pub(crate) fn poll_state_into(
+        &mut self,
+        state: RealizedMonitorState,
+        project: &Project,
+        server: &ServerIdentity,
+        now: Instant,
+        demand: bool,
+        emit: &mut dyn FnMut(MonitorTap, Vec<u8>),
+    ) {
         if !demand {
             self.idle();
-            return Vec::new();
+            return;
         }
         if self.built_revision != Some(state.revision) {
             self.pipeline = simulated_pipeline(project);
@@ -223,7 +248,7 @@ impl SimulatedMonitorTap {
                 || (changed && elapsed >= SIMULATED_MONITOR_MIN_GAP)
         });
         if !due {
-            return Vec::new();
+            return;
         }
         self.last_emit = Some(now);
         self.last_key = Some(state.change_key());
@@ -233,13 +258,12 @@ impl SimulatedMonitorTap {
                 u16::try_from(pipeline.height()).ok()?,
             ))
         }) else {
-            return Vec::new();
+            return;
         };
-        let mut frames = Vec::with_capacity(MonitorTap::ALL.len());
-        for tap in MonitorTap::ALL {
+        for tap in MONITOR_TAP_ORDER {
             let input = state.input(tap);
             let image = if scene_render::scene_of_input(project, input).is_some() {
-                self.scene_frame(tap, state, project, width, height)
+                self.scene_frame(tap, state, project)
             } else {
                 // Non-simulated inputs are never registered, so they render nothing.
                 self.pipeline
@@ -267,10 +291,9 @@ impl SimulatedMonitorTap {
             };
             if let Some(bytes) = encode_picture(server, &picture) {
                 self.sequences[tap.index()] = sequence;
-                frames.push((tap, bytes));
+                emit(tap, bytes);
             }
         }
-        frames
     }
 
     /// Returns the tap's scene picture at the fitted size, composing it only
@@ -281,8 +304,6 @@ impl SimulatedMonitorTap {
         tap: MonitorTap,
         state: RealizedMonitorState,
         project: &Project,
-        width: u16,
-        height: u16,
     ) -> Option<Arc<ImageFrame>> {
         let key = ComposeKey {
             revision: state.revision,
@@ -302,27 +323,12 @@ impl SimulatedMonitorTap {
             });
             return image;
         }
-        if self.scene_built_revision != Some(state.revision) {
-            self.scene_pipeline = simulated_pipeline_at(
-                project,
-                project.settings().video.dimensions.width(),
-                project.settings().video.dimensions.height(),
-            );
-            self.scene_built_revision = Some(state.revision);
-        }
         #[cfg(test)]
         {
             self.compositions += 1;
         }
         let image = scene_render::scene_of_input(project, key.input).and_then(|scene| {
-            scene_render::render_scene(
-                project,
-                scene,
-                self.scene_pipeline.as_ref()?,
-                state.frame,
-                u32::from(width),
-                u32::from(height),
-            )
+            scene_render::render_scene(project, scene, self.pipeline.as_ref()?, state.frame)
         });
         let image = image.map(Arc::new);
         self.composed[tap.index()] = Some(ComposedScene {
@@ -343,20 +349,25 @@ impl SimulatedMonitorTap {
 /// it depicts, or `None` when no peer wants frames.
 type MonitorWork = Option<(RealizedMonitorState, Arc<Project>)>;
 
-/// Renders one cadence step of `MonitorWork` at `Instant`.
-type MonitorRenderer = Box<dyn FnMut(MonitorWork, Instant) -> Vec<(MonitorTap, Vec<u8>)> + Send>;
+/// Renders one cadence step of `MonitorWork` at `Instant`, handing each
+/// finished tap group to the sink as soon as it is encoded.
+type MonitorRenderer =
+    Box<dyn FnMut(MonitorWork, Instant, &mut dyn FnMut(MonitorTap, Vec<u8>)) + Send>;
 
 /// Longest the worker sleeps between cadence steps while frames are wanted.
 const MONITOR_WORKER_STEP: Duration = Duration::from_millis(10);
-/// Rendered groups awaiting the session loop; monitor frames are lossy, so a
-/// full backlog drops the newest group instead of blocking the worker.
-const MONITOR_WORKER_BACKLOG: usize = 4;
 
-/// The latest work published by the session loop.
+/// The latest work published by the session loop, and the latest finished
+/// group per tap awaiting it.
 struct WorkerSlot {
     work: MonitorWork,
     changed: bool,
     shutdown: bool,
+    /// One latest-wins group per tap (indexed by `MonitorTap::index`).
+    /// Monitor frames are lossy: a newer group replaces an uncollected one,
+    /// so the worker never blocks, memory stays bounded at one group per tap,
+    /// and a burst of Program groups can never crowd out a Preview group.
+    finished: [Option<Vec<u8>>; 2],
 }
 
 struct WorkerShared {
@@ -372,16 +383,15 @@ impl WorkerShared {
 
 /// Runs [`SimulatedMonitorTap`] on a dedicated thread.
 ///
-/// Composing a Scene input at the project size is CPU work that can take
-/// seconds in a debug build. It must never run on the daemon's session loop:
-/// a command accepted while a composition ran would wait for it before its
+/// Composing a Scene input is CPU work that can still take a noticeable time
+/// in a debug build. It must never run on the daemon's session loop: a
+/// command accepted while a composition ran would wait for it before its
 /// result could be written, and a client waiting for that result treats the
 /// silence as a dead connection and reconnects. The session loop only
 /// publishes the latest realized state (latest wins) and collects whichever
 /// encoded groups are already finished.
 pub(crate) struct SimulatedMonitorWorker {
     shared: Arc<WorkerShared>,
-    frames: Receiver<(MonitorTap, Vec<u8>)>,
     worker: Option<JoinHandle<()>>,
     project: Option<(u64, Arc<Project>)>,
     published: Published,
@@ -403,12 +413,11 @@ impl SimulatedMonitorWorker {
     /// Returns the operating system error when the thread cannot start.
     pub(crate) fn spawn(server: ServerIdentity) -> std::io::Result<Self> {
         let mut tap = SimulatedMonitorTap::default();
-        Self::spawn_with(Box::new(move |work, now| {
+        Self::spawn_with(Box::new(move |work, now, emit| {
             if let Some((state, project)) = work {
-                tap.poll_state(state, &project, &server, now, true)
+                tap.poll_state_into(state, &project, &server, now, true, emit);
             } else {
                 tap.idle();
-                Vec::new()
             }
         }))
     }
@@ -419,17 +428,16 @@ impl SimulatedMonitorWorker {
                 work: None,
                 changed: false,
                 shutdown: false,
+                finished: [None, None],
             }),
             wake: Condvar::new(),
         });
-        let (sender, frames) = mpsc::sync_channel(MONITOR_WORKER_BACKLOG);
         let worker_shared = Arc::clone(&shared);
         let worker = thread::Builder::new()
             .name("freemixd-monitor".to_owned())
-            .spawn(move || run_monitor_worker(&worker_shared, &sender, &mut render))?;
+            .spawn(move || run_monitor_worker(&worker_shared, &mut render))?;
         Ok(Self {
             shared,
-            frames,
             worker: Some(worker),
             project: None,
             published: Published::Nothing,
@@ -455,16 +463,19 @@ impl SimulatedMonitorWorker {
         project: &Project,
     ) -> Vec<(MonitorTap, Vec<u8>)> {
         let published = state.map_or(Published::Idle, Published::State);
-        if self.published != published {
-            let work = state.map(|state| (state, self.project_at(state.revision, project)));
-            let mut slot = self.shared.lock();
+        let work = (self.published != published)
+            .then(|| state.map(|state| (state, self.project_at(state.revision, project))));
+        let mut slot = self.shared.lock();
+        if let Some(work) = work {
             slot.work = work;
             slot.changed = true;
-            drop(slot);
-            self.shared.wake.notify_one();
             self.published = published;
+            self.shared.wake.notify_one();
         }
-        self.frames.try_iter().collect()
+        MONITOR_TAP_ORDER
+            .into_iter()
+            .filter_map(|tap| Some((tap, slot.finished[tap.index()].take()?)))
+            .collect()
     }
 
     /// Shares one project copy per realized revision with the worker.
@@ -494,11 +505,7 @@ impl Drop for SimulatedMonitorWorker {
     }
 }
 
-fn run_monitor_worker(
-    shared: &WorkerShared,
-    frames: &SyncSender<(MonitorTap, Vec<u8>)>,
-    render: &mut MonitorRenderer,
-) {
+fn run_monitor_worker(shared: &WorkerShared, render: &mut MonitorRenderer) {
     let mut work: MonitorWork = None;
     loop {
         {
@@ -524,13 +531,17 @@ fn run_monitor_worker(
             if slot.changed {
                 work.clone_from(&slot.work);
                 slot.changed = false;
+                if work.is_none() {
+                    // Nobody wants frames any more; drop what was finished.
+                    slot.finished = [None, None];
+                }
             }
         }
-        for frame in render(work.clone(), Instant::now()) {
-            if let Err(TrySendError::Disconnected(_)) = frames.try_send(frame) {
-                return;
-            }
-        }
+        render(work.clone(), Instant::now(), &mut |tap, bytes| {
+            // Each tap's group is visible to the session loop the moment it
+            // is encoded, before the next tap starts composing.
+            shared.lock().finished[tap.index()] = Some(bytes);
+        });
     }
 }
 
@@ -565,6 +576,7 @@ fn simulated_pipeline_at(project: &Project, width: u32, height: u32) -> Option<S
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU128;
+    use std::sync::mpsc;
 
     use fm_model::{
         Input, Layer, LayerGeometry, ProjectSettings, Rotation, SimulatedAudio, SimulatedInput,
@@ -860,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_layers_compose_at_project_size_and_scale_to_the_monitor() {
+    fn scene_layers_compose_at_the_fitted_monitor_size() {
         let mut project = project(1_920, 1_080);
         // The solid input covers exactly the top-left quarter of 1920x1080.
         add_scene(
@@ -1052,19 +1064,19 @@ mod tests {
         let (rendering, rendering_rx) = mpsc::channel();
         let (release, release_rx) = mpsc::channel::<()>();
         let mut blocked_once = false;
-        let mut worker = SimulatedMonitorWorker::spawn_with(Box::new(move |work, _| {
+        let mut worker = SimulatedMonitorWorker::spawn_with(Box::new(move |work, _, emit| {
             let Some((state, _)) = work else {
-                return Vec::new();
+                return;
             };
             let _ = rendering.send(state.revision);
             if !blocked_once {
                 blocked_once = true;
-                // Stands in for a multi-second Scene composition.
+                // Stands in for a slow Scene composition.
                 release_rx
                     .recv_timeout(Duration::from_secs(30))
                     .expect("the test releases the composition");
             }
-            vec![(MonitorTap::Program, state.revision.to_be_bytes().to_vec())]
+            emit(MonitorTap::Program, state.revision.to_be_bytes().to_vec());
         }))
         .unwrap();
 
@@ -1092,10 +1104,216 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(revisions[0], 1);
         assert!(
             !revisions.contains(&2),
             "a superseded state is never rendered"
+        );
+        // The renderer only ever saw the blocked state and the latest one.
+        let rendered = rendering_rx.try_iter().collect::<Vec<_>>();
+        assert!(rendered.iter().all(|revision| *revision == 3));
+    }
+
+    /// Regression: one cadence step rendered both taps before publishing
+    /// either, and finished groups shared one small backlog, so a slow
+    /// Program Scene composition held back (or crowded out) the Preview
+    /// picture of the same step.
+    #[test]
+    fn preview_frames_are_never_held_behind_a_program_composition() {
+        let project = project(1_920, 1_080);
+        let (program_started, program_started_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let mut worker = SimulatedMonitorWorker::spawn_with(Box::new(move |work, _, emit| {
+            let Some((state, _)) = work else {
+                return;
+            };
+            emit(
+                MonitorTap::Preview,
+                vec![b'p', state.revision.to_be_bytes()[7]],
+            );
+            let _ = program_started.send(state.revision);
+            // Every Program composition is slow until released.
+            let _ = release_rx.recv_timeout(Duration::from_secs(30));
+            emit(
+                MonitorTap::Program,
+                vec![b'P', state.revision.to_be_bytes()[7]],
+            );
+        }))
+        .unwrap();
+
+        assert_eq!(worker.poll_state(Some(state(1, 1, 2)), &project), NO_FRAMES);
+        assert_eq!(
+            program_started_rx.recv_timeout(Duration::from_secs(5)),
+            Ok(1)
+        );
+        // Program is still composing, yet the Preview group is already out.
+        assert_eq!(
+            worker.poll_state(Some(state(1, 1, 2)), &project),
+            vec![(MonitorTap::Preview, vec![b'p', 1])]
+        );
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "Program never arrived");
+            let frames = worker.poll_state(Some(state(1, 1, 2)), &project);
+            if frames.contains(&(MonitorTap::Program, vec![b'P', 1])) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        // Releasing every later composition lets the worker shut down.
+        drop(release);
+    }
+
+    /// Scenes covering crops, masks, rotation, opacity, partial and
+    /// off-frame layers, thin layers, and both simulated patterns, laid out
+    /// for a 1920x1080 canvas and stretched onto the project's own size.
+    fn equivalence_scenes(project: &mut Project) -> Vec<u128> {
+        let dimensions = project.settings().video.dimensions;
+        let (width, height) = (dimensions.width(), dimensions.height());
+        let x = |value: u32| value * width / 1_920;
+        let y = |value: u32| value * height / 1_080;
+        let left = |value: i32| value * i32::try_from(width).unwrap() / 1_920;
+        let top = |value: i32| value * i32::try_from(height).unwrap() / 1_080;
+        let mut cropped = layer(
+            SourceRef::Input(input_id(2)),
+            left(101),
+            top(57),
+            x(777),
+            y(433),
+        );
+        cropped.crop = Some(fm_model::CropRect::new(x(300), y(120), x(900), y(600)));
+        let mut masked = layer(
+            SourceRef::Input(input_id(1)),
+            left(640),
+            top(360),
+            x(960),
+            y(540),
+        );
+        masked.crop = Some(fm_model::CropRect::new(x(10), y(20), x(1_500), y(900)));
+        masked.mask = Some(fm_model::RectMask {
+            x: x(211),
+            y: y(97),
+            width: x(1_003),
+            height: y(377),
+            invert: true,
+        });
+        masked.opacity = 160;
+        masked.z_order = 2;
+        let mut rotated = layer(
+            SourceRef::Input(input_id(2)),
+            left(-150),
+            top(400),
+            x(641),
+            y(359),
+        );
+        rotated.geometry.rotation = fm_model::Rotation::Deg90;
+        rotated.z_order = 3;
+        let mut upside_down = layer(
+            SourceRef::Input(input_id(2)),
+            left(1_700),
+            top(-90),
+            x(400),
+            y(300),
+        );
+        upside_down.geometry.rotation = fm_model::Rotation::Deg180;
+        let thin = layer(SourceRef::Input(input_id(1)), left(913), 0, 1, height);
+        add_scene(
+            project,
+            1,
+            10,
+            vec![layer(SourceRef::Input(input_id(2)), 0, 0, width, height)],
+        );
+        add_scene(
+            project,
+            2,
+            11,
+            vec![cropped, masked, rotated, upside_down, thin],
+        );
+        vec![10, 11]
+    }
+
+    /// Compares the monitor-size composition with the project-size reference
+    /// it replaced (compose at project size, then nearest-neighbor
+    /// downscale). Pictures may differ only along resampled edges.
+    #[test]
+    fn monitor_size_scenes_match_the_project_size_reference() {
+        // Integer (1080p), portrait, and non-integer (1000x750) ratios.
+        for (width, height) in [(1_920, 1_080), (1_080, 1_920), (1_000, 750)] {
+            let mut project = project(width, height);
+            let scenes = equivalence_scenes(&mut project);
+            let (monitor_width, monitor_height) = fit_monitor(width, height).unwrap();
+            let (monitor_width, monitor_height) =
+                (u32::from(monitor_width), u32::from(monitor_height));
+            let monitor = simulated_pipeline(&project).unwrap();
+            let full = simulated_pipeline_at(&project, width, height).unwrap();
+            for input in scenes {
+                let scene = scene_render::scene_of_input(&project, input_id(input)).unwrap();
+                let fast = scene_render::render_scene(&project, scene, &monitor, 4).unwrap();
+                let reference = scene_render::render_scene_at_project_size(
+                    &project,
+                    scene,
+                    &full,
+                    4,
+                    monitor_width,
+                    monitor_height,
+                )
+                .unwrap();
+                assert_eq!(
+                    (fast.width(), fast.height()),
+                    (reference.width(), reference.height())
+                );
+                let mut differing = 0_u64;
+                let mut total_error = 0_u64;
+                for y in 0..monitor_height {
+                    for x in 0..monitor_width {
+                        let a = fast.pixel(x, y).unwrap();
+                        let b = reference.pixel(x, y).unwrap();
+                        let error = [
+                            a.r.abs_diff(b.r),
+                            a.g.abs_diff(b.g),
+                            a.b.abs_diff(b.b),
+                            a.a.abs_diff(b.a),
+                        ];
+                        if error.iter().any(|channel| *channel != 0) {
+                            differing += 1;
+                        }
+                        total_error += error.iter().map(|channel| u64::from(*channel)).sum::<u64>();
+                    }
+                }
+                let pixels = u64::from(monitor_width * monitor_height);
+                // At most 1% of pixels (edge columns/rows) differ, and the mean
+                // per-channel error stays under one code value.
+                assert!(
+                    differing * 100 <= pixels,
+                    "{width}x{height} scene {input}: {differing} of {pixels} pixels differ"
+                );
+                assert!(
+                    total_error < pixels * 4,
+                    "{width}x{height} scene {input}: total error {total_error} over {pixels} pixels"
+                );
+            }
+        }
+    }
+
+    /// Regression for multi-second debug-build redraws: a 1080p Scene redraw
+    /// does a fraction of the project-size composition's work.
+    #[test]
+    fn monitor_size_scene_redraw_is_much_cheaper_than_project_size() {
+        let mut project = project(1_920, 1_080);
+        let scenes = equivalence_scenes(&mut project);
+        let scene = scene_render::scene_of_input(&project, input_id(scenes[1])).unwrap();
+        let monitor = simulated_pipeline(&project).unwrap();
+        let full = simulated_pipeline_at(&project, 1_920, 1_080).unwrap();
+        let started = Instant::now();
+        scene_render::render_scene(&project, scene, &monitor, 4).unwrap();
+        let fast = started.elapsed();
+        let started = Instant::now();
+        scene_render::render_scene_at_project_size(&project, scene, &full, 4, 640, 360).unwrap();
+        let reference = started.elapsed();
+        // The pixel work is ~9x smaller; demand a conservative 3x.
+        assert!(
+            fast * 3 < reference,
+            "monitor-size redraw took {fast:?}, project-size {reference:?}"
         );
     }
 }
