@@ -237,7 +237,9 @@ id = "accept-au-009"
 state = "planned"
 [[tests]]
 id = "accept-au-010"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-record/tests/wav_track_map.rs"]
+commands = ["cargo test -p fm-record --test wav_track_map"]
 [[tests]]
 id = "accept-au-011"
 state = "planned"
