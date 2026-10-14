@@ -115,7 +115,9 @@ id = "accept-sw-006"
 state = "planned"
 [[tests]]
 id = "accept-sw-007"
-state = "planned"
+state = "present"
+paths = ["crates/gpu/fm-compositor/tests/effects.rs", "crates/gpu/fm-compositor/tests/golden.rs"]
+commands = ["cargo test -p fm-compositor --test effects", "cargo test -p fm-compositor --test golden"]
 [[tests]]
 id = "accept-sw-008"
 state = "planned"
@@ -124,7 +126,9 @@ id = "accept-sw-009"
 state = "planned"
 [[tests]]
 id = "accept-sw-010"
-state = "planned"
+state = "present"
+paths = ["crates/gpu/fm-scopes/tests/monitor.rs", "crates/gpu/fm-scopes/tests/reference.rs"]
+commands = ["cargo test -p fm-scopes --test monitor", "cargo test -p fm-scopes --test reference"]
 [[tests]]
 id = "accept-sw-011"
 state = "planned"
@@ -230,7 +234,9 @@ id = "accept-or-003"
 state = "planned"
 [[tests]]
 id = "accept-or-004"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-record/tests/iso_taps.rs", "crates/media/fm-record/tests/process_kill_recovery.rs"]
+commands = ["cargo test -p fm-record --test iso_taps", "cargo test -p fm-record --test process_kill_recovery"]
 [[tests]]
 id = "accept-or-005"
 state = "present"
@@ -286,7 +292,9 @@ id = "accept-rc-003"
 state = "planned"
 [[tests]]
 id = "accept-rc-004"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-automation/tests/templates.rs", "crates/features/fm-automation/tests/automation.rs"]
+commands = ["cargo test -p fm-automation --test templates", "cargo test -p fm-automation --test automation"]
 [[tests]]
 id = "accept-rc-005"
 state = "planned"
