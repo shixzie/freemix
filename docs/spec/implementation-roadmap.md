@@ -1802,6 +1802,23 @@ playback has no real clock, per-event list overrides and controller mapping
 are absent, and no eight-camera storage profile is certified. `OR-012` and
 `OR-013` remain planned.
 
+Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a
+synchronized Quad View or a multiview of up to eight distinct angles plus A/B
+channel tiles in a near-square row-major grid, resolving each tile's exact
+frame through the channel resolver without mutating decks and labeling tiles
+LIVE or REPLAY with reported skew. Two independent controller profiles map
+shared keyboard keys and per-device buttons and MIDI notes to typed replay
+actions (marks, play and shuttle rates, bounded jog, angle and channel select,
+live toggle), refuse cross-profile keyboard conflicts, and apply actions
+atomically to decks and marks. A disk-health monitor converts configured
+bitrates into per-camera and per-root byte rates and predicts remaining
+recording time with warning, critical, and full levels that worsen
+immediately and recover only past a hysteresis margin. Remaining gaps: tiles
+are not decoded, scaled, or composited; controller bindings have no real
+device input, persistence, or jog acceleration; disk samples are caller
+supplied without OS or SMART queries or `fm-record` low-space wiring; and no
+storage profile is certified. `OR-014` remains planned.
+
 Exit: Sports Show scenario passes on certified storage/hardware.
 
 ## 10. Phase 8 — professional hardware and advanced formats (ongoing, 16–24 weeks)
