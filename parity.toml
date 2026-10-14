@@ -167,8 +167,8 @@ state = "planned"
 [[tests]]
 id = "accept-gx-001"
 state = "present"
-paths = ["crates/features/fm-titles/tests/image_render.rs", "crates/features/fm-titles/tests/title_scene.rs", "crates/features/fm-titles/tests/text_render.rs"]
-commands = ["cargo test -p fm-titles --test image_render", "cargo test -p fm-titles --test title_scene", "cargo test -p fm-titles --test text_render"]
+paths = ["crates/features/fm-titles/tests/image_render.rs", "crates/features/fm-titles/tests/title_scene.rs", "crates/features/fm-titles/tests/text_render.rs", "crates/features/fm-titles/tests/image_fit.rs"]
+commands = ["cargo test -p fm-titles --test image_render", "cargo test -p fm-titles --test title_scene", "cargo test -p fm-titles --test text_render", "cargo test -p fm-titles --test image_fit"]
 [[tests]]
 id = "accept-gx-002"
 state = "planned"
