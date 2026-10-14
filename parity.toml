@@ -382,7 +382,9 @@ id = "accept-rc-012"
 state = "planned"
 [[tests]]
 id = "accept-rc-013"
-state = "planned"
+state = "present"
+paths = ["crates/services/fm-persistence/tests/settings_import_export.rs"]
+commands = ["cargo test -p fm-persistence --test settings_import_export"]
 [[tests]]
 id = "accept-rc-014"
 state = "planned"
