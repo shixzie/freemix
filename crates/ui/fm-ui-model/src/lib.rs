@@ -22,6 +22,7 @@ use fm_protocol::{
 };
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
+pub mod animation_editor;
 pub mod i18n;
 pub mod title_editor;
 
