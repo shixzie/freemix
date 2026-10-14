@@ -495,3 +495,27 @@ fn failed_compilation_returns_no_partial_plan_or_report() {
         ExecutionPlan::compile_with_report(&graph, &CapabilityRegistry::new(), insufficient_budget);
     assert!(matches!(result, Err(CompileError::BudgetExceeded(_))));
 }
+
+#[test]
+fn deep_linear_graph_validates_without_exhausting_the_stack() {
+    const DEPTH: usize = 200_000;
+    let mut graph = EditableGraph::new();
+    for index in 0..DEPTH {
+        let mut node = Node::new(node_id(&format!("n{index:06}")), stable("stage"));
+        node.add_input(InputPort::new(
+            port_id("in"),
+            MediaKind::Video,
+            InputCardinality::OPTIONAL,
+        ))
+        .unwrap();
+        node.add_output(OutputPort::new(port_id("out"), MediaKind::Video))
+            .unwrap();
+        graph.add_node(node).unwrap();
+    }
+    for index in 1..DEPTH {
+        graph.connect(edge(&format!("n{:06}", index - 1), &format!("n{index:06}")));
+    }
+    let error =
+        ExecutionPlan::compile(&graph, &CapabilityRegistry::new(), ample_budget()).unwrap_err();
+    assert!(matches!(error, CompileError::BudgetExceeded(_)));
+}

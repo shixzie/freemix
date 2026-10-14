@@ -287,37 +287,48 @@ fn adjacency(graph: &EditableGraph) -> BTreeMap<&NodeId, BTreeSet<&NodeId>> {
     adjacency
 }
 
+/// Depth-first cycle search with an explicit stack so arbitrarily deep graphs
+/// cannot exhaust the thread stack.
 fn visit<'a>(
-    node: &'a NodeId,
+    root: &'a NodeId,
     adjacency: &BTreeMap<&'a NodeId, BTreeSet<&'a NodeId>>,
     visited: &mut BTreeSet<&'a NodeId>,
     active: &mut BTreeSet<&'a NodeId>,
     path: &mut Vec<&'a NodeId>,
 ) -> Option<Vec<NodeId>> {
-    if active.contains(node) {
-        let start = path
-            .iter()
-            .position(|candidate| *candidate == node)
-            .unwrap_or(0);
-        let mut cycle = path[start..]
-            .iter()
-            .map(|candidate| (*candidate).clone())
-            .collect::<Vec<_>>();
-        cycle.push(node.clone());
-        return Some(cycle);
-    }
-    if !visited.insert(node) {
+    if !visited.insert(root) {
         return None;
     }
+    let successors = |node: &'a NodeId| adjacency.get(node).into_iter().flatten().copied();
+    let mut stack = vec![successors(root)];
+    active.insert(root);
+    path.push(root);
 
-    active.insert(node);
-    path.push(node);
-    for next in adjacency.get(node).into_iter().flatten() {
-        if let Some(cycle) = visit(next, adjacency, visited, active, path) {
+    while let Some(next) = stack.last_mut().map(Iterator::next) {
+        let Some(next) = next else {
+            stack.pop();
+            if let Some(finished) = path.pop() {
+                active.remove(finished);
+            }
+            continue;
+        };
+        if active.contains(next) {
+            let start = path
+                .iter()
+                .position(|candidate| *candidate == next)
+                .unwrap_or(0);
+            let mut cycle = path[start..]
+                .iter()
+                .map(|candidate| (*candidate).clone())
+                .collect::<Vec<_>>();
+            cycle.push(next.clone());
             return Some(cycle);
         }
+        if visited.insert(next) {
+            active.insert(next);
+            path.push(next);
+            stack.push(successors(next));
+        }
     }
-    path.pop();
-    active.remove(node);
     None
 }
