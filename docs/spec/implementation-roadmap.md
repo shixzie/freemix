@@ -1289,6 +1289,22 @@ provide pre-fader PFL taps; device selection is an opaque ID without I/O; and
 talkback is not delivered to guest or camera transports. Both rows remain
 planned.
 
+Current implementation boundary for auxiliary buses (`AU-002`): `fm-audio`
+provides a deterministic `BusMatrix` with Master plus aux buses A–G. Each strip
+has a per-bus send enable, level, and pre- or post-fader tap, and strip mute
+cuts every send; each bus has a unique name, fader, mute, and optional
+`StripDsp` processing. One render validates everything first, then writes
+every bus into caller-owned planes with per-bus peak/RMS meters. Destinations
+are unique opaque device, network, or record IDs, and mix-minus feeds re-sum
+without the excluded strip instead of subtracting, so each feed is
+bit-identical to the bus with that send disabled, including through bus
+processing. Remaining gaps: the matrix is not wired into `MasterMixer`, the
+engine, persistence, protocol, or Studio and does not consume the existing
+bus-send authoring; destinations perform no I/O; strips and buses share one
+channel count without mapping or balance; there are no gain ramps, clipping
+policy, or meter ballistics; and allocation-free rendering is by construction
+rather than tested. `AU-002` remains planned.
+
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
