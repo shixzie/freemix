@@ -1720,6 +1720,22 @@ output is separate from the crash-safe packet spool and has no time or size
 rollover; and metadata stops at version-1 `bext` without iXML, loudness, or
 UMID. `AU-010` remains planned.
 
+Current implementation boundary for statistics and alerts (`RC-015`):
+`fm-observability` provides a deterministic, clock-free statistics layer: a
+bounded registry of counters, gauges, and fixed-bucket histograms keyed by
+metric ID and validated labels; windowed FPS, drop rate, maximum queue depth,
+and documented interpolated percentiles that report saturation instead of
+undercounting; and an alert engine with threshold, rate-of-change, and
+staleness rules, hysteresis, hold durations, pending, firing, and resolved
+states, deduplicated notifications in a bounded severity-aware queue, and
+expiring acknowledgements and silences. A redacted, sorted text snapshot can
+be appended to the support bundle under its byte cap. Remaining gaps: the
+daemon, engine, outputs, and Studio do not record into it or drain
+notifications; there is no GPU, CPU, disk, network, sync, or encoder-capacity
+sampling; no protocol or UI view; and no persisted rules or silences.
+`RC-015` remains planned.
+
+
 Exit: a remote-controlled headless production can stream and record
 independently with tested recovery.
 
