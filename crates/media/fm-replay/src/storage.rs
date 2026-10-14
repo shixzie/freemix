@@ -3,9 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use fm_frame::NormalizedTimestamp;
+
 use crate::{
-    CameraId, EventId, ExportJobId, HighlightId, ReplayError, SegmentId, StorageRootId,
-    TimelineRange,
+    CameraId, EventId, ExportJobId, HighlightId, ReplayError, SegmentCoverage, SegmentId,
+    StorageRootId, TimelineRange,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,6 +125,71 @@ impl RollingSegmentCatalog {
 
     pub fn segments(&self) -> impl Iterator<Item = &SegmentMetadata> {
         self.segments.values()
+    }
+
+    /// Returns the segment holding `camera_id` media at `at`.
+    ///
+    /// When segments overlap, the earliest (timeline start, recorder index,
+    /// ID) wins so resolution is deterministic.
+    #[must_use]
+    pub fn segment_at(
+        &self,
+        camera_id: CameraId,
+        at: NormalizedTimestamp,
+    ) -> Option<&SegmentMetadata> {
+        self.camera_segments(camera_id)
+            .into_iter()
+            .find(|segment| segment.timeline.contains(at))
+    }
+
+    /// Reports which segments cover `range` for one camera and which
+    /// sub-ranges have no recorded media.
+    #[must_use]
+    pub fn coverage(&self, camera_id: CameraId, range: TimelineRange) -> SegmentCoverage {
+        let mut segments = Vec::new();
+        let mut gaps = Vec::new();
+        let mut cursor = range.start;
+        for segment in self.camera_segments(camera_id) {
+            if !segment.timeline.overlaps(range) {
+                continue;
+            }
+            if segment.timeline.start > cursor {
+                gaps.push(TimelineRange {
+                    start: cursor,
+                    end: segment.timeline.start,
+                });
+            }
+            cursor = cursor.max(segment.timeline.end);
+            segments.push(segment.id);
+        }
+        if cursor < range.end {
+            gaps.push(TimelineRange {
+                start: cursor,
+                end: range.end,
+            });
+        }
+        SegmentCoverage {
+            camera_id,
+            range,
+            segments,
+            gaps,
+        }
+    }
+
+    fn camera_segments(&self, camera_id: CameraId) -> Vec<&SegmentMetadata> {
+        let mut segments: Vec<_> = self
+            .segments
+            .values()
+            .filter(|segment| segment.camera_id == camera_id)
+            .collect();
+        segments.sort_by_key(|segment| {
+            (
+                segment.timeline.start,
+                segment.recorder_segment_index,
+                segment.id,
+            )
+        });
+        segments
     }
 
     #[must_use]

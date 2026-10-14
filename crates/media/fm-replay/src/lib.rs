@@ -8,6 +8,7 @@ mod capacity;
 mod channel;
 mod event;
 mod highlight;
+mod resolve;
 mod source;
 mod storage;
 mod types;
@@ -25,6 +26,9 @@ pub use highlight::{
     CaptureState, ExportJob, ExportJobState, HighlightItem, HighlightTimeline, MusicBed,
     ReplaySession, Transition,
 };
+pub use resolve::{
+    AngleSpan, CapturedEvent, ChannelFrame, FrameSpan, LastNPreset, SegmentCoverage,
+};
 pub use source::{
     CameraSource, MAX_AUDIO_CHANNELS, MAX_REPLAY_SOURCES, QuadCell, QuadViewDescription,
     SourceCatalog, SourceObservation, SourceTimeline, TimelineDiscontinuity,
@@ -34,8 +38,10 @@ pub use storage::{
     StorageRoot,
 };
 pub use types::{
-    CameraId, EventId, ExportJobId, FolderId, HighlightId, ListId, MusicTrackId, ReplayError,
-    SegmentId, StorageRootId, TimelineRange,
+    CameraId, EventId, ExportJobId, FolderId, HighlightId, ListId, MAX_EVENTS, MAX_EVENTS_PER_LIST,
+    MAX_FOLDERS, MAX_LISTS, MAX_NAME_BYTES, MAX_NOTE_BYTES, MAX_OBSERVATIONS_PER_CAMERA,
+    MAX_TAGS_PER_EVENT, MusicTrackId, ReplayError, ReplayLimit, SegmentId, StorageRootId,
+    TimelineRange,
 };
 
 #[cfg(test)]

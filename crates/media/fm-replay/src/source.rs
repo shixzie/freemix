@@ -5,7 +5,10 @@ use fm_playback::FrameIndex;
 use fm_record::RecorderId;
 use fm_types::ChannelLayout;
 
-use crate::{CameraId, ReplayError, StorageRootId};
+use crate::{
+    CameraId, FrameSpan, MAX_OBSERVATIONS_PER_CAMERA, ReplayError, ReplayLimit, StorageRootId,
+    TimelineRange,
+};
 
 pub const MAX_REPLAY_SOURCES: usize = 8;
 pub const MAX_AUDIO_CHANNELS: usize = 4;
@@ -108,11 +111,20 @@ pub struct SourceTimeline {
     observations: BTreeMap<CameraId, Vec<SourceObservation>>,
     discontinuities: Vec<TimelineDiscontinuity>,
     epochs: BTreeMap<CameraId, u64>,
+    observation_limit: usize,
 }
 
 impl SourceTimeline {
+    /// Creates a timeline bounded by [`MAX_OBSERVATIONS_PER_CAMERA`].
     #[must_use]
     pub fn new(catalog: &SourceCatalog) -> Self {
+        Self::with_observation_limit(catalog, MAX_OBSERVATIONS_PER_CAMERA)
+    }
+
+    /// Creates a timeline retaining at most `limit` observations per camera
+    /// (minimum one). Callers prune alongside segment retention.
+    #[must_use]
+    pub fn with_observation_limit(catalog: &SourceCatalog, limit: usize) -> Self {
         Self {
             observations: catalog
                 .iter()
@@ -120,7 +132,89 @@ impl SourceTimeline {
                 .collect(),
             discontinuities: Vec::new(),
             epochs: catalog.iter().map(|source| (source.id, 0)).collect(),
+            observation_limit: limit.max(1),
         }
+    }
+
+    #[must_use]
+    pub const fn observation_limit(&self) -> usize {
+        self.observation_limit
+    }
+
+    #[must_use]
+    pub fn observation_count(&self, camera_id: CameraId) -> usize {
+        self.observations.get(&camera_id).map_or(0, Vec::len)
+    }
+
+    /// Returns the frame displayed for `camera_id` at `at`: the latest
+    /// observation whose synchronized time is at or before `at`.
+    ///
+    /// # Errors
+    ///
+    /// Unknown cameras and targets before the first retained observation are
+    /// rejected.
+    pub fn resolve(
+        &self,
+        camera_id: CameraId,
+        at: NormalizedTimestamp,
+    ) -> Result<SourceObservation, ReplayError> {
+        let observations = self
+            .observations
+            .get(&camera_id)
+            .ok_or(ReplayError::UnknownCamera(camera_id))?;
+        let after = observations.partition_point(|item| item.synchronized_at <= at);
+        after
+            .checked_sub(1)
+            .map(|index| observations[index])
+            .ok_or(ReplayError::ObservationUnavailable(camera_id))
+    }
+
+    /// Summarizes the frames whose synchronized time lies inside `range`.
+    ///
+    /// # Errors
+    ///
+    /// Unknown cameras and ranges without any observed frame are rejected.
+    pub fn frames_in(
+        &self,
+        camera_id: CameraId,
+        range: TimelineRange,
+    ) -> Result<FrameSpan, ReplayError> {
+        let observations = self
+            .observations
+            .get(&camera_id)
+            .ok_or(ReplayError::UnknownCamera(camera_id))?;
+        let first = observations.partition_point(|item| item.synchronized_at < range.start);
+        let end = observations.partition_point(|item| item.synchronized_at < range.end);
+        if first >= end {
+            return Err(ReplayError::NoFramesInRange(camera_id));
+        }
+        let first_observation = observations[first];
+        let last_observation = observations[end - 1];
+        Ok(FrameSpan {
+            camera_id,
+            first: first_observation,
+            last: last_observation,
+            frame_count: end - first,
+            discontinuities: last_observation
+                .discontinuity_epoch
+                .saturating_sub(first_observation.discontinuity_epoch),
+        })
+    }
+
+    /// Drops observations and discontinuity markers older than `cutoff`,
+    /// keeping each camera's latest observation at or before `cutoff` so the
+    /// cutoff instant itself still resolves. Returns the observations dropped.
+    pub fn prune_before(&mut self, cutoff: NormalizedTimestamp) -> usize {
+        let mut dropped = 0;
+        for observations in self.observations.values_mut() {
+            let at_or_before = observations.partition_point(|item| item.synchronized_at <= cutoff);
+            let remove = at_or_before.saturating_sub(1);
+            observations.drain(..remove);
+            dropped += remove;
+        }
+        self.discontinuities
+            .retain(|marker| marker.synchronized_at >= cutoff);
+        dropped
     }
 
     /// Appends one frame mapping to the shared synchronized timeline.
@@ -141,6 +235,12 @@ impl SourceTimeline {
             .get_mut(&camera_id)
             .ok_or(ReplayError::UnknownCamera(camera_id))?;
         let epoch = self.epochs[&camera_id];
+        if observations.len() >= self.observation_limit {
+            return Err(ReplayError::LimitExceeded {
+                limit: ReplayLimit::Observations,
+                maximum: self.observation_limit,
+            });
+        }
         if let Some(previous) = observations.last() {
             if synchronized_at <= previous.synchronized_at {
                 return Err(ReplayError::TimelineRegression(camera_id));

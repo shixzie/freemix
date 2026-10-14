@@ -2,7 +2,10 @@ use fm_audio::Gain;
 use fm_frame::NormalizedTimestamp;
 use fm_playback::{FrameIndex, Speed};
 
-use crate::{CameraId, EventId, ReplayError, ReplayEvent, TimelineRange};
+use crate::{
+    CameraId, ChannelFrame, EventDatabase, EventId, ReplayError, ReplayEvent,
+    RollingSegmentCatalog, SourceTimeline, TimelineRange,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplayChannelId {
@@ -229,6 +232,73 @@ impl ReplayDecks {
 
     pub fn select_angle(&mut self, id: ReplayChannelId, camera_id: CameraId) {
         self.channel_mut(id).angle = camera_id;
+    }
+
+    /// Switches one channel's angle while keeping its synchronized cursor, so
+    /// the new angle presents the same instant. In recorded mode the camera
+    /// must be one of the cued event's angles; live mode accepts any camera.
+    ///
+    /// # Errors
+    ///
+    /// The cued event must still exist and include `camera_id`. The channel
+    /// is unchanged on error.
+    pub fn select_event_angle(
+        &mut self,
+        id: ReplayChannelId,
+        camera_id: CameraId,
+        events: &EventDatabase,
+    ) -> Result<(), ReplayError> {
+        let channel = self.channel_mut(id);
+        if let ChannelMode::Recorded { event_id, .. } = channel.mode {
+            let event = events
+                .event(event_id)
+                .ok_or(ReplayError::UnknownEvent(event_id))?;
+            if !event.angles.contains(&camera_id) {
+                return Err(ReplayError::AngleNotInEvent {
+                    event: event_id,
+                    camera: camera_id,
+                });
+            }
+        }
+        channel.angle = camera_id;
+        Ok(())
+    }
+
+    /// Resolves the exact source frame and segment a channel presents now:
+    /// the channel cursor in recorded mode or `live_edge` in live mode.
+    ///
+    /// # Errors
+    ///
+    /// The selected angle must have an observation at or before the target
+    /// and that frame must lie inside a cataloged segment.
+    pub fn resolve_frame(
+        &self,
+        id: ReplayChannelId,
+        live_edge: NormalizedTimestamp,
+        timeline: &SourceTimeline,
+        catalog: &RollingSegmentCatalog,
+    ) -> Result<ChannelFrame, ReplayError> {
+        let channel = self.channel(id);
+        let live = matches!(channel.mode, ChannelMode::Live);
+        let target = if live { live_edge } else { channel.cursor };
+        let observation = timeline.resolve(channel.angle, target)?;
+        let segment = catalog
+            .segment_at(channel.angle, observation.synchronized_at)
+            .ok_or(ReplayError::SegmentUnavailable {
+                camera: channel.angle,
+                at: observation.synchronized_at,
+            })?;
+        let offset =
+            i128::from(target.as_nanos()) - i128::from(observation.synchronized_at.as_nanos());
+        Ok(ChannelFrame {
+            channel: id,
+            camera_id: channel.angle,
+            live,
+            target,
+            observation,
+            segment_id: segment.id,
+            offset_nanos: u64::try_from(offset).unwrap_or(0),
+        })
     }
 
     pub fn set_audio_policy(&mut self, id: ReplayChannelId, policy: AudioPolicy) {

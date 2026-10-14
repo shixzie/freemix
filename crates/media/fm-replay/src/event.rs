@@ -2,7 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fm_frame::NormalizedTimestamp;
 
-use crate::{CameraId, EventId, FolderId, ListId, ReplayError, TimelineRange};
+use crate::{
+    AngleSpan, CameraId, CapturedEvent, EventId, FolderId, ListId, MAX_EVENTS, MAX_EVENTS_PER_LIST,
+    MAX_FOLDERS, MAX_LISTS, MAX_NOTE_BYTES, MAX_REPLAY_SOURCES, MAX_TAGS_PER_EVENT,
+    ProtectionReference, ReplayError, ReplayLimit, RollingSegmentCatalog, SourceTimeline,
+    TimelineRange,
+    types::{check_bytes, check_count, check_name},
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReplayMarks {
@@ -93,21 +99,132 @@ impl EventDatabase {
     /// # Errors
     ///
     /// IDs must be unique, names and angle sets non-empty, and the preferred
-    /// angle must be one of the event angles.
+    /// angle must be one of the event angles. Names, notes, tags, angle count,
+    /// folder references, and total event count are bounded.
     pub fn insert_event(&mut self, event: ReplayEvent) -> Result<(), ReplayError> {
-        if event.name.trim().is_empty() {
-            return Err(ReplayError::EmptyName);
+        self.validate_event(&event)?;
+        self.events.insert(event.id, event);
+        Ok(())
+    }
+
+    fn validate_event(&self, event: &ReplayEvent) -> Result<(), ReplayError> {
+        check_name(&event.name)?;
+        check_bytes(&event.note, ReplayLimit::NoteBytes, MAX_NOTE_BYTES)?;
+        check_count(
+            event.tags.len(),
+            ReplayLimit::TagsPerEvent,
+            MAX_TAGS_PER_EVENT,
+        )?;
+        for tag in &event.tags {
+            check_name(tag)?;
+        }
+        if event.angles.len() > MAX_REPLAY_SOURCES {
+            return Err(ReplayError::TooManySources(event.angles.len()));
         }
         if !event.angles.contains(&event.preferred_angle) {
             return Err(ReplayError::PreferredAngleUnavailable(
                 event.preferred_angle,
             ));
         }
+        if let Some(folder) = event
+            .folders
+            .iter()
+            .find(|folder| !self.folders.contains_key(folder))
+        {
+            return Err(ReplayError::UnknownFolder(*folder));
+        }
         if self.events.contains_key(&event.id) {
             return Err(ReplayError::DuplicateEvent(event.id));
         }
+        check_count(self.events.len() + 1, ReplayLimit::Events, MAX_EVENTS)
+    }
+
+    /// Validates a marked event against recorded media for every angle,
+    /// protects the covering segments from retention, and inserts it.
+    ///
+    /// Either everything succeeds or neither the database nor the catalog is
+    /// changed.
+    ///
+    /// # Errors
+    ///
+    /// All [`Self::insert_event`] rules apply. Every angle must also have
+    /// gap-free segment coverage of the event range and at least one observed
+    /// frame inside it.
+    pub fn capture_event(
+        &mut self,
+        event: ReplayEvent,
+        catalog: &mut RollingSegmentCatalog,
+        timeline: &SourceTimeline,
+    ) -> Result<CapturedEvent, ReplayError> {
+        self.validate_event(&event)?;
+        let mut angles = Vec::with_capacity(event.angles.len());
+        for &camera in &event.angles {
+            let coverage = catalog.coverage(camera, event.timeline);
+            if let Some(&gap) = coverage.gaps.first() {
+                return Err(ReplayError::CoverageGap { camera, gap });
+            }
+            let frames = timeline.frames_in(camera, event.timeline)?;
+            angles.push(AngleSpan {
+                frames,
+                segments: coverage.segments,
+            });
+        }
+        let reference = ProtectionReference::Event(event.id);
+        for &camera in &event.angles {
+            let _protected = catalog.protect_range(camera, event.timeline, reference);
+        }
+        let captured = CapturedEvent {
+            event_id: event.id,
+            timeline: event.timeline,
+            angles,
+        };
         self.events.insert(event.id, event);
-        Ok(())
+        Ok(captured)
+    }
+
+    /// Removes an event, its list entries, and its retention protection.
+    ///
+    /// # Errors
+    ///
+    /// The event must exist.
+    pub fn remove_event(
+        &mut self,
+        id: EventId,
+        catalog: &mut RollingSegmentCatalog,
+    ) -> Result<ReplayEvent, ReplayError> {
+        let event = self
+            .events
+            .remove(&id)
+            .ok_or(ReplayError::UnknownEvent(id))?;
+        for list in self.lists.values_mut() {
+            list.events.retain(|entry| *entry != id);
+        }
+        catalog.release_reference(ProtectionReference::Event(id));
+        Ok(event)
+    }
+
+    /// Events carrying `tag`, in ascending event-ID order.
+    #[must_use]
+    pub fn events_with_tag(&self, tag: &str) -> Vec<EventId> {
+        self.events
+            .values()
+            .filter(|event| event.tags.contains(tag))
+            .map(|event| event.id)
+            .collect()
+    }
+
+    /// Events placed in `folder_id`, in ascending event-ID order.
+    #[must_use]
+    pub fn events_in_folder(&self, folder_id: FolderId) -> Vec<EventId> {
+        self.events
+            .values()
+            .filter(|event| event.folders.contains(&folder_id))
+            .map(|event| event.id)
+            .collect()
+    }
+
+    pub fn lists(&self) -> impl Iterator<Item = &EventList> {
+        self.lists.values()
     }
 
     #[must_use]
@@ -123,12 +240,14 @@ impl EventDatabase {
     ///
     /// # Errors
     ///
-    /// The event must exist.
+    /// The event must exist and the note must fit [`MAX_NOTE_BYTES`].
     pub fn set_note(&mut self, id: EventId, note: impl Into<String>) -> Result<(), ReplayError> {
+        let note = note.into();
+        check_bytes(&note, ReplayLimit::NoteBytes, MAX_NOTE_BYTES)?;
         self.events
             .get_mut(&id)
             .ok_or(ReplayError::UnknownEvent(id))?
-            .note = note.into();
+            .note = note;
         Ok(())
     }
 
@@ -136,17 +255,24 @@ impl EventDatabase {
     ///
     /// # Errors
     ///
-    /// The event must exist and the tag must not be empty.
+    /// The event must exist, the tag must be a bounded non-empty name, and an
+    /// event carries at most [`MAX_TAGS_PER_EVENT`] tags.
     pub fn add_tag(&mut self, id: EventId, tag: impl Into<String>) -> Result<(), ReplayError> {
         let tag = tag.into();
-        if tag.trim().is_empty() {
-            return Err(ReplayError::EmptyName);
-        }
-        self.events
+        check_name(&tag)?;
+        let tags = &mut self
+            .events
             .get_mut(&id)
             .ok_or(ReplayError::UnknownEvent(id))?
-            .tags
-            .insert(tag);
+            .tags;
+        if !tags.contains(&tag) {
+            check_count(
+                tags.len() + 1,
+                ReplayLimit::TagsPerEvent,
+                MAX_TAGS_PER_EVENT,
+            )?;
+            tags.insert(tag);
+        }
         Ok(())
     }
 
@@ -154,14 +280,14 @@ impl EventDatabase {
     ///
     /// # Errors
     ///
-    /// Empty names and duplicate folder IDs are rejected.
+    /// Empty or oversized names, duplicate IDs, and folders beyond
+    /// [`MAX_FOLDERS`] are rejected.
     pub fn add_folder(&mut self, folder: EventFolder) -> Result<(), ReplayError> {
-        if folder.name.trim().is_empty() {
-            return Err(ReplayError::EmptyName);
-        }
+        check_name(&folder.name)?;
         if self.folders.contains_key(&folder.id) {
             return Err(ReplayError::DuplicateFolder(folder.id));
         }
+        check_count(self.folders.len() + 1, ReplayLimit::Folders, MAX_FOLDERS)?;
         self.folders.insert(folder.id, folder);
         Ok(())
     }
@@ -191,17 +317,29 @@ impl EventDatabase {
     ///
     /// # Errors
     ///
-    /// Empty/duplicate lists and references to unknown events are rejected.
+    /// Empty/duplicate lists, references to unknown or repeated events, and
+    /// lists beyond [`MAX_LISTS`] or [`MAX_EVENTS_PER_LIST`] are rejected.
     pub fn add_list(&mut self, list: EventList) -> Result<(), ReplayError> {
-        if list.name.trim().is_empty() {
-            return Err(ReplayError::EmptyName);
-        }
+        check_name(&list.name)?;
         if self.lists.contains_key(&list.id) {
             return Err(ReplayError::DuplicateList(list.id));
         }
+        check_count(self.lists.len() + 1, ReplayLimit::Lists, MAX_LISTS)?;
+        check_count(
+            list.events.len(),
+            ReplayLimit::EventsPerList,
+            MAX_EVENTS_PER_LIST,
+        )?;
+        let mut seen = BTreeSet::new();
         for event in &list.events {
             if !self.events.contains_key(event) {
                 return Err(ReplayError::UnknownEvent(*event));
+            }
+            if !seen.insert(*event) {
+                return Err(ReplayError::EventAlreadyInList {
+                    event: *event,
+                    list: list.id,
+                });
             }
         }
         self.lists.insert(list.id, list);
@@ -231,6 +369,11 @@ impl EventDatabase {
                 list: list_id,
             });
         }
+        check_count(
+            list.events.len() + 1,
+            ReplayLimit::EventsPerList,
+            MAX_EVENTS_PER_LIST,
+        )?;
         list.events.push(event_id);
         Ok(())
     }
