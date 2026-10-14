@@ -152,7 +152,9 @@ paths = ["crates/gpu/fm-compositor/tests/multiview.rs", "crates/gpu/fm-composito
 commands = ["cargo test -p fm-compositor --test multiview", "cargo test -p fm-compositor --test golden"]
 [[tests]]
 id = "accept-sw-012"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-switcher/tests/logical_outputs.rs"]
+commands = ["cargo test -p fm-switcher --test logical_outputs"]
 [[tests]]
 id = "accept-sw-013"
 state = "present"
