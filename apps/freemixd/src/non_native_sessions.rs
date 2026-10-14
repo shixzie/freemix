@@ -20,7 +20,7 @@ use fm_protocol::{
     HeartbeatAcknowledgementMessage, LineDecoder, MonitorTap, ServerIdentity, StreamStatusMessage,
     StructuredError, WireMessage, encode_line,
 };
-use fm_server::{Server, Session, SyncPayload};
+use fm_server::{Server, Session, SessionError, SyncPayload};
 
 use super::{
     AppResult, CLIENT_READ_POLL_INTERVAL, CLIENT_WRITE_TIMEOUT, CommandDelivery, ControlHandle,
@@ -38,6 +38,10 @@ use crate::web::{WebEvent, WebGateway};
 const MAX_PEERS: usize = 2;
 const INBOUND_CAPACITY: usize = 8;
 const OUTBOUND_CAPACITY: usize = 32;
+/// Outbound slots live events never take, so the reply to the message being
+/// dispatched (a command result above all) normally queues at once instead
+/// of waiting behind a queue filled with events.
+const REPLY_RESERVE: usize = 1;
 const LIVE_EVENTS_PER_PASS: usize = 8;
 /// The handshake permission that makes a Studio peer monitor-frame eligible.
 const VIEW_STATUS_PERMISSION: &str = "view_status";
@@ -117,18 +121,48 @@ struct Peer {
     stream_status: bool,
     monitor_frames: bool,
     lossy: LossyRecords,
-    /// An accepted `RecordStart` acknowledgement held until the native
-    /// runtime has realized its segment. While it is held the peer's later
-    /// messages and live events wait behind it, so the peer observes exactly
-    /// the order it did when the start blocked the daemon; every other peer,
-    /// and this peer's lossy side channels, keep being served.
+    /// A reply the peer is owed but cannot be queued yet: an accepted
+    /// `RecordStart` acknowledgement held until the native runtime has
+    /// realized its segment, or any reply (a command result above all) that
+    /// met transient backpressure — a full outbound queue or a spent outbound
+    /// rate window. A command result is durable and must never be lost, and
+    /// backpressure alone must never disconnect the peer, so the reply is
+    /// retried every pass. While it is held the peer's later messages and
+    /// live events wait behind it, so the peer observes the order it would
+    /// have had the reply queued at once; every other peer, and this peer's
+    /// lossy side channels, keep being served. At most one reply is ever
+    /// held, because dispatch stops while one is. A peer that never drains
+    /// is still closed: its heartbeats wait unanswered behind the held reply
+    /// and the session's heartbeat timeout expires.
     held_result: Option<HeldResult>,
+    /// A live event taken from the subscription that met transient
+    /// backpressure; it is queued first on a later pass.
+    deferred_live: Option<WireMessage>,
 }
 
-/// A command result waiting for a recorder slot to finish realizing.
+/// A reply waiting to be queued.
 struct HeldResult {
-    result: CommandResult,
-    slot: usize,
+    message: WireMessage,
+    /// The recorder slot that must finish realizing first, if any.
+    slot: Option<usize>,
+}
+
+/// Why a message could not be queued for a peer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QueueRefusal {
+    /// The bounded outbound queue is full; retry once the peer drains it.
+    Full,
+    /// The session's outbound rate window is spent. fm-server documents this
+    /// as retryable and never disconnecting.
+    RateLimited,
+    /// The peer cannot take the message at all and must be closed.
+    Fatal,
+}
+
+impl QueueRefusal {
+    const fn transient(self) -> bool {
+        matches!(self, Self::Full | Self::RateLimited)
+    }
 }
 
 /// One independent latest-wins side-channel slot.
@@ -242,25 +276,32 @@ impl Peer {
             monitor_frames: false,
             lossy: LossyRecords::default(),
             held_result: None,
+            deferred_live: None,
         })
     }
 
-    fn queue(&mut self, message: &WireMessage, accounting: Accounting) -> Result<(), ()> {
+    fn queue(&mut self, message: &WireMessage, accounting: Accounting) -> Result<(), QueueRefusal> {
         if self.outbound.len() >= OUTBOUND_CAPACITY {
-            return Err(());
+            return Err(QueueRefusal::Full);
         }
-        let bytes = encode_line(message).map_err(|_| ())?.into_bytes();
+        let bytes = encode_line(message)
+            .map_err(|_| QueueRefusal::Fatal)?
+            .into_bytes();
         let byte_len = bytes.len();
         let (write, accounted) = match &self.transport {
             Transport::Raw(_) => (OutboundWrite::Raw(PendingWrite::new(bytes)), true),
             Transport::Web(_) => (OutboundWrite::Web(bytes), false),
         };
         if matches!(accounting, Accounting::Session) && accounted {
+            let now = now_millis().map_err(|_| QueueRefusal::Fatal)?;
             self.session
                 .as_mut()
-                .ok_or(())?
-                .queue_outbound(byte_len, now_millis().map_err(|_| ())?)
-                .map_err(|_| ())?;
+                .ok_or(QueueRefusal::Fatal)?
+                .queue_outbound(byte_len, now)
+                .map_err(|error| match error {
+                    SessionError::OutboundRateLimited => QueueRefusal::RateLimited,
+                    _ => QueueRefusal::Fatal,
+                })?;
         }
         self.outbound.push_back(Outbound {
             write,
@@ -278,17 +319,52 @@ impl Peer {
             let Some(message) = self.initial_sync.pop_front() else {
                 break;
             };
-            if self.queue(&message, Accounting::Session).is_err() {
-                return Err(());
+            match self.queue(&message, Accounting::Session) {
+                Ok(()) => {}
+                Err(refusal) if refusal.transient() => {
+                    self.initial_sync.push_front(message);
+                    break;
+                }
+                Err(_) => return Err(()),
             }
         }
         Ok(())
     }
 
     fn close_after(&mut self, message: &WireMessage) -> Result<(), ()> {
-        self.queue(message, Accounting::Raw)?;
+        self.queue(message, Accounting::Raw).map_err(|_| ())?;
         self.phase = Phase::Closing;
         Ok(())
+    }
+
+    /// Queues the reply to a dispatched message, holding it for a later pass
+    /// when transient backpressure refuses it. Only a peer that can never
+    /// take the reply is refused.
+    fn reply(&mut self, message: WireMessage) -> Result<(), QueueRefusal> {
+        debug_assert!(self.held_result.is_none(), "dispatch stops while held");
+        match self.queue(&message, Accounting::Session) {
+            Err(refusal) if refusal.transient() => {
+                self.held_result = Some(HeldResult {
+                    message,
+                    slot: None,
+                });
+                Ok(())
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// Queues a reply still held when the daemon shuts down. Shutdown no
+    /// longer waits for capacity or the rate window, so it makes room by
+    /// dropping the newest record that is not a command result and has not
+    /// started, and skips rate accounting; the held reply is owed exactly
+    /// like a result already queued.
+    fn force_held_reply(&mut self) {
+        let Some(held) = self.held_result.take() else {
+            return;
+        };
+        self.preserve_outbound_for_shutdown();
+        let _ = self.queue(&held.message, Accounting::Raw);
     }
 
     fn replace_meter(&mut self, bytes: Vec<u8>) {
@@ -526,9 +602,6 @@ pub(super) fn run(
                 return Err(error);
             }
             native.advance_recordings();
-            release_held_results(&mut peers, &mut close, |slot| {
-                native.recording_settling(slot)
-            });
             if let Some(meters) = native.take_audio_meters() {
                 publish_audio_meters(&mut peers, meters);
             }
@@ -536,6 +609,10 @@ pub(super) fn run(
                 publish_stream_status(&mut peers, status);
             }
         }
+        let realizing = native.as_deref();
+        release_held_results(&mut peers, &mut close, |slot| {
+            realizing.is_some_and(|native| native.recording_settling(slot))
+        });
         let monitor_demand = peers.iter().any(Peer::wants_monitor_frames);
         if let Some(native) = native.as_deref_mut() {
             native.set_monitor_demand(monitor_demand);
@@ -603,9 +680,9 @@ pub(super) fn run(
     }
 }
 
-/// Queues every held acknowledgement whose recorder slot is no longer
-/// settling. A peer that cannot take its result is closed, exactly as if the
-/// result had been queued when the command ran.
+/// Queues every held reply whose recorder slot (if any) is no longer
+/// settling. A reply that still meets transient backpressure stays held for
+/// the next pass; only a peer that can never take it is closed.
 fn release_held_results(
     peers: &mut [Peer],
     close: &mut [bool],
@@ -615,18 +692,19 @@ fn release_held_results(
         let Some(held) = peer.held_result.as_ref() else {
             continue;
         };
-        if settling(held.slot) {
+        if held.slot.is_some_and(&mut settling) {
             continue;
         }
         let held = peer.held_result.take().expect("checked above");
-        if peer
-            .queue(
-                &WireMessage::CommandResult(held.result),
-                Accounting::Session,
-            )
-            .is_err()
-        {
-            close[index] = true;
+        match peer.queue(&held.message, Accounting::Session) {
+            Ok(()) => {}
+            Err(refusal) if refusal.transient() => {
+                peer.held_result = Some(HeldResult {
+                    message: held.message,
+                    slot: None,
+                });
+            }
+            Err(_) => close[index] = true,
         }
     }
 }
@@ -721,6 +799,12 @@ impl From<()> for DispatchError {
     }
 }
 
+impl From<QueueRefusal> for DispatchError {
+    fn from(_: QueueRefusal) -> Self {
+        Self::Peer
+    }
+}
+
 struct Runtime<'a> {
     server: &'a Server<ControlHandle>,
     control: &'a SharedControl,
@@ -768,10 +852,13 @@ impl Runtime<'_> {
                         .as_deref()
                         .is_some_and(|native| native.recording_settling(slot))
                 {
-                    peer.held_result = Some(HeldResult { result, slot });
+                    peer.held_result = Some(HeldResult {
+                        message: WireMessage::CommandResult(result),
+                        slot: Some(slot),
+                    });
                     return Ok(());
                 }
-                peer.queue(&WireMessage::CommandResult(result), Accounting::Session)?;
+                peer.reply(WireMessage::CommandResult(result))?;
                 Ok(())
             }
             WireMessage::Heartbeat(heartbeat) => {
@@ -794,7 +881,7 @@ impl Runtime<'_> {
                     }
                     Err(message) => error_message("invalid_heartbeat", &message),
                 };
-                peer.queue(&message, Accounting::Session)?;
+                peer.reply(message)?;
                 Ok(())
             }
             WireMessage::DiagnosticsRequest(request) => {
@@ -818,17 +905,14 @@ impl Runtime<'_> {
                         error: structured_session_error(&error),
                     }),
                 };
-                peer.queue(&response, Accounting::Session)?;
+                peer.reply(response)?;
                 Ok(())
             }
             _ => {
-                peer.queue(
-                    &error_message(
-                        "unexpected_message",
-                        "only command and heartbeat messages are accepted after the handshake",
-                    ),
-                    Accounting::Session,
-                )?;
+                peer.reply(error_message(
+                    "unexpected_message",
+                    "only command and heartbeat messages are accepted after the handshake",
+                ))?;
                 Ok(())
             }
         }
@@ -961,27 +1045,37 @@ fn drain_live(peers: &mut [Peer], close: &mut [bool], budgets: &mut [usize]) {
         if close[index] || peer.phase != Phase::Active || peer.held_result.is_some() {
             continue;
         }
-        while budgets[index] > 0 && peer.outbound.len() < OUTBOUND_CAPACITY {
-            let event = match peer
-                .subscription
-                .as_ref()
-                .expect("active peers have subscriptions")
-                .try_recv()
-            {
-                Ok(event) => event,
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
+        while budgets[index] > 0 && peer.outbound.len() < OUTBOUND_CAPACITY - REPLY_RESERVE {
+            let message = if let Some(message) = peer.deferred_live.take() {
+                message
+            } else {
+                match peer
+                    .subscription
+                    .as_ref()
+                    .expect("active peers have subscriptions")
+                    .try_recv()
+                {
+                    Ok(LiveEvent::Durable(event)) => WireMessage::Event(event),
+                    Ok(LiveEvent::Runtime(event)) => WireMessage::RuntimeEvent(event),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        close[index] = true;
+                        break;
+                    }
+                }
+            };
+            match peer.queue(&message, Accounting::Session) {
+                Ok(()) => {}
+                // Bounded: the subscription keeps (and bounds) every later
+                // event while this one waits.
+                Err(refusal) if refusal.transient() => {
+                    peer.deferred_live = Some(message);
+                    break;
+                }
+                Err(_) => {
                     close[index] = true;
                     break;
                 }
-            };
-            let message = match event {
-                LiveEvent::Durable(event) => WireMessage::Event(event),
-                LiveEvent::Runtime(event) => WireMessage::RuntimeEvent(event),
-            };
-            if peer.queue(&message, Accounting::Session).is_err() {
-                close[index] = true;
-                break;
             }
             budgets[index] -= 1;
         }
@@ -1016,14 +1110,16 @@ fn write_peer(peer: &mut Peer) -> WriteOutcome {
             let Ok(now) = now_millis() else {
                 return WriteOutcome::Failed;
             };
-            if peer
+            match peer
                 .session
                 .as_mut()
                 .expect("session accounting has a session")
                 .queue_outbound(bytes.len(), now)
-                .is_err()
             {
-                return WriteOutcome::Failed;
+                Ok(()) => {}
+                // Retryable and never disconnecting: send on a later pass.
+                Err(SessionError::OutboundRateLimited) => return WriteOutcome::Pending,
+                Err(_) => return WriteOutcome::Failed,
             }
             record.accounted = true;
         }
@@ -1202,6 +1298,9 @@ fn shutdown_for_reason(
     // to its peer exactly like any other queued result.
     let mut close = vec![false; peers.len()];
     release_held_results(peers, &mut close, |_| false);
+    for peer in peers.iter_mut() {
+        peer.force_held_reply();
+    }
     match reason {
         DaemonShutdownReason::ProcessSignal => {
             let queue = if peers
@@ -1638,5 +1737,254 @@ mod tests {
         publish_monitor_frame(std::slice::from_mut(&mut peer), MonitorTap::Program, &group);
         discard_unstarted_lossy_records(&mut peer);
         assert!(peer.lossy.is_empty());
+    }
+
+    /// Serves an empty resume so a test can hold a real session.
+    struct StubPlane;
+
+    impl fm_server::ControlPlane for StubPlane {
+        type Error = std::convert::Infallible;
+
+        fn initial_sync(
+            &self,
+            _cursor: Option<&fm_protocol::EventCursor>,
+        ) -> Result<fm_server::InitialSync, Self::Error> {
+            Ok(fm_server::InitialSync {
+                engine: fm_protocol::EngineIdentity {
+                    engine_id: "engine".to_owned(),
+                    state_epoch: 1,
+                    log_id: "log".to_owned(),
+                },
+                current_revision: 0,
+                payload: SyncPayload::Resume(Vec::new()),
+            })
+        }
+    }
+
+    /// A real session whose outbound rate window admits `per_window`
+    /// messages every `window_ms`.
+    fn limited_session(per_window: u64, window_ms: u64, heartbeat_timeout_ms: u64) -> Session {
+        let limits = fm_server::SessionLimits {
+            outbound_messages: fm_server::RateLimit::new(per_window, window_ms),
+            heartbeat_timeout_ms,
+            ..fm_server::SessionLimits::default()
+        };
+        let config = fm_server::ServerConfig::new(
+            fm_server::ServerMode::Development,
+            fm_server::AuthenticationMode::Development,
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            "digest",
+        )
+        .with_session_limits(limits);
+        let mut server = Server::new(config, StubPlane).unwrap();
+        server.mark_ready().unwrap();
+        let principal = Principal::development(
+            UserId::new("user").unwrap(),
+            SessionId::new("session").unwrap(),
+            [Role::Admin],
+        );
+        server
+            .handshake(
+                &fm_protocol::HandshakeRequest {
+                    protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                    build: "test".to_owned(),
+                    client_type: ClientType::Studio,
+                    desired_role: fm_protocol::Role::Operator,
+                    // Resuming at the stub's current revision replays nothing.
+                    resume_cursor: Some(fm_protocol::ResumeCursor {
+                        server: identity(),
+                        revision: 0,
+                    }),
+                },
+                &principal,
+                now_millis().unwrap(),
+            )
+            .unwrap()
+            .session
+    }
+
+    fn command_result(id: &str) -> WireMessage {
+        WireMessage::CommandResult(CommandResult::Accepted {
+            id: id.to_owned(),
+            revision: 1,
+            scheduled_frame: None,
+        })
+    }
+
+    fn filler(index: usize) -> WireMessage {
+        error_message("filler", &format!("live record {index}"))
+    }
+
+    /// Reads every complete line the peer has written so far.
+    fn received(client: &mut TcpStream, decoder: &mut LineDecoder) -> Vec<WireMessage> {
+        client.set_nonblocking(true).unwrap();
+        let mut messages = Vec::new();
+        let mut chunk = [0_u8; 16 * 1024];
+        loop {
+            match client.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => messages.extend(decoder.push(&chunk[..read]).unwrap()),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("{error}"),
+            }
+        }
+        messages
+    }
+
+    /// Regression: a command result that met an outbound queue full of live
+    /// records closed the session, losing a durable acknowledgement and
+    /// dropping a merely busy peer.
+    #[test]
+    fn a_command_result_waits_out_a_full_outbound_queue_instead_of_disconnecting() {
+        let (mut peer, mut client) = active_eligible_peer();
+        peer.session = Some(limited_session(1_000, 1_000, 15_000));
+        // Live records fill every slot they may take; the reply slot stays.
+        for index in 0..OUTBOUND_CAPACITY - REPLY_RESERVE {
+            peer.queue(&filler(index), Accounting::Session).unwrap();
+        }
+        // Something else (an earlier reply) takes the reserved slot too.
+        peer.queue(&filler(99), Accounting::Session).unwrap();
+        assert_eq!(peer.outbound.len(), OUTBOUND_CAPACITY);
+
+        assert_eq!(peer.reply(command_result("busy")), Ok(()));
+        assert!(peer.held_result.is_some(), "the result is held, not lost");
+        let mut close = [false];
+        release_held_results(std::slice::from_mut(&mut peer), &mut close, |_| false);
+        assert_eq!(close, [false], "backpressure never disconnects");
+        assert!(peer.held_result.is_some());
+
+        // The peer drains one record; the held result takes the free slot.
+        while peer.outbound.len() == OUTBOUND_CAPACITY {
+            assert!(!matches!(write_peer(&mut peer), WriteOutcome::Failed));
+        }
+        release_held_results(std::slice::from_mut(&mut peer), &mut close, |_| false);
+        assert_eq!(close, [false]);
+        assert!(peer.held_result.is_none());
+        while !peer.outbound.is_empty() {
+            assert!(!matches!(write_peer(&mut peer), WriteOutcome::Failed));
+        }
+        let mut decoder = LineDecoder::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut messages = Vec::new();
+        while messages.len() < OUTBOUND_CAPACITY + 1 {
+            assert!(Instant::now() < deadline, "only {} records", messages.len());
+            messages.extend(received(&mut client, &mut decoder));
+        }
+        assert_eq!(messages.last(), Some(&command_result("busy")));
+    }
+
+    /// Regression: `OutboundRateLimited` is retryable and non-disconnecting in
+    /// fm-server, yet a rate-limited command result closed the session.
+    #[test]
+    fn a_rate_limited_command_result_is_retried_not_disconnected() {
+        let (mut peer, mut client) = active_eligible_peer();
+        peer.session = Some(limited_session(1, 200, 15_000));
+        peer.queue(&filler(0), Accounting::Session).unwrap();
+        assert_eq!(
+            peer.queue(&filler(1), Accounting::Session),
+            Err(QueueRefusal::RateLimited)
+        );
+
+        assert_eq!(peer.reply(command_result("limited")), Ok(()));
+        let mut close = [false];
+        release_held_results(std::slice::from_mut(&mut peer), &mut close, |_| false);
+        assert_eq!(close, [false]);
+        assert!(peer.held_result.is_some());
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while peer.held_result.is_some() {
+            assert!(Instant::now() < deadline, "the window never reopened");
+            thread::sleep(Duration::from_millis(20));
+            release_held_results(std::slice::from_mut(&mut peer), &mut close, |_| false);
+            assert_eq!(close, [false]);
+        }
+        while !peer.outbound.is_empty() {
+            assert!(!matches!(write_peer(&mut peer), WriteOutcome::Failed));
+        }
+        let mut decoder = LineDecoder::new();
+        let mut messages = Vec::new();
+        while messages.len() < 2 {
+            assert!(Instant::now() < deadline);
+            messages.extend(received(&mut client, &mut decoder));
+        }
+        assert_eq!(messages, [filler(0), command_result("limited")]);
+    }
+
+    /// A rate-limited live event waits in its bounded slot; the session stays.
+    #[test]
+    fn rate_limited_live_records_wait_instead_of_disconnecting() {
+        let (mut peer, _client) = active_eligible_peer();
+        peer.session = Some(limited_session(1, 60_000, 15_000));
+        peer.queue(&filler(0), Accounting::Session).unwrap();
+        peer.initial_sync.push_back(filler(1));
+        assert_eq!(peer.feed_initial_sync(), Ok(()));
+        assert_eq!(peer.initial_sync.len(), 1, "the sync record waits its turn");
+        assert_eq!(peer.outbound.len(), 1);
+    }
+
+    /// A web peer's rate-limited record is sent on a later pass.
+    #[test]
+    fn a_rate_limited_web_record_stays_pending() {
+        let (_inbound_sender, inbound) = mpsc::channel();
+        let (outbound_sender, outbound) = mpsc::sync_channel(8);
+        let (acknowledgement_sender, acknowledgements) = mpsc::channel();
+        let mut peer = Peer::new(
+            1,
+            Transport::Web(WebTransport {
+                inbound,
+                outbound: outbound_sender,
+                acknowledgements,
+                cancel: Arc::new(AtomicBool::new(false)),
+            }),
+            Principal::authenticated(
+                UserId::new("user").unwrap(),
+                SessionId::new("session").unwrap(),
+                [Role::Admin],
+            ),
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        peer.phase = Phase::Active;
+        peer.session = Some(limited_session(1, 200, 15_000));
+        peer.queue(&filler(0), Accounting::Session).unwrap();
+        peer.queue(&command_result("web"), Accounting::Session)
+            .unwrap();
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        acknowledgement_sender.send(()).unwrap();
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        // The window is spent: the result is not sent, and nothing fails.
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        assert_eq!(outbound.try_iter().count(), 1);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "the result was never sent");
+            assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+            if let Ok(bytes) = outbound.try_recv() {
+                assert_eq!(
+                    LineDecoder::new().push(&bytes).unwrap(),
+                    [command_result("web")]
+                );
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Backpressure handling never keeps a stuck peer alive: a held reply
+    /// stops dispatch, so its heartbeats go unrecorded and the session's
+    /// heartbeat timeout closes it as before.
+    #[test]
+    fn a_stuck_peer_with_a_held_result_still_times_out() {
+        let (mut peer, _client) = active_eligible_peer();
+        peer.session = Some(limited_session(1, 60_000, 100));
+        peer.queue(&filler(0), Accounting::Session).unwrap();
+        assert_eq!(peer.reply(command_result("stuck")), Ok(()));
+        assert!(peer.held_result.is_some());
+        assert!(super::super::session_heartbeat_active(peer.session.as_mut().unwrap()).unwrap());
+        thread::sleep(Duration::from_millis(150));
+        assert!(
+            !super::super::session_heartbeat_active(peer.session.as_mut().unwrap()).unwrap(),
+            "the heartbeat timeout still closes a peer that never drains"
+        );
     }
 }
