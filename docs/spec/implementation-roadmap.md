@@ -1643,14 +1643,19 @@ checks field types, element bounds, and referenced assets. Text is real glyph
 rasterization from caller-supplied font bytes through `ab_glyph` with kerned
 advances, greedy word wrapping, horizontal and vertical alignment,
 anti-aliased premultiplied RGBA8 coverage, and frame/box clipping. Image
-elements now render caller-supplied decoded RGBA8 frames with bounded
-nearest-neighbor stretch-to-bounds scaling, clipping, and premultiplied
-source-over including element opacity; unknown or name-only assets keep the
-placeholder path and are reported. All work is capped by output size, font
-size, characters, lines, glyphs, and canvas pixels, and per-element degradation
-is reported instead of failing the frame. Remaining gaps: no grapheme-level
-shaping or bidi, no file decode/orientation/color-profile handling, no fit
-modes or filtering, no GPU rasterization, no title designer or live field
+elements render caller-supplied decoded RGBA8 frames with per-element
+stretch, contain, cover, and native-size fit modes placed by the element
+alignment using exact integer sizing, and with nearest-neighbor or
+pixel-center bilinear filtering of premultiplied channels using 8-bit
+fixed-point weights and clamp-to-edge addressing. Drawing is clipped to the
+canvas, element box, and placed image, then composited source-over with
+element opacity. Unknown or name-only assets keep the placeholder path and are
+reported. All work is capped by output size, font size, characters, lines,
+glyphs, and canvas pixels, so a huge placed image costs only the canvas
+intersection, and per-element degradation is reported instead of failing the
+frame. Remaining gaps: no grapheme-level shaping or bidi, no file
+decode/orientation/color-profile handling, no mipmapped or higher-order
+minification filtering, no GPU rasterization, no title designer or live field
 editor, no project-schema instantiation, and no animation/ticker integration
 with real data sources. Item 1 therefore remains incomplete and `GX-001`
 remains planned.
