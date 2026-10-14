@@ -1873,10 +1873,15 @@ fragments with per-fragment sync and replays a failed fragment on the next
 root so nothing is lost while any root works. Recovery trusts the newest valid
 manifest, adopts orphan segments, and is idempotent. Free-space estimates, a
 hysteretic monitor, and a preflight report remaining time. FFmpeg-gated tests
-decode across a failover, a mid-fragment cut, and a killed recorder. Remaining
-gaps: the FFmpeg recorder and `freemixd` do not use the writer, session, or
-startup recovery; free space must be supplied by the caller; roots disabled
-for space stay disabled; repaired files are not re-finalized; corrupt
+decode across a failover, a mid-fragment cut, and a killed recorder. Native
+`freemixd` now records through this path: FFmpeg output passes through the
+fragment splitter into the resilient writer, `--record-fallback-dir` provides
+failover, a free-space preflight runs before each segment, and startup recovers
+sessions a crash left open before any recorder starts; FFmpeg-gated daemon tests
+cover a primary made read-only mid-show and a killed daemon with a torn tail.
+Remaining gaps: the WAV sidecar does not fail over, recovery has no
+cross-process lock, the fallback is refused with fullscreen output, runtime
+remaining-time warnings are not wired, roots disabled for space stay disabled; repaired files are not re-finalized; corrupt
 mid-file fragments end recovery; and only fragmented MP4 is handled. `OR-003`
 remains planned.
 

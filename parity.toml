@@ -300,8 +300,8 @@ commands = ["cargo test -p fm-model --test project_validation", "cargo test -p f
 [[tests]]
 id = "accept-or-003"
 state = "present"
-paths = ["crates/media/fm-record/tests/fault_tolerant_recording.rs"]
-commands = ["cargo test -p fm-record --test fault_tolerant_recording"]
+paths = ["crates/media/fm-record/tests/fault_tolerant_recording.rs", "apps/freemixd/tests/native_record_resilience.rs"]
+commands = ["cargo test -p fm-record --test fault_tolerant_recording", "cargo test -p freemixd --test native_record_resilience"]
 [[tests]]
 id = "accept-or-004"
 state = "present"
