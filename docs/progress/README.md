@@ -2,37 +2,81 @@
 
 Captured from the native `freemix-studio` console running headless on this
 development host (Linux aarch64, Xvfb + Mesa lavapipe software Vulkan). The
-supervised daemon runs in simulated mode, so audio meters report
-`UNAVAILABLE` and the monitor wells show replicated routing state with the
-explicit `VIDEO PREVIEW DELIVERY PENDING` note rather than output video.
+supervised daemon runs in simulated mode, so the mixer header reports
+`METERS UNAVAILABLE` with unlit meter wells, and the Preview/Program monitors
+show replicated routing state over a dark 16:9 well with the explicit
+`NO VIDEO FEED · preview delivery pending` caption rather than output video.
+
+The console layout: a top bar (show name, connection pill, revision, `REC` and
+`LIVE` on-air badges, UTC clock); Preview and Program monitors with tally
+headers around the transition column (Cut/Fade/Wipe/Alpha/Slide/Zoom keys,
+shared duration, vertical manual T-bar with its start/commit/cancel keys, and
+Fade-to-Black); the input bank as tally-bordered tiles (click = Preview,
+double-click or `CUT` = Preview then Cut); the audio mixer with vertical
+channel strips (segmented peak/RMS meters, fader, gain/balance/delay, M/S/AFV)
+and a pinned Master meter strip; a side panel with recording and stream status
+above Overlays/Stingers tabs; and a bottom status bar with the latest
+result/notice and keyboard hints.
 
 | File | What it shows |
 |---|---|
-| `studio-console-top.png` | Default 1280x800 window: header with readiness/revision, Program/Preview monitor wells, the transition row (Cut/Fade/Wipe/AlphaFade/Slide/Zoom plus eight unconfigured stinger slots), all eight overlay channels in reachable rows, and the Fade-to-Black and manual T-bar panels. |
-| `studio-console-stopped.png` | Scrolled lower console: Fade-to-Black, manual T-bar, per-input audio strips, the stream roster (local HLS ladder desired-running plus an RTMP backup), the two-row **RECORDING** panel with both recorder slots `STOPPED` and their `START` actions, and the input bank with Preview/Program tally. |
-| `studio-console-recording.png` | The same console with independent per-slot recording: `REC 1 STOPPED` with its `START` action beside `REC 2 RECORDING` with its `STOP` action. |
+| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder desired running but not reported live (amber `LIVE` outline), Camera 2 Close on Preview and Main Scene on Program. |
+| `studio-console-top.png` | The default 1600x940 window, idle: both recorder slots `STOPPED` with their `START` keys, overlays collapsed to one row per channel. |
+| `studio-console-stopped.png` | The compact 1280x800 layout with both recorder slots `STOPPED`; the input bank and mixer scroll inside their cards and the Master strip stays pinned. |
+| `studio-console-recording.png` | 1600x940 with independent per-slot recording (`REC 1 STOPPED` / `START` beside `REC 2 RECORDING` / `STOP`) and the Stingers tab showing all eight unconfigured slots. |
 
-The demo show used for the captures has six simulated inputs, one scene input
-with two picture-in-picture layers, an output, a two-rung local HLS ladder
-target, an RTMP target, and the scene routed to Program.
+The demo show used for the captures ("Evening Broadcast") has six simulated
+inputs, one scene input ("Main Scene") with two picture-in-picture layers, an
+audio bus, an output, a two-rung local HLS ladder target (desired running), an
+RTMP target (stopped), the scene routed to Program and Camera 2 Close on
+Preview.
 
 ## Reproducing
 
 ```sh
+cargo build -p freemix-cli -p freemixd -p freemix-studio
+
 # A show with inputs, a scene, an output, and stream targets.
 freemix-cli demo demo.freemix program.ppm
-# (author inputs/scene/output/streams with the other freemix-cli commands)
+freemix-cli project-rename demo.freemix "Evening Broadcast"
+freemix-cli rename demo.freemix 1 "Camera 1 Wide"
+freemix-cli rename demo.freemix 2 "Camera 2 Close"
+freemix-cli input-add demo.freemix 3 "Host Laptop"
+freemix-cli input-add demo.freemix 4 "Guest Remote"
+freemix-cli simulated-solid-input-add demo.freemix 5 "Lower Third" 20 60 140 255
+freemix-cli input-add demo.freemix 6 "Playback Clip"
+freemix-cli scene-input-add demo.freemix 7 100 "Main Scene"
+freemix-cli scene-layer-add demo.freemix 100 1 0 "Wide Shot"
+freemix-cli scene-layer-add demo.freemix 100 4 1 "Guest PiP"
+freemix-cli scene-layer-geometry demo.freemix 100 0 0 0 1920 1080 0
+freemix-cli scene-layer-geometry demo.freemix 100 1 1360 740 480 270 0
+freemix-cli audio-bus-add demo.freemix 1 "Program Bus"
+freemix-cli output-add demo.freemix 1 100 1 "Program Output"
+freemix-cli stream-add demo.freemix 1 1 hls:///tmp/hls "Local HLS Ladder" \
+    --startup reconcile-desired-state --rung 2500:1280x720 --rung 6000:1920x1080
+freemix-cli stream-add demo.freemix 2 1 rtmp://live.example.com/app demo-stream-key "RTMP Backup"
+freemix-cli stream-start demo.freemix 1
+freemix-cli preview demo.freemix 7 && freemix-cli cut demo.freemix
+freemix-cli preview demo.freemix 2
 
-Xvfb :99 -screen 0 2560x1600x24 &
+Xvfb :99 -screen 0 1920x1080x24 &
 DISPLAY=:99 \
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json \
 WGPU_BACKEND=vulkan \
 LIBGL_ALWAYS_SOFTWARE=1 \
-  freemix-studio --project demo.freemix --daemon freemixd &
+  freemix-studio --project demo.freemix --daemon freemixd --listen 127.0.0.1:7000 &
+
+# No window manager: size the window to the screen and park the pointer.
+WIN=$(DISPLAY=:99 xdotool search --onlyvisible --name "FreeMix Studio" | head -1)
+DISPLAY=:99 xdotool windowmove "$WIN" 0 0 windowsize "$WIN" 1920 1080
+DISPLAY=:99 xdotool mousemove 960 1076
+
+# Optional: recorder slot 2 for the recording state.
+freemix-cli remote-record-start 127.0.0.1:7000 --recorder 2
 
 DISPLAY=:99 import -window root shot.png
 ```
 
-The 1280x800 default window shows the top of the console; resize the window
-taller (for example with `xdotool windowsize`) and scroll to capture the lower
-panels, or use the `--record-start` CLI intent to capture the recording state.
+Software Vulkan is slow; allow roughly ten seconds after the window maps
+before capturing. The overview's overlay take was a click on O1 `TAKE` in the
+side panel; the recording capture clicked the `STINGERS` tab.
