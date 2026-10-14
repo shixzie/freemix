@@ -158,8 +158,8 @@ commands = ["cargo test -p fm-switcher --test logical_outputs"]
 [[tests]]
 id = "accept-sw-013"
 state = "present"
-paths = ["crates/media/fm-clock/tests/production_clocks.rs"]
-commands = ["cargo test -p fm-clock --test production_clocks"]
+paths = ["crates/media/fm-clock/tests/production_clocks.rs", "crates/features/fm-titles/tests/production_clock_titles.rs"]
+commands = ["cargo test -p fm-clock --test production_clocks", "cargo test -p fm-titles --test production_clock_titles"]
 [[tests]]
 id = "accept-sw-014"
 state = "present"

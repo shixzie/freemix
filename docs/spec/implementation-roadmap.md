@@ -2004,8 +2004,12 @@ formats broadcast presets including `HH:MM:SS:FF` at fractional frame rates,
 resolves time of day through fixed offsets or POSIX `TZ` rules with exact DST
 transitions, reports media remaining time with mark-in/out, accumulates
 stream/record/replay session timers, and exposes a bounded named-clock registry
-whose readings flatten into title binding values. Remaining gaps: no engine,
-daemon, protocol, CLI, UI, persistence, or `fm-titles` wiring; no IANA tz
+whose readings flatten into title binding values. `fm-titles` clock elements
+can reference a named production clock with an optional per-element preset
+through a caller-supplied clock source, degrading to a background-only element
+when unresolved, and scene and scoreboard clocks share the same formatter.
+Remaining gaps: no engine, daemon, protocol, CLI, UI, or persistence wiring;
+designer compositions and crawls take no clock source; no IANA tz
 database, leap seconds, drop-frame timecode, playback-speed-aware media
 remaining, playlist remaining time, or locale formats. `SW-013` remains planned.
 
