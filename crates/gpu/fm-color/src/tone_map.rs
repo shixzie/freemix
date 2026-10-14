@@ -56,16 +56,25 @@ pub fn tone_map_rgb(rgb: Rgb, policy: ToneMapPolicy) -> Result<Rgb, ToneMapError
                 return Err(ToneMapError::InvalidPeakLuminance);
             }
             let rgb = rgb.map(|value| value.max(0.0));
-            let luminance = 0.2627 * rgb.r + 0.6780 * rgb.g + 0.0593 * rgb.b;
+            // f64 keeps every intermediate finite for any finite f32 input;
+            // the f32 luminance sum or `relative * relative` would overflow
+            // and turn bright highlights into NaN.
+            let luminance =
+                0.2627 * f64::from(rgb.r) + 0.6780 * f64::from(rgb.g) + 0.0593 * f64::from(rgb.b);
             if luminance == 0.0 {
                 return Ok(Rgb::default());
             }
-            let target_scale = target_peak_nits / 100.0;
+            let target_scale = f64::from(target_peak_nits) / 100.0;
             let relative = luminance / target_scale;
-            let white = source_peak_nits / target_peak_nits;
-            let mapped = relative * (1.0 + relative / (white * white)) / (1.0 + relative);
-            let scale = mapped * target_scale / luminance;
-            Ok(rgb.map(|value| value * scale))
+            let white = f64::from(source_peak_nits) / f64::from(target_peak_nits);
+            // `mapped * target_scale / luminance`, with `relative` cancelled.
+            let scale = (1.0 + relative / (white * white)) / (1.0 + relative);
+            #[allow(clippy::cast_possible_truncation)]
+            let mapped = rgb.map(|value| (f64::from(value) * scale) as f32);
+            if !mapped.r.is_finite() || !mapped.g.is_finite() || !mapped.b.is_finite() {
+                return Err(ToneMapError::NonFiniteSample);
+            }
+            Ok(mapped)
         }
     }
 }

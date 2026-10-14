@@ -149,8 +149,11 @@ impl NavigationPolicy {
             ));
         }
 
+        // WHATWG special schemes always carry a host, even without `//`, so a
+        // missing parsed host must not skip the private-network check.
+        let special = built_in || matches!(scheme.as_str(), "ws" | "wss" | "ftp");
         let host = authority_host(remainder);
-        if built_in && host.is_none() {
+        if special && host.is_none() {
             return Err(blocked(url, NavigationBlockReason::MalformedUrl));
         }
         if let Some(host) = host
@@ -217,9 +220,17 @@ pub(crate) fn split_scheme(url: &str) -> Option<(&str, &str)> {
 fn authority_host(remainder: &str) -> Option<String> {
     let authority = remainder
         .strip_prefix("//")?
-        .split(['/', '?', '#'])
+        // Special schemes treat `\` as a path separator, so it also ends the
+        // authority; treating it that way for other schemes only fails closed.
+        .split(['/', '?', '#', '\\'])
         .next()?;
-    if authority.is_empty() || authority.bytes().any(|byte| byte.is_ascii_whitespace()) {
+    // Browsers IDNA-map non-ASCII hosts (full-width digits, ideographic full
+    // stops) before IPv4 parsing, so they cannot be classified here.
+    if authority.is_empty()
+        || authority
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || !byte.is_ascii())
+    {
         return None;
     }
     let host_port = authority
@@ -241,15 +252,17 @@ fn authority_host(remainder: &str) -> Option<String> {
 }
 
 fn is_private_host(host: &str) -> bool {
+    // IP literals first: IPv6 literals have no dots but are not single-label
+    // intranet names.
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return is_private_ip(ip);
+    }
     if host == "localhost"
         || host.ends_with(".localhost")
         || host.strip_suffix(".local").is_some()
         || !host.contains('.')
     {
         return true;
-    }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return is_private_ip(ip);
     }
     parse_whatwg_ipv4(host).is_some_and(is_private_ipv4)
 }
@@ -267,14 +280,17 @@ fn is_private_ip(address: IpAddr) -> bool {
 }
 
 fn is_private_ipv4(address: Ipv4Addr) -> bool {
-    let [a, b, _, _] = address.octets();
+    let [a, b, c, _] = address.octets();
     a == 0
         || a == 10
         || a == 127
         || (a == 100 && (64..=127).contains(&b))
         || (a == 169 && b == 254)
         || (a == 172 && (16..=31).contains(&b))
-        || (a == 192 && (b == 0 || b == 168))
+        // 192.0.0.0/24 (IETF protocol assignments) and 192.0.2.0/24
+        // (TEST-NET-1); the rest of 192.0.0.0/16 is publicly routed.
+        || (a == 192 && b == 0 && (c == 0 || c == 2))
+        || (a == 192 && b == 168)
         || (a == 198 && (b == 18 || b == 19))
         || a >= 224
 }

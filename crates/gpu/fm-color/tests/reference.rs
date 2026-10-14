@@ -1,9 +1,9 @@
 use fm_color::{
     AlphaMode, ColorError, ColorPipeline, LinearFrame, LinearRgba, Lut1D, Lut3D, LutError,
-    MatrixError, Rgb, ToneMapPolicy, TransferError, Yuv, bt709_from_linear, bt709_to_linear,
-    convert_primaries, decode_transfer, encode_transfer, hlg_from_linear, hlg_to_linear,
-    pq_from_linear, pq_to_linear, rgb_to_yuv, srgb_from_linear, srgb_to_linear, tone_map_rgb,
-    working_color_metadata, working_video_frame_metadata, yuv_to_rgb,
+    MatrixError, Rgb, ToneMapError, ToneMapPolicy, TransferError, Yuv, bt709_from_linear,
+    bt709_to_linear, convert_primaries, decode_transfer, encode_transfer, hlg_from_linear,
+    hlg_to_linear, pq_from_linear, pq_to_linear, rgb_to_yuv, srgb_from_linear, srgb_to_linear,
+    tone_map_rgb, working_color_metadata, working_video_frame_metadata, yuv_to_rgb,
 };
 use fm_frame::{CpuVideoPayload, CpuVideoPlane};
 use fm_types::{
@@ -436,6 +436,32 @@ fn tone_map_policy_is_luminance_preserving_and_validated() {
             }
         )
         .is_err()
+    );
+}
+
+#[test]
+fn reinhard_tone_map_keeps_extreme_finite_samples_finite() {
+    let policy = ToneMapPolicy::Reinhard {
+        source_peak_nits: 1000.0,
+        target_peak_nits: 100.0,
+    };
+    // Far above the source peak the curve tends to `value / white^2`.
+    let mapped = tone_map_rgb(Rgb::new(1.0e21, 0.0, 0.0), policy).unwrap();
+    assert_eq!((mapped.g, mapped.b), (0.0, 0.0));
+    close(mapped.r / 1.0e19, 1.0, 1.0e-3);
+    let mapped = tone_map_rgb(Rgb::new(f32::MAX, f32::MAX, f32::MAX), policy).unwrap();
+    close(mapped.r / (f32::MAX / 100.0), 1.0, 1.0e-3);
+
+    // An unrepresentable expansion is an error, never an `Ok` NaN or infinity.
+    assert_eq!(
+        tone_map_rgb(
+            Rgb::new(1.0, 0.0, 1.0),
+            ToneMapPolicy::Reinhard {
+                source_peak_nits: 1.0e-30,
+                target_peak_nits: 1.0e30,
+            },
+        ),
+        Err(ToneMapError::NonFiniteSample)
     );
 }
 

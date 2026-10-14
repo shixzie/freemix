@@ -321,3 +321,94 @@ fn resource_and_network_limits_fail_before_state_is_committed() {
     ));
     assert_eq!(renderer.surface(surface(1)).unwrap().current_url, None);
 }
+
+#[test]
+fn navigation_private_check_uses_the_host_browsers_parse_from_backslashes() {
+    // Special-scheme URLs treat `\` as a path separator, so the real host is
+    // 127.0.0.1 and `@example.com` is path text, not userinfo.
+    let policy = NavigationPolicy::new();
+    for url in [
+        "http://127.0.0.1\\@example.com/",
+        "https://169.254.169.254\\@public.example/latest",
+    ] {
+        assert!(
+            matches!(
+                policy.check(url).unwrap_err().reason,
+                NavigationBlockReason::PrivateNetwork { .. }
+            ),
+            "{url}"
+        );
+    }
+}
+
+#[test]
+fn navigation_rejects_non_ascii_hosts_that_idna_maps_to_private_addresses() {
+    // Browsers map full-width digits and ideographic full stops to ASCII
+    // before IPv4 parsing, so these name loopback.
+    let policy = NavigationPolicy::new();
+    for url in [
+        "http://\u{ff11}\u{ff12}\u{ff17}.0.0.1/",
+        "http://127\u{3002}0\u{3002}0\u{3002}1/",
+    ] {
+        assert!(
+            matches!(
+                policy.check(url).unwrap_err().reason,
+                NavigationBlockReason::MalformedUrl
+            ),
+            "{url}"
+        );
+    }
+}
+
+#[test]
+fn navigation_allows_public_ipv6_literals() {
+    let policy = NavigationPolicy::new();
+    policy.check("https://[2001:4860:4860::8888]/").unwrap();
+    policy.check("https://[2606:4700::1111]:8443/").unwrap();
+    for url in ["http://[fe80::1]/", "http://[fc00::1]/", "http://[::]/"] {
+        assert!(
+            matches!(
+                policy.check(url).unwrap_err().reason,
+                NavigationBlockReason::PrivateNetwork { .. }
+            ),
+            "{url}"
+        );
+    }
+}
+
+#[test]
+fn navigation_blocks_only_special_purpose_192_0_subnets() {
+    let policy = NavigationPolicy::new();
+    // 192.0.78.0/24 is publicly routed (WordPress.com); only 192.0.0.0/24
+    // and 192.0.2.0/24 are special-purpose.
+    policy.check("https://192.0.78.24/").unwrap();
+    policy
+        .check_resolved("https://public.example/", &[IpAddr::from([192, 0, 78, 24])])
+        .unwrap();
+    for url in ["http://192.0.0.170/", "http://192.0.2.1/"] {
+        assert!(
+            matches!(
+                policy.check(url).unwrap_err().reason,
+                NavigationBlockReason::PrivateNetwork { .. }
+            ),
+            "{url}"
+        );
+    }
+}
+
+#[test]
+fn granted_special_schemes_without_slashes_still_get_private_checks() {
+    // WHATWG parses a host for every special scheme even when the `//` is
+    // missing, so `ftp:127.0.0.1` targets loopback.
+    let mut policy = NavigationPolicy::new();
+    policy.grant(NavigationGrant::Scheme("ftp".to_owned()));
+    policy.grant(NavigationGrant::Scheme("ws".to_owned()));
+    for url in [
+        "ftp:127.0.0.1/file",
+        "ftp:/10.0.0.1/file",
+        "ws:127.0.0.1/socket",
+    ] {
+        assert!(policy.check(url).is_err(), "{url}");
+    }
+    policy.check("ftp://example.com/file").unwrap();
+}
