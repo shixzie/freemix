@@ -198,8 +198,8 @@ commands = ["cargo test -p fm-compositor --test flatten"]
 [[tests]]
 id = "accept-gx-001"
 state = "present"
-paths = ["crates/features/fm-titles/tests/image_render.rs", "crates/features/fm-titles/tests/title_scene.rs", "crates/features/fm-titles/tests/text_render.rs", "crates/features/fm-titles/tests/image_fit.rs"]
-commands = ["cargo test -p fm-titles --test image_render", "cargo test -p fm-titles --test title_scene", "cargo test -p fm-titles --test text_render", "cargo test -p fm-titles --test image_fit"]
+paths = ["crates/features/fm-titles/tests/image_render.rs", "crates/features/fm-titles/tests/title_scene.rs", "crates/features/fm-titles/tests/text_render.rs", "crates/features/fm-titles/tests/image_fit.rs", "crates/features/fm-titles/tests/field_set.rs", "crates/services/fm-persistence/tests/title_templates.rs", "crates/services/fm-engine/tests/titles.rs"]
+commands = ["cargo test -p fm-titles --test image_render", "cargo test -p fm-titles --test title_scene", "cargo test -p fm-titles --test text_render", "cargo test -p fm-titles --test image_fit", "cargo test -p fm-titles --test field_set", "cargo test -p fm-persistence --test title_templates", "cargo test -p fm-engine --test titles"]
 [[tests]]
 id = "accept-gx-002"
 state = "present"

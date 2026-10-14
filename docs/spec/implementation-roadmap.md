@@ -1991,9 +1991,17 @@ clocks, 1 MiB cap), imports fonts with dedupe and parse validation, checks
 project fields against their templates, audits missing template, font, and
 image assets, and copies title assets on export and append, refusing rather
 than renaming keys. `freemix-cli title-input-add` imports a template with
-`--font` files. Native freemixd refuses title inputs and the simulated
-monitors do not render them; there is no protocol, engine title state, or
-Studio editor yet, so `GX-001` remains planned.
+`--font` files. The engine keeps per-title field state with bounded
+compare-and-set saves, takes that apply fields and an overlay take in one
+revision, and off-air on the single showing channel, with air checks over
+desired and realized state including playing stinger media. Protocol 2.24
+carries `title_fields`, `title_take`, `title_off_air`, `title_changed`, and a
+`title_state` record after each snapshot; Graphics may save, Operators may
+take and clear, and a take with fields needs both. freemixd restores and
+persists title values, and its simulated monitors render title inputs and
+composite active overlays on Program. Native freemixd still refuses title
+inputs, runtime image URIs are not loaded until restart, and there is no
+Studio title panel yet, so `GX-001` remains planned.
 
 Current implementation boundary for item 1 scoreboards and tickers
 (`GX-003`): `fm-titles` provides a deterministic ticker crawl (horizontal
