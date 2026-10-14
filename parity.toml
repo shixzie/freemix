@@ -155,7 +155,9 @@ id = "accept-sw-012"
 state = "planned"
 [[tests]]
 id = "accept-sw-013"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-clock/tests/production_clocks.rs"]
+commands = ["cargo test -p fm-clock --test production_clocks"]
 [[tests]]
 id = "accept-sw-014"
 state = "present"
