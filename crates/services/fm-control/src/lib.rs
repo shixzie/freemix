@@ -25,7 +25,9 @@ pub use automation::{
 };
 
 use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
-use fm_command::{CommandReceipt, DurableEvent, IdempotencyKey, RejectionCode};
+use fm_command::{
+    CommandEnvelope, CommandReceipt, Deadline, DurableEvent, IdempotencyKey, RejectionCode,
+};
 use fm_engine::{
     Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineError, EngineEvent,
     EngineFadeToBlackState, EngineInputAudioStripState, EngineManualTransitionKind,
@@ -185,7 +187,11 @@ enum PreparedSubmissionKind {
         execution: Box<PreparedEngineExecution>,
         command: EngineCommand,
     },
-    AuthorizationDenial,
+    AuthorizationDenial {
+        /// False when the key already owns a durable engine receipt, which a
+        /// cached denial must never shadow.
+        remember: bool,
+    },
 }
 
 /// An isolated submission that exclusively borrows its control authority.
@@ -227,7 +233,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
             PreparedSubmissionKind::Engine { execution, .. } => {
                 execution.project(ticks).map_err(ControlError::from)
             }
-            PreparedSubmissionKind::AuthorizationDenial => {
+            PreparedSubmissionKind::AuthorizationDenial { .. } => {
                 project_engine(&self.control.engine, ticks).map_err(ControlError::from)
             }
         }
@@ -239,7 +245,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
     pub fn overlay_transition_ticks(&self, channel: OverlayChannelId) -> u32 {
         let engine = match &self.kind {
             PreparedSubmissionKind::Engine { execution, .. } => execution.staged_engine(),
-            PreparedSubmissionKind::AuthorizationDenial => &self.control.engine,
+            PreparedSubmissionKind::AuthorizationDenial { .. } => &self.control.engine,
         };
         let overlay = engine.show().desired_switcher().overlay(channel);
         match overlay.transition() {
@@ -291,11 +297,13 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                     .collect::<Vec<_>>();
                 submission.subscriber_failures = control.publish(&live_events);
             }
-            PreparedSubmissionKind::AuthorizationDenial => {
-                control.remember_authorization_denial(
-                    idempotency_key,
-                    submission.output.result.clone(),
-                );
+            PreparedSubmissionKind::AuthorizationDenial { remember } => {
+                if remember {
+                    control.remember_authorization_denial(
+                        idempotency_key,
+                        submission.output.result.clone(),
+                    );
+                }
             }
         }
 
@@ -733,6 +741,21 @@ impl<A: AuthorizationHook> ControlService<A> {
             .authorizer
             .authorize(principal, command_class(&message.payload))
         {
+            // The engine checks its receipts before anything else, so an
+            // already-exceeded probe envelope detects an existing receipt
+            // without validating or staging the denied command.
+            let remember = !matches!(
+                self.engine.prepare_execute(
+                    CommandEnvelope::new(
+                        message.id.clone(),
+                        message.idempotency_key.clone(),
+                        EngineCommand::Cut,
+                    )
+                    .with_deadline(Deadline::from_millis(0)),
+                    u64::MAX,
+                ),
+                Ok(EnginePrepareOutcome::Replayed(_))
+            );
             let result = CommandResult::Rejected {
                 id: message.id,
                 code: RejectionCode::PermissionDenied.as_str().to_owned(),
@@ -744,7 +767,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             return Ok(PrepareSubmitOutcome::Prepared(PreparedSubmission {
                 control: self,
                 idempotency_key,
-                kind: PreparedSubmissionKind::AuthorizationDenial,
+                kind: PreparedSubmissionKind::AuthorizationDenial { remember },
                 submission: CommandSubmission {
                     output: ResultBeforeEvents {
                         result,

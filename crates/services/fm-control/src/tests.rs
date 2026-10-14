@@ -1129,6 +1129,41 @@ fn authorization_denial_replays_after_role_and_command_change_without_engine_mut
 }
 
 #[test]
+fn authorization_denial_does_not_replace_an_existing_engine_receipt() {
+    let mut control = service(8, 8);
+    let accepted = control
+        .submit(
+            &principal(Role::Operator),
+            command("cut", "shared-key", CommandPayload::Cut),
+            0,
+        )
+        .unwrap();
+    assert!(accepted.is_accepted());
+
+    let denied = control
+        .submit(
+            &principal(Role::Viewer),
+            command("viewer-cut", "shared-key", CommandPayload::Cut),
+            0,
+        )
+        .unwrap();
+    assert!(matches!(
+        denied.output.result,
+        CommandResult::Rejected { ref code, .. } if code == "permission_denied"
+    ));
+
+    let retried = control
+        .submit(
+            &principal(Role::Operator),
+            command("cut", "shared-key", CommandPayload::Cut),
+            0,
+        )
+        .unwrap();
+    assert!(retried.replayed);
+    assert_eq!(retried.output.result, accepted.output.result);
+}
+
+#[test]
 fn authorization_denial_cache_uses_the_retained_event_bound() {
     let mut control = service(2, 8);
     for key in ["one", "two", "three"] {
