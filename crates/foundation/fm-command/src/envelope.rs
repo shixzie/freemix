@@ -34,7 +34,7 @@ impl fmt::Display for CommandId {
     }
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct IdempotencyKey(String);
 
 impl IdempotencyKey {

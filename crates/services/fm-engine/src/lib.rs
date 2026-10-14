@@ -9,7 +9,7 @@ pub use engine::{
     EngineFadeToBlackState, EngineManualTransitionKind, EngineManualTransitionPosition,
     EngineManualTransitionState, EnginePrepareOutcome, EngineRestoreState, EngineSnapshot,
     EngineStreamStatus, FrameResult, MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS,
-    MAX_INPUT_AUDIO_DELAY_SAMPLES, MAX_INPUT_AUDIO_GAIN_MILLIDB,
+    MAX_INPUT_AUDIO_DELAY_SAMPLES, MAX_INPUT_AUDIO_GAIN_MILLIDB, MAX_RETAINED_RECEIPTS,
     MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS, MIN_INPUT_AUDIO_GAIN_MILLIDB, PreparedEngineExecution,
 };
 pub use error::{EngineError, ShowError, SnapshotError};

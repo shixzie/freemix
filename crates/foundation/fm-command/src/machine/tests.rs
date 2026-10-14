@@ -520,3 +520,104 @@ fn exhausted_counters_prepare_rejected_receipts_without_mutation() {
         EventSequence::new(u64::MAX)
     );
 }
+
+fn reject(key: &str) -> CommandEnvelope<i32> {
+    envelope(key, 0)
+}
+
+fn rejecting(_: &State, _: i32) -> Result<SetValue, Rejection> {
+    Err(Rejection::new(RejectionCode::Conflict, "rejected"))
+}
+
+fn retained_keys<S>(commands: &CommandState<S, i32>) -> Vec<String> {
+    let mut keys = commands
+        .receipts()
+        .map(|(key, _)| key.as_str().to_owned())
+        .collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
+#[test]
+fn bounded_receipts_evict_the_oldest_and_reexecute_evicted_keys() {
+    let limit = NonZeroUsize::new(3).unwrap();
+    let mut commands =
+        CommandState::new(State { value: 0 }, StateEpoch::new(1)).with_receipt_limit(limit);
+    for value in 1..=5 {
+        commands.apply(envelope(&format!("k{value}"), value), 0, set_value);
+    }
+    assert_eq!(commands.receipt_limit(), Some(limit));
+    assert_eq!(commands.receipt_count(), 3);
+    assert_eq!(retained_keys(&commands), ["k3", "k4", "k5"]);
+
+    let replay = commands.apply(
+        envelope("k5", 99),
+        0,
+        |_: &State, _: i32| -> Result<SetValue, Rejection> { panic!("must replay") },
+    );
+    assert!(replay.replayed);
+    assert_eq!(commands.revision(), Revision::new(5));
+
+    let reexecuted = commands.apply(envelope("k1", 1), 0, set_value);
+    assert!(!reexecuted.replayed);
+    assert_eq!(
+        reexecuted.receipt.accepted().unwrap().revision,
+        Revision::new(6)
+    );
+    assert_eq!(retained_keys(&commands), ["k1", "k4", "k5"]);
+}
+
+#[test]
+fn bounded_receipts_rank_rejections_after_the_same_revision_then_by_key() {
+    let mut commands = CommandState::new(State { value: 0 }, StateEpoch::new(1))
+        .with_receipt_limit(NonZeroUsize::new(3).unwrap());
+    commands.apply(envelope("a-accepted", 1), 0, set_value);
+    // Rejected at revision 1, recorded out of key order.
+    commands.apply(reject("z-rejected"), 0, rejecting);
+    commands.apply(reject("m-rejected"), 0, rejecting);
+    assert_eq!(
+        retained_keys(&commands),
+        ["a-accepted", "m-rejected", "z-rejected"]
+    );
+
+    // The accepted receipt at revision 1 is oldest, then rejections by key.
+    commands.apply(envelope("b-accepted", 2), 0, set_value);
+    assert_eq!(
+        retained_keys(&commands),
+        ["b-accepted", "m-rejected", "z-rejected"]
+    );
+    commands.apply(reject("c-rejected"), 0, rejecting);
+    assert_eq!(
+        retained_keys(&commands),
+        ["b-accepted", "c-rejected", "z-rejected"]
+    );
+}
+
+#[test]
+fn bounded_receipts_never_evict_the_receipt_just_recorded() {
+    let mut commands = CommandState::<_, i32>::new(State { value: 0 }, StateEpoch::new(1))
+        .with_receipt_limit(NonZeroUsize::new(1).unwrap());
+    commands.apply(reject("b"), 0, rejecting);
+    // "a" ranks below "b" at the same revision but was just recorded.
+    commands.apply(reject("a"), 0, rejecting);
+    assert_eq!(retained_keys(&commands), ["a"]);
+}
+
+#[test]
+fn receipt_limit_trims_restored_receipts_to_the_newest_suffix() {
+    let mut source = CommandState::new(State { value: 0 }, StateEpoch::new(1));
+    for value in 1..=4 {
+        source.apply(envelope(&format!("k{value}"), value), 0, set_value);
+    }
+    let restored = CommandState::<_, i32>::restore_with_receipts(
+        source.state().clone(),
+        source.state_epoch(),
+        source.revision(),
+        source.event_sequence(),
+        source
+            .receipts()
+            .map(|(key, receipt)| (key.clone(), receipt.clone())),
+    )
+    .with_receipt_limit(NonZeroUsize::new(2).unwrap());
+    assert_eq!(retained_keys(&restored), ["k3", "k4"]);
+}

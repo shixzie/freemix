@@ -9,8 +9,8 @@ use fm_engine::{
     Engine, EngineCommand, EngineError, EngineEvent, EngineInputAudioStripState,
     EngineManualTransitionKind, EngineManualTransitionPosition, EnginePrepareOutcome,
     EngineRestoreState, EngineSnapshot, EngineStreamStatus, MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS,
-    MAX_INPUT_AUDIO_DELAY_SAMPLES, MAX_INPUT_AUDIO_GAIN_MILLIDB, ShowError, ShowState,
-    SnapshotError,
+    MAX_INPUT_AUDIO_DELAY_SAMPLES, MAX_INPUT_AUDIO_GAIN_MILLIDB, MAX_RETAINED_RECEIPTS, ShowError,
+    ShowState, SnapshotError,
 };
 use fm_scheduler::FrameNumber;
 use fm_switcher::{
@@ -2942,4 +2942,152 @@ fn show_rejects_preview_equal_to_program() {
             input(1)
         )))
     );
+}
+
+fn cut_key(index: usize) -> String {
+    format!("cut-{index:05}")
+}
+
+/// Executes `count` accepted cuts and realizes them at the next frame.
+fn engine_after_cuts(count: usize) -> Engine {
+    let mut engine = engine();
+    for index in 0..count {
+        let outcome = engine
+            .execute(envelope(&cut_key(index), EngineCommand::Cut), 0)
+            .unwrap();
+        assert!(outcome.receipt.accepted().is_some());
+    }
+    engine.tick().unwrap();
+    engine
+}
+
+#[test]
+fn long_show_retains_exactly_the_newest_bounded_receipts() {
+    let commands = MAX_RETAINED_RECEIPTS + 7;
+    let mut engine = engine_after_cuts(commands);
+    assert_eq!(engine.receipt_count(), MAX_RETAINED_RECEIPTS);
+    assert!(
+        engine
+            .receipt(&IdempotencyKey::new(cut_key(
+                commands - MAX_RETAINED_RECEIPTS - 1
+            )))
+            .is_none()
+    );
+    assert!(
+        engine
+            .receipt(&IdempotencyKey::new(cut_key(
+                commands - MAX_RETAINED_RECEIPTS
+            )))
+            .is_some()
+    );
+
+    let revision = engine.revision();
+    let newest = engine
+        .execute(envelope(&cut_key(commands - 1), EngineCommand::Cut), 0)
+        .unwrap();
+    assert!(newest.replayed);
+    assert_eq!(engine.revision(), revision);
+
+    let evicted = engine
+        .execute(envelope(&cut_key(0), EngineCommand::Cut), 0)
+        .unwrap();
+    assert!(!evicted.replayed);
+    assert_eq!(
+        evicted.receipt.accepted().unwrap().revision.get(),
+        revision.get() + 1
+    );
+    assert_eq!(engine.receipt_count(), MAX_RETAINED_RECEIPTS);
+    assert!(
+        engine
+            .receipt(&IdempotencyKey::new(cut_key(
+                commands - MAX_RETAINED_RECEIPTS
+            )))
+            .is_none()
+    );
+}
+
+#[test]
+fn bounded_receipt_suffix_round_trips_through_snapshot_and_restore() {
+    let commands = MAX_RETAINED_RECEIPTS + 3;
+    let engine = engine_after_cuts(commands);
+    let snapshot = engine.snapshot().unwrap();
+    assert_eq!(snapshot.receipts().len(), MAX_RETAINED_RECEIPTS);
+    assert_eq!(snapshot.revision().get(), commands as u64);
+
+    let mut restored = Engine::restore(snapshot.clone()).unwrap();
+    assert_eq!(restored.snapshot().unwrap(), snapshot);
+    let mut persisted = restore_persisted(
+        &snapshot,
+        snapshot.realized_switcher().clone(),
+        restore_state(&snapshot),
+    )
+    .unwrap();
+    assert_eq!(persisted.snapshot().unwrap(), snapshot);
+
+    for engine in [&mut restored, &mut persisted] {
+        let replay = engine
+            .execute(envelope(&cut_key(commands - 1), EngineCommand::Cut), 0)
+            .unwrap();
+        assert!(replay.replayed);
+        let fresh = engine
+            .execute(envelope("after-restore", EngineCommand::Cut), 0)
+            .unwrap();
+        assert_eq!(
+            fresh.receipt.accepted().unwrap().revision.get(),
+            commands as u64 + 1
+        );
+        assert_eq!(engine.receipt_count(), MAX_RETAINED_RECEIPTS);
+    }
+}
+
+#[test]
+fn bounded_receipts_evict_accepted_before_later_rejections() {
+    let mut engine = engine_after_cuts(MAX_RETAINED_RECEIPTS);
+    let current = engine.revision();
+    let stale = |key: &str| envelope(key, EngineCommand::Cut).expecting(Revision::new(0));
+
+    // Rejections at the current revision rank after every accepted receipt,
+    // so they evict the oldest accepted cuts first.
+    for key in ["stale-b", "stale-a"] {
+        let outcome = engine.execute(stale(key), 0).unwrap();
+        assert_eq!(
+            outcome.receipt.rejected().unwrap().current_revision,
+            current
+        );
+    }
+    assert_eq!(engine.receipt_count(), MAX_RETAINED_RECEIPTS);
+    assert!(engine.receipt(&IdempotencyKey::new(cut_key(0))).is_none());
+    assert!(engine.receipt(&IdempotencyKey::new(cut_key(1))).is_none());
+    assert!(engine.receipt(&IdempotencyKey::new(cut_key(2))).is_some());
+    assert!(engine.receipt(&IdempotencyKey::new("stale-a")).is_some());
+
+    // A later accepted command ranks above both rejections, which are
+    // evicted after the remaining older accepted cuts, in key order.
+    engine
+        .execute(envelope("later", EngineCommand::Cut), 0)
+        .unwrap();
+    assert!(engine.receipt(&IdempotencyKey::new(cut_key(2))).is_none());
+    assert!(engine.receipt(&IdempotencyKey::new("stale-a")).is_some());
+}
+
+#[test]
+fn preparation_goes_stale_after_a_rejection_at_the_receipt_bound() {
+    let mut engine = engine_after_cuts(MAX_RETAINED_RECEIPTS);
+    let prepared = engine
+        .prepare_execute(envelope("prepared", EngineCommand::Cut), 0)
+        .unwrap()
+        .prepared()
+        .unwrap();
+    engine
+        .execute(
+            envelope("rejected", EngineCommand::Cut).expecting(Revision::new(0)),
+            0,
+        )
+        .unwrap();
+    assert_eq!(engine.receipt_count(), MAX_RETAINED_RECEIPTS);
+    assert_eq!(
+        engine.commit_execute(prepared),
+        Err(EngineError::StalePreparation)
+    );
+    assert!(engine.receipt(&IdempotencyKey::new("rejected")).is_some());
 }

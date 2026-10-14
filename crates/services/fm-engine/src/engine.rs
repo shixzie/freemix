@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use fm_clock::{Clock, ClockDomainId, ClockTime, ManualClock};
@@ -19,6 +19,16 @@ use crate::{EngineError, EngineInputAudioStripState, ShowState, SnapshotError};
 
 type RuntimeScheduler = FrameScheduler<(), (), EngineCommand, ()>;
 const MAX_TRANSITION_DURATION_FRAMES: u32 = 3_600;
+/// Maximum idempotency receipts an engine retains in memory.
+///
+/// Retention keeps the newest receipts by the revision they were recorded at;
+/// a rejection recorded at revision `r` ranks just after the accepted command
+/// that produced `r`, and ties break by key. The receipt a command just
+/// produced is never evicted. Resubmitting an evicted key executes it as a new
+/// command. Persistence stores at most the same bound, so snapshots and
+/// restores round-trip the retained window.
+pub const MAX_RETAINED_RECEIPTS: usize = 1_024;
+const RECEIPT_LIMIT: NonZeroUsize = NonZeroUsize::new(MAX_RETAINED_RECEIPTS).unwrap();
 pub const MAX_INPUT_AUDIO_DELAY_SAMPLES: u32 = 48_000;
 pub const MIN_INPUT_AUDIO_GAIN_MILLIDB: i32 = -96_000;
 pub const MAX_INPUT_AUDIO_GAIN_MILLIDB: i32 = 24_000;
@@ -282,7 +292,7 @@ struct EnginePreparationBase {
     state_epoch: StateEpoch,
     revision: Revision,
     event_sequence: EventSequence,
-    durable_receipts: usize,
+    receipts_recorded: u64,
     frame_cursor: FrameNumber,
     clock_time: ClockTime,
     runtime_generation: RuntimeGeneration,
@@ -411,7 +421,9 @@ impl EngineSnapshot {
 #[derive(Clone, Debug)]
 pub struct Engine {
     commands: CommandState<ShowState, EngineAcceptance>,
-    receipt_history: HashMap<IdempotencyKey, CommandReceipt<EngineAcceptance>>,
+    /// Monotonic count of receipts recorded, so preparations go stale after
+    /// any committed receipt even once retention holds the count constant.
+    receipts_recorded: u64,
     realized_switcher: SwitcherState,
     scheduler: RuntimeScheduler,
     clock: ManualClock,
@@ -426,8 +438,8 @@ impl Engine {
     pub fn new(show: ShowState, frame_rate: FrameRate, clock_domain: ClockDomainId) -> Self {
         let realized_switcher = show.desired_switcher().clone();
         Self {
-            commands: CommandState::new(show, StateEpoch::new(1)),
-            receipt_history: HashMap::new(),
+            commands: CommandState::new(show, StateEpoch::new(1)).with_receipt_limit(RECEIPT_LIMIT),
+            receipts_recorded: 0,
             realized_switcher,
             scheduler: RuntimeScheduler::new(frame_rate, 0, PlanGeneration::new(0), Arc::new(())),
             clock: ManualClock::new(clock_domain, ClockTime::ZERO),
@@ -520,6 +532,13 @@ impl Engine {
     #[must_use]
     pub fn receipt(&self, key: &IdempotencyKey) -> Option<&CommandReceipt<EngineAcceptance>> {
         self.commands.receipt(key)
+    }
+
+    /// Returns how many idempotency receipts are retained, at most
+    /// [`MAX_RETAINED_RECEIPTS`].
+    #[must_use]
+    pub fn receipt_count(&self) -> usize {
+        self.commands.receipt_count()
     }
 
     /// Prepares a durable command and its runtime action on an isolated clone.
@@ -653,7 +672,7 @@ impl Engine {
             });
 
         if !outcome.replayed {
-            self.receipt_history.insert(key, outcome.receipt.clone());
+            self.receipts_recorded = self.receipts_recorded.wrapping_add(1);
         }
         if outcome.receipt.accepted().is_some() && !outcome.replayed {
             self.pending_actions += 1;
@@ -705,7 +724,7 @@ impl Engine {
             state_epoch: self.commands.state_epoch(),
             revision: self.commands.revision(),
             event_sequence: self.commands.event_sequence(),
-            durable_receipts: self.receipt_history.len(),
+            receipts_recorded: self.receipts_recorded,
             frame_cursor: self.scheduler.pacer().next_frame(),
             clock_time: self.clock.now(),
             runtime_generation: self.runtime_generation,
@@ -783,8 +802,8 @@ impl Engine {
             return Err(SnapshotError::WorkInFlight);
         }
         let mut receipts: Vec<_> = self
-            .receipt_history
-            .iter()
+            .commands
+            .receipts()
             .map(|(key, receipt)| (key.clone(), receipt.clone()))
             .collect();
         receipts.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
@@ -850,7 +869,6 @@ impl Engine {
             Arc::new(()),
         )
         .map_err(|_| SnapshotError::InvalidFrameCounter)?;
-        let receipt_history = restore_state.receipts.iter().cloned().collect();
         Ok(Self {
             commands: CommandState::restore_with_receipts(
                 show,
@@ -858,8 +876,9 @@ impl Engine {
                 restore_state.revision,
                 restore_state.event_sequence,
                 restore_state.receipts,
-            ),
-            receipt_history,
+            )
+            .with_receipt_limit(RECEIPT_LIMIT),
+            receipts_recorded: 0,
             realized_switcher,
             scheduler,
             clock: ManualClock::new(clock_domain, restore_state.clock_time),

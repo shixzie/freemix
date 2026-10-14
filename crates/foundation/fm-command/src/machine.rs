@@ -3,7 +3,10 @@ use crate::{
     RejectedReceipt, Rejection, RejectionCode, Revision, StateEpoch, Transaction,
 };
 use core::fmt;
-use std::collections::HashMap;
+use receipts::ReceiptLog;
+use std::num::NonZeroUsize;
+
+mod receipts;
 
 pub trait Mutation<S, E, R> {
     /// Applies this mutation to a transaction draft.
@@ -173,7 +176,7 @@ pub struct CommandState<S, R> {
     state_epoch: StateEpoch,
     revision: Revision,
     event_sequence: EventSequence,
-    receipts: HashMap<IdempotencyKey, CommandReceipt<R>>,
+    receipts: ReceiptLog<R>,
 }
 
 impl<S, R> CommandState<S, R> {
@@ -184,7 +187,7 @@ impl<S, R> CommandState<S, R> {
             state_epoch,
             revision: Revision::default(),
             event_sequence: EventSequence::default(),
-            receipts: HashMap::new(),
+            receipts: ReceiptLog::new(),
         }
     }
 
@@ -200,7 +203,7 @@ impl<S, R> CommandState<S, R> {
             state_epoch,
             revision,
             event_sequence,
-            receipts: HashMap::new(),
+            receipts: ReceiptLog::new(),
         }
     }
 
@@ -217,7 +220,7 @@ impl<S, R> CommandState<S, R> {
             state_epoch,
             revision,
             event_sequence,
-            receipts: receipts.into_iter().collect(),
+            receipts: ReceiptLog::from_receipts(receipts),
         }
     }
 
@@ -244,6 +247,37 @@ impl<S, R> CommandState<S, R> {
     #[must_use]
     pub fn receipt(&self, key: &IdempotencyKey) -> Option<&CommandReceipt<R>> {
         self.receipts.get(key)
+    }
+
+    /// Bounds idempotency receipt retention to the newest `limit` receipts.
+    ///
+    /// Recency is the revision a receipt was recorded at: a rejection
+    /// recorded at revision `r` ranks just after the accepted command that
+    /// produced `r`, and ties break by key. Receipts beyond the bound are
+    /// evicted oldest first, immediately and after every new receipt; the
+    /// receipt just recorded is never evicted. An evicted key is no longer
+    /// replayed, so resubmitting it executes as a new command.
+    #[must_use]
+    pub fn with_receipt_limit(mut self, limit: NonZeroUsize) -> Self {
+        self.receipts.set_limit(limit);
+        self
+    }
+
+    /// Returns the receipt retention bound, if any.
+    #[must_use]
+    pub const fn receipt_limit(&self) -> Option<NonZeroUsize> {
+        self.receipts.limit()
+    }
+
+    /// Returns the number of retained idempotency receipts.
+    #[must_use]
+    pub fn receipt_count(&self) -> usize {
+        self.receipts.len()
+    }
+
+    /// Iterates retained idempotency receipts in unspecified order.
+    pub fn receipts(&self) -> impl Iterator<Item = (&IdempotencyKey, &CommandReceipt<R>)> {
+        self.receipts.iter()
     }
 }
 
