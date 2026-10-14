@@ -1305,6 +1305,22 @@ channel count without mapping or balance; there are no gain ramps, clipping
 policy, or meter ballistics; and allocation-free rendering is by construction
 rather than tested. `AU-002` remains planned.
 
+Current implementation boundary for multichannel audio (`AU-003`): `fm-audio`
+provides a 1–16 channel layout catalog (1.0, 2.0, 2.1, 5.1, 7.1, and 16
+discrete) in SMPTE/ITU order with short labels, and a validated sparse N-to-M
+gain matrix that renders planar f32 into caller buffers without allocation and
+copies unity routes bit-exactly. Documented-coefficient downmixes cover
+ITU-R BS.775 5.1-to-stereo with selectable LFE handling and clip-preventing
+normalization, 7.1-to-5.1, and stereo-to-mono, alongside upmix by
+duplication. SDI-style 16-channel groups de-embed by mono, pair, or group, and
+an embedded-audio map re-embeds layouts while preserving labels. Remaining
+gaps: `fm-types` channel labels cannot yet express rear-surround or discrete
+channels, so 7.1 and 16-channel layouts cannot travel through `AudioBlock`,
+the existing channel mapping, or the Master mixer; nothing reaches persisted
+strips, protocol, daemon, or Studio; there is no device ancillary-data
+extraction, composite or Lt/Rt downmix, or hardware evidence. `AU-003`
+remains planned.
+
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
