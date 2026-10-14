@@ -173,7 +173,9 @@ paths = ["crates/gpu/fm-compositor/tests/safe_areas.rs", "crates/gpu/fm-composit
 commands = ["cargo test -p fm-compositor --test safe_areas", "cargo test -p fm-compositor --test golden"]
 [[tests]]
 id = "accept-sw-015"
-state = "planned"
+state = "present"
+paths = ["crates/gpu/fm-compositor/tests/vertical_canvas.rs"]
+commands = ["cargo test -p fm-compositor --test vertical_canvas"]
 [[tests]]
 id = "accept-sw-016"
 state = "present"

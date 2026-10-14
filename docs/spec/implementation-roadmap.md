@@ -1338,6 +1338,23 @@ counts rather than numeric error in the quality report. `SW-018` remains
 planned.
 
 
+Current implementation boundary for vertical and arbitrary canvases
+(`SW-015`): the CPU compositor carries no 16:9 assumption, and `fm-compositor`
+adds fit, fill, and stretch source placement with exact integer center-cut
+geometry and quarter-turn handling, a center-cut safe-area guide that outlines
+exactly what a portrait fill keeps, and an aspect-preserving multiview compile
+so a portrait Program is not distorted in a landscape multiview. The simulated
+pipeline and WebRTC 1080p ladder caps are orientation-independent, and project
+validation requires even dimensions for 4:2:0 and 4:2:2 formats. Pixel-exact
+CPU tests cover portrait, square, and odd canvases with letterbox, fill crops,
+rotations, masks, safe areas, and multiview. Remaining gaps: model crops are
+validated against project rather than source size, so a vertical crop of a
+landscape camera on a portrait project is refused; no model, protocol, or UI
+fit setting; Studio monitor wells are fixed 16:9; 8K stream ladders refuse
+portrait rungs; and the native GPU path is untested. `SW-015` remains
+planned.
+
+
 Exit: `P0` switcher, composition, audio, display, record, and control rows pass.
 
 Current implementation boundary for automix and monitoring (`AU-007`,
