@@ -427,3 +427,42 @@ fn missed_heartbeat_withdraws_capability_before_restart() {
         .position(|record| matches!(record.event, AuditEvent::RestartScheduled { .. }));
     assert!(withdrawal < restart);
 }
+
+#[test]
+fn stopping_a_quarantined_plugin_does_not_bypass_quarantine() {
+    let plugin = artifact("crashy", "plugin.crashy");
+    let plugin_id = plugin.manifest.plugin_id();
+    let mut controller = FakeChildController::default();
+    for _ in 0..3 {
+        controller
+            .spawn_results
+            .push_back(Err(ChildError::new("launch failed")));
+    }
+    let mut supervisor = Supervisor::new(
+        catalog(vec![plugin]),
+        controller,
+        supervisor_policy(),
+        IpcLimits::new(2, 4),
+    )
+    .unwrap();
+    supervisor.start(plugin_id, 0).unwrap();
+    supervisor.poll(10, []);
+    supervisor.poll(30, []);
+    assert_eq!(
+        supervisor.status(plugin_id).unwrap().state,
+        InstanceState::Quarantined
+    );
+
+    supervisor.stop(plugin_id, 31).unwrap();
+    assert_eq!(
+        supervisor.status(plugin_id).unwrap().state,
+        InstanceState::Quarantined
+    );
+    assert_eq!(
+        supervisor.start(plugin_id, 32),
+        Err(SupervisorError::InvalidState {
+            state: InstanceState::Quarantined
+        })
+    );
+    assert_eq!(supervisor.controller().spawned.len(), 3);
+}

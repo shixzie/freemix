@@ -398,7 +398,11 @@ impl<C: ChildController> Supervisor<C> {
         }
         self.withdraw_capabilities(id, now_ms);
         let instance = self.instance_mut(id)?;
-        instance.state = InstanceState::Stopped;
+        // Only `release_quarantine` may lift a quarantine; otherwise stop+start
+        // would bypass the crash limit.
+        if instance.state != InstanceState::Quarantined {
+            instance.state = InstanceState::Stopped;
+        }
         instance.child = None;
         instance.restart_at_ms = None;
         self.record(now_ms, id, AuditEvent::Stopped);
