@@ -11,6 +11,12 @@ use std::num::NonZeroU128;
 use fm_audio::Gain;
 use fm_types::InputId;
 
+mod control;
+
+pub use control::{
+    GuestCommand, GuestCommandOutcome, GuestHealthRow, GuestManagerRole, MAX_ROLE_PERMISSIONS,
+};
+
 /// Maximum number of retained guest sessions.
 pub const MAX_GUEST_SESSIONS: usize = 8;
 /// Maximum UTF-8 byte length of a guest display name.
@@ -287,6 +293,86 @@ pub enum ReturnVideoSelection {
     Input(InputId),
 }
 
+/// One of the four numbered program outputs (1 through 4).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ReturnOutput(u8);
+
+impl ReturnOutput {
+    /// Creates a validated output number.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuestError::InvalidReturnOutput`] unless `number` is in `1..=4`.
+    pub const fn new(number: u8) -> Result<Self, GuestError> {
+        if number == 0 || number > 4 {
+            return Err(GuestError::InvalidReturnOutput(number));
+        }
+        Ok(Self(number))
+    }
+
+    #[must_use]
+    pub const fn number(self) -> u8 {
+        self.0
+    }
+}
+
+/// One of the seven auxiliary audio buses, `A` through `G`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct AuxBus(char);
+
+impl AuxBus {
+    /// Creates a validated bus letter. Lowercase letters are normalized.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuestError::InvalidAuxBus`] unless `letter` is in `A..=G`.
+    pub const fn new(letter: char) -> Result<Self, GuestError> {
+        let upper = letter.to_ascii_uppercase();
+        if !matches!(upper, 'A'..='G') {
+            return Err(GuestError::InvalidAuxBus(letter));
+        }
+        Ok(Self(upper))
+    }
+
+    #[must_use]
+    pub const fn letter(self) -> char {
+        self.0
+    }
+}
+
+/// Audio bed sent back to a guest, independent of the return video choice.
+///
+/// Whatever bus is selected, the engine adapter must deliver the
+/// "clean" variant of it, with every guest microphone and manager talkback
+/// removed. The mix-minus plan then adds the other guests explicitly, so a
+/// guest never hears its own microphone regardless of the selected bus.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ReturnAudioSource {
+    #[default]
+    Master,
+    Headphones,
+    Output(ReturnOutput),
+    Aux(AuxBus),
+}
+
+/// Per-guest microphone contribution controls.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GuestAudioControl {
+    /// A muted microphone feeds neither program nor any other guest return.
+    pub microphone_muted: bool,
+    /// Gain applied to every route sourced from this guest's microphone.
+    pub microphone_gain: Gain,
+}
+
+impl Default for GuestAudioControl {
+    fn default() -> Self {
+        Self {
+            microphone_muted: false,
+            microphone_gain: Gain::UNITY,
+        }
+    }
+}
+
 /// Whether private manager talkback is routed to a guest's return.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TalkbackState {
@@ -310,6 +396,8 @@ pub struct GuestSession {
     pub slot: GuestSlot,
     pub connection: SessionConnection,
     pub return_video: ReturnVideoSelection,
+    pub return_audio: ReturnAudioSource,
+    pub audio: GuestAudioControl,
     pub talkback: TalkbackState,
     pub health: LatencyEchoHealth,
     pub admitted_at_ms: u64,
@@ -318,9 +406,9 @@ pub struct GuestSession {
 /// Source endpoint in a deterministic mix-minus plan.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum MixSource {
-    /// Program bed guaranteed by the producer to exclude all guest microphones
-    /// and manager talkback.
-    CleanProgram,
+    /// Selected return bus, guaranteed by the engine adapter to exclude all
+    /// guest microphones and manager talkback.
+    CleanReturnBed(ReturnAudioSource),
     GuestMicrophone(GuestId),
     ManagerTalkback,
 }
@@ -482,6 +570,8 @@ impl ChatMessage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GuestError {
     InvalidSlot(u8),
+    InvalidReturnOutput(u8),
+    InvalidAuxBus(char),
     InvalidDisplayName,
     InvalidEchoReturnLoss,
     InvalidExpiry,
@@ -514,12 +604,18 @@ pub enum GuestError {
     InvalidChatBody,
     ChatMessageExists,
     ChatMessageNotFound,
+    PermissionDenied(GuestManagerPermission),
+    RolePermissionLimitReached,
 }
 
 impl fmt::Display for GuestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidSlot(slot) => write!(formatter, "guest slot {slot} is outside 1..=8"),
+            Self::InvalidReturnOutput(number) => {
+                write!(formatter, "return output {number} is outside 1..=4")
+            }
+            Self::InvalidAuxBus(letter) => write!(formatter, "aux bus {letter:?} is outside A..=G"),
             Self::InvalidDisplayName => formatter.write_str("display name is empty or too long"),
             Self::InvalidEchoReturnLoss => formatter.write_str("invalid echo return loss"),
             Self::InvalidExpiry => formatter.write_str("invitation expiry must be in the future"),
@@ -560,6 +656,12 @@ impl fmt::Display for GuestError {
             Self::InvalidChatBody => formatter.write_str("chat body is empty or too long"),
             Self::ChatMessageExists => formatter.write_str("chat message ID already exists"),
             Self::ChatMessageNotFound => formatter.write_str("chat message was not found"),
+            Self::PermissionDenied(required) => {
+                write!(formatter, "manager role lacks permission {required:?}")
+            }
+            Self::RolePermissionLimitReached => {
+                formatter.write_str("manager role has too many permissions")
+            }
         }
     }
 }
@@ -788,6 +890,8 @@ impl GuestManager {
                 slot,
                 connection: SessionConnection::Connected,
                 return_video: ReturnVideoSelection::default(),
+                return_audio: ReturnAudioSource::default(),
+                audio: GuestAudioControl::default(),
                 talkback: TalkbackState::default(),
                 health,
                 admitted_at_ms: now_ms,
@@ -855,6 +959,32 @@ impl GuestManager {
             .ok_or(GuestError::SessionNotFound)
     }
 
+    /// Ends every disconnected session whose reconnect window closed before
+    /// `now_ms`, freeing its slot. Returned sessions are ordered by slot.
+    ///
+    /// A guest may still reconnect at exactly `reconnect_until_ms`, so only
+    /// sessions with `now_ms > reconnect_until_ms` are removed.
+    pub fn expire_reconnect_windows(&mut self, now_ms: u64) -> Vec<GuestSession> {
+        let expired: Vec<GuestId> = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| {
+                matches!(
+                    session.connection,
+                    SessionConnection::Disconnected { reconnect_until_ms }
+                        if now_ms > reconnect_until_ms
+                )
+            })
+            .map(|(guest_id, _)| *guest_id)
+            .collect();
+        let mut removed: Vec<GuestSession> = expired
+            .into_iter()
+            .filter_map(|guest_id| self.sessions.remove(&guest_id))
+            .collect();
+        removed.sort_by_key(|session| session.slot);
+        removed
+    }
+
     #[must_use]
     pub fn session(&self, guest_id: GuestId) -> Option<&GuestSession> {
         self.sessions.get(&guest_id)
@@ -878,6 +1008,40 @@ impl GuestManager {
             .get_mut(&guest_id)
             .ok_or(GuestError::SessionNotFound)?
             .return_video = selection;
+        Ok(())
+    }
+
+    /// Selects the audio bed returned to a retained session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuestError::SessionNotFound`] for an unknown guest.
+    pub fn set_return_audio(
+        &mut self,
+        guest_id: GuestId,
+        source: ReturnAudioSource,
+    ) -> Result<(), GuestError> {
+        self.sessions
+            .get_mut(&guest_id)
+            .ok_or(GuestError::SessionNotFound)?
+            .return_audio = source;
+        Ok(())
+    }
+
+    /// Replaces a retained session's microphone mute and gain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GuestError::SessionNotFound`] for an unknown guest.
+    pub fn set_guest_audio(
+        &mut self,
+        guest_id: GuestId,
+        control: GuestAudioControl,
+    ) -> Result<(), GuestError> {
+        self.sessions
+            .get_mut(&guest_id)
+            .ok_or(GuestError::SessionNotFound)?
+            .audio = control;
         Ok(())
     }
 
@@ -917,10 +1081,13 @@ impl GuestManager {
 
     /// Builds a stable mix-minus matrix ordered by slot and guest ID.
     ///
-    /// Only connected guests participate. Every microphone feeds program and
-    /// every other guest return, but never its own return. Returns use a clean
-    /// program bed, and manager talkback can feed only its selected guest, so
-    /// talkback cannot leak to program or another guest.
+    /// Only connected guests participate. Every unmuted microphone feeds
+    /// program and every other connected guest return at its configured gain,
+    /// but never its own return. Each return starts from the clean variant of
+    /// the guest's selected return bus, and manager talkback can feed only its
+    /// selected guest, so talkback cannot leak to program or another guest.
+    /// Muted microphones produce no routes; muting does not affect what the
+    /// muted guest hears.
     #[must_use]
     pub fn mix_minus_matrix(&self) -> MixMinusMatrix {
         let mut connected: Vec<_> = self
@@ -931,25 +1098,25 @@ impl GuestManager {
         connected.sort_by_key(|session| (session.slot, session.identity.id));
 
         let mut routes = Vec::new();
-        for session in &connected {
+        for session in connected.iter().filter(|s| !s.audio.microphone_muted) {
             routes.push(MixRoute {
                 source: MixSource::GuestMicrophone(session.identity.id),
                 destination: MixDestination::Program,
-                gain: Gain::UNITY,
+                gain: session.audio.microphone_gain,
             });
         }
         for destination in &connected {
             routes.push(MixRoute {
-                source: MixSource::CleanProgram,
+                source: MixSource::CleanReturnBed(destination.return_audio),
                 destination: MixDestination::GuestReturn(destination.identity.id),
                 gain: Gain::UNITY,
             });
             for source in &connected {
-                if source.identity.id != destination.identity.id {
+                if source.identity.id != destination.identity.id && !source.audio.microphone_muted {
                     routes.push(MixRoute {
                         source: MixSource::GuestMicrophone(source.identity.id),
                         destination: MixDestination::GuestReturn(destination.identity.id),
-                        gain: Gain::UNITY,
+                        gain: source.audio.microphone_gain,
                     });
                 }
             }
@@ -1313,7 +1480,7 @@ mod tests {
         let before = manager.session(guest_id(1)).unwrap().clone();
 
         manager.disconnect_guest(guest_id(1), 10, 50).unwrap();
-        assert!(manager.mix_minus_matrix().routes().is_empty());
+        assert_eq!(manager.mix_minus_matrix().routes().len(), 0);
         manager.reconnect_guest(guest_id(1), 50).unwrap();
         let after = manager.session(guest_id(1)).unwrap();
         assert_eq!(after.slot, before.slot);
@@ -1346,7 +1513,7 @@ mod tests {
                     && route.destination == MixDestination::GuestReturn(guest)
             }));
             assert!(routes.iter().any(|route| {
-                route.source == MixSource::CleanProgram
+                route.source == MixSource::CleanReturnBed(ReturnAudioSource::Master)
                     && route.destination == MixDestination::GuestReturn(guest)
             }));
         }
