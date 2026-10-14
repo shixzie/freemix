@@ -223,8 +223,8 @@ commands = ["cargo test -p fm-data --test title_binding_preview"]
 [[tests]]
 id = "accept-gx-006"
 state = "present"
-paths = ["apps/freemix-web/tests/title_editor.rs"]
-commands = ["cargo test -p freemix-web --test title_editor"]
+paths = ["apps/freemix-web/tests/title_editor.rs", "apps/freemix-web/tests/title_bridge.rs"]
+commands = ["cargo test -p freemix-web --test title_editor", "cargo test -p freemix-web --test title_bridge"]
 [[tests]]
 id = "accept-gx-007"
 state = "present"
