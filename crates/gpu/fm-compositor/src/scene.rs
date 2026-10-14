@@ -200,6 +200,13 @@ impl LumaKey {
 /// happens after the effects; with premultiplied alpha all four channels are
 /// scaled immediately. See [`ChromaKey`] and [`LumaKey`] for the per-pixel
 /// formulas.
+///
+/// The key decision is always made on straight colour: for premultiplied
+/// layers each channel is first un-premultiplied as
+/// `(channel * 255 + alpha / 2) / alpha` (`0` when `alpha == 0`), so a
+/// semi-transparent pixel is keyed on its true colour. Spill suppression and
+/// despill operate on the stored bytes. The native GPU path does not execute
+/// keys yet and rejects keyed layers with `UnsupportedKey`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Key {
     Chroma(ChromaKey),

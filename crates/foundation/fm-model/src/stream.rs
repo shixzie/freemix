@@ -723,6 +723,10 @@ pub enum StreamTargetError {
     /// Scheme, endpoint, key and separators together exceed what the sink
     /// accepts as one URL.
     UrlTooLong,
+    /// An SRT key travels as the single `?streamid=` query value, so `&` or
+    /// `?` inside it would start another parameter or query and the URL could
+    /// never be opened.
+    InvalidSrtStreamId,
 }
 
 impl fmt::Display for StreamTargetError {
@@ -748,6 +752,9 @@ impl fmt::Display for StreamTargetError {
                 "stream destination URL must not exceed {} bytes",
                 StreamTarget::MAX_URL_BYTES
             ),
+            Self::InvalidSrtStreamId => {
+                formatter.write_str("SRT stream id must not contain `&` or `?` query separators")
+            }
         }
     }
 }
@@ -788,8 +795,8 @@ impl StreamTarget {
     /// # Errors
     ///
     /// Returns [`StreamTargetError`] when the name is blank or oversized, the
-    /// protocol/key pairing is wrong, or the composed URL would exceed what
-    /// the sink accepts.
+    /// protocol/key pairing is wrong, an SRT key contains a `&` or `?` query
+    /// separator, or the composed URL would exceed what the sink accepts.
     pub fn new(
         id: StreamTargetId,
         name: String,
@@ -809,6 +816,13 @@ impl StreamTarget {
         }
         if protocol != StreamProtocol::Hls && key.is_none() {
             return Err(StreamTargetError::MissingStreamKey);
+        }
+        if protocol == StreamProtocol::Srt
+            && key
+                .as_ref()
+                .is_some_and(|key| key.expose_secret().contains(['&', '?']))
+        {
+            return Err(StreamTargetError::InvalidSrtStreamId);
         }
         if url_bytes(protocol, &endpoint, key.as_ref()) > Self::MAX_URL_BYTES {
             return Err(StreamTargetError::UrlTooLong);

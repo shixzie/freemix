@@ -687,6 +687,57 @@ fn restart_after_failure_recovers_to_a_random_access_point() {
 }
 
 #[test]
+fn a_rejected_packet_is_discarded_so_restart_does_not_fail_on_it_again() {
+    let id = rendition_id(1);
+    let mut outputs = OutputSet::new();
+    outputs
+        .add_destination(config(1, 8, OutputProtocol::Rtmp))
+        .unwrap();
+    outputs.start(destination_id(1)).unwrap();
+    let mut sink = FakeSink::with_write_results([Err(SinkError::rejected_packet(
+        FailureStage::Protocol,
+        None,
+        "packet belongs to another rendition",
+    ))]);
+    assert_eq!(
+        outputs.poll(destination_id(1), 0, &mut sink).unwrap(),
+        PollEvent::Connected
+    );
+    outputs
+        .enqueue(destination_id(1), packet_with_random_access(id, 1, true, 3))
+        .unwrap();
+    outputs
+        .enqueue(destination_id(1), packet_with_random_access(id, 2, true, 5))
+        .unwrap();
+    assert_eq!(
+        outputs.poll(destination_id(1), 1, &mut sink).unwrap(),
+        PollEvent::Failed
+    );
+    assert_eq!(outputs.queue_depth(destination_id(1)), Some(1));
+    assert_eq!(outputs.queued_bytes(destination_id(1)), Some(5));
+    let telemetry = outputs.telemetry(destination_id(1)).unwrap();
+    assert_eq!(telemetry.rejected_packets(), 1);
+    assert_eq!(telemetry.rejected_bytes(), 3);
+    assert_eq!(telemetry.failure_count(), 1);
+    assert!(!telemetry.latest_failure().unwrap().retryable);
+
+    outputs.start(destination_id(1)).unwrap();
+    assert_eq!(
+        outputs.poll(destination_id(1), 2, &mut sink).unwrap(),
+        PollEvent::AwaitingRandomAccess {
+            dropped_packets: 0,
+            dropped_bytes: 0,
+        }
+    );
+    assert_eq!(
+        outputs.poll(destination_id(1), 3, &mut sink).unwrap(),
+        PollEvent::PacketSent { sequence: 2 }
+    );
+    assert_eq!(sink.sequences, [2]);
+    assert_eq!(outputs.queue_depth(destination_id(1)), Some(0));
+}
+
+#[test]
 fn non_retryable_primary_connection_failure_never_contacts_backup() {
     let mut outputs = OutputSet::new();
     outputs

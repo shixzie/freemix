@@ -440,11 +440,75 @@ fn straight_and_premultiplied_sources_apply_key_alpha_differently() {
                 .with_alpha_mode(AlphaMode::Premultiplied),
         ],
     );
-    // Premultiplied alpha scales RGB and alpha by the same factor immediately:
-    // 100 * 200 / 255 = 78, 200 * 200 / 255 = 157, 60 * 200 / 255 = 47.
+    // The premultiplied key decision uses straight colour: (100, 200, 60) at
+    // alpha 220 un-premultiplies to (116, 232, 70), so the key alpha is 232.
+    // Premultiplied alpha then scales RGB and alpha by that factor at once:
+    // 100 -> 91, 200 -> 182, 60 -> 55, 220 -> 200.
     assert_eq!(
         pixels(&execute_layer(&premultiplied, &source)),
-        [Rgba8::new(78, 157, 47, 173)]
+        [Rgba8::new(91, 182, 55, 200)]
+    );
+}
+
+#[test]
+fn premultiplied_keys_decide_on_straight_colour() {
+    let premultiplied_row = |key: Key| {
+        plan_with_layers(
+            2,
+            1,
+            vec![
+                SourceLayer::new(SourceId::new(1), 0, transform(0, 0, 2, 1))
+                    .with_key(key)
+                    .with_alpha_mode(AlphaMode::Premultiplied),
+            ],
+        )
+    };
+    // Half-transparent pure green, premultiplied, next to opaque green. Both
+    // are exactly the key colour in straight terms and must key out fully.
+    let green = frame(
+        2,
+        1,
+        &[Rgba8::new(0, 128, 0, 128), Rgba8::new(0, 255, 0, 255)],
+    );
+    let plan = premultiplied_row(chroma(Rgba8::new(0, 255, 0, 255), 0, 0, 0));
+    assert_eq!(
+        pixels(&execute_layer(&plan, &green)),
+        [Rgba8::new(0, 0, 0, 0), Rgba8::new(0, 0, 0, 0)]
+    );
+
+    // Half-transparent white has straight luma 255 and survives a luma key
+    // at threshold 200 just like opaque white does.
+    let white = frame(
+        2,
+        1,
+        &[
+            Rgba8::new(128, 128, 128, 128),
+            Rgba8::new(255, 255, 255, 255),
+        ],
+    );
+    let plan = premultiplied_row(luma(200, 0, false));
+    assert_eq!(
+        pixels(&execute_layer(&plan, &white)),
+        [
+            Rgba8::new(128, 128, 128, 128),
+            Rgba8::new(255, 255, 255, 255)
+        ]
+    );
+
+    // The refined keying path (identity clip, no choke) agrees.
+    let refined = plan_with_layers(
+        2,
+        1,
+        vec![
+            SourceLayer::new(SourceId::new(1), 0, transform(0, 0, 2, 1))
+                .with_key(chroma(Rgba8::new(0, 255, 0, 255), 0, 0, 0))
+                .with_key_refinement(fm_compositor::KeyRefinement::new().with_choke(0))
+                .with_alpha_mode(AlphaMode::Premultiplied),
+        ],
+    );
+    assert_eq!(
+        pixels(&execute_layer(&refined, &green)),
+        [Rgba8::new(0, 0, 0, 0), Rgba8::new(0, 0, 0, 0)]
     );
 }
 

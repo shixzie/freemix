@@ -2,9 +2,10 @@
 //! laser pointers, shortcut buttons, and premultiplied reference output.
 
 use fm_telestrator::{
-    ApplyOutcome, AuthorId, Board, BoardId, Color, LaserOutcome, LaserPointer, Limits, ModelError,
-    Operation, OperationId, OperationKind, Point, PointId, SHORTCUT_SLOTS, ShortcutBank, Stroke,
-    StrokeId, StrokeKind, StrokeStyle, ToolPreset, UndoScope,
+    ApplyOutcome, AuthorId, Board, BoardId, Color, LaserOutcome, LaserPointer, Limits,
+    MAX_RENDER_DIMENSION, ModelError, Operation, OperationId, OperationKind, Point, PointId,
+    RenderError, SHORTCUT_SLOTS, ShortcutBank, Stroke, StrokeId, StrokeKind, StrokeStyle,
+    ToolPreset, UndoScope,
 };
 
 const BOARD: BoardId = BoardId(7);
@@ -563,4 +564,28 @@ fn shortcut_bank_has_ten_bounded_slots() {
 
     custom.assign(3, None).unwrap();
     assert_eq!(custom.get(3), Ok(None));
+}
+
+#[test]
+fn render_rejects_dimensions_above_the_frame_limit_before_allocating() {
+    let board = Board::new(BOARD);
+    let too_large = MAX_RENDER_DIMENSION + 1;
+    assert_eq!(
+        board.render(too_large, 1),
+        Err(RenderError::DimensionsTooLarge)
+    );
+    assert_eq!(
+        board.render(1, too_large),
+        Err(RenderError::DimensionsTooLarge)
+    );
+    assert_eq!(
+        board.render(u32::MAX, 1),
+        Err(RenderError::DimensionsTooLarge)
+    );
+    assert_eq!(
+        board.render_with_lasers(too_large, 1, 0),
+        Err(RenderError::DimensionsTooLarge)
+    );
+    let edge = board.render(MAX_RENDER_DIMENSION, 1).unwrap();
+    assert_eq!(edge.width(), MAX_RENDER_DIMENSION);
 }

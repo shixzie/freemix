@@ -23,7 +23,20 @@ pub enum Transform {
         separator: String,
     },
     /// Replaces only `Null`; all other values pass through unchanged.
+    ///
+    /// When a binding's transform chain contains a `Fallback`, a missing
+    /// source value enters the chain as `Null`, and a `Null` source value runs
+    /// through the chain instead of short-circuiting to "missing", so the
+    /// fallback can apply. This holds for [`crate::Mapper`],
+    /// [`crate::BindingSet`], and [`crate::TitleMapper`] alike.
     Fallback(DataValue),
+}
+
+/// Whether a transform chain can replace a `Null` or missing source value.
+pub(crate) fn has_fallback(transforms: &[Transform]) -> bool {
+    transforms
+        .iter()
+        .any(|transform| matches!(transform, Transform::Fallback(_)))
 }
 
 /// A transform received an incompatible value or invalid configuration.

@@ -2,9 +2,9 @@ use fm_titles::{
     Alignment, AnimatedProperty, AnimationTrack, AssetCatalog, Bounds, ClockDirection, ClockFormat,
     ClockSpec, Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldType,
     FieldValue, FontError, FontFace, FontStyle, ImageFilter, ImageFit, ImageSource, Interpolation,
-    Keyframe, MAX_OUTPUT_WIDTH, ReferenceRenderer, RenderError, Style, TemplateId, TickerDirection,
-    TickerSpec, TitleId, TitleTemplate, UpdateError, ValidationError, evaluate_clock,
-    evaluate_ticker_position, validate_template,
+    Keyframe, MAX_FONT_SIZE_PX, MAX_OUTPUT_WIDTH, ReferenceRenderer, RenderError, Style,
+    TemplateId, TickerDirection, TickerSpec, TitleId, TitleTemplate, UpdateError, ValidationError,
+    evaluate_clock, evaluate_ticker_position, validate_template,
 };
 use std::num::NonZeroU128;
 use std::sync::mpsc;
@@ -440,6 +440,58 @@ fn text_elements_require_a_resolvable_font_style() {
             .errors
             .contains(&ValidationError::EmptyFontFamily(element_id(1)))
     );
+}
+
+#[test]
+fn font_sizes_above_the_render_limit_are_rejected_at_validation() {
+    let message = field_id(1);
+    let fields = vec![FieldDefinition {
+        id: message,
+        name: "message".into(),
+        default: FieldValue::Text("hello".into()),
+    }];
+    let mut element = Element {
+        id: element_id(1),
+        name: "text".into(),
+        bounds: Bounds {
+            x: 0,
+            y: 0,
+            width: 8,
+            height: 8,
+        },
+        z_index: 0,
+        visible: true,
+        style: style(Color::new(255, 255, 255, 255)),
+        color_field: None,
+        kind: ElementKind::Text { field: message },
+        animations: Vec::new(),
+    };
+    element.style.font = Some(FontStyle {
+        family: "Sans".into(),
+        size_px: MAX_FONT_SIZE_PX,
+    });
+    let at_limit = template(fields.clone(), vec![element.clone()], 8, 8);
+    assert_eq!(
+        validate_template(&at_limit, &AssetCatalog::new()).errors,
+        Vec::new()
+    );
+
+    element.style.font = Some(FontStyle {
+        family: "Sans".into(),
+        size_px: MAX_FONT_SIZE_PX + 1,
+    });
+    let oversized = template(fields, vec![element], 8, 8);
+    let expected = ValidationError::FontSizeTooLarge {
+        element: element_id(1),
+        size_px: MAX_FONT_SIZE_PX + 1,
+        maximum: MAX_FONT_SIZE_PX,
+    };
+    assert_eq!(
+        validate_template(&oversized, &AssetCatalog::new()).errors,
+        vec![expected.clone()]
+    );
+    let error = oversized.instantiate(title_id(1)).unwrap_err();
+    assert_eq!(error.errors, vec![expected]);
 }
 
 #[test]

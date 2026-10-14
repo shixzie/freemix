@@ -114,6 +114,7 @@ pub struct SinkError {
     code: Option<i64>,
     message: String,
     retryable: bool,
+    rejects_packet: bool,
 }
 
 impl SinkError {
@@ -129,6 +130,26 @@ impl SinkError {
             code,
             message: message.into(),
             retryable,
+            rejects_packet: false,
+        }
+    }
+
+    /// A non-retryable write failure caused by the packet itself (wrong
+    /// rendition, malformed payload, regressed sequence), not the session.
+    ///
+    /// The state machine discards the offending packet from the queue before
+    /// failing the destination, so a later `start()` resumes with the next
+    /// packet instead of failing again on the same one. The discard is
+    /// counted by [`NetworkTelemetry::rejected_packets`].
+    #[must_use]
+    pub fn rejected_packet(
+        stage: FailureStage,
+        code: Option<i64>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            rejects_packet: true,
+            ..Self::new(stage, code, message, false)
         }
     }
 
@@ -150,6 +171,13 @@ impl SinkError {
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
         self.retryable
+    }
+
+    /// Whether the sink refused this specific packet; see
+    /// [`Self::rejected_packet`].
+    #[must_use]
+    pub const fn rejects_packet(&self) -> bool {
+        self.rejects_packet
     }
 }
 
@@ -258,6 +286,8 @@ pub struct NetworkTelemetry {
     bytes_sent: u64,
     recovery_dropped_packets: u64,
     recovery_dropped_bytes: u64,
+    rejected_packets: u64,
+    rejected_bytes: u64,
     backpressure_events: u64,
     congestion_events: u64,
     retransmitted_packets: u64,
@@ -310,6 +340,19 @@ impl NetworkTelemetry {
     #[must_use]
     pub const fn recovery_dropped_bytes(&self) -> u64 {
         self.recovery_dropped_bytes
+    }
+
+    /// Packets discarded because the sink refused them as malformed for
+    /// this destination ([`SinkError::rejected_packet`]).
+    #[must_use]
+    pub const fn rejected_packets(&self) -> u64 {
+        self.rejected_packets
+    }
+
+    /// Payload bytes of [`Self::rejected_packets`].
+    #[must_use]
+    pub const fn rejected_bytes(&self) -> u64 {
+        self.rejected_bytes
     }
 
     #[must_use]
@@ -668,6 +711,18 @@ impl DestinationOutput {
                 PollEvent::Congested
             }
             Err(error) => {
+                if error.rejects_packet {
+                    // The packet itself is unsendable; keeping it at the front
+                    // would fail every later session on it until `stop()`.
+                    let packet = self.queue.pop_front().expect("front packet exists");
+                    self.queued_bytes = self.queued_bytes.saturating_sub(packet.payload.len());
+                    self.telemetry.rejected_packets =
+                        self.telemetry.rejected_packets.saturating_add(1);
+                    self.telemetry.rejected_bytes = self
+                        .telemetry
+                        .rejected_bytes
+                        .saturating_add(u64::try_from(packet.payload.len()).unwrap_or(u64::MAX));
+                }
                 sink.disconnect();
                 self.schedule_failure(now_ms, error)
             }

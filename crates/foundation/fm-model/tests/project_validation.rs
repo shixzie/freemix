@@ -1336,6 +1336,47 @@ fn remote_protocols_require_a_stream_key() {
 }
 
 #[test]
+fn srt_stream_keys_with_query_separators_are_refused() {
+    let srt = StreamEndpoint::parse_for(StreamProtocol::Srt, "ingest.example:9710").unwrap();
+    for secret in ["sk-abcdef&latency=1", "sk-abcdef?mode=caller"] {
+        assert_eq!(
+            StreamTarget::new(
+                stream_target_id(5),
+                "SRT".to_owned(),
+                StreamProtocol::Srt,
+                srt.clone(),
+                Some(StreamKey::parse(secret).unwrap()),
+                output_id(1),
+            ),
+            Err(StreamTargetError::InvalidSrtStreamId)
+        );
+        // An RTMP key is a path segment, where a query string is legitimate.
+        assert!(
+            StreamTarget::new(
+                stream_target_id(5),
+                "RTMP".to_owned(),
+                StreamProtocol::Rtmp,
+                StreamEndpoint::parse("ingest.example/live").unwrap(),
+                Some(StreamKey::parse(secret).unwrap()),
+                output_id(1),
+            )
+            .is_ok()
+        );
+    }
+    assert!(
+        StreamTarget::new(
+            stream_target_id(5),
+            "SRT".to_owned(),
+            StreamProtocol::Srt,
+            srt,
+            Some(StreamKey::parse("sk-abcdef=012345").unwrap()),
+            output_id(1),
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn stream_key_never_appears_in_debug_display_or_errors() {
     const SECRET: &str = "live-9f3c-secret-key";
     let target = StreamTarget::new(

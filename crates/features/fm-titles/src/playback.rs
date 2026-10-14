@@ -13,7 +13,10 @@
 //! A transition of `n` frames shows local frames `0..n` on the `n` engine
 //! frames starting at its start frame; the next frame is Hold (after In) or
 //! Off (after Out). A zero-length transition therefore completes on the frame
-//! that started it. Hold samples the In timeline at its final frame.
+//! that started it. Hold samples the In timeline at local frame `n` (its
+//! `duration_frames`), one past the last transition frame: keyframes may sit
+//! at `duration_frames`, and that end point is the title's resting state, so
+//! the final keyframe value is what stays on air.
 
 use crate::{Composition, TimelineSample, TitleDesign, TransitionKind};
 use core::fmt;

@@ -123,8 +123,17 @@ impl Rational {
     /// Nearest integer, with exact halves rounded toward positive infinity.
     #[must_use]
     pub const fn round_half_up(self) -> i128 {
-        // floor((2n + d) / 2d); bounded inputs keep 2n + d far from overflow.
-        (2 * self.numer + self.denom).div_euclid(2 * self.denom)
+        // floor(n/d + 1/2) without forming `2n + d`, which overflows for large
+        // numerators. With `n = q*d + r` and `0 <= r < d`, the fractional part
+        // `r/d` rounds up exactly when `r >= d - r`. A non-zero remainder
+        // implies `d >= 2`, so `q + 1` cannot overflow.
+        let quotient = self.numer.div_euclid(self.denom);
+        let remainder = self.numer.rem_euclid(self.denom);
+        if remainder != 0 && remainder >= self.denom - remainder {
+            quotient + 1
+        } else {
+            quotient
+        }
     }
 
     /// Rounds onto the grid `k / denom` using [`Self::round_half_up`].
@@ -151,9 +160,56 @@ impl Rational {
 
 impl Ord for Rational {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Denominators are positive, so cross-multiplication preserves order.
-        // Values produced by this crate stay far below the overflow bound.
-        (self.numer * other.denom).cmp(&(other.numer * self.denom))
+        // Cross-multiplication can overflow `i128` for large public inputs, so
+        // compare integer parts first and then the fractional parts through
+        // their continued-fraction expansion. Every intermediate stays within
+        // `[0, denom)` and the loop terminates like Euclid's algorithm.
+        let floor_order = self.floor().cmp(&other.floor());
+        if floor_order != Ordering::Equal {
+            return floor_order;
+        }
+        compare_fractions(
+            self.numer.rem_euclid(self.denom),
+            self.denom,
+            other.numer.rem_euclid(other.denom),
+            other.denom,
+        )
+    }
+}
+
+/// Compares `left_numer / left_denom` with `right_numer / right_denom` where
+/// both fractions lie in `[0, 1)` and both denominators are positive.
+fn compare_fractions(
+    mut left_numer: i128,
+    mut left_denom: i128,
+    mut right_numer: i128,
+    mut right_denom: i128,
+) -> Ordering {
+    // `reversed` tracks how many reciprocals have been taken: each one flips
+    // the order of the remaining comparison.
+    let mut reversed = false;
+    loop {
+        let order = match (left_numer == 0, right_numer == 0) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => {
+                // a/b < c/d  <=>  b/a > d/c; compare the reciprocals' integer
+                // parts, then recurse on their fractional parts.
+                let left_whole = left_denom / left_numer;
+                let right_whole = right_denom / right_numer;
+                if left_whole == right_whole {
+                    let next_left = (left_denom % left_numer, left_numer);
+                    let next_right = (right_denom % right_numer, right_numer);
+                    (left_numer, left_denom) = next_left;
+                    (right_numer, right_denom) = next_right;
+                    reversed = !reversed;
+                    continue;
+                }
+                left_whole.cmp(&right_whole).reverse()
+            }
+        };
+        return if reversed { order.reverse() } else { order };
     }
 }
 
@@ -184,4 +240,58 @@ const fn gcd(mut left: u128, mut right: u128) -> u128 {
         right = remainder;
     }
     if left == 0 { 1 } else { left }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordering_and_rounding_do_not_overflow_for_extreme_values() {
+        let max = Rational::new(i128::MAX, 1).unwrap();
+        let min = Rational::new(i128::MIN, 1).unwrap();
+        let half = Rational::new(1, 2).unwrap();
+        let near_max = Rational::new(i128::MAX, i128::MAX - 1).unwrap();
+        let near_one = Rational::new(i128::MAX - 1, i128::MAX).unwrap();
+
+        assert!(max > half);
+        assert!(min < half);
+        assert!(min < max);
+        assert!(near_max > Rational::ONE);
+        assert!(near_one < Rational::ONE);
+        assert!(near_one < near_max);
+        assert_eq!(max.cmp(&max), Ordering::Equal);
+        assert_eq!(near_one.cmp(&near_one), Ordering::Equal);
+
+        assert_eq!(max.round_half_up(), i128::MAX);
+        assert_eq!(min.round_half_up(), i128::MIN);
+        assert_eq!(
+            Rational::new(i128::MAX, 2).unwrap().round_half_up(),
+            i128::MAX / 2 + 1
+        );
+        assert_eq!(
+            Rational::new(i128::MIN + 1, 2).unwrap().round_half_up(),
+            i128::MIN / 2 + 1
+        );
+        assert_eq!(near_one.round_half_up(), 1);
+        assert_eq!(near_max.round_half_up(), 1);
+    }
+
+    #[test]
+    fn ordering_matches_cross_multiplication_for_small_values() {
+        let mut values = Vec::new();
+        for numer in -13..=13 {
+            for denom in 1..=7 {
+                values.push(Rational::new(numer, denom).unwrap());
+            }
+        }
+        for left in &values {
+            for right in &values {
+                let expected = (left.numer * right.denom).cmp(&(right.numer * left.denom));
+                assert_eq!(left.cmp(right), expected, "{left} vs {right}");
+            }
+            let expected = (2 * left.numer + left.denom).div_euclid(2 * left.denom);
+            assert_eq!(left.round_half_up(), expected, "{left}");
+        }
+    }
 }

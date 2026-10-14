@@ -1,6 +1,6 @@
 use crate::{
     AnimatedProperty, Element, ElementId, ElementKind, FieldId, FieldType, FieldValue, FontError,
-    FontFace, TitleScene, TitleTemplate,
+    FontFace, MAX_FONT_SIZE_PX, TitleScene, TitleTemplate,
 };
 use core::fmt;
 use fm_video::ImageFrame;
@@ -207,6 +207,13 @@ pub enum ValidationError {
     DuplicateElementId(ElementId),
     ZeroElementBounds(ElementId),
     ZeroFontSize(ElementId),
+    /// The font size exceeds [`MAX_FONT_SIZE_PX`]; rendering would refuse
+    /// the whole frame with [`crate::RenderError::FontSizeTooLarge`].
+    FontSizeTooLarge {
+        element: ElementId,
+        size_px: u32,
+        maximum: u32,
+    },
     /// A declared font family is blank and can never resolve to a face.
     EmptyFontFamily(ElementId),
     /// A text, clock, or ticker element carries no font style, so there is no
@@ -343,6 +350,13 @@ fn validate_element(
         Some(font) => {
             if font.size_px == 0 {
                 errors.push(ValidationError::ZeroFontSize(element.id));
+            }
+            if font.size_px > MAX_FONT_SIZE_PX {
+                errors.push(ValidationError::FontSizeTooLarge {
+                    element: element.id,
+                    size_px: font.size_px,
+                    maximum: MAX_FONT_SIZE_PX,
+                });
             }
             if font.family.trim().is_empty() {
                 errors.push(ValidationError::EmptyFontFamily(element.id));

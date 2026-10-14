@@ -6,7 +6,10 @@
 
 use std::{collections::BTreeMap, fmt, str::FromStr};
 
-use crate::{DataPath, DataValue, Decimal, PathError, Transform, TransformError, ValueType};
+use crate::{
+    DataPath, DataValue, Decimal, PathError, Transform, TransformError, ValueType,
+    transform::has_fallback,
+};
 
 /// The declared type of a title template field.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -273,7 +276,8 @@ pub struct TitleFieldBinding {
     pub field: String,
     pub source: DataPath,
     pub kind: TitleFieldKind,
-    /// Applied in order to a present value before coercion.
+    /// Applied in order to a present value before coercion. A chain with a
+    /// [`Transform::Fallback`] also runs on missing and `Null` values.
     pub transforms: Vec<Transform>,
     /// When `false`, a missing value without fallback is omitted, not an error.
     pub required: bool,
@@ -521,14 +525,22 @@ impl TitleMapper {
         binding: &TitleFieldBinding,
         row: &DataValue,
     ) -> Result<Resolved, TitleFieldStatus> {
+        // A `Fallback` transform must see missing and `Null` values, matching
+        // `Mapper`; without one they short-circuit to missing.
+        let chain_has_fallback = has_fallback(&binding.transforms);
         let mut value = match binding.source.extract(row) {
             Ok(value) => value.clone(),
+            Err(PathError::MissingField { .. } | PathError::MissingIndex { .. })
+                if chain_has_fallback =>
+            {
+                DataValue::Null
+            }
             Err(PathError::MissingField { .. } | PathError::MissingIndex { .. }) => {
                 return Ok(Resolved::Missing);
             }
             Err(error) => return Err(TitleFieldStatus::Path(error)),
         };
-        if value.is_null() {
+        if value.is_null() && !chain_has_fallback {
             return Ok(Resolved::Missing);
         }
         for transform in &binding.transforms {

@@ -14,7 +14,7 @@ use crate::{
     CoercionError, CoercionPolicy, DataPath, DataValue, DateTimeFormat, Decimal, FormatError,
     NumberFormat, PathError, RowCursor, RowSelectionError, TitleColor, TitleFieldKind,
     TitleFieldValue, Transform, TransformError, ValueType, coerce_title_value,
-    format::numeric_value,
+    format::numeric_value, transform::has_fallback,
 };
 
 // ---------------------------------------------------------------- visibility
@@ -722,14 +722,22 @@ impl BindingSet {
             }
             _ => Ok(None),
         };
+        // A `Fallback` transform must see missing and `Null` values, matching
+        // `Mapper`; without one they short-circuit to missing.
+        let chain_has_fallback = has_fallback(&binding.transforms);
         let mut value = match binding.source.extract(row) {
             Ok(value) => value.clone(),
+            Err(PathError::MissingField { .. } | PathError::MissingIndex { .. })
+                if chain_has_fallback =>
+            {
+                DataValue::Null
+            }
             Err(PathError::MissingField { .. } | PathError::MissingIndex { .. }) => {
                 return missing(&binding.kind);
             }
             Err(error) => return Err(BindingError::Path(error)),
         };
-        if !value.is_null() {
+        if chain_has_fallback || !value.is_null() {
             for transform in &binding.transforms {
                 value = transform
                     .apply(value, row)

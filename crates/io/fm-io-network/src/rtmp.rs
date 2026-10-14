@@ -211,6 +211,33 @@ impl StreamKey {
         }
         Ok(Self(value))
     }
+
+    /// Like [`Self::new`], additionally refusing a key the given protocol can
+    /// never carry.
+    ///
+    /// An SRT key is rendered as the single `?streamid=` query value, so a key
+    /// containing `&` or `?` would split into extra parameters and
+    /// [`StreamDestination::parse`] refuses the URL on every connect. RTMP
+    /// keys are a final path segment where a query string is legitimate.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`Self::new`] rejects, plus
+    /// [`RtmpConfigError::InvalidSrtStreamId`].
+    pub fn for_protocol(
+        protocol: OutputProtocol,
+        value: impl Into<String>,
+    ) -> Result<Self, RtmpConfigError> {
+        let key = Self::new(value)?;
+        if !key.fits(protocol) {
+            return Err(RtmpConfigError::InvalidSrtStreamId);
+        }
+        Ok(key)
+    }
+
+    fn fits(&self, protocol: OutputProtocol) -> bool {
+        protocol != OutputProtocol::Srt || !self.0.contains(['&', '?'])
+    }
 }
 
 impl fmt::Debug for StreamKey {
@@ -223,11 +250,18 @@ impl fmt::Debug for StreamKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RtmpConfigError {
     InvalidStreamKey,
+    /// An SRT stream id containing `&` or `?`; see [`StreamKey::for_protocol`].
+    InvalidSrtStreamId,
 }
 
 impl fmt::Display for RtmpConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("stream key is not one redactable printable path segment")
+        formatter.write_str(match self {
+            Self::InvalidStreamKey => "stream key is not one redactable printable path segment",
+            Self::InvalidSrtStreamId => {
+                "SRT stream id must not contain `&` or `?` query separators"
+            }
+        })
     }
 }
 
@@ -548,6 +582,17 @@ impl FfmpegRtmpSink {
             OutputProtocol::Srt => {
                 let mut url = format!("srt://{host}:{}", endpoint.port());
                 if let Some(key) = &self.config.stream_key {
+                    // A key built with `StreamKey::new` was not checked
+                    // against the protocol; refuse it with a precise,
+                    // key-free reason instead of a generic URL rejection.
+                    if !key.fits(OutputProtocol::Srt) {
+                        return Err(SinkError::new(
+                            FailureStage::Protocol,
+                            None,
+                            RtmpConfigError::InvalidSrtStreamId.to_string(),
+                            false,
+                        ));
+                    }
                     url.push_str("?streamid=");
                     url.push_str(&key.0);
                 }
@@ -747,8 +792,9 @@ impl Drop for FfmpegRtmpSink {
     }
 }
 
+/// A refusal of one packet: the queue discards it and the destination fails.
 fn terminal_packet(message: impl Into<String>) -> SinkError {
-    SinkError::new(FailureStage::Protocol, None, message, false)
+    SinkError::rejected_packet(FailureStage::Protocol, None, message)
 }
 
 /// Matches the child's redacted output against the recognized causes.
@@ -975,5 +1021,33 @@ mod tests {
             url.redacted()
                 .starts_with("rtmp://stream.example.test:1935/live/")
         );
+    }
+
+    #[test]
+    fn srt_stream_ids_with_query_separators_are_refused_at_config_time() {
+        for key in ["secret&latency=1", "secret?streamid=x"] {
+            assert_eq!(
+                StreamKey::for_protocol(OutputProtocol::Srt, key),
+                Err(RtmpConfigError::InvalidSrtStreamId)
+            );
+            // RTMP keys are a path segment where a query string is legal.
+            assert!(StreamKey::for_protocol(OutputProtocol::Rtmp, key).is_ok());
+
+            // A key built without the protocol check is refused with the
+            // precise, key-free reason before any child exists.
+            let sink = sink(Some(key));
+            let endpoint = Endpoint::new("stream.example.test", 9_710, "/live").unwrap();
+            let error = sink
+                .destination_url(&destination(OutputProtocol::Srt, &endpoint), &endpoint)
+                .unwrap_err();
+            assert_eq!(error.stage(), FailureStage::Protocol);
+            assert!(!error.is_retryable());
+            assert_eq!(
+                error.message(),
+                RtmpConfigError::InvalidSrtStreamId.to_string()
+            );
+            assert!(!error.message().contains("secret"));
+        }
+        assert!(StreamKey::for_protocol(OutputProtocol::Srt, "secret-key=1").is_ok());
     }
 }

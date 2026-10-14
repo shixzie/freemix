@@ -495,6 +495,13 @@ pub enum LaserOutcome {
 /// Number of production shortcut buttons.
 pub const SHORTCUT_SLOTS: usize = 10;
 
+/// Largest width or height, in pixels, that [`Board::render`] accepts.
+///
+/// Matches `fm_frame::CpuVideoPayload::MAX_WIDTH`/`MAX_HEIGHT` so every
+/// renderable layer can be routed into the compositor, and bounds the RGBA
+/// allocation to 1 GiB.
+pub const MAX_RENDER_DIMENSION: u32 = 16_384;
+
 /// A tool selection bound to a shortcut button.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ToolPreset {
@@ -1186,8 +1193,8 @@ impl Board {
     /// # Errors
     ///
     /// Returns [`RenderError::EmptyDimensions`] for a zero dimension or
-    /// [`RenderError::DimensionsTooLarge`] if the RGBA allocation size
-    /// overflows `usize`.
+    /// [`RenderError::DimensionsTooLarge`] if either dimension exceeds
+    /// [`MAX_RENDER_DIMENSION`] or the RGBA allocation size overflows `usize`.
     pub fn render(&self, width: u32, height: u32) -> Result<RenderLayer, RenderError> {
         let mut layer = RenderLayer::new(width, height)?;
         for stroke in &self.strokes {
@@ -1273,6 +1280,9 @@ impl RenderLayer {
     fn new(width: u32, height: u32) -> Result<Self, RenderError> {
         if width == 0 || height == 0 {
             return Err(RenderError::EmptyDimensions);
+        }
+        if width > MAX_RENDER_DIMENSION || height > MAX_RENDER_DIMENSION {
+            return Err(RenderError::DimensionsTooLarge);
         }
         let len = usize::try_from(width)
             .ok()

@@ -9,7 +9,8 @@ use fm_data::{
     DateInput, DatePattern, DateTimeFormat, Decimal, DecimalRounding, EdgeBehavior, FieldChange,
     FormatError, ImageUriError, ImageUriPolicy, NumberFormat, ParseLimits, PreviewError,
     PreviewState, RowBindingError, RowCursor, RowNavigation, SignStyle, StagePolicy, Timestamp,
-    TitleColor, TruthyRule, UtcOffset, VisibilityError, VisibilityRule, parse_json, rows_at,
+    TitleColor, TitleFieldBinding, TitleFieldKind, TitleFieldStatus, TitleFieldValue, TitleMapper,
+    Transform, TruthyRule, UtcOffset, VisibilityError, VisibilityRule, parse_json, rows_at,
 };
 
 fn path(text: &str) -> DataPath {
@@ -744,4 +745,68 @@ fn preview_detects_stale_stage_and_keeps_live_on_error() {
     let outcome = state.apply_direct(&empty).unwrap();
     assert_eq!(outcome.changes.len(), 3);
     assert!(state.live().is_empty());
+}
+
+// ---------------------------------------------------------------- fallback transform
+
+#[test]
+fn fallback_transform_applies_to_null_and_missing_values_in_bindings_and_title_mapper() {
+    let fallback = Transform::Fallback(DataValue::from("TBD"));
+    let set = BindingSet::new(
+        vec![
+            DataBinding::new("Name", path("name"), BindingKind::Text)
+                .with_transform(fallback.clone()),
+        ],
+        CoercionPolicy::default(),
+    )
+    .unwrap();
+    let mapper = TitleMapper::new(
+        vec![
+            TitleFieldBinding::new("Name", path("name"), TitleFieldKind::Text)
+                .with_transform(fallback),
+        ],
+        CoercionPolicy::default(),
+    )
+    .unwrap();
+
+    for row in [r#"{"name":null}"#, r#"{"other":1}"#] {
+        let row = json(row);
+        let report = set.map_row(&row);
+        assert_eq!(
+            report.values.get("Name"),
+            Some(&BoundValue::Text("TBD".into())),
+            "{row:?}"
+        );
+        assert_eq!(report.fields[0].status, BindingStatus::Mapped);
+
+        let report = mapper.map_row(&row);
+        assert_eq!(
+            report.values.get("Name"),
+            Some(&TitleFieldValue::Text("TBD".into())),
+            "{row:?}"
+        );
+        assert_eq!(report.fields[0].status, TitleFieldStatus::Mapped);
+    }
+
+    // A present value passes through the fallback unchanged.
+    let row = json(r#"{"name":"Ada"}"#);
+    assert_eq!(
+        set.map_row(&row).values.get("Name"),
+        Some(&BoundValue::Text("Ada".into()))
+    );
+    assert_eq!(
+        mapper.map_row(&row).values.get("Name"),
+        Some(&TitleFieldValue::Text("Ada".into()))
+    );
+
+    // Without a fallback transform, null and missing still read as missing.
+    let plain = BindingSet::new(
+        vec![DataBinding::new("Name", path("name"), BindingKind::Text)],
+        CoercionPolicy::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        plain.map_row(&json(r#"{"name":null}"#)).fields[0].status,
+        BindingStatus::Missing
+    );
 }

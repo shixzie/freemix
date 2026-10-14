@@ -8,7 +8,7 @@ use core::fmt;
 
 use fm_video::{CropRect, FrameError, ImageFrame, Rgba8};
 
-use crate::cpu::{apply_spill, key_factor, mask_factor, multiply_u8};
+use crate::cpu::{apply_spill, key_factor, mask_factor, multiply_u8, straight_key_color};
 use crate::{AlphaMode, ChromaKey, Key, LumaKey, RectMask, SourceId};
 
 /// Maximum number of pixels an auto key reads from one frame. Larger regions
@@ -585,7 +585,9 @@ pub(crate) fn apply_layer_keying(
                 key_factor(pixel, Key::Luma(luma))
             } else {
                 let pixel = source.pixel(x, y).ok_or(FrameError::LayoutOverflow)?;
-                key.map_or(u8::MAX, |key| key_factor(pixel, key))
+                key.map_or(u8::MAX, |key| {
+                    key_factor(straight_key_color(pixel, alpha_mode), key)
+                })
             };
             matte.push(refinement.clip(alpha));
         }

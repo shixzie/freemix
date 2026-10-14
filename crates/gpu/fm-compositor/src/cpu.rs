@@ -433,7 +433,9 @@ fn apply_key_and_mask(
     for y in 0..source.height() {
         for x in 0..source.width() {
             let pixel = source.pixel(x, y).ok_or(FrameError::LayoutOverflow)?;
-            let key_alpha = key.map_or(u8::MAX, |key| key_factor(pixel, key));
+            let key_alpha = key.map_or(u8::MAX, |key| {
+                key_factor(straight_key_color(pixel, alpha_mode), key)
+            });
             let mask_alpha = mask.map_or(u8::MAX, |mask| mask_factor(x, y, mask));
             let factor = multiply_u8(key_alpha, mask_alpha);
             let mut adjusted = apply_spill(pixel, key, key_alpha);
@@ -461,13 +463,7 @@ fn apply_key_and_mask(
 /// (`channel <= alpha`) premultiplying the result restores the input exactly;
 /// a zero-alpha pixel becomes transparent black.
 fn unpremultiply_alpha(source: &ImageFrame) -> Result<ImageFrame, FrameError> {
-    let unpremultiply = |channel: u8, alpha: u8| {
-        if alpha == 0 {
-            return 0;
-        }
-        let value = (u16::from(channel) * 255 + u16::from(alpha) / 2) / u16::from(alpha);
-        u8::try_from(value).unwrap_or(u8::MAX)
-    };
+    let unpremultiply = unpremultiply_channel;
     let mut bytes = Vec::with_capacity(source.pixels().len());
     for y in 0..source.height() {
         for x in 0..source.width() {
@@ -486,6 +482,37 @@ fn unpremultiply_alpha(source: &ImageFrame) -> Result<ImageFrame, FrameError> {
         source.width() as usize * 4,
         bytes,
     )
+}
+
+/// `round(channel * 255 / alpha)`, saturating; zero alpha yields `0`.
+fn unpremultiply_channel(channel: u8, alpha: u8) -> u8 {
+    if alpha == 0 {
+        return 0;
+    }
+    let value = (u16::from(channel) * 255 + u16::from(alpha) / 2) / u16::from(alpha);
+    u8::try_from(value).unwrap_or(u8::MAX)
+}
+
+/// The straight colour a chroma or luma key decision is made on.
+///
+/// Keys are defined on straight colour: for premultiplied layers the RGB is
+/// un-premultiplied first (same rounding as the effect path), so a
+/// semi-transparent pixel is keyed on its true colour rather than a darkened
+/// one. A fully transparent premultiplied pixel reads as black; its alpha is
+/// already zero, so the key result cannot change its output. Spill and
+/// despill stay on the stored bytes: both are linear per pixel and only ever
+/// move a channel toward another channel, so premultiplied input stays
+/// premultiplied.
+pub(crate) fn straight_key_color(pixel: Rgba8, alpha_mode: AlphaMode) -> Rgba8 {
+    match alpha_mode {
+        AlphaMode::Straight => pixel,
+        AlphaMode::Premultiplied => Rgba8::new(
+            unpremultiply_channel(pixel.r, pixel.a),
+            unpremultiply_channel(pixel.g, pixel.a),
+            unpremultiply_channel(pixel.b, pixel.a),
+            pixel.a,
+        ),
+    }
 }
 
 pub(crate) fn key_factor(pixel: Rgba8, key: Key) -> u8 {

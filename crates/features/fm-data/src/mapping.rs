@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, fmt};
 
-use crate::{DataPath, DataValue, PathError, Transform, TransformError, ValueType};
+use crate::{
+    DataPath, DataValue, PathError, Transform, TransformError, ValueType, transform::has_fallback,
+};
 
 /// Maps one source path into one named output field.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,10 +116,7 @@ fn map_field(binding: &FieldBinding, root: &DataValue) -> Result<Option<DataValu
     let mut value = match binding.source.extract(root) {
         Ok(value) => value.clone(),
         Err(PathError::MissingField { .. } | PathError::MissingIndex { .. })
-            if binding
-                .transforms
-                .iter()
-                .any(|transform| matches!(transform, Transform::Fallback(_))) =>
+            if has_fallback(&binding.transforms) =>
         {
             DataValue::Null
         }
