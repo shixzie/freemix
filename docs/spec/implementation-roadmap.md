@@ -1321,6 +1321,20 @@ strips, protocol, daemon, or Studio; there is no device ancillary-data
 extraction, composite or Lt/Rt downmix, or hardware evidence. `AU-003`
 remains planned.
 
+Current implementation boundary for secondary mixes (`IN-023`): `fm-switcher`
+provides a deterministic `MixBank` with Main plus fifteen addressable
+secondary mixes, each with its own preview/program, cuts, timed transitions,
+and output-only mode, and every command is validated before any state
+changes. Mix-to-mix routing refuses cycles through program, preview, or a
+running transition and follows one timing rule: a read of another mix sees
+that mix's previous frame, frame zero reads black, and delays accumulate along
+a chain. Overlay and stinger effects target one or several mixes and apply all
+or nothing at the next frame boundary. Remaining gaps: the bank is not wired
+to `fm-engine`, the protocol, persistence, the compositor, or Studio, so no
+secondary-mix output renders; stinger effects do not check slot readiness or
+fallback; and overlay fades, mix-sourced overlays, T-bar, Fade-to-Black, and
+audio are absent. `IN-023` remains planned.
+
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
