@@ -6,11 +6,16 @@
 
 mod coordinator;
 mod format;
+mod iso;
 mod types;
 
 pub use coordinator::{
     DurableWriter, ReconciliationFailure, ReconciliationReport, RecorderCoordinator,
     StdWriterFactory, WriterFactory, repair_recording,
+};
+pub use iso::{
+    ISO_MANIFEST_NAME, IsoManifestEntry, IsoManifestError, IsoTapConfig, IsoTapError,
+    IsoTapSession, IsoTapSnapshot, MAX_ISO_TAPS, parse_iso_manifest, render_iso_manifest_entries,
 };
 pub use types::{
     ActionOutcome, ActionReceiptId, AppendError, AudioPacketMetadata, Discontinuity, EnqueueError,
