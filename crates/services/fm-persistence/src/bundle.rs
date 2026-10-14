@@ -1,13 +1,17 @@
 //! Self-contained portable bundles and projects instantiated from templates.
 //!
 //! Both operations copy a source bundle's durable manifest and exactly the
-//! assets its media inputs reference into a brand-new destination bundle.
+//! assets its media and title inputs reference (title templates, their fonts
+//! and image defaults, and title image values) into a brand-new destination
+//! bundle. Title asset keys are never rewritten: a title key that would need a
+//! portable rename refuses the export with
+//! [`BundleError::TitleAssetRewriteUnsupported`].
 //! The destination is assembled in a hidden staging sibling and published with
 //! one directory rename, so a failure never leaves a partial bundle at the
 //! destination, and an existing destination is never overwritten.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -21,6 +25,7 @@ use crate::{
     fsutil,
     media::{FoldedKeys, asset_uri, portable_key, suffixed_key},
     store::{next_temp_sequence, parent_directory, sync_directory},
+    title_template::template_issue,
 };
 
 const MAX_PORTABLE_SUFFIX: u32 = 10_000;
@@ -130,7 +135,18 @@ fn export_bundle(
         return Err(BundleError::DestinationInsideSource(target.to_path_buf()));
     }
 
-    let mapping = portable_mapping(&stored)?;
+    let title_uris = source
+        .title_asset_uris(stored.project())
+        .map_err(|(input, error)| {
+            BundleError::UnresolvedAssets(vec![template_issue(input, &error)])
+        })?;
+    let mapping = portable_mapping(&stored, &title_uris)?;
+    if let Some((uri, _)) = mapping
+        .iter()
+        .find(|(uri, bundled)| title_uris.contains(*uri) && uri != bundled)
+    {
+        return Err(BundleError::TitleAssetRewriteUnsupported { uri: uri.clone() });
+    }
     let mut project = stored.project().clone();
     let mut rewritten_inputs = Vec::new();
     for input in stored.project().inputs() {
@@ -176,8 +192,14 @@ fn export_bundle(
 
 /// Maps each distinct referenced URI to its portable URI. Keys are processed
 /// in sorted order, so the first of a case-folded clash keeps its name.
-fn portable_mapping(stored: &StoredProject) -> Result<BTreeMap<String, String>, BundleError> {
-    let mut uris = BTreeMap::new();
+fn portable_mapping(
+    stored: &StoredProject,
+    title_uris: &BTreeSet<String>,
+) -> Result<BTreeMap<String, String>, BundleError> {
+    let mut uris = title_uris
+        .iter()
+        .map(|uri| (uri.clone(), String::new()))
+        .collect::<BTreeMap<_, _>>();
     for input in stored.project().inputs() {
         if let InputKind::Media { asset_uri: uri } = &input.kind {
             uris.insert(uri.clone(), String::new());

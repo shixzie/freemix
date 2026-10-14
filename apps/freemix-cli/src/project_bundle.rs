@@ -13,11 +13,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use fm_model::InputKind;
+use fm_model::{InputKind, TitleInput};
 use fm_persistence::{
     AppendedAssetDisposition, AssetAuditReason, AssetDisposition, AutosaveRejection, BundleError,
     BundleExport, MAX_RECENT_PROJECTS, ProjectStore, RecentProjectStatus, RecentProjects,
-    RelinkResolution, RelinkSearch, StoredProject,
+    RelinkResolution, RelinkSearch, StoredProject, title_field_defaults,
 };
 
 use crate::app::{
@@ -92,6 +92,7 @@ pub const fn audit_reason_name(reason: AssetAuditReason) -> &'static str {
         AssetAuditReason::MissingAsset => "missing-asset",
         AssetAuditReason::OutsideAssetsRoot => "outside-assets-root",
         AssetAuditReason::NotRegularFile => "not-regular-file",
+        AssetAuditReason::UnreadableTitleTemplate => "unreadable-title-template",
     }
 }
 
@@ -209,6 +210,62 @@ pub fn import_media(
         )?;
     }
     Ok(())
+}
+
+/// Imports a title template with its fonts and adds a title input showing the
+/// template's default field values.
+pub fn title_input_add(
+    path: &Path,
+    input: u128,
+    name: String,
+    template: &Path,
+    fonts: &[(String, PathBuf)],
+) -> AppResult<()> {
+    let store = ProjectStore::new(path)?;
+    // Refuse a non-bundle or a taken id before copying anything.
+    let stored = load_stored_project(path)?;
+    let input = input_id(input)?;
+    if stored
+        .project()
+        .inputs()
+        .iter()
+        .any(|existing| existing.id == input)
+    {
+        return Err(AppFailure(format!("input {input} already exists")).into());
+    }
+    let imported = store
+        .import_title_template(template, fonts)
+        .map_err(|error| AppFailure(format!("title template import failed: {error}")))?;
+    println!(
+        "title-input-add: template {} {}",
+        imported.template_uri,
+        disposition_name(imported.disposition)
+    );
+    for font in &imported.fonts {
+        println!(
+            "font {:?} {} {}",
+            font.family,
+            font.asset_uri,
+            disposition_name(font.disposition)
+        );
+    }
+    add_input_with_kind(
+        path,
+        input,
+        name,
+        InputKind::Title(TitleInput {
+            template_uri: imported.template_uri,
+            field_revision: 0,
+            fields: title_field_defaults(&imported.stored.template),
+        }),
+    )
+}
+
+fn disposition_name(disposition: AssetDisposition) -> String {
+    match disposition {
+        AssetDisposition::Copied { bytes } => format!("copied bytes={bytes}"),
+        AssetDisposition::Reused => "reused".to_owned(),
+    }
 }
 
 pub fn relink(path: &Path, search: Vec<PathBuf>, apply: bool) -> AppResult<()> {

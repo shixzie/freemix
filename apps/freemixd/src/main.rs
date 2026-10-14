@@ -6289,6 +6289,7 @@ impl NativeDaemon {
 }
 
 #[cfg(feature = "native-media")]
+#[allow(clippy::too_many_lines)]
 fn resolve_native_sources(
     store: &ProjectStore,
     stored: &StoredProject,
@@ -6362,6 +6363,11 @@ fn resolve_native_sources(
             // Model-only so far: refuse rather than play some other picture.
             InputKind::Alias { .. } | InputKind::MixFeed(_) => Err(AppFailure(format!(
                 "native alias or program/preview feed input {} is not yet realized",
+                input.id
+            ))
+            .into()),
+            InputKind::Title(_) => Err(AppFailure(format!(
+                "native title input {} is not yet realized",
                 input.id
             ))
             .into()),

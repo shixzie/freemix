@@ -2813,3 +2813,250 @@ fn removing_a_locked_input_drops_its_lock() {
     assert!(project.is_input_locked(input_id(1)));
     assert_eq!(project.validate(), Ok(()));
 }
+
+fn title_field(id: u128, value: fm_model::TitleFieldValue) -> fm_model::TitleFieldEntry {
+    fm_model::TitleFieldEntry {
+        id: fm_model::TitleFieldId::new(NonZeroU128::new(id).unwrap()),
+        value,
+    }
+}
+
+fn title_project(fields: Vec<fm_model::TitleFieldEntry>) -> Project {
+    let mut project = valid_project();
+    project.add_input(Input {
+        id: input_id(9),
+        name: "Lower third".into(),
+        kind: InputKind::Title(fm_model::TitleInput {
+            template_uri: "asset://titles/lower-third.fmtitle".into(),
+            field_revision: 3,
+            fields,
+        }),
+        required_capabilities: Vec::new(),
+    });
+    project
+}
+
+fn title_errors(project: &Project) -> Vec<(&'static str, ValidationErrorKind)> {
+    project
+        .validate()
+        .err()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|error| {
+            assert_eq!(error.entity, Some(EntityRef::Input(input_id(9))));
+            (error.field, error.kind)
+        })
+        .collect()
+}
+
+#[test]
+fn title_inputs_validate_every_field_kind_and_stay_leaves() {
+    use fm_model::{
+        AudioRoute, MixFeedHistory, MixSelection, RenderSource, SourceResolver, TitleFieldValue,
+    };
+
+    let project = title_project(vec![
+        title_field(1, TitleFieldValue::Text("Jane Doe".into())),
+        title_field(2, TitleFieldValue::Number(-4)),
+        title_field(
+            3,
+            TitleFieldValue::Color(Rgba8::new(0x11, 0x22, 0x33, 0xff)),
+        ),
+        title_field(
+            4,
+            TitleFieldValue::Image {
+                asset_uri: "asset://images/logo.png".into(),
+            },
+        ),
+    ]);
+    project.validate().unwrap();
+    assert_eq!(project.input_reference(input_id(9)), None);
+
+    let resolver = SourceResolver::new(&project);
+    let history = MixFeedHistory::<()>::new();
+    let context = resolver
+        .context(
+            MixSelection {
+                program: input_id(9),
+                preview: input_id(1),
+            },
+            &history,
+        )
+        .unwrap();
+    let title_source = context.resolve_input(input_id(9)).unwrap();
+    assert_eq!(title_source.source, RenderSource::Input(input_id(9)));
+    assert_eq!(title_source.alias_chain, Vec::<InputId>::new());
+    assert_eq!(resolver.resolve_audio(input_id(9)), Ok(AudioRoute::Silence));
+}
+
+#[test]
+fn title_inputs_refuse_out_of_bounds_and_misordered_fields() {
+    use fm_model::{
+        MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELDS, MAX_TITLE_TEXT_CHARS, TitleFieldValue,
+    };
+
+    let mut blank_template = title_project(Vec::new());
+    blank_template
+        .replace_input_source(
+            input_id(9),
+            InputKind::Title(fm_model::TitleInput {
+                template_uri: "   ".into(),
+                field_revision: 0,
+                fields: Vec::new(),
+            }),
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        title_errors(&blank_template),
+        [("kind.title.template_uri", ValidationErrorKind::Empty)]
+    );
+
+    let too_many = (1..=u128::try_from(MAX_TITLE_FIELDS).unwrap() + 1)
+        .map(|id| title_field(id, TitleFieldValue::Number(0)))
+        .collect();
+    assert_eq!(
+        title_errors(&title_project(too_many)),
+        [("kind.title.fields", ValidationErrorKind::OutOfRange)]
+    );
+    let at_limit = (1..=u128::try_from(MAX_TITLE_FIELDS).unwrap())
+        .map(|id| title_field(id, TitleFieldValue::Number(0)))
+        .collect();
+    title_project(at_limit).validate().unwrap();
+
+    // Multibyte text counts characters, not bytes.
+    title_project(vec![title_field(
+        1,
+        TitleFieldValue::Text("é".repeat(MAX_TITLE_TEXT_CHARS)),
+    )])
+    .validate()
+    .unwrap();
+    assert_eq!(
+        title_errors(&title_project(vec![title_field(
+            1,
+            TitleFieldValue::Text("x".repeat(MAX_TITLE_TEXT_CHARS + 1)),
+        )])),
+        [("kind.title.fields.value", ValidationErrorKind::OutOfRange)]
+    );
+
+    let filler = "x".repeat(MAX_TITLE_TEXT_CHARS);
+    let mut content = (1..=3)
+        .map(|id| title_field(id, TitleFieldValue::Text(filler.clone())))
+        .collect::<Vec<_>>();
+    assert_eq!(3 * MAX_TITLE_TEXT_CHARS, MAX_TITLE_CONTENT_BYTES);
+    title_project(content.clone()).validate().unwrap();
+    content.push(title_field(
+        4,
+        TitleFieldValue::Image {
+            asset_uri: "a".into(),
+        },
+    ));
+    assert_eq!(
+        title_errors(&title_project(content)),
+        [("kind.title.fields", ValidationErrorKind::OutOfRange)]
+    );
+
+    assert_eq!(
+        title_errors(&title_project(vec![title_field(
+            1,
+            TitleFieldValue::Image {
+                asset_uri: " ".into()
+            },
+        )])),
+        [("kind.title.fields.asset_uri", ValidationErrorKind::Empty)]
+    );
+    assert_eq!(
+        title_errors(&title_project(vec![
+            title_field(2, TitleFieldValue::Number(1)),
+            title_field(1, TitleFieldValue::Number(2)),
+        ])),
+        [("kind.title.fields.id", ValidationErrorKind::OutOfOrder)]
+    );
+    assert_eq!(
+        title_errors(&title_project(vec![
+            title_field(1, TitleFieldValue::Number(1)),
+            title_field(1, TitleFieldValue::Number(2)),
+        ])),
+        [("kind.title.fields.id", ValidationErrorKind::DuplicateId)]
+    );
+}
+
+#[test]
+fn set_title_fields_replaces_values_atomically() {
+    use fm_model::{SetTitleFieldsError, TitleFieldValue, TitleFieldsError, TitleInput};
+
+    let mut project = title_project(vec![title_field(1, TitleFieldValue::Number(1))]);
+    let title = |project: &Project| match &project
+        .inputs()
+        .iter()
+        .find(|input| input.id == input_id(9))
+        .unwrap()
+        .kind
+    {
+        InputKind::Title(title) => title.clone(),
+        _ => unreachable!(),
+    };
+
+    project
+        .set_title_fields(
+            input_id(9),
+            4,
+            vec![
+                title_field(1, TitleFieldValue::Number(7)),
+                title_field(2, TitleFieldValue::Text("Live".into())),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        title(&project),
+        TitleInput {
+            template_uri: "asset://titles/lower-third.fmtitle".into(),
+            field_revision: 4,
+            fields: vec![
+                title_field(1, TitleFieldValue::Number(7)),
+                title_field(2, TitleFieldValue::Text("Live".into())),
+            ],
+        }
+    );
+    // The same revision may be rewritten; an older one may not.
+    project
+        .set_title_fields(
+            input_id(9),
+            4,
+            vec![title_field(1, TitleFieldValue::Number(8))],
+        )
+        .unwrap();
+    let before = project.clone();
+    assert_eq!(
+        project.set_title_fields(input_id(9), 3, Vec::new()),
+        Err(SetTitleFieldsError::RevisionRegressed {
+            current: 4,
+            requested: 3,
+        })
+    );
+    assert_eq!(
+        project.set_title_fields(
+            input_id(9),
+            5,
+            vec![
+                title_field(2, TitleFieldValue::Number(1)),
+                title_field(1, TitleFieldValue::Number(1)),
+            ],
+        ),
+        Err(SetTitleFieldsError::InvalidFields(
+            TitleFieldsError::OutOfOrder {
+                previous: fm_model::TitleFieldId::new(NonZeroU128::new(2).unwrap()),
+                next: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
+            }
+        ))
+    );
+    assert_eq!(
+        project.set_title_fields(input_id(77), 5, Vec::new()),
+        Err(SetTitleFieldsError::UnknownInput(input_id(77)))
+    );
+    assert_eq!(
+        project.set_title_fields(input_id(1), 5, Vec::new()),
+        Err(SetTitleFieldsError::NotTitleInput(input_id(1)))
+    );
+    assert_eq!(project, before);
+}

@@ -1397,6 +1397,13 @@ pub fn run(command: Command) -> AppResult<()> {
             search,
             apply,
         } => project_bundle::relink(&path, search, apply)?,
+        Command::TitleInputAdd {
+            path,
+            input,
+            name,
+            template,
+            fonts,
+        } => project_bundle::title_input_add(&path, input, name, &template, &fonts)?,
         Command::ProjectAutosave { path, keep } => project_bundle::autosave(&path, keep)?,
         Command::ProjectRecover { path, restore } => project_bundle::recover(&path, restore)?,
         Command::RecentProjects { file } => project_bundle::list_recent(&file)?,
@@ -3591,6 +3598,12 @@ fn print_inputs(project: &Project) {
                 " scene_id={scene_id} audio_source={}",
                 audio_source.map_or_else(|| "none".to_owned(), |input| input.to_string()),
             ),
+            InputKind::Title(title) => format!(
+                " template={} field_revision={} fields={}",
+                title.template_uri,
+                title.field_revision,
+                title.fields.len(),
+            ),
             _ => String::new(),
         };
         let strip = project.input_audio_strip(input.id).map_or_else(
@@ -3773,6 +3786,7 @@ const fn input_kind_name(kind: &InputKind) -> &'static str {
         InputKind::Alias { .. } => "alias",
         InputKind::MixFeed(fm_model::MixFeed::Program) => "program-feed",
         InputKind::MixFeed(fm_model::MixFeed::Preview) => "preview-feed",
+        InputKind::Title(_) => "title",
     }
 }
 
@@ -3921,6 +3935,15 @@ Usage:
   freemix-cli simulated-solid-input-add <show.freemix> <nonzero-input-id> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255>
   freemix-cli media-input-add <show.freemix> <nonzero-input-id> <name> <asset://key>
   freemix-cli media-input-relink <show.freemix> <existing-media-input-id> <asset://key>
+  freemix-cli title-input-add <show.freemix> --id <nonzero-input-id> --name <name> --template <source.fmtitle> [--font <Family=path.ttf>]...
+      Imports a title template and adds a title input showing its default
+      field values (field_revision 0). The source is a .fmtitle document in
+      the stored format (schema_version equal to the current project schema,
+      a \"template\" object, and \"fonts\": []); every font family the template
+      draws with is supplied once with --font and must parse as a font. The
+      template is stored as assets/titles/<source-stem>.fmtitle and fonts are
+      copied to assets/fonts/, reusing identical files. Image field defaults
+      must already be bundle asset:// URIs that resolve.
   freemix-cli audio-bus-add <show.freemix> <nonzero-bus-id> <name>
   freemix-cli audio-bus-rename <show.freemix> <existing-bus-id> <name>
   freemix-cli audio-bus-remove <show.freemix> <existing-bus-id>

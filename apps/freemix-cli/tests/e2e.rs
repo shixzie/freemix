@@ -2246,6 +2246,210 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
     fs::remove_dir_all(context.root).unwrap();
 }
 
+/// A `.fmtitle` source document that needs no font: a rectangle tinted by a
+/// color field, plus a number field.
+const SHAPE_TITLE_SOURCE: &str = r##"{
+  "schema_version": 27,
+  "template": {
+    "id": 7,
+    "name": "Score bar",
+    "width": 1920,
+    "height": 1080,
+    "background": "#00000000",
+    "fields": [
+      {"id": 2, "name": "Bar color", "default": {"type": "color", "value": "#112233FF"}},
+      {"id": 1, "name": "Score", "default": {"type": "number", "value": -4}}
+    ],
+    "elements": [
+      {"id": 1, "name": "Bar", "bounds": {"x": 0, "y": 900, "width": 1920, "height": 120}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": 2, "kind": {"type": "rectangle"}, "animations": []}
+    ]
+  },
+  "fonts": []
+}
+"##;
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn title_input_add_imports_the_template_and_adds_default_fields() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    let source = context.root.join("score-bar.fmtitle");
+    fs::write(&source, SHAPE_TITLE_SOURCE).unwrap();
+    let source = source.to_str().unwrap();
+
+    let added = invoke(&[
+        "title-input-add",
+        context.project_path(),
+        "--id",
+        "9",
+        "--name",
+        "Score bar",
+        "--template",
+        source,
+    ]);
+    assert_success(&added);
+    assert!(
+        stdout(&added).starts_with(
+            "title-input-add: template asset://titles/score-bar.fmtitle copied bytes="
+        ),
+        "{}",
+        stdout(&added)
+    );
+    let input = InputId::new(NonZeroU128::new(9).unwrap());
+    let loaded = store.load().unwrap();
+    let title = loaded
+        .project()
+        .inputs()
+        .iter()
+        .find(|candidate| candidate.id == input)
+        .unwrap();
+    assert_eq!(title.name, "Score bar");
+    let field = |id: u128, value| fm_model::TitleFieldEntry {
+        id: fm_model::TitleFieldId::new(NonZeroU128::new(id).unwrap()),
+        value,
+    };
+    assert_eq!(
+        title.kind,
+        InputKind::Title(fm_model::TitleInput {
+            template_uri: "asset://titles/score-bar.fmtitle".into(),
+            field_revision: 0,
+            fields: vec![
+                field(1, fm_model::TitleFieldValue::Number(-4)),
+                field(
+                    2,
+                    fm_model::TitleFieldValue::Color(Rgba8::new(0x11, 0x22, 0x33, 0xff))
+                ),
+            ],
+        })
+    );
+    assert_eq!(store.validate_titles(&loaded), Vec::new());
+    assert!(
+        context
+            .project
+            .join("assets/titles/score-bar.fmtitle")
+            .is_file()
+    );
+
+    let inputs = invoke(&["inputs", context.project_path()]);
+    assert_success(&inputs);
+    assert!(
+        stdout(&inputs).contains(
+            "input id=9 name=\"Score bar\" kind=title template=asset://titles/score-bar.fmtitle field_revision=0 fields=2 strip="
+        ),
+        "{}",
+        stdout(&inputs)
+    );
+    assert_success(&invoke(&["status", context.project_path()]));
+    let audit = invoke(&["asset-audit", context.project_path()]);
+    assert_success(&audit);
+    assert_eq!(stdout(&audit), "asset-audit: clean");
+
+    // A second title from the same document reuses the stored template.
+    let again = invoke(&[
+        "title-input-add",
+        context.project_path(),
+        "--id",
+        "10",
+        "--name",
+        "Score bar 2",
+        "--template",
+        source,
+    ]);
+    assert_success(&again);
+    assert!(
+        stdout(&again)
+            .starts_with("title-input-add: template asset://titles/score-bar.fmtitle reused")
+    );
+
+    // Refusals leave the manifest and assets untouched.
+    let manifest = fs::read(context.project.join("project.json")).unwrap();
+    assert_failure_contains(
+        &invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            "9",
+            "--name",
+            "Taken",
+            "--template",
+            source,
+        ]),
+        "input 9 already exists",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            "11",
+            "--name",
+            "Fonted",
+            "--template",
+            source,
+            "--font",
+            "Sans=/nonexistent/Sans.ttf",
+        ]),
+        "font family `Sans` is supplied but never used",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            "11",
+            "--name",
+            "Fonted",
+            "--template",
+            source,
+            "--font",
+            "no-separator",
+        ]),
+        "expected Family=path",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            "11",
+            "--template",
+            source,
+        ]),
+        "missing value for --name",
+    );
+    let stale = context.root.join("stale.fmtitle");
+    fs::write(
+        &stale,
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 27", "\"schema_version\": 26"),
+    )
+    .unwrap();
+    assert_failure_contains(
+        &invoke(&[
+            "title-input-add",
+            context.project_path(),
+            "--id",
+            "11",
+            "--name",
+            "Stale",
+            "--template",
+            stale.to_str().unwrap(),
+        ]),
+        "title template schema 26 is unsupported; expected 27",
+    );
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest
+    );
+    assert_eq!(
+        fs::read_dir(context.project.join("assets/titles"))
+            .unwrap()
+            .count(),
+        1
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 #[test]
 fn local_media_input_add_persists_offline_asset_contract() {
     let context = ContractContext::new();
@@ -3171,13 +3375,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        26
+        27
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 26);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 27);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -3190,7 +3394,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 26);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 27);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -3266,7 +3470,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        26
+        27
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -3274,7 +3478,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 26);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 27);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -3284,7 +3488,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 26);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 27);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -3292,7 +3496,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 26);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 27);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));

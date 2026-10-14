@@ -144,6 +144,14 @@ pub enum Command {
         input: u128,
         asset_uri: String,
     },
+    TitleInputAdd {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        template: PathBuf,
+        /// `(family, font file)` pairs in command-line order.
+        fonts: Vec<(String, PathBuf)>,
+    },
     AudioBusAdd {
         path: PathBuf,
         bus: u128,
@@ -993,6 +1001,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "simulated-solid-input-add" => parse_simulated_solid_input_add(arguments),
         "media-input-add" => parse_media_input_add(arguments),
         "media-input-relink" => parse_media_input_relink(arguments),
+        "title-input-add" => parse_title_input_add(arguments),
         "audio-bus-add" => parse_audio_bus_add(arguments),
         "audio-bus-rename" => parse_audio_bus_rename(arguments),
         "audio-bus-remove" => parse_audio_bus_remove(arguments),
@@ -2049,6 +2058,47 @@ fn parse_media_input_relink(
         path,
         input,
         asset_uri,
+    })
+}
+
+fn parse_title_input_add(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let mut input = None;
+    let mut name = None;
+    let mut template = None;
+    let mut fonts = Vec::new();
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--id" => input = Some(number(&required(&mut arguments, "input")?, "input")?),
+            "--name" => name = Some(nonblank(&mut arguments, "input name")?),
+            "--template" => template = Some(required_path(&mut arguments, "template path")?),
+            "--font" => {
+                let value = required(&mut arguments, "font")?;
+                let Some((family, file)) = value.split_once('=') else {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "font (expected Family=path)",
+                        value,
+                    });
+                };
+                if family.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("font family"));
+                }
+                if file.is_empty() {
+                    return Err(ArgsError::BlankValue("font path"));
+                }
+                fonts.push((family.to_owned(), PathBuf::from(file)));
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::TitleInputAdd {
+        path,
+        input: input.ok_or(ArgsError::MissingValue("--id"))?,
+        name: name.ok_or(ArgsError::MissingValue("--name"))?,
+        template: template.ok_or(ArgsError::MissingValue("--template"))?,
+        fonts,
     })
 }
 

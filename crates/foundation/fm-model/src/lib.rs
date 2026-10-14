@@ -2,6 +2,7 @@ mod cycles;
 mod project;
 mod resolve;
 mod stream;
+mod title;
 mod validation;
 
 pub use project::AddInputError;
@@ -34,5 +35,10 @@ pub use stream::{
     REDACTED_STREAM_KEY, StreamEndpoint, StreamEndpointError, StreamKey, StreamKeyError,
     StreamLadder, StreamLadderError, StreamLadderRung, StreamProtocol, StreamTarget,
     StreamTargetError, StreamTargetId, StreamVideoBitrateError,
+};
+pub use title::{
+    MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELDS, MAX_TITLE_TEXT_CHARS, SetTitleFieldsError,
+    TitleFieldEntry, TitleFieldId, TitleFieldValue, TitleFieldsError, TitleInput,
+    validate_title_fields,
 };
 pub use validation::{EntityRef, ValidationError, ValidationErrorKind};

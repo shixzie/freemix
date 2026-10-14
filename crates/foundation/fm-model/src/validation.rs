@@ -2,8 +2,10 @@ use fm_types::{BusId, InputId, MAX_INPUT_NAME_BYTES, OutputId, PixelFormat, Scen
 
 use crate::{
     CropRect, InputKind, Layer, LayerEffect, MAX_STREAM_TARGET_NAME_BYTES, Project,
-    ProjectSettings, RestartPolicy, SimulatedAudio, SourceRef, StreamTargetId,
+    ProjectSettings, RestartPolicy, SimulatedAudio, SourceRef, StreamTargetId, TitleFieldsError,
+    TitleInput,
     cycles::{mark_alias_cycles, mark_audio_input_cycles, mark_bus_cycles, mark_scene_cycles},
+    validate_title_fields,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -35,6 +37,8 @@ pub enum ValidationErrorKind {
     DuplicateReference,
     OutOfRange,
     FormatMismatch,
+    /// Entries that must be strictly ascending are not.
+    OutOfOrder,
 }
 
 pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
@@ -284,6 +288,9 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
             // A mix feed reads only the previous tick's committed bus frame,
             // so it has no reference to validate and adds no graph edge.
             InputKind::Color | InputKind::MixFeed(_) => {}
+            // A title is a leaf: its template is a bundle asset checked by
+            // persistence, so only its own field list is validated here.
+            InputKind::Title(title) => validate_title(entity, title, errors),
             InputKind::Media { asset_uri } => {
                 require_name(errors, entity, "asset_uri", asset_uri);
             }
@@ -626,6 +633,43 @@ fn validate_stream_targets(project: &Project, errors: &mut Vec<ValidationError>)
                 kind: ValidationErrorKind::MissingReference(EntityRef::Output(target.output())),
             });
         }
+    }
+}
+
+fn validate_title(
+    entity: Option<EntityRef>,
+    title: &TitleInput,
+    errors: &mut Vec<ValidationError>,
+) {
+    require_name(
+        errors,
+        entity,
+        "kind.title.template_uri",
+        &title.template_uri,
+    );
+    if let Err(error) = validate_title_fields(&title.fields) {
+        let (field, kind) = match error {
+            TitleFieldsError::TooManyFields { .. } | TitleFieldsError::ContentTooLarge { .. } => {
+                ("kind.title.fields", ValidationErrorKind::OutOfRange)
+            }
+            TitleFieldsError::DuplicateField(_) => {
+                ("kind.title.fields.id", ValidationErrorKind::DuplicateId)
+            }
+            TitleFieldsError::OutOfOrder { .. } => {
+                ("kind.title.fields.id", ValidationErrorKind::OutOfOrder)
+            }
+            TitleFieldsError::TextTooLong { .. } => {
+                ("kind.title.fields.value", ValidationErrorKind::OutOfRange)
+            }
+            TitleFieldsError::BlankImageUri(_) => {
+                ("kind.title.fields.asset_uri", ValidationErrorKind::Empty)
+            }
+        };
+        errors.push(ValidationError {
+            entity,
+            field,
+            kind,
+        });
     }
 }
 

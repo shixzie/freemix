@@ -14,6 +14,7 @@ mod recent;
 mod settings_export;
 mod settings_import;
 mod store;
+mod title_template;
 
 pub use append::{
     AppendReport, AppendedAsset, AppendedAssetDisposition, RenamedEntity, SkippedContent,
@@ -58,3 +59,9 @@ pub use settings_import::{
     ImportPlan, ImportResolutions, KeyChange, MergeStrategy, SectionChoice,
 };
 pub use store::{MAX_MANIFEST_BYTES, ProjectStore, StoreError};
+pub use title_template::{
+    ImportedTitleFont, ImportedTitleTemplate, MAX_TITLE_TEMPLATE_BYTES, StoredTitleTemplate,
+    TITLE_TEMPLATE_EXTENSION, TitleFontAsset, TitleImportError, TitleIssue, TitleProblem,
+    TitleTemplateError, decode_title_template, encode_title_template, field_type,
+    title_field_defaults, title_field_value,
+};

@@ -7,7 +7,8 @@ use fm_model::{
     RecorderSlot, RectMask, RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput,
     SimulatedVideo, SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
     StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
-    StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetId,
+    StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetId, TitleFieldEntry, TitleFieldId,
+    TitleFieldValue, TitleInput,
 };
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, ChromaLocation, ColorMetadata, ColorPrimaries,
@@ -430,10 +431,49 @@ fn parse_input_kind(value: Value) -> Result<InputKind, DecodeError> {
             "preview" => MixFeed::Preview,
             value => return Err(unknown_enum("mix feed", value)),
         }),
+        "title" => InputKind::Title(TitleInput {
+            template_uri: object.string("template_uri")?,
+            field_revision: object.u64("field_revision")?,
+            fields: parse_array(object.take("fields")?, "title fields", parse_title_field)?,
+        }),
         value => return Err(unknown_enum("input kind", value)),
     };
     object.finish()?;
     Ok(kind)
+}
+
+fn parse_title_field(value: Value) -> Result<TitleFieldEntry, DecodeError> {
+    let mut object = Object::new(value, "title field")?;
+    let id = TitleFieldId::new(object.nonzero_u128("id")?);
+    let value = match object.string("type")?.as_str() {
+        "text" => TitleFieldValue::Text(object.string("value")?),
+        "number" => TitleFieldValue::Number(object.i64("value")?),
+        "color" => TitleFieldValue::Color(parse_hex_color(&object.string("value")?)?),
+        "image" => TitleFieldValue::Image {
+            asset_uri: object.string("asset_uri")?,
+        },
+        value => return Err(unknown_enum("title field type", value)),
+    };
+    object.finish()?;
+    Ok(TitleFieldEntry { id, value })
+}
+
+/// Parses `#rrggbbaa` (hex digits in either case).
+pub(crate) fn parse_hex_color(value: &str) -> Result<Rgba8, DecodeError> {
+    let digits = value
+        .strip_prefix('#')
+        .filter(|digits| digits.len() == 8 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| syntax(format!("color `{value}` must be #rrggbbaa")))?;
+    let channel = |index: usize| {
+        u8::from_str_radix(&digits[index * 2..index * 2 + 2], 16)
+            .map_err(|_| syntax(format!("color `{value}` must be #rrggbbaa")))
+    };
+    Ok(Rgba8::new(
+        channel(0)?,
+        channel(1)?,
+        channel(2)?,
+        channel(3)?,
+    ))
 }
 
 fn parse_simulated_video(value: Value) -> Result<SimulatedVideo, DecodeError> {
@@ -979,33 +1019,33 @@ fn parse_receipt(value: Value) -> Result<IdempotencyReceipt, DecodeError> {
     Ok(receipt)
 }
 
-struct Object {
+pub(crate) struct Object {
     context: &'static str,
     values: BTreeMap<String, Value>,
 }
 
 impl Object {
-    fn new(value: Value, context: &'static str) -> Result<Self, DecodeError> {
+    pub(crate) fn new(value: Value, context: &'static str) -> Result<Self, DecodeError> {
         let Value::Object(values) = value else {
             return Err(syntax(format!("{context} must be an object")));
         };
         Ok(Self { context, values })
     }
 
-    fn take(&mut self, field: &str) -> Result<Value, DecodeError> {
+    pub(crate) fn take(&mut self, field: &str) -> Result<Value, DecodeError> {
         self.values
             .remove(field)
             .ok_or_else(|| syntax(format!("missing field `{field}` in {}", self.context)))
     }
 
-    fn string(&mut self, field: &str) -> Result<String, DecodeError> {
+    pub(crate) fn string(&mut self, field: &str) -> Result<String, DecodeError> {
         let Value::String(value) = self.take(field)? else {
             return Err(syntax(format!("field `{field}` must be a string")));
         };
         Ok(value)
     }
 
-    fn boolean(&mut self, field: &str) -> Result<bool, DecodeError> {
+    pub(crate) fn boolean(&mut self, field: &str) -> Result<bool, DecodeError> {
         let Value::Bool(value) = self.take(field)? else {
             return Err(syntax(format!("field `{field}` must be a boolean")));
         };
@@ -1021,11 +1061,11 @@ impl Object {
         Ok(value)
     }
 
-    fn u8(&mut self, field: &str) -> Result<u8, DecodeError> {
+    pub(crate) fn u8(&mut self, field: &str) -> Result<u8, DecodeError> {
         u8::try_from(self.number(field)?).map_err(|_| syntax(format!("field `{field}` exceeds u8")))
     }
 
-    fn u32(&mut self, field: &str) -> Result<u32, DecodeError> {
+    pub(crate) fn u32(&mut self, field: &str) -> Result<u32, DecodeError> {
         u32::try_from(self.number(field)?)
             .map_err(|_| syntax(format!("field `{field}` exceeds u32")))
     }
@@ -1035,7 +1075,7 @@ impl Object {
             .map_err(|_| syntax(format!("field `{field}` exceeds u16")))
     }
 
-    fn i32(&mut self, field: &str) -> Result<i32, DecodeError> {
+    pub(crate) fn i32(&mut self, field: &str) -> Result<i32, DecodeError> {
         match self.take(field)? {
             Value::Number(value) => {
                 i32::try_from(value).map_err(|_| syntax(format!("field `{field}` exceeds i32")))
@@ -1050,12 +1090,27 @@ impl Object {
         }
     }
 
-    fn u64(&mut self, field: &str) -> Result<u64, DecodeError> {
+    pub(crate) fn i64(&mut self, field: &str) -> Result<i64, DecodeError> {
+        match self.take(field)? {
+            Value::Number(value) => {
+                i64::try_from(value).map_err(|_| syntax(format!("field `{field}` exceeds i64")))
+            }
+            Value::NegativeNumber(value) => {
+                let magnitude = i128::try_from(value)
+                    .map_err(|_| syntax(format!("field `{field}` exceeds i64")))?;
+                i64::try_from(-magnitude)
+                    .map_err(|_| syntax(format!("field `{field}` exceeds i64")))
+            }
+            _ => Err(syntax(format!("field `{field}` must be an integer"))),
+        }
+    }
+
+    pub(crate) fn u64(&mut self, field: &str) -> Result<u64, DecodeError> {
         u64::try_from(self.number(field)?)
             .map_err(|_| syntax(format!("field `{field}` exceeds u64")))
     }
 
-    fn nonzero_u128(&mut self, field: &str) -> Result<NonZeroU128, DecodeError> {
+    pub(crate) fn nonzero_u128(&mut self, field: &str) -> Result<NonZeroU128, DecodeError> {
         NonZeroU128::new(self.number(field)?)
             .ok_or_else(|| syntax(format!("field `{field}` must be nonzero")))
     }
@@ -1081,7 +1136,7 @@ impl Object {
         }
     }
 
-    fn finish(self) -> Result<(), DecodeError> {
+    pub(crate) fn finish(self) -> Result<(), DecodeError> {
         if let Some(field) = self.values.keys().next() {
             Err(syntax(format!(
                 "unknown field `{field}` in {}",
@@ -1093,7 +1148,7 @@ impl Object {
     }
 }
 
-fn parse_array<T>(
+pub(crate) fn parse_array<T>(
     value: Value,
     context: &'static str,
     parse: impl FnMut(Value) -> Result<T, DecodeError>,
@@ -1127,7 +1182,7 @@ fn parse_strings(value: Value, context: &'static str) -> Result<Vec<String>, Dec
     })
 }
 
-fn parse_optional<T>(
+pub(crate) fn parse_optional<T>(
     value: Value,
     parse: impl FnOnce(Value) -> Result<T, DecodeError>,
 ) -> Result<Option<T>, DecodeError> {
@@ -1145,11 +1200,11 @@ fn nonzero_u128(value: &Value, context: &str) -> Result<NonZeroU128, DecodeError
     NonZeroU128::new(*value).ok_or_else(|| syntax(format!("{context} must be nonzero")))
 }
 
-fn unknown_enum(field: &str, value: &str) -> DecodeError {
+pub(crate) fn unknown_enum(field: &str, value: &str) -> DecodeError {
     syntax(format!("unknown {field} value `{value}`"))
 }
 
-fn syntax(message: impl Into<String>) -> DecodeError {
+pub(crate) fn syntax(message: impl Into<String>) -> DecodeError {
     DecodeError::Syntax {
         offset: 0,
         message: message.into(),

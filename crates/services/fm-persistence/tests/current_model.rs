@@ -594,7 +594,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 26"));
+    assert!(encoded.contains("\"schema_version\": 27"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -664,7 +664,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 26"));
+    assert!(encoded.contains("\"schema_version\": 27"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -820,7 +820,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 26"));
+    assert!(valid.contains("\"schema_version\": 27"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -836,7 +836,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 26", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 27", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1252,7 +1252,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 26"));
+    assert!(encoded.contains("\"schema_version\": 27"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1589,7 +1589,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 26"));
+    assert!(encoded.contains("\"schema_version\": 27"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -1682,7 +1682,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 26"));
+    assert!(encoded.contains("\"schema_version\": 27"));
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
@@ -1760,4 +1760,200 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     let error = store.load().unwrap_err();
     assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
+}
+
+fn title_entry(id: u128, value: fm_model::TitleFieldValue) -> fm_model::TitleFieldEntry {
+    fm_model::TitleFieldEntry {
+        id: fm_model::TitleFieldId::new(nz(id)),
+        value,
+    }
+}
+
+fn title_project() -> Project {
+    use fm_model::{TitleFieldValue, TitleInput};
+
+    let mut project = Project::new(project_id(1), "Titles", rich_settings())
+        .with_main_mix(MainMix::new(input_id(1), input_id(2)));
+    project.add_input(Input {
+        id: input_id(1),
+        name: "Bars".into(),
+        kind: InputKind::Simulated(SimulatedInput::new(
+            SimulatedVideo::Bars,
+            SimulatedAudio::Silence,
+        )),
+        required_capabilities: Vec::new(),
+    });
+    project.add_input(Input {
+        id: input_id(2),
+        name: "Lower third".into(),
+        kind: InputKind::Title(TitleInput {
+            template_uri: "asset://titles/lower-third.fmtitle".into(),
+            field_revision: 3,
+            fields: vec![
+                title_entry(1, TitleFieldValue::Text("Jane \"JD\" Doe".into())),
+                title_entry(2, TitleFieldValue::Number(-4)),
+                title_entry(
+                    3,
+                    TitleFieldValue::Color(Rgba8::new(0x11, 0x22, 0x33, 0xff)),
+                ),
+                title_entry(
+                    4,
+                    TitleFieldValue::Image {
+                        asset_uri: "asset://images/logo.png".into(),
+                    },
+                ),
+            ],
+        }),
+        required_capabilities: Vec::new(),
+    });
+    project
+}
+
+#[test]
+fn title_inputs_round_trip_exactly_at_the_current_schema() {
+    let temp = TestDirectory::new("title-inputs");
+    let store = temp.store("show");
+    let expected = StoredProject::from_project(
+        title_project(),
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(encoded.starts_with("{\n  \"schema_version\": 27,\n"));
+    let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
+         \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
+         \"Jane \\\"JD\\\" Doe\"}, {\"id\": 2, \"type\": \"number\", \"value\": -4}, {\"id\": 3, \
+         \"type\": \"color\", \"value\": \"#112233ff\"}, {\"id\": 4, \"type\": \"image\", \
+         \"asset_uri\": \"asset://images/logo.png\"}]}";
+    assert!(
+        encoded.contains(title),
+        "unexpected title encoding in {encoded}"
+    );
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded, expected);
+    // Encoding is canonical: a reload writes the same bytes.
+    store.save(&loaded).unwrap();
+    assert_eq!(fs::read_to_string(store.manifest_path()).unwrap(), encoded);
+
+    // Upper-case hex is accepted and re-encoded lower-case.
+    fs::write(
+        store.manifest_path(),
+        encoded.replacen("#112233ff", "#112233FF", 1),
+    )
+    .unwrap();
+    assert_eq!(store.load().unwrap(), expected);
+
+    // Field presence, types, and enum spellings are exact.
+    for malformed in [
+        encoded.replacen("\"type\": \"title\"", "\"type\": \"titles\"", 1),
+        encoded.replacen("\"type\": \"number\"", "\"type\": \"integer\"", 1),
+        encoded.replacen("\"type\": \"color\"", "\"type\": \"colour\"", 1),
+        encoded.replacen("\"field_revision\": 3, ", "", 1),
+        encoded.replacen("\"field_revision\": 3", "\"field_revision\": -3", 1),
+        encoded.replacen(
+            "\"field_revision\": 3",
+            "\"field_revision\": 3, \"extra\": 1",
+            1,
+        ),
+        encoded.replacen("{\"id\": 2, ", "{\"id\": 2, \"label\": \"x\", ", 1),
+        encoded.replacen("{\"id\": 2, ", "{\"id\": 0, ", 1),
+        encoded.replacen("\"value\": -4", "\"value\": \"-4\"", 1),
+        encoded.replacen("\"value\": -4", "\"value\": 9223372036854775808", 1),
+        encoded.replacen("\"value\": -4", "\"value\": -9223372036854775809", 1),
+        encoded.replacen("#112233ff", "#112233", 1),
+        encoded.replacen("#112233ff", "112233ff", 1),
+        encoded.replacen("#112233ff", "#11223g00", 1),
+        encoded.replacen(
+            "\"asset_uri\": \"asset://images",
+            "\"value\": \"asset://images",
+            1,
+        ),
+    ] {
+        assert_ne!(malformed, encoded);
+        fs::write(store.manifest_path(), &malformed).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(
+            matches!(error, StoreError::MalformedManifest { .. }),
+            "got {error:?} for {malformed}"
+        );
+    }
+
+    // Number extremes round-trip.
+    for extreme in ["-9223372036854775808", "9223372036854775807"] {
+        fs::write(
+            store.manifest_path(),
+            encoded.replacen("\"value\": -4", &format!("\"value\": {extreme}"), 1),
+        )
+        .unwrap();
+        store.load().unwrap();
+    }
+
+    // Well-formed but invalid title fields are rejected by project validation.
+    for invalid in [
+        encoded.replacen(
+            "\"template_uri\": \"asset://titles/lower-third.fmtitle\"",
+            "\"template_uri\": \" \"",
+            1,
+        ),
+        encoded.replacen("{\"id\": 2, ", "{\"id\": 1, ", 1),
+        encoded.replacen("{\"id\": 3, ", "{\"id\": 1, ", 1),
+        encoded.replacen("\"asset://images/logo.png\"", "\"\"", 1),
+    ] {
+        assert_ne!(invalid, encoded);
+        fs::write(store.manifest_path(), &invalid).unwrap();
+        let error = store.load().unwrap_err();
+        assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
+    }
+
+    // The previous schema is refused outright; no migration path exists.
+    fs::write(
+        store.manifest_path(),
+        encoded.replacen("\"schema_version\": 27", "\"schema_version\": 26", 1),
+    )
+    .unwrap();
+    let error = store.load().unwrap_err();
+    assert!(matches!(error, StoreError::Validation(_)), "got {error:?}");
+}
+
+#[test]
+fn title_fields_change_through_the_model_and_persist() {
+    use fm_model::TitleFieldValue;
+
+    let temp = TestDirectory::new("title-mutation");
+    let store = temp.store("show");
+    let stored = StoredProject::from_project(
+        title_project(),
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    let mut project = stored.project().clone();
+    project
+        .set_title_fields(
+            input_id(2),
+            4,
+            vec![
+                title_entry(1, TitleFieldValue::Text("Ana".into())),
+                title_entry(2, TitleFieldValue::Number(7)),
+                title_entry(3, TitleFieldValue::Color(Rgba8::new(0, 0, 0, 0))),
+                title_entry(
+                    4,
+                    TitleFieldValue::Image {
+                        asset_uri: "asset://images/other.png".into(),
+                    },
+                ),
+            ],
+        )
+        .unwrap();
+    let updated = stored.with_project(project).unwrap();
+    store.save(&updated).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(encoded.contains("\"field_revision\": 4"));
+    assert!(encoded.contains("\"value\": \"#00000000\""));
+    assert_eq!(store.load().unwrap(), updated);
 }

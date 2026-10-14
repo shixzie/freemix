@@ -6,7 +6,10 @@
 //! and per-input audio strips travel with their inputs. Name clashes are
 //! resolved with ` (2)`, ` (3)`, ... suffixes and reported. Referenced media
 //! is copied into the target bundle's assets, reusing identical files and
-//! renaming keys that would clash with different contents.
+//! renaming keys that would clash with different contents. Title templates,
+//! their fonts, and title images keep their exact keys: a clash with
+//! different contents, or a title asset missing from the source, refuses the
+//! append before anything is copied.
 //!
 //! Outputs, audio buses, stream targets, stingers, the main mix, recording
 //! flags, and runtime state are not appended; the report counts what was
@@ -22,9 +25,11 @@ use fm_model::{InputKind, Project, Scene, SourceRef};
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES, SceneId};
 
 use crate::{
-    AssetDisposition, BundleError, ProjectStore, StoredProject,
+    AssetAuditIssue, AssetDisposition, BundleError, ProjectStore, StoredProject,
     asset::asset_uri_key,
+    fsutil,
     media::{asset_uri, place_file, suffixed_key},
+    title_template::template_issue,
 };
 
 const MAX_NAME_SUFFIX: u32 = 10_000;
@@ -159,6 +164,15 @@ impl ProjectStore {
         incoming: &Project,
         source: &ProjectStore,
     ) -> Result<Vec<AppendedAsset>, BundleError> {
+        let mut assets = self.append_title_assets(incoming, source)?;
+        let title_keys = assets
+            .iter()
+            .filter_map(|asset| asset_uri_key(&asset.target_uri).ok().map(str::to_owned))
+            .collect::<BTreeSet<_>>();
+        let title_uris = assets
+            .iter()
+            .map(|asset| asset.source_uri.clone())
+            .collect::<BTreeSet<_>>();
         let uris = incoming
             .inputs()
             .iter()
@@ -166,18 +180,20 @@ impl ProjectStore {
                 InputKind::Media { asset_uri } => Some(asset_uri.clone()),
                 _ => None,
             })
+            // A media URI also used by a title was already placed verbatim.
+            .filter(|uri| !title_uris.contains(uri))
             .collect::<BTreeSet<_>>();
         let assets_root = self.assets_root();
         // Keys handed to missing source assets exist only in the project, not
         // on disk, so they are tracked here: no later asset, present or
         // missing, may land on one, and a missing asset never takes a key a
-        // later source asset would keep verbatim.
+        // later source asset would keep verbatim. Title keys are likewise
+        // never handed to media.
         let source_keys = uris
             .iter()
             .filter_map(|uri| asset_uri_key(uri).ok().map(str::to_owned))
             .collect::<BTreeSet<_>>();
         let mut claimed_missing = BTreeSet::new();
-        let mut assets = Vec::with_capacity(uris.len());
         for uri in &uris {
             let uri = uri.clone();
             let Ok(key) = asset_uri_key(&uri) else {
@@ -192,7 +208,7 @@ impl ProjectStore {
             };
             let (target_uri, disposition) = if let Ok(resolved) = source.resolve_asset_uri(&uri) {
                 let (key, disposition) = place_file(&assets_root, &resolved, key, |candidate| {
-                    claimed_missing.contains(candidate)
+                    claimed_missing.contains(candidate) || title_keys.contains(candidate)
                 })?;
                 (
                     asset_uri(&key),
@@ -207,6 +223,7 @@ impl ProjectStore {
                     .find(|candidate| {
                         (candidate == key || !source_keys.contains(candidate))
                             && !claimed_missing.contains(candidate)
+                            && !title_keys.contains(candidate)
                             && asset_uri_key(&asset_uri(candidate)).is_ok()
                             && fs::symlink_metadata(assets_root.join(candidate)).is_err()
                     })
@@ -220,6 +237,63 @@ impl ProjectStore {
                 source_uri: uri,
                 target_uri,
                 disposition,
+            });
+        }
+        assets.sort_by(|left, right| left.source_uri.cmp(&right.source_uri));
+        Ok(assets)
+    }
+
+    /// Copies every title template, font, and image under its exact source
+    /// key. Stored templates name their fonts by URI, so a key that would
+    /// have to change is refused before anything is copied, as is a title
+    /// asset missing from the source.
+    fn append_title_assets(
+        &self,
+        incoming: &Project,
+        source: &ProjectStore,
+    ) -> Result<Vec<AppendedAsset>, BundleError> {
+        let uris = source
+            .title_asset_uris(incoming)
+            .map_err(|(input, error)| {
+                BundleError::UnresolvedAssets(vec![template_issue(input, &error)])
+            })?;
+        let missing = source.audit_title_assets(incoming);
+        if !missing.is_empty() {
+            return Err(BundleError::UnresolvedAssets(
+                missing
+                    .into_iter()
+                    .map(|(input_id, reason)| AssetAuditIssue { input_id, reason })
+                    .collect(),
+            ));
+        }
+        let assets_root = self.assets_root();
+        let mut planned = Vec::with_capacity(uris.len());
+        for uri in uris {
+            let resolved = source
+                .resolve_asset_uri(&uri)
+                .map_err(|_| BundleError::UnresolvedAssets(source.audit_assets_of(incoming)))?;
+            let key = asset_uri_key(&uri)
+                .map_err(|_| BundleError::TitleAssetRewriteUnsupported { uri: uri.clone() })?
+                .to_owned();
+            let occupant = assets_root.join(&key);
+            if fs::symlink_metadata(&occupant).is_ok()
+                && !(fs::metadata(&occupant).is_ok_and(|meta| meta.is_file())
+                    && fsutil::same_contents(&resolved, &occupant)?)
+            {
+                return Err(BundleError::TitleAssetRewriteUnsupported { uri });
+            }
+            planned.push((uri, key, resolved));
+        }
+        let mut assets = Vec::with_capacity(planned.len());
+        for (uri, key, resolved) in planned {
+            let (placed, disposition) = place_file(&assets_root, &resolved, &key, |_| false)?;
+            if placed != key {
+                return Err(BundleError::TitleAssetRewriteUnsupported { uri });
+            }
+            assets.push(AppendedAsset {
+                target_uri: uri.clone(),
+                source_uri: uri,
+                disposition: AppendedAssetDisposition::Placed(disposition),
             });
         }
         Ok(assets)
@@ -312,11 +386,13 @@ fn append_inputs(
                 target: maps.inputs[target],
                 crop: *crop,
             },
+            // Title assets keep their exact keys (see `append_title_assets`).
             InputKind::Color
             | InputKind::Device { .. }
             | InputKind::Network { .. }
             | InputKind::Simulated(_)
-            | InputKind::MixFeed(_) => input.kind.clone(),
+            | InputKind::MixFeed(_)
+            | InputKind::Title(_) => input.kind.clone(),
         };
         let id = maps.inputs[&input.id];
         project.add_input(fm_model::Input {

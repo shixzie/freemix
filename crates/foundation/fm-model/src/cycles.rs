@@ -43,6 +43,7 @@ pub(crate) fn mark_scene_cycles(project: &Project, errors: &mut Vec<ValidationEr
                             | InputKind::Network { .. }
                             | InputKind::Simulated(_)
                             | InputKind::MixFeed(_)
+                            | InputKind::Title(_)
                             | InputKind::Alias { .. } => None,
                         }),
                 })
@@ -89,7 +90,8 @@ pub(crate) fn mark_audio_input_cycles(project: &Project, errors: &mut Vec<Valida
                 | InputKind::Device { .. }
                 | InputKind::Network { .. }
                 | InputKind::Simulated(_)
-                | InputKind::MixFeed(_) => Vec::new(),
+                | InputKind::MixFeed(_)
+                | InputKind::Title(_) => Vec::new(),
             }
         })
         .collect::<Vec<_>>();
@@ -151,7 +153,8 @@ fn alias_target(kind: &InputKind) -> Option<InputId> {
         | InputKind::Network { .. }
         | InputKind::Scene { .. }
         | InputKind::Simulated(_)
-        | InputKind::MixFeed(_) => None,
+        | InputKind::MixFeed(_)
+        | InputKind::Title(_) => None,
     }
 }
 

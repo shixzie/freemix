@@ -8,6 +8,7 @@ use fm_types::{
 use crate::{
     EntityRef, ValidationError, ValidationErrorKind,
     stream::{StreamTarget, StreamTargetId},
+    title::{SetTitleFieldsError, TitleFieldEntry, TitleInput, validate_title_fields},
     validation::validate_project,
 };
 
@@ -778,7 +779,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(26);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(27);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1084,6 +1085,7 @@ impl Project {
                 | InputKind::Device { .. }
                 | InputKind::Network { .. }
                 | InputKind::MixFeed(_)
+                | InputKind::Title(_)
                 | InputKind::Simulated(_) => None,
             })
     }
@@ -1207,6 +1209,46 @@ impl Project {
             unreachable!("media input kind was validated above");
         };
         *current = asset_uri;
+        Ok(())
+    }
+
+    /// Replaces a title input's field values and field revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetTitleFieldsError::UnknownInput`] when the input does not
+    /// exist, [`SetTitleFieldsError::NotTitleInput`] when it is not a title
+    /// input, [`SetTitleFieldsError::RevisionRegressed`] when
+    /// `field_revision` is older than the stored revision, and
+    /// [`SetTitleFieldsError::InvalidFields`] when the fields break a bound,
+    /// repeat or are out of id order, or name a blank image. Nothing changes
+    /// on error.
+    pub fn set_title_fields(
+        &mut self,
+        input: InputId,
+        field_revision: u64,
+        fields: Vec<TitleFieldEntry>,
+    ) -> Result<(), SetTitleFieldsError> {
+        let target = self
+            .inputs
+            .iter_mut()
+            .find(|candidate| candidate.id == input)
+            .ok_or(SetTitleFieldsError::UnknownInput(input))?;
+        let InputKind::Title(title) = &mut target.kind else {
+            return Err(SetTitleFieldsError::NotTitleInput(input));
+        };
+        if field_revision < title.field_revision {
+            return Err(SetTitleFieldsError::RevisionRegressed {
+                current: title.field_revision,
+                requested: field_revision,
+            });
+        }
+        validate_title_fields(&fields).map_err(SetTitleFieldsError::InvalidFields)?;
+        *title = TitleInput {
+            template_uri: std::mem::take(&mut title.template_uri),
+            field_revision,
+            fields,
+        };
         Ok(())
     }
 
@@ -2945,6 +2987,9 @@ pub enum InputKind {
     /// `n - 1`, and black before any frame has been committed. The delay is
     /// what lets this input appear on its own bus without a dependency cycle.
     MixFeed(MixFeed),
+    /// A title scene instantiated from a stored template. It is a leaf: it
+    /// renders its own picture, is silent, and references no other input.
+    Title(TitleInput),
 }
 
 /// The switcher bus a [`InputKind::MixFeed`] input re-enters.

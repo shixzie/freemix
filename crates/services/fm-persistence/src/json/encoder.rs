@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
 use fm_model::{
-    InputKind, MixFeed, RestartPolicy, Rotation, SimulatedAudio, SimulatedVideo, SourceRef,
-    StartupPolicy,
+    InputKind, MixFeed, RestartPolicy, Rgba8, Rotation, SimulatedAudio, SimulatedVideo, SourceRef,
+    StartupPolicy, TitleFieldValue, TitleInput,
 };
 use fm_types::{
     Channel, ChromaLocation, ColorPrimaries, DiscreteChannel, MatrixCoefficients, PixelFormat,
@@ -627,7 +627,58 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
             write!(output, "{{\"type\": \"mix_feed\", \"feed\": \"{feed}\"}}")
                 .expect("writing to a string cannot fail");
         }
+        InputKind::Title(title) => write_title_input(output, title),
     }
+}
+
+fn write_title_input(output: &mut String, title: &TitleInput) {
+    output.push_str("{\"type\": \"title\", \"template_uri\": \"");
+    escape_string(output, &title.template_uri);
+    write!(
+        output,
+        "\", \"field_revision\": {}, \"fields\": [",
+        title.field_revision
+    )
+    .expect("writing to a string cannot fail");
+    for (index, entry) in title.fields.iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(output, "{{\"id\": {}, ", entry.id).expect("writing to a string cannot fail");
+        match &entry.value {
+            TitleFieldValue::Text(text) => {
+                output.push_str("\"type\": \"text\", \"value\": \"");
+                escape_string(output, text);
+                output.push('"');
+            }
+            TitleFieldValue::Number(number) => {
+                write!(output, "\"type\": \"number\", \"value\": {number}")
+                    .expect("writing to a string cannot fail");
+            }
+            TitleFieldValue::Color(color) => {
+                output.push_str("\"type\": \"color\", \"value\": \"");
+                write_hex_color(output, *color);
+                output.push('"');
+            }
+            TitleFieldValue::Image { asset_uri } => {
+                output.push_str("\"type\": \"image\", \"asset_uri\": \"");
+                escape_string(output, asset_uri);
+                output.push('"');
+            }
+        }
+        output.push('}');
+    }
+    output.push_str("]}");
+}
+
+/// Writes `#rrggbbaa` in lowercase hex.
+pub(crate) fn write_hex_color(output: &mut String, color: Rgba8) {
+    write!(
+        output,
+        "#{:02x}{:02x}{:02x}{:02x}",
+        color.red, color.green, color.blue, color.alpha
+    )
+    .expect("writing to a string cannot fail");
 }
 
 fn write_string_variant(output: &mut String, kind: &str, field: &str, value: &str) {

@@ -1409,7 +1409,9 @@ dependencies = [
 name = "fm-persistence"
 version = "0.1.0"
 dependencies = [
+ "fm-clock",
  "fm-model",
+ "fm-titles",
  "fm-types",
  "turso",
 ]

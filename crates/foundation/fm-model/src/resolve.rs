@@ -256,7 +256,8 @@ impl<'p> SourceResolver<'p> {
                 InputKind::Scene {
                     audio_source: None, ..
                 }
-                | InputKind::MixFeed(_) => return Ok(AudioRoute::Silence),
+                | InputKind::MixFeed(_)
+                | InputKind::Title(_) => return Ok(AudioRoute::Silence),
                 InputKind::Color
                 | InputKind::Media { .. }
                 | InputKind::Device { .. }
@@ -305,6 +306,7 @@ impl<'p> SourceResolver<'p> {
             | InputKind::Network { .. }
             | InputKind::Simulated(_)
             | InputKind::MixFeed(_)
+            | InputKind::Title(_)
             | InputKind::Alias { .. } => None,
         })
     }
@@ -388,7 +390,8 @@ impl<'f, F> FrameContext<'_, '_, 'f, F> {
             | InputKind::Network { .. }
             | InputKind::Scene { .. }
             | InputKind::Simulated(_)
-            | InputKind::MixFeed(_) => None,
+            | InputKind::MixFeed(_)
+            | InputKind::Title(_) => None,
         };
         let (alias_chain, concrete) = resolver.follow_aliases(input)?;
         let (source, feedback) = match resolver.input_kind(concrete)? {
@@ -404,7 +407,8 @@ impl<'f, F> FrameContext<'_, '_, 'f, F> {
             | InputKind::Media { .. }
             | InputKind::Device { .. }
             | InputKind::Network { .. }
-            | InputKind::Simulated(_) => (RenderSource::Input(concrete), false),
+            | InputKind::Simulated(_)
+            | InputKind::Title(_) => (RenderSource::Input(concrete), false),
             InputKind::Alias { .. } => unreachable!("alias chains end at a non-alias input"),
         };
         Ok(ResolvedInput {

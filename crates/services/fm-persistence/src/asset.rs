@@ -1,6 +1,6 @@
 use std::{error::Error, fmt, fs, io, path::PathBuf};
 
-use fm_model::InputKind;
+use fm_model::{InputKind, Project};
 use fm_types::InputId;
 
 use crate::{ProjectStore, StoredProject};
@@ -55,11 +55,19 @@ impl ProjectStore {
         Ok(candidate)
     }
 
-    /// Reports media inputs whose project asset cannot be resolved.
+    /// Reports media inputs whose project asset cannot be resolved, and title
+    /// inputs whose template, template fonts and image defaults, or image
+    /// field values cannot be resolved (one issue per unresolved URI; a
+    /// template that resolves but does not decode is
+    /// [`AssetAuditReason::UnreadableTitleTemplate`]). Issues are sorted by
+    /// input id, stably.
     #[must_use]
     pub fn audit_assets(&self, project: &StoredProject) -> Vec<AssetAuditIssue> {
+        self.audit_assets_of(project.project())
+    }
+
+    pub(crate) fn audit_assets_of(&self, project: &Project) -> Vec<AssetAuditIssue> {
         let mut issues = project
-            .project()
             .inputs()
             .iter()
             .filter_map(|input| {
@@ -84,25 +92,32 @@ impl ProjectStore {
                 })
             })
             .collect::<Vec<_>>();
-        issues.sort_unstable_by_key(|issue| issue.input_id);
+        issues.extend(
+            self.audit_title_assets(project)
+                .into_iter()
+                .map(|(input_id, reason)| AssetAuditIssue { input_id, reason }),
+        );
+        issues.sort_by_key(|issue| issue.input_id);
         issues
     }
 }
 
-/// A project input with an unresolved media asset.
+/// A project input with an unresolved media or title asset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AssetAuditIssue {
     pub input_id: InputId,
     pub reason: AssetAuditReason,
 }
 
-/// A stable reason that a project media asset cannot be used.
+/// A stable reason that a project media or title asset cannot be used.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AssetAuditReason {
     InvalidUri,
     MissingAsset,
     OutsideAssetsRoot,
     NotRegularFile,
+    /// A title template resolves but is not a valid stored template.
+    UnreadableTitleTemplate,
 }
 
 /// Validates the strict syntax of a project `asset://` URI without filesystem access.

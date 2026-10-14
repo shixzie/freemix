@@ -61,6 +61,13 @@ pub enum BundleError {
     /// Referenced media could not be resolved, so the result would not be
     /// self-contained.
     UnresolvedAssets(Vec<AssetAuditIssue>),
+    /// A title template, font, or image key would have to be renamed in the
+    /// destination, which would require rewriting the stored template and
+    /// title fields; that is not supported, so the operation is refused
+    /// instead of dropping or silently rebinding the asset.
+    TitleAssetRewriteUnsupported {
+        uri: String,
+    },
     /// The source journal holds acknowledged batches the manifest lacks.
     UnappliedJournal {
         batches: usize,
@@ -106,6 +113,11 @@ impl fmt::Display for BundleError {
                 formatter,
                 "{} media input(s) reference unresolved assets",
                 issues.len()
+            ),
+            Self::TitleAssetRewriteUnsupported { uri } => write!(
+                formatter,
+                "title asset `{uri}` would need a different key in the destination; \
+                 rewriting title asset keys is not supported"
             ),
             Self::UnappliedJournal { batches } => write!(
                 formatter,
@@ -277,7 +289,13 @@ impl ProjectStore {
         project: &StoredProject,
         search: &RelinkSearch,
     ) -> Result<RelinkPlan, BundleError> {
-        let issues = self.audit_assets(project);
+        // Title assets are not media: they are repaired by re-importing the
+        // template, never by name search.
+        let issues = self
+            .audit_assets(project)
+            .into_iter()
+            .filter(|issue| media_uri(project, issue.input_id).is_some())
+            .collect::<Vec<_>>();
         let mut wanted = BTreeSet::new();
         for issue in &issues {
             if issue.reason == AssetAuditReason::MissingAsset
@@ -641,7 +659,7 @@ pub(crate) fn suffixed_key(key: &str, attempt: u32) -> String {
 }
 
 /// Derives a portable single-segment key from a host file name.
-fn imported_key(name: &OsStr) -> String {
+pub(crate) fn imported_key(name: &OsStr) -> String {
     let lossy = name.to_string_lossy();
     let segment = portable_segment(&lossy);
     if segment.is_empty() {
