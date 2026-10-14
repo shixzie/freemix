@@ -292,14 +292,27 @@ impl ControlCoalescer {
     /// many were dropped. Policies are kept.
     pub fn discard_port(&mut self, port: &str) -> usize {
         let before = self.pending.len();
-        self.pending.retain(|pending| pending.port != port);
-        self.mergeable.clear();
-        for (index, pending) in self.pending.iter().enumerate() {
-            let key = (pending.port.clone(), pending.event.control.clone());
-            if self.policy(&key, pending.event.value) != CoalescePolicy::Ordered {
-                self.mergeable.insert(key, index);
+        // Remap surviving slots instead of re-deriving mergeability from the
+        // current policies: an override changed mid-tick must not make a slot
+        // queued as ordered absorb later events.
+        let mut remap = Vec::with_capacity(before);
+        let mut kept = 0;
+        for pending in &self.pending {
+            if pending.port == port {
+                remap.push(None);
+            } else {
+                remap.push(Some(kept));
+                kept += 1;
             }
         }
+        self.pending.retain(|pending| pending.port != port);
+        self.mergeable.retain(|_, index| match remap[*index] {
+            Some(new_index) => {
+                *index = new_index;
+                true
+            }
+            None => false,
+        });
         before - self.pending.len()
     }
 }

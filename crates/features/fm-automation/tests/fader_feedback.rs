@@ -282,6 +282,36 @@ fn deltas_sum_and_ordered_overrides_keep_relative_encoder_steps() {
 }
 
 #[test]
+fn discarding_a_port_keeps_slots_queued_as_ordered_unmergeable() {
+    let mut coalescer = ControlCoalescer::new(16).unwrap();
+    coalescer
+        .set_policy("APC", cc(48, 0).control, CoalescePolicy::Ordered)
+        .unwrap();
+    coalescer.offer("APC", cc(48, 1), ts(1)).unwrap();
+    coalescer.offer("APC", cc(48, 1), ts(2)).unwrap();
+    coalescer.offer("other", cc(7, 5), ts(3)).unwrap();
+    // The override ends mid-tick: only later events coalesce, so the two
+    // encoder steps already queued must survive a port discard.
+    coalescer.clear_policy("APC", &cc(48, 0).control);
+    assert_eq!(coalescer.discard_port("other"), 1);
+    assert_eq!(
+        coalescer.offer("APC", cc(48, 9), ts(4)),
+        Ok(CoalesceOutcome::Queued)
+    );
+    assert_eq!(
+        coalescer.offer("APC", cc(48, 10), ts(5)),
+        Ok(CoalesceOutcome::Merged)
+    );
+    let tick = coalescer.drain();
+    assert_eq!(
+        tick.iter()
+            .map(|event| event.event.clone())
+            .collect::<Vec<_>>(),
+        vec![cc(48, 1), cc(48, 1), cc(48, 10)]
+    );
+}
+
+#[test]
 fn capacity_is_bounded_and_rejections_are_reported_not_silent() {
     assert_eq!(
         ControlCoalescer::new(0).unwrap_err(),
