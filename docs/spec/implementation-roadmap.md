@@ -2006,7 +2006,13 @@ bounded refresh of at most 25 Hz for clock, ticker, and animated templates),
 so titles reach Program, Scenes, and project-output overlays. Image fields
 load their PNG/JPEG assets on demand, including URIs first set at runtime, in
 `native-media` builds; a build without `fm-codec-image` keeps the image
-placeholder. There is no Studio title panel yet, so `GX-001` remains
+placeholder. The title editor core and its protocol bridge live in
+`fm-ui-model`, shared by the web editor and Studio's TITLES tab, which edits
+typed fields with conflict rebase/discard, previews, saves, takes on a chosen
+overlay channel, updates live, and takes titles off air. Remaining gaps: no
+grapheme shaping or bidi, no template designer persistence, titles cannot be
+stinger media, runtime-added title inputs are not rendered in simulated
+mode, and template field names are not localized, so `GX-001` remains
 planned.
 
 Current implementation boundary for item 1 scoreboards and tickers
