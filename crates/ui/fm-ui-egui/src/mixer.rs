@@ -26,7 +26,7 @@ use crate::{
 pub(crate) const STRIP_WIDTH: f32 = 82.0;
 const STRIP_GAP: f32 = 6.0;
 const MIN_FADER_HEIGHT: f32 = 140.0;
-const MAX_FADER_HEIGHT: f32 = 300.0;
+const MAX_FADER_HEIGHT: f32 = 420.0;
 /// Vertical space a strip needs besides its fader and meters.
 const STRIP_CHROME_HEIGHT: f32 = 196.0;
 /// Lowest level shown on the meter scale.

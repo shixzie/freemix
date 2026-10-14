@@ -7,8 +7,9 @@ use fm_ui_model::ManualTransitionStatus;
 
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::theme::{
-    ACCENT, ACCENT_FILL, AMBER, BORDER, BORDER_STRONG, MONITOR_BLACK, MUTED, PROGRAM, PROGRAM_FILL,
-    TEXT, TEXT_DIM, WIDGET, WIDGET_ACTIVE, WIDGET_HOVER, console_button, mono, section_label,
+    ACCENT, ACCENT_FILL, AMBER, AMBER_FILL, BORDER, BORDER_STRONG, MONITOR_BLACK, MUTED, PROGRAM,
+    PROGRAM_FILL, TEXT, TEXT_DIM, WIDGET, WIDGET_ACTIVE, WIDGET_HOVER, console_button, mono,
+    section_label,
 };
 use crate::{
     ManualTransitionAvailability, StudioIntent, StudioShell, StudioUiState, TransitionGate,
@@ -46,11 +47,18 @@ pub(crate) fn draw_transition_column(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let active = matches!(desired, ManualTransitionStatus::Active(_));
             ui.label(
-                RichText::new(if active { "T-BAR ACTIVE" } else { "T-BAR" })
-                    .size(10.0)
-                    .strong()
-                    .extra_letter_spacing(1.0)
-                    .color(if active { AMBER } else { MUTED }),
+                RichText::new(if active {
+                    format!(
+                        "T-BAR {}%",
+                        desired_manual_position(desired).basis_points() / 100
+                    )
+                } else {
+                    "T-BAR".to_owned()
+                })
+                .size(10.0)
+                .strong()
+                .extra_letter_spacing(1.0)
+                .color(if active { AMBER } else { MUTED }),
             );
         });
     });
@@ -72,11 +80,22 @@ pub(crate) fn draw_transition_column(
     } else {
         session_reason
     };
+    let names = state.view.as_ref().map_or(
+        InputNames {
+            inputs: &[],
+            names: &[],
+        },
+        |view| InputNames {
+            inputs: &view.inputs,
+            names: &view.input_names,
+        },
+    );
     draw_manual_transition(
         ui,
         (desired, realized),
         manual,
         (session_reason, manual_reason),
+        names,
         intents,
     );
     ui.separator();
@@ -185,6 +204,7 @@ fn draw_manual_transition(
     (desired, realized): (ManualTransitionStatus, ManualTransitionStatus),
     availability: ManualTransitionAvailability,
     (start_reason, active_reason): (&str, &str),
+    names: InputNames<'_>,
     intents: &mut Vec<StudioIntent>,
 ) {
     ui.horizontal(|ui| {
@@ -208,19 +228,161 @@ fn draw_manual_transition(
         );
         draw_manual_terminal_buttons(ui, availability.active_controls, active_reason, intents);
     });
-    ui.add(
-        egui::Label::new(
-            mono(format!(
-                "D {} · R {}",
-                manual_transition_label(desired),
-                manual_transition_label(realized)
-            ))
-            .size(9.5)
-            .color(TEXT_DIM),
-        )
-        .wrap(),
-    )
-    .on_hover_text("Desired (D) and last confirmed realized (R) manual transition");
+    draw_manual_status(
+        ui,
+        &manual_summary(desired, realized, names),
+        desired,
+        realized,
+    );
+}
+
+/// Operator-facing summary of the manual transition, derived only from the
+/// replicated desired and realized manual-transition state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ManualSummary {
+    /// The desired transition kind, or `None` while no manual transition is desired.
+    pub(crate) kind: Option<&'static str>,
+    /// Source and destination input names of the desired transition.
+    pub(crate) route: Option<(String, String)>,
+    /// Desired lever travel in whole percent (0 = start, 100 = end).
+    pub(crate) percent: u16,
+    /// Whether the last realized state matches the desired state.
+    pub(crate) confirmed: bool,
+}
+
+/// Input names, in project order, used to label manual-transition routes.
+#[derive(Clone, Copy)]
+pub(crate) struct InputNames<'a> {
+    pub(crate) inputs: &'a [fm_types::InputId],
+    pub(crate) names: &'a [String],
+}
+
+impl InputNames<'_> {
+    fn name(self, input: fm_types::InputId) -> String {
+        crate::monitors::input_name(self.inputs, self.names, input)
+    }
+}
+
+pub(crate) fn manual_summary(
+    desired: ManualTransitionStatus,
+    realized: ManualTransitionStatus,
+    names: InputNames<'_>,
+) -> ManualSummary {
+    // The interval start is bookkeeping for reversal, not operator state.
+    let confirmed = match (desired, realized) {
+        (ManualTransitionStatus::Inactive, ManualTransitionStatus::Inactive) => true,
+        (ManualTransitionStatus::Active(desired), ManualTransitionStatus::Active(realized)) => {
+            desired.kind == realized.kind
+                && desired.from == realized.from
+                && desired.to == realized.to
+                && desired.position == realized.position
+        }
+        _ => false,
+    };
+    match desired {
+        ManualTransitionStatus::Inactive => ManualSummary {
+            kind: None,
+            route: None,
+            percent: 0,
+            confirmed,
+        },
+        ManualTransitionStatus::Active(state) => ManualSummary {
+            kind: Some(manual_kind_label(state.kind)),
+            route: Some((names.name(state.from), names.name(state.to))),
+            percent: state.position.basis_points() / 100,
+            confirmed,
+        },
+    }
+}
+
+const fn manual_kind_label(kind: ManualTransitionKind) -> &'static str {
+    match kind {
+        ManualTransitionKind::Fade => "FADE",
+        ManualTransitionKind::Wipe => "WIPE",
+        ManualTransitionKind::AlphaFade => "ALPHA FADE",
+        ManualTransitionKind::Slide => "SLIDE",
+    }
+}
+
+/// A compact status card: kind, route, travel, and daemon confirmation.
+fn draw_manual_status(
+    ui: &mut Ui,
+    summary: &ManualSummary,
+    desired: ManualTransitionStatus,
+    realized: ManualTransitionStatus,
+) {
+    let active = summary.kind.is_some();
+    let accent = if active { AMBER } else { BORDER_STRONG };
+    let response = egui::Frame::new()
+        .fill(if active { AMBER_FILL } else { MONITOR_BLACK })
+        .stroke(Stroke::new(1.0, accent.gamma_multiply(0.6)))
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(8, 5))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(summary.kind.unwrap_or("NO MANUAL TRANSITION"))
+                        .size(10.5)
+                        .strong()
+                        .extra_letter_spacing(0.8)
+                        .color(if active { AMBER } else { MUTED }),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if active {
+                        ui.label(
+                            mono(format!("{}%", summary.percent))
+                                .size(11.0)
+                                .strong()
+                                .color(TEXT),
+                        );
+                    }
+                    if !summary.confirmed {
+                        ui.label(RichText::new("SYNCING").size(9.5).strong().color(AMBER));
+                    }
+                });
+            });
+            // Both states keep the same rows so the column never jumps.
+            let (route, color) = summary.route.as_ref().map_or_else(
+                || {
+                    (
+                        "Start one with FADE · WIPE · SLIDE · ALPHA".to_owned(),
+                        MUTED,
+                    )
+                },
+                |(from, to)| (format!("{from}  ▶  {to}"), TEXT),
+            );
+            ui.add(egui::Label::new(RichText::new(route).size(11.0).color(color)).truncate());
+            {
+                let (bar, _) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 3.0), Sense::hover());
+                let painter = ui.painter();
+                painter.rect_filled(bar, CornerRadius::same(1), BORDER);
+                painter.rect_filled(
+                    Rect::from_min_size(
+                        bar.min,
+                        Vec2::new(
+                            bar.width() * f32::from(summary.percent) / 100.0,
+                            bar.height(),
+                        ),
+                    ),
+                    CornerRadius::same(1),
+                    AMBER,
+                );
+            }
+        })
+        .response;
+    response.on_hover_text(format!(
+        "Desired: {}\nRealized: {}{}",
+        manual_transition_label(desired),
+        manual_transition_label(realized),
+        if summary.confirmed {
+            ""
+        } else {
+            "\nThe daemon has not yet confirmed the desired manual transition."
+        }
+    ));
 }
 
 /// Converts a T-bar travel fraction (0 = start, 1 = end) to a position.
@@ -462,12 +624,7 @@ pub(crate) fn manual_transition_label(status: ManualTransitionStatus) -> String 
         ManualTransitionStatus::Inactive => "INACTIVE".to_owned(),
         ManualTransitionStatus::Active(state) => format!(
             "{} {}->{} @ {} BP",
-            match state.kind {
-                ManualTransitionKind::Fade => "FADE",
-                ManualTransitionKind::Wipe => "WIPE",
-                ManualTransitionKind::AlphaFade => "ALPHA FADE",
-                ManualTransitionKind::Slide => "SLIDE",
-            },
+            manual_kind_label(state.kind),
             state.from,
             state.to,
             state.position.basis_points(),
@@ -486,5 +643,57 @@ mod tests {
         assert_eq!(t_bar_position(1.0), ManualTransitionPosition::END);
         assert_eq!(t_bar_position(7.0), ManualTransitionPosition::END);
         assert_eq!(t_bar_position(0.25).basis_points(), 2_500);
+    }
+
+    fn input(value: u128) -> fm_types::InputId {
+        fm_types::InputId::new(core::num::NonZeroU128::new(value).unwrap())
+    }
+
+    fn active(position: u16) -> ManualTransitionStatus {
+        active_from(position, 0)
+    }
+
+    fn active_from(position: u16, interval_start: u16) -> ManualTransitionStatus {
+        ManualTransitionStatus::Active(fm_ui_model::ActiveManualTransition {
+            kind: ManualTransitionKind::Slide,
+            from: input(1),
+            to: input(9),
+            interval_start: ManualTransitionPosition::new(interval_start).unwrap(),
+            position: ManualTransitionPosition::new(position).unwrap(),
+        })
+    }
+
+    #[test]
+    fn manual_summary_names_the_route_travel_and_confirmation() {
+        let inputs = [input(1), input(2)];
+        let names = ["Camera 1".to_owned(), "Camera 2".to_owned()];
+        let names = InputNames {
+            inputs: &inputs,
+            names: &names,
+        };
+        let idle = ManualTransitionStatus::Inactive;
+        assert_eq!(
+            manual_summary(idle, idle, names),
+            ManualSummary {
+                kind: None,
+                route: None,
+                percent: 0,
+                confirmed: true,
+            }
+        );
+        let summary = manual_summary(active(4_750), active(4_750), names);
+        assert_eq!(summary.kind, Some("SLIDE"));
+        assert_eq!(
+            summary.route,
+            Some(("Camera 1".to_owned(), "Input 9".to_owned()))
+        );
+        assert_eq!(summary.percent, 47);
+        assert!(summary.confirmed);
+        // Desired ahead of realized: the card reports it as unconfirmed.
+        assert!(!manual_summary(active(10_000), active(4_750), names).confirmed);
+        assert_eq!(manual_summary(active(10_000), idle, names).percent, 100);
+        assert!(!manual_summary(idle, active(4_750), names).confirmed);
+        // Only operator-visible fields decide confirmation.
+        assert!(manual_summary(active(4_750), active_from(4_750, 8_000), names).confirmed);
     }
 }

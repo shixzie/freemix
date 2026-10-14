@@ -15,18 +15,31 @@ frame older than one second, or a simulated frame whose input no longer
 matches the realized source, is dimmed and badged `STALE`. With a native
 daemon, Program frames are GPU-downscaled CPU readbacks captioned
 `ENCODED PREVIEW {w}×{h} · CPU readback`, and Preview reads
-`NO PREVIEW TAP · native Preview image not produced`. The other captures in
-this directory predate monitor frames and still show the earlier
+`NO PREVIEW TAP · native Preview image not produced`. Captures marked as
+predating monitor frames still show the earlier
 `NO VIDEO FEED · preview delivery pending` placeholder.
+
+Input tiles have no per-input thumbnail feed. A tile borrows the Preview or
+Program tap frame only while that frame is current (under one second old) and
+shows exactly that tile's input as the tap's realized source; the picture is
+tagged `PVW TAP` / `PGM TAP` (with `· SIM` for simulated renders). Every other
+tile keeps its dim ordinal and reads `no thumbnail`. When a frame goes stale
+the tile drops back to the ordinal while the monitor well dims it.
 
 The console layout: a menu bar (File / Edit / View / Inputs / Output / Help);
 a top bar (show name, connection pill, revision, `REC` and `LIVE` on-air
 badges, UTC clock); Preview and Program monitors with tally
 headers around the transition column (Cut/Fade/Wipe/Alpha/Slide/Zoom keys,
-shared duration, vertical manual T-bar with its start/commit/cancel keys, and
-Fade-to-Black); the input bank as tally-bordered tiles (click = Preview,
-double-click or `CUT` = Preview then Cut); the audio mixer with vertical
-channel strips (segmented RMS meters with a peak line, a peak-hold marker that
+shared duration, vertical manual T-bar with a travel readout in its header
+and its start/commit/cancel keys, a manual-transition status card naming the
+desired kind, `from ▶ to` inputs, travel percent, and `SYNCING` while the
+daemon's realized state differs, and Fade-to-Black with a realized on-air
+status line: `PROGRAM LIVE`, `FADING TO BLACK n%`, `PROGRAM BLACK`,
+`RESTORING · n% BLACK`, plus `· BLACK/LIVE REQUESTED` until the daemon adopts
+a new target); the input bank as tally-bordered tiles with a tally strip
+along the top edge (click = Preview, double-click or `CUT` = Preview then Cut,
+`···` or right-click = Preview/Cut/Rename/Move menu); the audio mixer with vertical
+channel strips whose meters and faders grow with the window (segmented RMS meters with a peak line, a peak-hold marker that
 holds 1.5 s then falls 20 dB/s, and a clip lamp latched 3 s at 0 dBFS; fader,
 gain/balance/delay, M/S/AFV) and a pinned Master meter strip; a side panel
 with per-slot recorder keys and per-target stream rows (desired `ON`/`OFF`,
@@ -62,12 +75,14 @@ and clip lamps are not visible here.
 
 | File | What it shows |
 |---|---|
-| `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click: both wells show `SIMULATED` encoded frames (Camera 1 Wide on Preview, Camera 2 Close on Program) with the Program tooltip naming what the simulated render omits. |
-| `studio-console-monitors-scene.png` | 1920x1080 with the Main Scene input on Program: Preview shows a simulated frame of Camera 2 Close, while Program keeps the routing placeholder (`NO VIDEO FEED · waiting for encoded preview`) because the simulated tap does not render scene inputs. |
-| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder desired running but not reported live (amber `LIVE` outline) with its `STOP` key, the stopped RTMP target with `START`, Camera 2 Close on Preview and Main Scene on Program. |
+| `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click: both wells show `SIMULATED` encoded frames (Camera 1 Wide on Preview, Camera 2 Close on Program), the two tiles borrow those frames, and the Program tooltip names what the simulated render omits. |
+| `studio-console-monitors-scene.png` | 1920x1080 with the Main Scene input on Program: Preview shows a simulated frame of Camera 2 Close and Program the simulated composite of the scene's layers. |
+| `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder desired running but not reported live (amber `LIVE` outline) with its `STOP` key, the stopped RTMP target with `START`, Camera 2 Close on Preview and Main Scene on Program; the Camera 2 Close and Main Scene tiles carry their `PVW TAP · SIM` / `PGM TAP · SIM` thumbnails. |
+| `studio-console-manual-transition.png` | 1920x1080 after manual `FADE` and a T-bar drag: header `T-BAR 24%`, the amber status card `FADE · Main Scene ▶ Camera 2 Close · 24%` (confirmed by the daemon), and the active `COMMIT`/`CANCEL` keys while automatic transitions are blocked. |
+| `studio-console-fade-to-black.png` | 1920x1080 after `FTB`: the lit `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program header. |
 | `studio-console-streams.png` | After clicking `START` on the RTMP Backup row: both targets desired `ON` with `STOP` keys (realized `STOPPED` in simulated mode), and the Output menu's Streams items (`Stop Local HLS Ladder`, `Stop RTMP Backup`) with the action tooltip. |
 | `studio-console-stingers.png` | The Stingers tab after choosing Playback Clip in the Configure slot media picker and clicking `ASSIGN` for S1: S1 `READY`, `CLEAR` enabled, and the slot summary (cut 15 fr, preload, mixed audio, fallback cut). |
-| `studio-console-top.png` | The default 1600x940 window, idle: both recorder slots `STOPPED` with their `START` keys, overlays collapsed to one row per channel. |
+| `studio-console-top.png` | The default 1600x940 window, idle: both recorder slots `STOPPED` with their `START` keys, stream rows with their keys, overlays collapsed to one row per channel. |
 | `studio-console-stopped.png` | The compact 1280x800 layout with both recorder slots `STOPPED`; the input bank and mixer scroll inside their cards and the Master strip stays pinned. |
 | `studio-console-recording.png` | 1600x940 with independent per-slot recording (`REC 1 STOPPED` / `START` beside `REC 2 RECORDING` / `STOP`) and the Stingers tab showing all eight unconfigured slots. |
 | `studio-console-menu.png` | 1920x1080 with the Output menu open (transitions with their `C`/`F` keys, Fade to black `B`, manual T-bar Commit/Cancel `Esc`, per-slot recorder Start/Stop, per-target stream Start/Stop, and the Stingers assign/clear submenus), hovering the disabled Commit item to show its reason. |
@@ -75,10 +90,11 @@ and clip lamps are not visible here.
 | `studio-console-input-menu.png` | Right-click menu on the Host Laptop tile: Select on Preview / Cut to Program enabled; Rename and Move disabled because the operator session lacks `edit_project`. |
 | `studio-console-reconnecting.png` | 1600x940 Studio started with `--connect` to an address with no daemon: the Reconnecting card with its attempt count and retry delay over the dimmed monitors, every control disabled, and the full error in the status bar. |
 
-`studio-console-top.png`, `-stopped.png`, `-recording.png`, `-shortcuts.png`,
-`-input-menu.png`, and `-reconnecting.png` predate the stream keys and the
-Stinger configuration row; every capture except the two `-monitors` ones
-predates encoded monitor frames.
+`studio-console-recording.png`, `-shortcuts.png`, `-input-menu.png`, and
+`-reconnecting.png` predate the stream keys and the Stinger configuration row;
+those four plus `-streams.png`, `-stingers.png`, and `-menu.png` also predate
+encoded monitor frames, tile thumbnails, the compact `···`/`CUT` tile keys,
+and the manual-transition and Fade-to-Black status lines.
 
 The demo show used for the captures ("Evening Broadcast") has six simulated
 inputs, one scene input ("Main Scene") with two picture-in-picture layers, an
@@ -145,4 +161,8 @@ without a window manager. The reconnecting capture runs
 `freemix-studio --connect 127.0.0.1:7399 --project-id 1` with nothing listening.
 The monitors captures start from the demo show (Main Scene on Program) for
 `-monitors-scene.png`, then click `CUT` and the Camera 1 Wide tile and hover
-the Program well for `-monitors.png`.
+the Program well for `-monitors.png`. The manual-transition capture clicks
+the `MANUAL` row's `FADE`, then drags the T-bar handle upward
+(`xdotool mousedown 1`, `mousemove`, `mouseup 1`); the Fade-to-Black capture
+clicks `FTB`. Recording start can stall the simulated daemon for a few
+seconds, so allow it to settle before capturing the overview.

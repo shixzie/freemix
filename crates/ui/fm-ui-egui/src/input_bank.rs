@@ -8,9 +8,12 @@ use egui::{
     Align2, Color32, CornerRadius, FontFamily, FontId, Rect, RichText, ScrollArea, Sense, Stroke,
     StrokeKind, Ui, Vec2, pos2,
 };
+use fm_protocol::{MonitorFrameOrigin, MonitorTap, WireInputId};
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
+use fm_ui_model::SwitcherState;
 
 use crate::gating::{self, Capability, Hint, unavailable_reason};
+use crate::monitors::{FrameFacts, MonitorPicture, letterbox, picture_visible};
 use crate::theme::{
     ACCENT, BORDER_STRONG, GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PROGRAM, TEXT, TEXT_DIM, mono,
     section_header, section_label, small_button, tally_badge, tally_color,
@@ -37,6 +40,43 @@ pub(crate) fn dynamic_columns(available_width: f32, spacing: f32) -> usize {
         occupied += spacing + MIN_TILE_WIDTH;
     }
     columns
+}
+
+/// Picks the monitor tap whose current frame shows exactly `input`, if any.
+///
+/// The client receives no per-input thumbnails, only the Preview and Program
+/// tap frames. A tile borrows a tap's frame only when that frame is fresh,
+/// shows this input, and this input is the tap's realized source, so a tile
+/// never shows another source's picture. Program wins when both match.
+pub(crate) fn thumbnail_tap(
+    input: InputId,
+    switcher: SwitcherState,
+    frames: [Option<FrameFacts>; 2],
+) -> Option<MonitorTap> {
+    let wire = WireInputId::from_domain(input);
+    [MonitorTap::Program, MonitorTap::Preview]
+        .into_iter()
+        .find(|tap| {
+            let realized = match tap {
+                MonitorTap::Preview => switcher.realized.preview,
+                MonitorTap::Program => switcher.realized.program,
+            };
+            realized == input
+                && frames[tap.index()].is_some_and(|frame| {
+                    frame.input == wire
+                        && picture_visible(frame.origin, frame.input, Some(wire), frame.age)
+                })
+        })
+}
+
+/// Short tag naming where a tile thumbnail came from.
+pub(crate) fn thumbnail_tag(tap: MonitorTap, origin: MonitorFrameOrigin) -> &'static str {
+    match (tap, origin) {
+        (MonitorTap::Program, MonitorFrameOrigin::Simulated) => "PGM TAP · SIM",
+        (MonitorTap::Preview, MonitorFrameOrigin::Simulated) => "PVW TAP · SIM",
+        (MonitorTap::Program, MonitorFrameOrigin::Native) => "PGM TAP",
+        (MonitorTap::Preview, MonitorFrameOrigin::Native) => "PVW TAP",
+    }
 }
 
 /// One operator gesture on an input tile.
@@ -125,6 +165,11 @@ impl StudioShell {
         let enabled = preview_selection_available(gate, state.can_select_preview);
         let cut_enabled = enabled && transition_availability(gate).basic();
         let reorder_enabled = project_editing_available(state);
+        let now = std::time::Instant::now();
+        let pictures = MonitorTap::ALL.map(|tap| {
+            self.monitor_textures
+                .picture(tap, &state.monitor_images, now)
+        });
         ScrollArea::vertical()
             .id_salt("studio-input-bank")
             .auto_shrink([false, false])
@@ -156,6 +201,16 @@ impl StudioShell {
                                         count: view.inputs.len(),
                                         width: tile_width,
                                         tally: tally_state(input, view.switcher),
+                                        thumbnail: thumbnail_tap(
+                                            input,
+                                            view.switcher,
+                                            pictures.map(|picture| {
+                                                picture.map(|picture| picture.facts)
+                                            }),
+                                        )
+                                        .and_then(|tap| {
+                                            pictures[tap.index()].map(|picture| (tap, picture))
+                                        }),
                                         enabled,
                                         cut_enabled,
                                         reorder_enabled,
@@ -182,12 +237,12 @@ impl StudioShell {
             input,
             index,
             name,
-            count,
             width,
             tally,
+            thumbnail,
             enabled,
             cut_enabled,
-            reorder_enabled,
+            ..
         } = tile;
         let preview_reason = unavailable_reason(state, Capability::SelectPreview);
         let cut_reason = if enabled {
@@ -211,6 +266,7 @@ impl StudioShell {
                     index,
                     name,
                     tally,
+                    thumbnail,
                     enabled,
                     hovered: response.hovered(),
                     focused: response.has_focus(),
@@ -223,8 +279,15 @@ impl StudioShell {
         } else {
             String::new()
         };
+        let source = thumbnail.map_or(
+            "Thumbnail: none (only Preview/Program tap frames are delivered)",
+            |(tap, _)| match tap {
+                MonitorTap::Program => "Thumbnail: current Program tap frame",
+                MonitorTap::Preview => "Thumbnail: current Preview tap frame",
+            },
+        );
         let hover = format!(
-            "{name}\n{}\nClick: select Preview{shortcut} · Double-click: cut to Program · Right-click: more",
+            "{name}\n{}\n{source}\nClick: select Preview{shortcut} · Double-click: cut to Program · Right-click: more",
             tally.operator_label()
         );
         let response = if enabled {
@@ -258,53 +321,33 @@ impl StudioShell {
         });
 
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 3.0;
-            let up = ui
-                .add_enabled(reorder_enabled && index > 0, small_button("◀"))
-                .hint(
-                    "Move this input earlier in the project order",
-                    if reorder_enabled {
-                        "this input is already first"
-                    } else {
-                        edit_reason
+            ui.spacing_mut().item_spacing.x = 4.0;
+            // Rename and reorder live behind one menu (also on right-click)
+            // so the bank reads as a grid of sources, not a grid of buttons.
+            egui::containers::menu::MenuButton::from_button(
+                small_button("···").min_size(Vec2::new(30.0, 20.0)),
+            )
+            .ui(ui, |ui| {
+                self.draw_tile_menu(
+                    ui,
+                    tile,
+                    TileReasons {
+                        preview: preview_reason,
+                        cut: cut_reason,
+                        edit: edit_reason,
                     },
+                    intents,
                 );
-            if up.clicked() {
-                intents.push(StudioIntent::MoveInput {
-                    input,
-                    direction: InputMoveDirection::Up,
-                });
-            }
-            let down = ui
-                .add_enabled(reorder_enabled && index + 1 < count, small_button("▶"))
-                .hint(
-                    "Move this input later in the project order",
-                    if reorder_enabled {
-                        "this input is already last"
-                    } else {
-                        edit_reason
-                    },
-                );
-            if down.clicked() {
-                intents.push(StudioIntent::MoveInput {
-                    input,
-                    direction: InputMoveDirection::Down,
-                });
-            }
-            if ui
-                .add_enabled(reorder_enabled, small_button("RENAME"))
-                .hint("Rename this input", edit_reason)
-                .clicked()
-            {
-                self.rename_draft = Some(RenameDraft::new(input, name));
-            }
+            })
+            .0
+            .on_hover_text("More: Preview, Cut, Rename, Move");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let cut = ui
                     .add_enabled(
                         cut_enabled,
                         egui::Button::new(RichText::new("CUT").size(11.0).strong().color(PROGRAM))
                             .stroke(Stroke::new(1.0, PROGRAM.gamma_multiply(0.35)))
-                            .min_size(Vec2::new(0.0, 20.0)),
+                            .min_size(Vec2::new(56.0, 20.0)),
                     )
                     .hint(
                         "Select this input on Preview, then cut it to Program  [double-click]",
@@ -495,6 +538,7 @@ struct TileContext<'a> {
     count: usize,
     width: f32,
     tally: crate::TallyState,
+    thumbnail: Option<(MonitorTap, MonitorPicture)>,
     enabled: bool,
     cut_enabled: bool,
     reorder_enabled: bool,
@@ -507,6 +551,7 @@ struct TilePaint<'a> {
     index: usize,
     name: &'a str,
     tally: crate::TallyState,
+    thumbnail: Option<(MonitorTap, MonitorPicture)>,
     enabled: bool,
     hovered: bool,
     focused: bool,
@@ -519,6 +564,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         index,
         name,
         tally,
+        thumbnail,
         enabled,
         hovered,
         focused,
@@ -540,31 +586,68 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             MONITOR_BLACK
         },
     );
-    // Large dim ordinal, like a multiview label on an empty source.
-    painter.text(
-        thumb.center(),
-        Align2::CENTER_CENTER,
-        format!("{}", index + 1),
-        FontId::new(
-            (thumb.height() * 0.42).clamp(22.0, 48.0),
-            FontFamily::Proportional,
-        ),
-        if has_tally {
-            border.gamma_multiply(0.35)
-        } else {
-            Color32::from_rgb(40, 44, 50)
-        },
-    );
-    painter.text(
-        pos2(thumb.center().x, thumb.max.y - 10.0),
-        Align2::CENTER_CENTER,
-        "no video feed",
-        FontId::new(9.0, FontFamily::Proportional),
-        MUTED.gamma_multiply(0.7),
-    );
+    if let Some((tap, picture)) = thumbnail {
+        painter.image(
+            picture.texture,
+            letterbox(thumb, picture.facts.width, picture.facts.height),
+            Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+        let tag = painter.layout_no_wrap(
+            thumbnail_tag(tap, picture.facts.origin).to_owned(),
+            FontId::new(9.0, FontFamily::Proportional),
+            TEXT,
+        );
+        let tag_rect = Rect::from_min_size(
+            pos2(thumb.min.x + 6.0, thumb.max.y - tag.size().y - 9.0),
+            tag.size() + Vec2::new(8.0, 4.0),
+        );
+        painter.rect_filled(
+            tag_rect,
+            CornerRadius::same(3),
+            Color32::from_black_alpha(190),
+        );
+        painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, TEXT);
+    } else {
+        // Large dim ordinal, like a multiview label on an empty source.
+        painter.text(
+            thumb.center(),
+            Align2::CENTER_CENTER,
+            format!("{}", index + 1),
+            FontId::new(
+                (thumb.height() * 0.42).clamp(22.0, 48.0),
+                FontFamily::Proportional,
+            ),
+            if has_tally {
+                border.gamma_multiply(0.35)
+            } else {
+                Color32::from_rgb(40, 44, 50)
+            },
+        );
+        painter.text(
+            pos2(thumb.center().x, thumb.max.y - 10.0),
+            Align2::CENTER_CENTER,
+            "no thumbnail",
+            FontId::new(9.0, FontFamily::Proportional),
+            MUTED.gamma_multiply(0.7),
+        );
+    }
+    if has_tally {
+        // Broadcast-style tally strip across the top edge.
+        painter.rect_filled(
+            Rect::from_min_size(rect.min, Vec2::new(rect.width(), 4.0)),
+            CornerRadius {
+                nw: 4,
+                ne: 4,
+                sw: 0,
+                se: 0,
+            },
+            border,
+        );
+    }
     // Key hint for the numbered Preview shortcuts.
     if index < 8 {
-        let key = Rect::from_min_size(thumb.min + Vec2::new(6.0, 6.0), Vec2::new(16.0, 16.0));
+        let key = Rect::from_min_size(thumb.min + Vec2::new(6.0, 8.0), Vec2::new(16.0, 16.0));
         painter.rect_filled(key, CornerRadius::same(3), GRAPHITE_RAISED);
         painter.rect_stroke(
             key,
@@ -587,7 +670,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             Color32::WHITE,
         );
         let badge_rect = Rect::from_min_size(
-            pos2(thumb.max.x - galley.size().x - 16.0, thumb.min.y + 6.0),
+            pos2(thumb.max.x - galley.size().x - 16.0, thumb.min.y + 8.0),
             Vec2::new(galley.size().x + 10.0, 16.0),
         );
         painter.rect_filled(badge_rect, CornerRadius::same(3), border);
@@ -687,6 +770,95 @@ mod tests {
         };
         assert_eq!(tile_intents(input, TileGesture::Click, closed), Vec::new());
         assert_eq!(tile_intents(input, TileGesture::Cut, closed), Vec::new());
+    }
+
+    fn id(value: u128) -> InputId {
+        InputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn frame(input: u128, origin: MonitorFrameOrigin, age_ms: u64) -> FrameFacts {
+        FrameFacts {
+            origin,
+            input: WireInputId::from_domain(id(input)),
+            width: 640,
+            height: 360,
+            age: std::time::Duration::from_millis(age_ms),
+        }
+    }
+
+    fn switcher(program: u128, preview: u128) -> SwitcherState {
+        let selection = fm_ui_model::BusSelection::new(id(program), id(preview));
+        SwitcherState {
+            desired: selection,
+            realized: selection,
+            desired_manual_transition: fm_ui_model::ManualTransitionStatus::Inactive,
+            realized_manual_transition: fm_ui_model::ManualTransitionStatus::Inactive,
+            desired_fade_to_black: fm_protocol::FadeToBlackState {
+                target_active: false,
+                position: fm_protocol::FadeToBlackPosition::LIVE,
+            },
+            realized_fade_to_black: fm_protocol::FadeToBlackState {
+                target_active: false,
+                position: fm_protocol::FadeToBlackPosition::LIVE,
+            },
+            runtime_generation: None,
+        }
+    }
+
+    #[test]
+    fn tiles_borrow_only_fresh_tap_frames_of_their_own_realized_source() {
+        let sim = MonitorFrameOrigin::Simulated;
+        let routing = switcher(2, 1);
+        let frames = [Some(frame(1, sim, 100)), Some(frame(2, sim, 100))];
+        assert_eq!(
+            thumbnail_tap(id(1), routing, frames),
+            Some(MonitorTap::Preview)
+        );
+        assert_eq!(
+            thumbnail_tap(id(2), routing, frames),
+            Some(MonitorTap::Program)
+        );
+        assert_eq!(thumbnail_tap(id(3), routing, frames), None);
+        // Stale frames are never borrowed.
+        assert_eq!(
+            thumbnail_tap(id(2), routing, [None, Some(frame(2, sim, 1_500))]),
+            None
+        );
+        // A frame of a source the tap no longer realizes is not borrowed.
+        assert_eq!(
+            thumbnail_tap(id(2), switcher(3, 1), [None, Some(frame(2, sim, 100))]),
+            None
+        );
+        // The Program frame wins when one input is on both buses.
+        assert_eq!(
+            thumbnail_tap(
+                id(4),
+                switcher(4, 4),
+                [Some(frame(4, sim, 100)), Some(frame(4, sim, 100))]
+            ),
+            Some(MonitorTap::Program)
+        );
+        assert_eq!(
+            thumbnail_tap(
+                id(4),
+                switcher(4, 4),
+                [Some(frame(4, MonitorFrameOrigin::Native, 100)), None]
+            ),
+            Some(MonitorTap::Preview)
+        );
+        assert_eq!(thumbnail_tap(id(1), routing, [None, None]), None);
+    }
+
+    #[test]
+    fn thumbnail_tags_name_the_tap_and_simulated_origin() {
+        assert_eq!(
+            thumbnail_tag(MonitorTap::Program, MonitorFrameOrigin::Simulated),
+            "PGM TAP · SIM"
+        );
+        assert_eq!(
+            thumbnail_tag(MonitorTap::Preview, MonitorFrameOrigin::Native),
+            "PVW TAP"
+        );
     }
 
     #[test]
