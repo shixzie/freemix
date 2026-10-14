@@ -2328,6 +2328,28 @@ fn undo_of_a_transition_class_edit_also_requires_the_transition_permission() {
             .is_accepted()
     );
     control.tick(&server_identity()).unwrap();
+    // Transports authorize exactly what prepare_submit authorizes.
+    let undo_payload = CommandPayload::Undo {
+        expected_edit: None,
+    };
+    let required = control.required_classes(&undo_payload);
+    assert_eq!(required.primary(), CommandClass::EditProject);
+    assert_eq!(required.additional(), Some(CommandClass::Transition));
+    assert!(
+        required
+            .authorize(&Policy::production(), &principal(Role::Graphics))
+            .is_err()
+    );
+    assert!(
+        required
+            .authorize(&Policy::production(), &principal(Role::Admin))
+            .is_ok()
+    );
+    // Nothing to redo yet: redo needs only its own class.
+    let redo_payload = CommandPayload::Redo {
+        expected_edit: None,
+    };
+    assert_eq!(control.required_classes(&redo_payload).additional(), None);
 
     // Graphics may edit the project but may not change Stinger slots, so it
     // may not revert a Stinger slot change through history either.
@@ -2346,6 +2368,12 @@ fn undo_of_a_transition_class_edit_also_requires_the_transition_permission() {
         .submit(&principal(Role::Admin), undo("admin-undo", Some(1)), 0)
         .unwrap();
     assert!(undone.is_accepted());
+    // Redo reapplies the Stinger change, so it needs Transition as well.
+    assert_eq!(
+        control.required_classes(&redo_payload).additional(),
+        Some(CommandClass::Transition)
+    );
+    assert_eq!(control.required_classes(&undo_payload).additional(), None);
     assert!(matches!(
         undone.output.events.as_slice(),
         [EventMessage {

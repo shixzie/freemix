@@ -9452,7 +9452,10 @@ fn execute_session_command(
 ) -> AppResult<CommandDelivery> {
     let encoded_bytes = encode_line(&WireMessage::Command(command.clone()))?.len();
     let now = now_millis()?;
-    if let Err(error) = session.admit_command(command, encoded_bytes, now) {
+    // The session authorizes its scoped role against the classes fm-control
+    // resolves now, including the edit an undo or redo would revert or reapply.
+    let required = control.borrow().required_classes(&command.payload);
+    if let Err(error) = session.admit_command(command, required, encoded_bytes, now) {
         let result = session_rejection(
             command,
             &error,

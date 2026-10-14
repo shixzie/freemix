@@ -1,9 +1,9 @@
 use std::{collections::VecDeque, error::Error, fmt};
 
 use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
+use fm_control::RequiredClasses;
 use fm_protocol::{
-    CommandMessage, CommandPayload, DiagnosticsRequest, EngineIdentity, EventCursor,
-    ProtocolVersion,
+    CommandMessage, DiagnosticsRequest, EngineIdentity, EventCursor, ProtocolVersion,
 };
 
 use crate::{RateLimit, SessionLimits};
@@ -156,7 +156,12 @@ impl Session {
 
     /// Authorizes and accounts for one command before control-plane execution.
     ///
-    /// The caller must invoke [`Self::command_completed`] after execution.
+    /// `required` must be the classes the control plane resolves for this
+    /// command at execution time ([`fm_control::ControlService::required_classes`]): the
+    /// session authorizes its scoped role against exactly the classes
+    /// fm-control would, including the class of the edit undo or redo
+    /// targets. The caller must invoke [`Self::command_completed`] after
+    /// execution.
     ///
     /// # Errors
     ///
@@ -165,61 +170,12 @@ impl Session {
     pub fn admit_command(
         &mut self,
         command: &CommandMessage,
+        required: RequiredClasses,
         encoded_bytes: usize,
         now_ms: u64,
     ) -> Result<(), SessionError> {
         self.ensure_connected()?;
-
-        let class = match command.payload {
-            // Undo, redo, the edit padlock, and title field saves are project
-            // edits; fm-control additionally authorizes the class of the edit
-            // undo/redo targets and EditProject for a title take with fields.
-            CommandPayload::RenameInput { .. }
-            | CommandPayload::ReorderInputs { .. }
-            | CommandPayload::AddInput { .. }
-            | CommandPayload::RemoveInput { .. }
-            | CommandPayload::Undo { .. }
-            | CommandPayload::Redo { .. }
-            | CommandPayload::SetEditLock { .. }
-            | CommandPayload::SetTitleFields { .. } => CommandClass::EditProject,
-            CommandPayload::SetInputAudioStrip { .. } => CommandClass::ControlAudio,
-            CommandPayload::SelectPreview { .. } => CommandClass::SelectPreview,
-            CommandPayload::Cut
-            | CommandPayload::Fade { .. }
-            | CommandPayload::AlphaFade { .. }
-            | CommandPayload::Slide { .. }
-            | CommandPayload::Zoom { .. }
-            | CommandPayload::Stinger { .. }
-            | CommandPayload::ConfigureStinger { .. }
-            | CommandPayload::RemoveStinger { .. }
-            | CommandPayload::TakeOverlay { .. }
-            | CommandPayload::UpdateOverlay { .. }
-            | CommandPayload::OverlayOff { .. }
-            | CommandPayload::SetOverlayOutputInclusion { .. }
-            | CommandPayload::ConfigureOverlayTransition { .. }
-            | CommandPayload::ConfigureOverlayAppearance { .. }
-            | CommandPayload::QueueOverlay { .. }
-            | CommandPayload::TakeNextOverlay { .. }
-            | CommandPayload::Wipe { .. }
-            | CommandPayload::FadeToBlack { .. }
-            | CommandPayload::StartManualTransition { .. }
-            | CommandPayload::SetManualTransitionPosition { .. }
-            | CommandPayload::CommitManualTransition
-            | CommandPayload::CancelManualTransition
-            | CommandPayload::StreamStart { .. }
-            | CommandPayload::StreamStop { .. }
-            | CommandPayload::RecordStart { .. }
-            | CommandPayload::RecordStop { .. }
-            | CommandPayload::TakeTitle { .. }
-            | CommandPayload::TitleOffAir { .. } => CommandClass::Transition,
-        };
-        self.policy.authorize(&self.principal, class)?;
-        // A title take that also edits fields needs both authorities.
-        if matches!(&command.payload, CommandPayload::TakeTitle { fields, .. } if !fields.is_empty())
-        {
-            self.policy
-                .authorize(&self.principal, CommandClass::EditProject)?;
-        }
+        required.authorize(&self.policy, &self.principal)?;
 
         if command.protocol != self.protocol {
             return Err(SessionError::ProtocolMismatch {

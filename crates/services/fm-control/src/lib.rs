@@ -91,6 +91,59 @@ impl AuthorizationHook for Policy {
     }
 }
 
+/// The command classes one command needs, resolved against engine state.
+///
+/// Every command needs its own target-free class. Undo and redo additionally
+/// need the class of the edit they would revert or reapply, so history never
+/// lets a role change configuration it could not change directly. A title take
+/// that also saves field values edits project content as well as switching,
+/// so it additionally needs `EditProject`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RequiredClasses {
+    primary: CommandClass,
+    additional: Option<CommandClass>,
+}
+
+impl RequiredClasses {
+    fn resolve(payload: &CommandPayload, history_target: Option<&EngineCommand>) -> Self {
+        let additional = history_target
+            .and_then(wire_edit_payload)
+            .map(|target| command_class(&target))
+            .or_else(|| additional_command_class(payload));
+        Self {
+            primary: command_class(payload),
+            additional,
+        }
+    }
+
+    /// The payload's own target-free class.
+    #[must_use]
+    pub const fn primary(self) -> CommandClass {
+        self.primary
+    }
+
+    /// The second class the command needs, if any.
+    #[must_use]
+    pub const fn additional(self) -> Option<CommandClass> {
+        self.additional
+    }
+
+    /// Authorizes every required class, the payload's own class first.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first denial.
+    pub fn authorize<A: AuthorizationHook + ?Sized>(
+        self,
+        authorizer: &A,
+        principal: &Principal,
+    ) -> Result<(), AuthorizationDenial> {
+        authorizer.authorize(principal, self.primary)?;
+        self.additional
+            .map_or(Ok(()), |class| authorizer.authorize(principal, class))
+    }
+}
+
 /// Independent bounds for resume history and live subscribers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ControlLimits {
@@ -784,6 +837,19 @@ impl<A: AuthorizationHook> ControlService<A> {
         }
     }
 
+    /// Returns every command class a principal must hold for `payload` to be
+    /// authorized against the current engine state, exactly as
+    /// [`Self::prepare_submit`] authorizes it.
+    ///
+    /// A transport session that scopes a connection to a narrower role than
+    /// the principal executing in this service must authorize these classes,
+    /// not only the payload's own class: undo and redo resolve to the edit at
+    /// the top of the history stack, which only the engine knows.
+    #[must_use]
+    pub fn required_classes(&self, payload: &CommandPayload) -> RequiredClasses {
+        RequiredClasses::resolve(payload, history_target(&self.engine, payload).as_ref())
+    }
+
     /// Prepares an authorized protocol command without changing live control state.
     ///
     /// A cached target-free authorization denial is replayed first. Otherwise,
@@ -814,23 +880,9 @@ impl<A: AuthorizationHook> ControlService<A> {
             }));
         }
 
-        // Undo and redo need EditProject and also the permission the edit
-        // they would revert or reapply needed, so history never lets a role
-        // change configuration it could not change directly. A title take
-        // that also saves field values edits project content as well as
-        // switching, so it needs EditProject on top of Transition.
         let history_target = history_target(&self.engine, &message.payload);
-        let additional_class = history_target
-            .as_ref()
-            .and_then(wire_edit_payload)
-            .map(|payload| command_class(&payload))
-            .or_else(|| additional_command_class(&message.payload));
-        let authorization = self
-            .authorizer
-            .authorize(principal, command_class(&message.payload))
-            .and_then(|()| {
-                additional_class.map_or(Ok(()), |class| self.authorizer.authorize(principal, class))
-            });
+        let authorization = RequiredClasses::resolve(&message.payload, history_target.as_ref())
+            .authorize(&self.authorizer, principal);
         if let Err(denial) = authorization {
             // A cached denial must never shadow a durable engine receipt.
             let remember = self.engine.receipt(&idempotency_key).is_none();

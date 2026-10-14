@@ -1,6 +1,7 @@
 use std::{convert::Infallible, net::IpAddr, num::NonZeroU128};
 
-use fm_auth::{Principal, Role as AuthRole, SessionId, UserId};
+use fm_auth::{Policy, Principal, Role as AuthRole, SessionId, UserId};
+use fm_control::{ControlLimits, ControlService};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, EngineIdentity,
     EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState,
@@ -9,7 +10,7 @@ use fm_protocol::{
 };
 use fm_server::{
     AuthenticationMode, ConfigError, ControlPlane, DisconnectReason, HandshakeError, HealthState,
-    Heartbeat, InitialSync, RateLimit, ReadinessState, Server, ServerConfig, ServerMode,
+    Heartbeat, InitialSync, RateLimit, ReadinessState, Server, ServerConfig, ServerMode, Session,
     SessionError, SessionLimits, SessionState, SyncPayload,
 };
 
@@ -193,6 +194,52 @@ fn hello(role: Role, cursor: Option<EventCursor>) -> HandshakeRequest {
     }
 }
 
+/// A real control plane over three inputs with empty edit history.
+fn control_service() -> ControlService {
+    let domain_input = |value: u128| fm_types::InputId::new(NonZeroU128::new(value).unwrap());
+    let show = fm_engine::ShowState::new(
+        "show",
+        (1..=3)
+            .map(|value| (domain_input(value), format!("Input {value}")))
+            .collect(),
+        domain_input(1),
+        domain_input(2),
+    )
+    .unwrap();
+    ControlService::new(
+        fm_engine::Engine::new(
+            show,
+            fm_types::FrameRate::new(60, 1).unwrap(),
+            fm_clock::ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        ),
+        Policy::production(),
+        "engine-a",
+        "log-a",
+        ControlLimits::default(),
+    )
+}
+
+/// Admits `command` with the classes a fresh control plane resolves for it.
+fn admit(
+    session: &mut Session,
+    command: &CommandMessage,
+    encoded_bytes: usize,
+    now_ms: u64,
+) -> Result<(), SessionError> {
+    admit_against(session, &control_service(), command, encoded_bytes, now_ms)
+}
+
+fn admit_against(
+    session: &mut Session,
+    control: &ControlService,
+    command: &CommandMessage,
+    encoded_bytes: usize,
+    now_ms: u64,
+) -> Result<(), SessionError> {
+    let required = control.required_classes(&command.payload);
+    session.admit_command(command, required, encoded_bytes, now_ms)
+}
+
 fn ready_server(config: ServerConfig) -> Server<FakeControl> {
     let mut server = Server::new(config, control()).unwrap();
     server.mark_ready().unwrap();
@@ -312,7 +359,7 @@ fn desired_role_and_commands_are_authorized_to_the_granted_scope() {
         .unwrap();
     let command = command(CommandPayload::Cut);
     assert!(matches!(
-        outcome.session.admit_command(&command, 10, 0),
+        admit(&mut outcome.session, &command, 10, 0),
         Err(SessionError::Authorization(_))
     ));
 }
@@ -326,7 +373,7 @@ fn wipe_uses_transition_authorization_and_fade_rate_accounting() {
         .unwrap()
         .session;
     assert!(matches!(
-        viewer.admit_command(&wipe, 10, 0),
+        admit(&mut viewer, &wipe, 10, 0),
         Err(SessionError::Authorization(_))
     ));
 
@@ -349,12 +396,12 @@ fn wipe_uses_transition_authorization_and_fade_rate_accounting() {
         .session;
     let mut wipe = wipe;
     wipe.protocol = CURRENT_PROTOCOL_VERSION;
-    operator.admit_command(&wipe, 10, 0).unwrap();
+    admit(&mut operator, &wipe, 10, 0).unwrap();
     operator.command_completed().unwrap();
     let mut fade = command(CommandPayload::Fade { duration_frames: 3 });
     fade.protocol = CURRENT_PROTOCOL_VERSION;
     assert_eq!(
-        operator.admit_command(&fade, 10, 0),
+        admit(&mut operator, &fade, 10, 0),
         Err(SessionError::InboundRateLimited)
     );
 }
@@ -385,17 +432,106 @@ fn title_take_with_fields_also_needs_project_edit_authority() {
         .unwrap()
         .session;
     assert!(matches!(
-        operator.admit_command(&take(fields.clone()), 10, 0),
+        admit(&mut operator, &take(fields.clone()), 10, 0),
         Err(SessionError::Authorization(_))
     ));
-    operator.admit_command(&take(Vec::new()), 10, 0).unwrap();
+    admit(&mut operator, &take(Vec::new()), 10, 0).unwrap();
     operator.command_completed().unwrap();
 
     let mut admin = server
         .handshake(&hello(Role::Admin, None), &principal(AuthRole::Admin), 0)
         .unwrap()
         .session;
-    admin.admit_command(&take(fields), 10, 0).unwrap();
+    admit(&mut admin, &take(fields), 10, 0).unwrap();
+}
+
+#[test]
+fn undo_and_redo_also_need_the_targeted_edit_class_at_the_session() {
+    let server = ready_server(config());
+    let session_for = |role: Role, auth_role: AuthRole| {
+        server
+            .handshake(&hello(role, None), &principal(auth_role), 0)
+            .unwrap()
+            .session
+    };
+    let mut graphics = session_for(Role::Graphics, AuthRole::Graphics);
+    let mut operator = session_for(Role::Operator, AuthRole::Operator);
+    let mut admin = session_for(Role::Admin, AuthRole::Admin);
+    let undo = command(CommandPayload::Undo {
+        expected_edit: None,
+    });
+    let redo = command(CommandPayload::Redo {
+        expected_edit: None,
+    });
+    let mut control = control_service();
+    let submit = |control: &mut ControlService, id: &str, payload: CommandPayload| {
+        let mut message = command(payload);
+        message.id = id.into();
+        message.idempotency_key = format!("{id}-key");
+        assert!(
+            control
+                .submit(&principal(AuthRole::Admin), message, 0)
+                .unwrap()
+                .is_accepted(),
+            "{id}"
+        );
+    };
+
+    // A rename is EditProject only: Graphics may undo it, Operator may not.
+    submit(
+        &mut control,
+        "rename",
+        CommandPayload::RenameInput {
+            input: input(1),
+            name: "Renamed".into(),
+        },
+    );
+    admit_against(&mut graphics, &control, &undo, 10, 0).unwrap();
+    graphics.command_completed().unwrap();
+    assert!(matches!(
+        admit_against(&mut operator, &control, &undo, 10, 0),
+        Err(SessionError::Authorization(_))
+    ));
+
+    // A Stinger slot change is Transition: Graphics may undo its own class but
+    // not revert the switcher configuration it could not change directly.
+    let stinger = CommandPayload::ConfigureStinger {
+        slot: fm_protocol::WireStingerSlotId::new(2).unwrap(),
+        media_input: input(3),
+        preload: false,
+        cut_point_frames: 6,
+        audio_policy: fm_protocol::StingerAudioPolicy::StingerOnly,
+        missing_media_fallback: fm_protocol::StingerMissingMediaFallback::Cut,
+    };
+    submit(&mut control, "stinger", stinger);
+    assert!(matches!(
+        admit_against(&mut graphics, &control, &undo, 10, 0),
+        Err(SessionError::Authorization(_))
+    ));
+    assert!(matches!(
+        admit_against(&mut operator, &control, &undo, 10, 0),
+        Err(SessionError::Authorization(_))
+    ));
+    admit_against(&mut admin, &control, &undo, 10, 0).unwrap();
+    admin.command_completed().unwrap();
+
+    // Once the Stinger change is undone, redoing it needs Transition too,
+    // while the rename beneath it is undoable by Graphics again.
+    submit(
+        &mut control,
+        "undo-stinger",
+        CommandPayload::Undo {
+            expected_edit: None,
+        },
+    );
+    assert!(matches!(
+        admit_against(&mut graphics, &control, &redo, 10, 0),
+        Err(SessionError::Authorization(_))
+    ));
+    admit_against(&mut admin, &control, &redo, 10, 0).unwrap();
+    admin.command_completed().unwrap();
+    admit_against(&mut graphics, &control, &undo, 10, 0).unwrap();
+    graphics.command_completed().unwrap();
 }
 
 #[test]
@@ -456,23 +592,23 @@ fn command_rates_and_outbound_buffers_are_bounded() {
     let command = command(CommandPayload::Cut);
 
     assert_eq!(
-        session.admit_command(&command, 33, 0),
+        admit(&mut session, &command, 33, 0),
         Err(SessionError::CommandTooLarge {
             size: 33,
             maximum: 32,
         })
     );
-    session.admit_command(&command, 20, 0).unwrap();
+    admit(&mut session, &command, 20, 0).unwrap();
     assert_eq!(
-        session.admit_command(&command, 20, 0),
+        admit(&mut session, &command, 20, 0),
         Err(SessionError::TooManyInflightCommands)
     );
     session.command_completed().unwrap();
     assert_eq!(
-        session.admit_command(&command, 20, 0),
+        admit(&mut session, &command, 20, 0),
         Err(SessionError::InboundRateLimited)
     );
-    session.admit_command(&command, 20, 100).unwrap();
+    admit(&mut session, &command, 20, 100).unwrap();
 
     session.queue_outbound(5, 0).unwrap();
     session.queue_outbound(5, 0).unwrap();
@@ -583,16 +719,16 @@ fn rate_window_reopens_when_the_clock_steps_backwards() {
         .session;
     let command = command(CommandPayload::Cut);
 
-    session.admit_command(&command, 20, 600_000).unwrap();
+    admit(&mut session, &command, 20, 600_000).unwrap();
     session.command_completed().unwrap();
     session.queue_outbound(5, 600_000).unwrap();
     assert_eq!(
-        session.admit_command(&command, 20, 600_000),
+        admit(&mut session, &command, 20, 600_000),
         Err(SessionError::InboundRateLimited)
     );
 
     // The wall clock steps back ten minutes: the limiter must not stay shut
     // until it catches up again.
-    session.admit_command(&command, 20, 0).unwrap();
+    admit(&mut session, &command, 20, 0).unwrap();
     session.queue_outbound(5, 0).unwrap();
 }

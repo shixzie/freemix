@@ -1510,8 +1510,11 @@ name = "fm-server"
 version = "0.1.0"
 dependencies = [
  "fm-auth",
+ "fm-clock",
  "fm-control",
+ "fm-engine",
  "fm-protocol",
+ "fm-types",
 ]
 
 [[package]]

@@ -4921,3 +4921,66 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
         daemon.wait_success();
     }
 }
+
+/// Undo and redo through the daemon need the session role to hold the class
+/// of the edit they would revert or reapply, not only the project-edit
+/// class: Graphics may undo a rename but not a Stinger slot change, exactly
+/// as fm-control authorizes it.
+#[test]
+fn undo_and_redo_need_the_targeted_edit_permission_through_the_daemon() {
+    let directory = TestDirectory::new("undo-targeted-permission");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut admin = daemon.connect();
+    admin.handshake_as(Role::Admin, None);
+    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    admin.send(&command(
+        "rename",
+        "rename-key",
+        CommandPayload::RenameInput {
+            input: input(1),
+            name: "Camera Left".into(),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "rename"), 1);
+    admin.send(&command(
+        "stinger",
+        "stinger-key",
+        CommandPayload::ConfigureStinger {
+            slot: WireStingerSlotId::new(8).unwrap(),
+            media_input: input(2),
+            preload: false,
+            cut_point_frames: 7,
+            audio_policy: StingerAudioPolicy::Muted,
+            missing_media_fallback: StingerMissingMediaFallback::KeepProgram,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "stinger"), 2);
+
+    let undo = || CommandPayload::Undo {
+        expected_edit: None,
+    };
+    let redo = || CommandPayload::Redo {
+        expected_edit: None,
+    };
+    // Two peers at most: the session-level matrix is covered in fm-server.
+    let mut graphics = daemon.connect();
+    graphics.handshake_as(Role::Graphics, None);
+    // Graphics may use history but may not change Stinger slots.
+    permission_denied(&mut graphics, "graphics-undo-stinger", undo());
+
+    admin.send(&command("admin-undo", "admin-undo-key", undo()));
+    assert_eq!(accepted_revision(&mut admin, "admin-undo"), 3);
+
+    // Redo would reapply the Stinger change; the rename beneath is Graphics'.
+    permission_denied(&mut graphics, "graphics-redo-stinger", redo());
+    graphics.send(&command("graphics-undo", "graphics-undo-key", undo()));
+    assert_eq!(accepted_revision(&mut graphics, "graphics-undo"), 4);
+    drop(graphics);
+    drop(admin);
+    let settled = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(input_name(&settled, 1), "Input 1");
+    assert_eq!(settled.stingers, []);
+}

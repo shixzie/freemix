@@ -10,5 +10,10 @@ fm-auth = { path = "../fm-auth" }
 fm-control = { path = "../fm-control" }
 fm-protocol = { path = "../../foundation/fm-protocol" }
 
+[dev-dependencies]
+fm-clock = { path = "../../media/fm-clock" }
+fm-engine = { path = "../fm-engine" }
+fm-types = { path = "../../foundation/fm-types" }
+
 [lints]
 workspace = true
