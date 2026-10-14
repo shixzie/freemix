@@ -1781,6 +1781,19 @@ state-document surface, no descendant or wildcard XPath, a partial ACTS set,
 no authentication, and no byte comparison against a real vMix 29 instance.
 `RC-009` remains planned.
 
+Current implementation boundary for item 3 (social moderation): `fm-social`
+provides a deterministic moderation desk over its in-memory aggregator.
+Operator commands are gated by Viewer, Moderator, Producer, and Admin roles
+and recorded in a bounded audit log with monotonic sequences; approved
+messages can be hidden, pinned on air, or rotated round-robin on a
+caller-supplied clock, and the on-air message is written into typed
+`fm-titles` fields atomically at a scene revision. Remaining gaps: no real
+provider adapters, transport, or authorization flows, no browser approval UI
+or control-protocol wiring, no persistence of desk, audit, or operator state,
+no cross-provider de-duplication, no unbounded-store limits in the
+aggregator, and no authenticated operator identity. `GX-010` remains blocked
+on exact authorized integrations.
+
 Exit: no unclassified vMix 29 public feature and no incomplete P0/P1/P2 row
 without a documented legal/platform exception.
 
