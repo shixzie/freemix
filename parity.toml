@@ -274,7 +274,9 @@ id = "accept-or-011"
 state = "planned"
 [[tests]]
 id = "accept-or-012"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-replay/tests/event_capture.rs"]
+commands = ["cargo test -p fm-replay --test event_capture"]
 [[tests]]
 id = "accept-or-013"
 state = "planned"
