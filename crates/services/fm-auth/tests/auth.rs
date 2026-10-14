@@ -1,8 +1,9 @@
 use std::{collections::BTreeSet, num::NonZeroU64};
 
 use fm_auth::{
-    CommandClass, DenialReason, PairingCode, PairingCodeValidator, PairingConfigurationError,
-    PairingError, Permission, Policy, Principal, PrincipalKind, Role, SessionId, UserId,
+    CommandClass, DenialReason, MAX_PAIRING_FAILED_ATTEMPTS, PairingCode, PairingCodeValidator,
+    PairingConfigurationError, PairingError, Permission, Policy, Principal, PrincipalKind, Role,
+    SessionId, UserId,
 };
 
 const COMMANDS: [CommandClass; 6] = [
@@ -161,6 +162,71 @@ fn invalid_pairing_attempt_does_not_consume_but_success_does() {
         validator.consume(&code("correct"), 13),
         Err(PairingError::AlreadyConsumed)
     );
+}
+
+#[test]
+fn pairing_code_is_invalidated_after_bounded_failed_attempts() {
+    let mut validator =
+        PairingCodeValidator::new(code("correct"), 0, NonZeroU64::new(600).unwrap()).unwrap();
+
+    for attempt in 1..MAX_PAIRING_FAILED_ATTEMPTS {
+        assert_eq!(
+            validator.consume(&code("guess"), 1),
+            Err(PairingError::Invalid)
+        );
+        assert_eq!(validator.failed_attempts(), attempt);
+        assert!(!validator.is_exhausted());
+    }
+    assert_eq!(
+        validator.consume(&code("guess"), 1),
+        Err(PairingError::AttemptsExhausted)
+    );
+    assert!(validator.is_exhausted());
+    assert_eq!(
+        validator.consume(&code("correct"), 2),
+        Err(PairingError::AttemptsExhausted)
+    );
+    assert!(!validator.is_consumed());
+    assert_eq!(validator.failed_attempts(), MAX_PAIRING_FAILED_ATTEMPTS);
+}
+
+#[test]
+fn expired_attempts_do_not_count_toward_the_failure_limit() {
+    let mut validator =
+        PairingCodeValidator::new(code("correct"), 0, NonZeroU64::new(5).unwrap()).unwrap();
+    for _ in 0..MAX_PAIRING_FAILED_ATTEMPTS {
+        assert_eq!(
+            validator.consume(&code("guess"), 5),
+            Err(PairingError::Expired)
+        );
+    }
+    assert_eq!(validator.failed_attempts(), 0);
+    assert!(!validator.is_exhausted());
+}
+
+#[test]
+fn success_below_the_failure_limit_still_consumes() {
+    let mut validator =
+        PairingCodeValidator::new(code("correct"), 0, NonZeroU64::new(60).unwrap()).unwrap();
+    for _ in 1..MAX_PAIRING_FAILED_ATTEMPTS {
+        assert_eq!(
+            validator.consume(&code("wrong!!"), 1),
+            Err(PairingError::Invalid)
+        );
+    }
+    assert_eq!(validator.consume(&code("correct"), 2), Ok(()));
+    assert!(validator.is_consumed());
+}
+
+#[test]
+fn pairing_code_equality_compares_full_encodings() {
+    assert_eq!(code("abcdef"), code("abcdef"));
+    assert_ne!(code("abcdef"), code("abcdeg"));
+    assert_ne!(code("abcdef"), code("Xbcdef"));
+    assert_ne!(code("abc"), code("abcdef"));
+    assert_ne!(code("abcdef"), code("abc"));
+    // Canonically equivalent but differently encoded codes are unequal.
+    assert_ne!(code("\u{e9}"), code("e\u{301}"));
 }
 
 #[test]

@@ -6,8 +6,8 @@ mod policy;
 
 pub use id::{InvalidIdentity, SessionId, UserId};
 pub use pairing::{
-    InvalidPairingCode, MAX_PAIRING_LIFETIME_SECONDS, PairingCode, PairingCodeValidator,
-    PairingConfigurationError, PairingError,
+    InvalidPairingCode, MAX_PAIRING_FAILED_ATTEMPTS, MAX_PAIRING_LIFETIME_SECONDS, PairingCode,
+    PairingCodeValidator, PairingConfigurationError, PairingError,
 };
 pub use policy::{
     AuthorizationDenial, CommandClass, DenialReason, Permission, Policy, Principal, PrincipalKind,

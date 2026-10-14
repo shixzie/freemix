@@ -3,8 +3,16 @@ use std::{error::Error, fmt, num::NonZeroU64};
 /// Maximum accepted pairing-code lifetime: ten minutes.
 pub const MAX_PAIRING_LIFETIME_SECONDS: u64 = 600;
 
+/// Maximum incorrect guesses tolerated per outstanding code. The guess that
+/// reaches this limit invalidates the code permanently.
+pub const MAX_PAIRING_FAILED_ATTEMPTS: u32 = 5;
+
 /// Caller-supplied opaque pairing secret.
-#[derive(Clone, Eq, PartialEq)]
+///
+/// Equality is constant-time over equal-length encodings: every byte is
+/// compared without an early exit on the first difference. Codes of different
+/// lengths are unequal without inspecting their contents.
+#[derive(Clone)]
 pub struct PairingCode(String);
 
 impl PairingCode {
@@ -23,18 +31,30 @@ impl PairingCode {
     }
 
     fn matches(&self, candidate: &Self) -> bool {
-        if self.0.len() != candidate.0.len() {
+        let expected = self.0.as_bytes();
+        let candidate = candidate.0.as_bytes();
+        if expected.len() != candidate.len() {
             return false;
         }
-        self.0
-            .bytes()
-            .zip(candidate.0.bytes())
+        let difference = expected
+            .iter()
+            .zip(candidate)
             .fold(0_u8, |difference, (left, right)| {
-                difference | (left ^ right)
-            })
-            == 0
+                // `black_box` keeps the optimizer from turning the fold into a
+                // short-circuiting comparison.
+                std::hint::black_box(difference | (left ^ right))
+            });
+        difference == 0
     }
 }
+
+impl PartialEq for PairingCode {
+    fn eq(&self, other: &Self) -> bool {
+        self.matches(other)
+    }
+}
+
+impl Eq for PairingCode {}
 
 impl fmt::Debug for PairingCode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -54,10 +74,14 @@ impl fmt::Display for InvalidPairingCode {
 impl Error for InvalidPairingCode {}
 
 /// One-use pairing-code validator with caller-injected time and secret.
+///
+/// At most [`MAX_PAIRING_FAILED_ATTEMPTS`] incorrect guesses are tolerated
+/// before the code is invalidated, bounding online brute force.
 pub struct PairingCodeValidator {
     expected: PairingCode,
     expires_at: u64,
     consumed: bool,
+    failed_attempts: u32,
 }
 
 impl PairingCodeValidator {
@@ -85,6 +109,7 @@ impl PairingCodeValidator {
             expected,
             expires_at,
             consumed: false,
+            failed_attempts: 0,
         })
     }
 
@@ -98,22 +123,48 @@ impl PairingCodeValidator {
         self.consumed
     }
 
+    /// Number of incorrect guesses recorded against this code.
+    #[must_use]
+    pub const fn failed_attempts(&self) -> u32 {
+        self.failed_attempts
+    }
+
+    /// True once incorrect guesses reached [`MAX_PAIRING_FAILED_ATTEMPTS`];
+    /// the code can then never be consumed.
+    #[must_use]
+    pub const fn is_exhausted(&self) -> bool {
+        self.failed_attempts >= MAX_PAIRING_FAILED_ATTEMPTS
+    }
+
     /// Validates and consumes the code at an injected timestamp.
     ///
-    /// Invalid and expired attempts do not consume the code.
+    /// A correct attempt consumes the code. Expired attempts neither consume
+    /// the code nor count as failures. Each incorrect attempt counts as a
+    /// failure; the attempt that reaches [`MAX_PAIRING_FAILED_ATTEMPTS`] and
+    /// every later attempt, including a correct one, return
+    /// [`PairingError::AttemptsExhausted`].
     ///
     /// # Errors
     ///
-    /// Returns [`PairingError`] when already consumed, expired, or incorrect.
+    /// Returns [`PairingError`] when already consumed, invalidated by too many
+    /// failed attempts, expired, or incorrect.
     pub fn consume(&mut self, candidate: &PairingCode, now: u64) -> Result<(), PairingError> {
         if self.consumed {
             return Err(PairingError::AlreadyConsumed);
+        }
+        if self.is_exhausted() {
+            return Err(PairingError::AttemptsExhausted);
         }
         if now >= self.expires_at {
             return Err(PairingError::Expired);
         }
         if !self.expected.matches(candidate) {
-            return Err(PairingError::Invalid);
+            self.failed_attempts = self.failed_attempts.saturating_add(1);
+            return Err(if self.is_exhausted() {
+                PairingError::AttemptsExhausted
+            } else {
+                PairingError::Invalid
+            });
         }
         self.consumed = true;
         Ok(())
@@ -127,6 +178,7 @@ impl fmt::Debug for PairingCodeValidator {
             .field("expected", &"[redacted]")
             .field("expires_at", &self.expires_at)
             .field("consumed", &self.consumed)
+            .field("failed_attempts", &self.failed_attempts)
             .finish()
     }
 }
@@ -156,6 +208,8 @@ pub enum PairingError {
     Invalid,
     Expired,
     AlreadyConsumed,
+    /// Too many incorrect guesses; the code is permanently invalidated.
+    AttemptsExhausted,
 }
 
 impl fmt::Display for PairingError {
@@ -164,6 +218,9 @@ impl fmt::Display for PairingError {
             Self::Invalid => "pairing code is invalid",
             Self::Expired => "pairing code has expired",
             Self::AlreadyConsumed => "pairing code was already consumed",
+            Self::AttemptsExhausted => {
+                "pairing code was invalidated after too many failed attempts"
+            }
         })
     }
 }
