@@ -2497,3 +2497,41 @@ fn audio_bus_cycles_are_rejected() {
         2
     );
 }
+
+#[test]
+fn acyclic_scene_and_bus_graphs_with_shared_descendants_validate_promptly() {
+    // Each scene composites the next scene twice and each bus sends to the
+    // next two buses, so path-by-path exploration would revisit shared
+    // descendants exponentially often. Reachability must stay polynomial.
+    const DEPTH: u128 = 64;
+    let mut project = Project::new(project_id(30), "Wide graph", settings());
+    for index in 1..=DEPTH {
+        let layers = if index == DEPTH {
+            Vec::new()
+        } else {
+            vec![
+                layer("Left", SourceRef::Scene(scene_id(index + 1))),
+                layer("Right", SourceRef::Scene(scene_id(index + 1))),
+            ]
+        };
+        project.add_scene(Scene {
+            id: scene_id(index),
+            name: format!("Scene {index}"),
+            background: Rgba8::OPAQUE_BLACK,
+            layers,
+        });
+        project.add_audio_bus(AudioBus {
+            id: bus_id(index),
+            name: format!("Bus {index}"),
+            sends: [index + 1, index + 2]
+                .into_iter()
+                .filter(|destination| *destination <= DEPTH)
+                .map(|destination| BusSend {
+                    destination: bus_id(destination),
+                })
+                .collect(),
+        });
+    }
+
+    assert_eq!(project.validate(), Ok(()));
+}

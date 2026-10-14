@@ -4,6 +4,9 @@ use crate::{EntityRef, InputKind, Project, SourceRef, ValidationError, Validatio
 
 pub(crate) fn mark_scene_cycles(project: &Project, errors: &mut Vec<ValidationError>) {
     for scene in project.scenes() {
+        // Each search keeps every visited node: a node that was fully explored
+        // without reaching the target never will, and forgetting it would make
+        // shared descendants cost exponential time.
         if reaches_scene(project, scene.id, scene.id, &mut Vec::new()) {
             errors.push(ValidationError {
                 entity: Some(EntityRef::Scene(scene.id)),
@@ -24,7 +27,7 @@ fn reaches_scene(
         return false;
     }
     visited.push(current);
-    let reaches = project
+    project
         .scenes()
         .iter()
         .find(|scene| scene.id == current)
@@ -45,9 +48,7 @@ fn reaches_scene(
                     next == target || reaches_scene(project, next, target, visited)
                 })
             })
-        });
-    visited.pop();
-    reaches
+        })
 }
 
 pub(crate) fn mark_audio_input_cycles(project: &Project, errors: &mut Vec<ValidationError>) {
@@ -72,7 +73,7 @@ fn reaches_audio_input(
         return false;
     }
     visited.push(current);
-    let reaches = project
+    project
         .inputs()
         .iter()
         .find(|input| input.id == current)
@@ -80,9 +81,7 @@ fn reaches_audio_input(
             InputKind::Scene { audio_source, .. } => audio_source,
             _ => None,
         })
-        .is_some_and(|next| next == target || reaches_audio_input(project, next, target, visited));
-    visited.pop();
-    reaches
+        .is_some_and(|next| next == target || reaches_audio_input(project, next, target, visited))
 }
 
 pub(crate) fn mark_bus_cycles(project: &Project, errors: &mut Vec<ValidationError>) {
@@ -102,7 +101,7 @@ fn reaches_bus(project: &Project, current: BusId, target: BusId, visited: &mut V
         return false;
     }
     visited.push(current);
-    let reaches = project
+    project
         .audio_buses()
         .iter()
         .find(|bus| bus.id == current)
@@ -111,7 +110,5 @@ fn reaches_bus(project: &Project, current: BusId, target: BusId, visited: &mut V
                 send.destination == target
                     || reaches_bus(project, send.destination, target, visited)
             })
-        });
-    visited.pop();
-    reaches
+        })
 }
