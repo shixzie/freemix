@@ -17,8 +17,8 @@ pub use fm_plugin_api::{AbiVersion, CapabilityGrant, CapabilitySet, PluginId, St
 pub use ipc::{BoundedIpcQueue, IpcLimits, IpcMessage, QueueError};
 pub use supervisor::{
     AuditEvent, AuditRecord, BudgetResource, ChildController, ChildError, ChildEvent, ChildId,
-    Failure, InstanceState, PluginStatus, ResourceUsage, Supervisor, SupervisorError,
-    SupervisorPolicy,
+    Failure, InstanceState, MAX_AUDIT_RECORDS, PluginStatus, ResourceUsage, Supervisor,
+    SupervisorError, SupervisorPolicy,
 };
 
 #[cfg(test)]

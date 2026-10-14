@@ -11,7 +11,7 @@ use fm_frame::{
     VideoDimensions, VideoFrameMetadata,
 };
 use fm_types::{AudioFormat, FrameRate, SampleFormat};
-use fm_video::{solid_color, vertical_color_bars};
+use fm_video::{FrameError, ImageFrame, solid_color, vertical_color_bars};
 
 use crate::{MediaSourceError, SourcePattern};
 
@@ -142,21 +142,21 @@ impl SimulatedTimedVideoSource {
             .ok()
             .and_then(|value| value.checked_mul(4))
             .ok_or(MediaSourceError::DimensionOverflow)?;
+        let required = stride
+            .checked_mul(usize::try_from(height).map_err(|_| MediaSourceError::DimensionOverflow)?)
+            .ok_or(MediaSourceError::DimensionOverflow)?;
+        // Reject before allocating: every frame is rendered through a bounded
+        // `ImageFrame`, so a larger source could never produce a frame.
+        if required > ImageFrame::MAX_BUFFER_BYTES {
+            return Err(MediaSourceError::Video(FrameError::BufferTooLarge {
+                required,
+                maximum: ImageFrame::MAX_BUFFER_BYTES,
+            }));
+        }
         CpuVideoPayload::new(
             PixelFormat::Rgba8,
             dimensions,
-            vec![CpuVideoPlane::new(
-                stride,
-                vec![
-                    0;
-                    stride
-                        .checked_mul(
-                            usize::try_from(height)
-                                .map_err(|_| MediaSourceError::DimensionOverflow)?
-                        )
-                        .ok_or(MediaSourceError::DimensionOverflow)?
-                ],
-            )?],
+            vec![CpuVideoPlane::new(stride, vec![0; required])?],
         )?;
         Ok(Self {
             width,

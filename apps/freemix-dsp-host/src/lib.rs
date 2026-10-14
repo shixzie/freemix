@@ -9,6 +9,8 @@ pub const MAX_CHANNELS: u16 = 64;
 pub const MIN_DEADLINE_US: u64 = 100;
 pub const MAX_DEADLINE_US: u64 = 1_000_000;
 pub const MISSED_DEADLINE_BYPASS_THRESHOLD: u32 = 3;
+/// Longest accepted control line, including its newline terminator.
+pub const MAX_CONTROL_LINE_BYTES: usize = 4 * 1024;
 
 pub const HELP: &str = "freemix-dsp-host - dedicated FreeMix DSP child process skeleton
 
@@ -491,10 +493,12 @@ impl Host {
 /// # Errors
 ///
 /// Returns an I/O error if stdin cannot be read, stdout cannot be written or
-/// flushed, or an internal lifecycle transition unexpectedly fails.
+/// flushed, a control line exceeds [`MAX_CONTROL_LINE_BYTES`], or an internal
+/// lifecycle transition unexpectedly fails. Non-UTF-8 lines are answered as
+/// invalid commands.
 pub fn run_control_loop(
     config: Config,
-    input: impl BufRead,
+    mut input: impl BufRead,
     mut output: impl Write,
 ) -> io::Result<()> {
     let mut host = Host::new(config);
@@ -506,9 +510,12 @@ pub fn run_control_loop(
     )?;
     output.flush()?;
 
-    for line in input.lines() {
-        let line = line?;
-        let Ok(command) = parse_command(&line) else {
+    let mut line = Vec::with_capacity(MAX_CONTROL_LINE_BYTES);
+    while read_control_line(&mut input, &mut line)? {
+        let Ok(command) = std::str::from_utf8(&line)
+            .map_err(|_| CommandError::Empty)
+            .and_then(parse_command)
+        else {
             writeln!(output, "error invalid-command")?;
             output.flush()?;
             continue;
@@ -543,6 +550,34 @@ pub fn run_control_loop(
     host.begin_shutdown().map_err(io::Error::other)?;
     host.finish_shutdown().map_err(io::Error::other)?;
     Ok(())
+}
+
+/// Reads one newline-terminated line without retaining more than
+/// [`MAX_CONTROL_LINE_BYTES`], so a peer cannot grow host memory unboundedly.
+fn read_control_line(input: &mut impl BufRead, line: &mut Vec<u8>) -> io::Result<bool> {
+    line.clear();
+    loop {
+        let (length, complete) = {
+            let buffer = input.fill_buf()?;
+            if buffer.is_empty() {
+                return Ok(!line.is_empty());
+            }
+            let newline = buffer.iter().position(|&byte| byte == b'\n');
+            let length = newline.map_or(buffer.len(), |index| index + 1);
+            if line.len() + length > MAX_CONTROL_LINE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("control line exceeds {MAX_CONTROL_LINE_BYTES} bytes"),
+                ));
+            }
+            line.extend_from_slice(&buffer[..length]);
+            (length, newline.is_some())
+        };
+        input.consume(length);
+        if complete {
+            return Ok(true);
+        }
+    }
 }
 
 fn write_status(output: &mut impl Write, config: Config, status: StatusRecord) -> io::Result<()> {
@@ -706,5 +741,43 @@ mod tests {
         assert!(output.contains("error invalid-command\n"));
         assert!(output.ends_with("ok shutdown lifecycle=stopping\n"));
         assert!(!output.contains("heartbeat=2"));
+    }
+
+    #[test]
+    fn control_loop_bounds_line_length() {
+        let mut accepted = b"ping".to_vec();
+        accepted.resize(MAX_CONTROL_LINE_BYTES - 1, b' ');
+        accepted.extend_from_slice(b"\nshutdown\n");
+        let mut output = Vec::new();
+        run_control_loop(
+            Config::default(),
+            io::BufReader::with_capacity(64, &accepted[..]),
+            &mut output,
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("pong heartbeat=1\n"));
+        assert!(output.ends_with("ok shutdown lifecycle=stopping\n"));
+
+        let oversized = vec![b'x'; MAX_CONTROL_LINE_BYTES + 1];
+        let mut output = Vec::new();
+        let error = run_control_loop(
+            Config::default(),
+            io::BufReader::with_capacity(64, &oversized[..]),
+            &mut output,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(!String::from_utf8(output).unwrap().contains("error"));
+    }
+
+    #[test]
+    fn control_loop_answers_non_utf8_lines_without_exiting() {
+        let input = b"\xff\xfe\nping\nshutdown\n";
+        let mut output = Vec::new();
+        run_control_loop(Config::default(), &input[..], &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("error invalid-command\npong heartbeat=1\n"));
+        assert!(output.ends_with("ok shutdown lifecycle=stopping\n"));
     }
 }

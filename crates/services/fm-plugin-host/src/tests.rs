@@ -466,3 +466,39 @@ fn stopping_a_quarantined_plugin_does_not_bypass_quarantine() {
     );
     assert_eq!(supervisor.controller().spawned.len(), 3);
 }
+
+#[test]
+fn audit_log_stays_bounded_under_continuous_heartbeats() {
+    let plugin = artifact("steady", "plugin.steady");
+    let plugin_id = plugin.manifest.plugin_id();
+    let mut supervisor = supervisor(vec![plugin]);
+    supervisor.start(plugin_id, 0).unwrap();
+    supervisor.poll(0, [ChildEvent::Ready { child: 1 }]);
+
+    let heartbeats = 3 * MAX_AUDIT_RECORDS as u64;
+    for now in 1..=heartbeats {
+        supervisor.poll(
+            now,
+            [ChildEvent::Heartbeat {
+                child: 1,
+                usage: ResourceUsage::default(),
+            }],
+        );
+    }
+
+    let audit = supervisor.audit();
+    assert!(audit.len() >= MAX_AUDIT_RECORDS);
+    assert!(audit.len() < 2 * MAX_AUDIT_RECORDS);
+    assert!(
+        audit
+            .windows(2)
+            .all(|records| records[0].sequence + 1 == records[1].sequence)
+    );
+    let last = audit.last().unwrap();
+    assert_eq!(last.at_ms, heartbeats);
+    assert!(matches!(last.event, AuditEvent::Heartbeat { child: 1, .. }));
+    assert_eq!(
+        supervisor.status(plugin_id).unwrap().state,
+        InstanceState::Running
+    );
+}

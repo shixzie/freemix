@@ -8,8 +8,9 @@ use fm_frame::{
 };
 use fm_sim::{
     AudioPattern, CollectError, CollectOutcome, CollectingAudioSink, CollectingSink,
-    CollectingVideoSink, FaultSchedule, OverflowPolicy, Rgba8, SimulatedAudioSource,
-    SimulatedVideoSource, SourceEvent, SourcePattern, audio_block_hash, video_frame_hash,
+    CollectingVideoSink, FaultSchedule, MediaSourceError, OverflowPolicy, Rgba8,
+    SimulatedAudioSource, SimulatedVideoSource, SourceEvent, SourcePattern, audio_block_hash,
+    video_frame_hash,
 };
 use fm_types::FrameRate;
 
@@ -243,4 +244,11 @@ fn reset_reproduces_video_hashes_and_audio_samples() {
     let repeated = audio.next_block().unwrap().unwrap();
     assert_eq!(repeated.planes(), first.planes());
     assert_eq!(audio_block_hash(&repeated), first_hash);
+}
+
+#[test]
+fn oversized_video_source_is_rejected_before_allocating() {
+    let result =
+        SimulatedVideoSource::new(1 << 20, 1 << 20, ntsc_60(), clock(), SourcePattern::Bars);
+    assert!(matches!(result, Err(MediaSourceError::Video(_))));
 }

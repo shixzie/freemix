@@ -10,6 +10,13 @@ use fm_plugin_api::PluginId;
 use crate::{BoundedIpcQueue, Catalog, IpcLimits, IpcMessage, PluginArtifact, QueueError};
 
 pub type ChildId = u64;
+
+/// Minimum number of most-recent audit records retained by a [`Supervisor`].
+///
+/// Heartbeats are audited, so an unbounded log would grow for as long as a
+/// plugin runs. Older records are discarded in batches; `sequence` numbers
+/// stay monotonic so consumers can detect the gap.
+pub const MAX_AUDIT_RECORDS: usize = 4_096;
 type PluginKey = (u64, u64);
 
 const fn plugin_key(id: PluginId) -> PluginKey {
@@ -290,6 +297,8 @@ impl<C: ChildController> Supervisor<C> {
         &self.registry
     }
 
+    /// Returns retained audit records in sequence order: at least the most
+    /// recent [`MAX_AUDIT_RECORDS`] and fewer than twice that many.
     pub fn audit(&self) -> &[AuditRecord] {
         &self.audit
     }
@@ -723,6 +732,10 @@ impl<C: ChildController> Supervisor<C> {
     fn record(&mut self, at_ms: u64, plugin_id: PluginId, event: AuditEvent) {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
+        if self.audit.len() >= 2 * MAX_AUDIT_RECORDS {
+            let excess = self.audit.len() + 1 - MAX_AUDIT_RECORDS;
+            self.audit.drain(..excess);
+        }
         self.audit.push(AuditRecord {
             sequence,
             at_ms,

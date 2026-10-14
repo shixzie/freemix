@@ -847,7 +847,11 @@ impl DspHost {
         self.ring[write].wet.copy_from_slice(input);
         self.ring[write].sequence = Some(sequence);
 
+        // `elapsed` reports every charged cost; `budget_used` only counts
+        // plugins that actually ran, so a substituted plugin's cost does not
+        // also time out the cheaper plugins after it.
         let mut elapsed = Duration::ZERO;
+        let mut budget_used = Duration::ZERO;
         let mut substitutions = 0_u32;
         for node in &mut self.plugins {
             if !node.is_runnable() {
@@ -856,18 +860,23 @@ impl DspHost {
             self.scratch.copy_from_slice(&self.ring[write].wet);
             let cost = node.plugin.processing_cost();
             elapsed = elapsed.saturating_add(cost);
-            if elapsed > self.config.deadline {
+            if budget_used.saturating_add(cost) > self.config.deadline {
                 self.ring[write].wet.copy_from_slice(&self.scratch);
                 node.status.health = PluginHealth::TimedOut;
                 node.status.substitutions = node.status.substitutions.saturating_add(1);
                 substitutions = substitutions.saturating_add(1);
                 continue;
             }
+            budget_used = budget_used.saturating_add(cost);
 
             let result = catch_unwind(AssertUnwindSafe(|| {
                 node.plugin.process(&mut self.ring[write].wet)
             }));
-            if !matches!(result, Ok(Ok(()))) {
+            // Non-finite output would poison every later plugin and the
+            // output mix, so it is handled exactly like a crash.
+            if !matches!(result, Ok(Ok(())))
+                || !self.ring[write].wet.iter().all(|sample| sample.is_finite())
+            {
                 self.ring[write].wet.copy_from_slice(&self.scratch);
                 node.status.health = PluginHealth::Crashed;
                 node.status.substitutions = node.status.substitutions.saturating_add(1);
@@ -1497,6 +1506,88 @@ mod tests {
 
         let second = host.process_block(&[1.0, 1.0]).unwrap();
         assert_eq!(second.samples, &[1.5, 1.0]);
+    }
+
+    #[test]
+    fn timed_out_plugin_cost_does_not_time_out_later_plugins() {
+        let slow = FakeDelayPlugin::new(id(1), 0).with_processing_cost(Duration::from_micros(101));
+        let mut host = DspHost::configure(
+            ChainId::new(1),
+            config(2),
+            vec![Box::new(slow), gain(2, 2.0)],
+        )
+        .unwrap();
+        let first = host.process_block(&[1.0, 1.0]).unwrap();
+        assert!(first.report.deadline_missed);
+        assert_eq!(first.report.substitutions, 1);
+        assert_eq!(
+            host.plugin_status(id(1)).unwrap().health,
+            PluginHealth::TimedOut
+        );
+        assert_eq!(
+            host.plugin_status(id(2)).unwrap().health,
+            PluginHealth::Active
+        );
+        host.clear_deadline_bypass();
+        let second = host.process_block(&[1.0, 1.0]).unwrap();
+        assert_eq!(second.report.substitutions, 0);
+        assert_eq!(second.samples[1], 2.0);
+    }
+
+    struct NonFinitePlugin(PluginId);
+
+    impl DspPlugin for NonFinitePlugin {
+        fn metadata(&self) -> PluginMetadata {
+            PluginMetadata {
+                id: self.0,
+                name: "Non-finite",
+                vendor: "FreeMix Test",
+                version: 1,
+                kind: PluginKind::Other,
+            }
+        }
+
+        fn configure(&mut self, _format: BlockFormat) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        fn process(&mut self, block: &mut [f32]) -> Result<(), PluginError> {
+            block[0] = f32::NAN;
+            block[1] = f32::INFINITY;
+            Ok(())
+        }
+
+        fn save_state(&self) -> Vec<u8> {
+            Vec::new()
+        }
+
+        fn validate_state(&self, _state: &[u8]) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        fn restore_state(&mut self, _state: &[u8]) -> Result<(), PluginError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn non_finite_plugin_output_is_substituted_like_a_crash() {
+        let mut host = DspHost::configure(
+            ChainId::new(1),
+            config(2),
+            vec![gain(1, 2.0), Box::new(NonFinitePlugin(id(2))), gain(3, 3.0)],
+        )
+        .unwrap();
+        let first = host.process_block(&[1.0, 2.0]).unwrap();
+        assert_eq!(first.report.substitutions, 1);
+        assert_eq!(
+            host.plugin_status(id(2)).unwrap().health,
+            PluginHealth::Crashed
+        );
+        assert_eq!(
+            host.process_block(&[0.0, 0.0]).unwrap().samples,
+            &[6.0, 12.0]
+        );
     }
 
     #[test]
