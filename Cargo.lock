@@ -1575,6 +1575,12 @@ dependencies = [
 [[package]]
 name = "fm-video"
 version = "0.1.0"
+dependencies = [
+ "fm-audio",
+ "fm-clock",
+ "fm-frame",
+ "fm-types",
+]
 
 [[package]]
 name = "fm-virtual-set"

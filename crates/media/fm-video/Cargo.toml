@@ -5,5 +5,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+fm-types = { path = "../../foundation/fm-types" }
+
+[dev-dependencies]
+fm-audio = { path = "../fm-audio" }
+fm-clock = { path = "../fm-clock" }
+fm-frame = { path = "../fm-frame" }
+
 [lints]
 workspace = true

@@ -3,6 +3,7 @@
 mod blend;
 mod color;
 mod composite;
+mod delay;
 mod frame;
 mod freeze;
 mod generate;
@@ -15,6 +16,12 @@ pub use color::{ColorMatrix, ColorRange, Yuv8, rgb_to_yuv, yuv_to_rgb};
 pub use composite::{
     CompositeError, Layer, apply_opacity_premultiplied, compose_layers, draw_inset_rect_border,
     premultiply_alpha,
+};
+pub use delay::{
+    DEFAULT_VIDEO_DELAY_MAX_SKEW_NANOS, DelayCapacity, DelayChangePolicy, DelayDuration,
+    DelayInputFrame, DelayLineState, DelayOutput, DelayedFrame, DelayedFrameKind,
+    MAX_VIDEO_DELAY_FRAMES, MAX_VIDEO_DELAY_NANOS, PushReport, SELECTION_SLACK_NANOS,
+    StartupPolicy, VideoDelayConfig, VideoDelayError, VideoDelayLine, VideoDelayTelemetry,
 };
 pub use frame::{FrameError, ImageFrame, Rgba8};
 pub use freeze::{
