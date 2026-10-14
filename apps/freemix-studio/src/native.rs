@@ -2713,13 +2713,23 @@ mod tests {
     #[cfg(unix)]
     fn idle_exit_helper(directory: &TestDirectory, address: std::net::SocketAddr) -> PathBuf {
         let path = directory.path("freemixd-test-helper");
+        // Stage the text in a never-executed file and let a `cp` child create
+        // the executable inode, so no write descriptor to it can leak into a
+        // concurrent test thread's fork and make our exec fail with ETXTBSY.
+        let staged = directory.path("freemixd-test-helper.source");
         fs::write(
-            &path,
+            &staged,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$2.pid\"\nprintf '%s\\n' \"$$\" >> \"$2.launches\"\nprintf 'FREEMIXD_READY\\tv=1\\taddress={address}\\tproject_id=1\\n'\nIFS= read -r hold\n"
             ),
         )
         .unwrap();
+        let status = std::process::Command::new("/bin/cp")
+            .arg(&staged)
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "failed to install test helper script");
         let mut permissions = fs::metadata(&path).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(&path, permissions).unwrap();

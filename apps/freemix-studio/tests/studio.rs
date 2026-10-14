@@ -1196,11 +1196,33 @@ fn helper(directory: &TestDirectory, behavior: &str) -> PathBuf {
         }
         _ => unreachable!(),
     };
-    fs::write(&path, body).unwrap();
-    let mut permissions = fs::metadata(&path).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&path, permissions).unwrap();
+    write_executable(&path, &body);
     path
+}
+
+/// Creates an executable script without ever holding a writable descriptor
+/// to its inode in this multi-threaded test process.
+///
+/// Any concurrent `fork` from another test thread inherits every open
+/// descriptor until that child calls `exec`. If the script were written here
+/// with `fs::write`, an inherited write descriptor could still be open when
+/// this test execs the script, and Linux rejects that with `ETXTBSY`. The
+/// source text is therefore staged in a sibling file that is never executed,
+/// and a short-lived `cp` child creates the executable inode; its only write
+/// descriptor dies with that child before `status()` returns.
+#[cfg(unix)]
+fn write_executable(path: &Path, body: &str) {
+    let staged = path.with_extension("source");
+    fs::write(&staged, body).unwrap();
+    let status = ProcessCommand::new("/bin/cp")
+        .arg(&staged)
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(status.success(), "failed to install test helper script");
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).unwrap();
 }
 
 #[cfg(unix)]
