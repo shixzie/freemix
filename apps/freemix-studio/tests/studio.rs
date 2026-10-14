@@ -1026,7 +1026,7 @@ fn diagnose_reports_validated_heartbeat_and_control_diagnostics() {
         let WireMessage::DiagnosticsRequest(request) = peer.receive_until(deadline) else {
             panic!("expected diagnostics request");
         };
-        assert!(!request.request_id.is_empty());
+        assert_ne!(request.request_id, "");
         assert!(request.request_id.len() <= 128);
         assert!(
             request

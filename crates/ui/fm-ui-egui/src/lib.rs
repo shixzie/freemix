@@ -2,40 +2,42 @@
 //!
 //! This crate translates immutable client views into operator-facing controls
 //! and returns intents. It performs no command dispatch, persistence, or I/O.
+//!
+//! Drawing is split by console region: `theme` (palette and style),
+//! `chrome` (top and status bars), `monitors` (Preview/Program wells),
+//! `transitions` (transition column, T-bar, FTB), `input_bank` (source
+//! tiles), `mixer` (channel strips), and `panels`/`overlays` (side panel).
 
-use core::num::NonZeroU128;
 use egui::{
-    Button, Color32, DragValue, Event, Frame, Grid, Key, Label, Margin, Modifiers, RichText,
-    ScrollArea, Stroke, Ui, Vec2,
+    Align, CentralPanel, Event, Frame, Key, Layout, Margin, Modifiers, Panel, ScrollArea, Stroke,
+    Ui, Vec2,
 };
 use fm_protocol::{
-    AudioMeterChannel, AudioMetersMessage, ManualTransitionKind, ManualTransitionPosition,
-    OverlayBorderPreset, OverlayPositionPreset, OverlayTransitionKind, StingerReadiness,
-    StreamRealizedState, StreamStatusMessage, StreamStatusSample, WireOverlayChannelId,
-    WireRecorderSlot, WireStingerSlotId,
+    AudioMetersMessage, ManualTransitionKind, ManualTransitionPosition, StreamStatusMessage,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
 };
-use fm_types::MAX_INPUT_NAME_BYTES;
 use fm_types::{InputId, OutputId};
-use fm_ui_model::{
-    BusSelection, ClientView, ManualTransitionStatus, StingerStatus, StreamStatus, SwitcherState,
-};
+use fm_ui_model::{ClientView, ManualTransitionStatus, StreamStatus, SwitcherState};
 
+mod chrome;
 mod fade_to_black;
+mod input_bank;
+mod mixer;
+mod monitors;
 mod overlay_status;
+mod overlays;
+mod panels;
+mod theme;
+mod transitions;
 
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
 
-const GRAPHITE: Color32 = Color32::from_rgb(13, 15, 17);
-const GRAPHITE_RAISED: Color32 = Color32::from_rgb(24, 27, 30);
-const MONITOR_BLACK: Color32 = Color32::from_rgb(4, 5, 6);
-const TEXT: Color32 = Color32::from_rgb(220, 224, 225);
-const MUTED: Color32 = Color32::from_rgb(125, 133, 137);
-const PROGRAM: Color32 = Color32::from_rgb(224, 48, 53);
-const PREVIEW: Color32 = Color32::from_rgb(38, 190, 101);
-const AMBER: Color32 = Color32::from_rgb(231, 164, 43);
-const ERROR: Color32 = Color32::from_rgb(255, 100, 91);
-const MIN_TILE_WIDTH: f32 = 156.0;
+use panels::SideTab;
+use theme::{BORDER, GRAPHITE, PANEL};
+
 const NARROW_MONITOR_WIDTH: f32 = 700.0;
+const SIDE_PANEL_WIDTH: f32 = 370.0;
+const MIN_LOWER_ROW_HEIGHT: f32 = 340.0;
 
 /// Changed controls for one input's Master audio strip.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -339,12 +341,6 @@ pub const fn recording_action(
     }
 }
 
-/// Operator-facing recording status derived only from the replicated desired
-/// flag; it is never an optimistic local guess.
-const fn recording_status_label(desired: bool) -> &'static str {
-    if desired { "RECORDING" } else { "STOPPED" }
-}
-
 /// Pure transition-control availability derived from one UI state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransitionAvailability {
@@ -422,62 +418,6 @@ pub struct ManualTransitionAvailability {
     pub start: bool,
     pub alpha_fade_start_exposed: bool,
     pub active_controls: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct StingerSlotPresentation {
-    label: &'static str,
-    color: Color32,
-    ready: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum StingerSlotState {
-    Unavailable,
-    Unconfigured,
-    Readiness(StingerReadiness),
-}
-
-const fn stinger_slot_presentation(state: StingerSlotState) -> StingerSlotPresentation {
-    match state {
-        StingerSlotState::Unavailable => StingerSlotPresentation {
-            label: "STATE UNAVAILABLE",
-            color: MUTED,
-            ready: false,
-        },
-        StingerSlotState::Unconfigured => StingerSlotPresentation {
-            label: "UNCONFIGURED",
-            color: MUTED,
-            ready: false,
-        },
-        StingerSlotState::Readiness(StingerReadiness::NotRequested) => StingerSlotPresentation {
-            label: "NOT REQUESTED",
-            color: AMBER,
-            ready: false,
-        },
-        StingerSlotState::Readiness(StingerReadiness::Ready) => StingerSlotPresentation {
-            label: "READY",
-            color: PREVIEW,
-            ready: true,
-        },
-        StingerSlotState::Readiness(StingerReadiness::Missing) => StingerSlotPresentation {
-            label: "MISSING",
-            color: ERROR,
-            ready: false,
-        },
-    }
-}
-
-fn stinger_slot_state(stingers: Option<&[StingerStatus]>, slot: u8) -> StingerSlotState {
-    let Some(stingers) = stingers else {
-        return StingerSlotState::Unavailable;
-    };
-    stingers
-        .iter()
-        .find(|status| status.slot == slot)
-        .map_or(StingerSlotState::Unconfigured, |status| {
-            StingerSlotState::Readiness(status.readiness)
-        })
 }
 
 /// Session and replicated-state gates for manual T-bar controls.
@@ -818,6 +758,7 @@ pub struct StudioShell {
     transition_duration_frames: u32,
     fade_to_black_duration_frames: u32,
     rename_draft: Option<RenameDraft>,
+    side_tab: SideTab,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -865,7 +806,7 @@ impl StudioShell {
     /// The UI must belong to an active `egui` pass, as is customary for
     /// immediate-mode drawing.
     pub fn draw(&mut self, ui: &mut Ui, state: &StudioUiState) -> Vec<StudioIntent> {
-        apply_console_visuals(ui.ctx());
+        theme::apply_console_visuals(ui.ctx());
         self.set_transition_duration_frames(self.transition_duration_frames);
         self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
 
@@ -892,778 +833,153 @@ impl StudioShell {
             self.transition_duration_frames,
             self.fade_to_black_duration_frames,
         );
-        Frame::new()
-            .fill(GRAPHITE)
-            .inner_margin(Margin::same(12))
+        let bar_frame = Frame::new()
+            .fill(PANEL)
+            .stroke(Stroke::new(1.0, BORDER))
+            .inner_margin(Margin::symmetric(14, 0));
+        Panel::top("studio-top-bar")
+            .exact_size(46.0)
+            .frame(bar_frame)
+            .show(ui, |ui| chrome::draw_top_bar(ui, state));
+        Panel::bottom("studio-status-bar")
+            .exact_size(26.0)
+            .frame(bar_frame)
+            .show(ui, |ui| chrome::draw_status_bar(ui, state));
+        Panel::right("studio-side-panel")
+            .resizable(true)
+            .default_size(SIDE_PANEL_WIDTH)
+            .min_size(300.0)
+            .max_size(560.0)
+            .frame(
+                Frame::new()
+                    .fill(PANEL)
+                    .stroke(Stroke::new(1.0, BORDER))
+                    .inner_margin(Margin::same(10)),
+            )
+            .show(ui, |ui| self.draw_side_panel(ui, state, &mut intents));
+        CentralPanel::default()
+            .frame(Frame::new().fill(GRAPHITE).inner_margin(Margin::same(12)))
             .show(ui, |ui| {
-                // The console is taller than a default window: without a
-                // scroll area every panel below the overlays (FTB, manual
-                // transition, audio, streams, recording, and the input tiles)
-                // is unreachable.
+                // Small windows keep every region reachable by scrolling.
                 ScrollArea::vertical()
+                    .id_salt("studio-console")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        draw_header(ui, state);
-                        draw_messages(ui, state);
-                        ui.add_space(8.0);
-                        draw_monitors(ui, state.view.as_ref());
-                        ui.add_space(8.0);
-                        draw_transition_row(ui, self, state, &mut intents);
-                        ui.add_space(8.0);
-                        draw_overlays(ui, state, self.transition_duration_frames, &mut intents);
-                        ui.add_space(8.0);
-                        fade_to_black::draw_fade_to_black(
-                            ui,
-                            &mut self.fade_to_black_duration_frames,
-                            state,
-                            &mut intents,
-                        );
-                        self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
-                        ui.add_space(8.0);
-                        draw_manual_transition(ui, state, manual_transition_controls, &mut intents);
-                        ui.add_space(8.0);
-                        draw_input_audio_strips(ui, state, &mut intents);
-                        draw_audio_meters(ui, state);
-                        draw_streams(ui, state);
-                        if let Some(action) = self.draw_recording(ui, state) {
-                            intents.push(StudioIntent::Recording(action));
-                        }
-                        ui.add_space(8.0);
-                        self.draw_inputs(ui, state, &mut intents);
+                        chrome::draw_message_banner(ui, state);
+                        self.draw_switcher_row(ui, state, manual_transition_controls, &mut intents);
+                        ui.add_space(12.0);
+                        self.draw_lower_row(ui, state, &mut intents);
                     });
             });
         intents
     }
 
-    /// Draws the compact recording panel and returns the selected action.
-    ///
-    /// The panel exposes exactly one action for the authoritative desired flag
-    /// and keeps it disabled while an earlier recording intent is unresolved.
-    #[allow(clippy::unused_self)] // the panel reads immutable state; the shell receiver matches `draw_inputs`
-    pub fn draw_recording(
+    /// Preview monitor, transition column, Program monitor.
+    fn draw_switcher_row(
         &mut self,
         ui: &mut Ui,
         state: &StudioUiState,
-    ) -> Option<RecordingAction> {
-        let mut selected = None;
-        Frame::new()
-            .fill(GRAPHITE_RAISED)
-            .stroke(Stroke::new(1.0, Color32::from_rgb(67, 61, 44)))
-            .inner_margin(Margin::symmetric(10, 8))
-            .show(ui, |ui| {
-                ui.label(RichText::new("RECORDING").small().strong().color(AMBER));
-                for (index, desired) in state.recording_desired.iter().copied().enumerate() {
-                    let Some(recorder) =
-                        u8::try_from(index + 1).ok().and_then(WireRecorderSlot::new)
-                    else {
-                        continue;
-                    };
-                    let slot = index + 1;
-                    let requested = if desired {
-                        RecordingAction::Stop(recorder)
-                    } else {
-                        RecordingAction::Start(recorder)
-                    };
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(
-                            RichText::new(format!("REC {slot}"))
-                                .small()
-                                .strong()
-                                .color(MUTED),
-                        );
-                        ui.label(
-                            RichText::new(recording_status_label(desired))
-                                .small()
-                                .strong()
-                                .color(if desired { PROGRAM } else { MUTED }),
-                        );
-                        if state.recording_pending[index] {
-                            ui.label(RichText::new("PENDING").small().color(AMBER));
-                        }
-                        let (label, fill) = match requested {
-                            RecordingAction::Start(_) => ("START", Color32::from_rgb(92, 28, 32)),
-                            RecordingAction::Stop(_) => ("STOP", Color32::from_rgb(98, 66, 17)),
-                        };
-                        if ui
-                            .add_enabled(
-                                recording_action(state, requested).is_some(),
-                                Button::new(RichText::new(label).strong())
-                                    .fill(fill)
-                                    .min_size(Vec2::new(92.0, 28.0)),
-                            )
-                            .on_hover_text(match requested {
-                                RecordingAction::Start(_) => {
-                                    format!("Start configured program recorder {slot}")
-                                }
-                                RecordingAction::Stop(_) => {
-                                    format!("Stop configured program recorder {slot}")
-                                }
-                            })
-                            .clicked()
-                        {
-                            selected = recording_action(state, requested);
-                        }
-                    });
-                }
-            });
-        selected
-    }
-}
-
-fn draw_audio_meters(ui: &mut Ui, state: &StudioUiState) {
-    let Some(meters) = state.audio_meters.as_ref() else {
-        if state.connection_status == StudioConnectionStatus::Ready && state.view.is_some() {
-            ui.label(
-                RichText::new("AUDIO METERS | UNAVAILABLE")
-                    .small()
-                    .color(MUTED),
-            );
-        }
-        return;
-    };
-    let Some(view) = state.view.as_ref() else {
-        return;
-    };
-    ui.horizontal_wrapped(|ui| {
-        meter_group(ui, "MIXER MASTER - PRE-STINGER/FTB", &meters.master);
-        for input in &meters.inputs {
-            if view.inputs.contains(&input.input.to_domain()) {
-                meter_group(
-                    ui,
-                    &label_for_input(view, input.input.to_domain()),
-                    &input.channels,
-                );
-            }
-        }
-    });
-}
-
-fn meter_group(ui: &mut Ui, label: &str, channels: &[AudioMeterChannel]) {
-    ui.vertical(|ui| {
-        ui.label(RichText::new(label).small().strong());
-        for (index, channel) in channels.iter().enumerate() {
-            ui.label(
-                RichText::new(format!(
-                    "{} P {:.3} R {:.3}",
-                    index + 1,
-                    f64::from(channel.peak_millionths) / 1_000_000.0,
-                    f64::from(channel.rms_millionths) / 1_000_000.0
-                ))
-                .small()
-                .color(MUTED),
-            );
-        }
-    });
-}
-
-const STREAMS_NONE_CONFIGURED: &str = "STREAMS | NONE CONFIGURED";
-
-fn draw_streams(ui: &mut Ui, state: &StudioUiState) {
-    if streams_show_none_configured(
-        state.connection_status,
-        state.view.is_some(),
-        &state.streams,
+        manual: ManualTransitionAvailability,
+        intents: &mut Vec<StudioIntent>,
     ) {
-        ui.label(RichText::new(STREAMS_NONE_CONFIGURED).small().color(MUTED));
-        return;
-    }
-    if state.streams.is_empty() {
-        return;
-    }
-    ui.vertical(|ui| {
-        ui.label(RichText::new("STREAMS").small().strong());
-        for stream in &state.streams {
-            let sample = latest_stream_sample(state.stream_status.as_ref(), stream.target);
-            ui.label(
-                RichText::new(stream_row_text(stream, sample))
-                    .small()
-                    .color(MUTED),
-            );
-        }
-    });
-}
-
-/// Pure placeholder decision: connected with a view but no configured streams.
-const fn streams_show_none_configured(
-    connection_status: StudioConnectionStatus,
-    has_view: bool,
-    streams: &[StreamStatus],
-) -> bool {
-    matches!(connection_status, StudioConnectionStatus::Ready) && has_view && streams.is_empty()
-}
-
-/// Finds the latest lossy status sample for one roster target, if any.
-fn latest_stream_sample(
-    status: Option<&StreamStatusMessage>,
-    target: NonZeroU128,
-) -> Option<&StreamStatusSample> {
-    status.and_then(|message| {
-        message
-            .samples
-            .iter()
-            .find(|sample| sample.target.get() == target)
-    })
-}
-
-/// Lowercase realized-state label matching the operator-facing protocol text.
-const fn stream_realized_name(state: StreamRealizedState) -> &'static str {
-    match state {
-        StreamRealizedState::Stopped => "stopped",
-        StreamRealizedState::Starting => "starting",
-        StreamRealizedState::Live => "live",
-        StreamRealizedState::WaitingToReconnect => "waiting-to-reconnect",
-        StreamRealizedState::Congested => "congested",
-        StreamRealizedState::Failed => "failed",
-        StreamRealizedState::Unavailable => "unavailable",
-    }
-}
-
-/// One compact roster row: canonical name plus desired flag and, when a latest
-/// sample exists for that target, the retained realized transport counters and
-/// any local HLS output health. Roster entries without samples show the desired
-/// flag only; samples without roster entries are ignored by the caller.
-fn stream_row_text(stream: &StreamStatus, sample: Option<&StreamStatusSample>) -> String {
-    use core::fmt::Write as _;
-    let mut row = format!("{} desired={}", stream.name, stream.desired_running);
-    let Some(sample) = sample else {
-        return row;
-    };
-    let _ = write!(
-        row,
-        " realized={} connected={} muxed_bytes={} enqueued_pairs={} dropped_pairs={} failure={}",
-        stream_realized_name(sample.realized),
-        sample.connected,
-        sample.muxed_bytes,
-        sample.enqueued_pairs,
-        sample.dropped_pairs,
-        sample.failure.as_deref().unwrap_or("none"),
-    );
-    if let Some(local) = sample.local {
-        let _ = write!(
-            row,
-            " local={}seg/{}ms/{}B",
-            local.segments, local.target_duration_ms, local.free_bytes
-        );
-    }
-    row
-}
-
-#[allow(clippy::too_many_lines)]
-fn draw_input_audio_strips(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
-    let enabled = state.connection_status.controls_enabled()
-        && state.can_control_audio
-        && state.view.is_some();
-    Frame::new()
-        .fill(GRAPHITE_RAISED)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(67, 61, 44)))
-        .inner_margin(Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("INPUT AUDIO").small().strong().color(AMBER));
-                let Some(view) = &state.view else {
-                    ui.label(RichText::new("UNAVAILABLE").small().color(MUTED));
-                    return;
-                };
-                for status in &view.input_audio_strips {
-                    ui.label(RichText::new(label_for_input(view, status.input)).small());
-                    let mut gain_millidb = status.gain_millidb;
-                    let mut balance_basis_points = status.balance_basis_points;
-                    let mut muted = status.muted;
-                    let mut soloed = status.soloed;
-                    let mut follow_video = status.follow_video;
-                    let mut delay_samples = status.delay_samples;
-                    let fader_changed = ui
-                        .scope(|ui| {
-                            ui.spacing_mut().slider_width = 120.0;
-                            ui.spacing_mut().interact_size.y = 28.0;
-                            ui.add_enabled(
-                                enabled,
-                                egui::Slider::new(&mut gain_millidb, -96_000..=24_000)
-                                    .vertical()
-                                    .step_by(100.0)
-                                    .show_value(false),
-                            )
-                            .on_hover_text("Input gain in one-thousandth of a decibel")
-                            .changed()
-                        })
-                        .inner;
-                    let entry_changed = ui
-                        .add_enabled(
-                            enabled,
-                            DragValue::new(&mut gain_millidb)
-                                .range(-96_000..=24_000)
-                                .suffix(" mdB")
-                                .speed(100.0),
-                        )
-                        .on_hover_text("Input gain in one-thousandth of a decibel")
-                        .changed();
-                    ui.label(
-                        RichText::new(format!("{:.3} dB", f64::from(gain_millidb) / 1000.0))
-                            .small()
-                            .color(MUTED),
-                    );
-                    let gain_changed = fader_changed || entry_changed;
-                    let balance_changed = ui
-                        .add_enabled(
-                            enabled,
-                            DragValue::new(&mut balance_basis_points)
-                                .range(-10_000..=10_000)
-                                .suffix(" BAL")
-                                .speed(100.0),
-                        )
-                        .on_hover_text("Stereo balance: -10000 full left, 10000 full right")
-                        .changed();
-                    let mute_changed = ui
-                        .add_enabled(enabled, egui::Checkbox::new(&mut muted, "MUTE"))
-                        .changed();
-                    let solo_changed = ui
-                        .add_enabled(enabled, egui::Checkbox::new(&mut soloed, "SOLO"))
-                        .changed();
-                    let follow_changed = ui
-                        .add_enabled(
-                            enabled,
-                            egui::Checkbox::new(&mut follow_video, "FOLLOW VIDEO"),
-                        )
-                        .changed();
-                    let delay_changed = ui
-                        .add_enabled(
-                            enabled,
-                            DragValue::new(&mut delay_samples)
-                                .range(0..=48_000)
-                                .suffix(" SAMPLES")
-                                .speed(48.0),
-                        )
-                        .on_hover_text("Input delay at the 48 kHz Master sample rate")
-                        .changed();
-                    let update = InputAudioStripUpdate {
-                        gain_millidb: gain_changed.then_some(gain_millidb),
-                        balance_basis_points: balance_changed.then_some(balance_basis_points),
-                        muted: mute_changed.then_some(muted),
-                        soloed: solo_changed.then_some(soloed),
-                        follow_video: follow_changed.then_some(follow_video),
-                        delay_samples: delay_changed.then_some(delay_samples),
-                    };
-                    if update != InputAudioStripUpdate::default() {
-                        intents.push(StudioIntent::SetInputAudioStrip {
-                            input: status.input,
-                            update,
-                        });
-                    }
-                }
-            });
-        });
-}
-
-fn draw_overlays(
-    ui: &mut Ui,
-    state: &StudioUiState,
-    duration_frames: u32,
-    intents: &mut Vec<StudioIntent>,
-) {
-    let enabled =
-        state.connection_status.controls_enabled() && state.can_transition && state.view.is_some();
-    Frame::new()
-        .fill(GRAPHITE_RAISED)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(67, 61, 44)))
-        .inner_margin(Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("OVERLAYS").small().strong().color(AMBER));
-                ui.label(
-                    RichText::new("D = desired. C = last daemon confirmation.")
-                        .small()
-                        .color(MUTED),
-                )
-                .on_hover_text("Confirmation is control state, not output-video proof.");
-            });
-            // Rows of three: eight channel columns at their bounded width
-            // never fit beside a default-width window, and a wrapped row
-            // silently clipped the last channels instead of wrapping.
-            for row in [1_u8..=3, 4_u8..=6, 7_u8..=8] {
-                ui.horizontal(|ui| {
-                    for channel_number in row {
-                        draw_overlay_channel(
-                            ui,
-                            state,
-                            channel_number,
-                            duration_frames,
-                            enabled,
-                            intents,
-                        );
-                    }
-                });
-            }
-        });
-}
-
-#[allow(clippy::too_many_lines)]
-fn draw_overlay_channel(
-    ui: &mut Ui,
-    state: &StudioUiState,
-    channel_number: u8,
-    duration_frames: u32,
-    enabled: bool,
-    intents: &mut Vec<StudioIntent>,
-) {
-    let channel = WireOverlayChannelId::new(channel_number)
-        .expect("Studio renders only overlay channels 1 through 8");
-    let (desired, realized) = state.view.as_ref().map_or((None, None), |view| {
-        (
-            view.desired_overlays
-                .iter()
-                .find(|overlay| overlay.channel == channel_number),
-            view.realized_overlays
-                .iter()
-                .find(|overlay| overlay.channel == channel_number),
-        )
-    });
-    let source = state
-        .view
-        .as_ref()
-        .map(|view| view.switcher.desired.preview);
-    ui.vertical(|ui| {
-        // Bound one channel column so its status text wraps instead of
-        // stretching the column past a third of a default-width window.
-        ui.set_max_width(390.0);
-        ui.horizontal_wrapped(|ui| {
-            let update = overlay_update_intent(enabled, channel, desired, source);
-            if ui
-                .add_enabled(
-                    enabled && source.is_some(),
-                    Button::new(RichText::new(format!("O{channel_number} TAKE")).strong()),
-                )
-                .on_hover_text("Take the current Preview source on this overlay channel")
-                .clicked()
-                && let Some(source) = source
-            {
-                intents.push(StudioIntent::TakeOverlay { channel, source });
-            }
-            if ui
-                .add_enabled(
-                    update.is_some(),
-                    Button::new(RichText::new(format!("O{channel_number} UPDATE")).strong()),
-                )
-                .on_hover_text("Update this active overlay channel from the current Preview source")
-                .clicked()
-                && let Some(update) = update
-            {
-                intents.push(update);
-            }
-            if ui
-                .add_enabled(
-                    enabled && source.is_some(),
-                    Button::new(format!(
-                        "Q+{}",
-                        desired.map_or(0, |value| value.queued_sources.len())
-                    )),
-                )
-                .on_hover_text("Append the current Preview source to this overlay queue")
-                .clicked()
-                && let Some(source) = source
-            {
-                intents.push(StudioIntent::QueueOverlay { channel, source });
-            }
-            if ui
-                .add_enabled(
-                    enabled && desired.is_some_and(|value| !value.queued_sources.is_empty()),
-                    Button::new("NEXT"),
-                )
-                .clicked()
-            {
-                intents.push(StudioIntent::TakeNextOverlay { channel });
-            }
-            let transition =
-                desired.map_or(OverlayTransitionKind::Cut, |overlay| overlay.transition);
-            if ui
-                .add_enabled(
-                    enabled,
-                    Button::new(match transition {
-                        OverlayTransitionKind::Cut => "CUT",
-                        OverlayTransitionKind::Fade => "FADE",
-                    }),
-                )
-                .on_hover_text("Toggle this overlay channel between Cut and Fade")
-                .clicked()
-            {
-                intents.push(StudioIntent::ToggleOverlayTransition {
-                    channel,
-                    duration_frames,
-                });
-            }
-            let position =
-                desired.map_or(OverlayPositionPreset::FullFrame, |overlay| overlay.position);
-            let border = desired.map_or(OverlayBorderPreset::None, |overlay| overlay.border);
-            if ui
-                .add_enabled(
-                    enabled,
-                    Button::new(overlay_status::position_label(position)),
-                )
-                .on_hover_text("Cycle this overlay channel's position preset")
-                .clicked()
-            {
-                intents.push(StudioIntent::CycleOverlayPosition { channel });
-            }
-            if ui
-                .add_enabled(enabled, Button::new(overlay_status::border_label(border)))
-                .on_hover_text("Cycle this overlay channel's white border preset")
-                .clicked()
-            {
-                intents.push(StudioIntent::CycleOverlayBorder { channel });
-            }
-            if ui
-                .add_enabled(
-                    enabled && desired.is_some_and(|overlay| overlay.active),
-                    Button::new(RichText::new(format!("O{channel_number} OFF")).strong()),
-                )
-                .on_hover_text("Remove this overlay channel from Program")
-                .clicked()
-            {
-                intents.push(StudioIntent::OverlayOff { channel });
-            }
-        });
-        let outputs = state.view.as_ref().map(|view| view.outputs.as_slice());
-        match outputs {
-            Some(outputs) if !outputs.is_empty() => {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("OUTPUTS").small().color(MUTED));
-                    for output in outputs {
-                        let mut included = desired.is_some_and(|overlay| {
-                            overlay.included_outputs.contains(&output.output)
-                        });
-                        if ui
-                            .add_enabled(
-                                enabled && desired.is_some(),
-                                egui::Checkbox::new(&mut included, &output.name),
-                            )
-                            .changed()
-                        {
-                            intents.push(StudioIntent::ToggleOverlayOutput {
-                                channel,
-                                output: output.output,
-                            });
-                        }
-                    }
-                });
-            }
-            Some(_) => {
-                ui.label(
-                    RichText::new("OUTPUTS unavailable: no configured outputs")
-                        .small()
-                        .color(MUTED),
+        let gap = 12.0;
+        let available = ui.available_width();
+        let column = transitions::TRANSITION_COLUMN_WIDTH + 2.0 * gap;
+        if available >= NARROW_MONITOR_WIDTH {
+            let monitor_width = ((available - column) / 2.0).floor();
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                monitors::draw_monitor(
+                    ui,
+                    monitors::Bus::Preview,
+                    state.view.as_ref(),
+                    monitor_width,
                 );
-            }
-            None => {
-                ui.label(
-                    RichText::new("OUTPUTS unavailable: project state not synchronized")
-                        .small()
-                        .color(MUTED),
+                ui.vertical(|ui| {
+                    transitions::draw_transition_column(ui, self, state, manual, intents);
+                });
+                monitors::draw_monitor(
+                    ui,
+                    monitors::Bus::Program,
+                    state.view.as_ref(),
+                    monitor_width,
                 );
-            }
-        }
-        ui.label(
-            RichText::new(overlay_status::format(channel_number, desired, realized))
-                .small()
-                .color(MUTED),
-        );
-    });
-}
-
-fn overlay_update_intent(
-    enabled: bool,
-    channel: WireOverlayChannelId,
-    desired: Option<&fm_ui_model::OverlayStatus>,
-    source: Option<InputId>,
-) -> Option<StudioIntent> {
-    if !enabled || !desired.is_some_and(|overlay| overlay.active) {
-        return None;
-    }
-    source.map(|source| StudioIntent::UpdateOverlay { channel, source })
-}
-
-fn draw_manual_transition(
-    ui: &mut Ui,
-    state: &StudioUiState,
-    availability: ManualTransitionAvailability,
-    intents: &mut Vec<StudioIntent>,
-) {
-    let desired = state
-        .view
-        .as_ref()
-        .map_or(ManualTransitionStatus::Inactive, |view| {
-            view.switcher.desired_manual_transition
-        });
-    let realized = state
-        .view
-        .as_ref()
-        .map_or(ManualTransitionStatus::Inactive, |view| {
-            view.switcher.realized_manual_transition
-        });
-    Frame::new()
-        .fill(GRAPHITE_RAISED)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(67, 61, 44)))
-        .inner_margin(Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            draw_manual_transition_status(ui, desired, realized);
-            ui.add_space(6.0);
-            draw_manual_transition_controls(ui, desired, availability, intents);
-        });
-}
-
-fn draw_manual_transition_status(
-    ui: &mut Ui,
-    desired: ManualTransitionStatus,
-    realized: ManualTransitionStatus,
-) {
-    ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new("MANUAL T-BAR").small().strong().color(AMBER));
-        ui.label(RichText::new(format!("DESIRED {}", manual_transition_label(desired))).small());
-        ui.label(
-            RichText::new(format!("REALIZED {}", manual_transition_label(realized)))
-                .small()
-                .color(MUTED),
-        );
-    });
-}
-
-fn draw_manual_transition_controls(
-    ui: &mut Ui,
-    desired: ManualTransitionStatus,
-    availability: ManualTransitionAvailability,
-    intents: &mut Vec<StudioIntent>,
-) {
-    ui.horizontal_wrapped(|ui| {
-        draw_manual_start_buttons(
-            ui,
-            availability.start,
-            availability.alpha_fade_start_exposed,
-            intents,
-        );
-        draw_manual_position(ui, desired, availability.active_controls, intents);
-        draw_manual_terminal_buttons(ui, availability.active_controls, intents);
-    });
-}
-
-fn draw_manual_start_buttons(
-    ui: &mut Ui,
-    enabled: bool,
-    alpha_fade_exposed: bool,
-    intents: &mut Vec<StudioIntent>,
-) {
-    for (label, kind, tooltip) in [
-        (
-            "START FADE T-BAR",
-            ManualTransitionKind::Fade,
-            "Start a reversible manual Fade transition",
-        ),
-        (
-            "START WIPE T-BAR",
-            ManualTransitionKind::Wipe,
-            "Start a reversible manual Wipe transition",
-        ),
-        (
-            "START SLIDE T-BAR",
-            ManualTransitionKind::Slide,
-            "Start a reversible manual Slide transition",
-        ),
-    ] {
-        let response = ui
-            .add_enabled(enabled, Button::new(RichText::new(label).strong()))
-            .on_hover_text(tooltip);
-        if response.clicked() {
-            intents.push(StudioIntent::StartManualTransition { kind });
-        }
-    }
-    if alpha_fade_exposed {
-        let response = ui
-            .add_enabled(
-                enabled,
-                Button::new(RichText::new("START ALPHA FADE T-BAR").strong()),
-            )
-            .on_hover_text("Start a reversible manual AlphaFade transition");
-        if response.clicked() {
-            intents.push(StudioIntent::StartManualTransition {
-                kind: ManualTransitionKind::AlphaFade,
+            });
+        } else {
+            let monitor_width = ((available - gap) / 2.0).floor();
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                monitors::draw_monitor(
+                    ui,
+                    monitors::Bus::Preview,
+                    state.view.as_ref(),
+                    monitor_width,
+                );
+                monitors::draw_monitor(
+                    ui,
+                    monitors::Bus::Program,
+                    state.view.as_ref(),
+                    monitor_width,
+                );
+            });
+            ui.add_space(gap);
+            ui.vertical(|ui| {
+                transitions::draw_transition_column(ui, self, state, manual, intents);
             });
         }
     }
-}
 
-fn draw_manual_position(
-    ui: &mut Ui,
-    desired: ManualTransitionStatus,
-    enabled: bool,
-    intents: &mut Vec<StudioIntent>,
-) {
-    let position_label = ui.label(
-        RichText::new("POSITION (BASIS POINTS)")
-            .small()
-            .color(MUTED),
-    );
-    let mut position = desired_manual_position(desired).basis_points();
-    let response = ui
-        .add_enabled(
-            enabled,
-            DragValue::new(&mut position).range(
-                ManualTransitionPosition::START.basis_points()
-                    ..=ManualTransitionPosition::END.basis_points(),
-            ),
-        )
-        .labelled_by(position_label.id)
-        .on_hover_text(
-            "Exact T-bar position from 0 through 10000 basis points; lower values reverse",
-        );
-    if response.changed() {
-        intents.push(StudioIntent::SetManualTransitionPosition {
-            position: ManualTransitionPosition::new(position)
-                .expect("DragValue range bounds manual positions"),
-        });
-    }
-}
-
-fn draw_manual_terminal_buttons(ui: &mut Ui, enabled: bool, intents: &mut Vec<StudioIntent>) {
-    for (label, tooltip, intent) in [
-        (
-            "COMMIT T-BAR",
-            "Commit the active manual transition",
-            StudioIntent::CommitManualTransition,
-        ),
-        (
-            "CANCEL T-BAR",
-            "Cancel the active manual transition",
-            StudioIntent::CancelManualTransition,
-        ),
-    ] {
-        let response = ui
-            .add_enabled(enabled, Button::new(RichText::new(label).strong()))
-            .on_hover_text(tooltip);
-        if response.clicked() {
-            intents.push(intent);
+    /// Input bank beside the audio mixer; stacked when the window is narrow.
+    fn draw_lower_row(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let strips = state
+            .view
+            .as_ref()
+            .map_or(0, |view| view.input_audio_strips.len());
+        let available = ui.available_width();
+        let mixer_width = mixer::mixer_width(strips).min(available * 0.55);
+        let height = ui.available_height().max(MIN_LOWER_ROW_HEIGHT);
+        let bank_width = available - mixer_width - 12.0;
+        if bank_width >= input_bank::MIN_TILE_WIDTH * 2.0 + 24.0 {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                ui.allocate_ui_with_layout(
+                    Vec2::new(bank_width, height),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        theme::card().show(ui, |ui| {
+                            ui.set_min_size(Vec2::new(ui.available_width(), height - 22.0));
+                            self.draw_inputs(ui, state, intents);
+                        });
+                    },
+                );
+                ui.allocate_ui_with_layout(
+                    Vec2::new(mixer_width, height),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        theme::card().show(ui, |ui| {
+                            ui.set_min_size(Vec2::new(ui.available_width(), height - 22.0));
+                            mixer::draw_mixer(ui, state, intents);
+                        });
+                    },
+                );
+            });
+        } else {
+            theme::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.set_min_height(MIN_LOWER_ROW_HEIGHT);
+                self.draw_inputs(ui, state, intents);
+            });
+            ui.add_space(12.0);
+            theme::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                mixer::draw_mixer(ui, state, intents);
+            });
         }
-    }
-}
-
-const fn desired_manual_position(status: ManualTransitionStatus) -> ManualTransitionPosition {
-    match status {
-        ManualTransitionStatus::Inactive => ManualTransitionPosition::START,
-        ManualTransitionStatus::Active(state) => state.position,
-    }
-}
-
-fn manual_transition_label(status: ManualTransitionStatus) -> String {
-    match status {
-        ManualTransitionStatus::Inactive => "INACTIVE".to_owned(),
-        ManualTransitionStatus::Active(state) => format!(
-            "{} {}->{} @ {} BP",
-            match state.kind {
-                ManualTransitionKind::Fade => "FADE",
-                ManualTransitionKind::Wipe => "WIPE",
-                ManualTransitionKind::AlphaFade => "ALPHA FADE",
-                ManualTransitionKind::Slide => "SLIDE",
-            },
-            state.from,
-            state.to,
-            state.position.basis_points(),
-        ),
     }
 }
 
@@ -1673,542 +989,8 @@ impl Default for StudioShell {
             transition_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
             fade_to_black_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
             rename_draft: None,
+            side_tab: SideTab::default(),
         }
-    }
-}
-
-fn apply_console_visuals(context: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = GRAPHITE;
-    visuals.window_fill = GRAPHITE_RAISED;
-    visuals.override_text_color = Some(TEXT);
-    visuals.widgets.noninteractive.bg_fill = GRAPHITE_RAISED;
-    visuals.widgets.inactive.bg_fill = Color32::from_rgb(35, 38, 41);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(48, 52, 55);
-    visuals.selection.bg_fill = AMBER;
-    context.set_visuals(visuals);
-}
-
-fn draw_header(ui: &mut Ui, state: &StudioUiState) {
-    Frame::new()
-        .fill(GRAPHITE_RAISED)
-        .inner_margin(Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let show_name = state
-                    .view
-                    .as_ref()
-                    .map(|view| view.show_name.as_str())
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or("FreeMix Studio");
-                ui.label(RichText::new(show_name).strong().size(18.0));
-                ui.separator();
-                ui.label(
-                    RichText::new(state.connection_status.operator_label())
-                        .strong()
-                        .color(connection_color(state.connection_status)),
-                );
-                if let Some(view) = &state.view {
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!("REV {}", view.cursor.revision.get()))
-                            .small()
-                            .color(MUTED),
-                    );
-                }
-                if state.pending_commands > 0 {
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!("{} PENDING", state.pending_commands))
-                            .small()
-                            .strong()
-                            .color(AMBER),
-                    );
-                }
-            });
-        });
-}
-
-fn draw_messages(ui: &mut Ui, state: &StudioUiState) {
-    if let Some(error) = &state.error {
-        ui.label(
-            RichText::new(format!("ERROR | {error}"))
-                .color(ERROR)
-                .strong(),
-        );
-    }
-    if let Some(notice) = &state.notice {
-        ui.label(RichText::new(format!("NOTICE | {notice}")).color(AMBER));
-    }
-    if let Some(notice) = &state.external_notice {
-        ui.label(RichText::new(format!("NOTICE | {notice}")).color(AMBER));
-    }
-    for uncertainty in &state.terminal_uncertainties {
-        ui.label(
-            RichText::new(format!(
-                "Command {} | Server receipt {}",
-                uncertainty.command_id, uncertainty.received_command_id
-            ))
-            .color(AMBER),
-        );
-    }
-}
-
-fn draw_monitors(ui: &mut Ui, view: Option<&ClientView>) {
-    let (preview, program) = view.map_or((None, None), |view| {
-        (
-            Some(monitor_routing(
-                view.switcher,
-                &view.inputs,
-                &view.input_names,
-                |selection| selection.preview,
-            )),
-            Some(monitor_routing(
-                view.switcher,
-                &view.inputs,
-                &view.input_names,
-                |selection| selection.program,
-            )),
-        )
-    });
-    if ui.available_width() >= NARROW_MONITOR_WIDTH {
-        ui.columns(2, |columns| {
-            draw_monitor(&mut columns[0], "PREVIEW", PREVIEW, preview);
-            draw_monitor(&mut columns[1], "PROGRAM", PROGRAM, program);
-        });
-    } else {
-        draw_monitor(ui, "PREVIEW", PREVIEW, preview);
-        ui.add_space(6.0);
-        draw_monitor(ui, "PROGRAM", PROGRAM, program);
-    }
-}
-
-fn draw_monitor(ui: &mut Ui, bus_label: &str, color: Color32, routing: Option<MonitorRouting>) {
-    Frame::new()
-        .fill(MONITOR_BLACK)
-        .stroke(Stroke::new(2.0, color))
-        .inner_margin(Margin::same(12))
-        .show(ui, |ui| {
-            ui.set_min_height(154.0);
-            ui.label(RichText::new(bus_label).strong().color(color));
-            ui.add_space(28.0);
-            ui.vertical_centered(|ui| {
-                if let Some(routing) = routing {
-                    let routing_text_color = routing_color(routing.desired.0, routing.realized.0);
-                    ui.add_sized(
-                        [ui.available_width(), 0.0],
-                        Label::new(
-                            RichText::new(format!("DESIRED: {}", routing.desired.1))
-                                .strong()
-                                .size(17.0)
-                                .color(routing_text_color),
-                        )
-                        .truncate(),
-                    );
-                    ui.add_sized(
-                        [ui.available_width(), 0.0],
-                        Label::new(
-                            RichText::new(format!("REALIZED: {}", routing.realized.1))
-                                .strong()
-                                .size(17.0)
-                                .color(routing_text_color),
-                        )
-                        .truncate(),
-                    );
-                } else {
-                    ui.label(
-                        RichText::new("ROUTING STATE UNAVAILABLE")
-                            .strong()
-                            .size(17.0)
-                            .color(MUTED),
-                    );
-                }
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("VIDEO PREVIEW DELIVERY PENDING")
-                        .small()
-                        .color(MUTED),
-                );
-                ui.label(
-                    RichText::new("ROUTING STATE, NOT OUTPUT VIDEO PROOF")
-                        .small()
-                        .color(MUTED),
-                );
-            });
-        });
-}
-
-fn draw_transition_row(
-    ui: &mut Ui,
-    shell: &mut StudioShell,
-    state: &StudioUiState,
-    intents: &mut Vec<StudioIntent>,
-) {
-    let availability = transition_availability(TransitionGate::from_state(state));
-    Frame::new()
-        .fill(GRAPHITE_RAISED)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(67, 61, 44)))
-        .inner_margin(Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("TRANSITION").small().strong().color(AMBER));
-                if transition_button(
-                    ui,
-                    availability.alpha_fade,
-                    "ALPHA",
-                    "AlphaFade Preview to Program",
-                ) {
-                    intents.push(StudioIntent::AlphaFade {
-                        duration_frames: shell.transition_duration_frames,
-                    });
-                }
-                if transition_button(
-                    ui,
-                    availability.slide(),
-                    "SLIDE",
-                    "Slide Preview to Program",
-                ) {
-                    intents.push(StudioIntent::Slide {
-                        duration_frames: shell.transition_duration_frames,
-                    });
-                }
-                if transition_button(ui, availability.zoom(), "ZOOM", "Zoom Preview to Program") {
-                    intents.push(StudioIntent::Zoom {
-                        duration_frames: shell.transition_duration_frames,
-                    });
-                }
-                for slot in 1..=8 {
-                    let slot_state = stinger_slot_state(
-                        state.view.as_ref().map(|view| view.stingers.as_slice()),
-                        slot,
-                    );
-                    let presentation = stinger_slot_presentation(slot_state);
-                    if stinger_button(ui, availability.stinger(), slot, presentation) {
-                        intents.push(StudioIntent::Stinger {
-                            slot: WireStingerSlotId::new(slot)
-                                .expect("Studio renders only Stinger slots 1 through 8"),
-                            duration_frames: shell.transition_duration_frames,
-                        });
-                    }
-                }
-                if transition_button(ui, availability.basic(), "CUT", "Cut Preview to Program") {
-                    intents.push(StudioIntent::Cut);
-                }
-                if transition_button(ui, availability.basic(), "FADE", "Fade Preview to Program") {
-                    intents.push(StudioIntent::Fade {
-                        duration_frames: shell.transition_duration_frames,
-                    });
-                }
-                if transition_button(ui, availability.wipe, "WIPE", "Wipe Preview to Program") {
-                    intents.push(StudioIntent::Wipe {
-                        duration_frames: shell.transition_duration_frames,
-                    });
-                }
-                ui.label(RichText::new("DURATION").small().color(MUTED));
-                ui.add_enabled(
-                    availability.basic(),
-                    DragValue::new(&mut shell.transition_duration_frames)
-                        .range(
-                            StudioShell::MIN_TRANSITION_DURATION_FRAMES
-                                ..=StudioShell::MAX_TRANSITION_DURATION_FRAMES,
-                        )
-                        .suffix(" FRAMES")
-                        .speed(1.0),
-                );
-                shell.set_transition_duration_frames(shell.transition_duration_frames);
-            });
-        });
-}
-
-fn transition_button(ui: &mut Ui, enabled: bool, label: &str, hover_text: &str) -> bool {
-    ui.add_enabled(
-        enabled,
-        Button::new(RichText::new(label).strong())
-            .fill(Color32::from_rgb(98, 66, 17))
-            .min_size(Vec2::new(92.0, 32.0)),
-    )
-    .on_hover_text(hover_text)
-    .clicked()
-}
-
-fn stinger_button(
-    ui: &mut Ui,
-    enabled: bool,
-    slot: u8,
-    presentation: StingerSlotPresentation,
-) -> bool {
-    ui.add_enabled(
-        enabled && presentation.ready,
-        Button::new(
-            RichText::new(format!("S{slot}\n{}", presentation.label))
-                .strong()
-                .color(presentation.color),
-        )
-        .fill(Color32::from_rgb(98, 66, 17))
-        .min_size(Vec2::new(92.0, 32.0)),
-    )
-    .on_hover_text(format!("Stinger slot {slot}: {}", presentation.label))
-    .clicked()
-}
-
-fn project_editing_available(state: &StudioUiState) -> bool {
-    state.connection_status.controls_enabled() && state.can_edit_project && state.view.is_some()
-}
-
-impl StudioShell {
-    fn reconcile_rename_draft(&mut self, state: &StudioUiState) {
-        let Some(draft) = &mut self.rename_draft else {
-            return;
-        };
-        if !project_editing_available(state) {
-            self.rename_draft = None;
-            return;
-        }
-        let Some(view) = state.view.as_ref() else {
-            self.rename_draft = None;
-            return;
-        };
-        let Some(index) = view.inputs.iter().position(|input| *input == draft.input) else {
-            self.rename_draft = None;
-            return;
-        };
-        let current = &view.input_names[index];
-        if current != &draft.confirmed_name {
-            if draft.name == draft.confirmed_name {
-                draft.name.clone_from(current);
-            }
-            draft.confirmed_name.clone_from(current);
-        }
-    }
-
-    fn draw_inputs(&mut self, ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("INPUT BANK").small().strong());
-            ui.separator();
-            let count = state.view.as_ref().map_or(0, |view| view.inputs.len());
-            ui.label(
-                RichText::new(format!("{count} SOURCES"))
-                    .small()
-                    .color(MUTED),
-            );
-        });
-        ui.add_space(4.0);
-
-        let enabled = preview_selection_available(
-            TransitionGate::from_state(state),
-            state.can_select_preview,
-        );
-        let reorder_enabled = project_editing_available(state);
-        ScrollArea::vertical()
-            .id_salt("studio-input-bank")
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                let Some(view) = state.view.as_ref() else {
-                    ui.label(RichText::new("INPUT STATE UNAVAILABLE").color(MUTED));
-                    return;
-                };
-                let columns = dynamic_columns(ui.available_width(), ui.spacing().item_spacing.x);
-                Grid::new("studio-input-grid")
-                    .num_columns(columns)
-                    .spacing(Vec2::new(6.0, 6.0))
-                    .show(ui, |ui| {
-                        for (index, input) in view.inputs.iter().copied().enumerate() {
-                            let tally = tally_state(input, view.switcher);
-                            let tile_text =
-                                format!("{}\n{}", view.input_names[index], tally.operator_label());
-                            ui.vertical(|ui| {
-                                let response = ui.add_enabled(
-                                    enabled,
-                                    Button::new(RichText::new(tile_text).color(tally_color(tally)))
-                                        .fill(tally_fill(tally))
-                                        .stroke(Stroke::new(1.0, tally_color(tally)))
-                                        .min_size(Vec2::new(MIN_TILE_WIDTH, 52.0)),
-                                );
-                                if response.clicked() {
-                                    intents.push(StudioIntent::SelectPreview(input));
-                                }
-                                ui.horizontal(|ui| {
-                                    let up = ui.add_enabled(
-                                        reorder_enabled && index > 0,
-                                        Button::new("UP").small(),
-                                    );
-                                    if up.clicked() {
-                                        intents.push(StudioIntent::MoveInput {
-                                            input,
-                                            direction: InputMoveDirection::Up,
-                                        });
-                                    }
-                                    let down = ui.add_enabled(
-                                        reorder_enabled && index + 1 < view.inputs.len(),
-                                        Button::new("DOWN").small(),
-                                    );
-                                    if down.clicked() {
-                                        intents.push(StudioIntent::MoveInput {
-                                            input,
-                                            direction: InputMoveDirection::Down,
-                                        });
-                                    }
-                                    if ui
-                                        .add_enabled(reorder_enabled, Button::new("RENAME").small())
-                                        .clicked()
-                                    {
-                                        self.rename_draft = Some(RenameDraft {
-                                            input,
-                                            name: view.input_names[index].clone(),
-                                            confirmed_name: view.input_names[index].clone(),
-                                        });
-                                    }
-                                });
-                                if self
-                                    .rename_draft
-                                    .as_ref()
-                                    .is_some_and(|draft| draft.input == input)
-                                {
-                                    self.draw_rename_editor(
-                                        ui,
-                                        state,
-                                        input,
-                                        &view.input_names[index],
-                                        intents,
-                                    );
-                                }
-                            });
-                            if (index + 1) % columns == 0 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-            });
-    }
-
-    fn draw_rename_editor(
-        &mut self,
-        ui: &mut Ui,
-        state: &StudioUiState,
-        input: InputId,
-        current: &str,
-        intents: &mut Vec<StudioIntent>,
-    ) {
-        let Some(draft) = &mut self.rename_draft else {
-            return;
-        };
-        let duplicate = state.view.as_ref().is_some_and(|view| {
-            view.inputs
-                .iter()
-                .enumerate()
-                .any(|(index, other)| *other != input && view.input_names[index] == draft.name)
-        });
-        let valid = !draft.name.trim().is_empty()
-            && draft.name.len() <= MAX_INPUT_NAME_BYTES
-            && !duplicate
-            && draft.name != current;
-        let mut close = false;
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(MIN_TILE_WIDTH));
-            if ui
-                .add_enabled(valid, Button::new("APPLY").small())
-                .clicked()
-            {
-                intents.push(StudioIntent::RenameInput {
-                    input,
-                    name: draft.name.clone(),
-                });
-                close = true;
-            }
-            if ui.button("CANCEL").clicked() {
-                close = true;
-            }
-        });
-        if close {
-            self.rename_draft = None;
-        }
-    }
-}
-
-fn dynamic_columns(available_width: f32, spacing: f32) -> usize {
-    let mut columns = 1;
-    let mut occupied = MIN_TILE_WIDTH;
-    while occupied + spacing + MIN_TILE_WIDTH <= available_width {
-        columns += 1;
-        occupied += spacing + MIN_TILE_WIDTH;
-    }
-    columns
-}
-
-struct MonitorRouting {
-    desired: (InputId, String),
-    realized: (InputId, String),
-}
-
-fn monitor_routing(
-    switcher: SwitcherState,
-    inputs: &[InputId],
-    input_names: &[String],
-    select: fn(BusSelection) -> InputId,
-) -> MonitorRouting {
-    let desired = select(switcher.desired);
-    let realized = select(switcher.realized);
-    MonitorRouting {
-        desired: (desired, input_name(inputs, input_names, desired)),
-        realized: (realized, input_name(inputs, input_names, realized)),
-    }
-}
-
-fn label_for_input(view: &ClientView, input: InputId) -> String {
-    input_name(&view.inputs, &view.input_names, input)
-}
-
-fn input_name(inputs: &[InputId], input_names: &[String], input: InputId) -> String {
-    inputs
-        .iter()
-        .position(|candidate| *candidate == input)
-        .map_or_else(
-            || format!("Input {input}"),
-            |index| input_names[index].clone(),
-        )
-}
-
-fn routing_color(desired: InputId, realized: InputId) -> Color32 {
-    if desired == realized { MUTED } else { AMBER }
-}
-
-const fn connection_color(status: StudioConnectionStatus) -> Color32 {
-    match status {
-        StudioConnectionStatus::Ready => PREVIEW,
-        StudioConnectionStatus::Failed | StudioConnectionStatus::ProtocolMismatch => ERROR,
-        StudioConnectionStatus::Disconnected => MUTED,
-        StudioConnectionStatus::Launching
-        | StudioConnectionStatus::Connecting
-        | StudioConnectionStatus::Synchronizing
-        | StudioConnectionStatus::Backoff => AMBER,
-    }
-}
-
-const fn tally_color(tally: TallyState) -> Color32 {
-    if tally.is_realized_program() {
-        PROGRAM
-    } else if tally.is_realized_preview() {
-        PREVIEW
-    } else if tally.is_desired_program() {
-        Color32::from_rgb(191, 91, 64)
-    } else if tally.is_desired_preview() {
-        Color32::from_rgb(86, 163, 112)
-    } else {
-        MUTED
-    }
-}
-
-const fn tally_fill(tally: TallyState) -> Color32 {
-    if tally.is_realized_program() {
-        Color32::from_rgb(66, 20, 23)
-    } else if tally.is_realized_preview() {
-        Color32::from_rgb(15, 55, 35)
-    } else if tally.is_desired_program() {
-        Color32::from_rgb(48, 28, 22)
-    } else if tally.is_desired_preview() {
-        Color32::from_rgb(23, 43, 30)
-    } else {
-        GRAPHITE_RAISED
     }
 }
 
@@ -2216,9 +998,22 @@ const fn tally_fill(tally: TallyState) -> Color32 {
 mod tests {
     use core::num::NonZeroU128;
 
+    use fm_protocol::{
+        OverlayBorderPreset, OverlayPositionPreset, OverlayTransitionKind, StingerReadiness,
+        StreamRealizedState, StreamStatusSample,
+    };
     use fm_ui_model::{ActiveManualTransition, BusSelection, ProjectCursor};
 
     use super::*;
+    use crate::monitors::monitor_routing;
+    use crate::overlays::overlay_update_intent;
+    use crate::panels::{
+        STREAMS_NONE_CONFIGURED, StingerSlotPresentation, StingerSlotState, latest_stream_sample,
+        recording_status_label, stinger_slot_presentation, stinger_slot_state,
+        stream_realized_name, stream_row_text, streams_show_none_configured,
+    };
+    use crate::theme::{AMBER, ERROR, MUTED, PREVIEW, routing_color};
+    use crate::transitions::{desired_manual_position, manual_transition_label};
 
     fn input(value: u128) -> InputId {
         InputId::new(NonZeroU128::new(value).unwrap())
@@ -2260,7 +1055,7 @@ mod tests {
         );
         for status in statuses {
             assert!(!status.controls_enabled(), "{status:?}");
-            assert!(!status.operator_label().is_empty());
+            assert_ne!(status.operator_label(), "");
         }
     }
 
@@ -2399,7 +1194,7 @@ mod tests {
             true,
             false,
         );
-        assert!(intents.is_empty());
+        assert_eq!(intents, Vec::new());
         assert!(matches!(
             remaining.as_slice(),
             [
@@ -2427,7 +1222,7 @@ mod tests {
             key(Key::F, Modifiers::NONE, false),
         ];
         let (intents, remaining) = run(rejected_events.clone(), blocked, true, false, false);
-        assert!(intents.is_empty());
+        assert_eq!(intents, Vec::new());
         assert!(matches!(
             remaining.as_slice(),
             [
@@ -2448,7 +1243,7 @@ mod tests {
             false,
             false,
         );
-        assert!(intents.is_empty());
+        assert_eq!(intents, Vec::new());
         assert_eq!(remaining.len(), 1);
 
         for blocked in [
@@ -2472,12 +1267,12 @@ mod tests {
                 false,
                 false,
             );
-            assert!(intents.is_empty());
+            assert_eq!(intents, Vec::new());
             assert_eq!(remaining.len(), 1);
         }
 
         let (intents, remaining) = run(rejected_events, gate, true, true, true);
-        assert!(intents.is_empty());
+        assert_eq!(intents, Vec::new());
         assert!(matches!(
             remaining.as_slice(),
             [
@@ -3214,7 +2009,7 @@ mod tests {
         );
         let intents = shell.draw(&mut ui, &state);
         let _output = context.end_pass();
-        assert!(intents.is_empty());
+        assert_eq!(intents, Vec::new());
     }
 
     #[test]

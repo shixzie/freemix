@@ -1,9 +1,8 @@
-use egui::{Button, Color32, DragValue, Frame, Margin, RichText, Stroke, Ui, Vec2};
+use egui::{Button, DragValue, RichText, Stroke, Ui, Vec2};
 use fm_protocol::{FadeToBlackPosition, FadeToBlackState};
 
-use crate::{
-    AMBER, GRAPHITE_RAISED, MUTED, PROGRAM, StudioConnectionStatus, StudioIntent, StudioUiState,
-};
+use crate::theme::{PROGRAM, PROGRAM_FILL, TEXT, TEXT_DIM, mono, section_label};
+use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
 /// Pure Fade-to-Black control availability derived from replicated state and session gates.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,70 +67,91 @@ pub(super) fn draw_fade_to_black(
         .as_ref()
         .map(|view| view.switcher.realized_fade_to_black);
     let availability = fade_to_black_availability(FadeToBlackGate::from_state(state), desired);
+    let black = desired.is_some_and(|desired| desired.target_active);
 
-    Frame::new()
-        .fill(GRAPHITE_RAISED)
-        .stroke(Stroke::new(1.0, Color32::from_rgb(77, 39, 42)))
-        .inner_margin(Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new("FADE TO BLACK")
-                        .small()
-                        .strong()
-                        .color(PROGRAM),
-                );
-                ui.label(
-                    RichText::new(format!("DESIRED {}", fade_to_black_label(desired))).small(),
-                );
-                ui.label(
-                    RichText::new(format!("REALIZED {}", fade_to_black_label(realized)))
-                        .small()
-                        .color(MUTED),
-                );
+    ui.horizontal(|ui| {
+        // One console key: it offers exactly the reversal the replicated
+        // desired target permits (to black while live, to live while black).
+        let (label, active, enabled, hover) = if black {
+            (
+                "FTB  ON",
+                false,
+                availability.to_live,
+                "Reverse Fade-to-Black and restore live Program  [B]",
+            )
+        } else {
+            (
+                "FTB",
+                true,
+                availability.to_black,
+                "Fade the realized Program video and audio to black  [B]",
+            )
+        };
+        let (fill, stroke) = if black {
+            (PROGRAM, PROGRAM)
+        } else {
+            (PROGRAM_FILL, PROGRAM.gamma_multiply(0.7))
+        };
+        if ui
+            .add_enabled(
+                enabled,
+                Button::new(RichText::new(label).strong().size(13.0).color(TEXT))
+                    .fill(fill)
+                    .stroke(Stroke::new(1.0, stroke))
+                    .min_size(Vec2::new(100.0, 40.0)),
+            )
+            .on_hover_text(hover)
+            .clicked()
+        {
+            intents.push(StudioIntent::FadeToBlack {
+                active,
+                duration_frames: *duration_frames,
             });
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(
-                        availability.to_black,
-                        Button::new(RichText::new("FADE TO BLACK").strong())
-                            .fill(Color32::from_rgb(92, 28, 32))
-                            .min_size(Vec2::new(138.0, 32.0)),
-                    )
-                    .on_hover_text("Fade the realized Program video and audio to black")
-                    .clicked()
-                {
-                    intents.push(StudioIntent::FadeToBlack {
-                        active: true,
-                        duration_frames: *duration_frames,
-                    });
-                }
-                if ui
-                    .add_enabled(
-                        availability.to_live,
-                        Button::new(RichText::new("FADE TO LIVE").strong())
-                            .fill(Color32::from_rgb(98, 66, 17))
-                            .min_size(Vec2::new(138.0, 32.0)),
-                    )
-                    .on_hover_text("Reverse Fade-to-Black and restore live Program")
-                    .clicked()
-                {
-                    intents.push(StudioIntent::FadeToBlack {
-                        active: false,
-                        duration_frames: *duration_frames,
-                    });
-                }
-                ui.label(RichText::new("DURATION").small().color(AMBER));
-                ui.add_enabled(
-                    availability.duration,
-                    DragValue::new(duration_frames)
-                        .range(1..=3_600)
-                        .suffix(" FRAMES")
-                        .speed(1.0),
-                );
-            });
+        }
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(section_label("Fade to black"));
+            ui.add_enabled(
+                availability.duration,
+                DragValue::new(duration_frames)
+                    .range(1..=3_600)
+                    .suffix(" fr")
+                    .speed(1.0),
+            )
+            .on_hover_text("Fade-to-Black duration in frames");
         });
+    });
+    ui.add(
+        egui::Label::new(
+            mono(format!(
+                "D {} · R {}",
+                fade_to_black_short_label(desired),
+                fade_to_black_short_label(realized)
+            ))
+            .size(9.5)
+            .color(TEXT_DIM),
+        )
+        .wrap(),
+    )
+    .on_hover_text(format!(
+        "DESIRED {}\nREALIZED {}",
+        fade_to_black_label(desired),
+        fade_to_black_label(realized)
+    ));
+}
+
+/// Compact target-and-percent label for the transition column.
+fn fade_to_black_short_label(state: Option<FadeToBlackState>) -> String {
+    state.map_or_else(
+        || "UNAVAILABLE".to_owned(),
+        |state| {
+            format!(
+                "{} {}%",
+                if state.target_active { "BLACK" } else { "LIVE" },
+                u32::from(state.position.numerator()) * 100 / FadeToBlackPosition::DENOMINATOR,
+            )
+        },
+    )
 }
 
 fn fade_to_black_label(state: Option<FadeToBlackState>) -> String {
@@ -231,5 +251,11 @@ mod tests {
             "TARGET LIVE @ 20000/65535"
         );
         assert_eq!(fade_to_black_label(None), "UNAVAILABLE");
+        assert_eq!(
+            fade_to_black_short_label(Some(state(true, 65_535))),
+            "BLACK 100%"
+        );
+        assert_eq!(fade_to_black_short_label(Some(state(false, 0))), "LIVE 0%");
+        assert_eq!(fade_to_black_short_label(None), "UNAVAILABLE");
     }
 }

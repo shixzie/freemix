@@ -57,8 +57,8 @@ static NEXT_WORKER_NONCE: AtomicU64 = AtomicU64::new(1);
 pub fn launch_native(config: StudioConfig) -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([760.0, 560.0]),
+            .with_inner_size([1600.0, 940.0])
+            .with_min_inner_size([960.0, 600.0]),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
