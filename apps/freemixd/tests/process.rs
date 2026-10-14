@@ -3020,6 +3020,10 @@ fn create_stream_project(path: &Path) {
 }
 
 fn canonical_project() -> Project {
+    canonical_project_at(1_280, 720)
+}
+
+fn canonical_project_at(width: u32, height: u32) -> Project {
     let frame_rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
         project_id(),
@@ -3027,7 +3031,7 @@ fn canonical_project() -> Project {
         ProjectSettings {
             frame_rate,
             video: VideoFormat {
-                dimensions: VideoDimensions::new(1_280, 720).unwrap(),
+                dimensions: VideoDimensions::new(width, height).unwrap(),
                 frame_rate,
                 pixel_format: PixelFormat::Rgba8,
                 scan: ScanMode::Progressive,
@@ -3365,5 +3369,176 @@ fn simulated_studio_peer_receives_monitor_frames_and_integration_peer_none() {
 
     drop(studio);
     drop(integration);
+    daemon.stop();
+}
+
+/// A 1080p project whose Program is a Scene input over simulated sources, so
+/// every Studio monitor picture of Program is a CPU Scene composition.
+fn create_scene_program_project(path: &Path) {
+    let mut project = canonical_project_at(1_920, 1_080);
+    project.add_input(Input {
+        id: domain_input(4),
+        name: "Program scene".into(),
+        kind: InputKind::Scene {
+            scene_id: scene_id(1),
+            audio_source: None,
+        },
+        required_capabilities: Vec::new(),
+    });
+    project.set_main_mix(MainMix::new(domain_input(4), domain_input(2)));
+    let project = StoredProject::from_project(
+        project,
+        RuntimeRouting {
+            desired_program_id: Some(domain_input(4)),
+            realized_program_id: Some(domain_input(4)),
+            desired_preview_id: Some(domain_input(2)),
+            realized_preview_id: Some(domain_input(2)),
+        },
+        ProjectPosition {
+            revision: 0,
+            state_epoch: 1,
+            event_sequence: 0,
+            frames_rendered: 0,
+            runtime_generation: 0,
+            clock_time_nanos: 0,
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    ProjectStore::new(path).unwrap().save(&project).unwrap();
+}
+
+/// Receives the next state-bearing session event before `deadline`, skipping
+/// lossy monitor frame parts.
+#[cfg(unix)]
+fn next_session_event(session: &mut TcpSession, deadline: Instant, expected: &str) -> SessionEvent {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for {expected}; the session loop was blocked"
+        );
+        match session
+            .receive_timeout(remaining.min(Duration::from_millis(25)))
+            .unwrap()
+        {
+            None | Some(SessionEvent::MonitorFrame { .. }) => {}
+            Some(event) => return event,
+        }
+    }
+}
+
+/// Regression for a Studio session drop on Stinger ASSIGN against a
+/// simulated daemon: with a Scene on Program, the session loop composed the
+/// Scene's monitor picture (seconds of CPU work in a debug build) between
+/// executing the command and writing its result. Studio's bounded command
+/// wait expired, it treated the silent session as dead and reconnected. The
+/// acknowledgement, its durable event, and its runtime event must never wait
+/// for monitor rendering, and the session must stay up afterwards.
+#[cfg(unix)]
+#[test]
+fn studio_stinger_assignment_is_acknowledged_while_a_scene_monitor_composes() {
+    // Well under Studio's own command wait; the blocking composition alone
+    // exceeded it.
+    const ACKNOWLEDGEMENT_BOUND: Duration = Duration::from_secs(2);
+
+    let directory = TestDirectory::new("studio-stinger-assignment");
+    let project_path = directory.project_path();
+    create_scene_program_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut session = TcpSession::new(
+        ProtocolClient::new(ClientConfig::new(
+            "process-test",
+            ClientType::Studio,
+            Role::Operator,
+            "studio-client",
+            project_id(),
+        ))
+        .unwrap(),
+    );
+    assert!(matches!(
+        session
+            .connect(daemon.address, Duration::from_secs(5))
+            .unwrap(),
+        SessionEvent::Connected { .. }
+    ));
+
+    // A composed Program picture proves monitor demand is active, so the
+    // accepted command below changes the revision a composition depends on.
+    let first_frame = Instant::now() + Duration::from_secs(60);
+    loop {
+        assert!(Instant::now() < first_frame, "no Program monitor frame");
+        if let Some(SessionEvent::MonitorFrame {
+            tap: fm_protocol::MonitorTap::Program,
+            complete: true,
+        }) = session.receive_timeout(Duration::from_millis(25)).unwrap()
+        {
+            break;
+        }
+    }
+
+    let command = session
+        .queue_command(
+            CommandPayload::ConfigureStinger {
+                slot: WireStingerSlotId::new(1).unwrap(),
+                media_input: input(3),
+                preload: true,
+                cut_point_frames: 15,
+                audio_policy: StingerAudioPolicy::MixWithProgram,
+                missing_media_fallback: StingerMissingMediaFallback::Cut,
+            },
+            "studio-stinger-assign",
+            Some(0),
+            None,
+        )
+        .unwrap();
+    session.flush().unwrap();
+    let deadline = Instant::now() + ACKNOWLEDGEMENT_BOUND;
+
+    let SessionEvent::CommandResult {
+        result: CommandResult::Accepted { id, revision, .. },
+        ..
+    } = next_session_event(&mut session, deadline, "the assignment result")
+    else {
+        panic!("expected the assignment to be accepted");
+    };
+    assert_eq!((id.as_str(), revision), (command.id.as_str(), 1));
+    assert!(matches!(
+        next_session_event(&mut session, deadline, "the Stinger slot event"),
+        SessionEvent::Event { event, .. }
+            if event.cursor.revision == 1
+                && matches!(
+                    &event.payload,
+                    EventPayload::StingerSlotsChanged { stingers, .. }
+                        if stingers.len() == 1 && stingers[0].media_input == input(3)
+                )
+    ));
+    assert!(matches!(
+        next_session_event(&mut session, deadline, "the realization event"),
+        SessionEvent::RuntimeEvent { event, .. } if event.revision == 1
+    ));
+
+    // The same session keeps answering: it was never dropped.
+    let sent_at_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let heartbeat = session.queue_heartbeat(sent_at_ms).unwrap();
+    session.flush().unwrap();
+    let deadline = Instant::now() + ACKNOWLEDGEMENT_BOUND;
+    assert!(matches!(
+        next_session_event(&mut session, deadline, "the heartbeat acknowledgement"),
+        SessionEvent::HeartbeatAcknowledged { acknowledgement }
+            if acknowledgement.heartbeat_sequence == heartbeat.sequence
+    ));
+    assert!(session.is_connected());
+    assert_eq!(
+        session.client().model().view().unwrap().stingers.len(),
+        1,
+        "the replicated view holds the assigned slot"
+    );
     daemon.stop();
 }

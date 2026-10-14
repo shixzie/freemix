@@ -16,7 +16,9 @@
 //! render honestly) produces no frame, so a client keeps its placeholder
 //! instead of seeing invented video.
 
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use fm_auth::Policy;
@@ -197,28 +199,6 @@ pub(crate) struct SimulatedMonitorTap {
 }
 
 impl SimulatedMonitorTap {
-    /// Returns each tap's encoded frame group due at `now`, if any.
-    pub(crate) fn poll(
-        &mut self,
-        control: &ControlService<Policy>,
-        project: &Project,
-        server: &ServerIdentity,
-        now: Instant,
-        demand: bool,
-    ) -> Vec<(MonitorTap, Vec<u8>)> {
-        if !demand {
-            self.idle();
-            return Vec::new();
-        }
-        self.poll_state(
-            RealizedMonitorState::from_control(control),
-            project,
-            server,
-            now,
-            true,
-        )
-    }
-
     /// Cadence and rendering against an explicit realized state.
     pub(crate) fn poll_state(
         &mut self,
@@ -356,6 +336,201 @@ impl SimulatedMonitorTap {
     fn idle(&mut self) {
         self.last_emit = None;
         self.last_key = None;
+    }
+}
+
+/// What the composition worker renders: the realized state and the project
+/// it depicts, or `None` when no peer wants frames.
+type MonitorWork = Option<(RealizedMonitorState, Arc<Project>)>;
+
+/// Renders one cadence step of `MonitorWork` at `Instant`.
+type MonitorRenderer = Box<dyn FnMut(MonitorWork, Instant) -> Vec<(MonitorTap, Vec<u8>)> + Send>;
+
+/// Longest the worker sleeps between cadence steps while frames are wanted.
+const MONITOR_WORKER_STEP: Duration = Duration::from_millis(10);
+/// Rendered groups awaiting the session loop; monitor frames are lossy, so a
+/// full backlog drops the newest group instead of blocking the worker.
+const MONITOR_WORKER_BACKLOG: usize = 4;
+
+/// The latest work published by the session loop.
+struct WorkerSlot {
+    work: MonitorWork,
+    changed: bool,
+    shutdown: bool,
+}
+
+struct WorkerShared {
+    slot: Mutex<WorkerSlot>,
+    wake: Condvar,
+}
+
+impl WorkerShared {
+    fn lock(&self) -> MutexGuard<'_, WorkerSlot> {
+        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Runs [`SimulatedMonitorTap`] on a dedicated thread.
+///
+/// Composing a Scene input at the project size is CPU work that can take
+/// seconds in a debug build. It must never run on the daemon's session loop:
+/// a command accepted while a composition ran would wait for it before its
+/// result could be written, and a client waiting for that result treats the
+/// silence as a dead connection and reconnects. The session loop only
+/// publishes the latest realized state (latest wins) and collects whichever
+/// encoded groups are already finished.
+pub(crate) struct SimulatedMonitorWorker {
+    shared: Arc<WorkerShared>,
+    frames: Receiver<(MonitorTap, Vec<u8>)>,
+    worker: Option<JoinHandle<()>>,
+    project: Option<(u64, Arc<Project>)>,
+    published: Published,
+}
+
+/// The last work handed to the worker, so unchanged polls skip the lock.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Published {
+    Nothing,
+    Idle,
+    State(RealizedMonitorState),
+}
+
+impl SimulatedMonitorWorker {
+    /// Starts the worker rendering frames that carry `server`'s identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating system error when the thread cannot start.
+    pub(crate) fn spawn(server: ServerIdentity) -> std::io::Result<Self> {
+        let mut tap = SimulatedMonitorTap::default();
+        Self::spawn_with(Box::new(move |work, now| {
+            if let Some((state, project)) = work {
+                tap.poll_state(state, &project, &server, now, true)
+            } else {
+                tap.idle();
+                Vec::new()
+            }
+        }))
+    }
+
+    fn spawn_with(mut render: MonitorRenderer) -> std::io::Result<Self> {
+        let shared = Arc::new(WorkerShared {
+            slot: Mutex::new(WorkerSlot {
+                work: None,
+                changed: false,
+                shutdown: false,
+            }),
+            wake: Condvar::new(),
+        });
+        let (sender, frames) = mpsc::sync_channel(MONITOR_WORKER_BACKLOG);
+        let worker_shared = Arc::clone(&shared);
+        let worker = thread::Builder::new()
+            .name("freemixd-monitor".to_owned())
+            .spawn(move || run_monitor_worker(&worker_shared, &sender, &mut render))?;
+        Ok(Self {
+            shared,
+            frames,
+            worker: Some(worker),
+            project: None,
+            published: Published::Nothing,
+        })
+    }
+
+    /// Publishes the current realized state when it changed and returns the
+    /// encoded groups the worker has finished since the last call. Never
+    /// waits for a composition.
+    pub(crate) fn poll(
+        &mut self,
+        control: &ControlService<Policy>,
+        project: &Project,
+        demand: bool,
+    ) -> Vec<(MonitorTap, Vec<u8>)> {
+        let state = demand.then(|| RealizedMonitorState::from_control(control));
+        self.poll_state(state, project)
+    }
+
+    fn poll_state(
+        &mut self,
+        state: Option<RealizedMonitorState>,
+        project: &Project,
+    ) -> Vec<(MonitorTap, Vec<u8>)> {
+        let published = state.map_or(Published::Idle, Published::State);
+        if self.published != published {
+            let work = state.map(|state| (state, self.project_at(state.revision, project)));
+            let mut slot = self.shared.lock();
+            slot.work = work;
+            slot.changed = true;
+            drop(slot);
+            self.shared.wake.notify_one();
+            self.published = published;
+        }
+        self.frames.try_iter().collect()
+    }
+
+    /// Shares one project copy per realized revision with the worker.
+    fn project_at(&mut self, revision: u64, project: &Project) -> Arc<Project> {
+        match &self.project {
+            Some((cached, shared)) if *cached == revision => Arc::clone(shared),
+            _ => {
+                let shared = Arc::new(project.clone());
+                self.project = Some((revision, Arc::clone(&shared)));
+                shared
+            }
+        }
+    }
+}
+
+impl Drop for SimulatedMonitorWorker {
+    fn drop(&mut self) {
+        self.shared.lock().shutdown = true;
+        self.shared.wake.notify_all();
+        // An idle worker exits at once; a composition still in progress
+        // finishes on its own detached thread so shutdown never waits for it.
+        if let Some(worker) = self.worker.take()
+            && worker.is_finished()
+        {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn run_monitor_worker(
+    shared: &WorkerShared,
+    frames: &SyncSender<(MonitorTap, Vec<u8>)>,
+    render: &mut MonitorRenderer,
+) {
+    let mut work: MonitorWork = None;
+    loop {
+        {
+            let mut slot = shared.lock();
+            if !slot.changed && !slot.shutdown {
+                // With demand the cadence needs periodic steps; without it
+                // nothing renders until the session loop publishes again.
+                slot = if work.is_some() {
+                    shared
+                        .wake
+                        .wait_timeout(slot, MONITOR_WORKER_STEP)
+                        .map_or_else(|error| error.into_inner().0, |(slot, _)| slot)
+                } else {
+                    shared
+                        .wake
+                        .wait(slot)
+                        .unwrap_or_else(PoisonError::into_inner)
+                };
+            }
+            if slot.shutdown {
+                return;
+            }
+            if slot.changed {
+                work.clone_from(&slot.work);
+                slot.changed = false;
+            }
+        }
+        for frame in render(work.clone(), Instant::now()) {
+            if let Err(TrySendError::Disconnected(_)) = frames.try_send(frame) {
+                return;
+            }
+        }
     }
 }
 
@@ -869,5 +1044,58 @@ mod tests {
         assert_eq!(fit_monitor(1, 4320), Some((1, 360)));
         assert_eq!(fit_monitor(0, 1080), None);
         assert_eq!(fit_within(100, 100, 10, 20), Some((10, 10)));
+    }
+
+    #[test]
+    fn monitor_worker_never_holds_the_session_loop_during_a_composition() {
+        let project = project(1_920, 1_080);
+        let (rendering, rendering_rx) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let mut blocked_once = false;
+        let mut worker = SimulatedMonitorWorker::spawn_with(Box::new(move |work, _| {
+            let Some((state, _)) = work else {
+                return Vec::new();
+            };
+            let _ = rendering.send(state.revision);
+            if !blocked_once {
+                blocked_once = true;
+                // Stands in for a multi-second Scene composition.
+                release_rx
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("the test releases the composition");
+            }
+            vec![(MonitorTap::Program, state.revision.to_be_bytes().to_vec())]
+        }))
+        .unwrap();
+
+        assert_eq!(worker.poll_state(Some(state(1, 1, 2)), &project), NO_FRAMES);
+        assert_eq!(rendering_rx.recv_timeout(Duration::from_secs(5)), Ok(1));
+        // The composition of revision 1 is now blocked. Every poll returns at
+        // once and the newest state replaces the older pending one.
+        assert_eq!(worker.poll_state(Some(state(2, 2, 1)), &project), NO_FRAMES);
+        assert_eq!(worker.poll_state(Some(state(3, 1, 2)), &project), NO_FRAMES);
+        assert_eq!(rendering_rx.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+        release.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut revisions = Vec::new();
+        while !revisions.contains(&3) {
+            assert!(
+                Instant::now() < deadline,
+                "worker never rendered the latest state"
+            );
+            revisions.extend(
+                worker
+                    .poll_state(Some(state(3, 1, 2)), &project)
+                    .into_iter()
+                    .map(|(_, bytes)| u64::from_be_bytes(bytes.try_into().unwrap())),
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(revisions[0], 1);
+        assert!(
+            !revisions.contains(&2),
+            "a superseded state is never rendered"
+        );
     }
 }

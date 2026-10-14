@@ -32,7 +32,7 @@ use super::{
 };
 use crate::journal::DurableStore;
 use crate::latest_record::LatestRecord;
-use crate::monitor_tap::SimulatedMonitorTap;
+use crate::monitor_tap::SimulatedMonitorWorker;
 use crate::web::{WebEvent, WebGateway};
 
 const MAX_PEERS: usize = 2;
@@ -391,7 +391,13 @@ pub(super) fn run(
         process_shutdown,
     };
     let mut native = native;
-    let mut simulated_monitor = SimulatedMonitorTap::default();
+    // Simulated monitor frames are composed off this loop so a slow Scene
+    // composition never delays command results, heartbeats, or events.
+    let mut simulated_monitor = if native.is_none() {
+        Some(SimulatedMonitorWorker::spawn(authority.clone())?)
+    } else {
+        None
+    };
 
     loop {
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
@@ -536,14 +542,8 @@ pub(super) fn run(
             if let Some((tap, bytes)) = native.take_monitor_frame() {
                 publish_monitor_frame(&mut peers, tap, &bytes);
             }
-        } else {
-            let frames = simulated_monitor.poll(
-                &control.borrow(),
-                durable.project(),
-                authority,
-                Instant::now(),
-                monitor_demand,
-            );
+        } else if let Some(monitor) = simulated_monitor.as_mut() {
+            let frames = monitor.poll(&control.borrow(), durable.project(), monitor_demand);
             for (tap, bytes) in frames {
                 publish_monitor_frame(&mut peers, tap, &bytes);
             }
