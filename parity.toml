@@ -314,7 +314,9 @@ paths = ["crates/media/fm-replay/tests/event_capture.rs"]
 commands = ["cargo test -p fm-replay --test event_capture"]
 [[tests]]
 id = "accept-or-013"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-replay/tests/highlight_reel_export.rs"]
+commands = ["cargo test -p fm-replay --test highlight_reel_export"]
 [[tests]]
 id = "accept-or-014"
 state = "present"

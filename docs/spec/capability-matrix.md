@@ -91,7 +91,7 @@ Total: 103 features. Status: planned=96, blocked=7. Priority: P0=24, P1=70, P2=9
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
 | OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (planned) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
-| OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (planned) |
+| OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (present) |
 | OR-014 | P1 | 7 | planned | replay-guests | accept-or-014 (present) |
 | OR-015 | P1 | 5 | planned | graphics-data-automation-plugins | accept-or-015 (planned) |
 | OR-016 | P2 | 8 | planned | codecs-network-recording | accept-or-016 (planned) |
@@ -199,7 +199,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
 | OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (planned) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
-| OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (planned) |
+| OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (present) |
 | OR-014 | P1 | 7 | planned | replay-guests | accept-or-014 (present) |
 | OR-015 | P1 | 5 | planned | graphics-data-automation-plugins | accept-or-015 (planned) |
 | OR-016 | P2 | 8 | planned | codecs-network-recording | accept-or-016 (planned) |
@@ -307,7 +307,7 @@ Total: 101 features. Status: planned=94, blocked=7. Priority: P0=24, P1=70, P2=7
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
 | OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (planned) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
-| OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (planned) |
+| OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (present) |
 | OR-014 | P1 | 7 | planned | replay-guests | accept-or-014 (present) |
 | OR-015 | P1 | 5 | planned | graphics-data-automation-plugins | accept-or-015 (planned) |
 | OR-016 | P2 | 8 | planned | codecs-network-recording | accept-or-016 (planned) |
@@ -399,7 +399,7 @@ Total: 4 features. Status: planned=4. Priority: P1=4.
 |---|---|---|---|---|---|
 | OR-004 | P1 | 4 | planned | codecs-network-recording | accept-or-004 (present) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
-| OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (planned) |
+| OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (present) |
 | OR-014 | P1 | 7 | planned | replay-guests | accept-or-014 (present) |
 
 ## vendor-certified
