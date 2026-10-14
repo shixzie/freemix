@@ -47,6 +47,7 @@ mod overlay_status;
 mod overlays;
 mod panels;
 mod playlist;
+mod preferences;
 mod stinger_config;
 mod stream_control;
 mod theme;
@@ -76,6 +77,7 @@ pub use playlist::{
     row_take as playlist_row_take, timecode,
     transport_availability as playlist_transport_availability,
 };
+pub use preferences::Appearance;
 pub use stinger_config::{
     default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
     stinger_remove_intent, stinger_setup_block_reason,
@@ -84,7 +86,7 @@ pub use stream_control::{StreamAction, stream_action, stream_command_pending};
 pub use titles::TitleUpdate;
 
 use panels::SideTab;
-use theme::{BORDER, GRAPHITE, PANEL};
+use theme::{border_color, graphite_color, panel_color};
 
 const NARROW_MONITOR_WIDTH: f32 = 700.0;
 const SIDE_PANEL_WIDTH: f32 = 370.0;
@@ -754,7 +756,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 13] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 16] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -832,6 +834,25 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 13] = [
         group: ShortcutGroup::Console,
         keys: "Esc",
         action: Msg::ShortcutCloseDialog.en(),
+        key: None,
+    },
+    // Handled by [`preferences::preference_key`] in every connection state.
+    ShortcutEntry {
+        group: ShortcutGroup::Console,
+        keys: preferences::PREFERENCES_SHORTCUT,
+        action: Msg::ShortcutPreferences.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Console,
+        keys: preferences::UI_SCALE_SHORTCUT,
+        action: Msg::ShortcutUiScale.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Console,
+        keys: preferences::UI_SCALE_RESET_SHORTCUT,
+        action: Msg::ShortcutUiScaleReset.en(),
         key: None,
     },
 ];
@@ -1026,6 +1047,7 @@ pub const fn tally_state(input: InputId, switcher: SwitcherState) -> TallyState 
 }
 
 /// Stateful controller for the pure studio presentation.
+#[allow(clippy::struct_excessive_bools)] // each bool is one independent dialog or drag state
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StudioShell {
     transition_duration_frames: u32,
@@ -1057,6 +1079,12 @@ pub struct StudioShell {
     health: health::HealthTracker,
     /// Whether the side panel's edge was being dragged last frame.
     side_panel_resizing: bool,
+    /// UI scale and contrast; local to this console.
+    appearance: preferences::Appearance,
+    /// The locale "Reset to defaults" returns to.
+    default_locale: Locale,
+    /// Whether the Preferences window is open.
+    show_preferences: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1212,6 +1240,7 @@ impl StudioShell {
     fn toggle_help_on_key(&mut self, ui: &mut Ui) {
         let context = ui.ctx().clone();
         let other_owner = self.show_about
+            || self.show_preferences
             || self.add_input.is_some()
             || self.remove_input.is_some()
             || (!self.show_shortcuts && egui::Popup::is_any_open(&context));
@@ -1246,6 +1275,7 @@ impl StudioShell {
     fn console_keys_blocked(&self, context: &egui::Context) -> bool {
         self.show_shortcuts
             || self.show_about
+            || self.show_preferences
             || self.add_input.is_some()
             || self.remove_input.is_some()
             || egui::Popup::is_any_open(context)
@@ -1287,7 +1317,9 @@ impl StudioShell {
     /// The UI must belong to an active `egui` pass, as is customary for
     /// immediate-mode drawing.
     pub fn draw(&mut self, ui: &mut Ui, state: &StudioUiState) -> Vec<StudioIntent> {
-        theme::apply_console_visuals(ui.ctx());
+        self.handle_preference_keys(ui);
+        theme::apply_console_visuals(ui.ctx(), self.appearance.high_contrast);
+        self.apply_ui_scale(ui.ctx());
         self.apply_locale(ui.ctx());
         self.monitor_textures.sync(ui.ctx(), &state.monitor_images);
         self.canvas = monitors::canvas_shape(&state.monitor_images, self.canvas);
@@ -1320,15 +1352,15 @@ impl StudioShell {
         self.toasts.tick(dt_ms);
         self.observe_toasts(state, dt_ms);
         let bar_frame = Frame::new()
-            .fill(PANEL)
-            .stroke(Stroke::new(1.0, BORDER))
+            .fill(panel_color())
+            .stroke(Stroke::new(1.0, border_color()))
             .inner_margin(Margin::symmetric(14, 0));
         Panel::top("studio-menu-bar")
             .exact_size(26.0)
             .frame(
                 Frame::new()
-                    .fill(theme::GRAPHITE)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .fill(theme::graphite_color())
+                    .stroke(Stroke::new(1.0, border_color()))
                     .inner_margin(Margin::symmetric(8, 0)),
             )
             .show(ui, |ui| {
@@ -1352,7 +1384,11 @@ impl StudioShell {
             self.draw_side_panel_region(ui, state, &mut intents);
         }
         let central = CentralPanel::default()
-            .frame(Frame::new().fill(GRAPHITE).inner_margin(Margin::same(12)))
+            .frame(
+                Frame::new()
+                    .fill(graphite_color())
+                    .inner_margin(Margin::same(12)),
+            )
             .show(ui, |ui| {
                 // Tall canvases may grow their wells into about half the
                 // console height; 16:9 wells always fill their width.
@@ -1386,8 +1422,10 @@ impl StudioShell {
             });
         self.draw_toasts(ui.ctx(), central.response.rect);
         self.draw_help_windows(ui.ctx(), state);
+        self.draw_preferences_window(ui.ctx());
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
         self.track_catalogue_intents(ui.ctx(), state, &intents);
+        theme::paint_focus_ring(ui.ctx());
         intents
     }
 
@@ -1411,8 +1449,8 @@ impl StudioShell {
             .max_size(max_side)
             .frame(
                 Frame::new()
-                    .fill(PANEL)
-                    .stroke(Stroke::new(1.0, BORDER))
+                    .fill(panel_color())
+                    .stroke(Stroke::new(1.0, border_color()))
                     .inner_margin(Margin::same(10)),
             )
             .show(ui, |ui| self.draw_side_panel(ui, state, intents));
@@ -1641,6 +1679,9 @@ impl Default for StudioShell {
             playlist: playlist::PlaylistPanel::default(),
             health: health::HealthTracker::default(),
             side_panel_resizing: false,
+            appearance: preferences::Appearance::default(),
+            default_locale: Locale::ENGLISH,
+            show_preferences: false,
         }
     }
 }
@@ -1663,7 +1704,7 @@ mod tests {
         recording_status_label, stinger_slot_presentation, stinger_slot_state, stream_row_text,
         streams_show_none_configured,
     };
-    use crate::theme::{AMBER, ERROR, MUTED, PREVIEW, routing_color};
+    use crate::theme::{AMBER, ERROR, PREVIEW, muted_color, routing_color};
     use crate::transitions::{desired_manual_position, manual_transition_label};
 
     fn input(value: u128) -> InputId {
@@ -2163,7 +2204,7 @@ mod tests {
             .iter()
             .filter(|entry| entry.group == ShortcutGroup::Console)
             .collect();
-        assert_eq!(console.len(), 2);
+        assert_eq!(console.len(), 5);
         assert_eq!(console[0].keys, Msg::KeyHelp.en());
         assert!(console.iter().all(|entry| entry.key.is_none()));
         // Every group has entries, and every entry's group is drawn.
@@ -2227,7 +2268,10 @@ mod tests {
         assert_eq!(preview.realized, (input(2), "Camera B".to_owned()));
         assert_eq!(program.desired, (input(3), "Graphics".to_owned()));
         assert_eq!(program.realized, (input(1), "Camera A".to_owned()));
-        assert_eq!(routing_color(preview.desired.0, preview.realized.0), MUTED);
+        assert_eq!(
+            routing_color(preview.desired.0, preview.realized.0),
+            muted_color()
+        );
         assert_eq!(routing_color(program.desired.0, program.realized.0), AMBER);
     }
 
@@ -2983,10 +3027,15 @@ mod tests {
             (
                 StingerSlotState::Unavailable,
                 "STATE UNAVAILABLE",
-                MUTED,
+                muted_color(),
                 false,
             ),
-            (StingerSlotState::Unconfigured, "UNCONFIGURED", MUTED, false),
+            (
+                StingerSlotState::Unconfigured,
+                "UNCONFIGURED",
+                muted_color(),
+                false,
+            ),
             (
                 StingerSlotState::Readiness(StingerReadiness::NotRequested),
                 "NOT REQUESTED",

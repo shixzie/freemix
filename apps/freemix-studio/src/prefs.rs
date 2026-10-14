@@ -1,6 +1,6 @@
 //! Local console preferences that survive a restart: the UI language, the
-//! top-bar clock, and the panel layout (which regions are shown and the
-//! side panel width).
+//! top-bar clock, the UI scale and high-contrast theme, and the panel
+//! layout (which regions are shown and the side panel width).
 //!
 //! The file is plain `key = value` text in the platform configuration
 //! directory (`$XDG_CONFIG_HOME/freemix/studio.conf`, else
@@ -13,7 +13,7 @@
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
-use fm_ui_egui::ConsoleLayout;
+use fm_ui_egui::{Appearance, ConsoleLayout};
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
 /// Environment variable naming the preferences file explicitly.
@@ -28,6 +28,10 @@ pub struct SavedPreferences {
     pub hour_cycle: Option<HourCycle>,
     /// The panel layout; `None` when the file has no layout keys.
     pub layout: Option<ConsoleLayout>,
+    /// The UI scale in percent, clamped to the supported range.
+    pub ui_scale_percent: Option<u16>,
+    /// Whether the high-contrast theme is on.
+    pub high_contrast: Option<bool>,
 }
 
 impl SavedPreferences {
@@ -38,6 +42,18 @@ impl SavedPreferences {
             language: Some(locale.language),
             hour_cycle: Some(locale.hour_cycle),
             layout: None,
+            ui_scale_percent: None,
+            high_contrast: None,
+        }
+    }
+
+    /// The appearance these preferences select, defaults filling the gaps.
+    #[must_use]
+    pub fn appearance(self) -> Appearance {
+        let default = Appearance::default();
+        Appearance {
+            ui_scale_percent: self.ui_scale_percent.unwrap_or(default.ui_scale_percent),
+            high_contrast: self.high_contrast.unwrap_or(default.high_contrast),
         }
     }
 
@@ -58,6 +74,14 @@ impl SavedPreferences {
             match key.trim() {
                 "language" => saved.language = Language::from_tag(value).or(saved.language),
                 "clock" => saved.hour_cycle = HourCycle::from_flag(value).or(saved.hour_cycle),
+                "ui.scale" => {
+                    saved.ui_scale_percent =
+                        Appearance::parse_ui_scale(value).or(saved.ui_scale_percent);
+                }
+                "ui.high_contrast" => {
+                    saved.high_contrast =
+                        Appearance::parse_high_contrast(value).or(saved.high_contrast);
+                }
                 key => {
                     let mut layout = saved.layout.unwrap_or_default();
                     if layout.apply_preference(key, value) {
@@ -82,6 +106,18 @@ impl SavedPreferences {
             text.push_str(match hour_cycle {
                 HourCycle::H23 => "clock = 24h\n",
                 HourCycle::H12 => "clock = 12h\n",
+            });
+        }
+        if let Some(percent) = self.ui_scale_percent {
+            text.push_str("ui.scale = ");
+            text.push_str(&Appearance::clamp_ui_scale(i64::from(percent)).to_string());
+            text.push('\n');
+        }
+        if let Some(high_contrast) = self.high_contrast {
+            text.push_str(if high_contrast {
+                "ui.high_contrast = on\n"
+            } else {
+                "ui.high_contrast = off\n"
             });
         }
         if let Some(layout) = self.layout {
@@ -154,11 +190,12 @@ pub fn preferences_path(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf>
     Some(directory.join(FILE_NAME))
 }
 
-/// Saves the console locale and layout whenever the operator changes them.
+/// Saves the console preferences whenever the operator changes them.
 ///
-/// Each preference is written only once the operator changes it, so a
-/// `--lang` or `--clock` override for one session is never written back
-/// when only the layout changes, and vice versa.
+/// Each preference is written only once the operator changes that very
+/// preference, so a `--lang` or `--clock` override for one session is never
+/// written back when the operator changes the clock, the layout, the UI
+/// scale, or the theme, and vice versa.
 #[derive(Debug)]
 pub struct PreferenceStore {
     path: Option<PathBuf>,
@@ -168,46 +205,68 @@ pub struct PreferenceStore {
     known_locale: Locale,
     /// The layout in effect at startup or last saved.
     known_layout: ConsoleLayout,
+    /// The appearance in effect at startup or last saved.
+    known_appearance: Appearance,
 }
 
 impl PreferenceStore {
     /// A store for `path` whose file held `saved` and whose console started
-    /// in `locale` with `layout`; nothing is written until either changes.
+    /// in `locale` with `layout` and `appearance`; nothing is written until
+    /// one of them changes.
     #[must_use]
     pub const fn new(
         path: Option<PathBuf>,
         saved: SavedPreferences,
         locale: Locale,
         layout: ConsoleLayout,
+        appearance: Appearance,
     ) -> Self {
         Self {
             path,
             saved,
             known_locale: locale,
             known_layout: layout,
+            known_appearance: appearance,
         }
     }
 
-    /// Saves `locale` and `layout` when either differs from the last known
-    /// one. Returns the write error, if any; a failed save is retried on
-    /// the next change.
+    /// Saves whichever of `locale`, `layout`, and `appearance` differ from
+    /// the last known ones. Returns the write error, if any; a failed save
+    /// is retried on the next change.
     ///
     /// # Errors
     ///
     /// Returns the error from [`SavedPreferences::save`].
-    pub fn observe(&mut self, locale: Locale, layout: ConsoleLayout) -> io::Result<()> {
-        if locale == self.known_locale && layout == self.known_layout {
+    pub fn observe(
+        &mut self,
+        locale: Locale,
+        layout: ConsoleLayout,
+        appearance: Appearance,
+    ) -> io::Result<()> {
+        if locale == self.known_locale
+            && layout == self.known_layout
+            && appearance == self.known_appearance
+        {
             return Ok(());
         }
-        if locale != self.known_locale {
-            self.known_locale = locale;
+        if locale.language != self.known_locale.language {
             self.saved.language = Some(locale.language);
+        }
+        if locale.hour_cycle != self.known_locale.hour_cycle {
             self.saved.hour_cycle = Some(locale.hour_cycle);
         }
+        self.known_locale = locale;
         if layout != self.known_layout {
             self.known_layout = layout;
             self.saved.layout = Some(layout);
         }
+        if appearance.ui_scale_percent != self.known_appearance.ui_scale_percent {
+            self.saved.ui_scale_percent = Some(appearance.ui_scale_percent);
+        }
+        if appearance.high_contrast != self.known_appearance.high_contrast {
+            self.saved.high_contrast = Some(appearance.high_contrast);
+        }
+        self.known_appearance = appearance;
         match &self.path {
             Some(path) => self.saved.save(path),
             None => Ok(()),

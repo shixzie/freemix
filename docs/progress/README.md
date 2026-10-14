@@ -269,7 +269,7 @@ the counts and lock chips.
 | `studio-console-fade-to-black.png` | 1920x1080 after `FTB` (with REC 2 recording and O1 on air): the lit red `FTB ON` key, the realized status line `PROGRAM BLACK` with its full red level bar, and the `FTB` badge on the Program canvas. |
 | `studio-console-streams.png` | 1920x1080 after clicking `START` on the RTMP Backup row: both targets desired on with amber `NOT LIVE` chips and amber-outlined `STOP` keys, and the Output menu with `NOT LIVE` beside both Stop items and `RECORDING` beside Stop recorder 2. |
 | `studio-console-stingers.png` | 1920x1080, Stingers tab after choosing Playback Clip in the Configure media picker and clicking `ASSIGN` for S1: the S1 card lit green `READY` with its media name, the Configure card's green `READY` chip, enabled `CLEAR`, and the replicated cut point (15 fr), preload, audio, and fallback. |
-| `studio-console-titles.png` | 1920x1080, Titles tab (Protocol 2.24) listing Lower Third (taken to O1, red `ON AIR` badge) and Score Bug (`OFF AIR`); the Lower Third editor with text, colour (swatch + `#RRGGBBAA`), and number fields, the edited Role and Bar colour fields marked `EDITED` with per-field `Discard` keys and an accent marker, the `PREVIEWED` frame showing the draft values to air, the `CHANNEL` picker, `UPDATE LIVE` and `OFF AIR` keys, and the disabled `TAKE` tooltip `Unavailable: the title is on air`. |
+| `studio-console-titles.png` | 1920x1080 `--role admin`, Titles tab (Protocol 2.24) listing Lower Third (taken to O1, red `ON AIR` badge, its bar composited into the simulated Program frame) and Score Bug (`OFF AIR`); the Lower Third editor with text, colour (swatch + `#RRGGBBAA`), and number fields, the edited Role and Bar colour fields marked `EDITED` with per-field `Discard` keys and an accent marker, the `PREVIEWED` frame showing the draft values to air, the `CHANNEL` picker, `UPDATE LIVE` and `OFF AIR` keys, and the disabled `TAKE` tooltip `Unavailable: the title is on air`. |
 | `studio-console-playlist.png` | 1920x1080 `--role admin`, Playlist tab (Protocol 2.26) after Studio restarted against a playlist already running in the simulated daemon (the late-join `playlist_state`): the `PLAYING` chip, the red `REMAINING` countdown in timecode with `of 00:00:45:00`, `ON AIR · Guest Remote` and the green `Next: Main Scene` line, loop `ALL`, the `START`/`STOP`/`PAUSE`/`PREVIOUS`/`NEXT` keys (Start disabled while running), five entries with transition and monospace duration, entry 04 lit red `ON AIR` with its row countdown, entry 05 lit green `NEXT`, the disabled entry 03 marked `SKIPPED`, and the New entry form disabled with "Unavailable: the playlist is running; stop it to change the list". |
 | `studio-console-top.png` | The default 1600x940 window, idle: the top-bar padlock (`UNLOCKED`) with disabled Undo/Redo keys (the operator session lacks `edit_project`), both recorder rows `STOPPED` with neutral `START` keys, overlays collapsed to one row per channel. |
 | `studio-console-stopped.png` | The compact 1280x800 layout: the side panel narrows to 320 px so the monitors keep their width; the input bank header keeps `7 SOURCES` and drops the gesture hint; the mixer scrolls inside its card and the Master strip stays pinned, its short scale dropping the crowded `-48` label. |
@@ -300,12 +300,50 @@ the counts and lock chips.
 | `studio-console-overlay-details.png` | 1920x1080 with O1 on air and its card open: `TAKE` / `TAKE OFF`, the UPDATE/queue/transition/position/border keys, OUTPUTS, and the localized diagnostic line `O1 · desired: Camera 2 Close, active, opacity 255, queue 0, full, no border · confirmed: …` naming the source instead of its raw id. |
 | `studio-console-spanish-transition.png` | 1920x1080 `--lang es` after manual `FUNDIDO` and a T-bar drag: the Spanish status card, `COMPLETAR`/`CANCELAR`, and the hover tooltip with requested/realized position. |
 | `studio-console-spanish-stingers.png` | 1920x1080 `--lang es` with Fade to Black on (`PROGRAMA EN NEGRO`) and the Stingers tab: the slot cards, the Configure card (`ASIGNAR`/`VACIAR`, cut point in `fr`, preload, audio, fallback), and the S4 card tooltip. |
-| `studio-console-spanish-titles.png` | 1920x1080 `--lang es`, Titles tab after a second Studio (`--connect`) changed the same Lower Third: the `CONFLICTO` banner, the `MÍO`/`SUYO` comparison for Name, `REBASAR` and `DESCARTAR TODO`, and the disabled `ACTUALIZAR EN VIVO` tooltip naming the server-side change. |
+| `studio-console-spanish-titles.png` | 1920x1080 `--lang es --role admin`, Titles tab after a second Studio (`--connect`) sent `UPDATE LIVE` with Name "M. Ruiz" while this console held the draft "Marta Ruiz López": the `CONFLICTO` banner, the `MÍO`/`SUYO` comparison for Name, `REBASAR` and `DESCARTAR TODO`, and the disabled `ACTUALIZAR EN VIVO` tooltip naming the server-side change. |
 | `studio-console-spanish-playlist.png` | 1920x1080 `--lang es --role admin`, the Lista tab after `remote-playlist … pause` and a Studio restart: `EN PAUSA`, the amber `RESTANTE` countdown held, `REANUDAR` lit amber in place of Pausa, `AL AIRE`/`SIGUIENTE`/`OMITIDO` row badges, and the Spanish editor and unavailable reason. |
 | `studio-console-spanish-compact.png` | 1280x800 `--lang es` with the Stingers tab: long Spanish labels and details ellipsize inside fixed-width keys and chips instead of overflowing; tooltips carry the full text. |
 | `studio-console-spanish-add-input.png` | 1920x1080 `--lang es --role admin`: the Añadir entrada dialog with `COLOR SÓLIDO`, the suggested name "Color sólido 1", the amber preset, and the preview tagged `ENTRADA 8` / `SIN AUDIO`. |
 | `studio-console-spanish-remove-input.png` | The Quitar entrada confirmation for "Color sólido 1" (entrada 8, posición 8) with the Spanish warning and the red `QUITAR` key. |
 | `studio-console-spanish-reconnecting.png` | 1600x940 `--lang es --connect` with no daemon: the Spanish Reconectando card (attempt, retry delay, last error, disabled-controls footer). |
+| `studio-console-preferences.png` | 1920x1080, File › Preferences… (or Ctrl+,) after choosing the 12-hour clock (the top-bar clock reads `10:20:35 PM`) and pressing Tab eight times: Language (each language named in itself), Clock, Display with the UI scale keys (`90%` to `150%`, `100%` selected) and the keyboard focus ring on `125%`, the High-contrast theme checkbox, the note that the choices live in `studio.conf` and that `--lang`/`--clock` win for their session, and the enabled `Reset to defaults` and `Done` keys. |
+| `studio-console-high-contrast.png` | 1920x1080 with `ui.high_contrast = on` in `studio.conf` (REC 2 recording, O1 on air): black and near-black surfaces, white and light-grey text, and light borders around every card and key, while the tally and status hues (red Program, `RECORDING`, `ON AIR`, green Preview, amber `NOT LIVE`) are unchanged. |
+
+UI round 9 added a Preferences window and a high-contrast theme, and
+audited keyboard access. File › Preferences… (Ctrl+, or Cmd+, anywhere a
+text field does not have the keyboard) sets the language, the 12/24-hour
+clock, the UI scale (90, 100, 110, 125, or 150 %, applied at once through
+egui's zoom; Ctrl+= / Ctrl+- step through those scales and Ctrl+0 returns to
+100 %, with a toast naming the new scale), and the high-contrast theme;
+`Reset to defaults` returns to the system language, the 24-hour clock, 100 %,
+and the standard theme. Studio keeps the choices in `studio.conf`
+(`ui.scale = 125`, `ui.high_contrast = on`; a hand-edited scale is clamped
+into 90-150 %, and unparsable values are ignored) and now writes each
+preference only when that very preference changes, so a `--lang` or
+`--clock` override is never written back when the operator changes the
+clock, the scale, the theme, or the layout. The high-contrast palette uses
+black and near-black surfaces, white and light-grey text, and light borders;
+a unit test computes the WCAG contrast ratio of every text colour against
+every surface (at least 4.5:1) and of borders and the focus ring (at least
+3:1). Tally and status hues are shared by both palettes. Every focused
+button, key, and field now shows a 2 px accent focus ring (also on the
+custom-painted console keys whose own fill hid egui's focused style);
+buttons take focus only from Tab, so a click never leaves a ring. Dialog
+close keys are 24 x 24 targets that come last in the Tab order (Keyboard
+shortcuts, About, Add input, Remove input, Preferences); Add input tabs
+Cancel then Add and Remove input tabs Cancel then Remove, left to right as
+drawn, and Remove input opens with Cancel focused so a stray Enter never
+removes an input; an overlay row tabs `TAKE` then `TAKE OFF`; the toast
+dismiss key is a 24 x 24 target; and the overlay disclosure triangle has a
+tooltip. The keyboard reference's Console group lists `Ctrl+,`,
+`Ctrl+= · Ctrl+-`, and `Ctrl+0`. Every new string is a catalog key with
+Spanish. This round regenerated `-monitors`, `-overview`,
+`-manual-transition`, `-fade-to-black`, `-streams`, `-stingers`,
+`-titles`, `-recording`, `-menu`, `-mixer`, `-2560`, `-portrait`,
+`-input-menu`, `-overlay-details`, `-spanish-menu`,
+`-spanish-input-refused`, and `-spanish-titles`, and added `-preferences`
+and `-high-contrast`. The captures from round 8 predate the focus ring, the
+24 x 24 dialog close keys, and Remove input's focused Cancel key.
 
 UI round 8 added the status bar health strip, the `?`/F1 keyboard reference
 with its Console group, a remembered panel layout (shown panels and the
@@ -318,12 +356,7 @@ captures (`-add-input`, `-add-input-bars`, `-input-added`, `-remove-input`,
 and `-spanish-transition`, `-spanish-stingers`, `-spanish-compact`,
 `-spanish-add-input`, `-spanish-remove-input`, and `-spanish-reconnecting`,
 and added `-health-strip`, `-layout-restored`, and `-spanish-shortcuts`.
-`-monitors`, `-overview`, `-manual-transition`, `-fade-to-black`, `-streams`,
-`-stingers`, `-titles`, `-recording`, `-menu`, `-mixer`, `-2560`,
-`-portrait`, `-input-menu`, `-overlay-details`, `-spanish-menu`,
-`-spanish-input-refused`, and `-spanish-titles` are from round 7 or the
-Titles round: they still show the taller overlay rows and a status bar
-without the health strip.
+Those captures are from round 8; round 9 regenerated the rest (see above).
 
 UI round 7 reviewed every capture as an operator would. The main fixes:
 red is reserved for on air (neutral `START`, tile `CUT`, transition `CUT`,
@@ -494,6 +527,35 @@ not follow strip gain or mute. The Spanish refusal capture runs
 `--lang es --role admin`, right-clicks Camera 1 Wide, chooses `Quitar…`, and
 confirms with `QUITAR`; the overlay-details capture clicks O1 `TAKE` and
 then O1's disclosure triangle.
+
+The titles captures use the demo show with input 5 renamed "Colour Fill"
+and two title inputs imported from `.fmtitle` sources (schema 28) drawn with
+DejaVu Sans: `lower-third.fmtitle` (fields Name, Role, Bar colour, Score; a
+bar whose fill follows Bar colour, with the Name and Role text on it) and
+`score-bug.fmtitle` (Home, Away, Home score, Away score):
+
+```sh
+D=/usr/share/fonts/truetype/dejavu
+freemix-cli rename demo.freemix 5 "Colour Fill"
+freemix-cli title-input-add demo.freemix --id 8 --name "Lower Third" \
+    --template lower-third.fmtitle \
+    --font "DejaVu Sans=$D/DejaVuSans.ttf" --font "DejaVu Sans Bold=$D/DejaVuSans-Bold.ttf"
+freemix-cli title-input-add demo.freemix --id 9 --name "Score Bug" \
+    --template score-bug.fmtitle --font "DejaVu Sans Bold=$D/DejaVuSans-Bold.ttf"
+```
+
+Both run Studio with `--role admin`. The English capture clicks `TITLES`,
+`PREVIEW TITLE`, and `TAKE`, types a new Role and Bar colour, previews again,
+and hovers `TAKE`. The Spanish capture takes the title the same way, types a
+Name draft, then starts a second Studio with `--connect 127.0.0.1:7000
+--project-id <the project id in project.json> --role admin` (with its own
+`FREEMIX_STUDIO_PREFS`), changes Name there, clicks `UPDATE LIVE`, closes it,
+and hovers `ACTUALIZAR EN VIVO` in the first. The Preferences capture presses
+Ctrl+, (after `xdotool windowfocus`), clicks `12-hour (AM/PM)`, and presses
+Tab eight times; the high-contrast capture writes `ui.high_contrast = on` to
+the scratch `FREEMIX_STUDIO_PREFS` file before launching Studio, then starts
+REC 2 and takes O1. Typing into Studio's fields with `xdotool type` also needs
+`xdotool windowfocus` first.
 
 Software Vulkan is slow; allow roughly ten seconds after the window maps
 before capturing. The overview's overlay take was a click on O1 `TAKE` in the

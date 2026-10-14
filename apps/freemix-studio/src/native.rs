@@ -220,7 +220,8 @@ struct StudioApp {
     osc: Option<OscReceiver>,
     osc_rejected: u64,
     osc_notice: Option<String>,
-    /// Saves View › Language and the clock choice for the next launch.
+    /// Saves the language, clock, layout, UI scale, and theme for the next
+    /// launch.
     preferences: PreferenceStore,
     /// Why the preferences could not be read or saved, shown as a notice.
     preferences_notice: Option<String>,
@@ -250,9 +251,17 @@ impl StudioApp {
         );
         let locale = config.ui.locale_with(saved, env);
         shell.set_locale(locale);
+        // Preferences › Reset to defaults returns to the language the
+        // environment selects, as if nothing were saved or flagged.
+        shell.set_default_locale(crate::UiPreferences::default().locale(env));
         let layout = saved.layout.unwrap_or_default();
         shell.set_layout(layout);
-        let preferences = PreferenceStore::new(path, saved, locale, layout);
+        shell.set_appearance(saved.appearance());
+        // The first frame already draws at the saved scale.
+        creation_context
+            .egui_ctx
+            .set_zoom_factor(shell.appearance().zoom_factor());
+        let preferences = PreferenceStore::new(path, saved, locale, layout, shell.appearance());
         let (request_sender, request_receiver) = sync_channel(REQUEST_CAPACITY);
         let repaint_context = creation_context.egui_ctx.clone();
         let (publisher, updates) = state_mailbox(repaint_context);
@@ -419,10 +428,11 @@ impl eframe::App for StudioApp {
         for intent in self.shell.draw(ui, &self.state) {
             self.enqueue_intent(intent);
         }
-        if let Err(error) = self
-            .preferences
-            .observe(self.shell.locale(), self.shell.layout())
-        {
+        if let Err(error) = self.preferences.observe(
+            self.shell.locale(),
+            self.shell.layout(),
+            self.shell.appearance(),
+        ) {
             self.preferences_notice = Some(format!("Console preferences not saved: {error}"));
         }
     }
@@ -2952,6 +2962,7 @@ mod tests {
                 SavedPreferences::default(),
                 fm_ui_model::i18n::Locale::ENGLISH,
                 fm_ui_egui::ConsoleLayout::default(),
+                fm_ui_egui::Appearance::default(),
             ),
             preferences_notice: None,
         };
@@ -4685,6 +4696,7 @@ mod tests {
                 SavedPreferences::default(),
                 fm_ui_model::i18n::Locale::ENGLISH,
                 fm_ui_egui::ConsoleLayout::default(),
+                fm_ui_egui::Appearance::default(),
             ),
             preferences_notice: None,
         };

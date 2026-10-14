@@ -21,7 +21,8 @@ use crate::panels::{
 };
 use crate::stream_control::{stream_action_text, stream_unavailable_reason};
 use crate::theme::{
-    ACCENT, MUTED, TEXT, TEXT_DIM, Tone, ellipsize, mono, paint_lamp, section_label,
+    Tone, accent_color, ellipsize, mono, muted_color, paint_lamp, section_label, text_color,
+    text_dim_color,
 };
 use crate::{
     HistoryVerb, REDO_SHORTCUT, UNDO_SHORTCUT, edit_history_availability, input_edit_lock_reason,
@@ -168,7 +169,7 @@ impl ConsoleLayout {
 fn item(ui: &mut Ui, enabled: bool, label: &str, shortcut: Option<&str>, reason: &str) -> bool {
     let mut button = Button::new(label);
     if let Some(shortcut) = shortcut {
-        button = button.shortcut_text(RichText::new(shortcut).color(MUTED));
+        button = button.shortcut_text(RichText::new(shortcut).color(muted_color()));
     }
     let l = l10n::locale(ui.ctx());
     ui.add_enabled(enabled, button)
@@ -262,15 +263,16 @@ impl StudioShell {
         });
     }
 
-    #[allow(clippy::unused_self)] // keeps every menu a shell method
     fn file_menu(&mut self, ui: &mut Ui, state: &StudioUiState) {
         let l = self.locale;
         ui.set_min_width(240.0);
         match &state.view {
             Some(view) => {
                 heading(ui, l.text(Msg::FileShowHeading));
-                ui.label(RichText::new(ellipsize(&view.show_name, MENU_LABEL_CHARS)).color(TEXT))
-                    .on_hover_text(&view.show_name);
+                ui.label(
+                    RichText::new(ellipsize(&view.show_name, MENU_LABEL_CHARS)).color(text_color()),
+                )
+                .on_hover_text(&view.show_name);
                 ui.label(
                     mono(l.format(
                         Msg::FileRevisionInputs,
@@ -280,18 +282,28 @@ impl StudioShell {
                         ],
                     ))
                     .size(11.0)
-                    .color(TEXT_DIM),
+                    .color(text_dim_color()),
                 );
             }
             None => {
-                ui.label(RichText::new(l.text(Msg::NoSynchronizedShow)).color(MUTED));
+                ui.label(RichText::new(l.text(Msg::NoSynchronizedShow)).color(muted_color()));
             }
         }
         ui.label(
             RichText::new(l.text(Msg::FileSavedByDaemon))
                 .size(10.5)
-                .color(MUTED),
+                .color(muted_color()),
         );
+        ui.separator();
+        if ui
+            .add(Button::new(l.text(Msg::MenuPreferences)).shortcut_text(
+                RichText::new(crate::preferences::PREFERENCES_SHORTCUT).color(muted_color()),
+            ))
+            .on_hover_text(l.text(Msg::MenuPreferencesHover))
+            .clicked()
+        {
+            self.show_preferences = true;
+        }
         ui.separator();
         if ui
             .add(Button::new(l.text(Msg::FileQuit)))
@@ -309,6 +321,7 @@ impl StudioShell {
         self.preview_input_menu_items(ui, state, intents);
     }
 
+    #[allow(clippy::too_many_lines)] // one menu group, one immediate-mode region
     fn preview_input_menu_items(
         &mut self,
         ui: &mut Ui,
@@ -337,7 +350,11 @@ impl StudioShell {
                 || l.text(Msg::None).to_owned(),
                 |name| ellipsize(name, MENU_LABEL_CHARS),
             ))
-            .color(if name.is_some() { TEXT } else { MUTED }),
+            .color(if name.is_some() {
+                text_color()
+            } else {
+                muted_color()
+            }),
         );
         let no_preview = Msg::ReasonNoPreviewInput.en();
         let locked = lock_reason.is_some();
@@ -461,7 +478,7 @@ impl StudioShell {
                 egui::Label::new(
                     RichText::new(l.text(Msg::ViewLayoutRemembered))
                         .size(10.0)
-                        .color(MUTED),
+                        .color(muted_color()),
                 )
                 .wrap(),
             );
@@ -911,7 +928,7 @@ impl StudioShell {
         if ui
             .add(
                 Button::new(l.text(Msg::KeyboardShortcuts))
-                    .shortcut_text(RichText::new(l.text(Msg::KeyHelp)).color(MUTED)),
+                    .shortcut_text(RichText::new(l.text(Msg::KeyHelp)).color(muted_color())),
             )
             .clicked()
         {
@@ -947,7 +964,7 @@ impl StudioShell {
                     ui.label(
                         RichText::new(l.text(Msg::ShortcutsIntro))
                             .size(11.0)
-                            .color(TEXT_DIM),
+                            .color(text_dim_color()),
                     );
                     // Short windows scroll the reference instead of
                     // pushing its footer off screen.
@@ -971,7 +988,10 @@ impl StudioShell {
                                             .filter(|entry| entry.group == group)
                                         {
                                             key_cap(ui, l.tr(entry.keys));
-                                            ui.label(RichText::new(l.tr(entry.action)).color(TEXT));
+                                            ui.label(
+                                                RichText::new(l.tr(entry.action))
+                                                    .color(text_color()),
+                                            );
                                             ui.end_row();
                                         }
                                     });
@@ -982,7 +1002,7 @@ impl StudioShell {
                     ui.label(
                         RichText::new(l.text(Msg::ShortcutsFooter))
                             .size(10.5)
-                            .color(MUTED),
+                            .color(muted_color()),
                     );
                 },
             );
@@ -1008,13 +1028,13 @@ impl StudioShell {
                                 .size(20.0)
                                 .strong()
                                 .extra_letter_spacing(3.0)
-                                .color(ACCENT),
+                                .color(accent_color()),
                         );
                         ui.label(
                             RichText::new("STUDIO")
                                 .size(14.0)
                                 .extra_letter_spacing(2.0)
-                                .color(MUTED),
+                                .color(muted_color()),
                         );
                     });
                     ui.label(
@@ -1022,10 +1042,10 @@ impl StudioShell {
                             Msg::AboutVersion,
                             &[("version", Arg::Str(env!("CARGO_PKG_VERSION")))],
                         ))
-                        .color(TEXT_DIM),
+                        .color(text_dim_color()),
                     );
                     ui.add_space(6.0);
-                    ui.label(RichText::new(l.text(Msg::AboutDescription)).color(TEXT));
+                    ui.label(RichText::new(l.text(Msg::AboutDescription)).color(text_color()));
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(l.format(
@@ -1033,7 +1053,7 @@ impl StudioShell {
                             &[("license", Arg::Str(env!("CARGO_PKG_LICENSE")))],
                         ))
                         .size(11.0)
-                        .color(MUTED),
+                        .color(muted_color()),
                     );
                 },
             );
@@ -1059,27 +1079,37 @@ pub(crate) fn help_modal(
         .backdrop_color(egui::Color32::from_black_alpha(150))
         .frame(
             egui::Frame::new()
-                .fill(crate::theme::GRAPHITE_RAISED)
-                .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_STRONG))
+                .fill(crate::theme::raised_color())
+                .stroke(egui::Stroke::new(1.0, crate::theme::border_strong_color()))
                 .corner_radius(egui::CornerRadius::same(8))
                 .inner_margin(egui::Margin::same(18)),
         )
         .show(context, |ui| {
             ui.set_width(width);
+            // The close key's place is reserved in the title row but the key
+            // is created after the contents, so Tab reaches the dialog's own
+            // fields first and the close key last.
+            let mut close_slot = egui::Rect::NOTHING;
             ui.horizontal(|ui| {
-                ui.label(RichText::new(title).size(16.0).strong().color(TEXT));
+                ui.label(RichText::new(title).size(16.0).strong().color(text_color()));
                 ui.with_layout(l10n::trailing_layout(l), |ui| {
-                    if ui
-                        .add(Button::new(RichText::new("×").color(TEXT_DIM)).frame(false))
-                        .on_hover_text(l.text(Msg::CloseEsc))
-                        .clicked()
-                    {
-                        close = true;
-                    }
+                    close_slot = ui
+                        .allocate_exact_size(
+                            Vec2::splat(crate::theme::MIN_TARGET),
+                            egui::Sense::hover(),
+                        )
+                        .0;
                 });
             });
             ui.separator();
             add_contents(ui);
+            if ui
+                .put(close_slot, crate::theme::close_key(14.0))
+                .on_hover_text(l.text(Msg::CloseEsc))
+                .clicked()
+            {
+                close = true;
+            }
         });
     close || response.should_close()
 }
@@ -1095,7 +1125,7 @@ fn key_cap(ui: &mut Ui, keys: &str) {
                 .layout_no_wrap(
                     keys.to_owned(),
                     egui::FontId::new(11.5, egui::FontFamily::Monospace),
-                    TEXT,
+                    text_color(),
                 )
                 .size()
                 .x
@@ -1104,7 +1134,11 @@ fn key_cap(ui: &mut Ui, keys: &str) {
             rect.height(),
         ),
     );
-    painter.rect_filled(cap, egui::CornerRadius::same(3), crate::theme::WIDGET);
+    painter.rect_filled(
+        cap,
+        egui::CornerRadius::same(3),
+        crate::theme::widget_color(),
+    );
     // A darker bottom lip reads as a physical key.
     painter.rect_filled(
         egui::Rect::from_min_max(egui::pos2(cap.min.x, cap.max.y - 2.0), cap.max),
@@ -1114,12 +1148,12 @@ fn key_cap(ui: &mut Ui, keys: &str) {
             sw: 3,
             se: 3,
         },
-        crate::theme::GRAPHITE,
+        crate::theme::graphite_color(),
     );
     painter.rect_stroke(
         cap,
         egui::CornerRadius::same(3),
-        egui::Stroke::new(1.0, crate::theme::BORDER_STRONG),
+        egui::Stroke::new(1.0, crate::theme::border_strong_color()),
         egui::StrokeKind::Inside,
     );
     painter.text(
@@ -1127,7 +1161,7 @@ fn key_cap(ui: &mut Ui, keys: &str) {
         egui::Align2::CENTER_CENTER,
         keys,
         egui::FontId::new(11.5, egui::FontFamily::Monospace),
-        TEXT,
+        text_color(),
     );
 }
 
@@ -1172,7 +1206,7 @@ fn lockable_item(
                 .color(Tone::Pending.color()),
         );
     } else if let Some(shortcut) = shortcut {
-        button = button.shortcut_text(RichText::new(shortcut).color(MUTED));
+        button = button.shortcut_text(RichText::new(shortcut).color(muted_color()));
     }
     let response = ui.add_enabled(enabled, button);
     let response = match hover {

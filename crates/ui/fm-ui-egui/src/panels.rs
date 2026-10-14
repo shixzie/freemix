@@ -15,8 +15,9 @@ use crate::gating::{Capability, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg, frames};
 use crate::stinger_config::{self, StingerEditor};
 use crate::theme::{
-    ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PREVIEW, TEXT,
-    TEXT_DIM, Tone, WIDGET_HOVER, caption, card, elided, mono, paint_lamp, section_label,
+    AMBER, ERROR, PREVIEW, Tone, accent_color, border_color, border_strong_color, caption, card,
+    elided, graphite_color, mono, muted_color, paint_lamp, raised_color, section_label, text_color,
+    text_dim_color, widget_hover_color,
 };
 use crate::{
     RecordingAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
@@ -72,18 +73,22 @@ impl StudioShell {
                     .size(11.0)
                     .strong()
                     .extra_letter_spacing(1.0)
-                    .color(if selected { TEXT } else { TEXT_DIM });
+                    .color(if selected {
+                        text_color()
+                    } else {
+                        text_dim_color()
+                    });
                 let response = ui.add(
                     Button::new(text)
                         .fill(if selected {
-                            GRAPHITE_RAISED
+                            raised_color()
                         } else {
                             Color32::TRANSPARENT
                         })
                         .stroke(Stroke::new(
                             1.0,
                             if selected {
-                                BORDER
+                                border_color()
                             } else {
                                 Color32::TRANSPARENT
                             },
@@ -95,7 +100,7 @@ impl StudioShell {
                     let rect = response.rect;
                     ui.painter().line_segment(
                         [rect.left_bottom(), rect.right_bottom()],
-                        Stroke::new(2.0, ACCENT),
+                        Stroke::new(2.0, accent_color()),
                     );
                 }
                 if response.clicked() {
@@ -238,16 +243,16 @@ pub(crate) enum StingerSlotState {
     Readiness(StingerReadiness),
 }
 
-pub(crate) const fn stinger_slot_presentation(state: StingerSlotState) -> StingerSlotPresentation {
+pub(crate) fn stinger_slot_presentation(state: StingerSlotState) -> StingerSlotPresentation {
     match state {
         StingerSlotState::Unavailable => StingerSlotPresentation {
             label: Msg::StingerStateUnavailable.en(),
-            color: MUTED,
+            color: muted_color(),
             ready: false,
         },
         StingerSlotState::Unconfigured => StingerSlotPresentation {
             label: Msg::StingerUnconfigured.en(),
-            color: MUTED,
+            color: muted_color(),
             ready: false,
         },
         StingerSlotState::Readiness(StingerReadiness::NotRequested) => StingerSlotPresentation {
@@ -362,7 +367,11 @@ fn draw_stingers(
     ui.add_space(2.0);
     ui.horizontal(|ui| {
         ui.label(section_label(l.text(Msg::Duration)));
-        ui.label(mono(frames(l, duration_frames)).size(11.5).color(TEXT));
+        ui.label(
+            mono(frames(l, duration_frames))
+                .size(11.5)
+                .color(text_color()),
+        );
         ui.add(egui::Label::new(caption(l.text(Msg::StingerDurationShared))).truncate());
     });
 }
@@ -392,19 +401,26 @@ fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardC
         let fill = if fires && response.is_pointer_button_down_on() {
             PREVIEW.gamma_multiply(0.25)
         } else if hovered {
-            WIDGET_HOVER
+            widget_hover_color()
         } else if fires {
             PREVIEW.gamma_multiply(0.10)
         } else {
-            GRAPHITE
+            graphite_color()
         };
         painter.rect_filled(rect, CornerRadius::same(4), fill);
         let stroke = if response.has_focus() {
-            Stroke::new(2.0, ACCENT)
+            Stroke::new(2.0, accent_color())
         } else if card.selected {
-            Stroke::new(1.5, ACCENT.gamma_multiply(0.8))
+            Stroke::new(1.5, accent_color().gamma_multiply(0.8))
         } else if tone == Tone::Idle {
-            Stroke::new(1.0, if hovered { BORDER_STRONG } else { BORDER })
+            Stroke::new(
+                1.0,
+                if hovered {
+                    border_strong_color()
+                } else {
+                    border_color()
+                },
+            )
         } else {
             Stroke::new(
                 1.0,
@@ -418,7 +434,11 @@ fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardC
             Align2::LEFT_CENTER,
             format!("S{}", card.slot),
             FontId::new(13.0, FontFamily::Monospace),
-            if tone == Tone::Idle { TEXT_DIM } else { TEXT },
+            if tone == Tone::Idle {
+                text_dim_color()
+            } else {
+                text_color()
+            },
         );
         let label = elided(
             painter,
@@ -439,9 +459,11 @@ fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardC
         );
         painter.galley(label_pos, label, tone.color());
         let (media, color) = match (card.media, card.state) {
-            (Some(media), _) => (media, TEXT_DIM),
-            (None, StingerSlotState::Unavailable) => (l.text(Msg::StingerStateNotSynced), MUTED),
-            (None, _) => (l.text(Msg::StingerEmptySlot), MUTED),
+            (Some(media), _) => (media, text_dim_color()),
+            (None, StingerSlotState::Unavailable) => {
+                (l.text(Msg::StingerStateNotSynced), muted_color())
+            }
+            (None, _) => (l.text(Msg::StingerEmptySlot), muted_color()),
         };
         let media = elided(
             painter,

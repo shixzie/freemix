@@ -22,8 +22,9 @@ use crate::meter_ballistics::{
 };
 use crate::monitors::label_for_input;
 use crate::theme::{
-    ACCENT, AMBER, BORDER, BORDER_STRONG, GRAPHITE, GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PREVIEW,
-    PROGRAM, TEXT, TEXT_DIM, WIDGET, WIDGET_HOVER, section_header, tally_color,
+    AMBER, MONITOR_BLACK, PREVIEW, PROGRAM, accent_color, border_color, border_strong_color,
+    graphite_color, muted_color, raised_color, section_header, tally_color, text_color,
+    text_dim_color, widget_color, widget_hover_color,
 };
 use crate::{
     InputAudioStripUpdate, StudioConnectionStatus, StudioIntent, StudioUiState, TallyState,
@@ -375,7 +376,7 @@ pub(crate) fn draw_mixer(
             ui.label(
                 RichText::new(l.text(Msg::MeterLegend))
                     .size(10.0)
-                    .color(MUTED),
+                    .color(muted_color()),
             )
             .on_hover_text(l.text(Msg::MeterLegendHover));
         }
@@ -494,7 +495,8 @@ fn stale_badge(ui: &mut Ui, text: &str) {
     );
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(galley.size().x + 12.0, 18.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(3), MUTED);
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(3), muted_color());
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0, galley, Color32::BLACK);
     response.on_hover_text(l10n::locale(ui.ctx()).text(Msg::MetersStaleHover));
@@ -509,8 +511,8 @@ struct StripGate {
 
 fn strip_frame(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
-        .fill(GRAPHITE_RAISED)
-        .stroke(Stroke::new(1.0, BORDER))
+        .fill(raised_color())
+        .stroke(Stroke::new(1.0, border_color()))
         .corner_radius(CornerRadius::same(4))
         .inner_margin(egui::Margin::symmetric(5, 6))
         .show(ui, |ui| {
@@ -555,13 +557,17 @@ fn name_plate(ui: &mut Ui, ordinal: Option<usize>, name: &str, tally: TallyState
             painter.rect_filled(
                 cap,
                 CornerRadius::same(3),
-                if tinted { tally_color(tally) } else { GRAPHITE },
+                if tinted {
+                    tally_color(tally)
+                } else {
+                    graphite_color()
+                },
             );
             if !tinted {
                 painter.rect_stroke(
                     cap,
                     CornerRadius::same(3),
-                    Stroke::new(1.0, BORDER_STRONG),
+                    Stroke::new(1.0, border_strong_color()),
                     StrokeKind::Inside,
                 );
             }
@@ -570,20 +576,24 @@ fn name_plate(ui: &mut Ui, ordinal: Option<usize>, name: &str, tally: TallyState
                 Align2::CENTER_CENTER,
                 format!("{ordinal}"),
                 FontId::new(9.5, FontFamily::Monospace),
-                if tinted { Color32::WHITE } else { TEXT_DIM },
+                if tinted {
+                    Color32::WHITE
+                } else {
+                    text_dim_color()
+                },
             );
             text_left = cap.max.x + 4.0;
         }
         let mut job = egui::text::LayoutJob::simple(
             name.to_owned(),
             FontId::new(10.5, FontFamily::Proportional),
-            TEXT,
+            text_color(),
             rect.max.x - text_left,
         );
         job.wrap.max_rows = 2;
         job.wrap.break_anywhere = false;
         let galley = painter.layout_job(job);
-        painter.galley(pos2(text_left, rect.min.y), galley, TEXT);
+        painter.galley(pos2(text_left, rect.min.y), galley, text_color());
     }
     response.on_hover_text(name);
 }
@@ -621,9 +631,9 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: b
                 if clipped {
                     PROGRAM
                 } else if stale_readout {
-                    MUTED
+                    muted_color()
                 } else {
-                    BORDER
+                    border_color()
                 },
             ),
             StrokeKind::Inside,
@@ -638,15 +648,15 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: b
         let color = if clipped {
             Color32::WHITE
         } else if stale_readout {
-            MUTED
+            muted_color()
         } else {
-            held_peak_mdb(holds).map_or(MUTED, |mdb| {
+            held_peak_mdb(holds).map_or(muted_color(), |mdb| {
                 #[allow(clippy::cast_precision_loss)] // milli-dB fits f32 exactly
                 let db = mdb as f32 / 1_000.0;
                 if db > METER_FLOOR_DB {
                     meter_segment_color(db)
                 } else {
-                    MUTED
+                    muted_color()
                 }
             })
         };
@@ -693,7 +703,7 @@ fn draw_input_strip(
         .map(|index| index + 1);
     let tally = tally_state(status.input, view.switcher);
     let accent = if tally.is_none() {
-        BORDER_STRONG
+        border_strong_color()
     } else {
         tally_color(tally)
     };
@@ -804,7 +814,7 @@ fn draw_input_strip(
             enabled,
             &mut follow_video,
             "AFV",
-            ACCENT,
+            accent_color(),
             STRIP_INNER_WIDTH,
         )
         .hint(l.text(Msg::AfvHover), reason)
@@ -855,11 +865,11 @@ fn led_key(
         let pressed = enabled && response.is_pointer_button_down_on();
         let painter = ui.painter();
         let base = if pressed {
-            crate::theme::WIDGET_ACTIVE
+            crate::theme::widget_active_color()
         } else if hovered {
-            WIDGET_HOVER
+            widget_hover_color()
         } else {
-            WIDGET
+            widget_color()
         };
         painter.rect_filled(rect, CornerRadius::same(3), base);
         if on {
@@ -877,9 +887,9 @@ fn led_key(
                 if on {
                     color.gamma_multiply(0.9 * dim)
                 } else if hovered {
-                    BORDER_STRONG
+                    border_strong_color()
                 } else {
-                    BORDER
+                    border_color()
                 },
             ),
             StrokeKind::Inside,
@@ -906,7 +916,7 @@ fn led_key(
             if on {
                 Color32::WHITE.gamma_multiply(dim)
             } else {
-                TEXT_DIM.gamma_multiply(dim)
+                text_dim_color().gamma_multiply(dim)
             },
         );
     }
@@ -986,9 +996,9 @@ fn fader(
         let y = y_for(mdb);
         let unity = mdb == 0;
         let (reach, color) = if unity {
-            (11.0, TEXT_DIM)
+            (11.0, text_dim_color())
         } else {
-            (7.0, BORDER_STRONG)
+            (7.0, border_strong_color())
         };
         for side in [-1.0, 1.0] {
             painter.line_segment(
@@ -1005,7 +1015,12 @@ fn fader(
                 Align2::RIGHT_CENTER,
                 label,
                 FontId::new(8.5, FontFamily::Monospace),
-                (if unity { TEXT_DIM } else { MUTED }).gamma_multiply(dim),
+                (if unity {
+                    text_dim_color()
+                } else {
+                    muted_color()
+                })
+                .gamma_multiply(dim),
             );
             last_label_y = y;
         }
@@ -1020,12 +1035,12 @@ fn fader(
             pos2(slot.max.x - 1.0, bottom),
         ),
         CornerRadius::same(1),
-        (if muted { MUTED } else { ACCENT }).gamma_multiply(0.55 * dim),
+        (if muted { muted_color() } else { accent_color() }).gamma_multiply(0.55 * dim),
     );
     painter.rect_stroke(
         slot,
         CornerRadius::same(2),
-        Stroke::new(1.0, BORDER),
+        Stroke::new(1.0, border_color()),
         StrokeKind::Outside,
     );
     // The cap: shadow, two-tone body, ridges, and a bright index line.
@@ -1076,7 +1091,7 @@ fn fader(
         Stroke::new(
             1.0,
             if response.dragged() || response.has_focus() {
-                ACCENT
+                accent_color()
             } else {
                 Color32::from_black_alpha(200)
             },
@@ -1090,7 +1105,7 @@ fn fader(
             Align2::RIGHT_CENTER,
             format_gain(l10n::locale(painter.ctx()), *gain_mdb),
             FontId::new(9.5, FontFamily::Monospace),
-            TEXT,
+            text_color(),
         );
     }
     response
@@ -1100,7 +1115,7 @@ fn fader(
 fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> bool {
     let l = l10n::locale(ui.ctx());
     let mut clear_clip = false;
-    strip_frame(ui, ACCENT, |ui| {
+    strip_frame(ui, accent_color(), |ui| {
         let (rect, _) = ui.allocate_exact_size(
             Vec2::new(STRIP_INNER_WIDTH, NAME_PLATE_HEIGHT),
             Sense::hover(),
@@ -1110,14 +1125,14 @@ fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> boo
             Align2::LEFT_TOP,
             l.text(Msg::MasterStrip),
             FontId::new(11.0, FontFamily::Proportional),
-            TEXT,
+            text_color(),
         );
         ui.painter().text(
             rect.left_top() + Vec2::new(0.0, 15.0),
             Align2::LEFT_TOP,
             l.text(Msg::ProgramMix),
             FontId::new(8.5, FontFamily::Proportional),
-            MUTED,
+            muted_color(),
         );
         clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some(), feed.stale);
         ui.horizontal_top(|ui| {
@@ -1127,8 +1142,12 @@ fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> boo
         });
         ui.vertical_centered(|ui| {
             ui.add(
-                egui::Label::new(RichText::new(l.text(Msg::MasterTap)).size(8.5).color(MUTED))
-                    .wrap(),
+                egui::Label::new(
+                    RichText::new(l.text(Msg::MasterTap))
+                        .size(8.5)
+                        .color(muted_color()),
+                )
+                .wrap(),
             )
             .on_hover_text(l.text(Msg::MasterTapHover));
         });
@@ -1188,7 +1207,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
                 if db >= 0.0 {
                     PROGRAM.gamma_multiply(0.8)
                 } else {
-                    MUTED
+                    muted_color()
                 },
             ),
         );
@@ -1289,7 +1308,7 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
             if clipped {
                 PROGRAM.gamma_multiply(0.7)
             } else {
-                BORDER
+                border_color()
             },
         ),
         StrokeKind::Inside,
@@ -1384,7 +1403,7 @@ fn draw_meter_scale(ui: &mut Ui, height: f32) {
             if db >= 0.0 {
                 PROGRAM.gamma_multiply(0.9)
             } else {
-                MUTED
+                muted_color()
             },
         );
     }

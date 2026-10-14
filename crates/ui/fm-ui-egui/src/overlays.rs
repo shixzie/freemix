@@ -10,8 +10,8 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Msg};
 use crate::monitors::label_for_input;
 use crate::theme::{
-    ACCENT, AMBER, BORDER, GRAPHITE_RAISED, MUTED, PROGRAM, TEXT, TEXT_DIM, caption, field_label,
-    mono, pill, small_button,
+    AMBER, PROGRAM, accent_color, border_color, caption, field_label, mono, muted_color, pill,
+    raised_color, small_button, text_color, text_dim_color,
 };
 use crate::{StudioIntent, StudioUiState, overlay_status};
 
@@ -98,16 +98,16 @@ fn draw_overlay_channel(
     } else if desired_active != confirmed_active {
         AMBER
     } else {
-        MUTED
+        muted_color()
     };
     Frame::new()
-        .fill(GRAPHITE_RAISED)
+        .fill(raised_color())
         .stroke(Stroke::new(
             1.0,
             if on_air {
                 PROGRAM.gamma_multiply(0.6)
             } else {
-                BORDER
+                border_color()
             },
         ))
         .corner_radius(CornerRadius::same(4))
@@ -127,7 +127,7 @@ fn draw_overlay_channel(
                     RichText::new(format!("O{channel_number}"))
                         .size(12.5)
                         .strong()
-                        .color(TEXT),
+                        .color(text_color()),
                 );
                 pill(ui, l.tr(state_label), state_color, on_air);
                 let source_name = desired
@@ -135,31 +135,35 @@ fn draw_overlay_channel(
                     .zip(state.view.as_ref())
                     .map(|(source, view)| label_for_input(l, view, source));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .add_enabled(
-                            enabled && desired_active,
-                            Button::new(
-                                RichText::new(l.text(Msg::OverlayOffKey))
-                                    .size(11.0)
-                                    .strong(),
-                            )
-                            .min_size(Vec2::new(0.0, OVERLAY_ROW_HEIGHT - 2.0)),
+                    // `TAKE OFF` sits right of `TAKE` but is created after
+                    // it, so Tab visits the row's keys left to right.
+                    let off_text = RichText::new(l.text(Msg::OverlayOffKey))
+                        .size(11.0)
+                        .strong();
+                    let off_width = ui
+                        .painter()
+                        .layout_no_wrap(
+                            l.text(Msg::OverlayOffKey).to_owned(),
+                            egui::FontId::proportional(11.0),
+                            text_color(),
                         )
-                        .hint(
-                            l.text(Msg::OverlayOffHover),
-                            why(enabled, reason, Msg::ReasonOverlayAlreadyOff.en()),
+                        .size()
+                        .x
+                        + 2.0 * ui.spacing().button_padding.x
+                        + 2.0;
+                    let off_slot = ui
+                        .allocate_exact_size(
+                            Vec2::new(off_width, OVERLAY_ROW_HEIGHT - 2.0),
+                            egui::Sense::hover(),
                         )
-                        .clicked()
-                    {
-                        intents.push(StudioIntent::OverlayOff { channel });
-                    }
+                        .0;
                     if ui
                         .add_enabled(
                             enabled && source.is_some(),
                             small_button(l.text(Msg::TakeKey))
                                 .min_size(Vec2::new(0.0, OVERLAY_ROW_HEIGHT - 2.0))
                                 .fill(crate::theme::ACCENT_FILL)
-                                .stroke(Stroke::new(1.0, ACCENT.gamma_multiply(0.6))),
+                                .stroke(Stroke::new(1.0, accent_color().gamma_multiply(0.6))),
                         )
                         .hint(
                             l.text(Msg::OverlayTakeHover),
@@ -169,6 +173,23 @@ fn draw_overlay_channel(
                         && let Some(source) = source
                     {
                         intents.push(StudioIntent::TakeOverlay { channel, source });
+                    }
+                    if ui
+                        .add_enabled_ui(enabled && desired_active, |ui| {
+                            ui.put(
+                                off_slot,
+                                Button::new(off_text)
+                                    .min_size(Vec2::new(0.0, OVERLAY_ROW_HEIGHT - 2.0)),
+                            )
+                        })
+                        .inner
+                        .hint(
+                            l.text(Msg::OverlayOffHover),
+                            why(enabled, reason, Msg::ReasonOverlayAlreadyOff.en()),
+                        )
+                        .clicked()
+                    {
+                        intents.push(StudioIntent::OverlayOff { channel });
                     }
                     ui.add(
                         egui::Label::new(
@@ -181,7 +202,7 @@ fn draw_overlay_channel(
                                 .to_owned()
                             }))
                             .size(11.5)
-                            .color(TEXT_DIM),
+                            .color(text_dim_color()),
                         )
                         .truncate(),
                     );
@@ -202,7 +223,9 @@ fn draw_overlay_channel(
                     },
                     intents,
                 );
-            });
+            })
+            .0
+            .on_hover_text(l.text(Msg::OverlayDetailsToggleHover));
         });
 }
 
@@ -352,14 +375,14 @@ fn draw_overlay_details(
             ui.label(
                 RichText::new(l.text(Msg::OverlayOutputsNone))
                     .size(10.0)
-                    .color(MUTED),
+                    .color(muted_color()),
             );
         }
         None => {
             ui.label(
                 RichText::new(l.text(Msg::OverlayOutputsUnsynced))
                     .size(10.0)
-                    .color(MUTED),
+                    .color(muted_color()),
             );
         }
     }
@@ -378,7 +401,7 @@ fn draw_overlay_details(
                 },
             ))
             .size(9.5)
-            .color(MUTED),
+            .color(muted_color()),
         )
         .wrap(),
     );

@@ -19,9 +19,10 @@ use crate::input_catalogue::{CatalogueAvailability, MAX_LIVE_INPUTS};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::{FrameFacts, MonitorPicture, letterbox, picture_visible};
 use crate::theme::{
-    ACCENT, AMBER, BORDER_STRONG, GRAPHITE_RAISED, LOCK_BADGE_SIZE, MONITOR_BLACK, MUTED, PREVIEW,
-    PROGRAM, TEXT, TEXT_DIM, Tone, elided, lock_badge, mono, paint_lock_badge, pill,
-    section_header, small_button, status_chip, tally_badge, tally_color,
+    AMBER, LOCK_BADGE_SIZE, MONITOR_BLACK, PREVIEW, PROGRAM, Tone, accent_color,
+    border_strong_color, elided, lock_badge, mono, muted_color, paint_lock_badge, pill,
+    raised_color, section_header, small_button, status_chip, tally_badge, tally_color, text_color,
+    text_dim_color,
 };
 use crate::{
     InputMoveDirection, RenameDraft, StudioIntent, StudioShell, StudioUiState, TransitionGate,
@@ -236,14 +237,14 @@ impl StudioShell {
                     |count| l.format(Msg::SourcesCount, &[("count", Arg::from(count))]),
                 ))
                 .size(10.5)
-                .color(TEXT_DIM),
+                .color(text_dim_color()),
             );
             // The gesture hint is dropped first when the header is narrow.
             if ui.available_width() > 250.0 {
                 ui.label(
                     RichText::new(l.text(Msg::BankGestureHint))
                         .size(10.0)
-                        .color(MUTED),
+                        .color(muted_color()),
                 );
             }
         });
@@ -465,11 +466,11 @@ impl StudioShell {
                             RichText::new(l.text(Msg::CutKey))
                                 .size(11.0)
                                 .strong()
-                                .color(TEXT),
+                                .color(text_color()),
                         )
                         // Neutral: red in the bank means "this input is on
                         // Program", never "this key cuts".
-                        .stroke(Stroke::new(1.0, BORDER_STRONG))
+                        .stroke(Stroke::new(1.0, border_strong_color()))
                         .min_size(Vec2::new(56.0, 20.0)),
                     )
                     .hint(l.text(Msg::TileCutHover), cut_reason);
@@ -530,7 +531,7 @@ impl StudioShell {
             } else if shortcut == LOCKED_MARK {
                 button = button.shortcut_text(RichText::new(mark).size(10.0).strong().color(AMBER));
             } else if !shortcut.is_empty() {
-                button = button.shortcut_text(RichText::new(mark).color(MUTED));
+                button = button.shortcut_text(RichText::new(mark).color(muted_color()));
             }
             ui.add_enabled(enabled, button)
                 .on_disabled_hover_text(l10n::unavailable(l, reason))
@@ -643,7 +644,10 @@ impl StudioShell {
             // stretch the wrapped words apart.
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 for note in notes {
-                    ui.add(egui::Label::new(RichText::new(note).size(10.5).color(MUTED)).wrap());
+                    ui.add(
+                        egui::Label::new(RichText::new(note).size(10.5).color(muted_color()))
+                            .wrap(),
+                    );
                 }
             });
         }
@@ -726,11 +730,11 @@ fn draw_tile_menu_header(ui: &mut Ui, index: usize, name: &str, tally: crate::Ta
         ui.spacing_mut().item_spacing.x = 6.0;
         let (key, _) = ui.allocate_exact_size(Vec2::new(18.0, 18.0), Sense::hover());
         ui.painter()
-            .rect_filled(key, CornerRadius::same(3), GRAPHITE_RAISED);
+            .rect_filled(key, CornerRadius::same(3), raised_color());
         ui.painter().rect_stroke(
             key,
             CornerRadius::same(3),
-            Stroke::new(1.0, BORDER_STRONG),
+            Stroke::new(1.0, border_strong_color()),
             StrokeKind::Inside,
         );
         ui.painter().text(
@@ -738,14 +742,15 @@ fn draw_tile_menu_header(ui: &mut Ui, index: usize, name: &str, tally: crate::Ta
             Align2::CENTER_CENTER,
             format!("{}", index + 1),
             FontId::new(10.5, FontFamily::Monospace),
-            TEXT_DIM,
+            text_dim_color(),
         );
         let badge = tally_badge(tally);
         let name_width = ui.available_width() - if badge.is_some() { 48.0 } else { 0.0 };
         ui.scope(|ui| {
             ui.set_max_width(name_width.max(60.0));
             ui.add(
-                egui::Label::new(RichText::new(name).size(13.0).strong().color(TEXT)).truncate(),
+                egui::Label::new(RichText::new(name).size(13.0).strong().color(text_color()))
+                    .truncate(),
             );
         });
         if let Some(badge) = badge {
@@ -819,7 +824,7 @@ impl StudioShell {
                             l.integer(MAX_LIVE_INPUTS as u64)
                         ))
                         .size(10.0)
-                        .color(MUTED),
+                        .color(muted_color()),
                     )
                     .on_hover_text(l.text(Msg::InputCountHover));
                 }
@@ -829,6 +834,7 @@ impl StudioShell {
 }
 
 #[allow(clippy::fn_params_excessive_bools)] // independent paint states
+#[allow(clippy::too_many_lines)] // one painted tile
 fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: bool, focused: bool) {
     let l = l10n::locale(ui.ctx());
     let painter = ui.painter_at(rect.expand(4.0));
@@ -846,11 +852,11 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
         },
     );
     let accent = if lit {
-        ACCENT
+        accent_color()
     } else if enabled {
-        ACCENT.gamma_multiply(0.75)
+        accent_color().gamma_multiply(0.75)
     } else {
-        MUTED.gamma_multiply(0.6)
+        muted_color().gamma_multiply(0.6)
     };
     // A dashed outline reads as an empty slot rather than a source.
     let outline = rect.shrink(0.5);
@@ -863,7 +869,14 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
     ];
     painter.extend(egui::Shape::dashed_line(
         &corners,
-        Stroke::new(1.0, if lit { ACCENT } else { BORDER_STRONG }),
+        Stroke::new(
+            1.0,
+            if lit {
+                accent_color()
+            } else {
+                border_strong_color()
+            },
+        ),
         6.0,
         4.0,
     ));
@@ -882,7 +895,7 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
         Align2::CENTER_CENTER,
         l.text(Msg::AddTileKinds),
         FontId::new(9.0, FontFamily::Proportional),
-        MUTED.gamma_multiply(if enabled { 0.9 } else { 0.6 }),
+        muted_color().gamma_multiply(if enabled { 0.9 } else { 0.6 }),
     );
     painter.rect_filled(
         name_bar.shrink(1.0),
@@ -892,7 +905,7 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
             sw: 4,
             se: 4,
         },
-        GRAPHITE_RAISED.gamma_multiply(0.7),
+        raised_color().gamma_multiply(0.7),
     );
     let lock_room = if locked {
         let badge = Rect::from_center_size(
@@ -911,7 +924,7 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
         &painter,
         l.text(Msg::AddInput),
         FontId::new(12.0, FontFamily::Proportional),
-        if enabled { TEXT } else { MUTED },
+        if enabled { text_color() } else { muted_color() },
         name_bar.width() - 12.0 - lock_room,
     );
     painter.galley(
@@ -920,13 +933,13 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
             name_bar.center().y - label.size().y / 2.0,
         ),
         label,
-        TEXT,
+        text_color(),
     );
     if focused {
         painter.rect_stroke(
             rect.expand(2.0),
             CornerRadius::same(6),
-            Stroke::new(2.0, ACCENT),
+            Stroke::new(2.0, accent_color()),
             StrokeKind::Outside,
         );
     }
@@ -1043,7 +1056,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         let tag = painter.layout_no_wrap(
             thumbnail_tag(tap, picture.facts.origin).to_owned(),
             FontId::new(9.0, FontFamily::Proportional),
-            TEXT,
+            text_color(),
         );
         let tag_rect = Rect::from_min_size(
             pos2(thumb.min.x + 6.0, thumb.max.y - tag.size().y - 9.0),
@@ -1054,7 +1067,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             CornerRadius::same(3),
             Color32::from_black_alpha(190),
         );
-        painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, TEXT);
+        painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, text_color());
     } else {
         // Large dim ordinal, like a multiview label on an empty source.
         painter.text(
@@ -1076,7 +1089,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             Align2::CENTER_CENTER,
             l10n::locale(ui.ctx()).text(Msg::NoThumbnail),
             FontId::new(9.0, FontFamily::Proportional),
-            MUTED.gamma_multiply(0.7),
+            muted_color().gamma_multiply(0.7),
         );
     }
     if has_tally {
@@ -1095,11 +1108,11 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
     // Key hint for the numbered Preview shortcuts.
     if index < 8 {
         let key = Rect::from_min_size(thumb.min + Vec2::new(6.0, 8.0), Vec2::new(16.0, 16.0));
-        painter.rect_filled(key, CornerRadius::same(3), GRAPHITE_RAISED);
+        painter.rect_filled(key, CornerRadius::same(3), raised_color());
         painter.rect_stroke(
             key,
             CornerRadius::same(3),
-            Stroke::new(1.0, BORDER_STRONG),
+            Stroke::new(1.0, border_strong_color()),
             StrokeKind::Inside,
         );
         painter.text(
@@ -1107,7 +1120,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             Align2::CENTER_CENTER,
             format!("{}", index + 1),
             FontId::new(10.0, FontFamily::Monospace),
-            TEXT_DIM,
+            text_dim_color(),
         );
     }
     if let Some(badge) = tally_badge(tally) {
@@ -1138,7 +1151,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         if has_tally {
             border.gamma_multiply(0.3)
         } else {
-            GRAPHITE_RAISED
+            raised_color()
         },
     );
     let lock_room = if locked {
@@ -1159,7 +1172,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         &painter,
         name,
         FontId::new(12.0, FontFamily::Proportional),
-        TEXT,
+        text_color(),
         name_bar.width() - 12.0 - lock_room,
     );
     painter.galley(
@@ -1168,11 +1181,11 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             name_bar.center().y - name_galley.size().y / 2.0,
         ),
         name_galley,
-        TEXT,
+        text_color(),
     );
     let stroke_width = if has_tally { 2.0 } else { 1.0 };
     let stroke_color = if hovered && enabled && !has_tally {
-        ACCENT.gamma_multiply(0.8)
+        accent_color().gamma_multiply(0.8)
     } else if hovered && enabled {
         border.gamma_multiply(1.2)
     } else {
@@ -1192,7 +1205,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         painter.rect_stroke(
             rect.expand(2.0),
             CornerRadius::same(6),
-            Stroke::new(2.0, ACCENT),
+            Stroke::new(2.0, accent_color()),
             StrokeKind::Outside,
         );
     }

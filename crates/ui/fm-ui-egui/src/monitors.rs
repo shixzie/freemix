@@ -21,8 +21,8 @@ use fm_ui_model::{BusSelection, ClientView, SwitcherState};
 
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{
-    AMBER, BORDER, GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PREVIEW, PROGRAM, TEXT, TEXT_DIM,
-    routing_color,
+    AMBER, MONITOR_BLACK, PREVIEW, PROGRAM, border_color, muted_color, raised_color, routing_color,
+    text_color, text_dim_color,
 };
 
 /// A delivered frame older than this is shown dimmed and marked STALE.
@@ -461,7 +461,7 @@ pub(crate) fn draw_monitor(
             sw: 0,
             se: 0,
         },
-        GRAPHITE_RAISED,
+        raised_color(),
     );
     // Tally bar along the top edge of the header.
     painter.rect_filled(
@@ -541,7 +541,7 @@ pub(crate) fn draw_monitor(
             &painter,
             &routing.realized.1,
             FontId::new(13.5, FontFamily::Proportional),
-            TEXT,
+            text_color(),
             width - reserved - 10.0,
         );
         painter.galley(
@@ -550,7 +550,7 @@ pub(crate) fn draw_monitor(
                 header.center().y + 1.0 - galley.size().y / 2.0,
             ),
             galley,
-            TEXT,
+            text_color(),
         );
     }
 
@@ -586,8 +586,12 @@ pub(crate) fn draw_monitor(
     if !live {
         draw_safe_area(&painter, canvas_area);
         let (title, size, title_color) = match &routing {
-            Some(routing) => (routing.realized.1.as_str(), title_size, TEXT_DIM),
-            None => (l.text(Msg::RoutingUnavailable), title_size * 0.7, MUTED),
+            Some(routing) => (routing.realized.1.as_str(), title_size, text_dim_color()),
+            None => (
+                l.text(Msg::RoutingUnavailable),
+                title_size * 0.7,
+                muted_color(),
+            ),
         };
         let galley = crate::theme::elided(
             &painter,
@@ -634,7 +638,7 @@ pub(crate) fn draw_monitor(
             band.center(),
             &caption.text,
             FontId::new(10.5, FontFamily::Proportional),
-            TEXT_DIM,
+            text_dim_color(),
             video.width() - 16.0,
         );
     } else {
@@ -643,7 +647,7 @@ pub(crate) fn draw_monitor(
             pos2(center.x, video.max.y - 30.0),
             &caption.text,
             FontId::new(10.5, FontFamily::Proportional),
-            MUTED,
+            muted_color(),
             video.width() - 16.0,
         );
         centered_line(
@@ -651,7 +655,7 @@ pub(crate) fn draw_monitor(
             pos2(center.x, video.max.y - 16.0),
             l.text(Msg::MonitorRoutingFootnote),
             FontId::new(9.5, FontFamily::Proportional),
-            MUTED.gamma_multiply(0.75),
+            muted_color().gamma_multiply(0.75),
             video.width() - 16.0,
         );
     }
@@ -670,7 +674,7 @@ pub(crate) fn draw_monitor(
             pos2(badge_right, canvas_area.min.y + 28.0),
         );
         let fill = if *badge == Msg::BadgeStale.en() {
-            MUTED
+            muted_color()
         } else {
             AMBER
         };
@@ -735,7 +739,7 @@ fn centered_line(
 
 /// Faint title-safe corner marks so the empty well reads as a monitor.
 fn draw_safe_area(painter: &egui::Painter, video: Rect) {
-    let guide = Stroke::new(1.0, BORDER);
+    let guide = Stroke::new(1.0, border_color());
     let safe = video.shrink2(video.size() * 0.1);
     let arm = (safe.width().min(safe.height()) * 0.08).max(8.0);
     for (corner, dx, dy) in [

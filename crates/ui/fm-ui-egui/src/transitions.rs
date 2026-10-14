@@ -8,9 +8,9 @@ use fm_ui_model::ManualTransitionStatus;
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg, with_key};
 use crate::theme::{
-    ACCENT, ACCENT_FILL, AMBER, AMBER_FILL, BORDER, BORDER_STRONG, MONITOR_BLACK, MUTED, TEXT,
-    TEXT_DIM, WIDGET, WIDGET_ACTIVE, WIDGET_HOVER, console_button, field_label, mono,
-    section_label,
+    ACCENT_FILL, AMBER, AMBER_FILL, MONITOR_BLACK, accent_color, border_color, border_strong_color,
+    console_button, field_label, mono, muted_color, section_label, text_color, text_dim_color,
+    widget_active_color, widget_color, widget_hover_color,
 };
 use crate::{
     ManualTransitionAvailability, StudioIntent, StudioShell, StudioUiState, TransitionGate,
@@ -65,7 +65,7 @@ pub(crate) fn draw_transition_column(
                 .size(10.0)
                 .strong()
                 .extra_letter_spacing(1.0)
-                .color(if active { AMBER } else { MUTED }),
+                .color(if active { AMBER } else { muted_color() }),
             );
         });
     });
@@ -128,9 +128,16 @@ fn draw_auto_transitions(
     let l = l10n::locale(ui.ctx());
     let reason = unavailable_reason(state, Capability::Transition);
     let duration_frames = shell.transition_duration_frames;
-    let primary =
-        |label: &str| console_button(label, ACCENT_FILL, ACCENT.gamma_multiply(0.6), BUTTON_SIZE);
-    let secondary = |label: &str| console_button(label, WIDGET, BORDER_STRONG, BUTTON_SIZE);
+    let primary = |label: &str| {
+        console_button(
+            label,
+            ACCENT_FILL,
+            accent_color().gamma_multiply(0.6),
+            BUTTON_SIZE,
+        )
+    };
+    let secondary =
+        |label: &str| console_button(label, widget_color(), border_strong_color(), BUTTON_SIZE);
     ui.horizontal(|ui| {
         if ui
             .add_enabled(
@@ -139,8 +146,8 @@ fn draw_auto_transitions(
                 // on the panel means on air.
                 console_button(
                     l.text(Msg::CutKey),
-                    WIDGET_ACTIVE,
-                    TEXT.gamma_multiply(0.7),
+                    widget_active_color(),
+                    text_color().gamma_multiply(0.7),
                     BUTTON_SIZE,
                 ),
             )
@@ -342,7 +349,7 @@ fn draw_manual_status(
 ) {
     let l = l10n::locale(ui.ctx());
     let active = summary.kind.is_some();
-    let accent = if active { AMBER } else { BORDER_STRONG };
+    let accent = if active { AMBER } else { border_strong_color() };
     let response = egui::Frame::new()
         .fill(if active { AMBER_FILL } else { MONITOR_BLACK })
         .stroke(Stroke::new(1.0, accent.gamma_multiply(0.6)))
@@ -357,7 +364,7 @@ fn draw_manual_status(
                         .size(10.5)
                         .strong()
                         .extra_letter_spacing(0.8)
-                        .color(if active { AMBER } else { MUTED }),
+                        .color(if active { AMBER } else { muted_color() }),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if active {
@@ -365,7 +372,7 @@ fn draw_manual_status(
                             mono(l.percent(i64::from(summary.percent)))
                                 .size(11.0)
                                 .strong()
-                                .color(TEXT),
+                                .color(text_color()),
                         );
                     }
                     if !summary.confirmed {
@@ -389,17 +396,17 @@ fn draw_manual_status(
                                 Arg::Str(&manual_start_keys(l, alpha_fade_exposed, " · ")),
                             )],
                         ),
-                        MUTED,
+                        muted_color(),
                     )
                 },
-                |(from, to)| (format!("{from}  ▶  {to}"), TEXT),
+                |(from, to)| (format!("{from}  ▶  {to}"), text_color()),
             );
             ui.add(egui::Label::new(RichText::new(route).size(11.0).color(color)).truncate());
             {
                 let (bar, _) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), 3.0), Sense::hover());
                 let painter = ui.painter();
-                painter.rect_filled(bar, CornerRadius::same(1), BORDER);
+                painter.rect_filled(bar, CornerRadius::same(1), border_color());
                 painter.rect_filled(
                     Rect::from_min_size(
                         bar.min,
@@ -490,7 +497,7 @@ fn draw_t_bar(
     painter.rect_stroke(
         groove,
         CornerRadius::same(4),
-        Stroke::new(1.0, BORDER),
+        Stroke::new(1.0, border_color()),
         StrokeKind::Outside,
     );
     if fraction > 0.0 {
@@ -507,21 +514,21 @@ fn draw_t_bar(
         let x = rect.min.x + 2.0;
         painter.line_segment(
             [pos2(x, y), pos2(x + half - 4.0, y)],
-            Stroke::new(1.0, BORDER_STRONG),
+            Stroke::new(1.0, border_strong_color()),
         );
         let x = rect.max.x - 2.0;
         painter.line_segment(
             [pos2(x - half + 4.0, y), pos2(x, y)],
-            Stroke::new(1.0, BORDER_STRONG),
+            Stroke::new(1.0, border_strong_color()),
         );
     }
     let handle = Rect::from_center_size(pos2(rect.center().x, handle_y), HANDLE);
     let (fill, stroke) = if !enabled {
-        (WIDGET, BORDER)
+        (widget_color(), border_color())
     } else if response.hovered() || response.dragged() {
-        (WIDGET_ACTIVE, AMBER)
+        (widget_active_color(), AMBER)
     } else {
-        (WIDGET_HOVER, BORDER_STRONG)
+        (widget_hover_color(), border_strong_color())
     };
     painter.rect_filled(handle, CornerRadius::same(3), fill);
     painter.rect_stroke(
@@ -536,7 +543,14 @@ fn draw_t_bar(
                 pos2(handle.min.x + 8.0, handle_y + offset),
                 pos2(handle.max.x - 8.0, handle_y + offset),
             ],
-            Stroke::new(1.0, if enabled { TEXT_DIM } else { MUTED }),
+            Stroke::new(
+                1.0,
+                if enabled {
+                    text_dim_color()
+                } else {
+                    muted_color()
+                },
+            ),
         );
     }
 }
@@ -615,9 +629,13 @@ fn draw_manual_start_buttons(
 }
 
 fn start_button(label: &str, size: Vec2) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(label.to_owned()).size(10.0).color(TEXT))
-        .min_size(size)
-        .truncate()
+    egui::Button::new(
+        RichText::new(label.to_owned())
+            .size(10.0)
+            .color(text_color()),
+    )
+    .min_size(size)
+    .truncate()
 }
 
 fn draw_manual_position(

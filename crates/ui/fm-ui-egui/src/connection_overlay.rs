@@ -5,7 +5,9 @@ use egui::{
 };
 
 use crate::l10n::{self, Arg, Locale, Msg};
-use crate::theme::{AMBER, BORDER_STRONG, ERROR, GRAPHITE_RAISED, MUTED, TEXT, TEXT_DIM};
+use crate::theme::{
+    AMBER, ERROR, border_strong_color, muted_color, raised_color, text_color, text_dim_color,
+};
 use crate::{StudioConnectionStatus, StudioUiState};
 
 /// Visual tone of the connection card.
@@ -104,7 +106,7 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
     let color = match card.tone {
         CardTone::Busy => AMBER,
         CardTone::Error => ERROR,
-        CardTone::Idle => MUTED,
+        CardTone::Idle => muted_color(),
     };
     let painter = ui.ctx().layer_painter(egui::LayerId::new(
         egui::Order::Middle,
@@ -116,7 +118,7 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
     let detail = painter.layout(
         card.detail.clone(),
         FontId::new(12.5, FontFamily::Proportional),
-        TEXT_DIM,
+        text_dim_color(),
         width - 48.0,
     );
     let error = card.last_error.as_ref().map(|error| {
@@ -132,7 +134,7 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
     let footer = painter.layout(
         l.text(Msg::CardControlsDisabled).to_owned(),
         FontId::new(11.0, FontFamily::Proportional),
-        MUTED,
+        muted_color(),
         width - 48.0,
     );
     let error_height = error.as_ref().map_or(0.0, |error| error.size().y + 10.0);
@@ -145,11 +147,11 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
         CornerRadius::same(8),
         Color32::from_black_alpha(90),
     );
-    painter.rect_filled(rect, CornerRadius::same(8), GRAPHITE_RAISED);
+    painter.rect_filled(rect, CornerRadius::same(8), raised_color());
     painter.rect_stroke(
         rect,
         CornerRadius::same(8),
-        Stroke::new(1.0, BORDER_STRONG),
+        Stroke::new(1.0, border_strong_color()),
         StrokeKind::Inside,
     );
     painter.rect_filled(
@@ -167,7 +169,7 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
         &painter,
         &card.title,
         FontId::new(18.0, FontFamily::Proportional),
-        TEXT,
+        text_color(),
         width - 64.0,
     );
     let lamp = pos2(rect.min.x + 26.0, title_y);
@@ -194,11 +196,11 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
             .anchor_size(pos2(rect.min.x + 44.0, title_y), title.size())
             .min,
         title,
-        TEXT,
+        text_color(),
     );
     let mut y = title_y + 22.0;
     let detail_height = detail.size().y;
-    painter.galley(pos2(rect.min.x + 24.0, y), detail, TEXT_DIM);
+    painter.galley(pos2(rect.min.x + 24.0, y), detail, text_dim_color());
     y += detail_height + 10.0;
     if let Some(error) = error {
         let box_rect = Rect::from_min_size(
@@ -212,9 +214,9 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
     }
     painter.line_segment(
         [pos2(rect.min.x + 18.0, y), pos2(rect.max.x - 18.0, y)],
-        Stroke::new(1.0, BORDER_STRONG.gamma_multiply(0.6)),
+        Stroke::new(1.0, border_strong_color().gamma_multiply(0.6)),
     );
-    painter.galley(pos2(rect.min.x + 24.0, y + 8.0), footer, MUTED);
+    painter.galley(pos2(rect.min.x + 24.0, y + 8.0), footer, muted_color());
 }
 
 #[cfg(test)]

@@ -11,9 +11,9 @@ use crate::health::HealthItem;
 use crate::l10n::{self, Arg, Locale, Msg, trailing_layout};
 use crate::panels::latest_stream_sample;
 use crate::theme::{
-    ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PREVIEW,
-    PROGRAM, TEXT, TEXT_DIM, WIDGET_ACTIVE, WIDGET_HOVER, connection_color, mono, paint_lamp,
-    paint_lock_glyph, pill, status_dot,
+    AMBER, ERROR, PREVIEW, PROGRAM, accent_color, border_color, border_strong_color,
+    connection_color, graphite_color, mono, muted_color, paint_lamp, paint_lock_glyph, pill,
+    raised_color, status_dot, text_color, text_dim_color, widget_active_color, widget_hover_color,
 };
 use crate::toasts::{Toast, ToastKind};
 use crate::{
@@ -134,25 +134,32 @@ fn history_key(ui: &mut Ui, enabled: bool, redo: bool) -> egui::Response {
             rect,
             CornerRadius::same(4),
             if response.is_pointer_button_down_on() && enabled {
-                WIDGET_ACTIVE
+                widget_active_color()
             } else if hovered {
-                WIDGET_HOVER
+                widget_hover_color()
             } else {
-                GRAPHITE
+                graphite_color()
             },
         );
         painter.rect_stroke(
             rect,
             CornerRadius::same(4),
-            Stroke::new(1.0, if hovered { BORDER_STRONG } else { BORDER }),
+            Stroke::new(
+                1.0,
+                if hovered {
+                    border_strong_color()
+                } else {
+                    border_color()
+                },
+            ),
             StrokeKind::Inside,
         );
         let color = if !enabled {
-            MUTED.gamma_multiply(0.55)
+            muted_color().gamma_multiply(0.55)
         } else if hovered {
-            TEXT
+            text_color()
         } else {
-            TEXT_DIM
+            text_dim_color()
         };
         paint_turn_arrow(painter, rect.center() + Vec2::new(0.0, 1.0), color, redo);
     }
@@ -200,7 +207,7 @@ fn show_name_label(ui: &mut Ui, state: &StudioUiState) {
             ui.scope(|ui| {
                 ui.set_max_width(max_width);
                 ui.add(
-                    egui::Label::new(RichText::new(name).size(15.0).strong().color(TEXT))
+                    egui::Label::new(RichText::new(name).size(15.0).strong().color(text_color()))
                         .truncate(),
                 );
             });
@@ -209,7 +216,7 @@ fn show_name_label(ui: &mut Ui, state: &StudioUiState) {
             ui.label(
                 RichText::new(l.text(Msg::NoSynchronizedShow))
                     .size(15.0)
-                    .color(MUTED),
+                    .color(muted_color()),
             )
             .on_hover_text(l.text(Msg::ShowNameHover));
         }
@@ -226,13 +233,13 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                 .size(13.0)
                 .strong()
                 .extra_letter_spacing(2.5)
-                .color(ACCENT),
+                .color(accent_color()),
         );
         ui.label(
             RichText::new("STUDIO")
                 .size(10.5)
                 .extra_letter_spacing(1.5)
-                .color(MUTED),
+                .color(muted_color()),
         );
         divider(ui);
         show_name_label(ui, state);
@@ -251,7 +258,7 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                     &[("revision", Arg::Plain(view.cursor.revision.get()))],
                 ))
                 .size(11.0)
-                .color(TEXT_DIM),
+                .color(text_dim_color()),
             )
             .on_hover_text(l.text(Msg::RevisionHover));
         }
@@ -274,9 +281,13 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
         ui.with_layout(trailing_layout(l), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             let now = utc_now_seconds();
-            ui.label(mono(format_utc_clock(l, now)).size(17.0).color(TEXT))
-                .on_hover_text(utc_clock_hover(l, now));
-            ui.label(RichText::new("UTC").size(10.0).color(MUTED));
+            ui.label(
+                mono(format_utc_clock(l, now))
+                    .size(17.0)
+                    .color(text_color()),
+            )
+            .on_hover_text(utc_clock_hover(l, now));
+            ui.label(RichText::new("UTC").size(10.0).color(muted_color()));
             divider(ui);
             let air = on_air(state);
             let stream_color = if air.stream_live {
@@ -284,7 +295,7 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             } else if air.stream_desired {
                 AMBER
             } else {
-                MUTED
+                muted_color()
             };
             on_air_badge(ui, l.text(Msg::Live), stream_color, air.stream_live).on_hover_text(
                 l.text(if air.stream_live {
@@ -298,7 +309,11 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             on_air_badge(
                 ui,
                 l.text(Msg::BadgeRec),
-                if air.recording { PROGRAM } else { MUTED },
+                if air.recording {
+                    PROGRAM
+                } else {
+                    muted_color()
+                },
                 air.recording,
             )
             .on_hover_text(l.text(if air.recording {
@@ -324,7 +339,7 @@ fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
     let label_width = [Msg::Locked, Msg::Unlocked]
         .map(|word| {
             ui.painter()
-                .layout_no_wrap(l.text(word).to_owned(), font.clone(), TEXT)
+                .layout_no_wrap(l.text(word).to_owned(), font.clone(), text_color())
                 .size()
                 .x
         })
@@ -349,10 +364,18 @@ fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
             )
         } else {
             (
-                if hovered { WIDGET_HOVER } else { GRAPHITE },
-                if hovered { BORDER_STRONG } else { BORDER },
-                MUTED,
-                TEXT_DIM,
+                if hovered {
+                    widget_hover_color()
+                } else {
+                    graphite_color()
+                },
+                if hovered {
+                    border_strong_color()
+                } else {
+                    border_color()
+                },
+                muted_color(),
+                text_dim_color(),
             )
         };
         let dim = if padlock.enabled { 1.0 } else { 0.55 };
@@ -384,7 +407,7 @@ fn padlock_button(ui: &mut Ui, padlock: PadlockToggle) -> egui::Response {
 fn divider(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 20.0), Sense::hover());
     ui.painter()
-        .rect_filled(rect, CornerRadius::ZERO, BORDER_STRONG);
+        .rect_filled(rect, CornerRadius::ZERO, border_strong_color());
 }
 
 /// Broadcast-style on-air badge: solid red with a lamp when lit, outlined otherwise.
@@ -396,7 +419,7 @@ fn on_air_badge(ui: &mut Ui, label: &str, color: Color32, lit: bool) -> egui::Re
         if lit {
             painter.rect_filled(rect, CornerRadius::same(4), color);
         } else {
-            painter.rect_filled(rect, CornerRadius::same(4), GRAPHITE);
+            painter.rect_filled(rect, CornerRadius::same(4), graphite_color());
             painter.rect_stroke(
                 rect,
                 CornerRadius::same(4),
@@ -435,7 +458,7 @@ pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
     };
     let mut dismissed = false;
     let response = Frame::new()
-        .fill(GRAPHITE_RAISED)
+        .fill(raised_color())
         .stroke(Stroke::new(1.0, color.gamma_multiply(0.55)))
         .corner_radius(CornerRadius::same(6))
         .inner_margin(Margin {
@@ -462,10 +485,7 @@ pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
                 );
                 ui.with_layout(trailing_layout(l), |ui| {
                     if ui
-                        .add(
-                            egui::Button::new(RichText::new("×").size(15.0).color(TEXT_DIM))
-                                .frame(false),
-                        )
+                        .add(crate::theme::close_key(15.0))
                         .on_hover_text(l.text(Msg::ToastDismissHover))
                         .clicked()
                     {
@@ -474,7 +494,7 @@ pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
                 });
             });
             let message = crate::toasts::localize_notice(l, &toast.message);
-            ui.add(egui::Label::new(RichText::new(message).size(12.0).color(TEXT)).wrap());
+            ui.add(egui::Label::new(RichText::new(message).size(12.0).color(text_color())).wrap());
         })
         .response;
     let rect = response.rect;
@@ -496,7 +516,7 @@ pub(crate) fn draw_toast(ui: &mut Ui, toast: &Toast) -> bool {
         egui::pos2(rect.min.x + 14.0, rect.max.y - 4.0),
         egui::pos2(rect.max.x - 8.0, rect.max.y - 2.0),
     );
-    painter.rect_filled(track, CornerRadius::same(1), BORDER);
+    painter.rect_filled(track, CornerRadius::same(1), border_color());
     painter.rect_filled(
         egui::Rect::from_min_size(
             track.min,
@@ -523,7 +543,11 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
         let hints = l.text(Msg::StatusBarKeyHints);
         let hint_width = ui
             .painter()
-            .layout_no_wrap(hints.to_owned(), egui::FontId::proportional(10.0), MUTED)
+            .layout_no_wrap(
+                hints.to_owned(),
+                egui::FontId::proportional(10.0),
+                muted_color(),
+            )
             .size()
             .x;
         // Keep room for the connection, pending, and message on the leading side.
@@ -532,13 +556,13 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
                 RichText::new(hints)
                     .size(10.0)
                     .extra_letter_spacing(0.5)
-                    .color(MUTED),
+                    .color(muted_color()),
             );
             if status.controls_enabled() {
                 ui.label(
                     RichText::new(l.text(Msg::StatusBarKeys))
                         .size(10.0)
-                        .color(TEXT_DIM),
+                        .color(text_dim_color()),
                 );
             }
         } else {
@@ -546,7 +570,7 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
                 RichText::new(l.text(Msg::StatusBarHelpHint))
                     .size(10.0)
                     .extra_letter_spacing(0.5)
-                    .color(MUTED),
+                    .color(muted_color()),
             )
             .on_hover_text(hints);
         }
@@ -568,7 +592,7 @@ pub(crate) fn draw_status_bar(ui: &mut Ui, state: &StudioUiState, health: &[Heal
                 .color(if state.pending_commands > 0 {
                     AMBER
                 } else {
-                    MUTED
+                    muted_color()
                 }),
             );
             bar_divider(ui);
@@ -599,7 +623,7 @@ fn health_lamp(ui: &mut Ui, item: &HealthItem) {
     let color = if item.tone.lit() {
         item.tone.color()
     } else {
-        TEXT_DIM
+        text_dim_color()
     };
     let galley = ui.painter().layout_no_wrap(item.label.clone(), font, color);
     let size = Vec2::new(galley.size().x + 14.0, 18.0);
@@ -623,7 +647,8 @@ fn health_lamp(ui: &mut Ui, item: &HealthItem) {
 
 fn bar_divider(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(1.0, 12.0), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::ZERO, BORDER);
+    ui.painter()
+        .rect_filled(rect, CornerRadius::ZERO, border_color());
 }
 
 /// Picks the most important one-line status message.
@@ -668,7 +693,7 @@ pub(crate) fn status_message(l: Locale, state: &StudioUiState) -> (String, Color
         | StudioConnectionStatus::Synchronizing
         | StudioConnectionStatus::Backoff => Msg::StatusIdleWaiting,
     };
-    (l.text(idle).to_owned(), MUTED)
+    (l.text(idle).to_owned(), muted_color())
 }
 
 #[cfg(test)]

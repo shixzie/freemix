@@ -499,6 +499,67 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ViewClock12hHover,
         t("Muestra el reloj de la barra superior con a. m./p. m. en lugar de 24 horas"),
     ),
+    (Msg::MenuPreferences, t("Preferencias…")),
+    (
+        Msg::MenuPreferencesHover,
+        t("Idioma, reloj, escala de la interfaz y contraste de esta consola"),
+    ),
+    (Msg::PrefsTitle, t("Preferencias")),
+    (Msg::PrefsClock, t("Reloj")),
+    (Msg::PrefsClock24h, t("24 horas")),
+    (Msg::PrefsClock12h, t("12 horas (a. m./p. m.)")),
+    (
+        Msg::PrefsClockHover,
+        t("Cómo muestra la hora el reloj de la barra superior"),
+    ),
+    (Msg::PrefsDisplay, t("Pantalla")),
+    (Msg::PrefsUiScale, t("Escala de la interfaz")),
+    (
+        Msg::PrefsUiScaleHover,
+        t("Tamaño de todo el texto y los controles; se aplica al instante"),
+    ),
+    (Msg::PrefsPercent, t("{percent} %")),
+    (
+        Msg::PrefsUiScaleKeys,
+        t("Ctrl+= y Ctrl+- cambian la escala; Ctrl+0 vuelve al 100 %"),
+    ),
+    (Msg::PrefsHighContrast, t("Tema de alto contraste")),
+    (
+        Msg::PrefsHighContrastHover,
+        t(
+            "Texto y bordes más claros sobre paneles más oscuros; el rojo, verde y ámbar de tally conservan su significado",
+        ),
+    ),
+    (
+        Msg::PrefsSavedNote,
+        t(
+            "Se guardan en esta consola en studio.conf y nunca se envían al daemon. Una opción --lang o --clock prevalece en su sesión sin guardarse.",
+        ),
+    ),
+    (Msg::PrefsReset, t("Restablecer valores predeterminados")),
+    (
+        Msg::PrefsResetHover,
+        t("Idioma del sistema, reloj de 24 horas, escala del 100 % y tema estándar"),
+    ),
+    (
+        Msg::PrefsResetDisabled,
+        t("Todas las preferencias ya tienen su valor predeterminado"),
+    ),
+    (Msg::PrefsDone, t("Listo")),
+    (Msg::PrefsDoneHover, t("Cerrar Preferencias  [Esc]")),
+    (Msg::PrefsUiScaleToast, t("Escala de la interfaz {percent}")),
+    (Msg::ShortcutPreferences, t("Abrir o cerrar Preferencias")),
+    (Msg::ShortcutUiScale, t("Ampliar o reducir la interfaz")),
+    (
+        Msg::ShortcutUiScaleReset,
+        t("Devolver la interfaz a la escala del 100 %"),
+    ),
+    (
+        Msg::OverlayDetailsToggleHover,
+        t(
+            "Mostrar u ocultar los detalles de este canal: actualizar, cola, transición, posición, borde y salidas",
+        ),
+    ),
     (Msg::NoInputs, t("Sin entradas")),
     (Msg::CutDirectlyToProgram, t("Cortar directo a Programa")),
     (Msg::CatalogueHeading, t("Catálogo")),

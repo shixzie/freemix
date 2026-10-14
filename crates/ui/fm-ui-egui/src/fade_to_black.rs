@@ -3,7 +3,9 @@ use fm_protocol::{FadeToBlackPosition, FadeToBlackState};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg, with_key};
-use crate::theme::{AMBER, BORDER, PROGRAM, TEXT, TEXT_DIM, WIDGET, section_label};
+use crate::theme::{
+    AMBER, PROGRAM, border_color, section_label, text_color, text_dim_color, widget_color,
+};
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
 /// Pure Fade-to-Black control availability derived from replicated state and session gates.
@@ -97,12 +99,12 @@ pub(super) fn draw_fade_to_black(
         let (fill, stroke) = if black {
             (PROGRAM, PROGRAM)
         } else {
-            (WIDGET, PROGRAM.gamma_multiply(0.45))
+            (widget_color(), PROGRAM.gamma_multiply(0.45))
         };
         if ui
             .add_enabled(
                 enabled,
-                Button::new(RichText::new(label).strong().size(13.0).color(TEXT))
+                Button::new(RichText::new(label).strong().size(13.0).color(text_color()))
                     .fill(fill)
                     .stroke(Stroke::new(1.0, stroke))
                     .min_size(Vec2::new(100.0, 40.0)),
@@ -130,7 +132,7 @@ pub(super) fn draw_fade_to_black(
     });
     let phase = fade_to_black_phase(l, desired, realized);
     let color = match phase.tone {
-        PhaseTone::Quiet => TEXT_DIM,
+        PhaseTone::Quiet => text_dim_color(),
         PhaseTone::Black => PROGRAM,
         PhaseTone::Pending => AMBER,
     };
@@ -167,7 +169,7 @@ pub(super) fn draw_fade_to_black(
     let (bar, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 3.0), Sense::hover());
     if let Some(black) = phase.black_percent {
         let painter = ui.painter();
-        painter.rect_filled(bar, CornerRadius::same(1), BORDER);
+        painter.rect_filled(bar, CornerRadius::same(1), border_color());
         painter.rect_filled(
             Rect::from_min_size(
                 bar.min,

@@ -16,8 +16,8 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg, frames};
 use crate::panels::{stinger_slot_presentation, stinger_slot_state, stinger_slot_tone};
 use crate::theme::{
-    ACCENT, ACCENT_FILL, BORDER_STRONG, MUTED, TEXT, TEXT_DIM, WIDGET, card, lock_badge, mono,
-    section_label, status_chip,
+    ACCENT_FILL, accent_color, border_strong_color, card, lock_badge, mono, muted_color,
+    section_label, status_chip, text_color, text_dim_color, widget_color,
 };
 use crate::{
     StudioIntent, StudioUiState, TransitionGate, stinger_edit_lock_reason, transition_availability,
@@ -321,7 +321,7 @@ pub(crate) fn draw_stinger_configuration(
                     .layout_no_wrap(
                         l.tr(label).to_owned(),
                         egui::FontId::new(9.5, egui::FontFamily::Proportional),
-                        TEXT,
+                        text_color(),
                     )
                     .size()
                     .x
@@ -337,7 +337,7 @@ pub(crate) fn draw_stinger_configuration(
             ui.label(
                 RichText::new(l.text(Msg::StingerConfigNotSynced))
                     .size(11.0)
-                    .color(MUTED),
+                    .color(muted_color()),
             )
             .on_hover_text(l10n::unavailable(l, reason));
             return;
@@ -354,14 +354,14 @@ pub(crate) fn draw_stinger_configuration(
             ui.spacing_mut().item_spacing.x = 6.0;
             let width = ((ui.available_width() - 6.0) / 2.0).floor().max(80.0);
             let key = |label: &str, primary: bool| {
-                Button::new(RichText::new(label).size(11.0).strong().color(TEXT))
-                    .fill(if primary { ACCENT_FILL } else { WIDGET })
+                Button::new(RichText::new(label).size(11.0).strong().color(text_color()))
+                    .fill(if primary { ACCENT_FILL } else { widget_color() })
                     .stroke(Stroke::new(
                         1.0,
                         if primary {
-                            ACCENT.gamma_multiply(0.6)
+                            accent_color().gamma_multiply(0.6)
                         } else {
-                            BORDER_STRONG
+                            border_strong_color()
                         },
                     ))
                     .min_size(Vec2::new(width, 24.0))
@@ -412,8 +412,8 @@ pub(crate) fn draw_stinger_configuration(
             .spacing(Vec2::new(12.0, 3.0))
             .show(ui, |ui| {
                 for (label, value) in stinger_details(l, view, editor.slot, duration_frames) {
-                    ui.label(RichText::new(label).size(10.5).color(MUTED));
-                    ui.label(RichText::new(value).size(10.5).color(TEXT_DIM));
+                    ui.label(RichText::new(label).size(10.5).color(muted_color()));
+                    ui.label(RichText::new(value).size(10.5).color(text_dim_color()));
                     ui.end_row();
                 }
             })

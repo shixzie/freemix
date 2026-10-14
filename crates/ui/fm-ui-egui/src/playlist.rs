@@ -36,9 +36,10 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::input_name;
 use crate::theme::{
-    ACCENT, ACCENT_FILL, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED,
-    PREVIEW, PROGRAM, PROGRAM_FILL, TEXT, TEXT_DIM, Tone, WIDGET, WIDGET_HOVER, caption, elided,
-    empty_state, field_label, mono, section_label, status_chip,
+    ACCENT_FILL, AMBER, ERROR, PREVIEW, PROGRAM, PROGRAM_FILL, Tone, accent_color, border_color,
+    border_strong_color, caption, elided, empty_state, field_label, graphite_color, mono,
+    muted_color, raised_color, section_label, status_chip, text_color, text_dim_color,
+    widget_color, widget_hover_color,
 };
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
@@ -882,14 +883,14 @@ impl Names<'_> {
 }
 
 fn key_button(label: &str, tone: Option<Color32>, width: f32) -> Button<'static> {
-    let (fill, stroke) = tone.map_or((WIDGET, BORDER_STRONG), |color| {
+    let (fill, stroke) = tone.map_or((widget_color(), border_strong_color()), |color| {
         (color.gamma_multiply(0.18), color.gamma_multiply(0.7))
     });
     Button::new(
         RichText::new(label.to_owned())
             .size(10.5)
             .strong()
-            .color(TEXT),
+            .color(text_color()),
     )
     .fill(fill)
     .stroke(Stroke::new(1.0, stroke))
@@ -915,14 +916,14 @@ fn draw_status_card(
         .fill(if phase == PlaylistPhase::Playing {
             PROGRAM_FILL.gamma_multiply(0.6)
         } else {
-            GRAPHITE_RAISED
+            raised_color()
         })
         .stroke(Stroke::new(
             1.0,
             if on_air {
                 PROGRAM.gamma_multiply(0.6)
             } else {
-                BORDER
+                border_color()
             },
         ))
         .corner_radius(CornerRadius::same(6))
@@ -956,7 +957,7 @@ fn draw_status_card(
                                 &[("duration", Arg::Str(&timecode(duration, rate)))],
                             ))
                             .size(10.5)
-                            .color(TEXT_DIM),
+                            .color(text_dim_color()),
                         );
                     });
                     ui.add(
@@ -964,7 +965,7 @@ fn draw_status_card(
                             RichText::new(format!("{} · {name}", l.text(Msg::OverlayOnAir)))
                                 .size(11.5)
                                 .strong()
-                                .color(TEXT),
+                                .color(text_color()),
                         )
                         .truncate(),
                     );
@@ -1005,7 +1006,7 @@ fn draw_status_card(
                     egui::Label::new(RichText::new(text).size(11.0).color(if next.is_some() {
                         PREVIEW
                     } else {
-                        TEXT_DIM
+                        text_dim_color()
                     }))
                     .truncate(),
                 );
@@ -1035,15 +1036,23 @@ fn draw_status_card(
                         RichText::new(l.text(label).to_uppercase())
                             .size(10.0)
                             .strong()
-                            .color(if selected { TEXT } else { TEXT_DIM }),
+                            .color(if selected {
+                                text_color()
+                            } else {
+                                text_dim_color()
+                            }),
                     )
-                    .fill(if selected { ACCENT_FILL } else { WIDGET })
+                    .fill(if selected {
+                        ACCENT_FILL
+                    } else {
+                        widget_color()
+                    })
                     .stroke(Stroke::new(
                         1.0,
                         if selected {
-                            ACCENT.gamma_multiply(0.7)
+                            accent_color().gamma_multiply(0.7)
                         } else {
-                            BORDER_STRONG
+                            border_strong_color()
                         },
                     ))
                     .min_size(Vec2::new(48.0, 20.0));
@@ -1207,18 +1216,18 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
         let (accent, fill) = match row.role {
             EntryRole::OnAir => (PROGRAM, PROGRAM_FILL),
             EntryRole::Next => (PREVIEW, PREVIEW.gamma_multiply(0.10)),
-            EntryRole::Idle => (BORDER, GRAPHITE),
+            EntryRole::Idle => (border_color(), graphite_color()),
         };
         let fill = if response.hovered() && row.role == EntryRole::Idle {
-            WIDGET_HOVER
+            widget_hover_color()
         } else {
             fill
         };
         painter.rect_filled(rect, CornerRadius::same(4), fill);
         let stroke = if row.selected {
-            Stroke::new(1.5, ACCENT)
+            Stroke::new(1.5, accent_color())
         } else if row.role == EntryRole::Idle {
-            Stroke::new(1.0, BORDER)
+            Stroke::new(1.0, border_color())
         } else {
             Stroke::new(1.0, accent.gamma_multiply(0.8))
         };
@@ -1234,12 +1243,16 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
         let take_fill = if take_response.hovered() && row.take.is_ok() {
             PREVIEW.gamma_multiply(0.35)
         } else if row.take.is_ok() {
-            WIDGET
+            widget_color()
         } else {
-            GRAPHITE_RAISED
+            raised_color()
         };
         painter.rect_filled(take_rect, CornerRadius::same(3), take_fill);
-        let triangle_color = if row.take.is_ok() { TEXT } else { MUTED };
+        let triangle_color = if row.take.is_ok() {
+            text_color()
+        } else {
+            muted_color()
+        };
         let center = take_rect.center();
         painter.add(egui::Shape::convex_polygon(
             vec![
@@ -1257,12 +1270,16 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
             egui::Align2::LEFT_CENTER,
             format!("{:02}", row.position),
             FontId::new(10.5, FontFamily::Monospace),
-            TEXT_DIM,
+            text_dim_color(),
         );
         let badge_width = 62.0;
         let duration_width = 100.0;
         let name_left = text_left + 22.0;
-        let name_color = if row.entry.enabled { TEXT } else { MUTED };
+        let name_color = if row.entry.enabled {
+            text_color()
+        } else {
+            muted_color()
+        };
         let name = elided(
             painter,
             &row.name,
@@ -1279,13 +1296,13 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
             painter,
             &transition,
             FontId::new(10.0, FontFamily::Proportional),
-            TEXT_DIM,
+            text_dim_color(),
             (rect.max.x - duration_width - badge_width - 12.0 - text_left).max(20.0),
         );
         painter.galley(
             pos2(text_left, rect.max.y - 10.0 - detail.size().y / 2.0),
             detail,
-            TEXT_DIM,
+            text_dim_color(),
         );
         // Role badge left of the duration column.
         let badge = match row.role {
@@ -1313,10 +1330,17 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
                 if matches!(row.role, EntryRole::OnAir) {
                     PROGRAM
                 } else {
-                    TEXT
+                    text_color()
                 },
             ),
-            _ => (duration, if row.entry.enabled { TEXT } else { MUTED }),
+            _ => (
+                duration,
+                if row.entry.enabled {
+                    text_color()
+                } else {
+                    muted_color()
+                },
+            ),
         };
         painter.text(
             pos2(rect.max.x - 8.0, rect.center().y),
@@ -1487,7 +1511,7 @@ fn draw_entry_form(
                 ui.add(
                     TextEdit::singleline(&mut form.duration)
                         .font(FontId::new(12.0, FontFamily::Monospace))
-                        .text_color(if valid { TEXT } else { ERROR })
+                        .text_color(if valid { text_color() } else { ERROR })
                         .hint_text(l.text(Msg::PlaylistDurationHint))
                         .desired_width(110.0),
                 )
@@ -1539,7 +1563,7 @@ fn draw_entry_form(
                     add.is_ok(),
                     key_button(
                         &l.text(Msg::PlaylistAdd).to_uppercase(),
-                        Some(ACCENT),
+                        Some(accent_color()),
                         width,
                     ),
                 )
@@ -1578,7 +1602,7 @@ fn draw_entry_form(
                 egui::Label::new(
                     RichText::new(l10n::unavailable(l, reason))
                         .size(10.5)
-                        .color(MUTED),
+                        .color(muted_color()),
                 )
                 .wrap(),
             );

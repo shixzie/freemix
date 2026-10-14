@@ -21,8 +21,9 @@ use crate::l10n::{self, Arg, Locale, Msg};
 use crate::panels::{STREAMS_NONE_CONFIGURED, latest_stream_sample, stream_row_text};
 use crate::stream_control::{stream_action_text, stream_unavailable_reason};
 use crate::theme::{
-    AMBER, BORDER, BORDER_STRONG, GRAPHITE, MUTED, PROGRAM, PROGRAM_FILL, TEXT, TEXT_DIM, Tone,
-    WIDGET, elided, mono, paint_lamp, section_header, status_chip_painted,
+    AMBER, PROGRAM, PROGRAM_FILL, Tone, border_color, border_strong_color, elided, graphite_color,
+    mono, muted_color, paint_lamp, section_header, status_chip_painted, text_color, text_dim_color,
+    widget_color,
 };
 use crate::{
     RecordingAction, StreamAction, StudioIntent, StudioUiState, recording_action, stream_action,
@@ -46,7 +47,7 @@ fn key_width(ui: &Ui, l: Locale) -> f32 {
                 .layout_no_wrap(
                     l.text(word).to_owned(),
                     FontId::new(11.0, FontFamily::Proportional),
-                    TEXT,
+                    text_color(),
                 )
                 .size()
                 .x
@@ -215,10 +216,10 @@ struct RowKey<'a> {
 /// requested-but-not-realized output takes the row's amber.
 pub(crate) fn row_key_style(starts: bool, tone: Tone) -> (Msg, Color32, Color32) {
     match (starts, tone) {
-        (true, _) => (Msg::StartKey, WIDGET, BORDER_STRONG),
+        (true, _) => (Msg::StartKey, widget_color(), border_strong_color()),
         (false, Tone::OnAir) => (Msg::StopKey, PROGRAM_FILL, PROGRAM.gamma_multiply(0.8)),
-        (false, Tone::Pending) => (Msg::StopKey, WIDGET, AMBER.gamma_multiply(0.7)),
-        (false, _) => (Msg::StopKey, WIDGET, BORDER_STRONG),
+        (false, Tone::Pending) => (Msg::StopKey, widget_color(), AMBER.gamma_multiply(0.7)),
+        (false, _) => (Msg::StopKey, widget_color(), border_strong_color()),
     }
 }
 
@@ -248,7 +249,7 @@ fn draw_row(
     );
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
-        painter.rect_filled(rect, CornerRadius::same(4), GRAPHITE);
+        painter.rect_filled(rect, CornerRadius::same(4), graphite_color());
         painter.rect_stroke(
             rect,
             CornerRadius::same(4),
@@ -257,7 +258,7 @@ fn draw_row(
                 if row.tone == Tone::OnAir {
                     PROGRAM.gamma_multiply(0.55)
                 } else {
-                    BORDER
+                    border_color()
                 },
             ),
             egui::StrokeKind::Inside,
@@ -272,14 +273,18 @@ fn draw_row(
             painter,
             title,
             FontId::new(12.5, FontFamily::Proportional),
-            TEXT,
+            text_color(),
             text_right - text_left,
         );
-        painter.galley(pos2(text_left, rect.min.y + 5.0), title_galley, TEXT);
+        painter.galley(
+            pos2(text_left, rect.min.y + 5.0),
+            title_galley,
+            text_color(),
+        );
         let detail_color = match row.tone {
             Tone::Fault => row.tone.color(),
-            Tone::Pending => TEXT_DIM,
-            _ => MUTED,
+            Tone::Pending => text_dim_color(),
+            _ => muted_color(),
         };
         let detail_left = chip_rect.max.x + 7.0;
         let detail_galley = elided(
@@ -312,7 +317,7 @@ fn draw_row(
     ui.place(key_rect, |ui: &mut Ui| {
         ui.add_enabled(
             key.enabled,
-            Button::new(RichText::new(label).size(11.0).strong().color(TEXT))
+            Button::new(RichText::new(label).size(11.0).strong().color(text_color()))
                 .fill(fill)
                 .stroke(Stroke::new(1.0, stroke))
                 .min_size(key_rect.size())
@@ -341,7 +346,11 @@ pub(crate) fn draw_recorders(ui: &mut Ui, state: &StudioUiState) -> Option<Recor
                 OutputKind::Recorders,
             ))
             .size(10.0)
-            .color(if recording > 0 { PROGRAM } else { TEXT_DIM }),
+            .color(if recording > 0 {
+                PROGRAM
+            } else {
+                text_dim_color()
+            }),
         );
     });
     let mut selected = None;
@@ -427,7 +436,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                 l.text(Msg::TargetsUnknown).to_owned()
             })
             .size(10.0)
-            .color(if live > 0 { PROGRAM } else { TEXT_DIM }),
+            .color(if live > 0 { PROGRAM } else { text_dim_color() }),
         );
     });
     if state.streams.is_empty() {
@@ -448,7 +457,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
         painter.rect_stroke(
             rect,
             CornerRadius::same(4),
-            Stroke::new(1.0, BORDER),
+            Stroke::new(1.0, border_color()),
             egui::StrokeKind::Inside,
         );
         painter.text(
@@ -456,7 +465,7 @@ pub(crate) fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             egui::Align2::CENTER_CENTER,
             text,
             FontId::new(11.0, FontFamily::Proportional),
-            MUTED,
+            muted_color(),
         );
         return;
     }
@@ -559,16 +568,16 @@ mod tests {
     fn row_keys_are_red_only_while_on_air() {
         assert_eq!(
             row_key_style(true, Tone::Idle),
-            (Msg::StartKey, WIDGET, BORDER_STRONG)
+            (Msg::StartKey, widget_color(), border_strong_color())
         );
         // A START key never turns red, whatever the row shows.
-        assert_eq!(row_key_style(true, Tone::OnAir).1, WIDGET);
+        assert_eq!(row_key_style(true, Tone::OnAir).1, widget_color());
         assert_eq!(row_key_style(false, Tone::OnAir).1, PROGRAM_FILL);
         assert_eq!(
             row_key_style(false, Tone::Pending).2,
             crate::theme::AMBER.gamma_multiply(0.7)
         );
-        assert_eq!(row_key_style(false, Tone::Fault).1, WIDGET);
+        assert_eq!(row_key_style(false, Tone::Fault).1, widget_color());
     }
 
     #[test]

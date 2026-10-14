@@ -32,9 +32,10 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::label_for_input;
 use crate::theme::{
-    ACCENT, ACCENT_FILL, AMBER, AMBER_FILL, BORDER, BORDER_STRONG, ERROR, GRAPHITE,
-    GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PROGRAM, PROGRAM_FILL, TEXT, TEXT_DIM, Tone,
-    WIDGET_HOVER, caption, elided, empty_state, field_label, mono, paint_lamp, status_chip_painted,
+    ACCENT_FILL, AMBER, AMBER_FILL, ERROR, MONITOR_BLACK, PROGRAM, PROGRAM_FILL, Tone,
+    accent_color, border_color, border_strong_color, caption, elided, empty_state, field_label,
+    graphite_color, mono, muted_color, paint_lamp, raised_color, status_chip_painted, text_color,
+    text_dim_color, widget_hover_color,
 };
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
@@ -194,13 +195,13 @@ impl TitlesPanel {
         let view = state.view.as_ref();
         let badge = title_air_badge(view, title, presentation.on_air);
         Frame::new()
-            .fill(GRAPHITE_RAISED)
+            .fill(raised_color())
             .stroke(Stroke::new(
                 1.0,
                 if badge == TitleAirBadge::OnAir {
                     PROGRAM.gamma_multiply(0.6)
                 } else {
-                    BORDER
+                    border_color()
                 },
             ))
             .corner_radius(CornerRadius::same(5))
@@ -296,18 +297,23 @@ impl TitlesPanel {
         let marker = if field.error.is_some() {
             ERROR
         } else if field.dirty {
-            ACCENT
+            accent_color()
         } else {
             Color32::TRANSPARENT
         };
         let top = ui.cursor().min;
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&field.name).size(11.5).strong().color(TEXT));
+            ui.label(
+                RichText::new(&field.name)
+                    .size(11.5)
+                    .strong()
+                    .color(text_color()),
+            );
             ui.label(
                 RichText::new(l.text(field_type_label(field.field_type)))
                     .size(9.0)
                     .extra_letter_spacing(0.8)
-                    .color(MUTED),
+                    .color(muted_color()),
             );
             if field.changed_upstream && !field.dirty {
                 ui.label(RichText::new("●").size(9.0).color(AMBER))
@@ -329,7 +335,7 @@ impl TitlesPanel {
                         RichText::new(l.text(Msg::TitleEdited))
                             .size(9.0)
                             .extra_letter_spacing(0.8)
-                            .color(ACCENT),
+                            .color(accent_color()),
                     );
                 });
             }
@@ -358,7 +364,13 @@ impl TitlesPanel {
                 .inner_margin(Margin::symmetric(6, 4))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    compare_row(ui, l.text(Msg::TitleMine), ACCENT, Some(&field.input), None);
+                    compare_row(
+                        ui,
+                        l.text(Msg::TitleMine),
+                        accent_color(),
+                        Some(&field.input),
+                        None,
+                    );
                     let theirs = conflict.theirs.as_ref().map(format_field_value);
                     compare_row(
                         ui,
@@ -888,19 +900,19 @@ fn draw_title_row(ui: &mut Ui, row: &TitleRow<'_>) -> Response {
         let painter = ui.painter();
         let tone = row.badge.tone();
         let fill = if response.hovered() {
-            WIDGET_HOVER
+            widget_hover_color()
         } else if row.selected {
-            GRAPHITE_RAISED
+            raised_color()
         } else {
-            GRAPHITE
+            graphite_color()
         };
         painter.rect_filled(rect, CornerRadius::same(4), fill);
         let stroke = if response.has_focus() {
-            Stroke::new(2.0, ACCENT)
+            Stroke::new(2.0, accent_color())
         } else if row.selected {
-            Stroke::new(1.5, ACCENT.gamma_multiply(0.8))
+            Stroke::new(1.5, accent_color().gamma_multiply(0.8))
         } else if tone == Tone::Idle {
-            Stroke::new(1.0, BORDER)
+            Stroke::new(1.0, border_color())
         } else {
             Stroke::new(1.0, tone.color().gamma_multiply(0.55))
         };
@@ -917,7 +929,11 @@ fn draw_title_row(ui: &mut Ui, row: &TitleRow<'_>) -> Response {
         } else if row.entry.dirty {
             markers.push_str(l.text(Msg::TitleEdited));
         }
-        let marker_color = if row.entry.stale { AMBER } else { ACCENT };
+        let marker_color = if row.entry.stale {
+            AMBER
+        } else {
+            accent_color()
+        };
         let marker = elided(
             painter,
             &markers,
@@ -931,7 +947,7 @@ fn draw_title_row(ui: &mut Ui, row: &TitleRow<'_>) -> Response {
             painter,
             &row.name,
             FontId::new(12.5, FontFamily::Proportional),
-            TEXT,
+            text_color(),
             name_width,
         );
         let detail = row.detail(l);
@@ -943,20 +959,20 @@ fn draw_title_row(ui: &mut Ui, row: &TitleRow<'_>) -> Response {
         painter.galley(
             pos2(rect.min.x + 24.0, name_y - name.size().y / 2.0),
             name,
-            TEXT,
+            text_color(),
         );
         if let Some(detail) = detail {
             let detail = elided(
                 painter,
                 &detail,
                 FontId::new(9.5, FontFamily::Proportional),
-                TEXT_DIM,
+                text_dim_color(),
                 name_width,
             );
             painter.galley(
                 pos2(rect.min.x + 24.0, rect.min.y + 24.0 - detail.size().y / 2.0),
                 detail,
-                TEXT_DIM,
+                text_dim_color(),
             );
         }
         if !markers.is_empty() {
@@ -980,7 +996,10 @@ fn draw_editor_header(
 ) {
     let name = title_display_name(l, view, presentation.title, &presentation.name);
     ui.horizontal(|ui| {
-        ui.add(egui::Label::new(RichText::new(&name).size(13.5).strong().color(TEXT)).truncate());
+        ui.add(
+            egui::Label::new(RichText::new(&name).size(13.5).strong().color(text_color()))
+                .truncate(),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 mono(l.format(
@@ -988,7 +1007,7 @@ fn draw_editor_header(
                     &[("revision", Arg::Plain(presentation.live_revision))],
                 ))
                 .size(10.5)
-                .color(MUTED),
+                .color(muted_color()),
             );
             crate::theme::status_chip(ui, badge.label().en(), badge.tone(), BADGE_WIDTH);
             if badge == TitleAirBadge::OnAir
@@ -997,7 +1016,7 @@ fn draw_editor_header(
                 ui.label(
                     RichText::new(location_text(l, location))
                         .size(10.5)
-                        .color(TEXT_DIM),
+                        .color(text_dim_color()),
                 );
             }
         });
@@ -1042,14 +1061,14 @@ fn compare_row(
             paint_swatch(ui, swatch.map_or(Color32::TRANSPARENT, swatch_color));
         }
         match value {
-            Some(value) => {
-                ui.add(egui::Label::new(RichText::new(value).size(11.0).color(TEXT)).truncate())
-            }
+            Some(value) => ui.add(
+                egui::Label::new(RichText::new(value).size(11.0).color(text_color())).truncate(),
+            ),
             None => ui.label(
                 RichText::new(l10n::locale(ui.ctx()).text(Msg::TitleFieldRemovedValue))
                     .size(11.0)
                     .italics()
-                    .color(MUTED),
+                    .color(muted_color()),
             ),
         };
     });
@@ -1076,7 +1095,7 @@ fn paint_swatch(ui: &mut Ui, color: Color32) {
     painter.rect_stroke(
         rect,
         CornerRadius::same(2),
-        Stroke::new(1.0, BORDER_STRONG),
+        Stroke::new(1.0, border_strong_color()),
         StrokeKind::Inside,
     );
 }
@@ -1084,8 +1103,8 @@ fn paint_swatch(ui: &mut Ui, color: Color32) {
 /// The armed values a Take or Update would air.
 fn draw_preview(ui: &mut Ui, l: Locale, preview: &TitlePreview) {
     Frame::new()
-        .fill(ACCENT.gamma_multiply(0.06))
-        .stroke(Stroke::new(1.0, ACCENT.gamma_multiply(0.4)))
+        .fill(accent_color().gamma_multiply(0.06))
+        .stroke(Stroke::new(1.0, accent_color().gamma_multiply(0.4)))
         .corner_radius(CornerRadius::same(3))
         .inner_margin(Margin::symmetric(8, 5))
         .show(ui, |ui| {
@@ -1097,7 +1116,7 @@ fn draw_preview(ui: &mut Ui, l: Locale, preview: &TitlePreview) {
                         .size(9.5)
                         .strong()
                         .extra_letter_spacing(1.0)
-                        .color(ACCENT),
+                        .color(accent_color()),
                 );
                 ui.label(caption(l.text(Msg::TitlePreviewHeading)));
             });
@@ -1105,8 +1124,12 @@ fn draw_preview(ui: &mut Ui, l: Locale, preview: &TitlePreview) {
                 ui.horizontal(|ui| {
                     fixed_column(ui, 96.0, |ui| {
                         ui.add(
-                            egui::Label::new(RichText::new(&field.name).size(10.5).color(TEXT_DIM))
-                                .truncate(),
+                            egui::Label::new(
+                                RichText::new(&field.name)
+                                    .size(10.5)
+                                    .color(text_dim_color()),
+                            )
+                            .truncate(),
                         );
                     });
                     if matches!(field.value, TitleFieldValue::Color { .. }) {
@@ -1119,9 +1142,9 @@ fn draw_preview(ui: &mut Ui, l: Locale, preview: &TitlePreview) {
                     }
                     ui.add(
                         egui::Label::new(RichText::new(text).size(11.0).color(if draft {
-                            ACCENT
+                            accent_color()
                         } else {
-                            TEXT
+                            text_color()
                         }))
                         .truncate(),
                     );
@@ -1142,15 +1165,15 @@ enum KeyTone {
 /// A fixed-size console key; disabled keys keep their size and dim.
 fn console_key(ui: &mut Ui, text: &str, width: f32, enabled: bool, tone: KeyTone) -> Response {
     let (fill, stroke) = match tone {
-        KeyTone::Neutral => (crate::theme::WIDGET, BORDER_STRONG),
-        KeyTone::Accent => (ACCENT_FILL, ACCENT.gamma_multiply(0.7)),
+        KeyTone::Neutral => (crate::theme::widget_color(), border_strong_color()),
+        KeyTone::Accent => (ACCENT_FILL, accent_color().gamma_multiply(0.7)),
         KeyTone::OnAir => (PROGRAM_FILL, PROGRAM.gamma_multiply(0.8)),
         KeyTone::Amber => (AMBER_FILL, AMBER.gamma_multiply(0.7)),
     };
     let (fill, stroke) = if enabled {
         (fill, stroke)
     } else {
-        (crate::theme::WIDGET, BORDER)
+        (crate::theme::widget_color(), border_color())
     };
     ui.add_enabled(
         enabled,
@@ -1159,7 +1182,7 @@ fn console_key(ui: &mut Ui, text: &str, width: f32, enabled: bool, tone: KeyTone
                 .size(11.0)
                 .strong()
                 .extra_letter_spacing(0.6)
-                .color(TEXT),
+                .color(text_color()),
         )
         .truncate()
         .fill(fill)

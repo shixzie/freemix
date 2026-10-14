@@ -22,8 +22,9 @@ use crate::gating::{Capability, unavailable_reason};
 use crate::input_bank::project_editing_available;
 use crate::l10n::{self, Arg, Locale, Msg, with_key};
 use crate::theme::{
-    ACCENT, ACCENT_FILL, AMBER, BORDER_STRONG, ERROR, MONITOR_BLACK, MUTED, PROGRAM, PROGRAM_FILL,
-    TEXT, TEXT_DIM, Tone, WIDGET, mono, paint_lamp, section_label,
+    ACCENT_FILL, AMBER, ERROR, MONITOR_BLACK, PROGRAM, PROGRAM_FILL, Tone, accent_color,
+    border_strong_color, mono, muted_color, paint_lamp, section_label, text_color, text_dim_color,
+    widget_color,
 };
 use crate::toasts::ToastKind;
 use crate::{StudioIntent, StudioShell, StudioUiState};
@@ -931,7 +932,7 @@ impl StudioShell {
                 ui.label(
                     RichText::new(l.text(Msg::AddInputIntro))
                         .size(11.0)
-                        .color(TEXT_DIM),
+                        .color(text_dim_color()),
                 );
                 ui.add_space(8.0);
                 ui.label(section_label(l.text(Msg::AddInputKind)));
@@ -979,11 +980,15 @@ impl StudioShell {
                         ui.label(
                             RichText::new(l.text(Msg::NameSuggested))
                                 .size(10.5)
-                                .color(MUTED),
+                                .color(muted_color()),
                         );
                     }
                     None => {
-                        ui.label(RichText::new(l.text(Msg::NameFree)).size(10.5).color(MUTED));
+                        ui.label(
+                            RichText::new(l.text(Msg::NameFree))
+                                .size(10.5)
+                                .color(muted_color()),
+                        );
                     }
                 }
                 ui.add_space(6.0);
@@ -1004,7 +1009,7 @@ impl StudioShell {
                                 },
                             ))
                             .size(10.5)
-                            .color(TEXT_DIM),
+                            .color(text_dim_color()),
                         );
                     });
                     if draft.kind == NewInputKind::Solid {
@@ -1033,7 +1038,9 @@ impl StudioShell {
                                     egui::color_picker::Alpha::Opaque,
                                 )
                                 .on_hover_text(l.text(Msg::ColourPickHover));
-                                ui.label(mono(hex_colour(draft.color)).size(11.5).color(TEXT));
+                                ui.label(
+                                    mono(hex_colour(draft.color)).size(11.5).color(text_color()),
+                                );
                             });
                         });
                     }
@@ -1057,23 +1064,45 @@ impl StudioShell {
                         ui.label(
                             RichText::new(l.text(Msg::AddInputUndoNote))
                                 .size(10.5)
-                                .color(MUTED),
+                                .color(muted_color()),
                         );
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let add = ui
-                            .add_enabled(
-                                submission.is_ok(),
+                        // Add sits right of Cancel but is created after it,
+                        // so Tab runs left to right: Cancel, then Add.
+                        let add_slot = ui
+                            .allocate_exact_size(Vec2::new(104.0, 26.0), Sense::hover())
+                            .0;
+                        if ui
+                            .add(
                                 Button::new(
-                                    RichText::new(l.text(Msg::AddInputKey))
+                                    RichText::new(l.text(Msg::CancelKey))
                                         .size(12.0)
-                                        .strong()
-                                        .color(TEXT),
+                                        .color(text_dim_color()),
                                 )
-                                .fill(ACCENT_FILL)
-                                .stroke(Stroke::new(1.0, ACCENT))
-                                .min_size(Vec2::new(104.0, 26.0)),
+                                .min_size(Vec2::new(84.0, 26.0)),
                             )
+                            .on_hover_text(with_key(l, l.text(Msg::AddInputCancelHover), "Esc"))
+                            .clicked()
+                        {
+                            cancel = true;
+                        }
+                        let add = ui
+                            .add_enabled_ui(submission.is_ok(), |ui| {
+                                ui.put(
+                                    add_slot,
+                                    Button::new(
+                                        RichText::new(l.text(Msg::AddInputKey))
+                                            .size(12.0)
+                                            .strong()
+                                            .color(text_color()),
+                                    )
+                                    .fill(ACCENT_FILL)
+                                    .stroke(Stroke::new(1.0, accent_color()))
+                                    .min_size(Vec2::new(104.0, 26.0)),
+                                )
+                            })
+                            .inner
                             .on_hover_text(with_key(
                                 l,
                                 l.text(Msg::AddInputKeyHover),
@@ -1085,20 +1114,6 @@ impl StudioShell {
                             ));
                         if add.clicked() {
                             submit = true;
-                        }
-                        if ui
-                            .add(
-                                Button::new(
-                                    RichText::new(l.text(Msg::CancelKey))
-                                        .size(12.0)
-                                        .color(TEXT_DIM),
-                                )
-                                .min_size(Vec2::new(84.0, 26.0)),
-                            )
-                            .on_hover_text(with_key(l, l.text(Msg::AddInputCancelHover), "Esc"))
-                            .clicked()
-                        {
-                            cancel = true;
                         }
                     });
                 });
@@ -1159,12 +1174,14 @@ impl StudioShell {
             l.text(Msg::RemoveInput),
             420.0,
             |ui| {
-                ui.add(egui::Label::new(RichText::new(question).size(13.0).color(TEXT)).wrap());
+                ui.add(
+                    egui::Label::new(RichText::new(question).size(13.0).color(text_color())).wrap(),
+                );
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(l.text(Msg::RemoveInputWarning))
                         .size(11.0)
-                        .color(TEXT_DIM),
+                        .color(text_dim_color()),
                 );
                 ui.add_space(8.0);
                 ui.separator();
@@ -1183,38 +1200,50 @@ impl StudioShell {
                         .on_hover_text(l10n::unavailable(l, availability.reason));
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(
-                                availability.enabled,
+                        // Remove sits right of Cancel but is created after
+                        // it, so Tab reaches the safe Cancel key first; the
+                        // dialog opens with Cancel focused, so a stray
+                        // Enter or Space never removes the input.
+                        let remove_slot = ui
+                            .allocate_exact_size(Vec2::new(96.0, 26.0), Sense::hover())
+                            .0;
+                        let cancel_key = ui
+                            .add(
                                 Button::new(
-                                    RichText::new(l.text(Msg::RemoveKey))
+                                    RichText::new(l.text(Msg::CancelKey))
                                         .size(12.0)
-                                        .strong()
-                                        .color(TEXT),
+                                        .color(text_dim_color()),
                                 )
-                                .fill(PROGRAM_FILL)
-                                .stroke(Stroke::new(1.0, PROGRAM))
-                                .min_size(Vec2::new(96.0, 26.0)),
+                                .min_size(Vec2::new(84.0, 26.0)),
                             )
+                            .on_hover_text(with_key(l, l.text(Msg::RemoveCancelHover), "Esc"));
+                        if cancel_key.clicked() {
+                            cancel = true;
+                        }
+                        if ui.ctx().memory(|memory| memory.focused().is_none()) {
+                            cancel_key.request_focus();
+                        }
+                        if ui
+                            .add_enabled_ui(availability.enabled, |ui| {
+                                ui.put(
+                                    remove_slot,
+                                    Button::new(
+                                        RichText::new(l.text(Msg::RemoveKey))
+                                            .size(12.0)
+                                            .strong()
+                                            .color(text_color()),
+                                    )
+                                    .fill(PROGRAM_FILL)
+                                    .stroke(Stroke::new(1.0, PROGRAM))
+                                    .min_size(Vec2::new(96.0, 26.0)),
+                                )
+                            })
+                            .inner
                             .on_hover_text(l.text(Msg::RemoveKeyHover))
                             .on_disabled_hover_text(l10n::unavailable(l, availability.reason))
                             .clicked()
                         {
                             remove = true;
-                        }
-                        if ui
-                            .add(
-                                Button::new(
-                                    RichText::new(l.text(Msg::CancelKey))
-                                        .size(12.0)
-                                        .color(TEXT_DIM),
-                                )
-                                .min_size(Vec2::new(84.0, 26.0)),
-                            )
-                            .on_hover_text(with_key(l, l.text(Msg::RemoveCancelHover), "Esc"))
-                            .clicked()
-                        {
-                            cancel = true;
                         }
                     });
                 });
@@ -1244,12 +1273,24 @@ fn kind_key(label: &str, selected: bool) -> Button<'static> {
         RichText::new(label.to_owned())
             .size(11.5)
             .strong()
-            .color(if selected { TEXT } else { TEXT_DIM }),
+            .color(if selected {
+                text_color()
+            } else {
+                text_dim_color()
+            }),
     )
-    .fill(if selected { ACCENT_FILL } else { WIDGET })
+    .fill(if selected {
+        ACCENT_FILL
+    } else {
+        widget_color()
+    })
     .stroke(Stroke::new(
         1.0,
-        if selected { ACCENT } else { BORDER_STRONG },
+        if selected {
+            accent_color()
+        } else {
+            border_strong_color()
+        },
     ))
     .min_size(Vec2::new(150.0, 28.0))
 }
@@ -1266,11 +1307,11 @@ fn colour_swatch(ui: &mut Ui, color: Color32, selected: bool) -> egui::Response 
             Stroke::new(
                 if selected { 2.0 } else { 1.0 },
                 if selected {
-                    ACCENT
+                    accent_color()
                 } else if response.hovered() {
-                    TEXT_DIM
+                    text_dim_color()
                 } else {
-                    BORDER_STRONG
+                    border_strong_color()
                 },
             ),
             StrokeKind::Outside,
@@ -1329,7 +1370,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
                 &[("input", Arg::Str(&input.to_string()))],
             ),
             FontId::new(9.5, FontFamily::Monospace),
-            TEXT,
+            text_color(),
         );
         let tag_rect = Rect::from_min_size(
             rect.min + Vec2::new(6.0, 6.0),
@@ -1340,7 +1381,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
             CornerRadius::same(3),
             Color32::from_black_alpha(190),
         );
-        painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, TEXT);
+        painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, text_color());
     }
     painter.text(
         pos2(rect.max.x - 6.0, rect.max.y - 6.0),
@@ -1352,7 +1393,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
     painter.rect_stroke(
         rect,
         CornerRadius::same(3),
-        Stroke::new(1.0, BORDER_STRONG),
+        Stroke::new(1.0, border_strong_color()),
         StrokeKind::Inside,
     );
 }
