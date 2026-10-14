@@ -1059,7 +1059,8 @@ mod tests {
         assert_eq!(preview.origin, MonitorFrameOrigin::Simulated);
         assert_eq!(preview.input, WireInputId::from_domain(input_id(2)));
         assert_eq!((preview.sequence, preview.frame), (1, 4));
-        // Seven equal bars across 640 pixels; sample the middle of each.
+        // Eight exact 75% BT.709 bars, 80 pixels each, on every row; the
+        // picture is static, so no pixel encodes the frame number.
         let bars = [
             [191, 191, 191, 255],
             [191, 191, 0, 255],
@@ -1068,13 +1069,15 @@ mod tests {
             [191, 0, 191, 255],
             [191, 0, 0, 255],
             [0, 0, 191, 255],
+            [0, 0, 0, 255],
         ];
         for (bar, expected) in bars.iter().enumerate() {
-            let x = (bar * 640 + 320) / 7;
-            assert_eq!(pixel(&preview, x, 0), *expected, "bar {bar}");
+            for x in [bar * 80, bar * 80 + 79] {
+                for y in [0, 359] {
+                    assert_eq!(pixel(&preview, x, y), *expected, "bar {bar} at ({x}, {y})");
+                }
+            }
         }
-        // The one-pixel frame marker sits on the last row at frame % width.
-        assert_eq!(pixel(&preview, 4, 359), [0, 0, 0, 255]);
 
         let program = decode(&frames[1].1);
         assert_eq!(program.tap, MonitorTap::Program);

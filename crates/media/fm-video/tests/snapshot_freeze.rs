@@ -1,9 +1,10 @@
 //! SW-016 reference slice: lossless still snapshots and freeze/live-pause.
 
 use fm_video::{
-    FreezeController, FreezeError, FreezeState, ImageFrame, MAX_PNG_RAW_BYTES, OutputFrame,
-    OutputOrigin, PNG_SIGNATURE, PngEncodeError, Rgba8, STORED_BLOCK_MAX, SourceFrame, adler32,
-    crc32, encode_png_rgba8, encode_png_rgba16, solid_color, vertical_color_bars,
+    BarsColorimetry, BarsPattern, FreezeController, FreezeError, FreezeState, ImageFrame,
+    MAX_PNG_RAW_BYTES, OutputFrame, OutputOrigin, PNG_SIGNATURE, PngEncodeError, Rgba8,
+    STORED_BLOCK_MAX, SourceFrame, TestSignalSpec, adler32, crc32, encode_png_rgba8,
+    encode_png_rgba16, render_test_signal_rgba8, solid_color,
 };
 
 // ---------------------------------------------------------------------------
@@ -155,11 +156,19 @@ fn one_pixel_rgba8_png_matches_golden_bytes() {
 
 #[test]
 fn rgba8_png_round_trips_exactly_and_ignores_row_padding() {
-    let bars = vertical_color_bars(7, 3, 0).unwrap();
+    let bars = render_test_signal_rgba8(
+        TestSignalSpec {
+            pattern: BarsPattern::Bars75,
+            colorimetry: BarsColorimetry::Bt709,
+        },
+        8,
+        3,
+    )
+    .unwrap();
     let decoded = decode_stored_png(&encode_png_rgba8(&bars).unwrap());
     assert_eq!(
         (decoded.width, decoded.height, decoded.bit_depth),
-        (7, 3, 8)
+        (8, 3, 8)
     );
     assert_eq!(decoded.pixels, bars.pixels());
 

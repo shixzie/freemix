@@ -4,7 +4,9 @@ use fm_scopes::{
     VectorscopeConfig, WaveformConfig, histogram, luma_waveform, pixel_probe, rgb_parade,
     vectorscope,
 };
-use fm_video::{ImageFrame, Rgba8, vertical_color_bars};
+use fm_video::{
+    BarsColorimetry, BarsPattern, ImageFrame, Rgba8, TestSignalSpec, render_test_signal_rgba8,
+};
 
 const FULL_601: ColorMetadata = ColorMetadata::new(ColorMatrix::Bt601, ColorRange::Full);
 const FULL_709: ColorMetadata = ColorMetadata::new(ColorMatrix::Bt709, ColorRange::Full);
@@ -98,7 +100,15 @@ fn primary_vectors_match_bt709_full_range_codes() {
 
 #[test]
 fn color_bars_produce_known_rgb_histogram() {
-    let bars = vertical_color_bars(7, 2, 0).unwrap();
+    let bars = render_test_signal_rgba8(
+        TestSignalSpec {
+            pattern: BarsPattern::Bars75,
+            colorimetry: BarsColorimetry::Bt709,
+        },
+        8,
+        2,
+    )
+    .unwrap();
     let histogram = histogram(
         &bars,
         HistogramConfig {
@@ -108,16 +118,17 @@ fn color_bars_produce_known_rgb_histogram() {
     )
     .unwrap();
 
-    // The second row includes the generator's one black frame marker.
-    assert_eq!(histogram.bin(HistogramChannel::Red, 191), Some(7));
-    assert_eq!(histogram.bin(HistogramChannel::Green, 191), Some(7));
-    assert_eq!(histogram.bin(HistogramChannel::Blue, 191), Some(7));
-    assert_eq!(histogram.bin(HistogramChannel::Red, 0), Some(7));
+    // Eight 75% bars per row: each primary is at 191 in four bars and at 0
+    // in the other four (including the black bar).
+    assert_eq!(histogram.bin(HistogramChannel::Red, 191), Some(8));
+    assert_eq!(histogram.bin(HistogramChannel::Green, 191), Some(8));
+    assert_eq!(histogram.bin(HistogramChannel::Blue, 191), Some(8));
+    assert_eq!(histogram.bin(HistogramChannel::Red, 0), Some(8));
     assert_eq!(
         histogram
             .bin_statistics(HistogramChannel::Luma)
             .sample_count,
-        14
+        16
     );
 }
 

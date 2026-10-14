@@ -553,7 +553,7 @@ pub struct GeneratedSourceSpec {
 /// returns the shared frame rendered for the current specification and only a
 /// specification change renders again. [`Self::renders`] counts renders so
 /// callers can assert that steady-state ticks do no per-frame pixel work.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct StaticGenerator {
     current: Option<(GeneratedSourceSpec, std::sync::Arc<ImageFrame>)>,
     renders: u64,

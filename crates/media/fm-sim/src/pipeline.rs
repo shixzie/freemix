@@ -1,14 +1,20 @@
 use crate::{PipelineConfigError, RegistryError, RenderError, SimulatedSource, SourcePattern};
 use fm_switcher::{ProgramFrame, TransitionKind};
 use fm_types::InputId;
-use fm_video::{BlendError, FrameError, ImageFrame, crossfade, solid_color, vertical_color_bars};
+use fm_video::{
+    BlendError, FrameError, ImageFrame, crossfade, render_test_signal_rgba8, solid_color,
+};
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 #[derive(Clone, Debug)]
 pub struct SimulatedPipeline {
     width: u32,
     height: u32,
     sources: BTreeMap<InputId, SimulatedSource>,
+    /// The bars picture at the pipeline size, rendered on first use. The
+    /// size never changes, so steady renders only copy it.
+    bars: OnceLock<ImageFrame>,
 }
 
 impl SimulatedPipeline {
@@ -52,6 +58,7 @@ impl SimulatedPipeline {
             width,
             height,
             sources: BTreeMap::new(),
+            bars: OnceLock::new(),
         })
     }
 
@@ -142,6 +149,10 @@ impl SimulatedPipeline {
 
     /// Renders a registered source for a frame number.
     ///
+    /// Simulated pictures are static, so `frame_number` does not change the
+    /// pixels; it is kept so callers address a frame of the program timeline.
+    /// Bars are rendered once per pipeline and copied afterwards.
+    ///
     /// # Errors
     ///
     /// Returns [`RenderError::MissingSource`] when the input is not registered,
@@ -151,14 +162,24 @@ impl SimulatedPipeline {
         input: InputId,
         frame_number: u64,
     ) -> Result<ImageFrame, RenderError> {
+        let _ = frame_number;
         let source = self
             .sources
             .get(&input)
             .ok_or(RenderError::MissingSource { input })?;
         Ok(match source.pattern() {
-            SourcePattern::Bars => vertical_color_bars(self.width, self.height, frame_number)?,
+            SourcePattern::Bars => self.bars()?,
             SourcePattern::Solid(color) => solid_color(self.width, self.height, color)?,
         })
+    }
+
+    fn bars(&self) -> Result<ImageFrame, FrameError> {
+        if let Some(bars) = self.bars.get() {
+            return Ok(bars.clone());
+        }
+        let bars = render_test_signal_rgba8(SourcePattern::BARS, self.width, self.height)
+            .map_err(crate::source::frame_error)?;
+        Ok(self.bars.get_or_init(|| bars).clone())
     }
 }
 

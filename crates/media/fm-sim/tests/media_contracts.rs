@@ -67,7 +67,7 @@ fn video_frames_have_importer_compatible_rgba_contracts() {
         assert_eq!(frame.payload().plane(0).unwrap().stride(), 14 * 4);
     }
 
-    assert_eq!(video_frame_hash(&bars), 727_902_077_449_732_892);
+    assert_eq!(video_frame_hash(&bars), 6_140_589_995_532_060_389);
     assert_eq!(video_frame_hash(&solid), 681_754_405_434_072_565);
     assert!(
         solid
@@ -217,8 +217,11 @@ fn reset_reproduces_video_hashes_and_audio_samples() {
     let mut video = video_source(SourcePattern::Bars);
     let first = video.next_frame().unwrap().unwrap();
     let first_hash = video_frame_hash(&first);
-    assert_eq!(first_hash, 727_902_077_449_732_892);
-    video.next_frame().unwrap();
+    assert_eq!(first_hash, 6_140_589_995_532_060_389);
+    // Bars are static; consecutive frames differ only in their timing.
+    let second = video.next_frame().unwrap().unwrap();
+    assert_eq!(video_frame_hash(&second), first_hash);
+    assert_ne!(second.timing().sequence(), first.timing().sequence());
     video.restart();
     assert_eq!(
         video_frame_hash(&video.next_frame().unwrap().unwrap()),

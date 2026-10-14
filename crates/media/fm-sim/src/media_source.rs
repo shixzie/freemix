@@ -11,7 +11,7 @@ use fm_frame::{
     VideoDimensions, VideoFrameMetadata,
 };
 use fm_types::{AudioFormat, FrameRate, SampleFormat};
-use fm_video::{FrameError, ImageFrame, solid_color, vertical_color_bars};
+use fm_video::{FrameError, GeneratedSourceSpec, ImageFrame, StaticGenerator};
 
 use crate::{MediaSourceError, SourcePattern};
 
@@ -110,6 +110,8 @@ pub struct SimulatedTimedVideoSource {
     frame_rate: FrameRate,
     clock_domain: ClockDomainId,
     pattern: SourcePattern,
+    /// Renders the static picture once; every later frame reuses it.
+    generator: StaticGenerator,
     faults: FaultSchedule,
     sequence: u64,
     recovering: bool,
@@ -164,6 +166,7 @@ impl SimulatedTimedVideoSource {
             frame_rate,
             clock_domain,
             pattern,
+            generator: StaticGenerator::new(),
             faults: FaultSchedule::default(),
             sequence: 0,
             recovering: false,
@@ -214,10 +217,16 @@ impl SimulatedTimedVideoSource {
             return Ok(SourceEvent::SignalLost { timing });
         }
 
-        let image = match self.pattern {
-            SourcePattern::Bars => vertical_color_bars(self.width, self.height, sequence)?,
-            SourcePattern::Solid(color) => solid_color(self.width, self.height, color)?,
-        };
+        // The picture is static: only the first frame (or a failed earlier
+        // render) does pixel work. Per-frame identity lives in the timing.
+        let image = self
+            .generator
+            .frame(GeneratedSourceSpec {
+                width: self.width,
+                height: self.height,
+                content: self.pattern.generated_content(),
+            })
+            .map_err(crate::source::frame_error)?;
         let dimensions = VideoDimensions::new(self.width, self.height)
             .ok_or(MediaSourceError::DimensionOverflow)?;
         let plane = CpuVideoPlane::new(image.stride(), image.pixels().to_vec())?;

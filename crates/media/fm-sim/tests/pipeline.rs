@@ -354,8 +354,8 @@ fn alpha_fade_interpolates_transparent_rgba_channels() {
 }
 
 #[test]
-fn moving_bars_change_deterministically_with_frame_number() {
-    let mut pipeline = SimulatedPipeline::new(14, 4).unwrap();
+fn bars_are_exact_static_75_percent_bt709_bars() {
+    let mut pipeline = SimulatedPipeline::new(16, 4).unwrap();
     pipeline
         .register(SimulatedSource::new(input(7), SourcePattern::Bars))
         .unwrap();
@@ -364,10 +364,24 @@ fn moving_bars_change_deterministically_with_frame_number() {
     let repeat = pipeline.render(10, program(input(7))).unwrap();
     let next = pipeline.render(11, program(input(7))).unwrap();
 
+    // The picture is static: frame identity is never encoded in pixels.
     assert_eq!(first, repeat);
-    assert_ne!(first, next);
-    assert_eq!(first.pixel(10, 3), Some(Rgba8::new(0, 0, 0, 255)));
-    assert_eq!(next.pixel(11, 3), Some(Rgba8::new(0, 0, 0, 255)));
+    assert_eq!(first, next);
+    let bars = [
+        Rgba8::new(191, 191, 191, 255),
+        Rgba8::new(191, 191, 0, 255),
+        Rgba8::new(0, 191, 191, 255),
+        Rgba8::new(0, 191, 0, 255),
+        Rgba8::new(191, 0, 191, 255),
+        Rgba8::new(191, 0, 0, 255),
+        Rgba8::new(0, 0, 191, 255),
+        Rgba8::new(0, 0, 0, 255),
+    ];
+    for y in 0..4 {
+        for x in 0..16 {
+            assert_eq!(first.pixel(x, y), Some(bars[x as usize / 2]), "({x}, {y})");
+        }
+    }
 }
 
 #[test]

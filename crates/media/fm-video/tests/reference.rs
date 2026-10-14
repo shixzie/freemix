@@ -1,7 +1,4 @@
-use fm_video::{
-    BlendError, FrameError, ImageFrame, Rgba8, crossfade, solid_color, vertical_color_bars,
-    write_ppm,
-};
+use fm_video::{BlendError, FrameError, ImageFrame, Rgba8, crossfade, solid_color, write_ppm};
 
 #[test]
 fn crossfade_has_exact_endpoints_and_rounded_midpoint() {
@@ -73,19 +70,6 @@ fn frame_rejects_zero_dimensions_bad_stride_overflow_and_large_buffers() {
         solid_color(100_000, 100_000, Rgba8::default()),
         Err(FrameError::BufferTooLarge { .. })
     ));
-}
-
-#[test]
-fn color_bars_are_deterministic_and_marker_moves_with_frame_number() {
-    let frame_zero = vertical_color_bars(14, 4, 0).unwrap();
-    let repeat = vertical_color_bars(14, 4, 0).unwrap();
-    let frame_one = vertical_color_bars(14, 4, 1).unwrap();
-
-    assert_eq!(frame_zero, repeat);
-    assert_ne!(frame_zero, frame_one);
-    assert_eq!(frame_zero.pixel(0, 3), Some(Rgba8::new(0, 0, 0, 255)));
-    assert_eq!(frame_one.pixel(1, 3), Some(Rgba8::new(0, 0, 0, 255)));
-    assert_ne!(frame_one.pixel(0, 3), frame_zero.pixel(0, 3));
 }
 
 #[test]

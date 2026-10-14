@@ -7824,13 +7824,13 @@ fn edited_current_configuration_survives_commands_restart_and_render() {
         project_path,
         bars_image.to_str().unwrap(),
         "--width",
-        "7",
+        "8",
         "--height",
         "2",
     ]));
     assert_ppm_top_row(
         &bars_image,
-        7,
+        8,
         2,
         &[
             [191, 191, 191],
@@ -7840,6 +7840,7 @@ fn edited_current_configuration_survives_commands_restart_and_render() {
             [191, 0, 191],
             [191, 0, 0],
             [0, 0, 191],
+            [0, 0, 0],
         ],
     );
 
@@ -8041,7 +8042,7 @@ fn local_scene_program_render_composes_supported_layers_and_rejects_unsupported_
         &bytes[header.len()..],
         &[
             10, 20, 30, 10, 20, 30, 10, 20, 30, 10, 20, 30, 10, 20, 30, 132, 171, 195, 73, 151,
-            199, 10, 20, 30, 10, 20, 30, 132, 171, 99, 132, 171, 99, 10, 20, 30, 10, 20, 30, 10,
+            199, 10, 20, 30, 10, 20, 30, 36, 171, 195, 36, 171, 195, 10, 20, 30, 10, 20, 30, 10,
             20, 30, 10, 20, 30, 10, 20, 30,
         ]
     );

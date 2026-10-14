@@ -28,7 +28,7 @@ pub use frame::{FrameError, ImageFrame, Rgba8};
 pub use freeze::{
     FreezeController, FreezeError, FreezeState, OutputFrame, OutputOrigin, SourceFrame,
 };
-pub use generate::{solid_color, vertical_color_bars};
+pub use generate::solid_color;
 pub use geometry::{
     CropError, CropRect, Rotation, Transform, TransformError, crop, scale_nearest,
     transform_nearest,
