@@ -37,8 +37,11 @@ use crate::{
 
 /// Extension of the session manifest file.
 pub const SESSION_MANIFEST_EXTENSION: &str = "fmsession";
-/// Extension of every segment file.
+/// Extension of every fragmented MP4 segment file, the default
+/// [`SegmentFormat`].
 pub const SESSION_SEGMENT_EXTENSION: &str = "mp4";
+/// Extension of every WAV segment file.
+pub const SESSION_WAV_SEGMENT_EXTENSION: &str = "wav";
 /// Primary plus fallback directories.
 pub const MAX_SESSION_ROOTS: usize = 4;
 /// Segment indexes run from 1 through this value (four digits).
@@ -51,6 +54,29 @@ const MAX_ATTEMPTS_PER_ROOT: u32 = 16;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MANIFEST_MAGIC: &str = "freemix-recording-session 1";
 
+/// Container written into a session's segment files. It picks the segment
+/// extension, the manifest name, and the recovery scanner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SegmentFormat {
+    /// Fragmented MP4 segments (`.mp4`), recovered by [`recover_session`].
+    #[default]
+    Fmp4,
+    /// RIFF/WAVE segments (`.wav`), recovered by
+    /// [`recover_wav_session`](crate::recover_wav_session).
+    Wav,
+}
+
+impl SegmentFormat {
+    /// Segment file extension, without the dot.
+    #[must_use]
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Fmp4 => SESSION_SEGMENT_EXTENSION,
+            Self::Wav => SESSION_WAV_SEGMENT_EXTENSION,
+        }
+    }
+}
+
 /// Validated session placement and failure policy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionConfig {
@@ -61,6 +87,7 @@ pub struct SessionConfig {
     attempts_per_root: u32,
     min_free_bytes: u64,
     bare_first_segment: bool,
+    format: SegmentFormat,
 }
 
 impl SessionConfig {
@@ -90,6 +117,7 @@ impl SessionConfig {
             attempts_per_root: 3,
             min_free_bytes: 0,
             bare_first_segment: false,
+            format: SegmentFormat::Fmp4,
         })
     }
 
@@ -166,6 +194,27 @@ impl SessionConfig {
         self
     }
 
+    /// Sets the segment container. A [`SegmentFormat::Wav`] session names its
+    /// segments `<name>-NNNN.wav` and its manifest `<name>.wav.fmsession`, so
+    /// it can share a directory and a name with the fragmented MP4 session it
+    /// accompanies. Recovery must use the same setting.
+    #[must_use]
+    pub fn with_segment_format(mut self, format: SegmentFormat) -> Self {
+        self.format = format;
+        self
+    }
+
+    #[must_use]
+    pub fn segment_format(&self) -> SegmentFormat {
+        self.format
+    }
+
+    /// Segment file extension, without the dot.
+    #[must_use]
+    pub fn segment_extension(&self) -> &'static str {
+        self.format.extension()
+    }
+
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -181,20 +230,29 @@ impl SessionConfig {
         self.max_segments
     }
 
-    /// File name of segment `index`: `<name>-NNNN.mp4`, or `<name>.mp4` for
-    /// segment 1 with [`Self::with_bare_first_segment`].
+    /// File name of segment `index`: `<name>-NNNN.<ext>`, or `<name>.<ext>`
+    /// for segment 1 with [`Self::with_bare_first_segment`]. `<ext>` is the
+    /// [`SegmentFormat`] extension.
     #[must_use]
     pub fn segment_file_name(&self, index: u32) -> String {
+        let extension = self.segment_extension();
         if self.bare_first_segment && index == 1 {
-            return format!("{}.{SESSION_SEGMENT_EXTENSION}", self.name);
+            return format!("{}.{extension}", self.name);
         }
-        format!("{}-{index:04}.{SESSION_SEGMENT_EXTENSION}", self.name)
+        format!("{}-{index:04}.{extension}", self.name)
     }
 
-    /// File name of the manifest: `<name>.fmsession`.
+    /// File name of the manifest: `<name>.fmsession` for fragmented MP4 and
+    /// `<name>.wav.fmsession` for WAV sessions.
     #[must_use]
     pub fn manifest_file_name(&self) -> String {
-        format!("{}.{SESSION_MANIFEST_EXTENSION}", self.name)
+        match self.format {
+            SegmentFormat::Fmp4 => format!("{}.{SESSION_MANIFEST_EXTENSION}", self.name),
+            SegmentFormat::Wav => format!(
+                "{}.{SESSION_WAV_SEGMENT_EXTENSION}.{SESSION_MANIFEST_EXTENSION}",
+                self.name
+            ),
+        }
     }
 
     /// Path of segment `index` under root `root`, if that root exists.
@@ -206,13 +264,14 @@ impl SessionConfig {
     }
 
     fn parse_segment_file_name(&self, file_name: &str) -> Option<u32> {
+        let extension = self.segment_extension();
         let rest = file_name.strip_prefix(self.name.as_str())?;
-        if self.bare_first_segment && rest == format!(".{SESSION_SEGMENT_EXTENSION}") {
+        if self.bare_first_segment && rest.strip_prefix('.') == Some(extension) {
             return Some(1);
         }
         let digits = rest
             .strip_prefix('-')?
-            .strip_suffix(SESSION_SEGMENT_EXTENSION)?
+            .strip_suffix(extension)?
             .strip_suffix('.')?;
         if digits.len() != 4 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
@@ -707,6 +766,17 @@ pub trait SegmentSink {
     ///
     /// Any I/O error; recovery repairs the file later.
     fn truncate(&mut self, length: u64) -> io::Result<()>;
+    /// Overwrites bytes already in the segment at `offset`, leaving the append
+    /// position at the end. Writers that patch a header in place (WAV sizes)
+    /// use it; the default refuses with [`io::ErrorKind::Unsupported`].
+    ///
+    /// # Errors
+    ///
+    /// Any I/O error; recovery repairs the file later.
+    fn write_at(&mut self, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        let _ = (offset, bytes);
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
 }
 
 impl SegmentSink for File {
@@ -723,6 +793,15 @@ impl SegmentSink for File {
         self.set_len(length)?;
         self.seek(io::SeekFrom::Start(length))?;
         File::sync_data(self)
+    }
+
+    fn write_at(&mut self, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        use std::io::Seek as _;
+        self.seek(io::SeekFrom::Start(offset))?;
+        let written = Write::write_all(self, bytes);
+        // Always return to the append position, even after a failed write.
+        let restored = self.seek(io::SeekFrom::End(0)).map(|_| ());
+        written.and(restored)
     }
 }
 
@@ -1402,7 +1481,7 @@ impl SessionRecovery {
     }
 }
 
-/// Recovers a crashed or interrupted session.
+/// Recovers a crashed or interrupted fragmented MP4 session.
 ///
 /// Reads the manifest copy from every root and trusts the valid one with the
 /// highest generation, adopts orphan segment files named for the session,
@@ -1414,9 +1493,83 @@ impl SessionRecovery {
 /// # Errors
 ///
 /// Returns an error only when a root directory listing fails for a reason
-/// other than the directory being absent.
-#[allow(clippy::too_many_lines)]
+/// other than the directory being absent, or
+/// [`SessionError::InvalidConfig`] for a [`SegmentFormat::Wav`] session,
+/// which [`recover_wav_session`](crate::recover_wav_session) recovers.
 pub fn recover_session(config: &SessionConfig) -> Result<SessionRecovery, SessionError> {
+    if config.segment_format() != SegmentFormat::Fmp4 {
+        return Err(SessionError::InvalidConfig(
+            "WAV sessions are recovered by recover_wav_session",
+        ));
+    }
+    let scan = scan_session(config, |path, recorded| {
+        match stat_segment(path, recorded) {
+            Ok(()) => repair_segment(path),
+            Err(SegmentPresence::NeverCreated) => SegmentOutcome::NeverCreated,
+            Err(SegmentPresence::Missing) => SegmentOutcome::Missing,
+            Err(SegmentPresence::Unreadable(kind)) => SegmentOutcome::Unreadable { kind },
+        }
+    })?;
+    let segments: Vec<RecoveredSessionSegment> = scan
+        .segments
+        .into_iter()
+        .map(|segment| RecoveredSessionSegment {
+            index: segment.index,
+            root: segment.root,
+            path: segment.path,
+            recorded: segment.recorded,
+            outcome: segment.outcome,
+        })
+        .collect();
+    let mut recovery = SessionRecovery {
+        manifests: scan.manifests,
+        manifest: scan.manifest,
+        segments,
+        rewritten_generation: None,
+        rewritten_roots: Vec::new(),
+    };
+    if recovery.manifest.is_none() && recovery.segments.is_empty() {
+        return Ok(recovery);
+    }
+    let entries = recovery
+        .segments
+        .iter()
+        .filter(|segment| segment.outcome != SegmentOutcome::NeverCreated)
+        .map(|segment| (segment.index, segment.root, segment.kept_bytes()))
+        .collect();
+    (recovery.rewritten_generation, recovery.rewritten_roots) = rewrite_recovered_manifest(
+        config,
+        &recovery.manifests,
+        recovery.manifest.as_ref(),
+        entries,
+    );
+    Ok(recovery)
+}
+
+/// One segment candidate found by [`scan_session`].
+pub(crate) struct ScannedSegment<O> {
+    pub(crate) index: u32,
+    pub(crate) root: usize,
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) recorded: Option<SegmentEntry>,
+    pub(crate) outcome: O,
+}
+
+/// The container-independent half of crash recovery.
+pub(crate) struct SessionScan<O> {
+    pub(crate) manifests: Vec<ManifestRead>,
+    pub(crate) manifest: Option<SessionManifest>,
+    pub(crate) segments: Vec<ScannedSegment<O>>,
+}
+
+/// Reads every manifest copy, trusts the newest valid one, adopts orphan
+/// segment files named for the session, and runs `recover` on every
+/// candidate in index order. A candidate whose root is no longer configured
+/// is reported to `recover` with no path; recovery reports it missing.
+pub(crate) fn scan_session<O>(
+    config: &SessionConfig,
+    mut recover: impl FnMut(&Path, Option<SegmentEntry>) -> O,
+) -> Result<SessionScan<O>, SessionError> {
     let manifest_name = config.manifest_file_name();
     let mut manifests = Vec::with_capacity(config.roots.len());
     let mut trusted: Option<SessionManifest> = None;
@@ -1472,14 +1625,14 @@ pub fn recover_session(config: &SessionConfig) -> Result<SessionRecovery, Sessio
     }
     candidates.sort_by_key(|(index, root, _)| (*index, *root));
 
-    let segments: Vec<RecoveredSessionSegment> = candidates
+    let segments = candidates
         .into_iter()
         .map(|(index, root, recorded)| {
             let path = config.segment_path(root, index);
-            let outcome = path.as_deref().map_or(SegmentOutcome::Missing, |path| {
-                recover_segment(path, recorded)
-            });
-            RecoveredSessionSegment {
+            // A root that is no longer configured has no path; an empty path
+            // never exists, so `recover` reports it missing.
+            let outcome = recover(path.as_deref().unwrap_or(Path::new("")), recorded);
+            ScannedSegment {
                 index,
                 root,
                 path,
@@ -1488,22 +1641,25 @@ pub fn recover_session(config: &SessionConfig) -> Result<SessionRecovery, Sessio
             }
         })
         .collect();
-
-    let mut recovery = SessionRecovery {
+    Ok(SessionScan {
         manifests,
         manifest: trusted,
         segments,
-        rewritten_generation: None,
-        rewritten_roots: Vec::new(),
-    };
-    if recovery.manifest.is_none() && recovery.segments.is_empty() {
-        return Ok(recovery);
-    }
-    let previous = recovery.manifest.as_ref();
+    })
+}
+
+/// Writes the recovered manifest (`index`, `root`, kept bytes per segment) in
+/// state [`SessionState::Recovered`] to every existing root. Returns the new
+/// generation, when any root took it, and the roots that did.
+pub(crate) fn rewrite_recovered_manifest(
+    config: &SessionConfig,
+    manifests: &[ManifestRead],
+    previous: Option<&SessionManifest>,
+    entries: Vec<(u32, usize, u64)>,
+) -> (Option<u64>, Vec<usize>) {
     let rewritten = SessionManifest {
         name: config.name.clone(),
-        generation: recovery
-            .manifests
+        generation: manifests
             .iter()
             .filter_map(|read| match read {
                 ManifestRead::Valid { generation } => Some(*generation),
@@ -1513,37 +1669,32 @@ pub fn recover_session(config: &SessionConfig) -> Result<SessionRecovery, Sessio
             .unwrap_or(0)
             + 1,
         state: SessionState::Recovered,
-        segments: recovery
-            .segments
-            .iter()
-            .filter(|segment| segment.outcome != SegmentOutcome::NeverCreated)
-            .map(|segment| {
-                let kept = segment.kept_bytes();
-                SegmentEntry {
-                    index: segment.index,
-                    root: segment.root,
-                    state: if kept > 0 {
-                        SegmentState::Recovered
-                    } else {
-                        SegmentState::Lost
-                    },
-                    bytes: kept,
-                }
+        segments: entries
+            .into_iter()
+            .map(|(index, root, kept)| SegmentEntry {
+                index,
+                root,
+                state: if kept > 0 {
+                    SegmentState::Recovered
+                } else {
+                    SegmentState::Lost
+                },
+                bytes: kept,
             })
             .collect(),
         errors: previous.map_or_else(Vec::new, |manifest| manifest.errors.clone()),
         errors_dropped: previous.map_or(0, |manifest| manifest.errors_dropped),
     };
     let text = rewritten.render();
+    let manifest_name = config.manifest_file_name();
+    let mut roots = Vec::new();
     for (root, directory) in config.roots.iter().enumerate() {
         if directory.is_dir() && write_manifest_atomic(directory, &manifest_name, &text).is_ok() {
-            recovery.rewritten_roots.push(root);
+            roots.push(root);
         }
     }
-    if !recovery.rewritten_roots.is_empty() {
-        recovery.rewritten_generation = Some(rewritten.generation);
-    }
-    Ok(recovery)
+    let generation = (!roots.is_empty()).then_some(rewritten.generation);
+    (generation, roots)
 }
 
 fn read_manifest(path: &Path, name: &str) -> Result<SessionManifest, ManifestRead> {
@@ -1576,25 +1727,39 @@ fn read_manifest(path: &Path, name: &str) -> Result<SessionManifest, ManifestRea
     Ok(manifest)
 }
 
-fn recover_segment(path: &Path, recorded: Option<SegmentEntry>) -> SegmentOutcome {
+/// Why a segment file could not be inspected.
+pub(crate) enum SegmentPresence {
+    /// The manifest named an open segment whose file was never created.
+    NeverCreated,
+    Missing,
+    Unreadable(io::ErrorKind),
+}
+
+/// Checks that `path` is a regular file before a container scanner opens it.
+pub(crate) fn stat_segment(
+    path: &Path,
+    recorded: Option<SegmentEntry>,
+) -> Result<(), SegmentPresence> {
+    if path.as_os_str().is_empty() {
+        return Err(SegmentPresence::Missing);
+    }
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => {}
-        Ok(_) => {
-            return SegmentOutcome::Unreadable {
-                kind: io::ErrorKind::InvalidInput,
-            };
-        }
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(SegmentPresence::Unreadable(io::ErrorKind::InvalidInput)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let never_created =
                 recorded.is_some_and(|entry| entry.state == SegmentState::Open && entry.bytes == 0);
-            return if never_created {
-                SegmentOutcome::NeverCreated
+            Err(if never_created {
+                SegmentPresence::NeverCreated
             } else {
-                SegmentOutcome::Missing
-            };
+                SegmentPresence::Missing
+            })
         }
-        Err(error) => return SegmentOutcome::Unreadable { kind: error.kind() },
+        Err(error) => Err(SegmentPresence::Unreadable(error.kind())),
     }
+}
+
+fn repair_segment(path: &Path) -> SegmentOutcome {
     match repair_fmp4_file(path) {
         Ok(repair) => match repair.scan.integrity {
             Fmp4Integrity::Unrecoverable { .. } => {

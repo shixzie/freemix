@@ -3,13 +3,19 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use std::sync::{Arc, Mutex};
+
 use fm_codec_ffmpeg::record::{
     CleanupStatus, EnqueueRejection, OutputFinalization, PairedFrame, RecordConfig, RecordFormat,
-    Recorder, StartErrorKind, StopOutcome,
+    RecordSink, Recorder, ResilientWavOutput, StartErrorKind, StopOutcome,
 };
 use fm_frame::{
     AudioBlock, ChannelLayout, ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration,
     NormalizedTimestamp, OriginalTimestamp, SampleRate, SequenceNumber, TimeBase,
+};
+use fm_record::{
+    FileStorage, RecordingSession, ResilientWavConfig, SegmentFormat, SegmentState, SessionConfig,
+    SessionState, UnknownSpace, read_wav_info,
 };
 use fm_types::{FrameRate, Timecode};
 use tempfile::tempdir;
@@ -418,6 +424,151 @@ fn safe_stop_embeds_the_configured_start_timecode() {
         timecodes.contains(&"01:02:03:04"),
         "ffprobe does not render the configured 01:02:03:04 timecode: {probe}"
     );
+}
+
+/// Records everything a WAV sink is given, and how often it was flushed and
+/// finished.
+#[derive(Clone, Default)]
+struct CapturedWav(Arc<Mutex<(Vec<u8>, usize, usize)>>);
+
+impl RecordSink for CapturedWav {
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.0.lock().unwrap().0.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().1 += 1;
+        Ok(())
+    }
+
+    fn finish(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap().2 += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn wav_sink_receives_the_child_wav_stream_byte_exactly() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempdir().unwrap();
+    let format = format();
+
+    // Reference: the same frames with the WAV written to a sidecar path.
+    let reference_path = directory.path().join("reference.wav");
+    let mut config = RecordConfig::new(format.clone());
+    config.wav = Some(reference_path.clone());
+    let output = std::fs::File::create(directory.path().join("reference.mp4")).unwrap();
+    let mut recorder = Recorder::start(output, config).unwrap();
+    enqueue_all(&mut recorder, &format);
+    let report = recorder.stop();
+    assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+    let reference = std::fs::read(&reference_path).unwrap();
+
+    // A WAV path and a WAV sink together are refused before any child.
+    let mut both = RecordConfig::new(format.clone());
+    both.wav = Some(directory.path().join("both.wav"));
+    let Err(error) = Recorder::start_with_sinks(
+        Box::new(std::fs::File::create(directory.path().join("both.mp4")).unwrap()),
+        Box::new(CapturedWav::default()),
+        both,
+    ) else {
+        panic!("start accepted a WAV path and a WAV sink");
+    };
+    assert_eq!(
+        error.kind,
+        StartErrorKind::WavOutput(std::io::ErrorKind::InvalidInput)
+    );
+    assert!(!directory.path().join("both.wav").exists());
+
+    let mp4_path = directory.path().join("sink.mp4");
+    let captured = CapturedWav::default();
+    let mut recorder = Recorder::start_with_sinks(
+        Box::new(std::fs::File::create(&mp4_path).unwrap()),
+        Box::new(captured.clone()),
+        RecordConfig::new(format.clone()),
+    )
+    .unwrap();
+    enqueue_all(&mut recorder, &format);
+    let report = recorder.stop();
+    assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+    assert_eq!(report.output, OutputFinalization::Synced, "{report:?}");
+    assert_eq!(report.cleanup, CleanupStatus::Complete, "{report:?}");
+    assert_probe_and_decode(&mp4_path, FRAME_COUNT);
+
+    let (streamed, flushes, finishes) = captured.0.lock().unwrap().clone();
+    assert_eq!((flushes, finishes), (1, 1), "the sink is finished once");
+    assert_eq!(report.wav_bytes, streamed.len() as u64, "{report:?}");
+    assert_eq!(report.telemetry.wav_bytes, streamed.len() as u64);
+
+    // The stream is the sidecar byte for byte, except that a non-seekable
+    // destination keeps FFmpeg's placeholder RIFF and data sizes.
+    let info = read_wav_info(&mut std::io::Cursor::new(streamed.as_slice())).unwrap();
+    let reference_info = read_wav_info(&mut std::io::Cursor::new(reference.as_slice())).unwrap();
+    assert_eq!(info.data_offset, reference_info.data_offset);
+    assert_eq!(info.spec, reference_info.spec);
+    let data_offset = usize::try_from(info.data_offset).unwrap();
+    assert_eq!(streamed.len(), reference.len());
+    assert_eq!(streamed[8..data_offset - 4], reference[8..data_offset - 4]);
+    assert!(
+        streamed[data_offset..] == reference[data_offset..],
+        "sample data differs from the sidecar"
+    );
+    assert_eq!(
+        reference_info.data_bytes,
+        FRAME_COUNT * 1_600 * 2 * 2,
+        "every accepted sample is in the WAV"
+    );
+}
+
+#[test]
+fn resilient_wav_output_writes_a_playable_session_segment() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempdir().unwrap();
+    let format = format();
+    let session_config = SessionConfig::new("recording", directory.path())
+        .unwrap()
+        .with_segment_format(SegmentFormat::Wav)
+        .with_bare_first_segment();
+    let session = RecordingSession::start(session_config, FileStorage::new(UnknownSpace)).unwrap();
+    let wav = ResilientWavOutput::new(session, ResilientWavConfig::default());
+    let status = wav.status();
+    let mp4_path = directory.path().join("recording.mp4");
+    let mut recorder = Recorder::start_with_sinks(
+        Box::new(std::fs::File::create(&mp4_path).unwrap()),
+        Box::new(wav),
+        RecordConfig::new(format.clone()),
+    )
+    .unwrap();
+    enqueue_all(&mut recorder, &format);
+    let report = recorder.stop();
+    assert_eq!(report.outcome, StopOutcome::Clean, "{report:?}");
+    assert_eq!(report.cleanup, CleanupStatus::Complete, "{report:?}");
+
+    let state = status.get();
+    assert!(state.finished);
+    assert!(state.error.is_none(), "{state:?}");
+    assert_eq!(state.snapshot.state, SessionState::Stopped);
+    assert_eq!(state.segments.len(), 1);
+    assert_eq!(state.segments[0].state, SegmentState::Closed);
+    let wav_path = directory.path().join("recording.wav");
+    let bytes = std::fs::read(&wav_path).unwrap();
+    assert_eq!(state.segments[0].bytes, bytes.len() as u64);
+    let info = read_wav_info(&mut std::io::Cursor::new(bytes.as_slice())).unwrap();
+    assert_eq!(info.riff_size, bytes.len() as u64 - 8, "RIFF size patched");
+    assert_eq!(
+        info.data_bytes,
+        FRAME_COUNT * 1_600 * 2 * 2,
+        "data size patched"
+    );
+    assert!(directory.path().join("recording.wav.fmsession").exists());
+    let span_seconds = f64::from(u32::try_from(FRAME_COUNT).unwrap()) / 30.0;
+    assert_wav_sidecar(&wav_path, span_seconds);
+    assert_probe_and_decode(&mp4_path, FRAME_COUNT);
 }
 
 #[test]

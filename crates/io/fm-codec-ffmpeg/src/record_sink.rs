@@ -8,6 +8,11 @@
 //! re-homes the in-flight fragment into a new segment on the next usable
 //! fallback directory rather than failing the recording, and every segment is
 //! independently playable and crash-recoverable through the session manifest.
+//!
+//! [`ResilientWavOutput`] does the same for the recorder's streamed WAV
+//! sidecar through a [`ResilientWavWriter`]: audio is re-homed frame-exactly
+//! into `<name>-NNNN.wav` on failure, every segment starts with the stream's
+//! header, and header sizes are patched on close.
 
 use std::fmt;
 use std::fs::File;
@@ -15,8 +20,9 @@ use std::io::{self, Write};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use fm_record::{
-    FailureKind, RecordingSession, ResilientFmp4Writer, ResilientWriterConfig, SegmentEntry,
-    SegmentStorage, SessionError, SessionSnapshot, SplitError, WriterError, WriterFinish,
+    FailureKind, RecordingSession, ResilientFmp4Writer, ResilientWavConfig, ResilientWavWriter,
+    ResilientWriterConfig, SegmentEntry, SegmentStorage, SessionError, SessionSnapshot, SplitError,
+    WavError, WavWriterError, WavWriterFinish, WavWriterStats, WriterError, WriterFinish,
     WriterStats,
 };
 
@@ -278,19 +284,225 @@ impl<S: SegmentStorage> Drop for ResilientOutput<S> {
     }
 }
 
+/// Latest state of a [`ResilientWavOutput`], shared with its owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResilientWavOutputState {
+    pub stats: WavWriterStats,
+    pub snapshot: SessionSnapshot,
+    /// Manifest segment entries: index, root, state, and known-good bytes.
+    pub segments: Vec<SegmentEntry>,
+    /// Bytes that never reached a segment: a trailing partial sample frame,
+    /// or a header cut short by a killed or crashed muxer.
+    pub discarded_tail_bytes: u64,
+    /// First terminal error, rendered.
+    pub error: Option<String>,
+    /// Whether [`RecordSink::finish`] stopped the session.
+    pub finished: bool,
+}
+
+/// Cloneable read handle on a [`ResilientWavOutput`]'s state.
+#[derive(Clone, Debug)]
+pub struct ResilientWavOutputStatus(Arc<Mutex<ResilientWavOutputState>>);
+
+impl ResilientWavOutputStatus {
+    /// A consistent copy of the latest state.
+    #[must_use]
+    pub fn get(&self) -> ResilientWavOutputState {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn update(&self, apply: impl FnOnce(&mut ResilientWavOutputState)) {
+        apply(&mut self.0.lock().unwrap_or_else(PoisonError::into_inner));
+    }
+}
+
+/// Fault-tolerant [`RecordSink`] for the recorder's streamed WAV output,
+/// over a session configured with [`fm_record::SegmentFormat::Wav`].
+pub struct ResilientWavOutput<S: SegmentStorage> {
+    writer: Option<ResilientWavWriter<S>>,
+    status: ResilientWavOutputStatus,
+    published: WavWriterStats,
+}
+
+impl<S: SegmentStorage> fmt::Debug for ResilientWavOutput<S> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ResilientWavOutput")
+            .field("status", &self.status.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<S: SegmentStorage> ResilientWavOutput<S> {
+    /// Wraps a started WAV session. Nothing is written until the stream
+    /// header and first sample bytes arrive.
+    #[must_use]
+    pub fn new(session: RecordingSession<S>, config: ResilientWavConfig) -> Self {
+        let state = ResilientWavOutputState {
+            stats: WavWriterStats::default(),
+            snapshot: session.snapshot(),
+            segments: session.manifest().segments.clone(),
+            discarded_tail_bytes: 0,
+            error: None,
+            finished: false,
+        };
+        Self {
+            writer: Some(ResilientWavWriter::new(session, config)),
+            status: ResilientWavOutputStatus(Arc::new(Mutex::new(state))),
+            published: WavWriterStats::default(),
+        }
+    }
+
+    /// Read handle that stays valid after the output moves into a recorder.
+    #[must_use]
+    pub fn status(&self) -> ResilientWavOutputStatus {
+        self.status.clone()
+    }
+
+    fn publish(&mut self) {
+        let Some(writer) = &self.writer else {
+            return;
+        };
+        let stats = writer.stats();
+        let placement_changed = stats.segments_opened != self.published.segments_opened
+            || stats.failovers != self.published.failovers
+            || stats.retries != self.published.retries;
+        self.published = stats;
+        let snapshot = placement_changed.then(|| writer.session().snapshot());
+        let segments = placement_changed.then(|| writer.session().manifest().segments.clone());
+        self.status.update(|state| {
+            state.stats = stats;
+            if let Some(snapshot) = snapshot {
+                state.snapshot = snapshot;
+            }
+            if let Some(segments) = segments {
+                state.segments = segments;
+            }
+        });
+    }
+
+    fn fail(&self, error: &WavWriterError) -> io::Error {
+        let rendered = error.to_string();
+        self.status.update(|state| {
+            state.error.get_or_insert(rendered);
+        });
+        wav_writer_io_error(error)
+    }
+
+    /// Publishes a finished writer's outcome. A stream that ended inside its
+    /// header (a muxer killed before any audio) is not an output failure;
+    /// a failed session stop always is.
+    fn conclude(&self, finish: WavWriterFinish) -> io::Result<()> {
+        let WavWriterFinish {
+            stats,
+            segments,
+            snapshot,
+            discarded_bytes,
+            error,
+        } = finish;
+        let error =
+            error.filter(|error| !matches!(error, WavWriterError::Stream(WavError::Truncated)));
+        let (snapshot, failure) = match (snapshot, error) {
+            (Ok(snapshot), None) => (Some(snapshot), None),
+            (Ok(snapshot), Some(error)) => (
+                Some(snapshot),
+                Some((error.to_string(), wav_writer_io_error(&error))),
+            ),
+            (Err(stop), None) => {
+                let error = WavWriterError::Session(stop);
+                (None, Some((error.to_string(), wav_writer_io_error(&error))))
+            }
+            (Err(stop), Some(error)) => {
+                let rendered = format!("{error}; stopping the session also failed: {stop}");
+                let kind = wav_writer_io_error(&error).kind();
+                (
+                    None,
+                    Some((rendered.clone(), io::Error::new(kind, rendered))),
+                )
+            }
+        };
+        self.status.update(|state| {
+            state.stats = stats;
+            state.segments = segments;
+            if let Some(snapshot) = snapshot {
+                state.snapshot = snapshot;
+            }
+            state.discarded_tail_bytes = discarded_bytes;
+            if let Some((rendered, _)) = &failure {
+                state.error.get_or_insert_with(|| rendered.clone());
+            }
+            state.finished = true;
+        });
+        failure.map_or(Ok(()), |(_, error)| Err(error))
+    }
+}
+
+impl<S> RecordSink for ResilientWavOutput<S>
+where
+    S: SegmentStorage + Send,
+    S::Sink: Send,
+{
+    fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let Some(writer) = self.writer.as_mut() else {
+            return Err(io::Error::other("WAV recording session already finished"));
+        };
+        let result = writer.push(bytes);
+        self.publish();
+        result.map_err(|error| self.fail(&error))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // Whole frames are written as they arrive and synced on the writer's
+        // interval; a partial frame is only ever buffered in memory.
+        Ok(())
+    }
+
+    fn finish(&mut self) -> io::Result<()> {
+        let Some(writer) = self.writer.take() else {
+            return Ok(());
+        };
+        self.conclude(writer.finish_report())
+    }
+}
+
+impl<S: SegmentStorage> Drop for ResilientWavOutput<S> {
+    /// A sink dropped without [`RecordSink::finish`] still closes its
+    /// session, so no manifest is left claiming a live recording.
+    fn drop(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            let _ = self.conclude(writer.finish_report());
+        }
+    }
+}
+
 /// Maps a writer failure onto an I/O error whose kind names the last
 /// storage failure, so recorder telemetry stays path-free and typed.
 fn writer_io_error(error: &WriterError) -> io::Error {
     let kind = match error {
         WriterError::Stream(_) => io::ErrorKind::InvalidData,
-        WriterError::Session(SessionError::Exhausted { last: Some(record) }) => {
-            failure_kind_io(record.kind)
-        }
-        WriterError::Session(SessionError::Io { source, .. }) => source.kind(),
-        WriterError::Session(SessionError::ManifestUnwritable(kind)) => *kind,
-        WriterError::Session(_) => io::ErrorKind::Other,
+        WriterError::Session(error) => session_io_kind(error),
     };
     io::Error::new(kind, error.to_string())
+}
+
+fn wav_writer_io_error(error: &WavWriterError) -> io::Error {
+    let kind = match error {
+        WavWriterError::Stream(_) => io::ErrorKind::InvalidData,
+        WavWriterError::Session(error) => session_io_kind(error),
+    };
+    io::Error::new(kind, error.to_string())
+}
+
+fn session_io_kind(error: &SessionError) -> io::ErrorKind {
+    match error {
+        SessionError::Exhausted { last: Some(record) } => failure_kind_io(record.kind),
+        SessionError::Io { source, .. } => source.kind(),
+        SessionError::ManifestUnwritable(kind) => *kind,
+        _ => io::ErrorKind::Other,
+    }
 }
 
 fn failure_kind_io(kind: FailureKind) -> io::ErrorKind {

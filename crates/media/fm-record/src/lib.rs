@@ -8,7 +8,9 @@
 //! in [`scan_fmp4_file`]/[`repair_fmp4_file`] (torn-tail validation and
 //! truncation), [`RecordingSession`]/[`recover_session`] (atomic multi-root
 //! session manifest, failure policy, and crash recovery),
-//! [`ResilientFmp4Writer`] (fragment-granular failover writer), and
+//! [`ResilientFmp4Writer`] (fragment-granular failover writer),
+//! [`ResilientWavWriter`]/[`recover_wav_session`] (the same failover and
+//! recovery for streamed WAV sidecars, frame-granular), and
 //! [`estimate_recording_space`]/[`SpaceMonitor`] (remaining-time estimates).
 
 mod coordinator;
@@ -16,6 +18,7 @@ mod fmp4;
 mod format;
 mod iso;
 mod resilient;
+mod resilient_wav;
 mod session;
 mod space;
 mod track_map;
@@ -39,13 +42,19 @@ pub use iso::{
 pub use resilient::{
     ResilientFmp4Writer, ResilientWriterConfig, WriterError, WriterFinish, WriterStats,
 };
+pub use resilient_wav::{
+    DEFAULT_MAX_WAV_HEADER_BYTES, RecoveredWavSegment, ResilientWavConfig, ResilientWavWriter,
+    WavSegmentOutcome, WavSessionRecovery, WavWriterError, WavWriterFinish, WavWriterStats,
+    recover_wav_session,
+};
 pub use session::{
     FailureDecision, FailureKind, FailureOp, FileStorage, MAX_SESSION_ERRORS,
     MAX_SESSION_NAME_BYTES, MAX_SESSION_ROOTS, MAX_SESSION_SEGMENTS, ManifestRead, OpenSegment,
     RecordingSession, RecoveredSessionSegment, SESSION_MANIFEST_EXTENSION,
-    SESSION_SEGMENT_EXTENSION, SegmentEntry, SegmentOutcome, SegmentSink, SegmentState,
-    SegmentStorage, SessionConfig, SessionError, SessionErrorRecord, SessionManifest,
-    SessionRecovery, SessionSnapshot, SessionState, SpaceProbe, UnknownSpace, recover_session,
+    SESSION_SEGMENT_EXTENSION, SESSION_WAV_SEGMENT_EXTENSION, SegmentEntry, SegmentFormat,
+    SegmentOutcome, SegmentSink, SegmentState, SegmentStorage, SessionConfig, SessionError,
+    SessionErrorRecord, SessionManifest, SessionRecovery, SessionSnapshot, SessionState,
+    SpaceProbe, UnknownSpace, recover_session,
 };
 pub use space::{
     RootPreflight, SpaceEstimate, SpaceLevel, SpaceMonitor, SpacePreflight, SpaceThresholds,

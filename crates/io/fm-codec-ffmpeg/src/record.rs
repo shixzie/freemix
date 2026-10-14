@@ -12,8 +12,17 @@
 //! cannot create the final fallback cleanup thread, ownership is retained and
 //! joined synchronously; only that thread-exhaustion fallback may exceed the
 //! configured deadline. An optional linear-PCM WAV sidecar is written by the
-//! same child; its path is created exclusively before any child starts and the
-//! child reopens it directly.
+//! same child, either to a path created exclusively before any child starts
+//! (which the child reopens directly) or, with [`Recorder::start_with_sinks`],
+//! to a [`RecordSink`] such as a [`ResilientWavOutput`].
+//!
+//! A WAV sink receives the child's second output through a third loopback
+//! listener authenticated by its own random path: `FFmpeg` streams the WAV as
+//! the raw body of one `PUT` request (`-method PUT -chunked_post 0`), which
+//! needs no extra inherited file descriptor and works on every platform the
+//! HTTP inputs already work on. Without seekable output `FFmpeg` leaves the
+//! RIFF and data sizes as placeholders; the sink owns fixing them (the
+//! resilient sink patches them on close, and crash recovery recomputes them).
 
 use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
@@ -23,7 +32,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, TryLockError, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -34,7 +43,8 @@ use fm_types::{Channel, ChannelLayout, FrameRate, SampleRate, Timecode, VideoDim
 use crate::{Executable, UnavailableReason};
 
 pub use crate::record_sink::{
-    RecordSink, ResilientOutput, ResilientOutputState, ResilientOutputStatus,
+    RecordSink, ResilientOutput, ResilientOutputState, ResilientOutputStatus, ResilientWavOutput,
+    ResilientWavOutputState, ResilientWavOutputStatus,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -294,6 +304,9 @@ pub struct RecordConfig {
     /// path itself, so nothing there is ever overwritten. Parent directories
     /// are never created. The sidecar is only guaranteed finalized after a
     /// clean stop; a killed child may leave it empty or truncated.
+    ///
+    /// Must be `None` when the WAV goes to a sink through
+    /// [`Recorder::start_with_sinks`].
     pub wav: Option<PathBuf>,
     /// Optional constant video bitrate in kbps, within
     /// [`MIN_VIDEO_BITRATE_KBPS`]`..=`[`MAX_VIDEO_BITRATE_KBPS`].
@@ -804,6 +817,9 @@ pub enum RecordFailure {
     OutputWrite(io::ErrorKind),
     OutputFlush(io::ErrorKind),
     OutputSync(io::ErrorKind),
+    /// The WAV sink refused bytes, failed to flush or finish, the child's
+    /// WAV upload broke off, or the child never delivered its WAV output.
+    WavOutput(io::ErrorKind),
     StderrRead(io::ErrorKind),
     DispatcherClosed(MediaInput),
     WorkerPanicked,
@@ -834,9 +850,10 @@ pub struct RecordTelemetry {
     pub retained_bytes: usize,
     pub output_bytes: u64,
     /// Bytes written to the WAV sidecar, measured once from the sidecar's
-    /// metadata when [`Recorder::stop`] freezes the report. Zero while a
-    /// recorder is running, when no sidecar is configured, or when the
-    /// metadata cannot be read.
+    /// metadata when [`Recorder::stop`] freezes the report, or, for a WAV
+    /// sink, the stream bytes the sink accepted. Zero while a recorder is
+    /// running, when no sidecar is configured, or when the metadata cannot be
+    /// read.
     ///
     /// The sidecar is only guaranteed finalized after a clean stop; a killed
     /// child may leave it empty or truncated.
@@ -937,7 +954,9 @@ struct Shared {
     data: Mutex<SharedData>,
     kill_requested: AtomicBool,
     max_stderr: usize,
-    redactions: [String; 2],
+    redactions: Vec<String>,
+    /// Stream bytes a WAV sink accepted.
+    wav_sink_bytes: AtomicU64,
 }
 
 struct SharedData {
@@ -959,7 +978,7 @@ struct SharedData {
 }
 
 impl Shared {
-    fn new(format: &RecordFormat, max_stderr: usize, redactions: [String; 2]) -> Self {
+    fn new(format: &RecordFormat, max_stderr: usize, redactions: impl Into<Vec<String>>) -> Self {
         Self {
             data: Mutex::new(SharedData {
                 state: RecorderState::Starting,
@@ -980,7 +999,8 @@ impl Shared {
             }),
             kill_requested: AtomicBool::new(false),
             max_stderr,
-            redactions,
+            redactions: redactions.into(),
+            wav_sink_bytes: AtomicU64::new(0),
         }
     }
 
@@ -1055,7 +1075,7 @@ fn fail_locked(data: &mut SharedData, failure: RecordFailure) {
     }
 }
 
-fn telemetry_locked(data: &SharedData, redactions: &[String; 2]) -> RecordTelemetry {
+fn telemetry_locked(data: &SharedData, redactions: &[String]) -> RecordTelemetry {
     let stderr = data.stderr.iter().copied().collect::<Vec<_>>();
     let mut stderr_tail = clean_tail(&stderr);
     for token in redactions.iter().filter(|token| !token.is_empty()) {
@@ -1168,6 +1188,8 @@ pub struct Recorder {
     format: RecordFormat,
     limits: RecordLimits,
     wav: Option<PathBuf>,
+    /// The WAV goes to a sink; telemetry counts the bytes it accepted.
+    wav_sink: bool,
     sender: Option<mpsc::SyncSender<PairJob>>,
     shared: Arc<Shared>,
     child: Arc<Mutex<Child>>,
@@ -1193,7 +1215,7 @@ impl Recorder {
     /// Returns a typed path-free error. [`StartError::cleanup`] explicitly says
     /// whether fallback output finalization or child reaping may continue.
     pub fn start(output: File, config: RecordConfig) -> Result<Self, StartError> {
-        Self::start_output(PendingOutput::File(output), config)
+        Self::start_output(PendingOutput::File(output), None, config)
     }
 
     /// Like [`Self::start`], but copies the muxed fragmented MP4 stream into
@@ -1212,14 +1234,50 @@ impl Recorder {
         sink: Box<dyn RecordSink>,
         config: RecordConfig,
     ) -> Result<Self, StartError> {
-        Self::start_output(PendingOutput::Sink(sink), config)
+        Self::start_output(PendingOutput::Sink(sink), None, config)
+    }
+
+    /// Like [`Self::start_with_sink`], and additionally copies the child's
+    /// linear-PCM WAV output into `wav` instead of a sidecar path. Use a
+    /// [`ResilientWavOutput`] for a fault-tolerant, multi-directory,
+    /// crash-recoverable WAV session.
+    ///
+    /// The WAV arrives over an authenticated loopback `PUT` whose raw body is
+    /// the WAV stream byte for byte, with placeholder RIFF and data sizes.
+    /// [`RecordSink::finish`] runs exactly once when that stream ends (or
+    /// when the child exits without ever delivering it), also after a sink
+    /// error. A sink failure, a broken upload, or a missing upload is
+    /// reported as [`RecordFailure::WavOutput`]. A start that fails before
+    /// the WAV worker exists drops `wav`.
+    ///
+    /// # Errors
+    ///
+    /// The same typed startup failures as [`Self::start_with_sink`], plus
+    /// [`StartErrorKind::WavOutput`] with [`io::ErrorKind::InvalidInput`]
+    /// when [`RecordConfig::wav`] also names a path, or with the listener
+    /// error when the WAV listener cannot be bound.
+    pub fn start_with_sinks(
+        output: Box<dyn RecordSink>,
+        wav: Box<dyn RecordSink>,
+        config: RecordConfig,
+    ) -> Result<Self, StartError> {
+        Self::start_output(PendingOutput::Sink(output), Some(wav), config)
     }
 
     #[allow(clippy::too_many_lines)]
-    fn start_output(output: PendingOutput, config: RecordConfig) -> Result<Self, StartError> {
+    fn start_output(
+        output: PendingOutput,
+        wav_sink: Option<Box<dyn RecordSink>>,
+        config: RecordConfig,
+    ) -> Result<Self, StartError> {
         validate_limits(&config.format, config.limits)
             .map_err(|error| StartError::complete(StartErrorKind::InvalidLimits(error)))?;
         validate_bitrates(&config)?;
+        if wav_sink.is_some() && config.wav.is_some() {
+            return Err(StartError::complete(StartErrorKind::WavOutput(
+                io::ErrorKind::InvalidInput,
+            )));
+        }
         let executable = recorder_executable(config.ffmpeg)?;
         let output: Box<dyn RecordSink> = match output {
             PendingOutput::File(file) => Box::new(prepare_output(file)?),
@@ -1235,21 +1293,41 @@ impl Recorder {
         let audio_listener = bind_listener(MediaInput::Audio)?;
         let video_address = listener_address(&video_listener, MediaInput::Video)?;
         let audio_address = listener_address(&audio_listener, MediaInput::Audio)?;
+        let wav_upload = match wav_sink {
+            Some(sink) => {
+                let token = random_token()?;
+                let (listener, address) = bind_wav_listener()?;
+                Some((sink, listener, address, token))
+            }
+            None => None,
+        };
+        let wav_destination = match (&wav_upload, config.wav.as_deref()) {
+            (Some((_, _, address, token)), _) => Some(WavDestination::Upload {
+                address: *address,
+                token,
+            }),
+            (None, Some(path)) => Some(WavDestination::File(path)),
+            (None, None) => None,
+        };
         let args = command_args(
             &config.format,
             video_address,
             audio_address,
             &video_token,
             &audio_token,
-            config.wav.as_deref(),
+            wav_destination,
             config.video_bitrate_kbps,
             config.audio_bitrate_kbps,
             config.timecode,
         );
+        let mut redactions = vec![video_token.clone(), audio_token.clone()];
+        if let Some((_, _, _, token)) = &wav_upload {
+            redactions.push(token.clone());
+        }
         let shared = Arc::new(Shared::new(
             &config.format,
             config.limits.max_stderr_bytes,
-            [video_token.clone(), audio_token.clone()],
+            redactions,
         ));
         let (monitor_sender, monitor) = spawn_monitor_waiter()?;
         let mut command = command(&executable, &args);
@@ -1314,6 +1392,27 @@ impl Recorder {
             }
         };
         let mut workers = vec![stderr_worker];
+        let wav_sink = wav_upload.is_some();
+        if let Some((sink, listener, _, token)) = wav_upload {
+            let endpoint = WavEndpoint {
+                listener,
+                path: format!("/{token}"),
+            };
+            match spawn_wav_output(endpoint, sink, config.limits, Arc::clone(&shared)) {
+                Ok(worker) => workers.push(worker),
+                Err(error) => {
+                    return Err(cleanup_startup(
+                        StartErrorKind::ThreadSpawn(error.kind()),
+                        &child,
+                        &shared,
+                        workers,
+                        Some(output_worker),
+                        monitor,
+                        config.limits.kill_timeout,
+                    ));
+                }
+            }
+        }
         let deadline = Instant::now() + config.limits.connect_timeout;
         let mut video = Endpoint {
             listener: video_listener,
@@ -1480,6 +1579,7 @@ impl Recorder {
             format: config.format,
             limits: config.limits,
             wav: config.wav,
+            wav_sink,
             sender: Some(pair_sender),
             shared,
             child,
@@ -1754,7 +1854,11 @@ impl Recorder {
         if output == OutputFinalization::Unconfirmed || !unfinished.is_empty() {
             self.shared.fail(RecordFailure::CleanupUnconfirmed);
         }
-        let wav_bytes = wav_sidecar_bytes(self.wav.as_deref());
+        let wav_bytes = if self.wav_sink {
+            self.shared.wav_sink_bytes.load(Ordering::Acquire)
+        } else {
+            wav_sidecar_bytes(self.wav.as_deref())
+        };
         let (telemetry, final_child) = {
             let mut data = self.shared.lock();
             data.wav_bytes = wav_bytes;
@@ -2074,13 +2178,33 @@ fn read_http_request(
 }
 
 fn request_path(request: &[u8]) -> Option<&str> {
+    request_target(request, "GET")
+}
+
+fn request_target<'a>(request: &'a [u8], method: &str) -> Option<&'a str> {
     let line_end = request.windows(2).position(|window| window == b"\r\n")?;
     let line = std::str::from_utf8(&request[..line_end]).ok()?;
     let mut parts = line.split(' ');
     match (parts.next(), parts.next(), parts.next(), parts.next()) {
-        (Some("GET"), Some(path), Some("HTTP/1.1" | "HTTP/1.0"), None) => Some(path),
+        (Some(verb), Some(path), Some("HTTP/1.1" | "HTTP/1.0"), None) if verb == method => {
+            Some(path)
+        }
         _ => None,
     }
+}
+
+/// Whether the request head carries a header named `name` (ASCII
+/// case-insensitive).
+fn has_header(head: &[u8], name: &str) -> bool {
+    head.split(|byte| *byte == b'\n').skip(1).any(|line| {
+        line.iter()
+            .position(|byte| *byte == b':')
+            .is_some_and(|colon| {
+                line[..colon]
+                    .trim_ascii()
+                    .eq_ignore_ascii_case(name.as_bytes())
+            })
+    })
 }
 
 fn spawn_pending_writer(
@@ -2285,6 +2409,177 @@ fn spawn_stderr(
                 }
             }
         })
+}
+
+/// The WAV upload listener and its authenticated path.
+struct WavEndpoint {
+    listener: TcpListener,
+    path: String,
+}
+
+fn bind_wav_listener() -> Result<(TcpListener, SocketAddr), StartError> {
+    let fail = |error: io::Error| StartError::complete(StartErrorKind::WavOutput(error.kind()));
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(fail)?;
+    listener.set_nonblocking(true).map_err(fail)?;
+    let address = listener.local_addr().map_err(fail)?;
+    Ok((listener, address))
+}
+
+/// Copies the child's WAV upload into `sink` with the same contract as the
+/// MP4 output worker: every body chunk is written until the first error,
+/// later bytes are drained and dropped so the child never blocks, and the
+/// sink is flushed and finished exactly once when the upload ends or the
+/// child exits without one.
+fn spawn_wav_output(
+    endpoint: WavEndpoint,
+    mut sink: Box<dyn RecordSink>,
+    limits: RecordLimits,
+    shared: Arc<Shared>,
+) -> io::Result<JoinHandle<()>> {
+    thread::Builder::new()
+        .name("fm-ffmpeg-wav-output".to_owned())
+        .spawn(move || {
+            let mut failed = false;
+            let mut fail = |kind: io::ErrorKind| {
+                if !failed {
+                    failed = true;
+                    shared.fail(RecordFailure::WavOutput(kind));
+                }
+            };
+            match accept_wav_upload(&endpoint, limits, &shared) {
+                Ok(Some((stream, body))) => {
+                    copy_wav_upload(stream, &body, &mut sink, &shared, &mut fail);
+                }
+                Ok(None) => {
+                    if !cancelling(&shared) {
+                        fail(io::ErrorKind::NotConnected);
+                    }
+                }
+                Err(kind) => fail(kind),
+            }
+            if let Err(error) = sink.flush() {
+                fail(error.kind());
+            }
+            if let Err(error) = sink.finish() {
+                fail(error.kind());
+            }
+        })
+}
+
+fn cancelling(shared: &Shared) -> bool {
+    shared.kill_requested.load(Ordering::Acquire)
+        || shared
+            .lock()
+            .shutdown
+            .is_some_and(|shutdown| shutdown.mode == ShutdownMode::Cancel)
+}
+
+/// Waits for the child's authenticated `PUT` of the WAV output and returns
+/// the stream plus any body bytes read with the request head. Returns
+/// `None` once the child exited or the recorder is cancelling without an
+/// upload having arrived. Unauthenticated or malformed requests are refused
+/// and waiting continues.
+fn accept_wav_upload(
+    endpoint: &WavEndpoint,
+    limits: RecordLimits,
+    shared: &Shared,
+) -> Result<Option<(TcpStream, Vec<u8>)>, io::ErrorKind> {
+    loop {
+        let (mut stream, peer) = match endpoint.listener.accept() {
+            Ok(value) => value,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if cancelling(shared) || shared.lock().child.is_some() {
+                    return Ok(None);
+                }
+                thread::sleep(POLL_INTERVAL);
+                continue;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error.kind()),
+        };
+        if !peer.ip().is_loopback() {
+            continue;
+        }
+        let deadline = Instant::now() + limits.connect_timeout;
+        if configure_http_stream(&stream, deadline, limits.no_progress_timeout).is_err() {
+            continue;
+        }
+        let request = match read_http_request(&mut stream, deadline, limits.no_progress_timeout) {
+            Ok(request) => request,
+            Err(HttpRequestError::TooLarge) => {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                continue;
+            }
+            Err(_) => continue,
+        };
+        let Some(head_end) = request
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|position| position + 4)
+        else {
+            continue;
+        };
+        if request_target(&request, "PUT") != Some(endpoint.path.as_str()) {
+            let _ = stream.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            continue;
+        }
+        // `-chunked_post 0` makes the body the raw WAV stream. A framed body
+        // would corrupt the copy, so it is refused rather than forwarded.
+        if has_header(&request[..head_end], "transfer-encoding") {
+            let _ = stream.write_all(
+                b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return Err(io::ErrorKind::InvalidData);
+        }
+        stream
+            .set_read_timeout(None)
+            .and_then(|()| stream.set_write_timeout(Some(limits.no_progress_timeout)))
+            .map_err(|error| error.kind())?;
+        return Ok(Some((stream, request[head_end..].to_vec())));
+    }
+}
+
+fn copy_wav_upload(
+    mut stream: TcpStream,
+    body: &[u8],
+    sink: &mut dyn RecordSink,
+    shared: &Shared,
+    fail: &mut impl FnMut(io::ErrorKind),
+) {
+    let mut healthy = true;
+    let mut deliver = |bytes: &[u8], fail: &mut dyn FnMut(io::ErrorKind)| {
+        if !healthy || bytes.is_empty() {
+            return;
+        }
+        match sink.write_all(bytes) {
+            Ok(()) => {
+                shared
+                    .wav_sink_bytes
+                    .fetch_add(bytes.len() as u64, Ordering::AcqRel);
+            }
+            Err(error) => {
+                healthy = false;
+                fail(error.kind());
+            }
+        }
+    };
+    deliver(body, fail);
+    let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return,
+            Ok(count) => deliver(&buffer[..count], fail),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                fail(error.kind());
+                return;
+            }
+        }
+    }
 }
 
 type MonitorTarget = (Arc<Mutex<Child>>, Arc<Shared>);
@@ -2611,6 +2906,62 @@ fn retained_environment_names() -> &'static [&'static str] {
     }
 }
 
+/// Where the child writes its linear-PCM WAV output.
+#[derive(Clone, Copy, Debug)]
+enum WavDestination<'a> {
+    /// A sidecar path the child opens itself.
+    File(&'a Path),
+    /// The raw body of one `PUT` to the authenticated WAV listener.
+    Upload { address: SocketAddr, token: &'a str },
+}
+
+/// Appends the optional WAV output: linear PCM from the same child, after
+/// the MP4 output so every video option stays attached to `pipe:1`.
+fn push_wav_output_args(args: &mut Vec<OsString>, wav: Option<WavDestination<'_>>) {
+    match wav {
+        None => {}
+        Some(WavDestination::File(path)) => {
+            // A second output for the same child: linear PCM written directly
+            // to the sidecar path. The MP4 output above stays first on
+            // `pipe:1`, and every video option stays attached to it.
+            args.extend(
+                ["-map", "1:a:0", "-c:a", "pcm_s16le", "-f", "wav", "-y"]
+                    .into_iter()
+                    .map(OsString::from),
+            );
+            // `file:` keeps a relative name such as `take:2.wav`, `pipe:1`, or
+            // `-a.wav` a literal path instead of a protocol, pipe, or option.
+            let mut output = OsString::from("file:");
+            output.push(path.as_os_str());
+            args.push(output);
+        }
+        Some(WavDestination::Upload { address, token }) => {
+            // The same second output, streamed as the raw body of one `PUT`
+            // (`-chunked_post 0`: no chunk framing, the body ends when the
+            // child closes the connection) to the authenticated listener.
+            args.extend(
+                [
+                    "-map",
+                    "1:a:0",
+                    "-c:a",
+                    "pcm_s16le",
+                    "-f",
+                    "wav",
+                    "-protocol_whitelist",
+                    "http,tcp",
+                    "-method",
+                    "PUT",
+                    "-chunked_post",
+                    "0",
+                ]
+                .into_iter()
+                .map(OsString::from),
+            );
+            args.push(OsString::from(format!("http://{address}/{token}")));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn command_args(
     format: &RecordFormat,
@@ -2618,7 +2969,7 @@ fn command_args(
     audio_address: SocketAddr,
     video_token: &str,
     audio_token: &str,
-    wav: Option<&Path>,
+    wav: Option<WavDestination<'_>>,
     video_bitrate_kbps: Option<u32>,
     audio_bitrate_kbps: Option<u32>,
     timecode: Option<Timecode>,
@@ -2718,21 +3069,7 @@ fn command_args(
     }
     values.extend(["-f".to_owned(), "mp4".to_owned(), "pipe:1".to_owned()]);
     let mut args = values.into_iter().map(OsString::from).collect::<Vec<_>>();
-    if let Some(path) = wav {
-        // A second output for the same child: linear PCM written directly to
-        // the sidecar path. The MP4 output above stays first on `pipe:1`, and
-        // every video option stays attached to it.
-        args.extend(
-            ["-map", "1:a:0", "-c:a", "pcm_s16le", "-f", "wav", "-y"]
-                .into_iter()
-                .map(OsString::from),
-        );
-        // `file:` keeps a relative name such as `take:2.wav`, `pipe:1`, or
-        // `-a.wav` a literal path instead of a protocol, pipe, or option.
-        let mut output = OsString::from("file:");
-        output.push(path.as_os_str());
-        args.push(output);
-    }
+    push_wav_output_args(&mut args, wav);
     args
 }
 
@@ -2837,6 +3174,7 @@ mod tests {
             format: format.clone(),
             limits,
             wav: None,
+            wav_sink: false,
             sender: Some(sender),
             shared,
             child: Arc::new(Mutex::new(helper_child("sleep"))),
@@ -3149,7 +3487,7 @@ mod tests {
 
     #[test]
     fn command_is_byte_identical_without_a_wav_sidecar_and_exact_with_one() {
-        let args = |wav: Option<&Path>| {
+        let args = |wav: Option<WavDestination<'_>>| {
             command_args(
                 &format(),
                 "127.0.0.1:1000".parse().unwrap(),
@@ -3237,7 +3575,82 @@ mod tests {
         expected_wav
             .extend(["-map", "1:a:0", "-c:a", "pcm_s16le", "-f", "wav", "-y"].map(str::to_owned));
         expected_wav.push(format!("file:{}", wav.to_str().unwrap()));
-        assert_eq!(strings(&args(Some(wav))), expected_wav);
+        assert_eq!(
+            strings(&args(Some(WavDestination::File(wav)))),
+            expected_wav
+        );
+    }
+
+    #[test]
+    fn command_streams_a_wav_sink_output_as_one_raw_put() {
+        let args = |wav: Option<WavDestination<'_>>| {
+            command_args(
+                &format(),
+                "127.0.0.1:1000".parse().unwrap(),
+                "127.0.0.1:1001".parse().unwrap(),
+                "video-secret",
+                "audio-secret",
+                wav,
+                None,
+                None,
+                None,
+            )
+        };
+        let strings = |args: &[OsString]| {
+            args.iter()
+                .map(|arg| arg.to_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        // A WAV sink receives the same output as the raw body of one
+        // authenticated `PUT`.
+        let mut expected_upload = strings(&args(None));
+        expected_upload.extend(
+            [
+                "-map",
+                "1:a:0",
+                "-c:a",
+                "pcm_s16le",
+                "-f",
+                "wav",
+                "-protocol_whitelist",
+                "http,tcp",
+                "-method",
+                "PUT",
+                "-chunked_post",
+                "0",
+                "http://127.0.0.1:1002/wav-secret",
+            ]
+            .map(str::to_owned),
+        );
+        assert_eq!(
+            strings(&args(Some(WavDestination::Upload {
+                address: "127.0.0.1:1002".parse().unwrap(),
+                token: "wav-secret",
+            }))),
+            expected_upload
+        );
+    }
+
+    #[test]
+    fn wav_upload_requests_need_the_put_method_and_a_raw_body() {
+        let put =
+            b"PUT /token HTTP/1.1\r\nUser-Agent: Lavf\r\nTransfer-Encoding: chunked\r\n\r\nRIFF";
+        assert_eq!(request_target(put, "PUT"), Some("/token"));
+        assert_eq!(request_target(put, "GET"), None);
+        assert_eq!(request_path(put), None);
+        let head_end = put
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        assert!(has_header(&put[..head_end], "transfer-encoding"));
+        assert!(has_header(&put[..head_end], "TRANSFER-ENCODING"));
+        assert!(!has_header(&put[..head_end], "content-length"));
+        // The request line is never mistaken for a header.
+        assert!(!has_header(
+            b"PUT /transfer-encoding: HTTP/1.1\r\n\r\n",
+            "put /transfer-encoding"
+        ));
     }
 
     #[test]
@@ -3252,7 +3665,7 @@ mod tests {
                 "127.0.0.1:1001".parse().unwrap(),
                 "video-secret",
                 "audio-secret",
-                Some(Path::new(path)),
+                Some(WavDestination::File(Path::new(path))),
                 None,
                 None,
                 None,
@@ -3830,6 +4243,165 @@ mod tests {
     }
 
     #[test]
+    fn wav_worker_authenticates_the_upload_and_copies_it_byte_exactly_once() {
+        #[derive(Default)]
+        struct Calls {
+            written: Vec<u8>,
+            writes: usize,
+            flushes: usize,
+            finishes: usize,
+        }
+
+        struct Capture {
+            calls: Arc<Mutex<Calls>>,
+            fail_after: usize,
+        }
+
+        impl RecordSink for Capture {
+            fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+                let mut calls = self.calls.lock().unwrap();
+                calls.writes += 1;
+                if calls.writes > self.fail_after {
+                    return Err(io::Error::from(io::ErrorKind::StorageFull));
+                }
+                calls.written.extend_from_slice(bytes);
+                Ok(())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                self.calls.lock().unwrap().flushes += 1;
+                Ok(())
+            }
+
+            fn finish(&mut self) -> io::Result<()> {
+                self.calls.lock().unwrap().finishes += 1;
+                Ok(())
+            }
+        }
+
+        let run = |fail_after: usize| {
+            let format = format();
+            let shared = Arc::new(Shared::new(&format, 64, [String::new(), String::new()]));
+            let calls = Arc::new(Mutex::new(Calls::default()));
+            let (listener, address) = bind_wav_listener().unwrap();
+            let worker = spawn_wav_output(
+                WavEndpoint {
+                    listener,
+                    path: "/wav-token".to_owned(),
+                },
+                Box::new(Capture {
+                    calls: Arc::clone(&calls),
+                    fail_after,
+                }),
+                RecordLimits::default(),
+                Arc::clone(&shared),
+            )
+            .unwrap();
+
+            // A wrong token and a GET are refused; waiting continues.
+            for request in [
+                &b"PUT /other HTTP/1.1\r\n\r\nRIFF"[..],
+                &b"GET /wav-token HTTP/1.1\r\n\r\n"[..],
+            ] {
+                let mut client = TcpStream::connect(address).unwrap();
+                client.write_all(request).unwrap();
+                let mut response = Vec::new();
+                client.read_to_end(&mut response).unwrap();
+                assert!(response.starts_with(b"HTTP/1.1 404"), "{response:?}");
+            }
+
+            let mut body = Vec::new();
+            for index in 0_u32..50_000 {
+                body.extend_from_slice(&index.to_le_bytes());
+            }
+            let mut client = TcpStream::connect(address).unwrap();
+            // Body bytes arrive in the same packet as the request head.
+            let mut first = b"PUT /wav-token HTTP/1.1\r\nConnection: close\r\n\r\n".to_vec();
+            first.extend_from_slice(&body[..10]);
+            client.write_all(&first).unwrap();
+            for chunk in body[10..].chunks(7_777) {
+                client.write_all(chunk).unwrap();
+            }
+            drop(client);
+            worker.join().unwrap();
+            let calls = Arc::try_unwrap(calls).ok().unwrap().into_inner().unwrap();
+            (shared, calls, body)
+        };
+
+        let (shared, calls, body) = run(usize::MAX);
+        assert!(
+            calls.written == body,
+            "the sink sees the body byte for byte"
+        );
+        assert_eq!((calls.flushes, calls.finishes), (1, 1));
+        assert_eq!(
+            shared.wav_sink_bytes.load(Ordering::Acquire),
+            body.len() as u64
+        );
+        assert!(shared.snapshot().failure.is_none());
+
+        // A sink failure is sticky and typed; the rest of the upload is
+        // drained, and the sink is still finished once.
+        let (shared, calls, body) = run(1);
+        assert!(!calls.written.is_empty() && calls.written.len() < body.len());
+        assert!(body.starts_with(&calls.written));
+        assert_eq!(
+            calls.writes, 2,
+            "nothing reaches the sink after its failure"
+        );
+        assert_eq!((calls.flushes, calls.finishes), (1, 1));
+        assert_eq!(
+            shared.snapshot().failure,
+            Some(RecordFailure::WavOutput(io::ErrorKind::StorageFull))
+        );
+    }
+
+    #[test]
+    fn wav_worker_finishes_its_sink_when_the_child_exits_without_an_upload() {
+        struct Finished(Arc<AtomicUsize>);
+
+        impl RecordSink for Finished {
+            fn write_all(&mut self, _bytes: &[u8]) -> io::Result<()> {
+                Ok(())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+
+            fn finish(&mut self) -> io::Result<()> {
+                self.0.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            }
+        }
+
+        let format = format();
+        let shared = Arc::new(Shared::new(&format, 64, [String::new(), String::new()]));
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let (listener, _) = bind_wav_listener().unwrap();
+        let worker = spawn_wav_output(
+            WavEndpoint {
+                listener,
+                path: "/wav-token".to_owned(),
+            },
+            Box::new(Finished(Arc::clone(&finishes))),
+            RecordLimits::default(),
+            Arc::clone(&shared),
+        )
+        .unwrap();
+        shared.lock().child = Some(ChildResult {
+            success: true,
+            code: Some(0),
+        });
+        worker.join().unwrap();
+        assert_eq!(finishes.load(Ordering::Acquire), 1);
+        assert_eq!(
+            shared.snapshot().failure,
+            Some(RecordFailure::WavOutput(io::ErrorKind::NotConnected))
+        );
+    }
+
+    #[test]
     fn resilient_output_refuses_a_non_fragmented_stream_and_closes_its_session() {
         use fm_record::{
             FileStorage, RecordingSession, ResilientWriterConfig, SessionConfig, SessionManifest,
@@ -4007,6 +4579,7 @@ mod tests {
             format: format.clone(),
             limits,
             wav: None,
+            wav_sink: false,
             sender: Some(sender),
             shared: Arc::clone(&shared),
             child: Arc::new(Mutex::new(child)),
@@ -4244,6 +4817,7 @@ mod tests {
                 ..RecordLimits::default()
             },
             wav: None,
+            wav_sink: false,
             sender: Some(sender),
             shared,
             child,
@@ -4294,6 +4868,7 @@ mod tests {
                 ..RecordLimits::default()
             },
             wav: None,
+            wav_sink: false,
             sender: Some(sender),
             shared,
             child,

@@ -1122,6 +1122,32 @@ pub fn recover_wav(target: &mut dyn WavRecoveryTarget) -> Result<WavRecovery, Wa
         target.seek(SeekFrom::Start(data_offset + data_bytes))?;
         target.write_all(&[0])?;
     }
+    write_sizes(target, layout, rf64, riff_size, data_bytes, frames)?;
+    target.flush()?;
+
+    Ok(WavRecovery {
+        info: WavInfo {
+            rf64,
+            riff_size,
+            data_bytes,
+            ..info
+        },
+        was_consistent: false,
+        discarded_tail_bytes: available - data_bytes,
+        file_len: new_len,
+    })
+}
+
+/// Rewrites the RIFF, `ds64`/`JUNK`, `fact`, and `data` sizes of a parsed
+/// header in `target`.
+fn write_sizes<T: Write + Seek + ?Sized>(
+    target: &mut T,
+    layout: ParsedLayout,
+    rf64: bool,
+    riff_size: u64,
+    data_bytes: u64,
+    frames: u64,
+) -> Result<(), WavError> {
     target.seek(SeekFrom::Start(0))?;
     target.write_all(if rf64 { b"RF64" } else { b"RIFF" })?;
     target.write_all(&size32(riff_size, rf64).to_le_bytes())?;
@@ -1149,19 +1175,48 @@ pub fn recover_wav(target: &mut dyn WavRecoveryTarget) -> Result<WavRecovery, Wa
     }
     target.seek(SeekFrom::Start(layout.data_size_offset))?;
     target.write_all(&size32(data_bytes, rf64).to_le_bytes())?;
-    target.flush()?;
+    Ok(())
+}
 
-    Ok(WavRecovery {
-        info: WavInfo {
-            rf64,
-            riff_size,
-            data_bytes,
-            ..info
-        },
-        was_consistent: false,
-        discarded_tail_bytes: available - data_bytes,
-        file_len: new_len,
-    })
+/// Returns a copy of `header` (every byte before the sample data, ending with
+/// the `data` chunk header) whose sizes describe `data_bytes` of samples plus
+/// the RIFF pad byte an odd length needs. Placeholder sizes from a streaming
+/// muxer are replaced; RF64 is used when the sizes outgrow RIFF and a
+/// `JUNK`/`ds64` reservation exists.
+///
+/// # Errors
+///
+/// Header parse errors, [`WavError::Malformed`] when `header` does not end
+/// exactly at the sample data or `data_bytes` is not whole frames, and
+/// [`WavError::Rf64Unavailable`].
+pub(crate) fn sized_wav_header(header: &[u8], data_bytes: u64) -> Result<Vec<u8>, WavError> {
+    let mut cursor = io::Cursor::new(header.to_vec());
+    let (info, layout) = parse_header(&mut cursor)?;
+    if info.data_offset != header.len() as u64 {
+        return Err(WavError::Malformed(
+            "header does not end at the sample data",
+        ));
+    }
+    let block = u64::from(info.spec.block_align());
+    if !data_bytes.is_multiple_of(block) {
+        return Err(WavError::Malformed("data is not a whole number of frames"));
+    }
+    let riff_size = (info.data_offset - 8)
+        .saturating_add(data_bytes)
+        .saturating_add(data_bytes & 1);
+    let rf64 = riff_size > MAX_RIFF_SIZE || data_bytes > MAX_RIFF_SIZE;
+    if rf64 && layout.reserve_offset.is_none() {
+        return Err(WavError::Rf64Unavailable);
+    }
+    write_sizes(
+        &mut cursor,
+        layout,
+        rf64,
+        riff_size,
+        data_bytes,
+        data_bytes / block,
+    )?;
+    Ok(cursor.into_inner())
 }
 
 /// Opens `path`, runs [`recover_wav`], truncates to the recovered length, and
