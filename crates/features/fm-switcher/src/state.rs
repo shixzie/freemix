@@ -48,7 +48,8 @@ impl SwitcherState {
     ///
     /// # Errors
     ///
-    /// Returns [`SwitcherError`] if either selected input is unavailable.
+    /// Returns [`SwitcherError`] if either selected input is unavailable or
+    /// the two selections are the same input.
     pub fn new(
         inputs: Vec<InputId>,
         program: InputId,
@@ -69,6 +70,9 @@ impl SwitcherState {
         };
         state.require_input(program)?;
         state.require_input(preview)?;
+        if program == preview {
+            return Err(SwitcherError::PreviewEqualsProgram(preview));
+        }
         Ok(state)
     }
 

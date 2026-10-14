@@ -2785,3 +2785,55 @@ fn idle_restore_rejects_divergent_desired_and_realized_recording_flags_per_slot(
         );
     }
 }
+
+#[test]
+fn keep_program_stinger_fallback_is_rejected_during_a_manual_transition() {
+    let slot = StingerSlotId::new(1).unwrap();
+    let mut engine = stinger_engine(false, 1, MissingMediaFallback::KeepProgram);
+    engine
+        .execute(
+            envelope(
+                "manual-start",
+                EngineCommand::StartManualTransition {
+                    kind: EngineManualTransitionKind::Fade,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    let outcome = engine
+        .execute(
+            envelope(
+                "keep-program-during-manual",
+                EngineCommand::Stinger {
+                    slot,
+                    duration_frames: 3,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        outcome.receipt.rejected().unwrap().rejection.code,
+        RejectionCode::Conflict
+    );
+    assert_eq!(engine.revision(), Revision::new(1));
+    engine.tick().unwrap();
+    assert!(engine.realized_manual_transition().is_some());
+    assert!(engine.snapshot().is_ok());
+}
+
+#[test]
+fn show_rejects_preview_equal_to_program() {
+    assert_eq!(
+        ShowState::new(
+            "same routing",
+            named_inputs([input(1), input(2)]),
+            input(1),
+            input(1),
+        ),
+        Err(ShowError::Switcher(SwitcherError::PreviewEqualsProgram(
+            input(1)
+        )))
+    );
+}

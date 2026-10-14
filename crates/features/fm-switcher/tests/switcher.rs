@@ -1097,3 +1097,11 @@ fn recording_desired_flags_are_per_slot_isolated_and_emit_only_on_change() {
     assert!(mid_transition.recording_desired(slot_two));
     assert!(!mid_transition.recording_desired(slot_one));
 }
+
+#[test]
+fn construction_rejects_preview_equal_to_program() {
+    assert_eq!(
+        SwitcherState::new(vec![input(1), input(2)], input(1), input(1)),
+        Err(SwitcherError::PreviewEqualsProgram(input(1)))
+    );
+}

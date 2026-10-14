@@ -1109,6 +1109,12 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
                 duration_frames,
             } => {
                 validate_transition_duration("stinger", *duration_frames)?;
+                // The runtime switcher refuses every automatic transition,
+                // including a KeepProgram fallback, while a manual one is
+                // active; accepting it here would fail the scheduled tick.
+                if state.desired_switcher().t_bar().is_some() {
+                    return Err(switcher_rejection(SwitcherError::TransitionInProgress));
+                }
                 match state.desired_switcher().stinger_playback_decision(*slot) {
                     fm_switcher::StingerPlaybackDecision::Play => {
                         let descriptor = state
