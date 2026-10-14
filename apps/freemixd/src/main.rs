@@ -107,6 +107,8 @@ mod scene_render;
 mod status_listener;
 #[cfg(feature = "native-media")]
 mod stinger_mutation;
+#[cfg(feature = "native-media")]
+mod stream_transport;
 mod web;
 
 use hls_server::{HlsRoots, HlsServer};
@@ -2936,7 +2938,9 @@ struct NativeProgramStream {
     /// Redacted primary destination for diagnostics; mirrors what
     /// `StreamDestination::redacted` renders.
     redacted_destination: String,
-    sink: FfmpegRtmpSink,
+    /// The `FFmpeg` transport, whose blocking connects and stops run on a
+    /// dedicated worker so the daemon loop never waits on them.
+    sink: stream_transport::BackgroundTransport<FfmpegRtmpSink>,
     ledger: StreamPairLedger,
     first_failure: Option<String>,
     /// Set when a frame pair was refused with capacity backpressure since the
@@ -3115,10 +3119,13 @@ fn split_destination_url(url: &str) -> AppResult<(OutputProtocol, Endpoint, Opti
                 "stream destination endpoint was refused: {error:?}"
             ))
         })?;
+    // The key is validated for the protocol that will carry it: an SRT
+    // stream id is one query value and may not split into more parameters.
+    // Only the typed refusal is rendered, never the key text.
     let stream_key = key_text
-        .map(StreamKey::new)
+        .map(|key| StreamKey::for_protocol(protocol, key))
         .transpose()
-        .map_err(|error| AppFailure(format!("stream destination key was refused: {error:?}")))?;
+        .map_err(|error| AppFailure(format!("stream destination key was refused: {error}")))?;
     Ok((protocol, endpoint, stream_key))
 }
 
@@ -3530,7 +3537,10 @@ impl NativeProgramStream {
                     &split.endpoint,
                     sink_config.stream_key.is_some(),
                 ),
-                sink: FfmpegRtmpSink::new(sink_config),
+                sink: stream_transport::BackgroundTransport::new(
+                    FfmpegRtmpSink::new(sink_config),
+                    format!("freemix-native-stream-{ordinal}"),
+                ),
                 ledger: StreamPairLedger {
                     next_sequence: frames_rendered,
                     ..StreamPairLedger::default()
@@ -3574,8 +3584,18 @@ impl NativeProgramStream {
 
     /// Whether any transport child this target started was not reaped within
     /// its deadline; shutdown reports this instead of abandoning it silently.
-    fn shutdown_error(&self) -> Option<AppResult<()>> {
-        let unconfirmed = self.sink.unconfirmed_cleanups();
+    ///
+    /// Waits for the transport worker's outstanding stop, which the sink
+    /// bounds by its own stop and kill deadlines; only shutdown calls this.
+    fn shutdown_error(&mut self) -> Option<AppResult<()>> {
+        let Some(sink) = self.sink.settle() else {
+            return Some(Err(AppFailure(format!(
+                "stream target {} did not shut down cleanly: transport worker exited",
+                self.target
+            ))
+            .into()));
+        };
+        let unconfirmed = sink.unconfirmed_cleanups();
         if unconfirmed == 0 {
             return None;
         }
@@ -3591,8 +3611,19 @@ impl NativeProgramStream {
     ///
     /// The first failure the set cannot recover from latches the target with
     /// one sanitized notice, exactly like every other feed failure.
+    ///
+    /// A connect the set is about to make runs on the transport worker: until
+    /// it is realized this destination is not polled at all, so the set stays
+    /// `Connecting` (or due to reconnect) and the daemon loop keeps running.
     fn poll(&mut self, output_set: &mut OutputSet, now_ms: u64) {
+        self.sink.advance();
         if self.first_failure.is_some() {
+            return;
+        }
+        if let Some(ready) = stream_transport::connect_due(output_set, self.destination_id, now_ms)
+            .map(|(config, endpoint)| self.sink.prepare_connect(config, endpoint))
+            && !ready
+        {
             return;
         }
         match output_set.poll(self.destination_id, now_ms, &mut self.sink) {
@@ -17334,7 +17365,10 @@ mod tests {
             target: SwitcherStreamTargetId::from_non_zero(NonZeroU128::new(7).unwrap()),
             destination_id,
             redacted_destination: "rtmp://primary.example.test:1935/live".to_owned(),
-            sink: FfmpegRtmpSink::new(RtmpSinkConfig::new(test_rendition(1), test_stream_format())),
+            sink: stream_transport::BackgroundTransport::new(
+                FfmpegRtmpSink::new(RtmpSinkConfig::new(test_rendition(1), test_stream_format())),
+                "freemix-native-stream-test".to_owned(),
+            ),
             ledger: StreamPairLedger::default(),
             first_failure: None,
             enqueue_backpressure: false,
@@ -17970,6 +18004,37 @@ mod tests {
                 "{url:?} must be refused"
             );
         }
+    }
+
+    /// An SRT stream id is one `?streamid=` query value, so query separators
+    /// in it are refused with the typed reason and never echoed; the same key
+    /// text stays legal as an RTMP path segment.
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn split_destination_url_validates_the_key_for_its_protocol() {
+        for url in [
+            "srt://ingest.example.test:9710?streamid=live-key&latency=1",
+            "srt://ingest.example.test:9710?streamid=live-key?0001",
+        ] {
+            let Err(error) = split_destination_url(url) else {
+                panic!("{url:?} must be refused");
+            };
+            let message = error.to_string();
+            assert!(
+                message.contains("stream destination key was refused")
+                    && message.contains("SRT stream id"),
+                "{message}"
+            );
+            assert!(!message.contains("live-key"), "{message}");
+        }
+        let (_, _, key) =
+            split_destination_url("rtmp://ingest.example.test:1935/live/live-key&x=1").unwrap();
+        assert!(key.is_some());
+        // A key no protocol can carry keeps its own reason.
+        let error = split_destination_url("srt://ingest.example.test:9710?streamid=abc")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("redactable"), "{error}");
     }
 
     #[cfg(feature = "native-media")]
