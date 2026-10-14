@@ -811,6 +811,55 @@ pub enum Command {
         path: PathBuf,
         output: Option<PathBuf>,
     },
+    ProjectExportBundle {
+        source: PathBuf,
+        destination: PathBuf,
+    },
+    ProjectFromTemplate {
+        template: PathBuf,
+        destination: PathBuf,
+        name: String,
+    },
+    ProjectAppend {
+        target: PathBuf,
+        source: PathBuf,
+    },
+    ProjectImportMedia {
+        path: PathBuf,
+        file: PathBuf,
+        /// Also add a media input with this id referencing the imported asset.
+        input: Option<u128>,
+        /// Name for that input; defaults to the imported file's stem.
+        name: Option<String>,
+    },
+    ProjectRelink {
+        path: PathBuf,
+        search: Vec<PathBuf>,
+        apply: bool,
+    },
+    ProjectAutosave {
+        path: PathBuf,
+        keep: usize,
+    },
+    ProjectRecover {
+        path: PathBuf,
+        restore: bool,
+    },
+    RecentProjects {
+        file: PathBuf,
+    },
+    RecentProjectsAdd {
+        file: PathBuf,
+        project: PathBuf,
+        capacity: usize,
+    },
+    RecentProjectsRemove {
+        file: PathBuf,
+        project: PathBuf,
+    },
+    RecentProjectsPrune {
+        file: PathBuf,
+    },
     Help,
 }
 
@@ -845,6 +894,11 @@ pub enum ArgsError {
     UnexpectedArgument(String),
     UnknownOption(String),
     UnknownCommand(String),
+    /// An option is only meaningful together with another one.
+    RequiresOption {
+        option: &'static str,
+        requires: &'static str,
+    },
 }
 
 impl core::fmt::Display for ArgsError {
@@ -881,6 +935,9 @@ impl core::fmt::Display for ArgsError {
             }
             Self::UnknownOption(option) => write!(formatter, "unknown option `{option}`"),
             Self::UnknownCommand(command) => write!(formatter, "unknown command `{command}`"),
+            Self::RequiresOption { option, requires } => {
+                write!(formatter, "{option} requires {requires}")
+            }
         }
     }
 }
@@ -1088,6 +1145,53 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let output = arguments.next().map(PathBuf::from);
             reject_extra(&mut arguments)?;
             Ok(Command::Demo { path, output })
+        }
+        "project-export-bundle" => {
+            let source = required_path(&mut arguments, "source project path")?;
+            let destination = required_path(&mut arguments, "destination project path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::ProjectExportBundle {
+                source,
+                destination,
+            })
+        }
+        "project-from-template" => parse_project_from_template(arguments),
+        "project-append" => {
+            let target = required_path(&mut arguments, "target project path")?;
+            let source = required_path(&mut arguments, "source project path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::ProjectAppend { target, source })
+        }
+        "project-import-media" => parse_project_import_media(arguments),
+        "project-relink" => parse_project_relink(arguments),
+        "project-autosave" => parse_project_autosave(arguments),
+        "project-recover" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let mut restore = false;
+            for option in arguments {
+                match option.as_str() {
+                    "--restore" => restore = true,
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::ProjectRecover { path, restore })
+        }
+        "recent-projects" => {
+            let file = required_path(&mut arguments, "recent-projects file")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::RecentProjects { file })
+        }
+        "recent-projects-add" => parse_recent_projects_add(arguments),
+        "recent-projects-remove" => {
+            let file = required_path(&mut arguments, "recent-projects file")?;
+            let project = required_path(&mut arguments, "project path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::RecentProjectsRemove { file, project })
+        }
+        "recent-projects-prune" => {
+            let file = required_path(&mut arguments, "recent-projects file")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::RecentProjectsPrune { file })
         }
         "help" | "--help" | "-h" => Ok(Command::Help),
         _ => Err(ArgsError::UnknownCommand(command)),
@@ -1726,6 +1830,106 @@ fn parse_remote_overlay(
         _ => unreachable!("caller dispatches only remote overlay commands"),
     };
     Ok(result)
+}
+
+fn parse_project_from_template(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let template = required_path(&mut arguments, "template project path")?;
+    let destination = required_path(&mut arguments, "destination project path")?;
+    let mut name = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--name" => name = Some(nonblank(&mut arguments, "project name")?),
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::ProjectFromTemplate {
+        template,
+        destination,
+        name: name.ok_or(ArgsError::MissingValue("--name <project name>"))?,
+    })
+}
+
+fn parse_project_import_media(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let file = required_path(&mut arguments, "media file")?;
+    let mut input = None;
+    let mut name = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--input" => input = Some(number(&required(&mut arguments, "input")?, "input")?),
+            "--name" => name = Some(nonblank(&mut arguments, "input name")?),
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    if name.is_some() && input.is_none() {
+        return Err(ArgsError::RequiresOption {
+            option: "--name",
+            requires: "--input",
+        });
+    }
+    Ok(Command::ProjectImportMedia {
+        path,
+        file,
+        input,
+        name,
+    })
+}
+
+fn parse_project_relink(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let mut search = Vec::new();
+    let mut apply = false;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--search" => search.push(required_path(&mut arguments, "search directory")?),
+            "--apply" => apply = true,
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::ProjectRelink {
+        path,
+        search,
+        apply,
+    })
+}
+
+fn parse_project_autosave(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let mut keep = fm_persistence::DEFAULT_AUTOSAVE_GENERATIONS;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--keep" => keep = number(&required(&mut arguments, "keep")?, "keep")?,
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::ProjectAutosave { path, keep })
+}
+
+fn parse_recent_projects_add(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let file = required_path(&mut arguments, "recent-projects file")?;
+    let project = required_path(&mut arguments, "project path")?;
+    let mut capacity = fm_persistence::DEFAULT_RECENT_PROJECTS;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--capacity" => {
+                capacity = number(&required(&mut arguments, "capacity")?, "capacity")?;
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::RecentProjectsAdd {
+        file,
+        project,
+        capacity,
+    })
 }
 
 fn parse_new(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
@@ -3452,6 +3656,89 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn parses_project_bundle_commands_and_their_options() {
+        assert_eq!(
+            parse(strings(&[
+                "project-relink",
+                "show.freemix",
+                "--search",
+                "a",
+                "--apply",
+                "--search",
+                "b",
+            ])),
+            Ok(Command::ProjectRelink {
+                path: "show.freemix".into(),
+                search: vec!["a".into(), "b".into()],
+                apply: true,
+            })
+        );
+        assert_eq!(
+            parse(strings(&["project-autosave", "show.freemix"])),
+            Ok(Command::ProjectAutosave {
+                path: "show.freemix".into(),
+                keep: fm_persistence::DEFAULT_AUTOSAVE_GENERATIONS,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "project-autosave",
+                "show.freemix",
+                "--keep",
+                "x"
+            ])),
+            Err(ArgsError::InvalidNumber {
+                field: "keep",
+                value: "x".into(),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["project-recover", "show.freemix", "--restore"])),
+            Ok(Command::ProjectRecover {
+                path: "show.freemix".into(),
+                restore: true,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "project-from-template",
+                "t.freemix",
+                "d.freemix"
+            ])),
+            Err(ArgsError::MissingValue("--name <project name>"))
+        );
+        assert_eq!(
+            parse(strings(&[
+                "project-import-media",
+                "show.freemix",
+                "clip.ppm",
+                "--name",
+                "Clip",
+            ])),
+            Err(ArgsError::RequiresOption {
+                option: "--name",
+                requires: "--input",
+            })
+        );
+        assert_eq!(
+            parse(strings(&["project-append", "a.freemix", "b.freemix", "c"])),
+            Err(ArgsError::UnexpectedArgument("c".into()))
+        );
+        assert_eq!(
+            parse(strings(&[
+                "recent-projects-add",
+                "recent.json",
+                "show.freemix"
+            ])),
+            Ok(Command::RecentProjectsAdd {
+                file: "recent.json".into(),
+                project: "show.freemix".into(),
+                capacity: fm_persistence::DEFAULT_RECENT_PROJECTS,
+            })
+        );
     }
 
     #[test]

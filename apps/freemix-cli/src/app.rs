@@ -54,10 +54,10 @@ use crate::{
         StingerAudioPolicy as CliStingerAudioPolicy, StingerFallback as CliStingerFallback,
         StreamSpec, TBarAction,
     },
-    remote,
+    project_bundle, remote,
 };
 
-type AppResult<T> = Result<T, Box<dyn Error>>;
+pub(crate) type AppResult<T> = Result<T, Box<dyn Error>>;
 static IMPLICIT_KEY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// Most idempotency receipts a local checkpoint retains.
 ///
@@ -1301,6 +1301,39 @@ pub fn run(command: Command) -> AppResult<()> {
             height,
         } => render(&path, &output, width, height)?,
         Command::Demo { path, output } => demo(&path, output.as_deref())?,
+        Command::ProjectExportBundle {
+            source,
+            destination,
+        } => project_bundle::export_bundle(&source, &destination)?,
+        Command::ProjectFromTemplate {
+            template,
+            destination,
+            name,
+        } => project_bundle::from_template(&template, &destination, &name)?,
+        Command::ProjectAppend { target, source } => project_bundle::append(&target, &source)?,
+        Command::ProjectImportMedia {
+            path,
+            file,
+            input,
+            name,
+        } => project_bundle::import_media(&path, &file, input, name)?,
+        Command::ProjectRelink {
+            path,
+            search,
+            apply,
+        } => project_bundle::relink(&path, search, apply)?,
+        Command::ProjectAutosave { path, keep } => project_bundle::autosave(&path, keep)?,
+        Command::ProjectRecover { path, restore } => project_bundle::recover(&path, restore)?,
+        Command::RecentProjects { file } => project_bundle::list_recent(&file)?,
+        Command::RecentProjectsAdd {
+            file,
+            project,
+            capacity,
+        } => project_bundle::add_recent(&file, &project, capacity)?,
+        Command::RecentProjectsRemove { file, project } => {
+            project_bundle::remove_recent(&file, &project)?;
+        }
+        Command::RecentProjectsPrune { file } => project_bundle::prune_recent(&file)?,
         Command::Help => print_help(),
     }
     Ok(())
@@ -1715,7 +1748,7 @@ fn add_input(path: &Path, input: InputId, name: String) -> AppResult<()> {
     )
 }
 
-fn add_input_with_kind(
+pub(crate) fn add_input_with_kind(
     path: &Path,
     input: InputId,
     name: String,
@@ -3145,7 +3178,7 @@ fn restored_t_bar(state: PersistedManualTransitionState) -> AppResult<TBarState>
 /// This opens the journal database, which a running daemon owns exclusively:
 /// the mutation is refused while the daemon holds it, and refused again if
 /// batches the daemon recorded are still unapplied.
-fn load_stored_project(path: &Path) -> AppResult<StoredProject> {
+pub(crate) fn load_stored_project(path: &Path) -> AppResult<StoredProject> {
     let store = ProjectStore::new(path)?;
     let project = store.load()?;
     if store.journal_path().try_exists()? {
@@ -3166,7 +3199,7 @@ fn load_stored_project(path: &Path) -> AppResult<StoredProject> {
 /// The journal database is locked exclusively by whichever process has it
 /// open, so inspecting a project must never open it: reporting a show's state
 /// has to work while its daemon is running.
-fn inspect_stored_project(path: &Path) -> AppResult<StoredProject> {
+pub(crate) fn inspect_stored_project(path: &Path) -> AppResult<StoredProject> {
     Ok(ProjectStore::new(path)?.load()?)
 }
 
@@ -3178,12 +3211,7 @@ fn audit_assets(path: &Path) -> AppResult<()> {
         println!(
             "input={} reason={}",
             issue.input_id,
-            match issue.reason {
-                fm_persistence::AssetAuditReason::InvalidUri => "invalid-uri",
-                fm_persistence::AssetAuditReason::MissingAsset => "missing-asset",
-                fm_persistence::AssetAuditReason::OutsideAssetsRoot => "outside-assets-root",
-                fm_persistence::AssetAuditReason::NotRegularFile => "not-regular-file",
-            }
+            project_bundle::audit_reason_name(issue.reason)
         );
     }
     if issues.is_empty() {
@@ -3940,7 +3968,24 @@ Usage:
   freemix-cli remote-record-start <127.0.0.1:port> [--recorder <1|2>] [--key <key>] [--expect <revision>]
   freemix-cli remote-record-stop <127.0.0.1:port> [--recorder <1|2>] [--key <key>] [--expect <revision>]
   freemix-cli render <show.freemix> <output.ppm> [--width <px>] [--height <px>]
-  freemix-cli demo <show.freemix> [output.ppm]"
+  freemix-cli demo <show.freemix> [output.ppm]
+  freemix-cli project-export-bundle <source.freemix> <destination.freemix>
+  freemix-cli project-from-template <template.freemix> <destination.freemix> --name <name>
+  freemix-cli project-append <target.freemix> <source.freemix>
+  freemix-cli project-import-media <show.freemix> <media-file> [--input <new-nonzero-input-id> [--name <name>]]
+  freemix-cli project-relink <show.freemix> [--search <dir>]... [--apply]
+  freemix-cli project-autosave <show.freemix> [--keep <1..=64>]
+  freemix-cli project-recover <show.freemix> [--restore]
+  freemix-cli recent-projects <recent.json>
+  freemix-cli recent-projects-add <recent.json> <show.freemix> [--capacity <1..=100>]
+  freemix-cli recent-projects-remove <recent.json> <show.freemix>
+  freemix-cli recent-projects-prune <recent.json>
+      Bundle commands never overwrite an existing destination. Export and
+      template copy only project.json and referenced media (no journal or
+      autosaves). project-relink previews by default; --apply writes it.
+      project-recover reports the newest usable autosave; --restore replaces
+      project.json with it. The recent-projects file is whatever path you pass;
+      freemix-cli keeps no hidden state."
     );
 }
 
@@ -4112,7 +4157,7 @@ fn clock_domain() -> ClockDomainId {
     ClockDomainId::new(NonZeroU128::new(1).expect("one is nonzero"))
 }
 
-fn generate_project_id() -> AppResult<ProjectId> {
+pub(crate) fn generate_project_id() -> AppResult<ProjectId> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let sequence = u128::from(PROJECT_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed));
     let process = u128::from(std::process::id());
@@ -4122,7 +4167,7 @@ fn generate_project_id() -> AppResult<ProjectId> {
     )))
 }
 
-fn input_id(value: u128) -> AppResult<InputId> {
+pub(crate) fn input_id(value: u128) -> AppResult<InputId> {
     NonZeroU128::new(value)
         .map(InputId::new)
         .ok_or_else(|| AppFailure("input ID must be nonzero".into()).into())
@@ -4195,7 +4240,7 @@ struct ExecuteResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct AppFailure(String);
+pub(crate) struct AppFailure(pub(crate) String);
 
 impl core::fmt::Display for AppFailure {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
