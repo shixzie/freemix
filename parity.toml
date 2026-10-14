@@ -186,7 +186,9 @@ paths = ["crates/features/fm-data/tests/typed_ingest.rs"]
 commands = ["cargo test -p fm-data --test typed_ingest"]
 [[tests]]
 id = "accept-gx-005"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-data/tests/title_binding_preview.rs"]
+commands = ["cargo test -p fm-data --test title_binding_preview"]
 [[tests]]
 id = "accept-gx-006"
 state = "planned"
