@@ -3,9 +3,21 @@
 Captured from the native `freemix-studio` console running headless on this
 development host (Linux aarch64, Xvfb + Mesa lavapipe software Vulkan). The
 supervised daemon runs in simulated mode, so the mixer header reports
-`METERS UNAVAILABLE` with unlit meter wells, and the Preview/Program monitors
-show replicated routing state over a dark 16:9 well with the explicit
-`NO VIDEO FEED · preview delivery pending` caption rather than output video.
+`METERS UNAVAILABLE` with unlit meter wells. The Preview/Program monitors show
+the daemon's encoded-fallback `monitor_frame` images (Protocol 2.21, at most
+640x360) letterboxed into each 16:9 well: in simulated mode each frame is a
+render of the realized simulated source, badged `SIMULATED` and captioned
+`SIMULATED RENDER · {w}×{h} encoded preview`; its tooltip states that
+overlays, scenes, and Fade to Black are not composited. A tap with no frame
+(for example a scene input, which the simulated tap does not render) keeps the
+routing placeholder captioned `NO VIDEO FEED · waiting for encoded preview`. A
+frame older than one second, or a simulated frame whose input no longer
+matches the realized source, is dimmed and badged `STALE`. With a native
+daemon, Program frames are GPU-downscaled CPU readbacks captioned
+`ENCODED PREVIEW {w}×{h} · CPU readback`, and Preview reads
+`NO PREVIEW TAP · native Preview image not produced`. The other captures in
+this directory predate monitor frames and still show the earlier
+`NO VIDEO FEED · preview delivery pending` placeholder.
 
 The console layout: a menu bar (File / Edit / View / Inputs / Output / Help);
 a top bar (show name, connection pill, revision, `REC` and `LIVE` on-air
@@ -50,6 +62,8 @@ and clip lamps are not visible here.
 
 | File | What it shows |
 |---|---|
+| `studio-console-monitors.png` | 1920x1080 after `CUT` and a Camera 1 Wide tile click: both wells show `SIMULATED` encoded frames (Camera 1 Wide on Preview, Camera 2 Close on Program) with the Program tooltip naming what the simulated render omits. |
+| `studio-console-monitors-scene.png` | 1920x1080 with the Main Scene input on Program: Preview shows a simulated frame of Camera 2 Close, while Program keeps the routing placeholder (`NO VIDEO FEED · waiting for encoded preview`) because the simulated tap does not render scene inputs. |
 | `studio-console-overview.png` | 1920x1080 overview: REC 2 recording (red `REC` badge lit), overlay O1 taken from Preview and confirmed `ON AIR` (also badged on the Program header), the HLS ladder desired running but not reported live (amber `LIVE` outline) with its `STOP` key, the stopped RTMP target with `START`, Camera 2 Close on Preview and Main Scene on Program. |
 | `studio-console-streams.png` | After clicking `START` on the RTMP Backup row: both targets desired `ON` with `STOP` keys (realized `STOPPED` in simulated mode), and the Output menu's Streams items (`Stop Local HLS Ladder`, `Stop RTMP Backup`) with the action tooltip. |
 | `studio-console-stingers.png` | The Stingers tab after choosing Playback Clip in the Configure slot media picker and clicking `ASSIGN` for S1: S1 `READY`, `CLEAR` enabled, and the slot summary (cut 15 fr, preload, mixed audio, fallback cut). |
@@ -63,7 +77,8 @@ and clip lamps are not visible here.
 
 `studio-console-top.png`, `-stopped.png`, `-recording.png`, `-shortcuts.png`,
 `-input-menu.png`, and `-reconnecting.png` predate the stream keys and the
-Stinger configuration row.
+Stinger configuration row; every capture except the two `-monitors` ones
+predates encoded monitor frames.
 
 The demo show used for the captures ("Evening Broadcast") has six simulated
 inputs, one scene input ("Main Scene") with two picture-in-picture layers, an
@@ -128,3 +143,6 @@ shortcuts`, and right-click the third tile (`xdotool click 3`); keyboard input
 such as `Escape` needs `xdotool windowfocus "$WIN"` first because Xvfb runs
 without a window manager. The reconnecting capture runs
 `freemix-studio --connect 127.0.0.1:7399 --project-id 1` with nothing listening.
+The monitors captures start from the demo show (Main Scene on Program) for
+`-monitors-scene.png`, then click `CUT` and the Camera 1 Wide tile and hover
+the Program well for `-monitors.png`.
