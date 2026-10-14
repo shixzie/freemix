@@ -382,6 +382,7 @@ fn native_media_daemon_refills_beyond_startup_prefix_and_checkpoints_once() {
 
 #[cfg(target_os = "macos")]
 #[test]
+#[allow(clippy::too_many_lines)]
 fn native_daemon_hot_configures_fires_replaces_removes_and_restarts_stinger() {
     let _hardware_lock = NATIVE_MEDIA_TEST_LOCK
         .lock()
@@ -536,6 +537,7 @@ fn native_daemon_hot_configures_fires_replaces_removes_and_restarts_stinger() {
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "requires FFmpeg with local video/audio and a native macOS Metal adapter"]
+#[allow(clippy::too_many_lines)]
 fn native_daemon_hot_replaces_audible_local_stinger_pool() {
     let _hardware_lock = NATIVE_MEDIA_TEST_LOCK
         .lock()
@@ -1217,7 +1219,7 @@ fn recording_desired_false_configures_support_without_recorder_activity() {
         "native-media-bounded-video-audio-master-meters-camera-record-program-telemetry-v4"
     );
     assert!(!recording_desired(&initial, 1));
-    thread::sleep(Duration::from_millis(1_000));
+    thread::sleep(Duration::from_secs(1));
     daemon.signal_terminate();
 
     let output = daemon.wait_for(RECORDING_PROCESS_TIMEOUT);
@@ -1241,6 +1243,7 @@ fn recording_desired_false_configures_support_without_recorder_activity() {
 #[cfg(target_os = "macos")]
 #[test]
 #[ignore = "requires FFmpeg with libx264/AAC, ffprobe, and a native macOS Metal adapter"]
+#[allow(clippy::too_many_lines)]
 fn protocol_record_commands_open_segments_and_persist_desired_state() {
     const RESTORED_FRAME: u64 = 17;
     let _hardware_lock = NATIVE_MEDIA_TEST_LOCK
@@ -1254,7 +1257,7 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
     let output_path = directory.path().join("program.mp4");
     save_restored_generator_project(&project_path, RESTORED_FRAME);
 
-    let Some(mut daemon) = require_native_recorder(NativeDaemonProcess::start_recording(
+    let Some(daemon) = require_native_recorder(NativeDaemonProcess::start_recording(
         &project_path,
         &output_path,
     )) else {
@@ -1279,7 +1282,7 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
     assert_eq!(stopped.revision, 1);
     // The finalizer drains within the recorder's stop budget; this wait only
     // bounds when the file becomes decodable, correctness is asserted below.
-    thread::sleep(Duration::from_millis(2_000));
+    thread::sleep(Duration::from_secs(2));
 
     let video = ffprobe_stream(&output_path, "v:0").unwrap();
     assert_eq!(probe_value(&video, "codec_name"), "h264");
@@ -1319,7 +1322,7 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
     assert_eq!(stopped_again.revision, 3);
     // The detached finalizer drains within the recorder's own stop budget,
     // so this bounded wait is what makes the segment decodable below.
-    thread::sleep(Duration::from_millis(2_000));
+    thread::sleep(Duration::from_secs(2));
     let second_audio = ffprobe_stream(&second_segment, "a:0").unwrap();
     assert_eq!(probe_value(&second_audio, "codec_name"), "aac");
     decode_recording(&second_segment).unwrap();
@@ -1357,7 +1360,7 @@ fn protocol_record_commands_open_segments_and_persist_desired_state() {
     );
     assert_eq!(snapshot.revision, 3);
     assert!(!recording_desired(&snapshot, 1));
-    thread::sleep(Duration::from_millis(1_000));
+    thread::sleep(Duration::from_secs(1));
     restarted.signal_terminate();
 
     let output = restarted.wait_for(RECORDING_PROCESS_TIMEOUT);

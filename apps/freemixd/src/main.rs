@@ -129,6 +129,8 @@ use fm_frame::{
     AudioBlock, ClockDomainId as MediaClockDomainId, CodecId, MediaTimestamp, MediaTiming,
     NormalizedDuration, NormalizedTimestamp, OriginalTimestamp, SequenceNumber, TimeBase,
 };
+#[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+use fm_gpu::NativeSurface;
 #[cfg(feature = "native-media")]
 use fm_gpu::{NativeBackend, NativeContext, NativeTexture};
 #[cfg(all(feature = "native-media", target_os = "macos"))]
@@ -546,6 +548,7 @@ fn utf8_prefix(value: &str, maximum_bytes: usize) -> &str {
 }
 
 #[cfg(feature = "native-media")]
+#[allow(clippy::struct_excessive_bools)] // each bool is a distinct native-mode operator or media option
 struct NativeDaemon {
     pacer: FramePacer,
     pacer_start_offset: Duration,
