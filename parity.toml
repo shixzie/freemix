@@ -307,10 +307,14 @@ id = "accept-rc-001"
 state = "planned"
 [[tests]]
 id = "accept-rc-002"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-guest/tests/return_audio_and_roles.rs"]
+commands = ["cargo test -p fm-guest --test return_audio_and_roles"]
 [[tests]]
 id = "accept-rc-003"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-guest/tests/return_audio_and_roles.rs"]
+commands = ["cargo test -p fm-guest --test return_audio_and_roles"]
 [[tests]]
 id = "accept-rc-004"
 state = "present"
