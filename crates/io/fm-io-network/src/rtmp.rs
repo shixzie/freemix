@@ -520,18 +520,20 @@ impl FfmpegRtmpSink {
         // this transport opens. Network endpoints render their explicit port
         // because [`Endpoint`] cannot exist without one; a local HLS endpoint
         // renders only its path.
+        // An IPv6 literal must be bracketed, or its colons read as the port
+        // separator.
+        let host = if endpoint.host().contains(':') && !endpoint.host().starts_with('[') {
+            format!("[{}]", endpoint.host())
+        } else {
+            endpoint.host().to_owned()
+        };
         let url = match config.protocol() {
             OutputProtocol::Rtmp | OutputProtocol::Rtmps => {
                 let scheme = match config.protocol() {
                     OutputProtocol::Rtmp => "rtmp",
                     _ => "rtmps",
                 };
-                let mut url = format!(
-                    "{scheme}://{}:{}{}",
-                    endpoint.host(),
-                    endpoint.port(),
-                    endpoint.path()
-                );
+                let mut url = format!("{scheme}://{host}:{}{}", endpoint.port(), endpoint.path());
                 if let Some(key) = &self.config.stream_key {
                     if !url.ends_with('/') {
                         url.push('/');
@@ -544,7 +546,7 @@ impl FfmpegRtmpSink {
             // `streamid` query parameter, and the endpoint's path — which the
             // [`Endpoint`] shape forces to exist — is deliberately ignored.
             OutputProtocol::Srt => {
-                let mut url = format!("srt://{}:{}", endpoint.host(), endpoint.port());
+                let mut url = format!("srt://{host}:{}", endpoint.port());
                 if let Some(key) = &self.config.stream_key {
                     url.push_str("?streamid=");
                     url.push_str(&key.0);
@@ -895,5 +897,83 @@ fn exit_status(failure: &StreamFailure) -> Option<i64> {
     match failure {
         StreamFailure::ChildExited { status } => status.map(i64::from),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use fm_codec_ffmpeg::stream::RecordFormat;
+    use fm_frame::{ChannelLayout, SampleRate, SequenceNumber};
+
+    use super::*;
+    use crate::{DestinationId, QueueCapacity, ReconnectPolicy};
+
+    fn sink(key: Option<&str>) -> FfmpegRtmpSink {
+        let format = RecordFormat::new(
+            320,
+            180,
+            fm_types::FrameRate::new(30, 1).unwrap(),
+            SampleRate::new(48_000).unwrap(),
+            ChannelLayout::stereo(),
+            SequenceNumber::new(0),
+        )
+        .unwrap();
+        let mut config = RtmpSinkConfig::new(RenditionId::new(NonZeroU32::new(1).unwrap()), format);
+        config.stream_key = key.map(|key| StreamKey::new(key).unwrap());
+        FfmpegRtmpSink::new(config)
+    }
+
+    fn destination(protocol: OutputProtocol, endpoint: &Endpoint) -> DestinationConfig {
+        DestinationConfig::new(
+            DestinationId::new(1).unwrap(),
+            protocol,
+            endpoint.clone(),
+            None,
+            None,
+            None,
+            QueueCapacity::new(4).unwrap(),
+            ReconnectPolicy::disabled(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn ipv6_literal_hosts_are_bracketed_in_destination_urls() {
+        let sink = sink(Some("secret-key"));
+        let endpoint = Endpoint::new("2001:db8::1", 1_935, "/live").unwrap();
+        let rtmp = sink
+            .destination_url(&destination(OutputProtocol::Rtmp, &endpoint), &endpoint)
+            .unwrap();
+        assert!(
+            rtmp.redacted()
+                .starts_with("rtmp://[2001:db8::1]:1935/live/"),
+            "{}",
+            rtmp.redacted()
+        );
+        let srt = sink
+            .destination_url(&destination(OutputProtocol::Srt, &endpoint), &endpoint)
+            .unwrap();
+        assert!(
+            srt.redacted()
+                .starts_with("srt://[2001:db8::1]:1935?streamid="),
+            "{}",
+            srt.redacted()
+        );
+        // An already-bracketed literal and a plain name are left alone.
+        let bracketed = Endpoint::new("[::1]", 1_935, "/live").unwrap();
+        let url = sink
+            .destination_url(&destination(OutputProtocol::Rtmp, &bracketed), &bracketed)
+            .unwrap();
+        assert!(url.redacted().starts_with("rtmp://[::1]:1935/live/"));
+        let named = Endpoint::new("stream.example.test", 1_935, "/live").unwrap();
+        let url = sink
+            .destination_url(&destination(OutputProtocol::Rtmp, &named), &named)
+            .unwrap();
+        assert!(
+            url.redacted()
+                .starts_with("rtmp://stream.example.test:1935/live/")
+        );
     }
 }

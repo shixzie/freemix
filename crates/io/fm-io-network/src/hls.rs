@@ -35,7 +35,9 @@ impl HlsSegmentMetadata {
     ///
     /// # Errors
     ///
-    /// Rejects empty/control-containing URIs and zero byte lengths.
+    /// Rejects empty/control-containing URIs, URIs a rendered playlist would
+    /// read as a tag or comment (leading `#`) or trim (surrounding whitespace),
+    /// and zero byte lengths.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         rendition: RenditionId,
@@ -48,7 +50,7 @@ impl HlsSegmentMetadata {
         uri: impl Into<String>,
     ) -> Result<Self, HlsError> {
         let uri = uri.into();
-        if uri.is_empty() || uri.len() > 2_048 || uri.chars().any(char::is_control) {
+        if !valid_playlist_uri(&uri) {
             return Err(HlsError::InvalidUri);
         }
         if byte_length == 0 {
@@ -198,7 +200,9 @@ impl HlsPlaylistMetadata {
                 let _ = writeln!(out, "#EXT-X-DISCONTINUITY");
                 current_discontinuity = segment.discontinuity_sequence;
             }
-            let total_micros = segment.duration.as_nanos().saturating_add(500) / 1_000;
+            // A positive duration never renders as `0.000000`, which the
+            // parser (and the HLS spec) refuses.
+            let total_micros = (segment.duration.as_nanos().saturating_add(500) / 1_000).max(1);
             let whole_seconds = total_micros / 1_000_000;
             let frac_micros = total_micros % 1_000_000;
             let _ = writeln!(out, "#EXTINF:{whole_seconds}.{frac_micros:06},");
@@ -513,12 +517,13 @@ impl HlsPlaylist {
         if segment.duration.as_nanos() > self.target_duration.as_nanos() {
             return Err(HlsError::DurationExceedsTarget);
         }
-        let expected_sequence = self
-            .segments
-            .back()
-            .map_or(self.initial_media_sequence, |last| {
-                last.media_sequence.saturating_add(1)
-            });
+        let expected_sequence = match self.segments.back() {
+            Some(last) => last
+                .media_sequence
+                .checked_add(1)
+                .ok_or(HlsError::MediaSequence)?,
+            None => self.initial_media_sequence,
+        };
         if segment.media_sequence != expected_sequence {
             return Err(HlsError::MediaSequence);
         }
@@ -612,6 +617,9 @@ impl HlsVariantMetadata {
             .any(|value| {
                 value.is_empty() || value.len() > 2_048 || value.chars().any(char::is_control)
             })
+            || !valid_playlist_uri(&playlist_uri)
+            // CODECS is rendered as a quoted attribute value.
+            || codecs.contains('"')
         {
             return Err(HlsError::InvalidUri);
         }
@@ -896,6 +904,16 @@ pub fn parse_master_m3u8(text: &str) -> Result<Vec<HlsMasterVariant>, HlsError> 
         return Err(HlsError::InvalidVariantCount);
     }
     Ok(variants)
+}
+
+/// Whether `uri` renders as exactly one URI line that the parser reads back
+/// verbatim: bounded, control-free, not a tag or comment, and not trimmed.
+fn valid_playlist_uri(uri: &str) -> bool {
+    !uri.is_empty()
+        && uri.len() <= 2_048
+        && !uri.chars().any(char::is_control)
+        && !uri.starts_with('#')
+        && uri.trim() == uri
 }
 
 fn parse_extinf_duration(text: &str) -> Result<NormalizedDuration, HlsError> {

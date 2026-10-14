@@ -1236,3 +1236,98 @@ fn hls_master_playlist_round_trips_and_ffmpeg_variants_align_in_abr_coordinator(
     assert_eq!(coordinator.playlist(low_id).unwrap(), parsed_0);
     assert_eq!(coordinator.playlist(high_id).unwrap(), parsed_1);
 }
+
+#[test]
+fn hls_playlist_refuses_a_repeated_sequence_at_the_end_of_the_sequence_space() {
+    let id = rendition_id(1);
+    let mut playlist =
+        HlsPlaylist::new(3, id, duration(2), u64::MAX, 4, HlsPlaylistType::Live).unwrap();
+    let at = |start_seconds: i64| {
+        HlsSegmentMetadata::new(
+            id,
+            u64::MAX,
+            0,
+            NormalizedTimestamp::from_nanos(start_seconds * 1_000_000_000),
+            duration(2),
+            1_000,
+            true,
+            format!("seg-{start_seconds}.ts"),
+        )
+        .unwrap()
+    };
+    playlist.append(at(0)).unwrap();
+    // There is no sequence after `u64::MAX`; repeating it must not be read as
+    // the contiguous successor.
+    assert_eq!(playlist.append(at(2)), Err(HlsError::MediaSequence));
+    assert_eq!(playlist.metadata().segments().len(), 1);
+}
+
+#[test]
+fn hls_rendered_sub_microsecond_segment_stays_parseable() {
+    let id = rendition_id(1);
+    let mut playlist = HlsPlaylist::new(3, id, duration(2), 0, 4, HlsPlaylistType::Live).unwrap();
+    playlist
+        .append(
+            HlsSegmentMetadata::new(
+                id,
+                0,
+                0,
+                NormalizedTimestamp::from_nanos(0),
+                NormalizedDuration::from_nanos(400).unwrap(),
+                1_000,
+                true,
+                "tiny.ts",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let rendered = playlist.metadata().render_m3u8();
+    let parsed = HlsPlaylistMetadata::parse_m3u8(&rendered, id, 1_000).unwrap();
+    assert_eq!(parsed.segments().len(), 1);
+    assert!(parsed.segments()[0].duration().as_nanos() > 0);
+}
+
+#[test]
+fn hls_uris_and_codecs_that_would_restructure_rendered_playlists_are_refused() {
+    let id = rendition_id(1);
+    for uri in ["#EXT-X-ENDLIST", "# comment.ts", " seg.ts", "seg.ts "] {
+        assert_eq!(
+            HlsSegmentMetadata::new(
+                id,
+                0,
+                0,
+                NormalizedTimestamp::from_nanos(0),
+                duration(1),
+                1_000,
+                true,
+                uri,
+            ),
+            Err(HlsError::InvalidUri),
+            "segment URI {uri:?}"
+        );
+        assert_eq!(
+            HlsVariantMetadata::new(
+                id,
+                "low",
+                1_000,
+                VideoDimensions::new(640, 360).unwrap(),
+                "avc1.64001e",
+                uri,
+            ),
+            Err(HlsError::InvalidUri),
+            "variant URI {uri:?}"
+        );
+    }
+    // A quote inside CODECS would terminate the quoted attribute early.
+    assert_eq!(
+        HlsVariantMetadata::new(
+            id,
+            "low",
+            1_000,
+            VideoDimensions::new(640, 360).unwrap(),
+            "avc1\",BANDWIDTH=9",
+            "0/index.m3u8",
+        ),
+        Err(HlsError::InvalidUri)
+    );
+}
