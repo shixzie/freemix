@@ -7,6 +7,7 @@ mod multiview;
 #[cfg(feature = "native-wgpu")]
 mod native;
 mod plan;
+mod safe_area;
 mod scene;
 mod stinger;
 mod transition;
@@ -34,6 +35,9 @@ pub use native::{
 };
 pub use plan::{
     CompilationReport, CompositionPlan, PlanError, PlanLayer, ReportEntry, compile_scene,
+};
+pub use safe_area::{
+    MAX_SAFE_AREA_GUIDES, SafeAreaError, SafeAreaPreset, preset_guides, push_preset_guides,
 };
 pub use scene::{
     ChromaKey, Effect, InclusionError, Key, LumaKey, OutputInclusion, OutputTarget, RectMask,
