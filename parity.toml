@@ -32,7 +32,9 @@ id = "accept-in-008"
 state = "planned"
 [[tests]]
 id = "accept-in-009"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-playback/tests/slideshow.rs"]
+commands = ["cargo test -p fm-playback --test slideshow"]
 [[tests]]
 id = "accept-in-010"
 state = "planned"
