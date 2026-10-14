@@ -1273,6 +1273,23 @@ Windows/Linux adapters, and complete profile acceptance remain absent, so Phase
 
 Exit: `P0` switcher, composition, audio, display, record, and control rows pass.
 
+Current implementation boundary for automix and monitoring (`AU-007`,
+`AU-008`): `fm-audio` provides a deterministic gain-sharing microphone
+automixer with per-channel weight and priority ducking, sample-domain
+attack/release ramps, last-mic hold, optional NOM attenuation of the summed
+mix, allocation-free processing, and per-block share and gain telemetry. A
+monitor bus selects Master, PFL, or one of eight aux sources with level and a
+fixed dim that can engage during talkback; talkback routes reach only guest or
+camera destinations through read-only mono feeds that the type system keeps
+out of the program Master, proved by a compile-fail doctest. Remaining gaps:
+neither is wired into `MasterMixer`, the engine, persistence, protocol, or UI;
+level detection is per-block mean square without hold time or adaptive
+threshold; audio-follow-video automix is not modelled; strips do not yet
+provide pre-fader PFL taps; device selection is an opaque ID without I/O; and
+talkback is not delivered to guest or camera transports. Both rows remain
+planned.
+
+
 ## 6. Phase 4 — output, stream, and headless reliability (10–14 weeks)
 
 1. Add RTMP/RTMPS and SRT outputs with independent state.
