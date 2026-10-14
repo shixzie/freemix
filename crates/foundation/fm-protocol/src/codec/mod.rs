@@ -62,6 +62,19 @@ fn validate_monitor_frame(
     Ok(())
 }
 
+/// Enforces the overlay transition duration bound shared by the encoder and
+/// decoder.
+fn validate_overlay_duration(duration_frames: u32, field: &'static str) -> Result<(), CodecError> {
+    if (1..=3_600).contains(&duration_frames) {
+        Ok(())
+    } else {
+        Err(CodecError::InvalidField {
+            field,
+            value: duration_frames.to_string(),
+        })
+    }
+}
+
 fn validate_request_id(value: &str) -> Result<(), CodecError> {
     if value.is_empty()
         || value.len() > MAX_REQUEST_ID_BYTES

@@ -20,7 +20,8 @@ use super::value::{
 };
 use super::{
     CodecError, MAX_FIELD_VALUE_BYTES, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_STREAM_LOCAL_SEGMENTS,
-    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_request_id,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_overlay_duration,
+    validate_request_id,
 };
 
 /// Encodes one message as a single newline-terminated record.
@@ -327,6 +328,7 @@ fn encode_overlay_command(record: &mut Record, payload: &CommandPayload) -> Resu
                     crate::OverlayTransitionKind::Fade => "fade",
                 },
             )?;
+            validate_overlay_duration(*duration_frames, "duration_frames")?;
             record.field("duration_frames", duration_frames)
         }
         CommandPayload::ConfigureOverlayAppearance {
@@ -497,9 +499,19 @@ fn encode_overlays(
             value: format!("expected 8 channels, found {}", overlays.len()),
         });
     }
+    let mut channels = [false; 8];
     let value = overlays
         .iter()
         .map(|overlay| {
+            let channel = usize::from(overlay.channel.number() - 1);
+            if channels[channel] {
+                return Err(CodecError::InvalidField {
+                    field,
+                    value: format!("duplicate channel {}", overlay.channel.number()),
+                });
+            }
+            channels[channel] = true;
+            validate_overlay_duration(overlay.duration_frames, field)?;
             if overlay.queued_sources.len() > 64 {
                 return Err(CodecError::TooManyItems("overlay queue"));
             }
@@ -553,6 +565,12 @@ fn encode_input_audio_strips(
     strips: &[InputAudioStripStatus],
 ) -> Result<(), CodecError> {
     check_count(strips.len(), "input audio strips")?;
+    if strips.is_empty() {
+        return Err(CodecError::InvalidField {
+            field: "input_audio_strips",
+            value: String::new(),
+        });
+    }
     let mut inputs = BTreeSet::new();
     for status in strips {
         if !(-96_000..=24_000).contains(&status.gain_millidb)

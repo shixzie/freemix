@@ -26,7 +26,8 @@ use super::value::{
 use super::{
     MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES, MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES,
     MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH, MAX_STREAM_LOCAL_SEGMENTS,
-    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_request_id,
+    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, validate_overlay_duration,
+    validate_request_id,
 };
 
 /// Decodes exactly one newline-terminated wire record.
@@ -452,17 +453,6 @@ fn decode_overlay_border(
         "thin_white" => Ok(crate::OverlayBorderPreset::ThinWhite),
         "thick_white" => Ok(crate::OverlayBorderPreset::ThickWhite),
         _ => Err(CodecError::InvalidField { field, value }),
-    }
-}
-
-fn validate_overlay_duration(duration_frames: u32, field: &'static str) -> Result<(), CodecError> {
-    if (1..=3_600).contains(&duration_frames) {
-        Ok(())
-    } else {
-        Err(CodecError::InvalidField {
-            field,
-            value: duration_frames.to_string(),
-        })
     }
 }
 

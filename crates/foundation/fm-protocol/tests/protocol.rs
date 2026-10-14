@@ -2237,3 +2237,156 @@ fn maximum_monitor_frame_round_trips_through_the_wire() {
             .all(|(rgba, rgb)| rgba[..3] == *rgb && rgba[3] == 255)
     );
 }
+
+#[test]
+fn protocol_identifier_must_be_canonical_decimal() {
+    let fixture = encode_line(&WireMessage::Command(command())).unwrap();
+    let current = format!("protocol={CURRENT_PROTOCOL_VERSION}");
+    assert!(fixture.contains(&current));
+    for alias in [
+        format!(
+            "protocol=%2B{}.{}",
+            CURRENT_PROTOCOL_VERSION.major, CURRENT_PROTOCOL_VERSION.minor
+        ),
+        format!(
+            "protocol=0{}.{}",
+            CURRENT_PROTOCOL_VERSION.major, CURRENT_PROTOCOL_VERSION.minor
+        ),
+        format!(
+            "protocol={}.0{}",
+            CURRENT_PROTOCOL_VERSION.major, CURRENT_PROTOCOL_VERSION.minor
+        ),
+        format!(
+            "protocol={}.%2B{}",
+            CURRENT_PROTOCOL_VERSION.major, CURRENT_PROTOCOL_VERSION.minor
+        ),
+    ] {
+        assert!(
+            matches!(
+                decode_line(&fixture.replace(&current, &alias)),
+                Err(CodecError::InvalidField {
+                    field: "protocol",
+                    ..
+                })
+            ),
+            "{alias} must not alias the current identifier"
+        );
+    }
+    let zero = encode_line(&WireMessage::Command(CommandMessage {
+        protocol: ProtocolVersion::new(0, 0),
+        ..command()
+    }))
+    .unwrap();
+    assert!(decode_line(&zero).is_ok());
+}
+
+#[test]
+fn encoder_refuses_overlay_records_the_decoder_rejects() {
+    let channel = WireOverlayChannelId::new(1).unwrap();
+    for duration_frames in [0, 3_601] {
+        let message = WireMessage::Command(CommandMessage {
+            payload: CommandPayload::ConfigureOverlayTransition {
+                channel,
+                transition: OverlayTransitionKind::Fade,
+                duration_frames,
+            },
+            ..command()
+        });
+        assert!(
+            matches!(
+                encode_line(&message),
+                Err(CodecError::InvalidField {
+                    field: "duration_frames",
+                    ..
+                })
+            ),
+            "duration {duration_frames}"
+        );
+    }
+
+    let WireMessage::Snapshot(valid) = snapshot(input_statuses(&[(1, "camera"), (2, "slides")]))
+    else {
+        unreachable!()
+    };
+    let mut zero_duration = valid.clone();
+    zero_duration.desired_overlays[3].duration_frames = 0;
+    assert!(matches!(
+        encode_line(&WireMessage::Snapshot(zero_duration)),
+        Err(CodecError::InvalidField {
+            field: "desired_overlays",
+            ..
+        })
+    ));
+    let mut duplicate_channel = valid.clone();
+    duplicate_channel.realized_overlays[7].channel = channel;
+    assert!(matches!(
+        encode_line(&WireMessage::Snapshot(duplicate_channel)),
+        Err(CodecError::InvalidField {
+            field: "realized_overlays",
+            ..
+        })
+    ));
+    let mut no_strips = valid;
+    no_strips.input_audio_strips.clear();
+    assert!(matches!(
+        encode_line(&WireMessage::Snapshot(no_strips)),
+        Err(CodecError::InvalidField {
+            field: "input_audio_strips",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn handshake_permissions_reject_empty_entries_in_both_directions() {
+    let response = |permissions: Vec<String>| {
+        WireMessage::HandshakeResponse(fm_protocol::HandshakeResponse {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            granted_role: fm_protocol::Role::Operator,
+            permissions,
+            capabilities: CapabilityReportSummary {
+                digest: "sha256:abc".to_owned(),
+                total: 1,
+                available: 1,
+                degraded: 0,
+                unavailable: 0,
+            },
+            server: server_identity(),
+            current_revision: 9,
+            outcome: HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            },
+        })
+    };
+    let valid = response(vec!["switcher.cut".to_owned(), "a,b".to_owned()]);
+    let encoded = encode_line(&valid).unwrap();
+    assert_eq!(decode_line(&encoded).unwrap(), valid);
+    let none = response(Vec::new());
+    assert_eq!(decode_line(&encode_line(&none).unwrap()).unwrap(), none);
+
+    // `[""]` used to encode as the empty list and silently decode as `[]`.
+    for permissions in [vec![String::new()], vec!["a".to_owned(), String::new()]] {
+        assert!(matches!(
+            encode_line(&response(permissions)),
+            Err(CodecError::InvalidField {
+                field: "permissions",
+                ..
+            })
+        ));
+    }
+    let list = "permissions=switcher.cut%2Ca%252Cb";
+    assert!(encoded.contains(list));
+    for invalid in [
+        "permissions=switcher.cut%2C",
+        "permissions=%2Cswitcher.cut",
+        "permissions=switcher.cut%2C%2Ca",
+    ] {
+        assert!(matches!(
+            decode_line(&encoded.replace(list, invalid)),
+            Err(CodecError::InvalidField {
+                field: "permissions",
+                ..
+            })
+        ));
+    }
+}

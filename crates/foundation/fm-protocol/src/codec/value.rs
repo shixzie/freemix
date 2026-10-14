@@ -83,16 +83,35 @@ pub(super) fn parse_role(value: &str) -> Option<Role> {
     }
 }
 
+/// Parses the exact `major.minor` identifier the encoder emits: each part is
+/// canonical decimal, so a sign or leading zero (`+2.21`, `02.21`) is not the
+/// current identifier.
 pub(super) fn parse_version(value: &str) -> Option<ProtocolVersion> {
     let (major, minor) = value.split_once('.')?;
+    let canonical = |part: &str| {
+        !part.is_empty()
+            && part.bytes().all(|byte| byte.is_ascii_digit())
+            && (part == "0" || !part.starts_with('0'))
+    };
+    if !canonical(major) || !canonical(minor) {
+        return None;
+    }
     Some(ProtocolVersion::new(
         major.parse().ok()?,
         minor.parse().ok()?,
     ))
 }
 
+/// Encodes the permission list. An empty permission is refused because the
+/// one-item list `[""]` would encode to the empty list.
 pub(super) fn string_list(values: &[String]) -> Result<String, CodecError> {
     bounded_join(values, MAX_LIST_ITEMS, "permissions", |value| {
+        if value.is_empty() {
+            return Err(CodecError::InvalidField {
+                field: "permissions",
+                value: String::new(),
+            });
+        }
         escape_bounded(value)
     })
 }
@@ -102,7 +121,18 @@ pub(super) fn parse_string_list(value: &str) -> Result<Vec<String>, CodecError> 
         return Ok(Vec::new());
     }
     check_items(value, ',', MAX_LIST_ITEMS, "permissions")?;
-    value.split(',').map(unescape).collect()
+    value
+        .split(',')
+        .map(|entry| {
+            if entry.is_empty() {
+                return Err(CodecError::InvalidField {
+                    field: "permissions",
+                    value: value.to_owned(),
+                });
+            }
+            unescape(entry)
+        })
+        .collect()
 }
 
 pub(super) fn input_statuses(values: &[InputStatus]) -> Result<String, CodecError> {

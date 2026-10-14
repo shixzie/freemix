@@ -283,8 +283,12 @@ pub fn decode_qoi_rgb(width: u16, height: u16, data: &[u8]) -> Result<Vec<u8>, M
             }
         }
         index[qoi_hash(pixel)] = pixel;
+        // The op state keeps the reference decoder's alpha (an index op can
+        // load a never-written, all-zero slot), but a three-channel stream
+        // carries no alpha, so every output pixel is opaque.
+        let opaque = [pixel[0], pixel[1], pixel[2], 255];
         for _ in 0..count {
-            out.extend_from_slice(&pixel);
+            out.extend_from_slice(&opaque);
         }
         produced += count;
     }
@@ -699,6 +703,17 @@ mod tests {
         assert_eq!(
             encode_qoi_rgb(2, 2, &[0; 11], 6, 3),
             Err(MonitorImageError::InvalidPixelLayout)
+        );
+    }
+
+    #[test]
+    fn decoder_output_is_opaque_after_an_index_op_on_an_unwritten_slot() {
+        // `0x05` loads the never-written all-zero index slot 5 (alpha 0), and
+        // the zero `QOI_OP_DIFF` and a run then carry that pixel forward.
+        let data = stream(4, 1, &[0x05, 0x6a, 0xc1]);
+        assert_eq!(
+            decode_qoi_rgb(4, 1, &data).unwrap(),
+            [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]
         );
     }
 
