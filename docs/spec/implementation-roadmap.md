@@ -2025,6 +2025,22 @@ device input, persistence, or jog acceleration; disk samples are caller
 supplied without OS or SMART queries or `fm-record` low-space wiring; and no
 storage profile is certified. `OR-014` remains planned.
 
+Current implementation boundary for item 7: `fm-replay` compiles highlight
+reels of ordered event clips (one angle each, trims, exact rational speeds,
+cuts or dissolves) into an exact output timeline whose frames resolve to one
+or two recorded source layers with exact mix weights and sample-exact audio
+positions. A music bed plans once-through or looping playlists with linear
+crossfades, sample-exact ducking under program-audio clips, merged nearby
+ducks, and an end fade using integer gains. An export-during-record queue
+accepts only gap-free, closed segments, protects them from retention, advances
+in bounded frame chunks with progress and cancellation, and revalidates
+segments and source frames so an export never resolves pruned media.
+Remaining gaps: nothing is decoded, mixed, encoded, or written; dissolve is the
+only transition and clips play forward only; the queue is not wired to
+`fm-record`, persistence, protocol, or UI; and exports needing an open segment
+are refused rather than deferred. `OR-013` remains planned.
+
+
 Exit: Sports Show scenario passes on certified storage/hardware.
 
 ## 10. Phase 8 — professional hardware and advanced formats (ongoing, 16–24 weeks)
