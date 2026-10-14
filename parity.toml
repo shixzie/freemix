@@ -199,7 +199,9 @@ id = "accept-au-004"
 state = "planned"
 [[tests]]
 id = "accept-au-005"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-audio/tests/dsp.rs", "crates/media/fm-audio/tests/sample_delay.rs", "crates/media/fm-audio/tests/master_input_meters.rs"]
+commands = ["cargo test -p fm-audio --test dsp", "cargo test -p fm-audio --test sample_delay", "cargo test -p fm-audio --test master_input_meters"]
 [[tests]]
 id = "accept-au-006"
 state = "planned"
