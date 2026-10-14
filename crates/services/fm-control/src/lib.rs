@@ -588,6 +588,12 @@ impl<A: AuthorizationHook> ControlService<A> {
         &self.snapshot
     }
 
+    /// Returns the engine's next unrendered frame number (its frame cursor).
+    #[must_use]
+    pub const fn frame_cursor(&self) -> u64 {
+        self.engine.frame_cursor().get()
+    }
+
     /// Returns the engine's next deterministic frame deadline without ticking.
     ///
     /// # Errors

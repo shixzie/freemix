@@ -23,7 +23,6 @@ impl LatestRecord {
         self.current.as_ref().is_some_and(PendingWrite::started)
     }
 
-    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.current.is_none() && self.next.is_none()
     }

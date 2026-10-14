@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    io::Read,
+    io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
         Arc,
@@ -16,7 +16,7 @@ use fm_control::{LiveEvent, Subscription};
 use fm_persistence::StoredProject;
 use fm_protocol::{
     AudioMetersMessage, ClientType, ErrorMessage, HandshakeOutcome as ProtocolHandshakeOutcome,
-    HandshakeResponse, HeartbeatAcknowledgementMessage, LineDecoder, ServerIdentity,
+    HandshakeResponse, HeartbeatAcknowledgementMessage, LineDecoder, MonitorTap, ServerIdentity,
     StreamStatusMessage, StructuredError, WireMessage, encode_line,
 };
 use fm_server::{Server, Session, SyncPayload};
@@ -31,12 +31,15 @@ use super::{
 };
 use crate::journal::DurableStore;
 use crate::latest_record::LatestRecord;
+use crate::monitor_tap::SimulatedMonitorTap;
 use crate::web::{WebEvent, WebGateway};
 
 const MAX_PEERS: usize = 2;
 const INBOUND_CAPACITY: usize = 8;
 const OUTBOUND_CAPACITY: usize = 32;
 const LIVE_EVENTS_PER_PASS: usize = 8;
+/// The handshake permission that makes a Studio peer monitor-frame eligible.
+const VIEW_STATUS_PERMISSION: &str = "view_status";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
@@ -110,9 +113,92 @@ struct Peer {
     initial_sync: VecDeque<WireMessage>,
     outbound: VecDeque<Outbound>,
     audio_meters: bool,
-    latest_meter: LatestRecord,
     stream_status: bool,
-    latest_stream_status: LatestRecord,
+    monitor_frames: bool,
+    lossy: LossyRecords,
+}
+
+/// One independent latest-wins side-channel slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LossySlot {
+    Meter,
+    StreamStatus,
+    PreviewFrame,
+    ProgramFrame,
+}
+
+impl LossySlot {
+    const COUNT: usize = 4;
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Meter => 0,
+            Self::StreamStatus => 1,
+            Self::PreviewFrame => 2,
+            Self::ProgramFrame => 3,
+        }
+    }
+
+    const fn monitor(tap: MonitorTap) -> Self {
+        match tap {
+            MonitorTap::Preview => Self::PreviewFrame,
+            MonitorTap::Program => Self::ProgramFrame,
+        }
+    }
+}
+
+/// Every lossy slot of one raw peer plus the round-robin cursor that drains
+/// them.
+///
+/// At most one slot is ever in flight: a started record is always finished
+/// before any other slot (or queued record) writes a byte, so lossy lines —
+/// including multi-line monitor frame groups — can never interleave. When no
+/// slot is in flight, at most one slot starts per pass, chosen round-robin
+/// after the last started slot so a busy slot cannot starve the others.
+#[derive(Default)]
+struct LossyRecords {
+    slots: [LatestRecord; LossySlot::COUNT],
+    cursor: usize,
+}
+
+impl LossyRecords {
+    fn replace(&mut self, slot: LossySlot, bytes: Vec<u8>) {
+        self.slots[slot.index()].replace(bytes);
+    }
+
+    #[cfg(test)]
+    fn slot(&self, slot: LossySlot) -> &LatestRecord {
+        &self.slots[slot.index()]
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.slots.iter().all(LatestRecord::is_empty)
+    }
+
+    fn started(&self) -> bool {
+        self.slots.iter().any(LatestRecord::started)
+    }
+
+    fn discard_unstarted(&mut self) {
+        for slot in &mut self.slots {
+            slot.discard_unstarted();
+        }
+    }
+
+    fn write_once(&mut self, writer: &mut impl Write) -> std::io::Result<()> {
+        if let Some(record) = self.slots.iter_mut().find(|record| record.started()) {
+            return record.write_once(writer);
+        }
+        for offset in 0..LossySlot::COUNT {
+            let index = (self.cursor + offset) % LossySlot::COUNT;
+            if !self.slots[index].is_empty() {
+                self.cursor = (index + 1) % LossySlot::COUNT;
+                return self.slots[index].write_once(writer);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Peer {
@@ -139,9 +225,9 @@ impl Peer {
             initial_sync: VecDeque::new(),
             outbound: VecDeque::new(),
             audio_meters: false,
-            latest_meter: LatestRecord::default(),
             stream_status: false,
-            latest_stream_status: LatestRecord::default(),
+            monitor_frames: false,
+            lossy: LossyRecords::default(),
         })
     }
 
@@ -193,7 +279,7 @@ impl Peer {
 
     fn replace_meter(&mut self, bytes: Vec<u8>) {
         if self.audio_meters && self.phase == Phase::Active {
-            self.latest_meter.replace(bytes);
+            self.lossy.replace(LossySlot::Meter, bytes);
         }
     }
 
@@ -201,8 +287,19 @@ impl Peer {
     /// neither lossy record can evict the other.
     fn replace_stream_status(&mut self, bytes: Vec<u8>) {
         if self.stream_status && self.phase == Phase::Active {
-            self.latest_stream_status.replace(bytes);
+            self.lossy.replace(LossySlot::StreamStatus, bytes);
         }
+    }
+
+    /// Coalesces one tap's latest encoded monitor frame group in its own slot.
+    fn replace_monitor_frame(&mut self, tap: MonitorTap, bytes: &[u8]) {
+        if self.wants_monitor_frames() {
+            self.lossy.replace(LossySlot::monitor(tap), bytes.to_vec());
+        }
+    }
+
+    fn wants_monitor_frames(&self) -> bool {
+        self.monitor_frames && self.phase == Phase::Active
     }
 
     fn replace_outbound_for_shutdown(&mut self) {
@@ -280,6 +377,7 @@ pub(super) fn run(
         process_shutdown,
     };
     let mut native = native;
+    let mut simulated_monitor = SimulatedMonitorTap::default();
 
     loop {
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
@@ -412,6 +510,24 @@ pub(super) fn run(
             }
             if let Some(status) = native.take_stream_status() {
                 publish_stream_status(&mut peers, status);
+            }
+        }
+        let monitor_demand = peers.iter().any(Peer::wants_monitor_frames);
+        if let Some(native) = native.as_deref_mut() {
+            native.set_monitor_demand(monitor_demand);
+            if let Some((tap, bytes)) = native.take_monitor_frame() {
+                publish_monitor_frame(&mut peers, tap, &bytes);
+            }
+        } else {
+            let frames = simulated_monitor.poll(
+                &control.borrow(),
+                durable.project(),
+                authority,
+                Instant::now(),
+                monitor_demand,
+            );
+            for (tap, bytes) in frames {
+                publish_monitor_frame(&mut peers, tap, &bytes);
             }
         }
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
@@ -731,6 +847,11 @@ impl Runtime<'_> {
         peer.subscription = Some(subscription);
         peer.audio_meters = !peer.transport.is_web() && request.client_type == ClientType::Studio;
         peer.stream_status = peer.audio_meters;
+        peer.monitor_frames = monitor_frames_eligible(
+            peer.transport.is_web(),
+            request.client_type,
+            &handshake.server_hello.permissions,
+        );
         if peer
             .queue(
                 &WireMessage::HandshakeResponse(response),
@@ -745,6 +866,15 @@ impl Runtime<'_> {
         peer.phase = Phase::Syncing;
         Ok(())
     }
+}
+
+/// Monitor frames go only to raw (non-Web) Studio peers whose granted role
+/// carries `view_status`.
+fn monitor_frames_eligible(web: bool, client_type: ClientType, permissions: &[String]) -> bool {
+    !web && client_type == ClientType::Studio
+        && permissions
+            .iter()
+            .any(|permission| permission == VIEW_STATUS_PERMISSION)
 }
 
 fn make_retryable(response: &mut HandshakeResponse) {
@@ -835,19 +965,13 @@ fn write_peer(peer: &mut Peer) -> WriteOutcome {
             Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => WriteOutcome::Failed,
         }
     } else {
-        // Continue any in-flight lossy record before touching the queue.
-        if peer.latest_meter.started() {
-            return write_meter(peer);
-        }
-        if peer.latest_stream_status.started() {
-            return write_stream_status(peer);
+        // Continue any in-flight lossy record before touching the queue; an
+        // idle queue starts at most one lossy slot per pass.
+        if peer.lossy.started() {
+            return write_lossy(peer);
         }
         let Some(record) = peer.outbound.front_mut() else {
-            let outcome = write_meter(peer);
-            if matches!(outcome, WriteOutcome::Failed) {
-                return outcome;
-            }
-            return write_stream_status(peer);
+            return write_lossy(peer);
         };
         let Transport::Raw(stream) = &mut peer.transport else {
             unreachable!("raw transport checked above")
@@ -893,30 +1017,11 @@ fn finish_outbound(peer: &mut Peer) -> WriteOutcome {
     }
 }
 
-fn write_meter(peer: &mut Peer) -> WriteOutcome {
-    write_lossy(peer, LossySlot::Meter)
-}
-
-fn write_stream_status(peer: &mut Peer) -> WriteOutcome {
-    write_lossy(peer, LossySlot::StreamStatus)
-}
-
-/// Which independent lossy side-channel slot to drain.
-#[derive(Clone, Copy)]
-enum LossySlot {
-    Meter,
-    StreamStatus,
-}
-
-fn write_lossy(peer: &mut Peer, slot: LossySlot) -> WriteOutcome {
-    let (record, transport) = match slot {
-        LossySlot::Meter => (&mut peer.latest_meter, &mut peer.transport),
-        LossySlot::StreamStatus => (&mut peer.latest_stream_status, &mut peer.transport),
-    };
-    let Transport::Raw(stream) = transport else {
+fn write_lossy(peer: &mut Peer) -> WriteOutcome {
+    let Transport::Raw(stream) = &mut peer.transport else {
         return WriteOutcome::Failed;
     };
-    match record.write_once(stream) {
+    match peer.lossy.write_once(stream) {
         Ok(()) => WriteOutcome::Pending,
         Err(error)
             if matches!(
@@ -948,11 +1053,18 @@ fn publish_stream_status(peers: &mut [Peer], status: StreamStatusMessage) {
     }
 }
 
+/// Publishes one tap's atomic encoded frame group to every eligible peer.
+fn publish_monitor_frame(peers: &mut [Peer], tap: MonitorTap, bytes: &[u8]) {
+    for peer in peers {
+        peer.replace_monitor_frame(tap, bytes);
+    }
+}
+
 /// Drops lossy records that never reached the wire so shutdown cannot flush
-/// stale telemetry after its goodbye; in-flight records keep draining.
+/// stale telemetry or monitor frames after its goodbye; in-flight records keep
+/// draining.
 fn discard_unstarted_lossy_records(peer: &mut Peer) {
-    peer.latest_meter.discard_unstarted();
-    peer.latest_stream_status.discard_unstarted();
+    peer.lossy.discard_unstarted();
 }
 
 enum ShutdownQueue {
@@ -1114,6 +1226,7 @@ mod tests {
         peer.phase = Phase::Active;
         peer.audio_meters = true;
         peer.stream_status = true;
+        peer.monitor_frames = true;
         (peer, client)
     }
 
@@ -1130,13 +1243,13 @@ mod tests {
         publish_audio_meters(std::slice::from_mut(&mut peer), meters_message());
         publish_stream_status(std::slice::from_mut(&mut peer), status_message());
         // Both slots hold their own encoded record; neither evicted the other.
-        assert!(!peer.latest_meter.is_empty());
-        assert!(!peer.latest_stream_status.is_empty());
+        assert!(!peer.lossy.slot(LossySlot::Meter).is_empty());
+        assert!(!peer.lossy.slot(LossySlot::StreamStatus).is_empty());
 
         // A newer stream status replaces only the stream status slot.
         publish_stream_status(std::slice::from_mut(&mut peer), status_message());
-        assert!(!peer.latest_meter.is_empty());
-        assert!(!peer.latest_stream_status.is_empty());
+        assert!(!peer.lossy.slot(LossySlot::Meter).is_empty());
+        assert!(!peer.lossy.slot(LossySlot::StreamStatus).is_empty());
 
         let expected_meters = encode_line(&WireMessage::AudioMeters(meters_message()))
             .unwrap()
@@ -1145,7 +1258,9 @@ mod tests {
             .unwrap()
             .into_bytes();
 
-        while !peer.latest_meter.is_empty() || !peer.latest_stream_status.is_empty() {
+        while !peer.lossy.slot(LossySlot::Meter).is_empty()
+            || !peer.lossy.slot(LossySlot::StreamStatus).is_empty()
+        {
             assert!(!matches!(write_peer(&mut peer), WriteOutcome::Failed));
         }
         assert_eq!(
@@ -1170,7 +1285,7 @@ mod tests {
         peer.audio_meters = false;
         peer.stream_status = false;
         publish_stream_status(std::slice::from_mut(&mut peer), status_message());
-        assert!(peer.latest_stream_status.is_empty());
+        assert!(peer.lossy.slot(LossySlot::StreamStatus).is_empty());
         write_peer(&mut peer);
         client.set_nonblocking(true).unwrap();
         let mut probe = [0_u8; 16];
@@ -1211,7 +1326,7 @@ mod tests {
             "web peers are not lossy-record eligible"
         );
         publish_stream_status(std::slice::from_mut(&mut web_peer), status_message());
-        assert!(web_peer.latest_stream_status.is_empty());
+        assert!(web_peer.lossy.slot(LossySlot::StreamStatus).is_empty());
     }
 
     #[test]
@@ -1219,11 +1334,235 @@ mod tests {
         let (mut peer, _client) = active_eligible_peer();
         publish_audio_meters(std::slice::from_mut(&mut peer), meters_message());
         publish_stream_status(std::slice::from_mut(&mut peer), status_message());
-        assert!(!peer.latest_meter.is_empty());
-        assert!(!peer.latest_stream_status.is_empty());
+        assert!(!peer.lossy.slot(LossySlot::Meter).is_empty());
+        assert!(!peer.lossy.slot(LossySlot::StreamStatus).is_empty());
 
         discard_unstarted_lossy_records(&mut peer);
-        assert!(peer.latest_meter.is_empty());
-        assert!(peer.latest_stream_status.is_empty());
+        assert!(peer.lossy.slot(LossySlot::Meter).is_empty());
+        assert!(peer.lossy.slot(LossySlot::StreamStatus).is_empty());
+    }
+
+    struct PartialWriter {
+        bytes: Vec<u8>,
+        limit: usize,
+    }
+
+    impl Write for PartialWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let written = bytes.len().min(self.limit);
+            self.bytes.extend_from_slice(&bytes[..written]);
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn monitor_group(tap: MonitorTap, sequence: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for part in 0..2_u16 {
+            let message = fm_protocol::MonitorFrameMessage {
+                server: identity(),
+                tap,
+                sequence,
+                frame: 3,
+                input: fm_protocol::WireInputId::new(NonZeroU128::new(1).unwrap()),
+                origin: fm_protocol::MonitorFrameOrigin::Simulated,
+                width: 2,
+                height: 2,
+                part,
+                parts: 2,
+                data: vec![u8::try_from(part).unwrap() + 1; 5],
+            };
+            bytes.extend_from_slice(
+                encode_line(&WireMessage::MonitorFrame(message))
+                    .unwrap()
+                    .as_bytes(),
+            );
+        }
+        bytes
+    }
+
+    #[test]
+    fn partial_lossy_writes_never_interleave_records() {
+        // Regression: a partially written meter used to let the stream status
+        // start in the same pass, splicing its bytes into the meter line.
+        let meters = encode_line(&WireMessage::AudioMeters(meters_message()))
+            .unwrap()
+            .into_bytes();
+        let status = encode_line(&WireMessage::StreamStatus(status_message()))
+            .unwrap()
+            .into_bytes();
+        let preview = monitor_group(MonitorTap::Preview, 1);
+        let program = monitor_group(MonitorTap::Program, 1);
+        let mut records = LossyRecords::default();
+        records.replace(LossySlot::Meter, meters.clone());
+        records.replace(LossySlot::StreamStatus, status.clone());
+        records.replace(LossySlot::PreviewFrame, preview.clone());
+        records.replace(LossySlot::ProgramFrame, program.clone());
+        let mut writer = PartialWriter {
+            bytes: Vec::new(),
+            limit: 7,
+        };
+        let newer_program = monitor_group(MonitorTap::Program, 2);
+        let mut replaced = false;
+        while !records.is_empty() {
+            records.write_once(&mut writer).unwrap();
+            // A newer group arriving while the program group is mid-flight
+            // waits behind it instead of splicing into it.
+            if !replaced && records.slot(LossySlot::ProgramFrame).started() {
+                records.replace(LossySlot::ProgramFrame, newer_program.clone());
+                records.replace(LossySlot::Meter, meters.clone());
+                replaced = true;
+            }
+        }
+        assert!(replaced);
+        assert_eq!(
+            writer.bytes,
+            [
+                meters.clone(),
+                status,
+                preview,
+                program,
+                meters,
+                newer_program
+            ]
+            .concat()
+        );
+
+        let decoded = LineDecoder::new().push(&writer.bytes).unwrap();
+        let kinds = decoded
+            .iter()
+            .map(|message| match message {
+                WireMessage::AudioMeters(_) => "meters",
+                WireMessage::StreamStatus(_) => "status",
+                WireMessage::MonitorFrame(frame) => frame.tap.as_str(),
+                _ => "other",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            [
+                "meters", "status", "preview", "preview", "program", "program", "meters",
+                "program", "program"
+            ]
+        );
+    }
+
+    #[test]
+    fn lossy_round_robin_never_starves_quieter_slots() {
+        let meters = encode_line(&WireMessage::AudioMeters(meters_message()))
+            .unwrap()
+            .into_bytes();
+        let mut records = LossyRecords::default();
+        records.replace(LossySlot::Meter, meters.clone());
+        records.replace(LossySlot::StreamStatus, b"status\n".to_vec());
+        records.replace(LossySlot::PreviewFrame, b"preview\n".to_vec());
+        records.replace(LossySlot::ProgramFrame, b"program\n".to_vec());
+        let mut writer = Vec::new();
+        for _ in 0..4 {
+            records.write_once(&mut writer).unwrap();
+            // The meter slot is refilled after every pass, as at frame rate.
+            records.replace(LossySlot::Meter, meters.clone());
+        }
+        assert_eq!(
+            writer,
+            [
+                meters.clone(),
+                b"status\n".to_vec(),
+                b"preview\n".to_vec(),
+                b"program\n".to_vec()
+            ]
+            .concat()
+        );
+        records.write_once(&mut writer).unwrap();
+        assert!(writer.ends_with(&meters));
+    }
+
+    #[test]
+    fn write_peer_starts_one_lossy_slot_per_pass() {
+        let (mut peer, mut client) = active_eligible_peer();
+        publish_audio_meters(std::slice::from_mut(&mut peer), meters_message());
+        publish_monitor_frame(
+            std::slice::from_mut(&mut peer),
+            MonitorTap::Program,
+            &monitor_group(MonitorTap::Program, 4),
+        );
+        assert!(!matches!(write_peer(&mut peer), WriteOutcome::Failed));
+        assert!(peer.lossy.slot(LossySlot::Meter).is_empty());
+        assert!(!peer.lossy.slot(LossySlot::ProgramFrame).is_empty());
+        assert!(!matches!(write_peer(&mut peer), WriteOutcome::Failed));
+        assert!(peer.lossy.is_empty());
+        let expected_meters = encode_line(&WireMessage::AudioMeters(meters_message()))
+            .unwrap()
+            .into_bytes();
+        let group = monitor_group(MonitorTap::Program, 4);
+        assert_eq!(
+            read_exact(&mut client, expected_meters.len() + group.len()),
+            [expected_meters, group].concat()
+        );
+    }
+
+    #[test]
+    fn monitor_frames_reach_only_active_view_status_studio_raw_peers() {
+        let view_status = vec!["view_status".to_owned(), "transition".to_owned()];
+        let no_view_status = vec!["transition".to_owned()];
+        assert!(monitor_frames_eligible(
+            false,
+            ClientType::Studio,
+            &view_status
+        ));
+        assert!(!monitor_frames_eligible(
+            true,
+            ClientType::Studio,
+            &view_status
+        ));
+        assert!(!monitor_frames_eligible(
+            false,
+            ClientType::Integration,
+            &view_status
+        ));
+        assert!(!monitor_frames_eligible(
+            false,
+            ClientType::Studio,
+            &no_view_status
+        ));
+
+        let group = monitor_group(MonitorTap::Preview, 1);
+        let (mut ineligible, mut client) = raw_peer();
+        ineligible.phase = Phase::Active;
+        ineligible.audio_meters = true;
+        ineligible.monitor_frames = false;
+        let (mut syncing, _syncing_client) = active_eligible_peer();
+        syncing.phase = Phase::Syncing;
+        let mut peers = vec![ineligible, syncing];
+        publish_monitor_frame(&mut peers, MonitorTap::Preview, &group);
+        publish_monitor_frame(&mut peers, MonitorTap::Program, &group);
+        assert!(peers.iter().all(|peer| peer.lossy.is_empty()));
+        write_peer(&mut peers[0]);
+        client.set_nonblocking(true).unwrap();
+        let mut probe = [0_u8; 16];
+        assert!(matches!(
+            client.read(&mut probe),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+        assert!(!peers.iter().any(Peer::wants_monitor_frames));
+
+        let (eligible, _client) = active_eligible_peer();
+        peers.push(eligible);
+        assert!(peers.iter().any(Peer::wants_monitor_frames));
+        publish_monitor_frame(&mut peers, MonitorTap::Preview, &group);
+        assert!(!peers[2].lossy.slot(LossySlot::PreviewFrame).is_empty());
+    }
+
+    #[test]
+    fn unstarted_monitor_frames_are_discarded_for_shutdown() {
+        let (mut peer, _client) = active_eligible_peer();
+        let group = monitor_group(MonitorTap::Preview, 1);
+        publish_monitor_frame(std::slice::from_mut(&mut peer), MonitorTap::Preview, &group);
+        publish_monitor_frame(std::slice::from_mut(&mut peer), MonitorTap::Program, &group);
+        discard_unstarted_lossy_records(&mut peer);
+        assert!(peer.lossy.is_empty());
     }
 }

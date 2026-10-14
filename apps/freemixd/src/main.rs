@@ -69,9 +69,9 @@ use fm_protocol::{
     AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CapabilityReportSummary, CommandMessage,
     CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse, ErrorMessage,
     EventCursor, HandshakeOutcome as ProtocolHandshakeOutcome, HandshakeRequest, HandshakeResponse,
-    HeartbeatMessage, ProtocolVersion, RecordingStatus, ResumeCursor, RuntimeEventMessage,
-    ServerHello, ServerIdentity, StreamStatus, StreamStatusMessage, StructuredError, WireMessage,
-    WireStreamTargetId, choose_handshake_outcome, encode_line,
+    HeartbeatMessage, MonitorTap, ProtocolVersion, RecordingStatus, ResumeCursor,
+    RuntimeEventMessage, ServerHello, ServerIdentity, StreamStatus, StreamStatusMessage,
+    StructuredError, WireMessage, WireStreamTargetId, choose_handshake_outcome, encode_line,
 };
 #[cfg(test)]
 use fm_protocol::{CodecError, EventMessage, HeartbeatAcknowledgementMessage, LineDecoder};
@@ -95,6 +95,7 @@ mod disk;
 mod hls_server;
 mod journal;
 mod latest_record;
+mod monitor_tap;
 mod non_native_sessions;
 // The network preflight is wired only into the native daemon; every helper
 // still compiles (and is unit-tested) in every build.
@@ -639,6 +640,8 @@ struct NativeDaemon {
     pending_audio_meters: Option<AudioMetersMessage>,
     stream_status_sequence: u64,
     pending_stream_status: Option<StreamStatusMessage>,
+    /// Encoded-fallback Program monitor tap; see [`NativeMonitorTap`].
+    monitor: NativeMonitorTap,
     #[cfg(target_os = "macos")]
     cameras: NativeCameraInputs,
     #[cfg(target_os = "macos")]
@@ -1521,6 +1524,11 @@ struct NativeRuntimeTelemetry {
     recorder_peak_retained_bytes: u64,
     stream_enqueued_pairs_total: u64,
     stream_dropped_pairs_total: u64,
+    /// Encoded Program monitor frames published (Protocol 2.21 fallback).
+    monitor_frames_published: u64,
+    /// Program monitor readbacks or encodes that failed and were skipped;
+    /// a failed monitor tap never fails the frame tick.
+    monitor_frames_failed: u64,
     /// Latest successfully sampled free bytes across the configured outputs:
     /// the recording output's parent and every local HLS output directory;
     /// `None` until the first sample.
@@ -1575,6 +1583,8 @@ impl NativeRuntimeTelemetry {
             recorder_peak_retained_bytes: 0,
             stream_enqueued_pairs_total: 0,
             stream_dropped_pairs_total: 0,
+            monitor_frames_published: 0,
+            monitor_frames_failed: 0,
             disk_free_bytes: None,
             disk_alert: None,
         }
@@ -1699,7 +1709,7 @@ impl NativeRuntimeTelemetry {
         let presentation_active = presentation.is_some();
         let presentation = presentation.unwrap_or_default();
         format!(
-            "FREEMIXD_TELEMETRY\tv=4\thost_lateness_samples_total={}\thost_lateness_samples_retained={}\thost_lateness_metric_samples_dropped={}\thost_lateness_p50_ms={}\thost_lateness_p95_ms={}\thost_lateness_p99_ms={}\taudio_retained_blocks={}\taudio_observed_peak_retained_blocks={}\taudio_retained_samples={}\taudio_observed_peak_retained_samples={}\taudio_retained_bytes={}\taudio_observed_peak_retained_bytes={}\taudio_reservation_requests={}\taudio_reserved_blocks={}\taudio_observed_peak_reserved_blocks={}\taudio_reserved_samples={}\taudio_observed_peak_reserved_samples={}\taudio_reserved_bytes={}\taudio_observed_peak_reserved_bytes={}\taudio_source_stalls={}\taudio_positioned_blocks={}\taudio_positioned_samples={}\taudio_leading_silence_samples={}\taudio_eos_padding_blocks={}\taudio_eos_padding_samples={}\taudio_sink_depth={}\taudio_sink_peak_depth={}\taudio_sink_dropped={}\tcamera_configured_sources={}\tcamera_frames_received={}\tcamera_frames_ingested={}\tcamera_native_dropped={}\tcamera_queue_depth={}\tcamera_queue_peak_depth={}\tcamera_queue_dropped={}\tcamera_continuity_rejected={}\tcamera_recovery_timeout_discarded={}\tcamera_terminal_error_discarded={}\tcamera_terminal_trigger_discarded={}\tcamera_ready_delivery_depth={}\tcamera_ready_delivery_discarded={}\tcamera_cancellation_discarded={}\tcamera_supervisor_slot_replaced={}\tcamera_supervisor_slot_depth={}\tcamera_ingest_failed={}\tcamera_preflight_depth={}\tcamera_preflight_discarded={}\tcamera_recovery_attempts={}\tcamera_recovery_successes={}\tcamera_recovery_exhausted={}\tcamera_recovery_worker_failures={}\tpresentation_active={}\tpresentation_pending_depth={}\tpresentation_peak_pending_depth={}\tpresentation_dropped={}\trecorder_configured={}\trecorder_outstanding_pairs={}\trecorder_observed_peak_outstanding_pairs={}\trecorder_retained_bytes={}\trecorder_observed_peak_retained_bytes={}\tstream_pairs_enqueued_total={}\tstream_pairs_dropped_total={}\tgpu_backend={:?}\tgpu_adapter={}\tgpu_timing={:?}\tgpu_pass_samples_total={}\tgpu_pass_samples_retained={}\tgpu_pass_metric_samples_dropped={}\tgpu_pass_p50_ms={}\tgpu_pass_p95_ms={}\tgpu_pass_p99_ms={}\tgpu_samples_pending={}\tgpu_samples_dropped={}\tgpu_samples_unavailable={}\tmetric_errors={}\tmetric_samples_dropped={}\tdisk_alert={}\tdisk_free_bytes={}",
+            "FREEMIXD_TELEMETRY\tv=4\thost_lateness_samples_total={}\thost_lateness_samples_retained={}\thost_lateness_metric_samples_dropped={}\thost_lateness_p50_ms={}\thost_lateness_p95_ms={}\thost_lateness_p99_ms={}\taudio_retained_blocks={}\taudio_observed_peak_retained_blocks={}\taudio_retained_samples={}\taudio_observed_peak_retained_samples={}\taudio_retained_bytes={}\taudio_observed_peak_retained_bytes={}\taudio_reservation_requests={}\taudio_reserved_blocks={}\taudio_observed_peak_reserved_blocks={}\taudio_reserved_samples={}\taudio_observed_peak_reserved_samples={}\taudio_reserved_bytes={}\taudio_observed_peak_reserved_bytes={}\taudio_source_stalls={}\taudio_positioned_blocks={}\taudio_positioned_samples={}\taudio_leading_silence_samples={}\taudio_eos_padding_blocks={}\taudio_eos_padding_samples={}\taudio_sink_depth={}\taudio_sink_peak_depth={}\taudio_sink_dropped={}\tcamera_configured_sources={}\tcamera_frames_received={}\tcamera_frames_ingested={}\tcamera_native_dropped={}\tcamera_queue_depth={}\tcamera_queue_peak_depth={}\tcamera_queue_dropped={}\tcamera_continuity_rejected={}\tcamera_recovery_timeout_discarded={}\tcamera_terminal_error_discarded={}\tcamera_terminal_trigger_discarded={}\tcamera_ready_delivery_depth={}\tcamera_ready_delivery_discarded={}\tcamera_cancellation_discarded={}\tcamera_supervisor_slot_replaced={}\tcamera_supervisor_slot_depth={}\tcamera_ingest_failed={}\tcamera_preflight_depth={}\tcamera_preflight_discarded={}\tcamera_recovery_attempts={}\tcamera_recovery_successes={}\tcamera_recovery_exhausted={}\tcamera_recovery_worker_failures={}\tpresentation_active={}\tpresentation_pending_depth={}\tpresentation_peak_pending_depth={}\tpresentation_dropped={}\trecorder_configured={}\trecorder_outstanding_pairs={}\trecorder_observed_peak_outstanding_pairs={}\trecorder_retained_bytes={}\trecorder_observed_peak_retained_bytes={}\tstream_pairs_enqueued_total={}\tstream_pairs_dropped_total={}\tmonitor_frames_published={}\tmonitor_frames_failed={}\tgpu_backend={:?}\tgpu_adapter={}\tgpu_timing={:?}\tgpu_pass_samples_total={}\tgpu_pass_samples_retained={}\tgpu_pass_metric_samples_dropped={}\tgpu_pass_p50_ms={}\tgpu_pass_p95_ms={}\tgpu_pass_p99_ms={}\tgpu_samples_pending={}\tgpu_samples_dropped={}\tgpu_samples_unavailable={}\tmetric_errors={}\tmetric_samples_dropped={}\tdisk_alert={}\tdisk_free_bytes={}",
             host.count,
             host.retained_samples,
             host.dropped_samples,
@@ -1762,6 +1772,8 @@ impl NativeRuntimeTelemetry {
             self.recorder_peak_retained_bytes,
             self.stream_enqueued_pairs_total,
             self.stream_dropped_pairs_total,
+            self.monitor_frames_published,
+            self.monitor_frames_failed,
             self.gpu_backend,
             diagnostic_field(&self.gpu_adapter),
             self.gpu_support,
@@ -3881,6 +3893,7 @@ impl NativeDaemon {
             pending_audio_meters: None,
             stream_status_sequence: 0,
             pending_stream_status: None,
+            monitor: NativeMonitorTap::new(stored.project().settings()),
             #[cfg(target_os = "macos")]
             cameras: resolution.cameras,
             #[cfg(target_os = "macos")]
@@ -4321,6 +4334,20 @@ impl NativeDaemon {
     /// boundary, mirroring [`Self::take_audio_meters`].
     fn take_stream_status(&mut self) -> Option<StreamStatusMessage> {
         self.pending_stream_status.take()
+    }
+
+    /// Whether any eligible session currently wants monitor frames; without
+    /// demand no readback runs.
+    fn set_monitor_demand(&mut self, demand: bool) {
+        self.monitor.demand = demand;
+    }
+
+    /// Consumes the latest encoded Program monitor frame group.
+    fn take_monitor_frame(&mut self) -> Option<(MonitorTap, Vec<u8>)> {
+        self.monitor
+            .pending
+            .take()
+            .map(|bytes| (MonitorTap::Program, bytes))
     }
 
     /// Monotonic milliseconds since the native runtime's origin — the clock
@@ -4867,8 +4894,10 @@ impl NativeDaemon {
         let latest_output = &mut self.latest_output;
         let latest_project_outputs = &mut self.latest_project_outputs;
         let mut audio = None;
+        let mut monitor_frame = None;
         let outcome = control.tick_with_realizer(server, |frame| {
             debug_assert_eq!(projected_frame, Some(frame));
+            monitor_frame = Some((frame.frame.get(), frame.program.primary));
             for &(input, state) in &frame.input_audio_strip_updates {
                 let strip = model_audio_strip_state(state);
                 master
@@ -4956,6 +4985,20 @@ impl NativeDaemon {
                 &self.latest_project_outputs,
                 self.latest_output.as_ref(),
                 &audio,
+            );
+        }
+        if let Some((frame, input)) = monitor_frame {
+            self.monitor.capture(
+                &self.runtime,
+                resolve_project_output_texture(
+                    None,
+                    &self.latest_project_outputs,
+                    self.latest_output.as_ref(),
+                ),
+                server,
+                frame,
+                input,
+                &mut self.telemetry,
             );
         }
         let now = Instant::now();
@@ -5280,6 +5323,127 @@ fn validate_native_video_dimensions(
     Ok(())
 }
 
+/// Encoded-fallback Program monitor tap (Protocol 2.21).
+///
+/// While an eligible session wants frames, every `interval`-th realized frame
+/// is transformed and downscaled on the GPU into a lazily created readback
+/// target at the fitted monitor size, read back to the CPU, QOI-encoded, and
+/// held as one atomic latest-wins `monitor_frame` group. The engine produces
+/// no native Preview image, so there is no native Preview tap. Readback or
+/// encode failures skip the frame and are counted in telemetry; they never
+/// fail the frame tick.
+#[cfg(feature = "native-media")]
+struct NativeMonitorTap {
+    dimensions: Option<(u16, u16)>,
+    interval: u64,
+    readback: Option<NativeProgramReadback>,
+    demand: bool,
+    sequence: u64,
+    pending: Option<Vec<u8>>,
+}
+
+#[cfg(feature = "native-media")]
+impl NativeMonitorTap {
+    /// Native monitor frames target at most about ten per second.
+    const TARGET_FPS: u64 = 10;
+
+    fn new(settings: &fm_model::ProjectSettings) -> Self {
+        let dimensions = settings.video.dimensions;
+        let rate = settings.frame_rate;
+        let whole_fps = u64::from(rate.numerator()).div_ceil(u64::from(rate.denominator().max(1)));
+        Self {
+            dimensions: monitor_tap::fit_monitor(dimensions.width(), dimensions.height()),
+            interval: whole_fps.div_ceil(Self::TARGET_FPS).max(1),
+            readback: None,
+            demand: false,
+            sequence: 0,
+            pending: None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture(
+        &mut self,
+        runtime: &NativeMediaRuntime,
+        program: Option<&NativeTexture>,
+        server: &ServerIdentity,
+        frame: u64,
+        input: InputId,
+        telemetry: &mut NativeRuntimeTelemetry,
+    ) {
+        if !self.demand || !frame.is_multiple_of(self.interval) {
+            return;
+        }
+        let (Some((width, height)), Some(program)) = (self.dimensions, program) else {
+            return;
+        };
+        if self.encode(runtime, program, server, frame, input, width, height) {
+            telemetry.monitor_frames_published =
+                telemetry.monitor_frames_published.saturating_add(1);
+        } else {
+            telemetry.monitor_frames_failed = telemetry.monitor_frames_failed.saturating_add(1);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn encode(
+        &mut self,
+        runtime: &NativeMediaRuntime,
+        program: &NativeTexture,
+        server: &ServerIdentity,
+        frame: u64,
+        input: InputId,
+        width: u16,
+        height: u16,
+    ) -> bool {
+        if self.readback.is_none() {
+            let (Some(target_width), Some(target_height)) = (
+                NonZeroU32::new(u32::from(width)),
+                NonZeroU32::new(u32::from(height)),
+            ) else {
+                return false;
+            };
+            match runtime.create_program_readback_blocking(target_width, target_height) {
+                Ok(readback) => self.readback = Some(readback),
+                Err(_) => return false,
+            }
+        }
+        let Some(readback) = self.readback.as_mut() else {
+            return false;
+        };
+        // The synchronous diagnostic readback path, bounded by its timeout.
+        let Ok(pixels) = runtime.readback_program_blocking(readback, program) else {
+            return false;
+        };
+        let (Ok(stride), Some(sequence)) =
+            (usize::try_from(pixels.stride), self.sequence.checked_add(1))
+        else {
+            return false;
+        };
+        if pixels.width != u32::from(width) || pixels.height != u32::from(height) {
+            return false;
+        }
+        let picture = monitor_tap::MonitorPicture {
+            tap: MonitorTap::Program,
+            sequence,
+            frame,
+            input,
+            origin: fm_protocol::MonitorFrameOrigin::Native,
+            width,
+            height,
+            pixels: &pixels.rgba,
+            stride,
+            bytes_per_pixel: 4,
+        };
+        let Some(bytes) = monitor_tap::encode_picture(server, &picture) else {
+            return false;
+        };
+        self.sequence = sequence;
+        self.pending = Some(bytes);
+        true
+    }
+}
+
 #[cfg(feature = "native-media")]
 fn audio_meters_message(
     server: &ServerIdentity,
@@ -5396,6 +5560,14 @@ impl NativeDaemon {
     }
 
     fn take_stream_status(&mut self) -> Option<StreamStatusMessage> {
+        None
+    }
+
+    #[allow(clippy::unused_self)]
+    fn set_monitor_demand(&mut self, _demand: bool) {}
+
+    #[allow(clippy::unused_self)]
+    fn take_monitor_frame(&mut self) -> Option<(MonitorTap, Vec<u8>)> {
         None
     }
 

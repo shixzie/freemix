@@ -3219,3 +3219,151 @@ fn pipelined_commands_before_a_write_half_close_are_all_answered() {
         2
     );
 }
+
+/// Reads records until `found` yields a value, failing after `timeout`.
+fn receive_within<T>(
+    client: &mut Client,
+    timeout: Duration,
+    expected: &str,
+    mut found: impl FnMut(WireMessage) -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if let Some(value) = found(client.receive()) {
+            return value;
+        }
+    }
+    panic!("timed out waiting for {expected}");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn simulated_studio_peer_receives_monitor_frames_and_integration_peer_none() {
+    use fm_protocol::{MonitorFrameAssembler, MonitorFrameOrigin, MonitorImage, MonitorTap};
+
+    let directory = TestDirectory::new("simulated-monitor-frames");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut integration = daemon.connect();
+    integration.handshake(None);
+    assert!(matches!(integration.receive(), WireMessage::Snapshot(_)));
+
+    let mut studio = daemon.connect();
+    studio
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    studio.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Operator,
+        resume_cursor: None,
+    }));
+    let WireMessage::HandshakeResponse(response) = studio.receive() else {
+        panic!("expected handshake response");
+    };
+    assert!(matches!(
+        response.outcome,
+        HandshakeOutcome::Snapshot { .. }
+    ));
+    let server = response.server.clone();
+    assert!(matches!(studio.receive(), WireMessage::Snapshot(_)));
+
+    let mut assemblers = [MonitorFrameAssembler::new(), MonitorFrameAssembler::new()];
+    let mut assemble = |message: WireMessage| -> Option<MonitorImage> {
+        let WireMessage::MonitorFrame(part) = message else {
+            // Any other record mid-group would be an interleave violation.
+            assert!(
+                assemblers
+                    .iter()
+                    .all(|assembler| !assembler.is_in_progress())
+            );
+            return None;
+        };
+        assert_eq!(part.server, server);
+        assert!(
+            !assemblers[1 - part.tap.index()].is_in_progress(),
+            "monitor frame groups interleaved"
+        );
+        assemblers[part.tap.index()].push(&part).unwrap()
+    };
+
+    let mut latest: [Option<MonitorImage>; 2] = [None, None];
+    while latest.iter().any(Option::is_none) {
+        let image = receive_within(&mut studio, Duration::from_secs(5), "monitor frames", |m| {
+            assemble(m)
+        });
+        let index = image.tap.index();
+        latest[index] = Some(image);
+    }
+    let [Some(preview), Some(program)] = latest else {
+        unreachable!("both taps were received");
+    };
+    for image in [&preview, &program] {
+        assert_eq!(image.origin, MonitorFrameOrigin::Simulated);
+        assert_eq!((image.width, image.height), (640, 360));
+    }
+    assert_eq!(preview.input, input(2));
+    assert_eq!(program.input, input(1));
+    assert!(
+        program
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [12, 34, 56, 255])
+    );
+    // The bars' first column is 75% white.
+    assert_eq!(&preview.rgba[..4], &[191, 191, 191, 255]);
+
+    studio.send(&command(
+        "monitor-cut",
+        "monitor-cut-key",
+        CommandPayload::Cut,
+    ));
+    let cut = receive_within(
+        &mut studio,
+        Duration::from_secs(5),
+        "program frame after Cut",
+        |message| {
+            assemble(message)
+                .filter(|image| image.tap == MonitorTap::Program && image.input == input(2))
+        },
+    );
+    assert!(cut.sequence > program.sequence);
+    assert_eq!(&cut.rgba[..4], &[191, 191, 191, 255]);
+
+    // The Integration peer saw the Cut's events but never a monitor frame.
+    integration
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    let mut integration_records = 0;
+    loop {
+        let mut line = String::new();
+        match integration.reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let message = decode_line(&line).unwrap();
+                assert!(
+                    !matches!(message, WireMessage::MonitorFrame(_)),
+                    "integration peers must not receive monitor frames"
+                );
+                integration_records += 1;
+            }
+        }
+    }
+    assert!(
+        integration_records > 0,
+        "the Cut was replicated to the integration peer"
+    );
+
+    drop(studio);
+    drop(integration);
+    daemon.stop();
+}

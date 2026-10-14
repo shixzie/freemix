@@ -382,6 +382,46 @@ fn native_media_daemon_refills_beyond_startup_prefix_and_checkpoints_once() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn native_daemon_publishes_program_monitor_frames_to_studio_peers() {
+    let _hardware_lock = NATIVE_MEDIA_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-monitor-frames.freemix");
+    save_generator_project(&project_path);
+
+    let Some(daemon) = require_native(NativeDaemonProcess::start(&project_path, true)) else {
+        return;
+    };
+    let mut client = StudioClient::connect(daemon.address);
+    let snapshot = client.handshake();
+    let mut assembler = fm_protocol::MonitorFrameAssembler::new();
+    let image = client.receive_until("native Program monitor frame", |message| {
+        let WireMessage::MonitorFrame(part) = message else {
+            return None;
+        };
+        // The engine produces no native Preview image, so only Program taps.
+        assert_eq!(part.tap, fm_protocol::MonitorTap::Program);
+        assembler.push(part).unwrap()
+    });
+    assert_eq!(image.origin, fm_protocol::MonitorFrameOrigin::Native);
+    assert_eq!(image.input, snapshot.realized_program);
+    assert_eq!((image.width, image.height), (64, 48));
+    assert_eq!(image.rgba.len(), 64 * 48 * 4);
+    drop(client);
+
+    let output = daemon.wait();
+    assert!(
+        output.status.success(),
+        "native daemon failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("\tmonitor_frames_published=0\t"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 #[allow(clippy::too_many_lines)]
 fn native_daemon_hot_configures_fires_replaces_removes_and_restarts_stinger() {
     let _hardware_lock = NATIVE_MEDIA_TEST_LOCK
