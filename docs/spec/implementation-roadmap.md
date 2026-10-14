@@ -1773,6 +1773,20 @@ dispatches, or persists bindings and macros; macro permissions are not
 enforced; scripts have no loops or arithmetic and cannot recall dispatched
 commands on cancellation. `IN-027` and `RC-010` remain planned.
 
+Current implementation boundary for item 3: `fm-browser-input` provides a
+deterministic network policy that strictly normalizes URLs (including numeric
+IPv4 and IPv6 literal forms and dot segments), rejects credentials and
+malformed hosts, applies scheme, private-network (also after resolution), and
+wildcard host allow/deny rules where deny wins, and validates bounded redirect
+chains against loops, HTTPS downgrades, and `file:` targets. Custom CSS is
+accepted only after a lexical scan rejects style breakout, imports, escapes
+outside strings, unsafe functions, and excess external `url()` references,
+which are returned for policy checks. Remaining gaps: no real browser engine,
+DNS, or sockets; the fake renderer still navigates through the older policy;
+in-page fetches are not policed; and browser audio, HTML5 media, on-disk
+profile isolation, refresh-on-activate, and zoomed input translation remain
+contracts or fakes. `IN-013` remains planned.
+
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 
 ## 8. Phase 6 — guests and collaboration (10–14 weeks)
