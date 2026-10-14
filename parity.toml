@@ -89,7 +89,9 @@ id = "accept-in-027"
 state = "planned"
 [[tests]]
 id = "accept-in-028"
-state = "planned"
+state = "present"
+paths = ["crates/features/fm-ptz/tests/visca_codec.rs"]
+commands = ["cargo test -p fm-ptz --test visca_codec"]
 [[tests]]
 id = "accept-in-029"
 state = "planned"
