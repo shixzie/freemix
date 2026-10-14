@@ -1841,6 +1841,27 @@ sampling; no protocol or UI view; and no persisted rules or silences.
 `RC-015` remains planned.
 
 
+Current implementation boundary for fault-tolerant recording (`OR-003`):
+`fm-record` scans fragmented MP4 files with bounded memory, classifies them as
+finalized, complete, torn, or unrecoverable, reports exact per-track coverage
+and loss, and repairs a torn tail by truncating to the last complete fragment
+without touching unrecoverable files. A `RecordingSession` names segments in an
+atomically rewritten, CRC-checked manifest mirrored in every root before
+creating them, disables full, read-only, or missing roots at once, retries
+other errors a bounded number of times, records failures in a bounded ring,
+and fails loudly when no root remains. `ResilientFmp4Writer` writes whole
+fragments with per-fragment sync and replays a failed fragment on the next
+root so nothing is lost while any root works. Recovery trusts the newest valid
+manifest, adopts orphan segments, and is idempotent. Free-space estimates, a
+hysteretic monitor, and a preflight report remaining time. FFmpeg-gated tests
+decode across a failover, a mid-fragment cut, and a killed recorder. Remaining
+gaps: the FFmpeg recorder and `freemixd` do not use the writer, session, or
+startup recovery; free space must be supplied by the caller; roots disabled
+for space stay disabled; repaired files are not re-finalized; corrupt
+mid-file fragments end recovery; and only fragmented MP4 is handled. `OR-003`
+remains planned.
+
+
 Exit: a remote-controlled headless production can stream and record
 independently with tested recovery.
 

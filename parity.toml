@@ -297,7 +297,9 @@ paths = ["crates/foundation/fm-model/tests/project_validation.rs", "crates/found
 commands = ["cargo test -p fm-model --test project_validation", "cargo test -p fm-protocol --test protocol", "cargo test -p fm-engine --test engine", "cargo test -p freemix-cli --test e2e", "cargo test -p freemixd --test process"]
 [[tests]]
 id = "accept-or-003"
-state = "planned"
+state = "present"
+paths = ["crates/media/fm-record/tests/fault_tolerant_recording.rs"]
+commands = ["cargo test -p fm-record --test fault_tolerant_recording"]
 [[tests]]
 id = "accept-or-004"
 state = "present"
