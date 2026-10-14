@@ -180,6 +180,31 @@ impl ProductionClock {
             Self::Session { kind, .. } => ClockKind::Session(*kind),
         }
     }
+
+    /// The clock's configured display format.
+    #[must_use]
+    pub const fn display_format(&self) -> DisplayFormat {
+        match self {
+            Self::Timer { format, .. }
+            | Self::MediaRemaining { format, .. }
+            | Self::Session { format, .. } => DisplayFormat::Duration(*format),
+            Self::TimeOfDay { format, .. } => DisplayFormat::TimeOfDay(*format),
+        }
+    }
+
+    /// Whether `format` is of the kind this clock displays: a duration
+    /// format for timers, media and sessions, a time-of-day format for time
+    /// of day.
+    #[must_use]
+    pub const fn accepts_format(&self, format: DisplayFormat) -> bool {
+        matches!(
+            (self, format),
+            (
+                Self::Timer { .. } | Self::MediaRemaining { .. } | Self::Session { .. },
+                DisplayFormat::Duration(_)
+            ) | (Self::TimeOfDay { .. }, DisplayFormat::TimeOfDay(_))
+        )
+    }
 }
 
 /// Operator or API commands. Each is valid only for some clock kinds.
@@ -511,7 +536,36 @@ impl ProductionClocks {
     /// Reads one clock.
     #[must_use]
     pub fn reading(&self, name: &ClockName, at: TimeReading) -> Option<ClockReading> {
-        self.clocks.get(name).map(|clock| read(name, clock, at))
+        self.clocks
+            .get(name)
+            .map(|clock| read(name, clock, at, clock.display_format()))
+    }
+
+    /// Reads one clock with its text in `format` instead of the clock's
+    /// configured format, without changing the clock. State, value, and
+    /// rounding are exactly those of [`Self::reading`]; only
+    /// [`ClockReading::text`] differs. This is how a consumer such as a title
+    /// element shows one shared clock in its own preset.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionClockError::UnknownClock`], or
+    /// [`ProductionClockError::FormatMismatch`] when `format` is not of the
+    /// clock's kind (see [`ProductionClock::accepts_format`]).
+    pub fn reading_with_format(
+        &self,
+        name: &ClockName,
+        at: TimeReading,
+        format: DisplayFormat,
+    ) -> Result<ClockReading, ProductionClockError> {
+        let clock = self
+            .clocks
+            .get(name)
+            .ok_or_else(|| ProductionClockError::UnknownClock(name.clone()))?;
+        if !clock.accepts_format(format) {
+            return Err(ProductionClockError::FormatMismatch);
+        }
+        Ok(read(name, clock, at, format))
     }
 
     /// Reads every clock in name order.
@@ -519,7 +573,7 @@ impl ProductionClocks {
     pub fn readings(&self, at: TimeReading) -> Vec<ClockReading> {
         self.clocks
             .iter()
-            .map(|(name, clock)| read(name, clock, at))
+            .map(|(name, clock)| read(name, clock, at, clock.display_format()))
             .collect()
     }
 
@@ -608,7 +662,19 @@ fn placeholder(format: DurationFormat) -> String {
         .collect()
 }
 
-fn read(name: &ClockName, clock: &ProductionClock, at: TimeReading) -> ClockReading {
+/// Reads `clock` with its text in `display`. A `display` of the wrong kind
+/// (callers check [`ProductionClock::accepts_format`] first) falls back to the
+/// clock's own format, keeping the read total.
+fn read(
+    name: &ClockName,
+    clock: &ProductionClock,
+    at: TimeReading,
+    display: DisplayFormat,
+) -> ClockReading {
+    let duration_format = |own: DurationFormat| match display {
+        DisplayFormat::Duration(format) => format,
+        DisplayFormat::TimeOfDay(_) => own,
+    };
     let mut reading = ClockReading {
         name: name.clone(),
         kind: clock.kind(),
@@ -631,7 +697,7 @@ fn read(name: &ClockName, clock: &ProductionClock, at: TimeReading) -> ClockRead
             };
             reading.text = format_duration(
                 snapshot.value,
-                *format,
+                duration_format(*format),
                 snapshot.config.direction.rounding(),
             );
             reading.value = Some(snapshot.value);
@@ -640,19 +706,23 @@ fn read(name: &ClockName, clock: &ProductionClock, at: TimeReading) -> ClockRead
         ProductionClock::TimeOfDay { zone, format } => {
             let resolution = zone.resolve(at.utc);
             let local = at.utc.to_civil(resolution.utc_offset_seconds);
-            reading.text = format_time_of_day(&local, *format);
+            let format = match display {
+                DisplayFormat::TimeOfDay(format) => format,
+                DisplayFormat::Duration(_) => *format,
+            };
+            reading.text = format_time_of_day(&local, format);
             reading.local = Some(local);
             reading.zone = Some(resolution.abbreviation.to_owned());
         }
         ProductionClock::MediaRemaining { progress, format } => {
             if let Some(progress) = progress {
                 let remaining = progress.remaining();
-                reading.text = format_duration(remaining, *format, Rounding::Ceil);
+                reading.text = format_duration(remaining, duration_format(*format), Rounding::Ceil);
                 reading.value = Some(remaining);
                 reading.expired = progress.is_finished();
             } else {
                 reading.state = ReadingState::Unavailable;
-                reading.text = placeholder(*format);
+                reading.text = placeholder(duration_format(*format));
             }
         }
         ProductionClock::Session { timer, format, .. } => {
@@ -664,7 +734,8 @@ fn read(name: &ClockName, clock: &ProductionClock, at: TimeReading) -> ClockRead
             } else {
                 ReadingState::Stopped
             };
-            reading.text = format_duration(snapshot.session, *format, Rounding::Floor);
+            reading.text =
+                format_duration(snapshot.session, duration_format(*format), Rounding::Floor);
             reading.value = Some(snapshot.session);
             reading.total = Some(snapshot.total);
         }

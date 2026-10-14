@@ -342,9 +342,9 @@ fn validate_element(
     if element.bounds.width == 0 || element.bounds.height == 0 {
         errors.push(ValidationError::ZeroElementBounds(element.id));
     }
-    let needs_font = matches!(
+    let needs_font = !matches!(
         element.kind,
-        ElementKind::Text { .. } | ElementKind::Clock(_) | ElementKind::Ticker(_)
+        ElementKind::Rectangle | ElementKind::Image { .. }
     );
     match element.style.font.as_ref() {
         Some(font) => {
@@ -391,7 +391,7 @@ fn validate_element(
             &[FieldType::Text, FieldType::Number],
             "text or number",
         ),
-        ElementKind::Rectangle | ElementKind::Clock(_) => {}
+        ElementKind::Rectangle | ElementKind::Clock(_) | ElementKind::ProductionClock(_) => {}
     }
     if let Some(field) = element.color_field {
         require_field(

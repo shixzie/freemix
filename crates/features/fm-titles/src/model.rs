@@ -1,6 +1,6 @@
 use crate::{
-    AnimationTrack, ClockSpec, ElementId, FieldId, TemplateId, TickerSpec, TitleId,
-    validation::validate_template_structure,
+    AnimationTrack, ClockSpec, ElementId, FieldId, ProductionClockSpec, TemplateId, TickerSpec,
+    TitleId, validation::validate_template_structure,
 };
 use core::fmt;
 use std::borrow::Cow;
@@ -198,7 +198,11 @@ pub enum ElementKind {
         fit: ImageFit,
         filter: ImageFilter,
     },
+    /// A scene-time clock that starts with the title.
     Clock(ClockSpec),
+    /// A shared production clock read from the frame's
+    /// [`crate::ClockSource`]; see [`crate::production_clock`].
+    ProductionClock(ProductionClockSpec),
     Ticker(TickerSpec),
 }
 

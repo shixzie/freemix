@@ -34,7 +34,10 @@
 //! data feed or control surface) onto typed actions with strict parsing; see
 //! that function for the key set.
 
-use crate::{ClockDirection, ClockFormat, FieldId, FieldValue, TitleScene, UpdateError};
+use crate::{
+    ClockDirection, ClockFormat, FieldId, FieldValue, TitleScene, UpdateError,
+    runtime::format_clock_ms,
+};
 use core::fmt;
 use fm_types::FrameRate;
 
@@ -209,12 +212,11 @@ impl GameClock {
     /// Display text at `frame` in the configured format.
     #[must_use]
     pub fn display(&self, frame: u64) -> String {
-        let value = self.value_ms(frame);
-        let seconds = match self.config.direction {
-            ClockDirection::CountDown => value.div_ceil(1_000),
-            ClockDirection::CountUp => value / 1_000,
-        };
-        format_seconds(seconds, self.config.format)
+        format_clock_ms(
+            self.value_ms(frame),
+            self.config.format,
+            self.config.direction,
+        )
     }
 
     /// Stops a running clock at its exact expiry frame if `frame` reached it.
@@ -267,19 +269,6 @@ impl GameClock {
             self.settle(frame);
         }
         Ok(())
-    }
-}
-
-fn format_seconds(total_seconds: u64, format: ClockFormat) -> String {
-    let seconds = total_seconds % 60;
-    let total_minutes = total_seconds / 60;
-    match format {
-        ClockFormat::MinutesSeconds => format!("{total_minutes:02}:{seconds:02}"),
-        ClockFormat::HoursMinutesSeconds => {
-            let hours = total_minutes / 60;
-            let minutes = total_minutes % 60;
-            format!("{hours:02}:{minutes:02}:{seconds:02}")
-        }
     }
 }
 

@@ -1448,3 +1448,78 @@ fn stepping_the_wall_clock_moves_time_of_day_but_never_timers() {
         "01:00:00"
     );
 }
+
+#[test]
+fn reading_with_format_reformats_one_read_without_changing_the_clock() {
+    let mut clocks = ProductionClocks::new();
+    clocks
+        .insert(
+            name("down"),
+            ProductionClock::timer(
+                TimerConfig::countdown(secs(90), OverrunPolicy::Continue),
+                DurationFormat::MinutesSeconds,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    clocks
+        .insert(
+            name("tod"),
+            ProductionClock::time_of_day(TimeZone::utc(), TimeOfDayFormat::Hours24),
+        )
+        .unwrap();
+    clocks
+        .apply(&name("down"), ClockCommand::Start, at_s(0))
+        .unwrap();
+    let at = TimeReading::new(at_ms(500), utc(2026, 3, 8, 13, 5, 9));
+
+    let plain = clocks.reading(&name("down"), at).unwrap();
+    let compact = clocks
+        .reading_with_format(
+            &name("down"),
+            at,
+            DisplayFormat::Duration(DurationFormat::Compact),
+        )
+        .unwrap();
+    assert_eq!(plain.text, "01:30");
+    // Same rounding (countdown ceil), same state and value; only text differs.
+    assert_eq!(compact.text, "1:30");
+    assert_eq!(compact.value, plain.value);
+    assert_eq!(compact.state, plain.state);
+    assert_eq!(
+        clocks.get(&name("down")).unwrap().display_format(),
+        DisplayFormat::Duration(DurationFormat::MinutesSeconds)
+    );
+
+    let twelve = clocks
+        .reading_with_format(
+            &name("tod"),
+            at,
+            DisplayFormat::TimeOfDay(TimeOfDayFormat::Hours12Minutes),
+        )
+        .unwrap();
+    assert_eq!(twelve.text, "1:05 PM");
+
+    assert_eq!(
+        clocks.reading_with_format(
+            &name("tod"),
+            at,
+            DisplayFormat::Duration(DurationFormat::Seconds)
+        ),
+        Err(ProductionClockError::FormatMismatch)
+    );
+    assert!(
+        !clocks
+            .get(&name("down"))
+            .unwrap()
+            .accepts_format(DisplayFormat::TimeOfDay(TimeOfDayFormat::Date))
+    );
+    assert_eq!(
+        clocks.reading_with_format(
+            &name("absent"),
+            at,
+            DisplayFormat::Duration(DurationFormat::Seconds)
+        ),
+        Err(ProductionClockError::UnknownClock(name("absent")))
+    );
+}

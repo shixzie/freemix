@@ -1544,6 +1544,7 @@ name = "fm-titles"
 version = "0.1.0"
 dependencies = [
  "ab_glyph",
+ "fm-clock",
  "fm-types",
  "fm-video",
 ]

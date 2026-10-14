@@ -1,13 +1,54 @@
+use fm_clock::production::{ClockValue, DurationFormat, Rounding, format_duration};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClockDirection {
     CountUp,
     CountDown,
 }
 
+impl ClockDirection {
+    /// The production-clock rounding for this direction: a countdown rounds
+    /// up so `00:00` appears exactly at zero, a count-up rounds down.
+    #[must_use]
+    pub const fn rounding(self) -> Rounding {
+        match self {
+            Self::CountUp => Rounding::Floor,
+            Self::CountDown => Rounding::Ceil,
+        }
+    }
+}
+
+/// The scene-clock display presets. Each is a name for the matching
+/// [`DurationFormat`], whose formatter draws every title clock, so scene
+/// clocks, scoreboard clocks, and production clocks cannot diverge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClockFormat {
     MinutesSeconds,
     HoursMinutesSeconds,
+}
+
+impl ClockFormat {
+    #[must_use]
+    pub const fn duration_format(self) -> DurationFormat {
+        match self {
+            Self::MinutesSeconds => DurationFormat::MinutesSeconds,
+            Self::HoursMinutesSeconds => DurationFormat::HoursMinutesSeconds,
+        }
+    }
+}
+
+/// Formats a non-negative millisecond clock value with the production-clock
+/// formatter. Values beyond [`ClockValue::MAX`] display as that maximum.
+pub(crate) fn format_clock_ms(
+    value_ms: u64,
+    format: ClockFormat,
+    direction: ClockDirection,
+) -> String {
+    let value = i64::try_from(value_ms)
+        .ok()
+        .and_then(|millis| ClockValue::from_millis(millis).ok())
+        .unwrap_or(ClockValue::MAX);
+    format_duration(value, format.duration_format(), direction.rounding())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,20 +70,12 @@ impl ClockSpec {
     }
 }
 
-/// Evaluates a clock at scene time. Display values use whole seconds.
+/// Evaluates a clock at scene time in whole seconds, through the
+/// production-clock formatter: a count-up rounds down and a countdown rounds
+/// up, so a countdown shows `00:00` only once it has reached zero.
 #[must_use]
 pub fn evaluate_clock(spec: ClockSpec, scene_time_ms: u64) -> String {
-    let total_seconds = spec.value_ms(scene_time_ms) / 1_000;
-    let seconds = total_seconds % 60;
-    let total_minutes = total_seconds / 60;
-    match spec.format {
-        ClockFormat::MinutesSeconds => format!("{total_minutes:02}:{seconds:02}"),
-        ClockFormat::HoursMinutesSeconds => {
-            let hours = total_minutes / 60;
-            let minutes = total_minutes % 60;
-            format!("{hours:02}:{minutes:02}:{seconds:02}")
-        }
-    }
+    format_clock_ms(spec.value_ms(scene_time_ms), spec.format, spec.direction)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

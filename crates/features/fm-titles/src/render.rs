@@ -49,12 +49,13 @@
 //! the whole frame meaningless is a [`RenderError`].
 
 use crate::{
-    Alignment, AssetCatalog, Bounds, Color, Composition, Crawl, CrawlMode, Element, ElementId,
-    ElementKind, ElementPlacement, FieldId, FieldValue, FontFace, HorizontalAlignment, ImageFilter,
-    ImageFit, MissingFont, ResolvedClip, TickerSpec, TitleScene, VerticalAlignment,
+    Alignment, AssetCatalog, Bounds, ClockSource, ClockUnresolved, Color, Composition, Crawl,
+    CrawlMode, Element, ElementId, ElementKind, ElementPlacement, FieldId, FieldValue, FontFace,
+    HorizontalAlignment, ImageFilter, ImageFit, MissingFont, ResolvedClip, TickerSpec, TitleScene,
+    VerticalAlignment,
     animation::evaluate_tracks,
     crawl::{MAX_CRAWL_VISIBLE_SEGMENTS, layout_segment},
-    evaluate_clock, evaluate_ticker_position,
+    evaluate_clock, evaluate_production_clock, evaluate_ticker_position,
     font::ScaledFace,
     image,
     text::{LaidText, fixed_to_px, layout_text},
@@ -63,6 +64,7 @@ use crate::{
 use ab_glyph::{Font, Glyph, GlyphId, OutlinedGlyph, ScaleFont, point};
 use core::fmt;
 use fm_video::{FrameError, ImageFrame, Rgba8};
+use std::borrow::Cow;
 
 /// Maximum rendered frame width.
 pub const MAX_OUTPUT_WIDTH: u32 = 8_192;
@@ -104,6 +106,9 @@ pub enum Degradation {
     /// The frame's [`MAX_GLYPHS_PER_FRAME`] budget ran out. The element's
     /// remaining glyphs were not rasterized.
     GlyphBudgetExhausted { maximum: usize },
+    /// A production clock element could not be read. It drew its background
+    /// and no text.
+    ClockUnresolved(ClockUnresolved),
     /// A crawl had more than this many segments inside its viewport; the
     /// trailing ones were not drawn.
     CrawlSegmentsCapped { maximum: usize },
@@ -129,6 +134,13 @@ impl fmt::Display for DegradedElement {
                 "element {} lost glyphs to the {maximum} glyph frame budget",
                 self.element
             ),
+            Degradation::ClockUnresolved(reason) => {
+                write!(
+                    formatter,
+                    "clock element {} drew no text: {reason}",
+                    self.element
+                )
+            }
             Degradation::CrawlSegmentsCapped { maximum } => write!(
                 formatter,
                 "crawl {} drew only its first {maximum} visible segments",
@@ -296,7 +308,31 @@ impl ReferenceRenderer {
         assets: &AssetCatalog,
         crawls: &[CrawlLayer<'_>],
     ) -> Result<RenderOutput, RenderError> {
-        render_frame(scene, scene_time_ms, assets, crawls, None)
+        render_frame(scene, scene_time_ms, assets, crawls, None, None)
+    }
+
+    /// Renders like [`Self::render`], reading every
+    /// [`ElementKind::ProductionClock`] element from `clocks` at
+    /// `clocks.at`.
+    ///
+    /// Scene-time animation, tickers and [`ElementKind::Clock`] elements
+    /// still follow `scene_time_ms`; only production clock text comes from
+    /// the source. Without a source (every other render method), or for an
+    /// unknown clock or a preset of the wrong kind, a production clock
+    /// element draws its background and no text and is listed in
+    /// [`RenderReport::degraded`] with [`Degradation::ClockUnresolved`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::render`].
+    pub fn render_with_clocks(
+        self,
+        scene: &TitleScene,
+        scene_time_ms: u64,
+        assets: &AssetCatalog,
+        clocks: ClockSource<'_>,
+    ) -> Result<RenderOutput, RenderError> {
+        render_frame(scene, scene_time_ms, assets, &[], None, Some(clocks))
     }
 
     /// Renders a scene instantiated from [`crate::TitleDesign::to_template`]
@@ -320,7 +356,7 @@ impl ReferenceRenderer {
         assets: &AssetCatalog,
         composition: &Composition,
     ) -> Result<RenderOutput, RenderError> {
-        render_frame(scene, scene_time_ms, assets, &[], Some(composition))
+        render_frame(scene, scene_time_ms, assets, &[], Some(composition), None)
     }
 }
 
@@ -330,6 +366,7 @@ fn render_frame(
     assets: &AssetCatalog,
     crawls: &[CrawlLayer<'_>],
     composition: Option<&Composition>,
+    clocks: Option<ClockSource<'_>>,
 ) -> Result<RenderOutput, RenderError> {
     if scene.width() > MAX_OUTPUT_WIDTH || scene.height() > MAX_OUTPUT_HEIGHT {
         return Err(RenderError::OutputTooLarge {
@@ -387,7 +424,7 @@ fn render_frame(
             &mut canvas,
             scene,
             element,
-            (scene_time_ms, placement),
+            (scene_time_ms, placement, clocks),
             assets,
             &mut state,
         )?;
@@ -445,7 +482,7 @@ fn draw_element(
     canvas: &mut Canvas<'_>,
     scene: &TitleScene,
     element: &Element,
-    (time_ms, placement): (u64, Option<&ElementPlacement>),
+    (time_ms, placement, clocks): (u64, Option<&ElementPlacement>, Option<ClockSource<'_>>),
     assets: &AssetCatalog,
     state: &mut FrameState,
 ) -> Result<(), RenderError> {
@@ -494,7 +531,10 @@ fn draw_element(
             .paint(canvas, scene, assets);
             return Ok(());
         }
-        ElementKind::Text { .. } | ElementKind::Clock(_) | ElementKind::Ticker(_) => {}
+        ElementKind::Text { .. }
+        | ElementKind::Clock(_)
+        | ElementKind::ProductionClock(_)
+        | ElementKind::Ticker(_) => {}
     }
 
     if let Some(background) = element.style.background {
@@ -531,30 +571,41 @@ fn draw_element(
         face,
         size_px: style.size_px.max(1),
     };
-    match element.kind {
-        ElementKind::Text { field } => {
-            let Some(text) = scene.field_value(field).and_then(FieldValue::display_text) else {
-                return Ok(());
-            };
-            paint.paint(canvas, &text, TextFlow::Wrapped, state)
+    let flow = match element.kind {
+        ElementKind::Ticker(spec) => TextFlow::Ticker { spec, time_ms },
+        _ => TextFlow::Wrapped,
+    };
+    match element_text(element, scene, time_ms, clocks) {
+        Ok(Some(text)) => paint.paint(canvas, &text, flow, state),
+        Ok(None) => Ok(()),
+        Err(reason) => {
+            state.degrade(element.id, Degradation::ClockUnresolved(reason));
+            Ok(())
         }
-        ElementKind::Clock(spec) => paint.paint(
-            canvas,
-            &evaluate_clock(spec, time_ms),
-            TextFlow::Wrapped,
-            state,
-        ),
-        ElementKind::Ticker(spec) => {
-            let Some(text) = scene
-                .field_value(spec.field)
-                .and_then(FieldValue::display_text)
-            else {
-                return Ok(());
-            };
-            paint.paint(canvas, &text, TextFlow::Ticker { spec, time_ms }, state)
-        }
-        ElementKind::Rectangle | ElementKind::Image { .. } => Ok(()),
     }
+}
+
+/// The text a text-drawing element shows: its field, its scene clock, or its
+/// production clock read from `clocks`. `None` draws no text silently (an
+/// absent or non-text field); an unresolved production clock is an error the
+/// caller reports.
+fn element_text<'a>(
+    element: &Element,
+    scene: &'a TitleScene,
+    time_ms: u64,
+    clocks: Option<ClockSource<'_>>,
+) -> Result<Option<Cow<'a, str>>, ClockUnresolved> {
+    let field = match &element.kind {
+        &ElementKind::Text { field } => field,
+        &ElementKind::Ticker(spec) => spec.field,
+        &ElementKind::Clock(spec) => return Ok(Some(Cow::Owned(evaluate_clock(spec, time_ms)))),
+        ElementKind::ProductionClock(spec) => {
+            let source = clocks.ok_or(ClockUnresolved::NoClockSource)?;
+            return evaluate_production_clock(spec, source).map(|text| Some(Cow::Owned(text)));
+        }
+        ElementKind::Rectangle | ElementKind::Image { .. } => return Ok(None),
+    };
+    Ok(scene.field_value(field).and_then(FieldValue::display_text))
 }
 
 /// What an image element draws and where.

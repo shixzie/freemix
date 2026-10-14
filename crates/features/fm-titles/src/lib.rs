@@ -4,6 +4,13 @@
 //!
 //! * Templates, typed fields, optimistic scene updates, keyframe animation,
 //!   clock and ticker runtime, and structural validation.
+//! * Production clocks: an [`ElementKind::ProductionClock`] element shows a
+//!   named `fm_clock` production clock (timer, time of day in a POSIX zone,
+//!   media remaining, session) in its own or an element-level preset, read
+//!   from a caller-supplied [`ClockSource`] by
+//!   [`ReferenceRenderer::render_with_clocks`]. Every title clock - scene,
+//!   scoreboard, and production - is formatted by `fm_clock`'s
+//!   `format_duration`/`format_time_of_day`, so they cannot diverge.
 //! * Text rendering: glyph outlines are rasterized from caller-supplied font
 //!   bytes through `ab_glyph`, with kerned advances, ascent-correct baselines,
 //!   per-element pixel sizes, greedy word wrapping, horizontal and vertical
@@ -62,6 +69,7 @@ mod id;
 mod image;
 mod model;
 mod playback;
+pub mod production_clock;
 mod render;
 mod runtime;
 mod scoreboard;
@@ -93,6 +101,9 @@ pub use model::{
     TitleScene, TitleTemplate, UpdateError, VerticalAlignment,
 };
 pub use playback::{PlaybackError, PlaybackOutcome, PlaybackPhase, TitlePlayback};
+pub use production_clock::{
+    ClockSource, ClockUnresolved, ProductionClockSpec, evaluate_production_clock,
+};
 pub use render::{
     CrawlLayer, Degradation, DegradedElement, MAX_FONT_SIZE_PX, MAX_GLYPH_RASTER_DIMENSION,
     MAX_GLYPH_RASTER_PIXELS, MAX_GLYPHS_PER_ELEMENT, MAX_GLYPHS_PER_FRAME, MAX_OUTPUT_HEIGHT,
