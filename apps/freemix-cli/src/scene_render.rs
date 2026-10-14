@@ -7,7 +7,7 @@ use fm_compositor::{
 };
 use fm_model::{Input, InputKind, Project, SimulatedVideo, SourceRef};
 use fm_types::{InputId, SceneId};
-use fm_video::{CropRect, ImageFrame, Rgba8};
+use fm_video::{CropRect, FrameError, ImageFrame, Rgba8, scale_nearest};
 
 #[derive(Debug)]
 pub(crate) enum SceneRenderError {
@@ -37,6 +37,7 @@ pub(crate) enum SceneRenderError {
     Plan(PlanError),
     Source(fm_sim::RenderError),
     Cpu(CpuExecutionError),
+    Scale(FrameError),
 }
 
 impl fmt::Display for SceneRenderError {
@@ -77,18 +78,30 @@ impl fmt::Display for SceneRenderError {
             Self::Plan(error) => error.fmt(formatter),
             Self::Source(error) => error.fmt(formatter),
             Self::Cpu(error) => error.fmt(formatter),
+            Self::Scale(error) => error.fmt(formatter),
         }
     }
 }
 
 impl std::error::Error for SceneRenderError {}
 
-/// Renders one flat simulated scene at the pipeline output dimensions.
+/// Renders one flat simulated scene and scales it to `width`x`height`.
+///
+/// Layer geometry, crops and masks are authored in the project coordinate
+/// space, so the scene is composed at the pipeline dimensions, which the
+/// caller sets to the project video dimensions. Sources are rendered at that
+/// size, crops and masks are checked against it, and the finished frame is
+/// resampled to the output with nearest-neighbor sampling. Composing first and
+/// scaling once keeps every authored rectangle exact in project pixels; when
+/// the output divides the project size evenly (1920x1080 to 640x360, for
+/// example) each authored edge lands on an exact output pixel.
 pub(crate) fn render_scene(
     project: &Project,
     scene: SceneId,
     pipeline: &fm_sim::SimulatedPipeline,
     frame_number: u64,
+    width: u32,
+    height: u32,
 ) -> Result<ImageFrame, SceneRenderError> {
     let model = project
         .scenes()
@@ -152,7 +165,11 @@ pub(crate) fn render_scene(
         .iter()
         .map(|(source, frame)| CpuSourceFrame::new(*source, frame))
         .collect::<Vec<_>>();
-    execute_cpu(&plan, &bindings).map_err(SceneRenderError::Cpu)
+    let composed = execute_cpu(&plan, &bindings).map_err(SceneRenderError::Cpu)?;
+    if composed.width() == width && composed.height() == height {
+        return Ok(composed);
+    }
+    scale_nearest(&composed, width, height).map_err(SceneRenderError::Scale)
 }
 
 fn input_for_layer(project: &Project, source: SourceRef) -> Result<&Input, SceneRenderError> {

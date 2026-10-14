@@ -7717,6 +7717,12 @@ fn local_scene_program_render_composes_supported_layers_and_rejects_unsupported_
     }
 
     apply!(&["new", path]);
+    // Scene geometry is authored in project pixels; a 4x4 project makes the
+    // 4x4 render a 1:1 view of the authored rectangles.
+    let mut source = manifest(&project);
+    replace_once(&mut source, "\"width\": 1920,", "\"width\": 4,");
+    replace_once(&mut source, "\"height\": 1080,", "\"height\": 4,");
+    fs::write(project.join("project.json"), source).unwrap();
     apply!(&["input-replace-simulated", path, "2"]);
     apply!(&["scene-input-add", path, "3", "11", "Program Scene"]);
     apply!(&["scene-background", path, "11", "10", "20", "30", "255"]);
@@ -7888,6 +7894,187 @@ fn status_reads_a_project_without_opening_its_journal() {
     );
 
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_overlay_next_runs_a_fade_transition_to_completion() {
+    let root = unique_test_root();
+    let project = root.join("overlay-next.freemix");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+
+    assert_success(&invoke_bounded(&["new", path]));
+    assert_success(&invoke_bounded(&[
+        "overlay-transition",
+        path,
+        "1",
+        "fade",
+        "10",
+    ]));
+    assert_success(&invoke_bounded(&["overlay-queue", path, "1", "2"]));
+    let next = invoke_bounded(&["overlay-next", path, "1"]);
+    assert_success(&next);
+    let reported = stdout(&next);
+    assert!(
+        reported.contains("realized=[1:2:on:opacity=255:fade@10"),
+        "overlay-next did not realize the faded overlay: {reported}"
+    );
+    assert_eq!(status(&project), reported);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_scene_render_maps_project_coordinates_onto_the_output_size() {
+    let root = unique_test_root();
+    let project = root.join("coordinates.freemix");
+    let quarter = root.join("quarter.ppm");
+    let cropped = root.join("cropped.ppm");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+    let run = |arguments: &[&str]| assert_success(&invoke_bounded(arguments));
+
+    run(&["new", path]);
+    run(&["input-replace-solid", path, "1", "200", "100", "50", "255"]);
+    run(&["scene-input-add", path, "3", "10", "Cam"]);
+    run(&["scene-background", path, "10", "10", "20", "30", "255"]);
+    run(&["scene-layer-add", path, "10", "1", "0", "L1"]);
+    // The default project is 1920x1080, so this is the top-left quarter.
+    run(&[
+        "scene-layer-geometry",
+        path,
+        "10",
+        "0",
+        "0",
+        "0",
+        "960",
+        "540",
+        "0",
+    ]);
+    run(&["preview", path, "3"]);
+    run(&["cut", path]);
+    run(&["render", path, quarter.to_str().unwrap()]);
+    let layer = [200, 100, 50];
+    let background = [10, 20, 30];
+    for (x, y, expected) in [
+        (0, 0, layer),
+        (319, 179, layer),
+        (320, 0, background),
+        (0, 180, background),
+        (639, 359, background),
+    ] {
+        assert_eq!(
+            ppm_pixel(&quarter, 640, 360, x, y),
+            expected,
+            "pixel {x},{y}"
+        );
+    }
+
+    // A crop authored in project space (valid against 1920x1080) renders at
+    // the smaller default output instead of being re-checked against it.
+    run(&["scene-layer-crop", path, "10", "0", "0", "0", "1000", "500"]);
+    run(&["render", path, cropped.to_str().unwrap()]);
+    assert_eq!(ppm_pixel(&cropped, 640, 360, 0, 0), layer);
+    assert_eq!(ppm_pixel(&cropped, 640, 360, 320, 180), background);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_stream_update_preserves_desired_running() {
+    let context = ContractContext::new();
+    author_stream_destination(&context);
+    assert_success(&invoke_bounded(&[
+        "stream-start",
+        context.project_path(),
+        "40",
+    ]));
+    assert_success(&invoke_bounded(&[
+        "stream-update",
+        context.project_path(),
+        "40",
+        "30",
+        "rtmp://relay.example.test/live",
+        "rotated-key-0001",
+        "Main ingest",
+    ]));
+    let streams = invoke_bounded(&["streams", context.project_path()]);
+    assert_success(&streams);
+    assert!(
+        stdout(&streams).ends_with("running=true"),
+        "stream-update cleared desired running: {}",
+        stdout(&streams)
+    );
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let target = &stored.project().stream_targets()[0];
+    assert!(target.running());
+    assert_eq!(target.key().unwrap().expose_secret(), "rotated-key-0001");
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+#[test]
+fn demo_refuses_to_overwrite_an_existing_bundle() {
+    let root = unique_test_root();
+    let project = root.join("existing.freemix");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+    assert_success(&invoke_bounded(&["new", path, "--name", "Keep Me"]));
+    assert_success(&invoke_bounded(&["cut", path]));
+    let before = fs::read(project.join("project.json")).unwrap();
+
+    let refused = invoke_bounded(&["demo", path]);
+    assert_failure_contains(&refused, "destination bundle already exists");
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), before);
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_implicit_idempotency_keys_are_compact() {
+    let root = unique_test_root();
+    let project = root.join("keys.freemix");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+    assert_success(&invoke_bounded(&["new", path]));
+    assert_success(&invoke_bounded(&["cut", path]));
+    assert_success(&invoke_bounded(&[
+        "overlay-transition",
+        path,
+        "1",
+        "fade",
+        "3",
+    ]));
+
+    let stored = ProjectStore::new(&project).unwrap().load().unwrap();
+    let receipts = stored.idempotency_receipts();
+    assert_eq!(receipts.len(), 2);
+    for receipt in receipts {
+        // `cli:` + 32 hex timestamp + `:` + 8 hex pid + `:` + 16 hex sequence.
+        assert_eq!(
+            receipt.key().len(),
+            62,
+            "implicit key is not compact: {}",
+            receipt.key()
+        );
+        assert!(receipt.key().starts_with("cli:"));
+        assert!(
+            receipt.key()[4..]
+                .chars()
+                .all(|character| character == ':' || character.is_ascii_hexdigit()),
+            "implicit key carries a command payload: {}",
+            receipt.key()
+        );
+    }
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn ppm_pixel(path: &Path, width: u32, height: u32, x: u32, y: u32) -> [u8; 3] {
+    let bytes = fs::read(path).unwrap();
+    let header = format!("P6\n{width} {height}\n255\n");
+    assert!(bytes.starts_with(header.as_bytes()));
+    let offset = header.len() + ((y * width + x) as usize) * 3;
+    [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
 }
 
 fn invoke(arguments: &[&str]) -> Output {

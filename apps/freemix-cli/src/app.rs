@@ -59,6 +59,13 @@ use crate::{
 
 type AppResult<T> = Result<T, Box<dyn Error>>;
 static IMPLICIT_KEY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+/// Most idempotency receipts a local checkpoint retains.
+///
+/// Every local command stores a receipt, so an unbounded history would
+/// eventually push `project.json` past the manifest size limit and make the
+/// bundle unsaveable. Only the most recent receipts are kept; a key older than
+/// this window is treated as new if it is ever reused.
+const MAX_PERSISTED_RECEIPTS: usize = 1_024;
 static PROJECT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PPM_OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1399,7 +1406,9 @@ fn mutate(
         {
             1
         }
-        EngineCommand::TakeOverlay { channel, .. } | EngineCommand::OverlayOff { channel } => {
+        EngineCommand::TakeOverlay { channel, .. }
+        | EngineCommand::TakeNextOverlay { channel }
+        | EngineCommand::OverlayOff { channel } => {
             let overlay = project.engine.show().desired_switcher().overlay(*channel);
             match overlay.transition() {
                 OverlayTransitionKind::Cut => 1,
@@ -1433,7 +1442,7 @@ fn execute(
 ) -> AppResult<ExecuteResult> {
     let key = match key {
         Some(key) => key,
-        None => generate_implicit_key(&command, expected_revision)?,
+        None => generate_implicit_key()?,
     };
     let mut envelope = CommandEnvelope::new(format!("command-{key}"), key, command);
     if let Some(revision) = expected_revision {
@@ -1457,16 +1466,42 @@ fn execute(
     })
 }
 
-fn generate_implicit_key(
-    command: &EngineCommand,
-    expected_revision: Option<u64>,
-) -> AppResult<String> {
+/// Generates a unique key for a command run without `--key`.
+///
+/// The key only has to be unique, so it is a fixed-width timestamp, process id
+/// and in-process sequence; it deliberately carries no command payload, which
+/// would make every persisted receipt as large as the command's debug form.
+fn generate_implicit_key() -> AppResult<String> {
     let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let sequence = IMPLICIT_KEY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     Ok(format!(
-        "cli:{timestamp:032x}:{:08x}:{sequence:016x}:{command:?}:expect={expected_revision:?}",
+        "cli:{timestamp:032x}:{:08x}:{sequence:016x}",
         std::process::id()
     ))
+}
+
+/// Selects the newest [`MAX_PERSISTED_RECEIPTS`] receipts, in key order.
+///
+/// Recency is the revision a receipt was recorded at; a rejection recorded at
+/// revision `r` happened after the command that produced `r`, so it ranks
+/// above that accepted receipt.
+fn retained_receipts(
+    receipts: &[(IdempotencyKey, CommandReceipt<EngineAcceptance>)],
+) -> Vec<&(IdempotencyKey, CommandReceipt<EngineAcceptance>)> {
+    let mut retained = receipts.iter().collect::<Vec<_>>();
+    if retained.len() <= MAX_PERSISTED_RECEIPTS {
+        return retained;
+    }
+    retained.sort_by_key(|(key, receipt)| {
+        let recency = match receipt {
+            CommandReceipt::Accepted { acceptance, .. } => (acceptance.revision.get(), false),
+            CommandReceipt::Rejected { rejection, .. } => (rejection.current_revision.get(), true),
+        };
+        (recency, key.as_str())
+    });
+    let mut retained = retained.split_off(retained.len() - MAX_PERSISTED_RECEIPTS);
+    retained.sort_by_key(|(key, _)| key.as_str());
+    retained
 }
 
 fn persisted_receipt(
@@ -1603,9 +1638,8 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
             runtime_generation: snapshot.runtime_generation().get(),
             clock_time_nanos: snapshot.clock_time().as_nanos(),
         },
-        snapshot
-            .receipts()
-            .iter()
+        retained_receipts(snapshot.receipts())
+            .into_iter()
             .map(persisted_receipt)
             .collect::<AppResult<Vec<_>>>()?,
     )?;
@@ -1999,10 +2033,20 @@ fn add_stream_target(path: &Path, spec: &StreamSpec) -> AppResult<()> {
     })
 }
 
+/// Replaces one destination's authored configuration.
+///
+/// The desired running flag is switcher state, not configuration, so it is
+/// carried over from the existing destination: rotating a key or URL must not
+/// silently stop a stream the operator started.
 fn update_stream_target(path: &Path, spec: &StreamSpec) -> AppResult<()> {
     let target = stream_target(spec)?;
     update_project(path, |project| {
-        project.replace_stream_target(target)?;
+        let running = project
+            .stream_targets()
+            .iter()
+            .find(|existing| existing.id() == target.id())
+            .is_some_and(StreamTarget::running);
+        project.replace_stream_target(target.set_running(running))?;
         Ok(())
     })
 }
@@ -3177,15 +3221,20 @@ fn reject_unapplied_journal_batches(count: usize) -> AppResult<()> {
     .into())
 }
 
-fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> {
-    let project = inspect_engine(path)?;
-    let engine = &project.engine;
+fn simulated_pipeline(project: &Project, width: u32, height: u32) -> AppResult<SimulatedPipeline> {
     let mut pipeline = SimulatedPipeline::new(width, height)?;
-    for input in project.project.inputs() {
+    for input in project.inputs() {
         if matches!(input.kind, InputKind::Simulated(_)) {
             pipeline.register(SimulatedSource::new(input.id, source_pattern(input)?))?;
         }
     }
+    Ok(pipeline)
+}
+
+fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> {
+    let project = inspect_engine(path)?;
+    let engine = &project.engine;
+    let pipeline = simulated_pipeline(&project.project, width, height)?;
     let program = engine.realized_switcher().program_frame();
     if program.secondary.is_some()
         && [Some(program.primary), program.secondary]
@@ -3209,11 +3258,19 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
             _ => None,
         });
     let frame = if let Some(scene) = scene {
+        // Scene geometry, crops and masks are authored in project pixels, so
+        // the scene is composed at the project dimensions from sources
+        // rendered at that size and only then scaled to the requested output.
+        let dimensions = project.project.settings().video.dimensions;
+        let scene_pipeline =
+            simulated_pipeline(&project.project, dimensions.width(), dimensions.height())?;
         crate::scene_render::render_scene(
             &project.project,
             scene,
-            &pipeline,
+            &scene_pipeline,
             engine.frame_cursor().get(),
+            width,
+            height,
         )?
     } else {
         for input in [Some(program.primary), program.secondary]
@@ -3299,6 +3356,16 @@ impl Drop for PpmTempGuard {
 }
 
 fn demo(path: &Path, output: Option<&Path>) -> AppResult<()> {
+    // Like `new`, the demo only ever creates a fresh bundle; an existing one
+    // (possibly owned by a running daemon through its journal) is never
+    // overwritten.
+    if path.try_exists()? {
+        return Err(AppFailure(format!(
+            "destination bundle already exists: {}",
+            path.display()
+        ))
+        .into());
+    }
     let mut project = default_project("FreeMix MVP Demo".into())?;
     println!("created deterministic two-input show");
     print_status(&project);
@@ -4142,6 +4209,80 @@ impl Error for AppFailure {}
 mod tests {
     use super::*;
     use fm_persistence::MutationBatch;
+
+    #[test]
+    fn persisted_receipts_keep_only_the_most_recent_bounded_window() {
+        let root = std::env::temp_dir().join(format!(
+            "freemix-cli-receipt-window-{}-{}",
+            std::process::id(),
+            PPM_OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("receipts.freemix");
+        let mut project = default_project("Receipts".into()).unwrap();
+        let commands = MAX_PERSISTED_RECEIPTS + 5;
+        for index in 0..commands {
+            reject_unexpected(
+                execute(
+                    &mut project.engine,
+                    EngineCommand::Cut,
+                    1,
+                    Some(format!("cut-{index:05}")),
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        // A rejection at the newest revision is more recent than the accepted
+        // command that produced that revision, so it must be retained too.
+        let rejected = execute(
+            &mut project.engine,
+            EngineCommand::Cut,
+            1,
+            Some("stale".into()),
+            Some(0),
+        )
+        .unwrap();
+        assert!(rejected.rejection.is_some());
+        save_engine(&path, &project).unwrap();
+
+        let stored = ProjectStore::new(&path).unwrap().load().unwrap();
+        let keys = stored
+            .idempotency_receipts()
+            .iter()
+            .map(IdempotencyReceipt::key)
+            .collect::<Vec<_>>();
+        assert_eq!(keys.len(), MAX_PERSISTED_RECEIPTS);
+        assert!(keys.contains(&"stale"));
+        assert!(keys.contains(&format!("cut-{:05}", commands - 1).as_str()));
+        assert!(!keys.contains(&format!("cut-{:05}", commands - MAX_PERSISTED_RECEIPTS).as_str()));
+        assert!(
+            keys.contains(&format!("cut-{:05}", commands - MAX_PERSISTED_RECEIPTS + 1).as_str())
+        );
+        assert_eq!(stored.position().revision, commands as u64);
+
+        // The pruned bundle restores, replays a retained key, and accepts new work.
+        let mut restored = load_engine(&path).unwrap();
+        let replay = execute(
+            &mut restored.engine,
+            EngineCommand::Cut,
+            1,
+            Some(format!("cut-{:05}", commands - 1)),
+            None,
+        )
+        .unwrap();
+        assert!(replay.replayed);
+        reject_unexpected(
+            execute(&mut restored.engine, EngineCommand::Cut, 1, None, None).unwrap(),
+        )
+        .unwrap();
+        save_engine(&path, &restored).unwrap();
+        let stored = ProjectStore::new(&path).unwrap().load().unwrap();
+        assert_eq!(stored.idempotency_receipts().len(), MAX_PERSISTED_RECEIPTS);
+        assert_eq!(stored.position().revision, commands as u64 + 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn ppm_publication_write_failure_keeps_previous_target() {
