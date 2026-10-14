@@ -25,7 +25,8 @@ pub struct MonotoneCubic {
 }
 
 impl MonotoneCubic {
-    /// Returns `None` for no knots, non-finite input, or non-increasing `x`.
+    /// Returns `None` for no knots, non-finite input, non-increasing `x`, or
+    /// knots whose slopes overflow `f32`.
     #[must_use]
     pub fn new(knots: &[(f32, f32)]) -> Option<Self> {
         if knots.is_empty()
@@ -71,6 +72,14 @@ impl MonotoneCubic {
                 tangents[k] = tau * alpha * secant;
                 tangents[k + 1] = tau * beta * secant;
             }
+        }
+        // Overflowing slopes would evaluate to NaN or infinity.
+        if !tangents
+            .iter()
+            .chain(&secants)
+            .all(|value| value.is_finite())
+        {
+            return None;
         }
         Some(Self { xs, ys, tangents })
     }
@@ -118,8 +127,8 @@ pub struct PeriodicCatmullRom {
 
 impl PeriodicCatmullRom {
     /// Returns `None` for no knots, a non-positive or non-finite period,
-    /// positions outside `[0, period)`, non-finite values, or non-increasing
-    /// positions.
+    /// positions outside `[0, period)`, non-finite values, non-increasing
+    /// positions, or a period or tangents that overflow `f32`.
     #[must_use]
     pub fn new(knots: &[(f32, f32)], period: f32) -> Option<Self> {
         if knots.is_empty()
@@ -132,6 +141,8 @@ impl PeriodicCatmullRom {
                     || *position >= period
             })
             || knots.windows(2).any(|pair| pair[1].0 <= pair[0].0)
+            // The wrap-around segment ends at `first + period`.
+            || !(knots[0].0 + period).is_finite()
         {
             return None;
         }
@@ -155,7 +166,10 @@ impl PeriodicCatmullRom {
                 };
                 (next_value - previous_value) / (next_position - previous_position)
             })
-            .collect();
+            .collect::<Vec<f32>>();
+        if !tangents.iter().all(|tangent| tangent.is_finite()) {
+            return None;
+        }
         Some(Self {
             period,
             positions,
@@ -164,16 +178,18 @@ impl PeriodicCatmullRom {
         })
     }
 
-    /// Evaluates the curve at `x`, wrapped into the period. NaN input
-    /// evaluates as the first knot.
+    /// Evaluates the curve at `x`, wrapped into the period. Non-finite input
+    /// (and input so far out that it cannot be wrapped) evaluates as the
+    /// first knot.
     #[must_use]
     pub fn evaluate(&self, x: f32) -> f32 {
         let n = self.positions.len();
-        if n == 1 || x.is_nan() {
+        let first = self.positions[0];
+        let offset = x - first;
+        if n == 1 || !offset.is_finite() {
             return self.values[0];
         }
-        let first = self.positions[0];
-        let mut wrapped = first + (x - first).rem_euclid(self.period);
+        let mut wrapped = first + offset.rem_euclid(self.period);
         if wrapped >= first + self.period {
             wrapped = first;
         }

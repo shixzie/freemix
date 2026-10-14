@@ -224,6 +224,8 @@ fn validate_domain(minimum: [f32; 3], maximum: [f32; 3]) -> Result<(), CubeError
         minimum[channel].is_finite()
             && maximum[channel].is_finite()
             && minimum[channel] < maximum[channel]
+            // An infinite span would map every input to the first entry.
+            && (maximum[channel] - minimum[channel]).is_finite()
     });
     if valid {
         Ok(())
@@ -382,7 +384,8 @@ struct Header {
 /// line, blank lines are ignored, and other keywords produce a
 /// [`CubeWarning`]. Headers must precede data; each data row is exactly
 /// three finite numbers. 3D edges are `2..=65`, 1D sizes `2..=65536`, and
-/// the input is limited to 16 MiB.
+/// the input is limited to 16 MiB. A leading UTF-8 byte-order mark is
+/// ignored.
 ///
 /// # Errors
 /// Returns a typed [`CubeError`] describing the first violation.
@@ -392,6 +395,8 @@ pub fn parse_cube(source: &str) -> Result<(CubeLut, Vec<CubeWarning>), CubeError
             bytes: source.len(),
         });
     }
+    // Some editors prefix UTF-8 files with a byte-order mark.
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     let mut header = Header::default();
     let mut warnings = Vec::new();
     let mut entries: Vec<[f32; 3]> = Vec::new();

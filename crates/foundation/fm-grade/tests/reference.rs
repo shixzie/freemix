@@ -725,6 +725,26 @@ fn every_grade_bound_is_validated_with_a_typed_error() {
 }
 
 #[test]
+fn extreme_wheel_directions_are_rejected_without_overflow() {
+    // `x² + y²` for two `i16::MIN` components exceeds `i32::MAX`.
+    for (x, y) in [
+        (i16::MIN, i16::MIN),
+        (i16::MAX, i16::MAX),
+        (i16::MIN, 0),
+        (0, i16::MAX),
+    ] {
+        assert_eq!(
+            grade(|g| g.wheels.lift = Wheel::new(x, y, 0)).validate(),
+            Err(GradeError::WheelRadius {
+                wheel: WheelKind::Lift,
+                x,
+                y,
+            })
+        );
+    }
+}
+
+#[test]
 fn builtin_presets_are_valid_stable_and_distinct() {
     let ids: Vec<&str> = BUILTIN_PRESETS.iter().map(|preset| preset.id).collect();
     assert_eq!(ids, ["neutral", "warm", "cool", "punchy", "faded", "bw"]);

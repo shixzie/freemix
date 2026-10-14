@@ -155,3 +155,44 @@ fn single_knot_periodic_curve_is_constant() {
     }
     assert_eq!(curve.evaluate(f32::NAN), 0.3);
 }
+
+#[test]
+fn periodic_catmull_rom_non_finite_input_evaluates_as_the_first_knot() {
+    let curve = PeriodicCatmullRom::new(&[(0.1, 0.5), (0.6, -0.25)], 1.0).unwrap();
+    assert_eq!(curve.evaluate(f32::INFINITY), 0.5);
+    assert_eq!(curve.evaluate(f32::NEG_INFINITY), 0.5);
+    // `x - first` overflows to -inf for a finite `x`.
+    let wide = PeriodicCatmullRom::new(&[(1.0e38, 0.5), (1.5e38, -0.25)], 2.0e38).unwrap();
+    assert!(wide.evaluate(-3.0e38).is_finite());
+}
+
+#[test]
+fn splines_never_evaluate_to_non_finite_values() {
+    let sweep_finite = |evaluate: &dyn Fn(f32) -> f32, from: f32, to: f32| {
+        for step in 0..=1000_u16 {
+            let x = from + (to - from) * f32::from(step) / 1000.0;
+            let y = evaluate(x);
+            assert!(y.is_finite(), "{x} -> {y}");
+        }
+    };
+    // Secant overflow.
+    if let Some(curve) = MonotoneCubic::new(&[(0.0, -3.0e38), (1.0, 3.0e38)]) {
+        sweep_finite(&|x| curve.evaluate(x), 0.0, 1.0);
+    }
+    // Finite secants whose tangent ratio overflows.
+    if let Some(curve) =
+        MonotoneCubic::new(&[(0.0, 0.0), (1.0e-6, 1.0e30), (1.0e30, 1.0e30 + 1.0e23)])
+    {
+        sweep_finite(&|x| curve.evaluate(x), 0.0, 1.0e-6);
+        sweep_finite(&|x| curve.evaluate(x), 1.0e-6, 1.0e30);
+    }
+    // Catmull–Rom tangent overflow.
+    if let Some(curve) = PeriodicCatmullRom::new(&[(0.0, -3.0e38), (0.1, 0.0), (0.2, 3.0e38)], 1.0)
+    {
+        sweep_finite(&|x| curve.evaluate(x), 0.0, 1.0);
+    }
+    // The wrap-around segment ends at `first + period`, which overflows.
+    if let Some(curve) = PeriodicCatmullRom::new(&[(1.0e38, 0.0), (2.0e38, 1.0)], 3.3e38) {
+        sweep_finite(&|x| curve.evaluate(x), 0.0, 3.3e38);
+    }
+}

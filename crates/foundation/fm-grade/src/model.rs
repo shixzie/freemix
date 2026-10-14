@@ -504,9 +504,10 @@ const fn in_symmetric(value: i16, bound: i16) -> bool {
 }
 
 fn validate_wheel(kind: WheelKind, wheel: Wheel) -> Result<(), GradeError> {
-    let radius = i32::from(MAX_WHEEL_RADIUS);
-    let x = i32::from(wheel.x);
-    let y = i32::from(wheel.y);
+    // `i16::MIN² * 2` overflows `i32`.
+    let radius = i64::from(MAX_WHEEL_RADIUS);
+    let x = i64::from(wheel.x);
+    let y = i64::from(wheel.y);
     if x * x + y * y > radius * radius {
         return Err(GradeError::WheelRadius {
             wheel: kind,

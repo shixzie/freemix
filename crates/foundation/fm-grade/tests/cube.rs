@@ -392,3 +392,30 @@ fn programmatic_constructors_validate() {
     assert_eq!(lut.title(), None);
     assert_eq!(lut.clone(), lut);
 }
+
+#[test]
+fn rejects_domains_whose_span_overflows() {
+    // Each bound is finite but `max - min` is infinite, which would map every
+    // input to the first lattice point.
+    let rows = identity_rows(2);
+    assert_eq!(
+        error(&format!(
+            "LUT_3D_SIZE 2\nDOMAIN_MIN -3e38 0 0\nDOMAIN_MAX 3e38 1 1\n{rows}"
+        )),
+        CubeError::InvalidDomain
+    );
+    assert_eq!(
+        CubeLut::new_1d(vec![[0.0; 3], [1.0; 3]], [-3.0e38; 3], [3.0e38; 3]),
+        Err(CubeError::InvalidDomain)
+    );
+}
+
+#[test]
+fn accepts_a_leading_byte_order_mark() {
+    let source = format!("\u{feff}TITLE \"BOM\"\nLUT_3D_SIZE 2\n{}", identity_rows(2));
+    let (lut, warnings) = parse_cube(&source).unwrap();
+    assert_eq!(lut.title(), Some("BOM"));
+    assert_eq!(warnings, Vec::<CubeWarning>::new());
+    let source = format!("\u{feff}LUT_3D_SIZE 2\n{}", identity_rows(2));
+    assert_eq!(parse_cube(&source).unwrap().0.size(), 2);
+}
