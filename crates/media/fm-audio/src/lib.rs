@@ -14,7 +14,9 @@ mod bus_matrix;
 mod channel_mapping;
 mod clock_recalibration;
 mod dsp;
+mod embedded_audio;
 mod monitor;
+mod multichannel;
 mod sample_delay;
 mod synchronizer;
 
@@ -39,11 +41,21 @@ pub use dsp::{
     Biquad, BiquadCoefficients, BiquadKind, BiquadSettings, Compressor, DspError, DspMeter,
     DspMeterReading, Gate, Limiter, MAX_EQ_BANDS, ParametricEq, Polarity, StripDsp,
 };
+pub use embedded_audio::{
+    EMBEDDED_CHANNELS, EMBEDDED_CHANNELS_PER_GROUP, EMBEDDED_GROUPS, EmbeddedAssignment,
+    EmbeddedAudioMap, EmbeddedPair, EmbeddedSlot, deembed_group, deembed_mono, deembed_pair,
+};
 pub use monitor::{
     MAX_MONITOR_AUX_BUSES, MAX_MONITOR_CHANNELS, MAX_MONITOR_LEVEL_DB, MAX_MONITOR_STRIPS,
     MAX_TALKBACK_GAIN_DB, MAX_TALKBACK_ROUTES, MONITOR_DIM_DB, MonitorBus, MonitorDeviceId,
     MonitorError, MonitorSource, MonitorTap, MonitorTelemetry, TalkbackDestination, TalkbackFeed,
     TalkbackRoute,
+};
+pub use multichannel::{
+    DiscreteChannel, DownmixNormalization, DownmixOptions, GainMatrix, LfeHandling,
+    MAX_GAIN_MATRIX_GAIN, MAX_GAIN_MATRIX_INPUT_MAGNITUDE, MAX_GAIN_MATRIX_ROUTES,
+    MAX_MULTICHANNEL_CHANNELS, MINUS_3_DB, MatrixRoute, MultichannelError, MultichannelLayout,
+    MultichannelSide, SpeakerLabel, StandardLayout,
 };
 pub use sample_delay::{
     MAX_SAMPLE_DELAY_BYTES, MAX_SAMPLE_DELAY_SAMPLES, SampleDelay, SampleDelayError,
