@@ -1755,6 +1755,7 @@ dependencies = [
  "fm-server",
  "fm-sim",
  "fm-switcher",
+ "fm-titles",
  "fm-types",
  "fm-video",
  "fs4",

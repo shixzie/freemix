@@ -48,6 +48,7 @@ fm-record = { path = "../../crates/media/fm-record", optional = true }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
 fm-server = { path = "../../crates/services/fm-server" }
 fm-switcher = { path = "../../crates/features/fm-switcher" }
+fm-titles = { path = "../../crates/features/fm-titles" }
 fm-types = { path = "../../crates/foundation/fm-types" }
 fm-video = { path = "../../crates/media/fm-video" }
 fs4 = "0.13"

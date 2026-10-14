@@ -307,6 +307,41 @@ a subscription command: eligibility is implicit, like meters, and covers active
 non-Web Studio peers permitted to view status. The record never advances or
 carries a durable revision.
 
+What a simulated (`origin=simulated`) monitor frame depicts is fixed without
+any wire change. The daemon renders on a dedicated worker thread, never on the
+session loop, and publishes nothing for a picture it cannot render honestly,
+so a client keeps its placeholder instead of seeing invented video:
+
+- A realized Preview or Program simulated input renders its pattern, and a
+  Scene input whose enabled layers all name simulated inputs is composed with
+  the CPU reference compositor at the monitor size.
+- A realized Preview or Program title input renders its persisted field
+  values: the stored template is instantiated, the input's field values are
+  applied, the frame is rendered at the template size by the `fm_titles`
+  reference renderer, scaled nearest-neighbor onto the fitted monitor size,
+  and shown over black. Templates and their fonts load once at daemon
+  startup; a template that does not load renders nothing, and a family whose
+  font does not load draws no text. Image fields are registered by name only
+  and draw the renderer's image placeholder (no image is decoded yet).
+  Renders are cached per title input, template, field revision, and field
+  values; the frame cursor joins the key only for templates with clock,
+  ticker, or animated elements. Title scene time is the frame cursor times
+  the project frame duration, an approximation: the simulated daemon has no
+  title playback state, so every title is treated as starting at frame zero.
+- The Program tap then composites every realized active overlay (in channel
+  order, highest channel on top) over the Program picture with its realized
+  opacity, position preset, and border preset, using the native overlay
+  geometry evaluated at the monitor size. An overlay's source may be a
+  simulated, Scene, or title input (a title keeps its template alpha); any
+  other source is skipped. Overlay output inclusion is deliberately ignored:
+  overlays include no outputs by default, and the Program tap shows the
+  program bus rather than any one output, so it shows every active overlay.
+  Preview never shows overlays.
+
+Native daemons (`--native-media`) still refuse a project containing a title
+input at startup, before readiness, so native monitor frames never carry a
+title.
+
 Each telemetry class has requested cadence, aggregation, and maximum bandwidth.
 Slow clients receive coalesced latest data, never unbounded queues.
 

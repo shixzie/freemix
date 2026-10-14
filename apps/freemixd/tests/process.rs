@@ -3412,6 +3412,196 @@ fn simulated_studio_peer_receives_monitor_frames_and_integration_peer_none() {
     daemon.stop();
 }
 
+const TITLE_TEMPLATE_KEY: &str = "titles/process-title.fmtitle";
+
+/// The canonical 1280x720 project plus title input 4 (realized Preview)
+/// whose stored template draws one rectangle at (200, 100) sized 400x200,
+/// tinted by color field 1, on a transparent background. No font is needed.
+fn create_title_project(path: &Path) {
+    use fm_titles::{
+        Bounds, Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue,
+        Style, TemplateId, TitleTemplate,
+    };
+
+    let field = FieldId::new(NonZeroU128::new(1).unwrap());
+    let template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(1).unwrap()),
+        name: "Process title".into(),
+        width: 1_280,
+        height: 720,
+        background: Color::TRANSPARENT,
+        fields: vec![FieldDefinition {
+            id: field,
+            name: "Bar".into(),
+            default: FieldValue::Color(Color::new(1, 2, 3, 255)),
+        }],
+        elements: vec![Element {
+            id: ElementId::new(NonZeroU128::new(1).unwrap()),
+            name: "Bar".into(),
+            bounds: Bounds {
+                x: 200,
+                y: 100,
+                width: 400,
+                height: 200,
+            },
+            z_index: 0,
+            visible: true,
+            style: Style::default(),
+            color_field: Some(field),
+            kind: ElementKind::Rectangle,
+            animations: Vec::new(),
+        }],
+    };
+    let store = ProjectStore::new(path).unwrap();
+    let document = fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
+        template,
+        fonts: Vec::new(),
+    })
+    .unwrap();
+    let template_path = store.assets_root().join(TITLE_TEMPLATE_KEY);
+    fs::create_dir_all(template_path.parent().unwrap()).unwrap();
+    fs::write(&template_path, document).unwrap();
+
+    let mut project = canonical_project();
+    project.add_input(Input {
+        id: domain_input(4),
+        name: "Lower third".into(),
+        kind: InputKind::Title(fm_model::TitleInput {
+            template_uri: format!("asset://{TITLE_TEMPLATE_KEY}"),
+            field_revision: 3,
+            fields: vec![fm_model::TitleFieldEntry {
+                id: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                value: fm_model::TitleFieldValue::Color(Rgba8::new(230, 20, 140, 255)),
+            }],
+        }),
+        required_capabilities: Vec::new(),
+    });
+    project.set_main_mix(MainMix::new(domain_input(1), domain_input(4)));
+    let project = StoredProject::from_project(
+        project,
+        RuntimeRouting {
+            desired_program_id: Some(domain_input(1)),
+            realized_program_id: Some(domain_input(1)),
+            desired_preview_id: Some(domain_input(4)),
+            realized_preview_id: Some(domain_input(4)),
+        },
+        ProjectPosition {
+            revision: 0,
+            state_epoch: 1,
+            event_sequence: 0,
+            frames_rendered: 0,
+            runtime_generation: 0,
+            clock_time_nanos: 0,
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&project).unwrap();
+}
+
+/// Whether `image` is `inside` exactly on `x0..x1` x `y0..y1` and `outside`
+/// everywhere else.
+fn shows_rectangle(
+    image: &fm_protocol::MonitorImage,
+    (x0, y0, x1, y1): (usize, usize, usize, usize),
+    inside: [u8; 4],
+    outside: [u8; 4],
+) -> bool {
+    image
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .enumerate()
+        .all(|(index, pixel)| {
+            let x = index % usize::from(image.width);
+            let y = index / usize::from(image.width);
+            let expected = if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
+                inside
+            } else {
+                outside
+            };
+            *pixel == expected
+        })
+}
+
+#[test]
+fn simulated_monitor_shows_title_inputs_and_title_overlays() {
+    use fm_protocol::{MonitorFrameAssembler, MonitorImage, MonitorTap, WireOverlayChannelId};
+
+    let directory = TestDirectory::new("simulated-title-monitor");
+    let project_path = directory.project_path();
+    create_title_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut studio = daemon.connect();
+    studio
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    studio.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Operator,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        studio.receive(),
+        WireMessage::HandshakeResponse(_)
+    ));
+    assert!(matches!(studio.receive(), WireMessage::Snapshot(_)));
+
+    let mut assemblers = [MonitorFrameAssembler::new(), MonitorFrameAssembler::new()];
+    let mut assemble = |message: WireMessage| -> Option<MonitorImage> {
+        let WireMessage::MonitorFrame(part) = message else {
+            return None;
+        };
+        assemblers[part.tap.index()].push(&part).unwrap()
+    };
+    // The 1280x720 template rectangle lands on (100, 50)..(300, 150) of the
+    // 640x360 monitor picture.
+    let bar = (100, 50, 300, 150);
+    let title = [230, 20, 140, 255];
+
+    // Preview shows the title's persisted field values over black.
+    let preview = receive_within(
+        &mut studio,
+        Duration::from_secs(10),
+        "title preview frame",
+        |message| assemble(message).filter(|image| image.tap == MonitorTap::Preview),
+    );
+    assert_eq!(preview.input, input(4));
+    assert_eq!((preview.width, preview.height), (640, 360));
+    assert!(shows_rectangle(&preview, bar, title, [0, 0, 0, 255]));
+
+    // Taking the title on overlay channel 1 composites it over Program.
+    studio.send(&command(
+        "title-overlay",
+        "title-overlay-key",
+        CommandPayload::TakeOverlay {
+            channel: WireOverlayChannelId::new(1).unwrap(),
+            source: input(4),
+        },
+    ));
+    let program = receive_within(
+        &mut studio,
+        Duration::from_secs(10),
+        "program frame with the title overlay",
+        |message| {
+            assemble(message).filter(|image| {
+                image.tap == MonitorTap::Program
+                    && shows_rectangle(image, bar, title, [12, 34, 56, 255])
+            })
+        },
+    );
+    assert_eq!(program.input, input(1));
+
+    drop(studio);
+    daemon.stop();
+}
+
 /// A 1080p project whose Program is a Scene input over simulated sources, so
 /// every Studio monitor picture of Program is a CPU Scene composition.
 fn create_scene_program_project(path: &Path) {

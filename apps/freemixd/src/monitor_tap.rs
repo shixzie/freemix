@@ -12,26 +12,47 @@
 //! reference compositor directly at the fitted monitor size (see
 //! [`scene_render::render_scene`]); each composition is cached per realized
 //! revision, frame cursor, and input so the steady cadence never recomposes
-//! an unchanged picture. Any other realized input (or a scene the CPU reference cannot
+//! an unchanged picture. Title inputs render their persisted field values
+//! through the `fm_titles` reference renderer over black (see
+//! [`title_render`]), cached per title state and, only for clock, ticker, or
+//! animated templates, frame cursor.
+//!
+//! The Program tap then composites every realized active overlay over the
+//! Program picture with its opacity, position, and border preset, using the
+//! native overlay geometry ([`overlay_transform`]) evaluated at the monitor
+//! size. Overlays are drawn whatever their output inclusion: the tap shows
+//! the program bus, not one output. An overlay source may be a simulated,
+//! scene, or title input; any other source is skipped.
+//!
+//! Any other realized input (or a scene or title the CPU reference cannot
 //! render honestly) produces no frame, so a client keeps its placeholder
 //! instead of seeing invented video.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use fm_auth::Policy;
+use fm_compositor::{
+    AlphaMode, CpuSourceFrame, OutputTarget, Rotation, Scene, SourceId, SourceLayer, Transform,
+    compile_scene, execute_cpu,
+};
 use fm_control::ControlService;
 use fm_model::{InputKind, Project, SimulatedVideo};
 use fm_protocol::{
     MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_WIDTH, MonitorFrameMessage, MonitorFrameOrigin,
-    MonitorTap, ServerIdentity, WireInputId, WireMessage, encode_line, encode_qoi_rgb,
-    monitor_frame_parts,
+    MonitorTap, OverlayBorderPreset as WireOverlayBorder,
+    OverlayPositionPreset as WireOverlayPosition, OverlayStatus, ServerIdentity, WireInputId,
+    WireMessage, encode_line, encode_qoi_rgb, monitor_frame_parts,
 };
 use fm_sim::{ImageFrame, Rgba8, SimulatedPipeline, SimulatedSource, SourcePattern};
-use fm_types::InputId;
+use fm_switcher::{OverlayBorderPreset, OverlayPositionPreset};
+use fm_types::{InputId, VideoDimensions};
+use freemixd::overlay_layout::{overlay_border_width, overlay_transform};
 
 use crate::scene_render;
+use crate::title_render::{self, TitleAssets, TitleKey};
 
 /// The order taps render within one cadence step: the cheap, latency-visible
 /// Preview first, so it is never queued behind a Program Scene composition.
@@ -134,14 +155,55 @@ pub(crate) fn encode_picture(
     ))
 }
 
-/// The realized state a simulated monitor frame depicts.
+/// One realized active overlay the Program tap composites, in channel order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RealizedOverlay {
+    pub(crate) source: InputId,
+    pub(crate) opacity: u8,
+    pub(crate) position: OverlayPositionPreset,
+    pub(crate) border: OverlayBorderPreset,
+}
+
+impl RealizedOverlay {
+    /// The overlay a realized channel status shows, or `None` when the
+    /// channel is inactive or has no source.
+    fn from_status(status: &OverlayStatus) -> Option<Self> {
+        if !status.active {
+            return None;
+        }
+        Some(Self {
+            source: status.source?.to_domain(),
+            opacity: status.opacity,
+            position: match status.position {
+                WireOverlayPosition::FullFrame => OverlayPositionPreset::FullFrame,
+                WireOverlayPosition::TopLeft => OverlayPositionPreset::TopLeft,
+                WireOverlayPosition::TopRight => OverlayPositionPreset::TopRight,
+                WireOverlayPosition::BottomLeft => OverlayPositionPreset::BottomLeft,
+                WireOverlayPosition::BottomRight => OverlayPositionPreset::BottomRight,
+            },
+            border: match status.border {
+                WireOverlayBorder::None => OverlayBorderPreset::None,
+                WireOverlayBorder::ThinWhite => OverlayBorderPreset::ThinWhite,
+                WireOverlayBorder::ThickWhite => OverlayBorderPreset::ThickWhite,
+            },
+        })
+    }
+}
+
+/// The realized state a simulated monitor frame depicts.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RealizedMonitorState {
     pub(crate) revision: u64,
     pub(crate) frame: u64,
     pub(crate) program: InputId,
     pub(crate) preview: InputId,
+    /// Every realized active overlay, in channel order (lowest channel
+    /// composites first, so the highest channel is on top).
+    pub(crate) overlays: Vec<RealizedOverlay>,
 }
+
+/// The realized fields whose change publishes a frame immediately.
+type ChangeKey = (u64, InputId, InputId, Vec<RealizedOverlay>);
 
 impl RealizedMonitorState {
     pub(crate) fn from_control(control: &ControlService<Policy>) -> Self {
@@ -151,10 +213,15 @@ impl RealizedMonitorState {
             frame: control.frame_cursor(),
             program: snapshot.realized_program.to_domain(),
             preview: snapshot.realized_preview.to_domain(),
+            overlays: snapshot
+                .realized_overlays
+                .iter()
+                .filter_map(RealizedOverlay::from_status)
+                .collect(),
         }
     }
 
-    const fn input(self, tap: MonitorTap) -> InputId {
+    const fn input(&self, tap: MonitorTap) -> InputId {
         match tap {
             MonitorTap::Preview => self.preview,
             MonitorTap::Program => self.program,
@@ -163,8 +230,13 @@ impl RealizedMonitorState {
 
     /// The fields whose change publishes a frame immediately; the frame
     /// cursor alone only advances on the steady cadence.
-    const fn change_key(self) -> (u64, InputId, InputId) {
-        (self.revision, self.program, self.preview)
+    fn change_key(&self) -> ChangeKey {
+        (
+            self.revision,
+            self.program,
+            self.preview,
+            self.overlays.clone(),
+        )
     }
 }
 
@@ -176,11 +248,37 @@ struct ComposeKey {
     input: InputId,
 }
 
-/// One tap's most recent scene composition; `image` is `None` when the scene
-/// could not be rendered, so a failing scene is not retried every poll.
+/// One scene composition; `image` is `None` when the scene could not be
+/// rendered, so a failing scene is not retried every poll.
 struct ComposedScene {
     key: ComposeKey,
     image: Option<Arc<ImageFrame>>,
+}
+
+/// One title input's most recent render at the fitted monitor size.
+struct RenderedTitle {
+    key: TitleKey,
+    /// Premultiplied, keeping the template's alpha (the overlay source).
+    keyed: Option<Arc<ImageFrame>>,
+    /// The same picture over opaque black (the Preview/Program picture).
+    flat: Option<Arc<ImageFrame>>,
+}
+
+/// Identity of one Program picture with overlays composited.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProgramKey {
+    revision: u64,
+    frame: u64,
+    program: InputId,
+    overlays: Vec<RealizedOverlay>,
+    /// The title state of Program and of each overlay source.
+    titles: Vec<Option<TitleKey>>,
+}
+
+/// A picture to layer over Program and how its alpha is stored.
+struct OverlaySource {
+    image: Arc<ImageFrame>,
+    alpha: AlphaMode,
 }
 
 /// Renders realized Preview and Program from simulated inputs on a bounded
@@ -191,18 +289,38 @@ pub(crate) struct SimulatedMonitorTap {
     /// from these same sources.
     pipeline: Option<SimulatedPipeline>,
     built_revision: Option<u64>,
-    composed: [Option<ComposedScene>; 2],
+    /// Title templates and fonts loaded at startup.
+    titles: Arc<TitleAssets>,
+    /// Scene compositions used by the most recent cadence step.
+    composed: Vec<ComposedScene>,
+    /// The latest render of each title input, keyed by its full title state.
+    rendered_titles: BTreeMap<InputId, RenderedTitle>,
+    /// The latest Program picture with overlays composited.
+    program_overlaid: Option<(ProgramKey, Option<Arc<ImageFrame>>)>,
     /// Scene compositions performed, observed by tests to prove caching.
     #[cfg(test)]
     compositions: u64,
-    last_key: Option<(u64, InputId, InputId)>,
+    /// Title renders performed, observed by tests to prove caching.
+    #[cfg(test)]
+    title_renders: u64,
+    last_key: Option<ChangeKey>,
     last_emit: Option<Instant>,
     sequences: [u64; 2],
 }
 
 impl SimulatedMonitorTap {
-    /// Cadence and rendering against an explicit realized state.
+    /// A tap rendering title inputs from `titles`.
+    pub(crate) fn with_titles(titles: Arc<TitleAssets>) -> Self {
+        Self {
+            titles,
+            ..Self::default()
+        }
+    }
+
+    /// Cadence and rendering against an explicit realized state. Takes the
+    /// state by value so tests can build it inline.
     #[cfg(test)]
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn poll_state(
         &mut self,
         state: RealizedMonitorState,
@@ -212,7 +330,7 @@ impl SimulatedMonitorTap {
         demand: bool,
     ) -> Vec<(MonitorTap, Vec<u8>)> {
         let mut frames = Vec::new();
-        self.poll_state_into(state, project, server, now, demand, &mut |tap, bytes| {
+        self.poll_state_into(&state, project, server, now, demand, &mut |tap, bytes| {
             frames.push((tap, bytes));
         });
         frames
@@ -226,7 +344,7 @@ impl SimulatedMonitorTap {
     /// step.
     pub(crate) fn poll_state_into(
         &mut self,
-        state: RealizedMonitorState,
+        state: &RealizedMonitorState,
         project: &Project,
         server: &ServerIdentity,
         now: Instant,
@@ -241,7 +359,8 @@ impl SimulatedMonitorTap {
             self.pipeline = simulated_pipeline(project);
             self.built_revision = Some(state.revision);
         }
-        let changed = self.last_key != Some(state.change_key());
+        let change_key = state.change_key();
+        let changed = self.last_key.as_ref() != Some(&change_key);
         let due = self.last_emit.is_none_or(|last| {
             let elapsed = now.saturating_duration_since(last);
             elapsed >= SIMULATED_MONITOR_INTERVAL
@@ -251,7 +370,7 @@ impl SimulatedMonitorTap {
             return;
         }
         self.last_emit = Some(now);
-        self.last_key = Some(state.change_key());
+        self.last_key = Some(change_key);
         let Some((width, height)) = self.pipeline.as_ref().and_then(|pipeline| {
             Some((
                 u16::try_from(pipeline.width()).ok()?,
@@ -260,17 +379,15 @@ impl SimulatedMonitorTap {
         }) else {
             return;
         };
+        let mut used_scenes = Vec::new();
         for tap in MONITOR_TAP_ORDER {
             let input = state.input(tap);
-            let image = if scene_render::scene_of_input(project, input).is_some() {
-                self.scene_frame(tap, state, project)
-            } else {
-                // Non-simulated inputs are never registered, so they render nothing.
-                self.pipeline
-                    .as_ref()
-                    .and_then(|pipeline| pipeline.render_source(input, state.frame).ok())
-                    .map(Arc::new)
-            };
+            let mut image = self.input_picture(input, state, project, &mut used_scenes);
+            if tap == MonitorTap::Program && !state.overlays.is_empty() {
+                image = image.and_then(|program| {
+                    self.overlaid_program(program, state, project, &mut used_scenes)
+                });
+            }
             let Some(image) = image else {
                 continue;
             };
@@ -294,47 +411,213 @@ impl SimulatedMonitorTap {
                 emit(tap, bytes);
             }
         }
+        // Keep only the compositions this step showed: memory stays bounded
+        // by the scenes on air, and an unchanged step reuses all of them.
+        self.composed
+            .retain(|composed| used_scenes.contains(&composed.key));
+        self.rendered_titles.retain(|input, _| {
+            state.program == *input
+                || state.preview == *input
+                || state
+                    .overlays
+                    .iter()
+                    .any(|overlay| overlay.source == *input)
+        });
+        if state.overlays.is_empty() {
+            self.program_overlaid = None;
+        }
     }
 
-    /// Returns the tap's scene picture at the fitted size, composing it only
-    /// when no cached composition matches the realized revision, frame
-    /// cursor, and input. The other tap's matching composition is shared.
+    /// The opaque fitted-size picture of one input shown on a tap: a
+    /// simulated source, a composed scene, or a title over black. `None`
+    /// for anything that cannot be rendered honestly.
+    fn input_picture(
+        &mut self,
+        input: InputId,
+        state: &RealizedMonitorState,
+        project: &Project,
+        used_scenes: &mut Vec<ComposeKey>,
+    ) -> Option<Arc<ImageFrame>> {
+        if scene_render::scene_of_input(project, input).is_some() {
+            return self.scene_frame(input, state, project, used_scenes);
+        }
+        if title_render::title_of_input(project, input).is_some() {
+            return self
+                .title_frame(input, state.frame, project)
+                .and_then(|rendered| rendered.flat.clone());
+        }
+        // Other non-simulated inputs are never registered, so they render
+        // nothing.
+        self.pipeline
+            .as_ref()
+            .and_then(|pipeline| pipeline.render_source(input, state.frame).ok())
+            .map(Arc::new)
+    }
+
+    /// Returns the scene picture of `input` at the fitted size, composing it
+    /// only when no cached composition matches the realized revision, frame
+    /// cursor, and input. Every tap and overlay showing it shares one
+    /// composition.
     fn scene_frame(
         &mut self,
-        tap: MonitorTap,
-        state: RealizedMonitorState,
+        input: InputId,
+        state: &RealizedMonitorState,
         project: &Project,
+        used_scenes: &mut Vec<ComposeKey>,
     ) -> Option<Arc<ImageFrame>> {
         let key = ComposeKey {
             revision: state.revision,
             frame: state.frame,
-            input: state.input(tap),
+            input,
         };
-        if let Some(cached) = self
-            .composed
-            .iter()
-            .flatten()
-            .find(|composed| composed.key == key)
-        {
-            let image = cached.image.clone();
-            self.composed[tap.index()] = Some(ComposedScene {
-                key,
-                image: image.clone(),
-            });
-            return image;
+        if !used_scenes.contains(&key) {
+            used_scenes.push(key);
+        }
+        if let Some(cached) = self.composed.iter().find(|composed| composed.key == key) {
+            return cached.image.clone();
         }
         #[cfg(test)]
         {
             self.compositions += 1;
         }
-        let image = scene_render::scene_of_input(project, key.input).and_then(|scene| {
-            scene_render::render_scene(project, scene, self.pipeline.as_ref()?, state.frame)
-        });
-        let image = image.map(Arc::new);
-        self.composed[tap.index()] = Some(ComposedScene {
+        let image = scene_render::scene_of_input(project, input)
+            .and_then(|scene| {
+                scene_render::render_scene(project, scene, self.pipeline.as_ref()?, state.frame)
+            })
+            .map(Arc::new);
+        self.composed.push(ComposedScene {
             key,
             image: image.clone(),
         });
+        image
+    }
+
+    /// Returns the title picture of `input` at the fitted size, rendering it
+    /// only when its template, field revision, field values, or (for a
+    /// time-dependent template) frame changed.
+    fn title_frame(
+        &mut self,
+        input: InputId,
+        frame: u64,
+        project: &Project,
+    ) -> Option<&RenderedTitle> {
+        let title = title_render::title_of_input(project, input)?;
+        let key = title_render::title_key(&self.titles, title, frame)?;
+        let cached = self
+            .rendered_titles
+            .get(&input)
+            .is_some_and(|rendered| rendered.key == key);
+        if !cached {
+            #[cfg(test)]
+            {
+                self.title_renders += 1;
+            }
+            let pipeline = self.pipeline.as_ref()?;
+            let keyed = title_render::render_title(
+                &self.titles,
+                project,
+                input,
+                title,
+                frame,
+                pipeline.width(),
+                pipeline.height(),
+            );
+            let flat = keyed
+                .as_ref()
+                .and_then(title_render::flatten_over_black)
+                .map(Arc::new);
+            self.rendered_titles.insert(
+                input,
+                RenderedTitle {
+                    key,
+                    keyed: keyed.map(Arc::new),
+                    flat,
+                },
+            );
+        }
+        self.rendered_titles.get(&input)
+    }
+
+    /// One overlay's fitted-size source picture, or `None` when the source
+    /// cannot be rendered (the overlay is then skipped, never invented).
+    fn overlay_source(
+        &mut self,
+        input: InputId,
+        state: &RealizedMonitorState,
+        project: &Project,
+        used_scenes: &mut Vec<ComposeKey>,
+    ) -> Option<OverlaySource> {
+        if title_render::title_of_input(project, input).is_some() {
+            let image = self
+                .title_frame(input, state.frame, project)?
+                .keyed
+                .clone()?;
+            return Some(OverlaySource {
+                image,
+                alpha: AlphaMode::Premultiplied,
+            });
+        }
+        // Simulated and scene pictures are opaque.
+        let image = self.input_picture(input, state, project, used_scenes)?;
+        Some(OverlaySource {
+            image,
+            alpha: AlphaMode::Straight,
+        })
+    }
+
+    /// Composites every renderable realized active overlay over the Program
+    /// picture, caching the result per revision, frame cursor, Program input,
+    /// and overlay set. `None` when the composition itself fails.
+    fn overlaid_program(
+        &mut self,
+        program: Arc<ImageFrame>,
+        state: &RealizedMonitorState,
+        project: &Project,
+        used_scenes: &mut Vec<ComposeKey>,
+    ) -> Option<Arc<ImageFrame>> {
+        let key = ProgramKey {
+            revision: state.revision,
+            frame: state.frame,
+            program: state.program,
+            overlays: state.overlays.clone(),
+            titles: std::iter::once(state.program)
+                .chain(state.overlays.iter().map(|overlay| overlay.source))
+                .map(|input| {
+                    title_render::title_of_input(project, input)
+                        .and_then(|title| title_render::title_key(&self.titles, title, state.frame))
+                })
+                .collect(),
+        };
+        if let Some((cached, image)) = &self.program_overlaid
+            && *cached == key
+        {
+            // Keep the scenes the cached picture was composed from.
+            for overlay in &state.overlays {
+                let scene = ComposeKey {
+                    revision: state.revision,
+                    frame: state.frame,
+                    input: overlay.source,
+                };
+                if self.composed.iter().any(|composed| composed.key == scene)
+                    && !used_scenes.contains(&scene)
+                {
+                    used_scenes.push(scene);
+                }
+            }
+            return image.clone();
+        }
+        let mut sources = Vec::with_capacity(state.overlays.len());
+        for overlay in &state.overlays {
+            if let Some(source) = self.overlay_source(overlay.source, state, project, used_scenes) {
+                sources.push((*overlay, source));
+            }
+        }
+        let image = if sources.is_empty() {
+            Some(program)
+        } else {
+            composite_overlays(&program, &sources).map(Arc::new)
+        };
+        self.program_overlaid = Some((key, image.clone()));
         image
     }
 
@@ -343,6 +626,42 @@ impl SimulatedMonitorTap {
         self.last_emit = None;
         self.last_key = None;
     }
+}
+
+/// Layers each overlay source over `program` with the native overlay
+/// geometry evaluated at the program picture's size.
+fn composite_overlays(
+    program: &ImageFrame,
+    overlays: &[(RealizedOverlay, OverlaySource)],
+) -> Option<ImageFrame> {
+    let (width, height) = (program.width(), program.height());
+    let dimensions = VideoDimensions::new(width, height)?;
+    let mut scene = Scene::new(width, height, Rgba8::new(0, 0, 0, u8::MAX)).ok()?;
+    scene.push_layer(SourceLayer::new(
+        SourceId::new(0),
+        0,
+        Transform::new(0, 0, width, height, Rotation::Deg0),
+    ));
+    for (index, (overlay, source)) in overlays.iter().enumerate() {
+        let token = SourceId::new(u64::try_from(index + 1).ok()?);
+        let transform = overlay_transform(dimensions, overlay.position)?;
+        scene.push_layer(
+            SourceLayer::new(token, i32::try_from(index + 1).ok()?, transform)
+                .with_opacity(overlay.opacity)
+                .with_alpha_mode(source.alpha)
+                .with_inset_border(overlay_border_width(overlay.border, transform)),
+        );
+    }
+    let (plan, _) = compile_scene(&scene, OutputTarget::Program).ok()?;
+    let mut bindings = Vec::with_capacity(overlays.len() + 1);
+    bindings.push(CpuSourceFrame::new(SourceId::new(0), program));
+    for (index, (_, source)) in overlays.iter().enumerate() {
+        bindings.push(CpuSourceFrame::new(
+            SourceId::new(u64::try_from(index + 1).ok()?),
+            &source.image,
+        ));
+    }
+    execute_cpu(&plan, &bindings).ok()
 }
 
 /// What the composition worker renders: the realized state and the project
@@ -398,7 +717,7 @@ pub(crate) struct SimulatedMonitorWorker {
 }
 
 /// The last work handed to the worker, so unchanged polls skip the lock.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 enum Published {
     Nothing,
     Idle,
@@ -411,11 +730,11 @@ impl SimulatedMonitorWorker {
     /// # Errors
     ///
     /// Returns the operating system error when the thread cannot start.
-    pub(crate) fn spawn(server: ServerIdentity) -> std::io::Result<Self> {
-        let mut tap = SimulatedMonitorTap::default();
+    pub(crate) fn spawn(server: ServerIdentity, titles: Arc<TitleAssets>) -> std::io::Result<Self> {
+        let mut tap = SimulatedMonitorTap::with_titles(titles);
         Self::spawn_with(Box::new(move |work, now, emit| {
             if let Some((state, project)) = work {
-                tap.poll_state_into(state, &project, &server, now, true, emit);
+                tap.poll_state_into(&state, &project, &server, now, true, emit);
             } else {
                 tap.idle();
             }
@@ -462,9 +781,13 @@ impl SimulatedMonitorWorker {
         state: Option<RealizedMonitorState>,
         project: &Project,
     ) -> Vec<(MonitorTap, Vec<u8>)> {
-        let published = state.map_or(Published::Idle, Published::State);
-        let work = (self.published != published)
-            .then(|| state.map(|state| (state, self.project_at(state.revision, project))));
+        let published = state.clone().map_or(Published::Idle, Published::State);
+        let work = (self.published != published).then(|| {
+            state.map(|state| {
+                let project = self.project_at(state.revision, project);
+                (state, project)
+            })
+        });
         let mut slot = self.shared.lock();
         if let Some(work) = work {
             slot.work = work;
@@ -694,6 +1017,7 @@ mod tests {
             frame: 4,
             program: input_id(program),
             preview: input_id(preview),
+            overlays: Vec::new(),
         }
     }
 
@@ -1008,6 +1332,368 @@ mod tests {
                 "scene input {program}"
             );
         }
+    }
+
+    const TITLE_URI: &str = "asset://titles/lower-third.fmtitle";
+    const CLOCK_TITLE_URI: &str = "asset://titles/clock.fmtitle";
+
+    fn field(value: u128) -> fm_titles::FieldId {
+        fm_titles::FieldId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    /// A 1920x1080 template with a transparent background and one rectangle
+    /// at (300, 150) sized 600x300, tinted by color field 1. With `clock`, a
+    /// font-less scene clock makes the template time-dependent (it draws no
+    /// text without a font, so the picture itself does not change).
+    fn title_template(clock: bool) -> fm_titles::TitleTemplate {
+        use fm_titles::{
+            Bounds, ClockDirection, ClockFormat, ClockSpec, Color, Element, ElementId, ElementKind,
+            FieldDefinition, FieldValue, FontStyle, Style, TemplateId, TitleTemplate,
+        };
+        let element = |id: u128, kind: ElementKind, font: Option<FontStyle>| Element {
+            id: ElementId::new(NonZeroU128::new(id).unwrap()),
+            name: format!("Element {id}"),
+            bounds: Bounds {
+                x: 300,
+                y: 150,
+                width: 600,
+                height: 300,
+            },
+            z_index: 0,
+            visible: true,
+            style: Style {
+                font,
+                ..Style::default()
+            },
+            color_field: None,
+            kind,
+            animations: Vec::new(),
+        };
+        let mut bar = element(1, ElementKind::Rectangle, None);
+        bar.color_field = Some(field(1));
+        let mut elements = vec![bar];
+        if clock {
+            elements.push(element(
+                2,
+                ElementKind::Clock(ClockSpec {
+                    direction: ClockDirection::CountUp,
+                    start_value_ms: 0,
+                    starts_at_ms: 0,
+                    format: ClockFormat::MinutesSeconds,
+                }),
+                Some(FontStyle {
+                    family: "Unavailable".into(),
+                    size_px: 32,
+                }),
+            ));
+        }
+        TitleTemplate {
+            id: TemplateId::new(NonZeroU128::new(1).unwrap()),
+            name: "Lower third".into(),
+            width: 1_920,
+            height: 1_080,
+            background: Color::TRANSPARENT,
+            fields: vec![FieldDefinition {
+                id: field(1),
+                name: "Bar".into(),
+                default: FieldValue::Color(Color::new(1, 2, 3, 255)),
+            }],
+            elements,
+        }
+    }
+
+    fn title_assets() -> Arc<TitleAssets> {
+        let mut assets = TitleAssets::default();
+        assets.insert(
+            TITLE_URI,
+            title_render::LoadedTitleTemplate::new(
+                title_template(false),
+                fm_titles::AssetCatalog::new(),
+            ),
+        );
+        assets.insert(
+            CLOCK_TITLE_URI,
+            title_render::LoadedTitleTemplate::new(
+                title_template(true),
+                fm_titles::AssetCatalog::new(),
+            ),
+        );
+        Arc::new(assets)
+    }
+
+    fn bar_color(red: u8, green: u8, blue: u8) -> Vec<fm_model::TitleFieldEntry> {
+        vec![fm_model::TitleFieldEntry {
+            id: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
+            value: fm_model::TitleFieldValue::Color(fm_model::Rgba8::new(red, green, blue, 255)),
+        }]
+    }
+
+    fn add_title(project: &mut Project, input: u128, uri: &str, bar: (u8, u8, u8)) {
+        project.add_input(Input {
+            id: input_id(input),
+            name: format!("Title {input}"),
+            kind: InputKind::Title(fm_model::TitleInput {
+                template_uri: uri.into(),
+                field_revision: 0,
+                fields: bar_color(bar.0, bar.1, bar.2),
+            }),
+            required_capabilities: Vec::new(),
+        });
+    }
+
+    /// Asserts `image` is `inside` exactly on the monitor rectangle
+    /// `x0..x1` x `y0..y1` and `outside` everywhere else.
+    fn assert_rectangle(
+        image: &MonitorImage,
+        (x0, y0, x1, y1): (usize, usize, usize, usize),
+        inside: [u8; 4],
+        outside: [u8; 4],
+    ) {
+        for y in 0..usize::from(image.height) {
+            for x in 0..usize::from(image.width) {
+                let expected = if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
+                    inside
+                } else {
+                    outside
+                };
+                assert_eq!(pixel(image, x, y), expected, "pixel ({x}, {y})");
+            }
+        }
+    }
+
+    /// The template rectangle (300, 150, 600, 300) at 1920x1080 lands on
+    /// (100, 50)..(300, 150) of the 640x360 monitor.
+    const TITLE_BAR: (usize, usize, usize, usize) = (100, 50, 300, 150);
+
+    #[test]
+    fn title_inputs_render_their_persisted_fields_on_program_and_preview() {
+        let mut project = project(1_920, 1_080);
+        add_title(&mut project, 20, TITLE_URI, (200, 40, 10));
+        add_title(&mut project, 21, TITLE_URI, (5, 150, 250));
+        let server = server();
+        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
+        let start = Instant::now();
+        let frames = tap.poll_state(state(1, 20, 21), &project, &server, start, true);
+        assert_eq!(
+            frames.iter().map(|(tap, _)| *tap).collect::<Vec<_>>(),
+            vec![MonitorTap::Preview, MonitorTap::Program]
+        );
+        let preview = decode(&frames[0].1);
+        assert_eq!(preview.input, WireInputId::from_domain(input_id(21)));
+        assert_eq!(preview.origin, MonitorFrameOrigin::Simulated);
+        assert_eq!((preview.width, preview.height), (640, 360));
+        // The transparent template background is shown over black.
+        assert_rectangle(&preview, TITLE_BAR, [5, 150, 250, 255], [0, 0, 0, 255]);
+        let program = decode(&frames[1].1);
+        assert_eq!(program.input, WireInputId::from_domain(input_id(20)));
+        assert_rectangle(&program, TITLE_BAR, [200, 40, 10, 255], [0, 0, 0, 255]);
+        assert_eq!(tap.title_renders, 2);
+
+        // A new field value shows on the next picture.
+        project
+            .set_title_fields(input_id(20), 1, bar_color(9, 99, 199))
+            .unwrap();
+        let frames = tap.poll_state(
+            state(2, 20, 21),
+            &project,
+            &server,
+            start + Duration::from_millis(200),
+            true,
+        );
+        let program = decode(&frames[1].1);
+        assert_rectangle(&program, TITLE_BAR, [9, 99, 199, 255], [0, 0, 0, 255]);
+        // Only the changed title rendered again.
+        assert_eq!(tap.title_renders, 3);
+    }
+
+    #[test]
+    fn static_titles_are_cached_and_clock_titles_rerender_per_frame() {
+        let mut project = project(1_920, 1_080);
+        add_title(&mut project, 20, TITLE_URI, (200, 40, 10));
+        add_title(&mut project, 22, CLOCK_TITLE_URI, (200, 40, 10));
+        let server = server();
+        let start = Instant::now();
+        let at = |millis| start + Duration::from_millis(millis);
+
+        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
+        // Both taps show the static title: one render serves both, and new
+        // frame cursors and revisions reuse it.
+        for (step, (revision, frame)) in [(1, 4), (1, 5), (2, 6), (3, 7)].into_iter().enumerate() {
+            let mut realized = state(revision, 20, 20);
+            realized.frame = frame;
+            let millis = u64::try_from(step).unwrap() * 200;
+            assert_eq!(
+                tap.poll_state(realized, &project, &server, at(millis), true)
+                    .len(),
+                2
+            );
+            assert_eq!(tap.title_renders, 1, "static title, step {step}");
+        }
+
+        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
+        for (step, frame) in [4, 4, 5, 6].into_iter().enumerate() {
+            let mut realized = state(1, 22, 22);
+            realized.frame = frame;
+            let millis = u64::try_from(step).unwrap() * 200;
+            assert_eq!(
+                tap.poll_state(realized, &project, &server, at(millis), true)
+                    .len(),
+                2
+            );
+        }
+        // Frames 4, 5, and 6 each render once; the repeated frame 4 hits.
+        assert_eq!(tap.title_renders, 3);
+    }
+
+    #[test]
+    fn titles_without_loaded_templates_produce_no_frame() {
+        let mut project = project(1_920, 1_080);
+        add_title(
+            &mut project,
+            20,
+            "asset://titles/missing.fmtitle",
+            (1, 1, 1),
+        );
+        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
+        let frames = tap.poll_state(state(1, 20, 1), &project, &server(), Instant::now(), true);
+        assert_eq!(
+            frames.iter().map(|(tap, _)| *tap).collect::<Vec<_>>(),
+            vec![MonitorTap::Preview]
+        );
+    }
+
+    fn overlay(
+        source: u128,
+        opacity: u8,
+        position: OverlayPositionPreset,
+        border: OverlayBorderPreset,
+    ) -> RealizedOverlay {
+        RealizedOverlay {
+            source: input_id(source),
+            opacity,
+            position,
+            border,
+        }
+    }
+
+    /// `round(left * right / 255)`, the compositor's 8-bit product.
+    fn mul(left: u8, right: u8) -> u8 {
+        u8::try_from((u16::from(left) * u16::from(right) + 127) / 255).unwrap()
+    }
+
+    #[test]
+    fn half_opacity_top_right_overlay_blends_in_its_exact_rectangle() {
+        let mut project = project(1_920, 1_080);
+        project.add_input(Input {
+            id: input_id(5),
+            name: "Overlay".into(),
+            kind: InputKind::Simulated(SimulatedInput::new(
+                SimulatedVideo::Solid(SolidColor::new(240, 120, 60, 255)),
+                SimulatedAudio::Silence,
+            )),
+            required_capabilities: Vec::new(),
+        });
+        let mut realized = state(1, 1, 2);
+        realized.overlays = vec![
+            overlay(
+                5,
+                128,
+                OverlayPositionPreset::TopRight,
+                OverlayBorderPreset::None,
+            ),
+            // An unrenderable source (a Color input) is skipped.
+            overlay(
+                3,
+                255,
+                OverlayPositionPreset::FullFrame,
+                OverlayBorderPreset::None,
+            ),
+        ];
+        let mut tap = SimulatedMonitorTap::default();
+        let frames = tap.poll_state(realized, &project, &server(), Instant::now(), true);
+        let program = decode(&frames[1].1);
+        assert_eq!(program.tap, MonitorTap::Program);
+        assert_eq!(program.input, WireInputId::from_domain(input_id(1)));
+        // Premultiplied source-over at opacity 128 of (240, 120, 60) on
+        // (7, 11, 13): source * 128/255 + destination * (255 - 128)/255.
+        let blend = |source: u8, destination: u8| mul(source, 128) + mul(destination, 127);
+        let blended = [blend(240, 7), blend(120, 11), blend(60, 13), 255];
+        assert_eq!(blended, [123, 65, 36, 255]);
+        // TopRight at 640x360: a 213x120 box inset 11 pixels from the corner.
+        assert_rectangle(&program, (416, 11, 629, 131), blended, [7, 11, 13, 255]);
+        // Preview never shows overlays.
+        let preview = decode(&frames[0].1);
+        assert_eq!(&preview.rgba[..4], &[191, 191, 191, 255]);
+    }
+
+    #[test]
+    fn title_overlay_composites_over_a_solid_program() {
+        let mut project = project(1_920, 1_080);
+        add_title(&mut project, 20, TITLE_URI, (200, 40, 10));
+        let mut realized = state(1, 1, 2);
+        realized.overlays = vec![overlay(
+            20,
+            255,
+            OverlayPositionPreset::FullFrame,
+            OverlayBorderPreset::None,
+        )];
+        let server = server();
+        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
+        let start = Instant::now();
+        let frames = tap.poll_state(realized.clone(), &project, &server, start, true);
+        let program = decode(&frames[1].1);
+        assert_eq!(program.input, WireInputId::from_domain(input_id(1)));
+        // The title's transparent background keeps the program picture.
+        assert_rectangle(&program, TITLE_BAR, [200, 40, 10, 255], [7, 11, 13, 255]);
+
+        // The overlaid picture is cached while nothing changes.
+        assert_eq!(tap.title_renders, 1);
+        let frames = tap.poll_state(
+            realized,
+            &project,
+            &server,
+            start + Duration::from_millis(200),
+            true,
+        );
+        assert_eq!(frames.len(), 2);
+        assert_eq!(tap.title_renders, 1);
+
+        // Taking the overlay off publishes the plain program promptly.
+        let frames = tap.poll_state(
+            state(1, 1, 2),
+            &project,
+            &server,
+            start + Duration::from_millis(250),
+            true,
+        );
+        let program = decode(&frames[1].1);
+        assert_rectangle(&program, TITLE_BAR, [7, 11, 13, 255], [7, 11, 13, 255]);
+    }
+
+    #[test]
+    fn overlay_borders_are_drawn_inside_the_overlay_box() {
+        let mut project = project(1_920, 1_080);
+        add_title(&mut project, 20, TITLE_URI, (200, 40, 10));
+        let mut realized = state(1, 1, 2);
+        realized.overlays = vec![overlay(
+            1,
+            255,
+            OverlayPositionPreset::BottomLeft,
+            OverlayBorderPreset::ThickWhite,
+        )];
+        // Program is bars; the solid overlay sits at (11, 229) sized 213x120
+        // with a 2-pixel white inset border.
+        realized.program = input_id(2);
+        let mut tap = SimulatedMonitorTap::default();
+        let frames = tap.poll_state(realized, &project, &server(), Instant::now(), true);
+        let program = decode(&frames[1].1);
+        assert_eq!(pixel(&program, 11, 229), [255, 255, 255, 255]);
+        assert_eq!(pixel(&program, 12, 230), [255, 255, 255, 255]);
+        assert_eq!(pixel(&program, 13, 231), [7, 11, 13, 255]);
+        assert_eq!(pixel(&program, 222, 348), [255, 255, 255, 255]);
+        assert_eq!(pixel(&program, 220, 346), [7, 11, 13, 255]);
+        // Just outside the box is the bars' first column (75% white).
+        assert_eq!(pixel(&program, 10, 300), [191, 191, 191, 255]);
     }
 
     #[test]

@@ -111,6 +111,7 @@ mod status_listener;
 mod stinger_mutation;
 #[cfg(feature = "native-media")]
 mod stream_transport;
+mod title_render;
 mod web;
 
 use hls_server::{HlsRoots, HlsServer};
@@ -8459,6 +8460,14 @@ fn serve_inner(
         process_shutdown.set_diagnostic_deadline(duration)?;
     }
 
+    // Title templates and fonts load once, before serving, for the simulated
+    // monitor tap. Native media refuses title inputs at startup, so it never
+    // needs them.
+    let titles = Arc::new(if native.is_none() {
+        title_render::TitleAssets::load(&store, durable.project())
+    } else {
+        title_render::TitleAssets::default()
+    });
     let session_result = non_native_sessions::run(
         &listener,
         &server,
@@ -8468,6 +8477,7 @@ fn serve_inner(
         &principal,
         native.as_mut(),
         &authority,
+        &titles,
         &process_shutdown,
         once,
         web_gateway.as_ref(),

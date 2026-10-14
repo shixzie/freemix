@@ -33,6 +33,7 @@ use super::{
 use crate::journal::DurableStore;
 use crate::latest_record::LatestRecord;
 use crate::monitor_tap::SimulatedMonitorWorker;
+use crate::title_render::TitleAssets;
 use crate::web::{WebEvent, WebGateway};
 
 const MAX_PEERS: usize = 2;
@@ -450,6 +451,7 @@ pub(super) fn run(
     principal: &Principal,
     native: Option<&mut NativeDaemon>,
     authority: &ServerIdentity,
+    titles: &Arc<TitleAssets>,
     process_shutdown: &ProcessShutdown,
     once: bool,
     web: Option<&WebGateway>,
@@ -470,7 +472,10 @@ pub(super) fn run(
     // Simulated monitor frames are composed off this loop so a slow Scene
     // composition never delays command results, heartbeats, or events.
     let mut simulated_monitor = if native.is_none() {
-        Some(SimulatedMonitorWorker::spawn(authority.clone())?)
+        Some(SimulatedMonitorWorker::spawn(
+            authority.clone(),
+            Arc::clone(titles),
+        )?)
     } else {
         None
     };

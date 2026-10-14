@@ -70,6 +70,8 @@ use fm_types::{
     AudioFormat, FrameRate, InputId, OutputId, SampleFormat, SceneId, TimeBase, VideoDimensions,
 };
 
+use crate::overlay_layout::{overlay_border_width, overlay_transform};
+
 const RGBA16_FLOAT_BYTES_PER_PIXEL: u64 = 8;
 const NATIVE_PROJECT_IN_FLIGHT_SLOTS: usize = 1;
 const SOURCE_REFILL_LOW_WATERMARK: usize = 4;
@@ -702,59 +704,6 @@ impl NativeOutputFrame {
     #[must_use]
     pub const fn texture(&self) -> &NativeTexture {
         &self.texture
-    }
-}
-
-fn overlay_transform(
-    dimensions: VideoDimensions,
-    position: OverlayPositionPreset,
-) -> Result<Transform, NativeSourceRenderError> {
-    let width = dimensions.width();
-    let height = dimensions.height();
-    let (x, y, scale_width, scale_height) = if position == OverlayPositionPreset::FullFrame {
-        (0, 0, width, height)
-    } else {
-        let scale_width = (width / 3).max(1);
-        let scale_height = (height / 3).max(1);
-        let margin = (width.min(height) / 32).max(1);
-        let left = margin.min(width.saturating_sub(scale_width));
-        let top = margin.min(height.saturating_sub(scale_height));
-        let right = width.saturating_sub(scale_width).saturating_sub(margin);
-        let bottom = height.saturating_sub(scale_height).saturating_sub(margin);
-        let (x, y) = match position {
-            OverlayPositionPreset::FullFrame => unreachable!(),
-            OverlayPositionPreset::TopLeft => (left, top),
-            OverlayPositionPreset::TopRight => (right, top),
-            OverlayPositionPreset::BottomLeft => (left, bottom),
-            OverlayPositionPreset::BottomRight => (right, bottom),
-        };
-        (x, y, scale_width, scale_height)
-    };
-    Ok(Transform::new(
-        i32::try_from(x).map_err(|_| NativeSourceRenderError::ResourceBounds)?,
-        i32::try_from(y).map_err(|_| NativeSourceRenderError::ResourceBounds)?,
-        scale_width,
-        scale_height,
-        CompositorRotation::Deg0,
-    ))
-}
-
-const fn overlay_border_width(border: OverlayBorderPreset, transform: Transform) -> u32 {
-    let minimum_dimension = if transform.scale_width < transform.scale_height {
-        transform.scale_width
-    } else {
-        transform.scale_height
-    };
-    match border {
-        OverlayBorderPreset::None => 0,
-        OverlayBorderPreset::ThinWhite => {
-            let scaled = minimum_dimension / 360;
-            if scaled < 1 { 1 } else { scaled }
-        }
-        OverlayBorderPreset::ThickWhite => {
-            let scaled = minimum_dimension / 120;
-            if scaled < 2 { 2 } else { scaled }
-        }
     }
 }
 
@@ -7018,7 +6967,8 @@ impl NativeMediaRuntime {
             );
             let z =
                 i32::try_from(index + 1).map_err(|_| NativeSourceRenderError::ResourceBounds)?;
-            let transform = overlay_transform(project.dimensions, overlay.position)?;
+            let transform = overlay_transform(project.dimensions, overlay.position)
+                .ok_or(NativeSourceRenderError::ResourceBounds)?;
             let border_width = overlay_border_width(overlay.border, transform);
             scene.push_layer(
                 SourceLayer::new(source, z, transform)
