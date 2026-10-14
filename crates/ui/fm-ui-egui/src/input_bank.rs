@@ -15,8 +15,8 @@ use fm_ui_model::SwitcherState;
 use crate::gating::{self, Capability, Hint, unavailable_reason};
 use crate::monitors::{FrameFacts, MonitorPicture, letterbox, picture_visible};
 use crate::theme::{
-    ACCENT, BORDER_STRONG, GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PROGRAM, TEXT, TEXT_DIM, mono,
-    section_header, section_label, small_button, tally_badge, tally_color,
+    ACCENT, BORDER_STRONG, GRAPHITE_RAISED, MONITOR_BLACK, MUTED, PROGRAM, TEXT, TEXT_DIM, elided,
+    mono, pill, section_header, small_button, tally_badge, tally_color,
 };
 use crate::{
     InputMoveDirection, RenameDraft, StudioIntent, StudioShell, StudioUiState, TransitionGate,
@@ -150,14 +150,21 @@ impl StudioShell {
         state: &StudioUiState,
         intents: &mut Vec<StudioIntent>,
     ) {
-        let count = state.view.as_ref().map_or(0, |view| view.inputs.len());
+        let count = state.view.as_ref().map(|view| view.inputs.len());
         section_header(ui, "Input bank", |ui| {
             ui.label(
                 RichText::new("click PVW · double-click CUT · right-click more")
                     .size(10.0)
                     .color(MUTED),
             );
-            ui.label(mono(format!("{count} SOURCES")).size(10.5).color(TEXT_DIM));
+            ui.label(
+                mono(count.map_or_else(
+                    || "— SOURCES".to_owned(),
+                    |count| format!("{count} SOURCES"),
+                ))
+                .size(10.5)
+                .color(TEXT_DIM),
+            );
         });
         ui.add_space(2.0);
 
@@ -175,7 +182,11 @@ impl StudioShell {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let Some(view) = state.view.as_ref() else {
-                    ui.label(RichText::new("INPUT STATE UNAVAILABLE").color(MUTED));
+                    crate::theme::empty_state(
+                        ui,
+                        "No input state",
+                        "Sources appear once project state is synchronized.",
+                    );
                     return;
                 };
                 let spacing = 8.0;
@@ -393,8 +404,10 @@ impl StudioShell {
             preview: enabled,
             transition: cut_enabled,
         };
-        ui.set_min_width(210.0);
-        ui.label(section_label(name));
+        ui.set_min_width(230.0);
+        ui.set_max_width(260.0);
+        draw_tile_menu_header(ui, index, name, tile.tally);
+        ui.separator();
         let item = |ui: &mut Ui, enabled: bool, label: &str, shortcut: &str, reason: &str| {
             let mut button = egui::Button::new(label);
             if !shortcut.is_empty() {
@@ -449,6 +462,24 @@ impl StudioShell {
             intents.push(StudioIntent::MoveInput {
                 input,
                 direction: InputMoveDirection::Down,
+            });
+        }
+        let notes = tile_menu_notes(
+            TileGates {
+                preview: enabled,
+                transition: cut_enabled,
+            },
+            reorder_enabled,
+            reasons,
+        );
+        if !notes.is_empty() {
+            ui.separator();
+            // A left-aligned layout so the menu's justified layout does not
+            // stretch the wrapped words apart.
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                for note in notes {
+                    ui.add(egui::Label::new(RichText::new(note).size(10.5).color(MUTED)).wrap());
+                }
             });
         }
     }
@@ -522,12 +553,63 @@ impl StudioShell {
     }
 }
 
+/// Menu header: the input's key, its name (ellipsized), and its tally role.
+fn draw_tile_menu_header(ui: &mut Ui, index: usize, name: &str, tally: crate::TallyState) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (key, _) = ui.allocate_exact_size(Vec2::new(18.0, 18.0), Sense::hover());
+        ui.painter()
+            .rect_filled(key, CornerRadius::same(3), GRAPHITE_RAISED);
+        ui.painter().rect_stroke(
+            key,
+            CornerRadius::same(3),
+            Stroke::new(1.0, BORDER_STRONG),
+            StrokeKind::Inside,
+        );
+        ui.painter().text(
+            key.center(),
+            Align2::CENTER_CENTER,
+            format!("{}", index + 1),
+            FontId::new(10.5, FontFamily::Monospace),
+            TEXT_DIM,
+        );
+        let badge = tally_badge(tally);
+        let name_width = ui.available_width() - if badge.is_some() { 48.0 } else { 0.0 };
+        ui.scope(|ui| {
+            ui.set_max_width(name_width.max(60.0));
+            ui.add(
+                egui::Label::new(RichText::new(name).size(13.0).strong().color(TEXT)).truncate(),
+            );
+        });
+        if let Some(badge) = badge {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                pill(ui, badge, tally_color(tally), true).on_hover_text(tally.operator_label());
+            });
+        }
+    });
+}
+
+/// One muted line per disabled action group, so a greyed-out menu item is
+/// explained without hovering it.
+pub(crate) fn tile_menu_notes(gates: TileGates, edit: bool, reasons: TileReasons) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !gates.preview {
+        notes.push(format!("Preview and Cut unavailable: {}", reasons.preview));
+    } else if !gates.transition {
+        notes.push(format!("Cut unavailable: {}", reasons.cut));
+    }
+    if !edit {
+        notes.push(format!("Rename and Move unavailable: {}", reasons.edit));
+    }
+    notes
+}
+
 /// Why each tile action is unavailable, when it is.
 #[derive(Clone, Copy)]
-struct TileReasons {
-    preview: &'static str,
-    cut: &'static str,
-    edit: &'static str,
+pub(crate) struct TileReasons {
+    pub(crate) preview: &'static str,
+    pub(crate) cut: &'static str,
+    pub(crate) edit: &'static str,
 }
 
 #[derive(Clone, Copy)]
@@ -694,15 +776,19 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             GRAPHITE_RAISED
         },
     );
-    let name_galley = painter.layout(
-        name.to_owned(),
+    // One line, ending in an ellipsis; the tile tooltip carries the full name.
+    let name_galley = elided(
+        &painter,
+        name,
         FontId::new(12.0, FontFamily::Proportional),
         TEXT,
         name_bar.width() - 12.0,
     );
-    let name_rows_clip = painter.with_clip_rect(name_bar.shrink2(Vec2::new(6.0, 2.0)));
-    name_rows_clip.galley(
-        pos2(name_bar.min.x + 6.0, name_bar.center().y - 7.5),
+    painter.galley(
+        pos2(
+            name_bar.min.x + 6.0,
+            name_bar.center().y - name_galley.size().y / 2.0,
+        ),
         name_galley,
         TEXT,
     );
@@ -739,6 +825,44 @@ mod tests {
     use core::num::NonZeroU128;
 
     use super::*;
+
+    #[test]
+    fn tile_menu_notes_explain_each_disabled_group_once() {
+        let reasons = TileReasons {
+            preview: "no preview permission",
+            cut: "a manual T-bar transition is in progress",
+            edit: "this session lacks the edit_project permission",
+        };
+        let open = TileGates {
+            preview: true,
+            transition: true,
+        };
+        assert_eq!(tile_menu_notes(open, true, reasons), Vec::<String>::new());
+        assert_eq!(
+            tile_menu_notes(open, false, reasons),
+            ["Rename and Move unavailable: this session lacks the edit_project permission"]
+        );
+        let no_cut = TileGates {
+            transition: false,
+            ..open
+        };
+        assert_eq!(
+            tile_menu_notes(no_cut, true, reasons),
+            ["Cut unavailable: a manual T-bar transition is in progress"]
+        );
+        // Without Preview selection, Cut is covered by the same note.
+        let closed = TileGates {
+            preview: false,
+            transition: false,
+        };
+        assert_eq!(
+            tile_menu_notes(closed, false, reasons),
+            [
+                "Preview and Cut unavailable: no preview permission",
+                "Rename and Move unavailable: this session lacks the edit_project permission",
+            ]
+        );
+    }
 
     #[test]
     fn tile_gestures_respect_preview_and_transition_gates() {

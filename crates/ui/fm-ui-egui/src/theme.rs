@@ -222,6 +222,136 @@ pub(crate) fn status_dot(ui: &mut Ui, color: Color32) {
     ui.painter().circle_filled(rect.center(), 4.0, color);
 }
 
+/// Operator meaning of a status lamp or chip. Every status surface maps its
+/// state onto one tone so red, green, and amber mean the same thing console-wide.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Tone {
+    /// Off, idle, or unknown.
+    Idle,
+    /// Configured and ready (green).
+    Ready,
+    /// On air: recording, streaming live, or keyed over Program (red).
+    OnAir,
+    /// Requested but not yet realized, or degraded (amber).
+    Pending,
+    /// Failed or missing (error red).
+    Fault,
+}
+
+impl Tone {
+    pub(crate) const fn color(self) -> Color32 {
+        match self {
+            Self::Idle => MUTED,
+            Self::Ready => PREVIEW,
+            Self::OnAir => PROGRAM,
+            Self::Pending => AMBER,
+            Self::Fault => ERROR,
+        }
+    }
+
+    /// Whether the lamp is lit (filled) rather than an unlit outline.
+    pub(crate) const fn lit(self) -> bool {
+        !matches!(self, Self::Idle)
+    }
+}
+
+/// A round status lamp: lit tones glow, idle lamps are an unlit outline.
+pub(crate) fn paint_lamp(painter: &egui::Painter, center: egui::Pos2, radius: f32, tone: Tone) {
+    let color = tone.color();
+    if tone.lit() {
+        painter.circle_filled(center, radius + 2.5, color.gamma_multiply(0.22));
+        painter.circle_filled(center, radius, color);
+    } else {
+        painter.circle_filled(center, radius, MONITOR_BLACK);
+        painter.circle_stroke(center, radius, Stroke::new(1.0, BORDER_STRONG));
+    }
+}
+
+/// A fixed-width status chip so stacked rows keep their columns aligned.
+pub(crate) fn status_chip(ui: &mut Ui, text: &str, tone: Tone, width: f32) -> Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        status_chip_painted(ui.painter(), rect, text, tone);
+    }
+    response
+}
+
+/// Paints a status chip into `rect`: solid red when on air, tinted otherwise.
+pub(crate) fn status_chip_painted(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    text: &str,
+    tone: Tone,
+) {
+    let color = tone.color();
+    let solid = tone == Tone::OnAir;
+    painter.rect_filled(
+        rect,
+        CornerRadius::same(3),
+        if solid {
+            color
+        } else {
+            color.gamma_multiply(0.14)
+        },
+    );
+    if !solid {
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(3),
+            Stroke::new(1.0, color.gamma_multiply(0.5)),
+            StrokeKind::Inside,
+        );
+    }
+    let text_color = if solid { Color32::WHITE } else { color };
+    let galley = elided(
+        painter,
+        text,
+        FontId::new(9.5, FontFamily::Proportional),
+        text_color,
+        rect.width() - 8.0,
+    );
+    painter.galley(rect.center() - galley.size() / 2.0, galley, text_color);
+}
+
+/// Lays out one line of text, ending in `…` when it exceeds `max_width`.
+pub(crate) fn elided(
+    painter: &egui::Painter,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(1.0));
+    painter.layout_job(job)
+}
+
+/// Shortens `text` to at most `max_chars` characters, ending in `…` when cut.
+/// Used where the width is not known in pixels, such as menu labels.
+pub(crate) fn ellipsize(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// A centered empty-state message for a region with no replicated data:
+/// a title in dim caps and one muted line saying why.
+pub(crate) fn empty_state(ui: &mut Ui, title: &str, detail: &str) {
+    ui.add_space((ui.available_height() * 0.3).clamp(12.0, 120.0));
+    ui.vertical_centered(|ui| {
+        ui.label(
+            RichText::new(title.to_uppercase())
+                .size(11.0)
+                .strong()
+                .extra_letter_spacing(1.0)
+                .color(TEXT_DIM),
+        );
+        ui.add(egui::Label::new(RichText::new(detail).size(10.5).color(MUTED)).wrap());
+    });
+}
+
 /// Large square console button used by the transition column.
 pub(crate) fn console_button(
     text: &str,
@@ -289,5 +419,31 @@ pub(crate) const fn tally_badge(tally: TallyState) -> Option<&'static str> {
         Some("PVW…")
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ellipsize_keeps_short_text_and_cuts_long_text_on_characters() {
+        assert_eq!(ellipsize("Camera 1", 12), "Camera 1");
+        assert_eq!(ellipsize("Camera 1 Wide", 13), "Camera 1 Wide");
+        assert_eq!(ellipsize("Camera 1 Wide", 9), "Camera 1…");
+        // Multi-byte names are cut on characters, never inside a code point.
+        assert_eq!(ellipsize("Kamera Größe Süd", 8), "Kamera…");
+        assert_eq!(ellipsize("Ünïcödé", 3), "Ün…");
+    }
+
+    #[test]
+    fn tones_map_to_the_console_palette() {
+        assert_eq!(Tone::OnAir.color(), PROGRAM);
+        assert_eq!(Tone::Ready.color(), PREVIEW);
+        assert_eq!(Tone::Pending.color(), AMBER);
+        assert_eq!(Tone::Fault.color(), ERROR);
+        assert_eq!(Tone::Idle.color(), MUTED);
+        assert!(!Tone::Idle.lit());
+        assert!(Tone::OnAir.lit() && Tone::Pending.lit());
     }
 }

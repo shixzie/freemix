@@ -139,10 +139,10 @@ pub(crate) fn draw_mixer(
     ballistics.begin_frame(state.audio_meters.as_ref().map(|meters| meters.sequence));
     let Some(view) = &state.view else {
         ballistics.retain(|_| false);
-        ui.label(
-            RichText::new("INPUT AUDIO UNAVAILABLE")
-                .size(11.0)
-                .color(MUTED),
+        crate::theme::empty_state(
+            ui,
+            "No audio state",
+            "Channel strips appear once project state is synchronized.",
         );
         return;
     };

@@ -13,8 +13,11 @@ use fm_types::InputId;
 use fm_ui_model::{ClientView, StingerStatus};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
-use crate::panels::{stinger_slot_presentation, stinger_slot_state};
-use crate::theme::{BORDER_STRONG, MUTED, TEXT, TEXT_DIM, WIDGET, mono, section_label};
+use crate::panels::{stinger_slot_presentation, stinger_slot_state, stinger_slot_tone};
+use crate::theme::{
+    ACCENT, ACCENT_FILL, BORDER_STRONG, MUTED, TEXT, TEXT_DIM, WIDGET, card, mono, section_label,
+    status_chip,
+};
 use crate::{StudioIntent, StudioUiState, TransitionGate, transition_availability};
 
 /// Number of Stinger slots the protocol addresses.
@@ -194,7 +197,56 @@ fn draw_stinger_pickers(
     });
 }
 
+/// Labelled facts about one slot for the Configure section: the replicated
+/// settings of a configured slot, or the defaults ASSIGN applies to an empty one.
+pub(crate) fn stinger_details(
+    view: &ClientView,
+    slot: u8,
+    duration_frames: u32,
+) -> [(&'static str, String); 4] {
+    let Some(status) = configured_stinger(view, slot) else {
+        return [
+            (
+                "Cut point",
+                format!(
+                    "{} fr (default)",
+                    default_stinger_cut_point_frames(duration_frames)
+                ),
+            ),
+            ("Preload", "yes (default)".to_owned()),
+            ("Audio", "mixed with Program (default)".to_owned()),
+            ("Fallback", "cut (default)".to_owned()),
+        ];
+    };
+    [
+        ("Cut point", format!("{} fr", status.cut_point_frames)),
+        (
+            "Preload",
+            if status.preload { "yes" } else { "no" }.to_owned(),
+        ),
+        (
+            "Audio",
+            match status.audio_policy {
+                StingerAudioPolicy::Muted => "muted",
+                StingerAudioPolicy::StingerOnly => "stinger only",
+                StingerAudioPolicy::MixWithProgram => "mixed with Program",
+            }
+            .to_owned(),
+        ),
+        (
+            "Fallback",
+            match status.missing_media_fallback {
+                StingerMissingMediaFallback::Cut => "cut",
+                StingerMissingMediaFallback::Fade => "fade",
+                StingerMissingMediaFallback::KeepProgram => "keep Program",
+            }
+            .to_owned(),
+        ),
+    ]
+}
+
 /// Draws the slot/media pickers with Assign and Clear keys.
+#[allow(clippy::too_many_lines)] // one immediate-mode card
 pub(crate) fn draw_stinger_configuration(
     ui: &mut Ui,
     state: &StudioUiState,
@@ -203,78 +255,110 @@ pub(crate) fn draw_stinger_configuration(
     intents: &mut Vec<StudioIntent>,
 ) {
     ui.add_space(8.0);
-    ui.label(section_label("Configure slot"));
-    ui.add_space(2.0);
     let reason = unavailable_reason(state, Capability::Transition);
-    let Some(view) = &state.view else {
-        ui.label(
-            RichText::new("STINGER STATE UNAVAILABLE")
-                .size(10.5)
-                .color(MUTED),
-        )
-        .on_hover_text(reason);
-        return;
-    };
     editor.slot = editor.slot.clamp(1, STINGER_SLOT_COUNT);
-    let media = stinger_editor_media(view, *editor);
-    draw_stinger_pickers(ui, view, editor, media);
-    let slot = WireStingerSlotId::new(editor.slot).expect("the editor clamps slots to 1 through 8");
-    let assign = media.and_then(|media| stinger_assign_intent(state, slot, media, duration_frames));
-    let remove = stinger_remove_intent(state, slot);
-    let session_ok = stinger_configuration_available(state);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let width = ((ui.available_width() - 8.0) / 2.0).max(80.0);
-        let key = |label: &str| {
-            Button::new(RichText::new(label).size(11.0).strong().color(TEXT))
-                .fill(WIDGET)
-                .stroke(Stroke::new(1.0, BORDER_STRONG))
-                .min_size(Vec2::new(width, 24.0))
-        };
-        let assign_text = media.map_or_else(
-            || format!("Assign media to Stinger slot {}", editor.slot),
-            |media| {
-                format!(
-                    "Assign \"{}\" as Stinger slot {} media (other slot settings are kept)",
-                    input_name(view, media),
-                    editor.slot
+    let stingers = state.view.as_ref().map(|view| view.stingers.as_slice());
+    let slot_state = stinger_slot_state(stingers, editor.slot);
+    card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.horizontal(|ui| {
+            ui.label(section_label(&format!("Configure S{}", editor.slot)));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                status_chip(
+                    ui,
+                    stinger_slot_presentation(slot_state).label,
+                    stinger_slot_tone(slot_state),
+                    104.0,
                 )
-            },
-        );
-        if ui
-            .add_enabled(assign.is_some(), key("ASSIGN"))
-            .hint(
-                &assign_text,
-                if session_ok {
-                    "choose a media input"
-                } else {
-                    reason
-                },
+                .on_hover_text("Replicated readiness of the selected slot");
+            });
+        });
+        let Some(view) = &state.view else {
+            ui.label(
+                RichText::new("Stinger state not synchronized")
+                    .size(11.0)
+                    .color(MUTED),
             )
-            .clicked()
-            && let Some(intent) = assign.clone()
-        {
-            intents.push(intent);
-        }
-        if ui
-            .add_enabled(remove.is_some(), key("CLEAR"))
-            .hint(
-                &format!("Clear Stinger slot {}", editor.slot),
-                if session_ok {
-                    "this Stinger slot is not configured"
-                } else {
-                    reason
+            .on_hover_text(reason);
+            return;
+        };
+        let media = stinger_editor_media(view, *editor);
+        draw_stinger_pickers(ui, view, editor, media);
+        let slot =
+            WireStingerSlotId::new(editor.slot).expect("the editor clamps slots to 1 through 8");
+        let assign =
+            media.and_then(|media| stinger_assign_intent(state, slot, media, duration_frames));
+        let remove = stinger_remove_intent(state, slot);
+        let session_ok = stinger_configuration_available(state);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let width = ((ui.available_width() - 6.0) / 2.0).floor().max(80.0);
+            let key = |label: &str, primary: bool| {
+                Button::new(RichText::new(label).size(11.0).strong().color(TEXT))
+                    .fill(if primary { ACCENT_FILL } else { WIDGET })
+                    .stroke(Stroke::new(
+                        1.0,
+                        if primary {
+                            ACCENT.gamma_multiply(0.6)
+                        } else {
+                            BORDER_STRONG
+                        },
+                    ))
+                    .min_size(Vec2::new(width, 24.0))
+            };
+            let assign_text = media.map_or_else(
+                || format!("Assign media to Stinger slot {}", editor.slot),
+                |media| {
+                    format!(
+                        "Assign \"{}\" as Stinger slot {} media (other slot settings are kept)",
+                        input_name(view, media),
+                        editor.slot
+                    )
                 },
-            )
-            .clicked()
-            && let Some(intent) = remove.clone()
-        {
-            intents.push(intent);
-        }
+            );
+            if ui
+                .add_enabled(assign.is_some(), key("ASSIGN", true))
+                .hint(
+                    &assign_text,
+                    if session_ok {
+                        "choose a media input"
+                    } else {
+                        reason
+                    },
+                )
+                .clicked()
+                && let Some(intent) = assign.clone()
+            {
+                intents.push(intent);
+            }
+            if ui
+                .add_enabled(remove.is_some(), key("CLEAR", false))
+                .hint(
+                    &format!("Clear Stinger slot {}", editor.slot),
+                    if session_ok {
+                        "this Stinger slot is not configured"
+                    } else {
+                        reason
+                    },
+                )
+                .clicked()
+                && let Some(intent) = remove.clone()
+            {
+                intents.push(intent);
+            }
+        });
+        egui::Grid::new("studio-stinger-details")
+            .num_columns(2)
+            .spacing(Vec2::new(12.0, 3.0))
+            .show(ui, |ui| {
+                for (label, value) in stinger_details(view, editor.slot, duration_frames) {
+                    ui.label(RichText::new(label).size(10.5).color(MUTED));
+                    ui.label(RichText::new(value).size(10.5).color(TEXT_DIM));
+                    ui.end_row();
+                }
+            })
+            .response
+            .on_hover_text(stinger_summary(view, editor.slot));
     });
-    ui.label(
-        mono(stinger_summary(view, editor.slot))
-            .size(10.0)
-            .color(TEXT_DIM),
-    );
 }

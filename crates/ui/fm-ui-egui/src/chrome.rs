@@ -74,13 +74,33 @@ pub(crate) fn draw_top_bar(ui: &mut Ui, state: &StudioUiState) {
                 .color(MUTED),
         );
         divider(ui);
-        let show_name = state
-            .view
-            .as_ref()
-            .map(|view| view.show_name.as_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("FreeMix Studio");
-        ui.label(RichText::new(show_name).size(15.0).strong().color(TEXT));
+        match state.view.as_ref().map(|view| view.show_name.as_str()) {
+            Some(name) => {
+                let name = if name.is_empty() {
+                    "Untitled show"
+                } else {
+                    name
+                };
+                // Long show names end in an ellipsis (full name on hover)
+                // so the on-air badges and clock keep their place.
+                let max_width = (ui.available_width() * 0.35).max(120.0);
+                ui.scope(|ui| {
+                    ui.set_max_width(max_width);
+                    ui.add(
+                        egui::Label::new(RichText::new(name).size(15.0).strong().color(TEXT))
+                            .truncate(),
+                    );
+                });
+            }
+            None => {
+                ui.label(
+                    RichText::new("No synchronized show")
+                        .size(15.0)
+                        .color(MUTED),
+                )
+                .on_hover_text("The show name appears once project state is synchronized");
+            }
+        }
         let status = state.connection_status;
         pill(ui, status.operator_label(), connection_color(status), false)
             .on_hover_text("Control connection lifecycle");

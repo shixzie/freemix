@@ -7,20 +7,26 @@
 //! View items only change local layout state.
 
 use egui::{Button, RichText, Ui, Vec2};
-use fm_protocol::{WireRecorderSlot, WireStingerSlotId};
+use fm_protocol::{WireRecorderSlot, WireStingerSlotId, WireStreamTargetId};
 use fm_types::InputId;
 
 use crate::gating::{Capability, unavailable_reason};
 use crate::input_bank::project_editing_available;
+use crate::outputs::{recorder_row, stream_row};
 use crate::panels::SideTab;
+use crate::panels::{
+    latest_stream_sample, stinger_slot_presentation, stinger_slot_state, stinger_slot_tone,
+};
 use crate::stream_control::{stream_action_text, stream_unavailable_reason};
-use crate::theme::{ACCENT, MUTED, TEXT, TEXT_DIM, mono, section_label};
+use crate::theme::{
+    ACCENT, MUTED, TEXT, TEXT_DIM, Tone, ellipsize, mono, paint_lamp, section_label,
+};
 use crate::{
     InputMoveDirection, ManualTransitionAvailability, RECORDER_SLOT_COUNT, RecordingAction,
     RenameDraft, STUDIO_SHORTCUTS, ShortcutGroup, StreamAction, StudioIntent, StudioShell,
     StudioUiState, TransitionGate, fade_to_black, preview_selection_available, recording_action,
     stinger_assign_intent, stinger_configuration_available, stinger_remove_intent, stream_action,
-    transition_availability,
+    stream_command_pending, transition_availability,
 };
 
 /// Which console regions are visible; stored in the shell between frames.
@@ -54,6 +60,43 @@ fn item(ui: &mut Ui, enabled: bool, label: &str, shortcut: Option<&str>, reason:
         .on_disabled_hover_text(format!("Unavailable: {reason}"))
         .clicked()
 }
+
+/// A menu entry whose right column shows the target's live status in its
+/// tone colour instead of a shortcut (for example `RECORDING` in red).
+fn status_item(
+    ui: &mut Ui,
+    enabled: bool,
+    label: &str,
+    (status, tone): (&str, Tone),
+    hover: &str,
+    reason: &str,
+) -> bool {
+    let button = Button::new(label).shortcut_text(
+        RichText::new(status)
+            .size(10.0)
+            .strong()
+            .color(tone.color()),
+    );
+    ui.add_enabled(enabled, button)
+        .on_hover_text(hover)
+        .on_disabled_hover_text(format!("{hover}\nUnavailable: {reason}"))
+        .clicked()
+}
+
+/// Replicated readiness label and tone of one Stinger slot.
+fn slot_status(state: &StudioUiState, slot: u8) -> (&'static str, Tone) {
+    let slot_state = stinger_slot_state(
+        state.view.as_ref().map(|view| view.stingers.as_slice()),
+        slot,
+    );
+    (
+        stinger_slot_presentation(slot_state).label,
+        stinger_slot_tone(slot_state),
+    )
+}
+
+/// Longest menu label, in characters, before it ends in an ellipsis.
+const MENU_LABEL_CHARS: usize = 32;
 
 fn heading(ui: &mut Ui, text: &str) {
     ui.add_space(2.0);
@@ -95,7 +138,8 @@ impl StudioShell {
         match &state.view {
             Some(view) => {
                 heading(ui, "Show");
-                ui.label(RichText::new(&view.show_name).color(TEXT));
+                ui.label(RichText::new(ellipsize(&view.show_name, MENU_LABEL_CHARS)).color(TEXT))
+                    .on_hover_text(&view.show_name);
                 ui.label(
                     mono(format!(
                         "Revision {} · {} inputs",
@@ -139,8 +183,11 @@ impl StudioShell {
                 .map(|view| view.input_names[index].clone())
         });
         ui.label(
-            RichText::new(name.clone().unwrap_or_else(|| "none".to_owned()))
-                .color(if name.is_some() { TEXT } else { MUTED }),
+            RichText::new(name.as_deref().map_or_else(
+                || "none".to_owned(),
+                |name| ellipsize(name, MENU_LABEL_CHARS),
+            ))
+            .color(if name.is_some() { TEXT } else { MUTED }),
         );
         let no_preview = "no input is selected on Preview";
         if item(
@@ -243,7 +290,7 @@ impl StudioShell {
         heading(ui, "Select on Preview");
         for (index, (input, name)) in view.inputs.iter().zip(&view.input_names).enumerate() {
             let shortcut = (index < 8).then(|| format!("{}", index + 1));
-            let label = format!("{:>2}  {name}", index + 1);
+            let label = format!("{:>2}  {}", index + 1, ellipsize(name, MENU_LABEL_CHARS));
             if item(ui, preview, &label, shortcut.as_deref(), preview_reason) {
                 intents.push(StudioIntent::SelectPreview(*input));
             }
@@ -256,7 +303,7 @@ impl StudioShell {
                     if item(
                         ui,
                         cut,
-                        &format!("{:>2}  {name}", index + 1),
+                        &format!("{:>2}  {}", index + 1, ellipsize(name, MENU_LABEL_CHARS)),
                         None,
                         cut_reason,
                     ) {
@@ -390,15 +437,23 @@ impl StudioShell {
                 if desired { "Stop" } else { "Start" },
                 index + 1
             );
+            let pending = index < RECORDER_SLOT_COUNT && state.recording_pending[index];
             let slot_reason = if !session_ok {
                 reason
-            } else if index < RECORDER_SLOT_COUNT && state.recording_pending[index] {
+            } else if pending {
                 "an earlier recording command is still pending"
             } else {
                 "the current state does not allow it"
             };
-            if item(ui, allowed.is_some(), &label, None, slot_reason)
-                && let Some(action) = allowed
+            let row = recorder_row(state.view.is_some(), desired, pending);
+            if status_item(
+                ui,
+                allowed.is_some(),
+                &label,
+                (row.status, row.tone),
+                &format!("{label}: Program recorder slot {}", index + 1),
+                slot_reason,
+            ) && let Some(action) = allowed
             {
                 intents.push(StudioIntent::Recording(action));
             }
@@ -419,17 +474,21 @@ impl StudioShell {
             let label = format!(
                 "{} {}",
                 if requested.starts() { "Start" } else { "Stop" },
-                stream.name
+                ellipsize(&stream.name, MENU_LABEL_CHARS)
             );
-            if ui
-                .add_enabled(allowed.is_some(), Button::new(label))
-                .on_hover_text(stream_action_text(requested, &stream.name))
-                .on_disabled_hover_text(format!(
-                    "Unavailable: {}",
-                    stream_unavailable_reason(state, stream)
-                ))
-                .clicked()
-                && let Some(action) = allowed
+            let row = stream_row(
+                stream,
+                latest_stream_sample(state.stream_status.as_ref(), stream.target),
+                stream_command_pending(state, WireStreamTargetId::new(stream.target)),
+            );
+            if status_item(
+                ui,
+                allowed.is_some(),
+                &label,
+                (row.status, row.tone),
+                &stream_action_text(requested, &stream.name),
+                stream_unavailable_reason(state, stream),
+            ) && let Some(action) = allowed
             {
                 intents.push(StudioIntent::Stream(action));
             }
@@ -463,11 +522,12 @@ impl StudioShell {
                     let intent = preview.and_then(|preview| {
                         stinger_assign_intent(state, slot, preview, duration_frames)
                     });
-                    if item(
+                    if status_item(
                         ui,
                         intent.is_some(),
                         &format!("Slot S{number}"),
-                        None,
+                        slot_status(state, number),
+                        &format!("Assign the Preview input as Stinger S{number} media"),
                         assign_reason,
                     ) && let Some(intent) = intent
                     {
@@ -494,11 +554,12 @@ impl StudioShell {
                     let slot =
                         WireStingerSlotId::new(number).expect("Studio lists slots 1 through 8");
                     let intent = stinger_remove_intent(state, slot);
-                    if item(
+                    if status_item(
                         ui,
                         intent.is_some(),
                         &format!("Slot S{number}"),
-                        None,
+                        slot_status(state, number),
+                        &format!("Clear Stinger S{number}"),
                         "this Stinger slot is not configured",
                     ) && let Some(intent) = intent
                     {
@@ -530,33 +591,44 @@ impl StudioShell {
     }
 
     /// Draws the Help dialogs when open.
-    pub(crate) fn draw_help_windows(&mut self, context: &egui::Context) {
+    pub(crate) fn draw_help_windows(&mut self, context: &egui::Context, state: &StudioUiState) {
         if self.show_shortcuts {
+            let (status, tone) = shortcut_status(state);
             let response = help_modal(
                 context,
                 "studio-shortcuts-window",
                 "Keyboard shortcuts",
-                470.0,
+                500.0,
                 |ui| {
+                    ui.horizontal(|ui| {
+                        let (lamp, _) =
+                            ui.allocate_exact_size(Vec2::new(12.0, 12.0), egui::Sense::hover());
+                        paint_lamp(ui.painter(), lamp.center(), 4.0, tone);
+                        ui.label(
+                            RichText::new(status)
+                                .size(11.5)
+                                .strong()
+                                .color(tone.color()),
+                        );
+                    });
                     ui.label(
-                    RichText::new(
-                        "Keys act only while the console is ready, no text field has focus, and the session holds the matching permission.",
-                    )
-                    .size(11.0)
-                    .color(TEXT_DIM),
-                );
+                        RichText::new(
+                            "Keys act only while the console is ready, no text field has focus, and the session holds the matching permission.",
+                        )
+                        .size(11.0)
+                        .color(TEXT_DIM),
+                    );
                     for group in [
                         ShortcutGroup::Switching,
                         ShortcutGroup::Transitions,
                         ShortcutGroup::InputBank,
                     ] {
-                        ui.add_space(8.0);
+                        ui.add_space(10.0);
                         ui.label(section_label(group.title()));
                         ui.add_space(2.0);
                         egui::Grid::new(("studio-shortcuts", group.title()))
                             .num_columns(2)
-                            .spacing(Vec2::new(18.0, 6.0))
-                            .min_col_width(120.0)
+                            .spacing(Vec2::new(16.0, 6.0))
                             .show(ui, |ui| {
                                 for entry in
                                     STUDIO_SHORTCUTS.iter().filter(|entry| entry.group == group)
@@ -567,6 +639,13 @@ impl StudioShell {
                                 }
                             });
                     }
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.label(
+                        RichText::new("Esc or a click outside closes this reference")
+                            .size(10.5)
+                            .color(MUTED),
+                    );
                 },
             );
             if response {
@@ -651,14 +730,87 @@ fn help_modal(
     close || response.should_close()
 }
 
-/// A key-cap styled label such as `C` or `1 – 8`.
+/// A fixed-width key cap such as `C` or `1 – 8`, so the action column aligns.
 fn key_cap(ui: &mut Ui, keys: &str) {
-    egui::Frame::new()
-        .fill(crate::theme::WIDGET)
-        .stroke(egui::Stroke::new(1.0, crate::theme::BORDER_STRONG))
-        .corner_radius(egui::CornerRadius::same(3))
-        .inner_margin(egui::Margin::symmetric(7, 2))
-        .show(ui, |ui| {
-            ui.label(mono(keys).size(11.5).color(TEXT));
-        });
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(104.0, 22.0), egui::Sense::hover());
+    let painter = ui.painter();
+    let cap = egui::Rect::from_min_size(
+        rect.min,
+        Vec2::new(
+            (painter
+                .layout_no_wrap(
+                    keys.to_owned(),
+                    egui::FontId::new(11.5, egui::FontFamily::Monospace),
+                    TEXT,
+                )
+                .size()
+                .x
+                + 16.0)
+                .clamp(28.0, rect.width()),
+            rect.height(),
+        ),
+    );
+    painter.rect_filled(cap, egui::CornerRadius::same(3), crate::theme::WIDGET);
+    // A darker bottom lip reads as a physical key.
+    painter.rect_filled(
+        egui::Rect::from_min_max(egui::pos2(cap.min.x, cap.max.y - 2.0), cap.max),
+        egui::CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: 3,
+            se: 3,
+        },
+        crate::theme::GRAPHITE,
+    );
+    painter.rect_stroke(
+        cap,
+        egui::CornerRadius::same(3),
+        egui::Stroke::new(1.0, crate::theme::BORDER_STRONG),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        cap.center() - Vec2::new(0.0, 1.0),
+        egui::Align2::CENTER_CENTER,
+        keys,
+        egui::FontId::new(11.5, egui::FontFamily::Monospace),
+        TEXT,
+    );
+}
+
+/// Whether the global keys currently act, and why not when they do not.
+pub(crate) fn shortcut_status(state: &StudioUiState) -> (String, Tone) {
+    if state.connection_status.controls_enabled() && state.view.is_some() {
+        ("Keys active".to_owned(), Tone::Ready)
+    } else {
+        (
+            format!(
+                "Keys inactive: {}",
+                unavailable_reason(state, Capability::Transition)
+            ),
+            Tone::Pending,
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::StudioConnectionStatus;
+
+    #[test]
+    fn shortcut_status_reports_why_keys_are_inactive() {
+        let state = StudioUiState::new(StudioConnectionStatus::Backoff);
+        assert_eq!(
+            shortcut_status(&state),
+            (
+                "Keys inactive: the control connection is not ready yet".to_owned(),
+                Tone::Pending
+            )
+        );
+        let state = StudioUiState::new(StudioConnectionStatus::Ready);
+        assert_eq!(
+            shortcut_status(&state).0,
+            "Keys inactive: project state is not synchronized yet"
+        );
+    }
 }

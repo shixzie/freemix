@@ -24,7 +24,13 @@ pub(crate) struct ConnectionCard {
     pub(crate) title: String,
     pub(crate) detail: String,
     pub(crate) tone: CardTone,
+    /// The last connection error while retrying, when one is known.
+    pub(crate) last_error: Option<String>,
 }
+
+/// What every card states about the console's controls.
+pub(crate) const CONTROLS_DISABLED: &str =
+    "Switching, audio, and output controls are disabled until the console is ready.";
 
 /// Formats a millisecond delay as seconds with one decimal.
 fn format_delay(delay_ms: u64) -> String {
@@ -33,11 +39,17 @@ fn format_delay(delay_ms: u64) -> String {
 
 /// Returns the card to show, or `None` when the console is Ready with state.
 pub(crate) fn connection_card(state: &StudioUiState) -> Option<ConnectionCard> {
+    // A terminal failure already shows its error as the detail.
+    let last_error = match state.connection_status {
+        StudioConnectionStatus::Failed => None,
+        _ => state.error.clone(),
+    };
     let card = |title: &str, detail: String, tone| {
         Some(ConnectionCard {
             title: title.to_owned(),
             detail,
             tone,
+            last_error: last_error.clone(),
         })
     };
     match state.connection_status {
@@ -94,6 +106,7 @@ pub(crate) fn connection_card(state: &StudioUiState) -> Option<ConnectionCard> {
 }
 
 /// Paints the card centered in `area` on a foreground layer.
+#[allow(clippy::too_many_lines)] // one painter pass for the whole card
 pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) {
     let color = match card.tone {
         CardTone::Busy => AMBER,
@@ -105,14 +118,31 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
         egui::Id::new("studio-connection-card"),
     ));
     let painter = painter.with_clip_rect(area);
-    let width = area.width().clamp(240.0, 460.0);
+    let width = area.width().clamp(240.0, 480.0);
     let detail = painter.layout(
         card.detail.clone(),
         FontId::new(12.5, FontFamily::Proportional),
         TEXT_DIM,
         width - 48.0,
     );
-    let height = 78.0 + detail.size().y;
+    let error = card.last_error.as_ref().map(|error| {
+        let mut job = egui::text::LayoutJob::simple(
+            format!("Last error: {error}"),
+            FontId::new(11.0, FontFamily::Monospace),
+            ERROR,
+            width - 48.0,
+        );
+        job.wrap.max_rows = 3;
+        painter.layout_job(job)
+    });
+    let footer = painter.layout(
+        CONTROLS_DISABLED.to_owned(),
+        FontId::new(11.0, FontFamily::Proportional),
+        MUTED,
+        width - 48.0,
+    );
+    let error_height = error.as_ref().map_or(0.0, |error| error.size().y + 10.0);
+    let height = 92.0 + detail.size().y + error_height + footer.size().y;
     let rect = Rect::from_center_size(area.center(), Vec2::new(width, height));
     // Dim the wells behind so the card reads as modal state, not content.
     painter.rect_filled(area, CornerRadius::same(4), Color32::from_black_alpha(110));
@@ -165,7 +195,25 @@ pub(crate) fn paint_connection_card(ui: &Ui, area: Rect, card: &ConnectionCard) 
         FontId::new(18.0, FontFamily::Proportional),
         TEXT,
     );
-    painter.galley(pos2(rect.min.x + 24.0, title_y + 22.0), detail, TEXT_DIM);
+    let mut y = title_y + 22.0;
+    let detail_height = detail.size().y;
+    painter.galley(pos2(rect.min.x + 24.0, y), detail, TEXT_DIM);
+    y += detail_height + 10.0;
+    if let Some(error) = error {
+        let box_rect = Rect::from_min_size(
+            pos2(rect.min.x + 18.0, y - 4.0),
+            Vec2::new(width - 36.0, error.size().y + 8.0),
+        );
+        painter.rect_filled(box_rect, CornerRadius::same(4), ERROR.gamma_multiply(0.08));
+        let error_height = error.size().y;
+        painter.galley(pos2(rect.min.x + 24.0, y), error, ERROR);
+        y += error_height + 10.0;
+    }
+    painter.line_segment(
+        [pos2(rect.min.x + 18.0, y), pos2(rect.max.x - 18.0, y)],
+        Stroke::new(1.0, BORDER_STRONG.gamma_multiply(0.6)),
+    );
+    painter.galley(pos2(rect.min.x + 24.0, y + 8.0), footer, MUTED);
 }
 
 #[cfg(test)]
@@ -197,6 +245,12 @@ mod tests {
             card.detail,
             "Connection lost · attempt 3 · retrying after 2.4 s"
         );
+        assert_eq!(card.last_error, None);
+        state.error = Some("TCP connect refused".to_owned());
+        assert_eq!(
+            connection_card(&state).unwrap().last_error.as_deref(),
+            Some("TCP connect refused")
+        );
     }
 
     #[test]
@@ -207,7 +261,10 @@ mod tests {
         assert_eq!(card.tone, CardTone::Error);
         let mut state = StudioUiState::new(StudioConnectionStatus::Failed);
         state.error = Some("daemon exited".to_owned());
-        assert_eq!(connection_card(&state).unwrap().detail, "daemon exited");
+        let failed = connection_card(&state).unwrap();
+        assert_eq!(failed.detail, "daemon exited");
+        // The failure detail already is the error; it is not repeated.
+        assert_eq!(failed.last_error, None);
         let state = StudioUiState::new(StudioConnectionStatus::Disconnected);
         assert_eq!(connection_card(&state).unwrap().tone, CardTone::Idle);
     }

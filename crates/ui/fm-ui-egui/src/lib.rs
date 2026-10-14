@@ -6,7 +6,8 @@
 //! Drawing is split by console region: `theme` (palette and style),
 //! `chrome` (top and status bars), `monitors` (Preview/Program wells),
 //! `transitions` (transition column, T-bar, FTB), `input_bank` (source
-//! tiles), `mixer` (channel strips), `panels`/`overlays` (side panel),
+//! tiles), `mixer` (channel strips), `outputs` (recorder and stream status
+//! rows), `panels`/`overlays` (side panel),
 //! `menu` (menu bar and Help windows), `connection_overlay` (the status card
 //! over the monitors), and `toasts` (transient notices). Pure helpers live in
 //! `gating` (disabled-control reasons), `meter_ballistics` (peak hold),
@@ -34,6 +35,7 @@ mod menu;
 mod meter_ballistics;
 mod mixer;
 mod monitors;
+mod outputs;
 mod overlay_status;
 mod overlays;
 mod panels;
@@ -1037,11 +1039,14 @@ impl StudioShell {
                 .show(ui, |ui| chrome::draw_status_bar(ui, state));
         }
         if self.layout.show_side_panel {
+            // Compact windows give the monitors the width; wide ones may grow
+            // the side panel up to a quarter of the window.
+            let max_side = (ui.available_width() * 0.25).clamp(320.0, 560.0);
             Panel::right("studio-side-panel")
                 .resizable(true)
-                .default_size(SIDE_PANEL_WIDTH)
+                .default_size(SIDE_PANEL_WIDTH.min(max_side))
                 .min_size(300.0)
-                .max_size(560.0)
+                .max_size(max_side)
                 .frame(
                     Frame::new()
                         .fill(PANEL)
@@ -1074,7 +1079,7 @@ impl StudioShell {
                     });
             });
         self.draw_toasts(ui.ctx(), central.response.rect);
-        self.draw_help_windows(ui.ctx());
+        self.draw_help_windows(ui.ctx(), state);
         intents
     }
 
@@ -1177,7 +1182,14 @@ impl StudioShell {
         let show_bank = self.layout.show_input_bank;
         let show_mixer = self.layout.show_mixer;
         let mixer_width = if show_bank {
-            mixer::mixer_width(strips).min(available * 0.55)
+            // Without synchronized strips the mixer keeps a readable share
+            // instead of collapsing to the Master strip's width.
+            let wanted = if state.view.is_some() {
+                mixer::mixer_width(strips)
+            } else {
+                available * 0.4
+            };
+            wanted.min(available * 0.55)
         } else {
             available
         };
@@ -1837,7 +1849,7 @@ mod tests {
 
     #[test]
     fn streams_placeholder_applies_only_when_ready_with_view_and_empty_roster() {
-        assert_eq!(STREAMS_NONE_CONFIGURED, "STREAMS | NONE CONFIGURED");
+        assert_eq!(STREAMS_NONE_CONFIGURED, "No stream targets configured");
         let empty: [StreamStatus; 0] = [];
         assert!(streams_show_none_configured(
             StudioConnectionStatus::Ready,
@@ -2215,6 +2227,65 @@ mod tests {
             "S3: Camera · cut 10 fr · preload · stinger-only audio · fallback fade"
         );
         assert_eq!(stinger_summary(view, 4), "S4 is not configured");
+    }
+
+    #[test]
+    fn stinger_details_show_replicated_settings_or_assign_defaults() {
+        use crate::stinger_config::stinger_details;
+        let state = stinger_state(vec![configured_slot(3, 1)]);
+        let view = state.view.as_ref().unwrap();
+        assert_eq!(
+            stinger_details(view, 3, 30),
+            [
+                ("Cut point", "10 fr".to_owned()),
+                ("Preload", "yes".to_owned()),
+                ("Audio", "stinger only".to_owned()),
+                ("Fallback", "fade".to_owned()),
+            ]
+        );
+        // An empty slot lists exactly what ASSIGN would configure.
+        assert_eq!(
+            stinger_details(view, 4, 30),
+            [
+                ("Cut point", "15 fr (default)".to_owned()),
+                ("Preload", "yes (default)".to_owned()),
+                ("Audio", "mixed with Program (default)".to_owned()),
+                ("Fallback", "cut (default)".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn stinger_cards_fire_only_when_ready_and_allowed_and_otherwise_configure() {
+        use crate::panels::{StingerCardClick, stinger_card_click, stinger_slot_tone};
+        use crate::theme::Tone;
+        assert_eq!(stinger_card_click(true, true), StingerCardClick::Fire);
+        assert_eq!(stinger_card_click(true, false), StingerCardClick::Configure);
+        assert_eq!(stinger_card_click(false, true), StingerCardClick::Configure);
+        for (state, tone) in [
+            (StingerSlotState::Unavailable, Tone::Idle),
+            (StingerSlotState::Unconfigured, Tone::Idle),
+            (
+                StingerSlotState::Readiness(StingerReadiness::Ready),
+                Tone::Ready,
+            ),
+            (
+                StingerSlotState::Readiness(StingerReadiness::NotRequested),
+                Tone::Pending,
+            ),
+            (
+                StingerSlotState::Readiness(StingerReadiness::Missing),
+                Tone::Fault,
+            ),
+        ] {
+            assert_eq!(stinger_slot_tone(state), tone, "{state:?}");
+            // The lamp tone and the presentation color always agree.
+            assert_eq!(
+                tone.color(),
+                stinger_slot_presentation(state).color,
+                "{state:?}"
+            );
+        }
     }
 
     #[test]

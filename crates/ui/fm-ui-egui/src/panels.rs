@@ -1,26 +1,28 @@
 //! Right-hand side panel: on-air outputs (recording and streams) above a
 //! tabbed area for overlays and stingers.
 
+use core::fmt::Write as _;
 use core::num::NonZeroU128;
 
-use egui::{Button, Color32, RichText, ScrollArea, Stroke, Ui, Vec2};
+use egui::{
+    Align2, Button, Color32, CornerRadius, FontFamily, FontId, RichText, ScrollArea, Sense, Stroke,
+    StrokeKind, Ui, Vec2, pos2,
+};
 use fm_protocol::{
     StingerReadiness, StreamRealizedState, StreamStatusMessage, StreamStatusSample,
-    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    WireStingerSlotId,
 };
 use fm_ui_model::{StingerStatus, StreamStatus};
 
-use crate::gating::{Capability, Hint, unavailable_reason};
-use crate::stinger_config;
-use crate::stream_control::{stream_action_text, stream_unavailable_reason};
+use crate::gating::{Capability, unavailable_reason};
+use crate::stinger_config::{self, StingerEditor};
 use crate::theme::{
-    ACCENT, AMBER, BORDER, ERROR, GRAPHITE_RAISED, MUTED, PREVIEW, PROGRAM, PROGRAM_FILL, TEXT,
-    TEXT_DIM, card, mono, pill, section_header, section_label,
+    ACCENT, AMBER, BORDER, BORDER_STRONG, ERROR, GRAPHITE, GRAPHITE_RAISED, MUTED, PREVIEW, TEXT,
+    TEXT_DIM, Tone, WIDGET_HOVER, card, elided, mono, paint_lamp, section_label,
 };
 use crate::{
-    RecordingAction, StreamAction, StudioConnectionStatus, StudioIntent, StudioShell,
-    StudioUiState, TransitionGate, overlays, recording_action, stream_action,
-    stream_command_pending, transition_availability,
+    RecordingAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
+    TransitionGate, outputs, overlays, transition_availability,
 };
 
 /// Tabs of the lower side panel.
@@ -31,7 +33,7 @@ pub(crate) enum SideTab {
     Stingers,
 }
 
-pub(crate) const STREAMS_NONE_CONFIGURED: &str = "STREAMS | NONE CONFIGURED";
+pub(crate) const STREAMS_NONE_CONFIGURED: &str = "No stream targets configured";
 
 impl StudioShell {
     pub(crate) fn draw_side_panel(
@@ -42,12 +44,12 @@ impl StudioShell {
     ) {
         card().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            section_header(ui, "Recording", |_| {});
+            ui.spacing_mut().item_spacing.y = 4.0;
             if let Some(action) = self.draw_recording(ui, state) {
                 intents.push(StudioIntent::Recording(action));
             }
-            ui.add_space(4.0);
-            draw_streams(ui, state, intents);
+            ui.add_space(6.0);
+            outputs::draw_streams(ui, state, intents);
         });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -99,7 +101,13 @@ impl StudioShell {
                     overlays::draw_overlays(ui, state, self.transition_duration_frames, intents);
                 }
                 SideTab::Stingers => {
-                    draw_stingers(ui, state, self.transition_duration_frames, intents);
+                    draw_stingers(
+                        ui,
+                        state,
+                        &mut self.stinger_editor,
+                        self.transition_duration_frames,
+                        intents,
+                    );
                     stinger_config::draw_stinger_configuration(
                         ui,
                         state,
@@ -111,9 +119,9 @@ impl StudioShell {
             });
     }
 
-    /// Draws the compact recording panel and returns the selected action.
+    /// Draws the recorder status rows and returns the selected action.
     ///
-    /// The panel exposes exactly one action for the authoritative desired flag
+    /// Each row exposes exactly one action for the authoritative desired flag
     /// and keeps it disabled while an earlier recording intent is unresolved.
     #[allow(clippy::unused_self)] // the panel reads immutable state; the shell receiver matches `draw_inputs`
     pub fn draw_recording(
@@ -121,69 +129,7 @@ impl StudioShell {
         ui: &mut Ui,
         state: &StudioUiState,
     ) -> Option<RecordingAction> {
-        let mut selected = None;
-        for (index, desired) in state.recording_desired.iter().copied().enumerate() {
-            let Some(recorder) = u8::try_from(index + 1).ok().and_then(WireRecorderSlot::new)
-            else {
-                continue;
-            };
-            let slot = index + 1;
-            let requested = if desired {
-                RecordingAction::Stop(recorder)
-            } else {
-                RecordingAction::Start(recorder)
-            };
-            ui.horizontal(|ui| {
-                ui.label(mono(format!("REC {slot}")).size(11.5).strong().color(TEXT));
-                pill(
-                    ui,
-                    recording_status_label(desired),
-                    if desired { PROGRAM } else { MUTED },
-                    desired,
-                );
-                if state.recording_pending[index] {
-                    pill(ui, "PENDING", AMBER, false);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (label, fill, stroke) = match requested {
-                        RecordingAction::Start(_) => {
-                            ("START", PROGRAM_FILL, PROGRAM.gamma_multiply(0.6))
-                        }
-                        RecordingAction::Stop(_) => {
-                            ("STOP", crate::theme::WIDGET, crate::theme::BORDER_STRONG)
-                        }
-                    };
-                    if ui
-                        .add_enabled(
-                            recording_action(state, requested).is_some(),
-                            Button::new(RichText::new(label).size(11.5).strong())
-                                .fill(fill)
-                                .stroke(Stroke::new(1.0, stroke))
-                                .min_size(Vec2::new(84.0, 24.0)),
-                        )
-                        .hint(
-                            &match requested {
-                                RecordingAction::Start(_) => {
-                                    format!("Start configured program recorder {slot}")
-                                }
-                                RecordingAction::Stop(_) => {
-                                    format!("Stop configured program recorder {slot}")
-                                }
-                            },
-                            if state.recording_pending[index] {
-                                "an earlier recording command is still pending"
-                            } else {
-                                unavailable_reason(state, Capability::Transition)
-                            },
-                        )
-                        .clicked()
-                    {
-                        selected = recording_action(state, requested);
-                    }
-                });
-            });
-        }
-        selected
+        outputs::draw_recorders(ui, state)
     }
 }
 
@@ -191,133 +137,6 @@ impl StudioShell {
 /// flag; it is never an optimistic local guess.
 pub(crate) const fn recording_status_label(desired: bool) -> &'static str {
     if desired { "RECORDING" } else { "STOPPED" }
-}
-
-fn draw_streams(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
-    section_header(ui, "Streams", |ui| {
-        ui.label(
-            mono(format!("{}", state.streams.len()))
-                .size(10.5)
-                .color(TEXT_DIM),
-        );
-    });
-    if streams_show_none_configured(
-        state.connection_status,
-        state.view.is_some(),
-        &state.streams,
-    ) {
-        ui.label(
-            RichText::new(STREAMS_NONE_CONFIGURED)
-                .size(10.5)
-                .color(MUTED),
-        );
-        return;
-    }
-    if state.streams.is_empty() {
-        ui.label(
-            RichText::new("STREAM STATE UNAVAILABLE")
-                .size(10.5)
-                .color(MUTED),
-        );
-        return;
-    }
-    for stream in &state.streams {
-        let sample = latest_stream_sample(state.stream_status.as_ref(), stream.target);
-        let response = ui
-            .horizontal(|ui| {
-                ui.add(
-                    egui::Label::new(RichText::new(&stream.name).size(12.0).color(TEXT)).truncate(),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(action) = stream_button(ui, state, stream) {
-                        intents.push(StudioIntent::Stream(action));
-                    }
-                    if stream_command_pending(state, WireStreamTargetId::new(stream.target)) {
-                        pill(ui, "PENDING", AMBER, false);
-                    }
-                    // The latest lossy sample wins; otherwise the replicated
-                    // last-confirmed realized state is shown.
-                    let realized = sample.map_or(stream.realized, |sample| sample.realized);
-                    pill(
-                        ui,
-                        &stream_realized_name(realized).to_uppercase(),
-                        stream_state_color(realized),
-                        realized == StreamRealizedState::Live,
-                    )
-                    .on_hover_text("Realized transport state");
-                    pill(
-                        ui,
-                        if stream.desired_running { "ON" } else { "OFF" },
-                        if stream.desired_running {
-                            ACCENT
-                        } else {
-                            MUTED
-                        },
-                        false,
-                    )
-                    .on_hover_text("Desired running state");
-                });
-            })
-            .response;
-        response.on_hover_text(stream_row_text(stream, sample));
-        if let Some(sample) = sample {
-            ui.label(
-                mono(format!(
-                    "{} B · {} enq · {} drop{}",
-                    sample.muxed_bytes,
-                    sample.enqueued_pairs,
-                    sample.dropped_pairs,
-                    sample
-                        .failure
-                        .as_deref()
-                        .map_or_else(String::new, |failure| format!(" · {failure}"))
-                ))
-                .size(10.0)
-                .color(MUTED),
-            );
-        }
-    }
-}
-
-/// Draws the one Start/Stop key offered for a stream row and returns the
-/// gated action when clicked.
-fn stream_button(
-    ui: &mut Ui,
-    state: &StudioUiState,
-    stream: &StreamStatus,
-) -> Option<StreamAction> {
-    let requested = StreamAction::for_stream(stream);
-    let allowed = stream_action(state, requested);
-    let (label, fill, stroke) = if requested.starts() {
-        ("START", PROGRAM_FILL, PROGRAM.gamma_multiply(0.6))
-    } else {
-        ("STOP", crate::theme::WIDGET, crate::theme::BORDER_STRONG)
-    };
-    ui.add_enabled(
-        allowed.is_some(),
-        Button::new(RichText::new(label).size(11.0).strong())
-            .fill(fill)
-            .stroke(Stroke::new(1.0, stroke))
-            .min_size(Vec2::new(58.0, 22.0)),
-    )
-    .hint(
-        &stream_action_text(requested, &stream.name),
-        stream_unavailable_reason(state, stream),
-    )
-    .clicked()
-    .then_some(allowed)
-    .flatten()
-}
-
-const fn stream_state_color(state: StreamRealizedState) -> Color32 {
-    match state {
-        StreamRealizedState::Live => PROGRAM,
-        StreamRealizedState::Starting
-        | StreamRealizedState::WaitingToReconnect
-        | StreamRealizedState::Congested => AMBER,
-        StreamRealizedState::Failed => ERROR,
-        StreamRealizedState::Stopped | StreamRealizedState::Unavailable => MUTED,
-    }
 }
 
 /// Pure placeholder decision: connected with a view but no configured streams.
@@ -444,83 +263,200 @@ pub(crate) fn stinger_slot_state(stingers: Option<&[StingerStatus]>, slot: u8) -
         })
 }
 
+/// Lamp tone of one Stinger slot state.
+pub(crate) const fn stinger_slot_tone(state: StingerSlotState) -> Tone {
+    match state {
+        StingerSlotState::Unavailable | StingerSlotState::Unconfigured => Tone::Idle,
+        StingerSlotState::Readiness(StingerReadiness::Ready) => Tone::Ready,
+        StingerSlotState::Readiness(StingerReadiness::NotRequested) => Tone::Pending,
+        StingerSlotState::Readiness(StingerReadiness::Missing) => Tone::Fault,
+    }
+}
+
+/// What a click on one Stinger slot card does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StingerCardClick {
+    /// Fire the slot from Preview to Program.
+    Fire,
+    /// Select the slot in the Configure section below the grid.
+    Configure,
+}
+
+/// A ready slot fires when the transition gates allow it; any other click
+/// only selects the slot for configuration, which is local and harmless.
+pub(crate) const fn stinger_card_click(ready: bool, can_fire: bool) -> StingerCardClick {
+    if ready && can_fire {
+        StingerCardClick::Fire
+    } else {
+        StingerCardClick::Configure
+    }
+}
+
+const STINGER_CARD_HEIGHT: f32 = 50.0;
+
 fn draw_stingers(
     ui: &mut Ui,
     state: &StudioUiState,
+    editor: &mut StingerEditor,
     duration_frames: u32,
     intents: &mut Vec<StudioIntent>,
 ) {
-    let availability = transition_availability(TransitionGate::from_state(state));
+    let can_fire = transition_availability(TransitionGate::from_state(state)).stinger();
     let reason = unavailable_reason(state, Capability::Transition);
     ui.label(
-        RichText::new("Fire a configured stinger from Preview to Program.")
+        RichText::new("Click a READY slot to fire it from Preview to Program. Click any other slot to configure it below.")
             .size(10.5)
             .color(MUTED),
     );
-    ui.add_space(4.0);
+    ui.add_space(2.0);
     let stingers = state.view.as_ref().map(|view| view.stingers.as_slice());
-    let width = ((ui.available_width() - 8.0) / 2.0).max(80.0);
+    let gap = 6.0;
+    let width = ((ui.available_width() - gap) / 2.0).floor().max(80.0);
     for row in [[1_u8, 2], [3, 4], [5, 6], [7, 8]] {
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.spacing_mut().item_spacing.x = gap;
             for slot in row {
-                let presentation = stinger_slot_presentation(stinger_slot_state(stingers, slot));
-                if stinger_button(
-                    ui,
-                    (availability.stinger(), reason),
+                let slot_state = stinger_slot_state(stingers, slot);
+                let media = state.view.as_ref().and_then(|view| {
+                    stinger_config::configured_stinger(view, slot)
+                        .map(|status| crate::monitors::label_for_input(view, status.media_input))
+                });
+                let card = StingerCard {
                     slot,
-                    presentation,
+                    state: slot_state,
+                    media: media.as_deref(),
+                    selected: editor.slot == slot,
+                    can_fire,
+                    reason,
                     width,
-                ) {
-                    intents.push(StudioIntent::Stinger {
+                };
+                match draw_stinger_card(ui, &card) {
+                    Some(StingerCardClick::Fire) => intents.push(StudioIntent::Stinger {
                         slot: WireStingerSlotId::new(slot)
                             .expect("Studio renders only Stinger slots 1 through 8"),
                         duration_frames,
-                    });
+                    }),
+                    Some(StingerCardClick::Configure) if editor.slot != slot => {
+                        editor.slot = slot;
+                        editor.media = None;
+                    }
+                    Some(StingerCardClick::Configure) | None => {}
                 }
             }
         });
     }
-    ui.add_space(6.0);
-    ui.label(section_label("Duration"));
-    ui.label(
-        mono(format!(
-            "{duration_frames} fr (shared with automatic transitions)"
-        ))
-        .size(10.5)
-        .color(TEXT_DIM),
-    );
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(section_label("Duration"));
+        ui.label(mono(format!("{duration_frames} fr")).size(11.5).color(TEXT));
+        ui.label(
+            RichText::new("shared with automatic transitions")
+                .size(10.5)
+                .color(MUTED),
+        );
+    });
 }
 
-fn stinger_button(
-    ui: &mut Ui,
-    (enabled, reason): (bool, &str),
+struct StingerCard<'a> {
     slot: u8,
-    presentation: StingerSlotPresentation,
+    state: StingerSlotState,
+    media: Option<&'a str>,
+    selected: bool,
+    can_fire: bool,
+    reason: &'a str,
     width: f32,
-) -> bool {
-    ui.add_enabled(
-        enabled && presentation.ready,
-        Button::new(
-            RichText::new(format!("S{slot}\n{}", presentation.label))
-                .size(11.0)
-                .strong()
-                .color(presentation.color),
-        )
-        .fill(GRAPHITE_RAISED)
-        .stroke(Stroke::new(1.0, presentation.color.gamma_multiply(0.5)))
-        .min_size(Vec2::new(width, 44.0)),
-    )
-    .hint(
-        &format!(
-            "Fire Stinger slot {slot} from Preview to Program: {}",
-            presentation.label
-        ),
-        if enabled {
-            "this Stinger slot is not configured and ready"
+}
+
+/// One fixed-size Stinger slot card; returns the click meaning, if clicked.
+fn draw_stinger_card(ui: &mut Ui, card: &StingerCard<'_>) -> Option<StingerCardClick> {
+    let presentation = stinger_slot_presentation(card.state);
+    let tone = stinger_slot_tone(card.state);
+    let click = stinger_card_click(presentation.ready, card.can_fire);
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(card.width, STINGER_CARD_HEIGHT), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let fires = click == StingerCardClick::Fire;
+        let hovered = response.hovered();
+        let fill = if fires && response.is_pointer_button_down_on() {
+            PREVIEW.gamma_multiply(0.25)
+        } else if hovered {
+            WIDGET_HOVER
+        } else if fires {
+            PREVIEW.gamma_multiply(0.10)
         } else {
-            reason
-        },
-    )
-    .clicked()
+            GRAPHITE
+        };
+        painter.rect_filled(rect, CornerRadius::same(4), fill);
+        let stroke = if response.has_focus() {
+            Stroke::new(2.0, ACCENT)
+        } else if card.selected {
+            Stroke::new(1.5, ACCENT.gamma_multiply(0.8))
+        } else if tone == Tone::Idle {
+            Stroke::new(1.0, if hovered { BORDER_STRONG } else { BORDER })
+        } else {
+            Stroke::new(
+                1.0,
+                tone.color()
+                    .gamma_multiply(if hovered { 0.9 } else { 0.55 }),
+            )
+        };
+        painter.rect_stroke(rect, CornerRadius::same(4), stroke, StrokeKind::Inside);
+        painter.text(
+            pos2(rect.min.x + 9.0, rect.min.y + 13.0),
+            Align2::LEFT_CENTER,
+            format!("S{}", card.slot),
+            FontId::new(13.0, FontFamily::Monospace),
+            if tone == Tone::Idle { TEXT_DIM } else { TEXT },
+        );
+        let label = elided(
+            painter,
+            presentation.label,
+            FontId::new(9.5, FontFamily::Proportional),
+            tone.color(),
+            rect.width() - 60.0,
+        );
+        let label_pos = pos2(
+            rect.max.x - 9.0 - label.size().x,
+            rect.min.y + 13.0 - label.size().y / 2.0,
+        );
+        paint_lamp(
+            painter,
+            pos2(label_pos.x - 9.0, rect.min.y + 13.0),
+            3.5,
+            tone,
+        );
+        painter.galley(label_pos, label, tone.color());
+        let (media, color) = match (card.media, card.state) {
+            (Some(media), _) => (media, TEXT_DIM),
+            (None, StingerSlotState::Unavailable) => ("State not synchronized", MUTED),
+            (None, _) => ("Empty slot", MUTED),
+        };
+        let media = elided(
+            painter,
+            media,
+            FontId::new(11.0, FontFamily::Proportional),
+            color,
+            rect.width() - 18.0,
+        );
+        painter.galley(pos2(rect.min.x + 9.0, rect.max.y - 20.0), media, color);
+    }
+    let mut tooltip = format!("Stinger S{} · {}", card.slot, presentation.label);
+    if let Some(media) = card.media {
+        let _ = write!(tooltip, "\nMedia: {media}");
+    }
+    match click {
+        StingerCardClick::Fire => tooltip.push_str("\nClick: fire from Preview to Program"),
+        StingerCardClick::Configure if presentation.ready => {
+            let _ = write!(
+                tooltip,
+                "\nCannot fire: {}\nClick: configure this slot below",
+                card.reason
+            );
+        }
+        StingerCardClick::Configure => {
+            tooltip.push_str("\nNot ready to fire · Click: configure this slot below");
+        }
+    }
+    response.on_hover_text(tooltip).clicked().then_some(click)
 }

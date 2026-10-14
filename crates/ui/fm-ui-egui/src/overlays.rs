@@ -79,7 +79,12 @@ fn draw_overlay_channel(
     let reason = unavailable_reason(state, Capability::Transition);
     let desired_active = desired.is_some_and(|overlay| overlay.active);
     let confirmed_active = realized.is_some_and(|overlay| overlay.active);
-    let (state_label, on_air) = overlay_state_label(desired_active, confirmed_active);
+    let synchronized = state.view.is_some();
+    let (state_label, on_air) = if synchronized {
+        overlay_state_label(desired_active, confirmed_active)
+    } else {
+        ("NO STATE", false)
+    };
     let state_color = if on_air {
         PROGRAM
     } else if desired_active != confirmed_active {
@@ -159,9 +164,15 @@ fn draw_overlay_channel(
                     }
                     ui.add(
                         egui::Label::new(
-                            RichText::new(source_name.unwrap_or_else(|| "no source".to_owned()))
-                                .size(11.5)
-                                .color(TEXT_DIM),
+                            RichText::new(source_name.unwrap_or_else(|| {
+                                if synchronized {
+                                    "no source".to_owned()
+                                } else {
+                                    "not synchronized".to_owned()
+                                }
+                            }))
+                            .size(11.5)
+                            .color(TEXT_DIM),
                         )
                         .truncate(),
                     );

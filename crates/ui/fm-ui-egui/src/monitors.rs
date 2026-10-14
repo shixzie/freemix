@@ -428,11 +428,32 @@ pub(crate) fn draw_monitor(
         }
     }
     if let Some(routing) = &routing {
-        painter.text(
-            pos2(header.max.x - 10.0, header.center().y + 1.0),
-            Align2::RIGHT_CENTER,
+        // Leave room for the bus label and any overlay badges on the left.
+        let overlays = if bus == Bus::Program {
+            view.map_or(0, |view| {
+                view.realized_overlays
+                    .iter()
+                    .filter(|overlay| overlay.active)
+                    .count()
+            })
+        } else {
+            0
+        };
+        #[allow(clippy::cast_precision_loss)] // at most eight overlay badges
+        let reserved = 90.0 + overlays as f32 * 30.0;
+        let galley = crate::theme::elided(
+            &painter,
             &routing.realized.1,
             FontId::new(12.0, FontFamily::Proportional),
+            TEXT,
+            width - reserved - 10.0,
+        );
+        painter.galley(
+            pos2(
+                header.max.x - 10.0 - galley.size().x,
+                header.center().y + 1.0 - galley.size().y / 2.0,
+            ),
+            galley,
             TEXT,
         );
     }
@@ -468,21 +489,28 @@ pub(crate) fn draw_monitor(
             Some(routing) => (routing.realized.1.as_str(), title_size, TEXT_DIM),
             None => ("ROUTING STATE UNAVAILABLE", title_size * 0.7, MUTED),
         };
-        painter.text(
-            center - Vec2::new(0.0, title_size * 0.6),
-            Align2::CENTER_CENTER,
+        let galley = crate::theme::elided(
+            &painter,
             title,
             FontId::new(size, FontFamily::Proportional),
+            title_color,
+            video.width() - 48.0,
+        );
+        painter.galley(
+            center - Vec2::new(0.0, title_size * 0.6) - galley.size() / 2.0,
+            galley,
             title_color,
         );
     }
     if let Some(routing) = &routing
         && routing.desired.0 != routing.realized.0
     {
-        let galley = painter.layout_no_wrap(
-            format!("DESIRED: {}", routing.desired.1),
+        let galley = crate::theme::elided(
+            &painter,
+            &format!("DESIRED: {}", routing.desired.1),
             FontId::new(12.0, FontFamily::Proportional),
             routing_color(routing.desired.0, routing.realized.0),
+            video.width() - 48.0,
         );
         let text_rect = Align2::CENTER_CENTER
             .anchor_size(center + Vec2::new(0.0, title_size * 0.45), galley.size());
