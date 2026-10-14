@@ -1784,7 +1784,7 @@ fn acknowledged_commands_survive_sigkill_before_any_checkpoint() {
     let crashed = store.scan_journal().unwrap();
     assert_eq!(crashed.batches().len(), 2);
     assert_eq!(crashed.checkpoint_sequence(), 0);
-    assert!(crashed.observations().is_empty());
+    assert_eq!(crashed.observations(), []);
 
     let daemon = Daemon::start(&project_path);
     let mut restarted = daemon.connect();
@@ -1903,7 +1903,7 @@ fn checkpoints_compact_the_journal_and_recovery_reproduces_the_exact_state() {
     assert_eq!(crash_store.load().unwrap(), clean);
     // Checkpointing discarded what it applied instead of retaining it forever.
     let settled = crash_store.scan_journal().unwrap();
-    assert!(settled.batches().is_empty());
+    assert_eq!(settled.batches(), []);
     assert_eq!(
         settled.checkpoint_revision(),
         u64::from(CHECKPOINTED_COMMANDS)
@@ -1995,7 +1995,7 @@ fn live_stinger_slot_mutations_fire_immediately_and_survive_restart() {
     let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(persisted.position().revision, 4);
     assert_eq!(persisted.idempotency_receipts().len(), 4);
-    assert!(persisted.project().stingers().is_empty());
+    assert_eq!(persisted.project().stingers(), []);
 
     let daemon = Daemon::start(&project_path);
     let mut client = daemon.connect();
@@ -2008,7 +2008,7 @@ fn live_stinger_slot_mutations_fire_immediately_and_survive_restart() {
     let WireMessage::Snapshot(snapshot) = client.receive() else {
         panic!("expected second restarted snapshot");
     };
-    assert!(snapshot.stingers.is_empty());
+    assert_eq!(snapshot.stingers, []);
     drop(client);
     daemon.wait_success();
 }
@@ -2527,7 +2527,7 @@ fn viewer_diagnostics_query_is_read_only_and_correlated() {
     drop(client);
     let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(persisted.position().revision, handshake.current_revision);
-    assert!(persisted.idempotency_receipts().is_empty());
+    assert_eq!(persisted.idempotency_receipts(), []);
     daemon.stop();
 }
 
@@ -2544,7 +2544,7 @@ fn non_loopback_bind_is_rejected_before_listening() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8(output.stdout).unwrap().is_empty());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "");
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()

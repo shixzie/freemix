@@ -622,7 +622,6 @@ impl NativeProjectPlan {
         }))
     }
 
-    #[must_use]
     pub fn scene_order(&self) -> impl ExactSizeIterator<Item = SceneId> + '_ {
         self.scenes.iter().map(|scene| scene.id)
     }
@@ -1566,7 +1565,6 @@ impl NativeSourceRegistry {
     }
 
     /// Iterates full-width source IDs in deterministic map order.
-    #[must_use]
     pub fn inputs(&self) -> impl ExactSizeIterator<Item = InputId> + '_ {
         self.sources.keys().copied()
     }
@@ -3187,7 +3185,6 @@ impl NativeMasterRuntime {
         telemetry
     }
 
-    #[must_use]
     pub fn collected_audio(&self) -> impl ExactSizeIterator<Item = &AudioBlock> {
         self.sink.iter()
     }
@@ -7955,7 +7952,7 @@ mod tests {
         let mut frame = frame_result(0, input(1), None);
         frame.overlays = switcher.overlays().clone();
 
-        assert!(NativeProjectPlan::program_overlays(&frame, clean).is_empty());
+        assert_eq!(NativeProjectPlan::program_overlays(&frame, clean), []);
         assert_eq!(
             NativeProjectPlan::program_overlays(&frame, dirty),
             vec![NativeProgramOverlay {
@@ -10532,7 +10529,7 @@ mod tests {
             }
         );
 
-        assert!(switcher.advance_frame_events().is_empty());
+        assert_eq!(switcher.advance_frame_events(), []);
         assert_eq!(
             native_audio_mix_plan(switcher.program_frame()).unwrap(),
             NativeAudioMixPlan {
@@ -10556,7 +10553,7 @@ mod tests {
             }
         );
 
-        assert!(switcher.advance_frame_events().is_empty());
+        assert_eq!(switcher.advance_frame_events(), []);
         switcher
             .apply(SwitcherCommand::SetTBarPosition(TBarPosition::END))
             .unwrap();

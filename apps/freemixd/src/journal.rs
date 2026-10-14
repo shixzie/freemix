@@ -242,8 +242,10 @@ pub(crate) fn decode_mutation(payload: &[u8]) -> AppResult<RecordedMutation> {
         .into());
     }
     let mut fields = header[PROTOCOL_BYTES..]
-        .chunks_exact(8)
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("chunks are eight bytes")));
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| u64::from_le_bytes(*chunk));
     let mut next = || fields.next().expect("the header holds seven values");
     let submitted_at_millis = next();
     let position = ProjectPosition {

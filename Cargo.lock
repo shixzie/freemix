@@ -1739,6 +1739,7 @@ dependencies = [
  "fm-sim",
  "fm-switcher",
  "fm-types",
+ "fm-video",
  "fs4",
  "half",
  "image",

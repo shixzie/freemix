@@ -7,9 +7,16 @@
 //!
 //! The simulated daemon has no frame clock, so [`SimulatedMonitorTap`] renders
 //! the current realized Preview and Program inputs on a wall-clock cadence.
-//! Only simulated inputs produce pixels; any other realized input produces no
-//! frame, so a client keeps its placeholder instead of seeing invented video.
+//! Simulated inputs render directly at the fitted monitor size. Scene inputs
+//! whose enabled layers all name simulated inputs are composed with the CPU
+//! reference compositor at the project size and downscaled to the fitted
+//! monitor size; each composition is cached per realized revision, frame
+//! cursor, and input so the steady cadence never recomposes an unchanged
+//! picture. Any other realized input (or a scene the CPU reference cannot
+//! render honestly) produces no frame, so a client keeps its placeholder
+//! instead of seeing invented video.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fm_auth::Policy;
@@ -20,8 +27,10 @@ use fm_protocol::{
     MonitorTap, ServerIdentity, WireInputId, WireMessage, encode_line, encode_qoi_rgb,
     monitor_frame_parts,
 };
-use fm_sim::{Rgba8, SimulatedPipeline, SimulatedSource, SourcePattern};
+use fm_sim::{ImageFrame, Rgba8, SimulatedPipeline, SimulatedSource, SourcePattern};
 use fm_types::InputId;
+
+use crate::scene_render;
 
 /// Steady simulated monitor cadence (5 fps).
 pub(crate) const SIMULATED_MONITOR_INTERVAL: Duration = Duration::from_millis(200);
@@ -154,12 +163,34 @@ impl RealizedMonitorState {
     }
 }
 
+/// Identity of one composed scene picture.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ComposeKey {
+    revision: u64,
+    frame: u64,
+    input: InputId,
+}
+
+/// One tap's most recent scene composition; `image` is `None` when the scene
+/// could not be rendered, so a failing scene is not retried every poll.
+struct ComposedScene {
+    key: ComposeKey,
+    image: Option<Arc<ImageFrame>>,
+}
+
 /// Renders realized Preview and Program from simulated inputs on a bounded
 /// wall-clock cadence while at least one eligible peer wants frames.
 #[derive(Default)]
 pub(crate) struct SimulatedMonitorTap {
     pipeline: Option<SimulatedPipeline>,
     built_revision: Option<u64>,
+    /// Project-size pipeline for scene composition, built only on demand.
+    scene_pipeline: Option<SimulatedPipeline>,
+    scene_built_revision: Option<u64>,
+    composed: [Option<ComposedScene>; 2],
+    /// Scene compositions performed, observed by tests to prove caching.
+    #[cfg(test)]
+    compositions: u64,
     last_key: Option<(u64, InputId, InputId)>,
     last_emit: Option<Instant>,
     sequences: [u64; 2],
@@ -216,20 +247,27 @@ impl SimulatedMonitorTap {
         }
         self.last_emit = Some(now);
         self.last_key = Some(state.change_key());
-        let Some(pipeline) = &self.pipeline else {
-            return Vec::new();
-        };
-        let (Ok(width), Ok(height)) = (
-            u16::try_from(pipeline.width()),
-            u16::try_from(pipeline.height()),
-        ) else {
+        let Some((width, height)) = self.pipeline.as_ref().and_then(|pipeline| {
+            Some((
+                u16::try_from(pipeline.width()).ok()?,
+                u16::try_from(pipeline.height()).ok()?,
+            ))
+        }) else {
             return Vec::new();
         };
         let mut frames = Vec::with_capacity(MonitorTap::ALL.len());
         for tap in MonitorTap::ALL {
             let input = state.input(tap);
-            // Non-simulated inputs are never registered, so they render nothing.
-            let Ok(image) = pipeline.render_source(input, state.frame) else {
+            let image = if scene_render::scene_of_input(project, input).is_some() {
+                self.scene_frame(tap, state, project, width, height)
+            } else {
+                // Non-simulated inputs are never registered, so they render nothing.
+                self.pipeline
+                    .as_ref()
+                    .and_then(|pipeline| pipeline.render_source(input, state.frame).ok())
+                    .map(Arc::new)
+            };
+            let Some(image) = image else {
                 continue;
             };
             let Some(sequence) = self.sequences[tap.index()].checked_add(1) else {
@@ -255,6 +293,65 @@ impl SimulatedMonitorTap {
         frames
     }
 
+    /// Returns the tap's scene picture at the fitted size, composing it only
+    /// when no cached composition matches the realized revision, frame
+    /// cursor, and input. The other tap's matching composition is shared.
+    fn scene_frame(
+        &mut self,
+        tap: MonitorTap,
+        state: RealizedMonitorState,
+        project: &Project,
+        width: u16,
+        height: u16,
+    ) -> Option<Arc<ImageFrame>> {
+        let key = ComposeKey {
+            revision: state.revision,
+            frame: state.frame,
+            input: state.input(tap),
+        };
+        if let Some(cached) = self
+            .composed
+            .iter()
+            .flatten()
+            .find(|composed| composed.key == key)
+        {
+            let image = cached.image.clone();
+            self.composed[tap.index()] = Some(ComposedScene {
+                key,
+                image: image.clone(),
+            });
+            return image;
+        }
+        if self.scene_built_revision != Some(state.revision) {
+            self.scene_pipeline = simulated_pipeline_at(
+                project,
+                project.settings().video.dimensions.width(),
+                project.settings().video.dimensions.height(),
+            );
+            self.scene_built_revision = Some(state.revision);
+        }
+        #[cfg(test)]
+        {
+            self.compositions += 1;
+        }
+        let image = scene_render::scene_of_input(project, key.input).and_then(|scene| {
+            scene_render::render_scene(
+                project,
+                scene,
+                self.scene_pipeline.as_ref()?,
+                state.frame,
+                u32::from(width),
+                u32::from(height),
+            )
+        });
+        let image = image.map(Arc::new);
+        self.composed[tap.index()] = Some(ComposedScene {
+            key,
+            image: image.clone(),
+        });
+        image
+    }
+
     /// Without demand nothing renders; the next demanded poll is immediate.
     fn idle(&mut self) {
         self.last_emit = None;
@@ -267,7 +364,12 @@ impl SimulatedMonitorTap {
 fn simulated_pipeline(project: &Project) -> Option<SimulatedPipeline> {
     let dimensions = project.settings().video.dimensions;
     let (width, height) = fit_monitor(dimensions.width(), dimensions.height())?;
-    let mut pipeline = SimulatedPipeline::new(u32::from(width), u32::from(height)).ok()?;
+    simulated_pipeline_at(project, u32::from(width), u32::from(height))
+}
+
+/// Builds a pipeline at exactly `width`x`height` holding every simulated input.
+fn simulated_pipeline_at(project: &Project, width: u32, height: u32) -> Option<SimulatedPipeline> {
+    let mut pipeline = SimulatedPipeline::new(width, height).ok()?;
     for input in project.inputs() {
         let InputKind::Simulated(simulated) = &input.kind else {
             continue;
@@ -289,14 +391,19 @@ fn simulated_pipeline(project: &Project) -> Option<SimulatedPipeline> {
 mod tests {
     use std::num::NonZeroU128;
 
-    use fm_model::{Input, ProjectSettings, SimulatedAudio, SimulatedInput, SolidColor};
+    use fm_model::{
+        Input, Layer, LayerGeometry, ProjectSettings, Rotation, SimulatedAudio, SimulatedInput,
+        SolidColor, SourceRef,
+    };
     use fm_protocol::{LineDecoder, MonitorFrameAssembler, MonitorImage};
     use fm_types::{
         AudioFormat, ChannelLayout, ColorMetadata, FrameRate, PixelFormat, ProjectId, SampleFormat,
-        SampleRate, ScanMode, VideoDimensions, VideoFormat,
+        SampleRate, ScanMode, SceneId, VideoDimensions, VideoFormat,
     };
 
     use super::*;
+
+    const NO_FRAMES: [(MonitorTap, Vec<u8>); 0] = [];
 
     fn input_id(value: u128) -> InputId {
         InputId::new(NonZeroU128::new(value).unwrap())
@@ -358,6 +465,40 @@ mod tests {
             required_capabilities: Vec::new(),
         });
         project
+    }
+
+    fn layer(source: SourceRef, x: i32, y: i32, width: u32, height: u32) -> Layer {
+        Layer {
+            name: "Layer".into(),
+            source,
+            enabled: true,
+            geometry: LayerGeometry::new(x, y, width, height, Rotation::Deg0),
+            crop: None,
+            mask: None,
+            effects: Vec::new(),
+            opacity: 255,
+            z_order: 0,
+        }
+    }
+
+    /// Adds scene `scene` with a dark background, exposed as input `input`.
+    fn add_scene(project: &mut Project, scene: u128, input: u128, layers: Vec<Layer>) {
+        let scene_id = SceneId::new(NonZeroU128::new(scene).unwrap());
+        project.add_scene(fm_model::Scene {
+            id: scene_id,
+            name: format!("Scene {scene}"),
+            background: fm_model::Rgba8::new(20, 30, 40, 255),
+            layers,
+        });
+        project.add_input(Input {
+            id: input_id(input),
+            name: format!("Scene input {input}"),
+            kind: InputKind::Scene {
+                scene_id,
+                audio_source: None,
+            },
+            required_capabilities: Vec::new(),
+        });
     }
 
     fn state(revision: u64, program: u128, preview: u128) -> RealizedMonitorState {
@@ -456,22 +597,22 @@ mod tests {
             sequences(&tap.poll_state(state(1, 1, 2), &project, &server, at(0), true)),
             [1, 1]
         );
-        assert!(
-            tap.poll_state(state(1, 1, 2), &project, &server, at(100), true)
-                .is_empty()
+        assert_eq!(
+            tap.poll_state(state(1, 1, 2), &project, &server, at(100), true),
+            NO_FRAMES
         );
-        assert!(
-            tap.poll_state(state(1, 1, 2), &project, &server, at(199), true)
-                .is_empty()
+        assert_eq!(
+            tap.poll_state(state(1, 1, 2), &project, &server, at(199), true),
+            NO_FRAMES
         );
         assert_eq!(
             sequences(&tap.poll_state(state(1, 1, 2), &project, &server, at(200), true)),
             [2, 2]
         );
         // A realized change inside the minimum gap waits for the gap.
-        assert!(
-            tap.poll_state(state(2, 2, 1), &project, &server, at(220), true)
-                .is_empty()
+        assert_eq!(
+            tap.poll_state(state(2, 2, 1), &project, &server, at(220), true),
+            NO_FRAMES
         );
         let changed = tap.poll_state(state(2, 2, 1), &project, &server, at(250), true);
         assert_eq!(sequences(&changed), [3, 3]);
@@ -480,9 +621,9 @@ mod tests {
             WireInputId::from_domain(input_id(2))
         );
         // The steady cadence restarts from the change.
-        assert!(
-            tap.poll_state(state(2, 2, 1), &project, &server, at(400), true)
-                .is_empty()
+        assert_eq!(
+            tap.poll_state(state(2, 2, 1), &project, &server, at(400), true),
+            NO_FRAMES
         );
         assert_eq!(
             sequences(&tap.poll_state(state(2, 2, 1), &project, &server, at(450), true)),
@@ -502,15 +643,15 @@ mod tests {
             2
         );
         for millis in [0, 200, 400, 1_000] {
-            assert!(
+            assert_eq!(
                 tap.poll_state(
                     state(1, 1, 2),
                     &project,
                     &server,
                     start + Duration::from_millis(millis),
                     false
-                )
-                .is_empty()
+                ),
+                NO_FRAMES
             );
         }
         // Demand returning publishes at once, continuing each tap's sequence.
@@ -540,7 +681,146 @@ mod tests {
             Instant::now() + Duration::from_secs(1),
             true,
         );
-        assert!(frames.is_empty());
+        assert_eq!(frames, NO_FRAMES);
+    }
+
+    #[test]
+    fn scene_layers_compose_at_project_size_and_scale_to_the_monitor() {
+        let mut project = project(1_920, 1_080);
+        // The solid input covers exactly the top-left quarter of 1920x1080.
+        add_scene(
+            &mut project,
+            1,
+            10,
+            vec![layer(SourceRef::Input(input_id(1)), 0, 0, 960, 540)],
+        );
+        let mut tap = SimulatedMonitorTap::default();
+        let frames = tap.poll_state(state(1, 10, 2), &project, &server(), Instant::now(), true);
+        assert_eq!(
+            frames.iter().map(|(tap, _)| *tap).collect::<Vec<_>>(),
+            vec![MonitorTap::Preview, MonitorTap::Program]
+        );
+        let program = decode(&frames[1].1);
+        assert_eq!(program.tap, MonitorTap::Program);
+        assert_eq!(program.input, WireInputId::from_domain(input_id(10)));
+        assert_eq!(program.origin, MonitorFrameOrigin::Simulated);
+        assert_eq!((program.width, program.height), (640, 360));
+        for y in 0..360 {
+            for x in 0..640 {
+                let expected = if x < 320 && y < 180 {
+                    [7, 11, 13, 255]
+                } else {
+                    [20, 30, 40, 255]
+                };
+                assert_eq!(pixel(&program, x, y), expected, "pixel ({x}, {y})");
+            }
+        }
+        assert_eq!(tap.compositions, 1);
+    }
+
+    #[test]
+    fn scene_compositions_are_cached_per_revision_frame_and_input() {
+        let mut project = project(1_280, 720);
+        add_scene(
+            &mut project,
+            1,
+            10,
+            vec![layer(SourceRef::Input(input_id(2)), 0, 0, 640, 360)],
+        );
+        let server = server();
+        let mut tap = SimulatedMonitorTap::default();
+        let start = Instant::now();
+        let at = |millis| start + Duration::from_millis(millis);
+        // Both taps show the same scene: one composition serves both.
+        assert_eq!(
+            tap.poll_state(state(1, 10, 10), &project, &server, at(0), true)
+                .len(),
+            2
+        );
+        assert_eq!(tap.compositions, 1);
+        // Steady cadence with an unchanged frame cursor reuses the cache.
+        for millis in [200, 400, 600] {
+            assert_eq!(
+                tap.poll_state(state(1, 10, 10), &project, &server, at(millis), true)
+                    .len(),
+                2
+            );
+        }
+        assert_eq!(tap.compositions, 1);
+        // A new frame cursor or revision recomposes once more.
+        let mut advanced = state(1, 10, 10);
+        advanced.frame = 5;
+        assert_eq!(
+            tap.poll_state(advanced, &project, &server, at(800), true)
+                .len(),
+            2
+        );
+        assert_eq!(tap.compositions, 2);
+        assert_eq!(
+            tap.poll_state(state(2, 10, 1), &project, &server, at(1_000), true)
+                .len(),
+            2
+        );
+        assert_eq!(tap.compositions, 3);
+    }
+
+    #[test]
+    fn unsupported_scenes_produce_no_frame() {
+        let mut project = project(1_280, 720);
+        // A non-simulated layer source.
+        add_scene(
+            &mut project,
+            1,
+            10,
+            vec![layer(SourceRef::Input(input_id(3)), 0, 0, 640, 360)],
+        );
+        // A nested scene layer.
+        add_scene(
+            &mut project,
+            2,
+            11,
+            vec![layer(
+                SourceRef::Scene(SceneId::new(NonZeroU128::new(1).unwrap())),
+                0,
+                0,
+                640,
+                360,
+            )],
+        );
+        // A crop outside the project-size source.
+        let mut cropped = layer(SourceRef::Input(input_id(1)), 0, 0, 640, 360);
+        cropped.crop = Some(fm_model::CropRect {
+            x: 1_000,
+            y: 0,
+            width: 400,
+            height: 100,
+        });
+        add_scene(&mut project, 3, 12, vec![cropped]);
+        // A layer naming a missing input, and a scene input with no scene.
+        add_scene(
+            &mut project,
+            4,
+            13,
+            vec![layer(SourceRef::Input(input_id(99)), 0, 0, 640, 360)],
+        );
+        let server = server();
+        let mut tap = SimulatedMonitorTap::default();
+        let start = Instant::now();
+        for (index, program) in [10, 11, 12, 13].into_iter().enumerate() {
+            let millis = u64::try_from(index).unwrap() * 1_000;
+            let frames = tap.poll_state(
+                state(1, program, 1),
+                &project,
+                &server,
+                start + Duration::from_millis(millis),
+                true,
+            );
+            assert_eq!(
+                frames.iter().map(|(tap, _)| *tap).collect::<Vec<_>>(),
+                vec![MonitorTap::Preview],
+                "scene input {program}"
+            );
+        }
     }
 
     #[test]

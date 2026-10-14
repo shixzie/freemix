@@ -103,6 +103,7 @@ mod non_native_sessions;
 mod preflight;
 #[cfg(feature = "macos-program-surface")]
 mod program_surface;
+mod scene_render;
 mod status_listener;
 #[cfg(feature = "native-media")]
 mod stinger_mutation;
@@ -235,6 +236,10 @@ const OPERATOR_STATE_TRUNCATION_MARKER: &str = "\n[TRUNCATED]\n";
 /// The control loop polls every few milliseconds; one render per second is
 /// more than enough for a support surface and keeps the pass cheap.
 const OPERATOR_STATE_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
+/// Newest idempotency receipts kept in `project.json`. The engine restores a
+/// bounded suffix, so a long show neither grows the project file without
+/// bound nor rewrites an ever-larger receipt list on every command.
+const MAX_PERSISTED_RECEIPTS: usize = 1_024;
 #[cfg(all(feature = "native-media", feature = "macos-program-surface"))]
 // Referenced by macos-program-surface code paths that are themselves inert off macOS.
 #[allow(dead_code)]
@@ -5555,10 +5560,12 @@ impl NativeDaemon {
         Err(AppFailure("native-media support was not compiled in".into()).into())
     }
 
+    #[allow(clippy::unused_self)]
     fn take_audio_meters(&mut self) -> Option<AudioMetersMessage> {
         None
     }
 
+    #[allow(clippy::unused_self)]
     fn take_stream_status(&mut self) -> Option<StreamStatusMessage> {
         None
     }
@@ -9141,7 +9148,11 @@ fn stored_project_from_snapshot(
         receipts.push(persisted_result(command, result)?);
     }
 
-    stored_project_with_receipts(durable, snapshot, receipts)
+    stored_project_with_receipts(
+        durable,
+        snapshot,
+        retained_receipts(receipts, Some(&command.idempotency_key)),
+    )
 }
 
 fn stored_project_checkpoint(
@@ -9151,12 +9162,47 @@ fn stored_project_checkpoint(
     stored_project_with_receipts(
         durable,
         snapshot,
-        snapshot
-            .receipts()
-            .iter()
-            .map(persisted_engine_receipt)
-            .collect(),
+        retained_receipts(
+            snapshot
+                .receipts()
+                .iter()
+                .map(persisted_engine_receipt)
+                .collect(),
+            None,
+        ),
     )
+}
+
+/// Keeps the newest [`MAX_PERSISTED_RECEIPTS`] receipts.
+///
+/// Recency is the revision a receipt was recorded at; a rejection recorded at
+/// revision `r` happened after the command that produced `r`, so it ranks just
+/// above that accepted receipt. Ties break by key so retention is
+/// deterministic. The receipt for `pinned` (the command being made durable)
+/// is always kept, so its answer stays replayable after a restart.
+fn retained_receipts(
+    mut receipts: Vec<IdempotencyReceipt>,
+    pinned: Option<&str>,
+) -> Vec<IdempotencyReceipt> {
+    if receipts.len() <= MAX_PERSISTED_RECEIPTS {
+        return receipts;
+    }
+    receipts.sort_by(|left, right| {
+        receipt_recency(left, pinned)
+            .cmp(&receipt_recency(right, pinned))
+            .then_with(|| left.key().cmp(right.key()))
+    });
+    receipts.split_off(receipts.len() - MAX_PERSISTED_RECEIPTS)
+}
+
+fn receipt_recency(receipt: &IdempotencyReceipt, pinned: Option<&str>) -> (bool, u64, bool) {
+    let (revision, rejected) = match receipt.outcome() {
+        ReceiptOutcome::Accepted { revision, .. } => (*revision, false),
+        ReceiptOutcome::Rejected {
+            current_revision, ..
+        } => (*current_revision, true),
+    };
+    (pinned == Some(receipt.key()), revision, rejected)
 }
 
 fn stored_project_with_receipts(
@@ -14188,10 +14234,10 @@ mod tests {
                 ..
             } if code == "unavailable"
         ));
-        assert!(execution.submission.output.events.is_empty());
+        assert_eq!(execution.submission.output.events, []);
         assert!(execution.submission.accepted.is_none());
         assert!(!execution.submission.replayed);
-        assert!(execution.runtime_events.is_empty());
+        assert_eq!(execution.runtime_events, []);
         assert_eq!(durable, test_project());
         assert_eq!(control.diagnostics(), before_diagnostics);
         assert_eq!(control.snapshot(), &before_snapshot);
@@ -14407,7 +14453,7 @@ mod tests {
         assert_eq!(desired.source(), Some(test_input_id(2)));
         assert!(desired.is_active());
         assert_eq!(desired.opacity(), u8::MAX);
-        assert!(desired.queued_sources().is_empty());
+        assert_eq!(desired.queued_sources(), []);
     }
 
     #[test]
@@ -14972,7 +15018,7 @@ mod tests {
         .unwrap();
         assert!(replay.submission.replayed);
         assert_eq!(saver.0.get(), 1);
-        assert!(replay.runtime_events.is_empty());
+        assert_eq!(replay.runtime_events, []);
 
         let mut restarted = test_control(&durable);
         let restarted_server = test_server(&restarted);
@@ -15047,11 +15093,156 @@ mod tests {
         )
         .unwrap();
         assert!(replay.submission.replayed);
-        assert!(replay.runtime_events.is_empty());
+        assert_eq!(replay.runtime_events, []);
         assert_eq!(save_counter.0.get(), 0);
         assert_eq!(restarted_durable, saved);
 
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn long_show_persists_a_bounded_receipt_window_that_restarts_and_accepts_work() {
+        let root = std::env::temp_dir().join(format!(
+            "freemixd-receipts-{}-{}.freemix",
+            std::process::id(),
+            now_millis().unwrap()
+        ));
+        let store = ProjectStore::new(&root).unwrap();
+        let mut durable = test_project();
+        let mut control = test_control(&durable);
+        let server = test_server(&control);
+        let commands = MAX_PERSISTED_RECEIPTS + 6;
+        let mut project_bytes_at_limit = 0;
+        for index in 0..commands {
+            execute_durable_command(
+                &mut control,
+                &CountingSaver::default(),
+                &mut durable,
+                &operator(),
+                &server,
+                &test_command(
+                    &format!("cut-{index}"),
+                    &format!("cut-key-{index:05}"),
+                    CommandPayload::Cut,
+                ),
+                0,
+            )
+            .unwrap();
+            assert!(durable.idempotency_receipts().len() <= MAX_PERSISTED_RECEIPTS);
+            if index + 1 == MAX_PERSISTED_RECEIPTS {
+                store.save(&durable).unwrap();
+                project_bytes_at_limit = fs::metadata(root.join("project.json")).unwrap().len();
+            }
+        }
+        assert_eq!(durable.position().revision, commands as u64);
+        assert_eq!(durable.idempotency_receipts().len(), MAX_PERSISTED_RECEIPTS);
+        let keys = durable
+            .idempotency_receipts()
+            .iter()
+            .map(IdempotencyReceipt::key)
+            .collect::<std::collections::BTreeSet<_>>();
+        // The oldest receipts were dropped; the newest are all retained.
+        for index in 0..6 {
+            assert!(!keys.contains(format!("cut-key-{index:05}").as_str()));
+        }
+        for index in 6..commands {
+            assert!(keys.contains(format!("cut-key-{index:05}").as_str()));
+        }
+
+        // The bounded project file does not grow past the full window.
+        store.save(&durable).unwrap();
+        let project_bytes = fs::metadata(root.join("project.json")).unwrap().len();
+        assert!(
+            project_bytes <= project_bytes_at_limit + 64,
+            "{project_bytes} > {project_bytes_at_limit}"
+        );
+
+        // A restart restores the window, replays a retained key, and accepts
+        // new work with a fresh receipt that keeps the window bounded.
+        let saved = store.load().unwrap();
+        assert_eq!(saved.idempotency_receipts(), durable.idempotency_receipts());
+        let mut restarted = test_control(&saved);
+        let restarted_server = test_server(&restarted);
+        let mut restarted_durable = saved.clone();
+        let newest = format!("cut-key-{:05}", commands - 1);
+        let replay = execute_durable_command(
+            &mut restarted,
+            &CountingSaver::default(),
+            &mut restarted_durable,
+            &operator(),
+            &restarted_server,
+            &test_command(
+                &format!("cut-{}", commands - 1),
+                &newest,
+                CommandPayload::Cut,
+            ),
+            0,
+        )
+        .unwrap();
+        assert!(replay.submission.replayed);
+        let fresh = execute_durable_command(
+            &mut restarted,
+            &CountingSaver::default(),
+            &mut restarted_durable,
+            &operator(),
+            &restarted_server,
+            &test_command("after-restart", "after-restart-key", CommandPayload::Cut),
+            0,
+        )
+        .unwrap();
+        assert!(!fresh.submission.replayed);
+        assert!(matches!(
+            fresh.submission.output.result,
+            CommandResult::Accepted { revision, .. } if revision == commands as u64 + 1
+        ));
+        assert_eq!(
+            restarted_durable.idempotency_receipts().len(),
+            MAX_PERSISTED_RECEIPTS
+        );
+        assert!(
+            restarted_durable
+                .idempotency_receipts()
+                .iter()
+                .any(|receipt| receipt.key() == "after-restart-key")
+        );
+        store.save(&restarted_durable).unwrap();
+        assert_eq!(
+            store.load().unwrap().idempotency_receipts().len(),
+            MAX_PERSISTED_RECEIPTS
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn receipt_retention_ranks_rejections_after_their_revision_and_keeps_the_pinned_key() {
+        let mut receipts = (1..=MAX_PERSISTED_RECEIPTS as u64)
+            .map(|revision| {
+                IdempotencyReceipt::accepted(format!("a-{revision:05}"), "id", revision, revision)
+            })
+            .collect::<Vec<_>>();
+        // A rejection at revision 1 is newer than the accept that produced 1.
+        receipts.push(IdempotencyReceipt::rejected(
+            "r-1", "id", 1, "conflict", "stale", false,
+        ));
+        let retained = retained_receipts(receipts.clone(), None);
+        assert_eq!(retained.len(), MAX_PERSISTED_RECEIPTS);
+        assert!(!retained.iter().any(|receipt| receipt.key() == "a-00001"));
+        assert!(retained.iter().any(|receipt| receipt.key() == "r-1"));
+
+        // An older rejection drops first, unless it is the pinned key.
+        receipts.push(IdempotencyReceipt::rejected(
+            "r-0", "id", 0, "conflict", "stale", false,
+        ));
+        let retained = retained_receipts(receipts.clone(), None);
+        assert!(!retained.iter().any(|receipt| receipt.key() == "r-0"));
+        let retained = retained_receipts(receipts, Some("r-0"));
+        assert_eq!(retained.len(), MAX_PERSISTED_RECEIPTS);
+        assert!(retained.iter().any(|receipt| receipt.key() == "r-0"));
+        // Pinning displaces the next-oldest receipt instead.
+        assert!(!retained.iter().any(|receipt| receipt.key() == "r-1"));
+        assert!(retained.iter().any(|receipt| receipt.key() == "a-00002"));
     }
 
     fn test_project() -> StoredProject {
