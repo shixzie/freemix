@@ -401,7 +401,12 @@ Protocol 2.28 edits and replicates project colour grading (`SW-019`):
     (`lut_id`; refused while any grade references it).
 - Ids are chosen by the client, like `input_add`: grade and LUT ids are
   canonical nonzero 32-bit decimals, and an id already in use is refused.
-  Names are nonblank, at most 128 bytes, free of control characters, and
+  A LUT id is never reused within a project bundle: removing a LUT keeps
+  its bundled file (older manifests and autosaves still name it), and a
+  `grade_lut_import` whose id already has a file with different text is
+  refused as a non-retryable `conflict` (the same text is accepted).
+  Clients allocate above the highest id they have seen, wrapping to the
+  lowest free id after `4294967295`. Names are nonblank, at most 128 bytes, free of control characters, and
   unique among library grades (or among LUTs).
 - `grade` is seventeen `;`-separated sections,
   `enabled;temperature,tint;exposure;contrast,pivot;saturation;lift;gamma;gain;offset;master;red;green;blue;hue_vs_hue;hue_vs_saturation;luma_vs_saturation;lut`:

@@ -100,6 +100,8 @@ pub(crate) struct ColorWindow {
     pub(crate) library_name: String,
     pub(crate) lut_path: String,
     lut_requests: Vec<GradeLutRequest>,
+    /// The last LUT id requested this session; the next import goes past it.
+    lut_issued: Option<NonZeroU32>,
     /// The picture shown and the frame it came from.
     source: Option<(GradeTarget, SourceKind)>,
     source_frame: Option<(MonitorTap, u64)>,
@@ -120,6 +122,7 @@ impl Default for ColorWindow {
             library_name: String::new(),
             lut_path: String::new(),
             lut_requests: Vec::new(),
+            lut_issued: None,
             source: None,
             source_frame: None,
             source_at: None,
@@ -855,7 +858,7 @@ impl StudioShell {
                 })
                 .or_else(|| lut_name_problem(&name, grading).map(|p| name_reason(p, true)))
                 .or_else(|| {
-                    next_lut_id(grading)
+                    next_lut_id(grading, self.color.lut_issued)
                         .is_none()
                         .then_some(Msg::ColorReasonLutsFull.en())
                 });
@@ -869,8 +872,9 @@ impl StudioShell {
                     import_reason.unwrap_or(""),
                 );
             if import.clicked()
-                && let Some(lut) = next_lut_id(grading)
+                && let Some(lut) = next_lut_id(grading, self.color.lut_issued)
             {
+                self.color.lut_issued = Some(lut);
                 self.color.lut_requests.push(GradeLutRequest {
                     path: PathBuf::from(self.color.lut_path.trim()),
                     lut,

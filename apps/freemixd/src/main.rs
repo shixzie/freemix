@@ -10492,7 +10492,7 @@ fn refuse_undurable(
     command: &CommandMessage,
     current_revision: u64,
     attempted_revision: u64,
-    error: &dyn Error,
+    error: &(dyn Error + 'static),
 ) -> CommandSubmission {
     eprintln!(
         "FREEMIXD_DURABILITY\tv=1\tcommand={}\trevision={attempted_revision}\terror={error}",
@@ -10505,12 +10505,17 @@ fn refuse_undurable(
 ///
 /// It is refused, not failed: the engine never saw it, so retrying it is safe
 /// and the operator is told which command did not take effect instead of being
-/// told nothing or being told it succeeded.
+/// told nothing or being told it succeeded. A store that decided the refusal
+/// itself (a [`CommandRefusal`], such as a LUT import that would replace a
+/// bundled file) is answered with that refusal instead.
 fn refused_submission(
     command: &CommandMessage,
     current_revision: u64,
-    error: &dyn Error,
+    error: &(dyn Error + 'static),
 ) -> CommandSubmission {
+    if let Some(refusal) = error.downcast_ref::<CommandRefusal>() {
+        return rejected_submission(command, current_revision, refusal);
+    }
     rejected_submission(
         command,
         current_revision,
@@ -21118,6 +21123,197 @@ mod tests {
             "an undiscardable staged copy must stop the daemon"
         );
         assert_eq!(control.diagnostics().current_revision, 0);
+    }
+
+    /// Regression: an animation edit stays staged beside its template until
+    /// a checkpoint covers it, and checkpoints committed only the templates
+    /// a title still named. When the only title naming the template was
+    /// removed after the edit, the copy was never committed or discarded, and
+    /// a title added offline later picked the stale edit up on the next
+    /// start. Every staged copy now commits by the same durable-revision
+    /// rule, at the checkpoint and at startup recovery alike.
+    #[test]
+    fn a_staged_animation_of_a_template_no_title_names_any_more_still_commits() {
+        use journal::DurableJournal;
+
+        let rate = FrameRate::new(25, 1).unwrap();
+        let empty =
+            fm_titles::fm_animation::Clip::new(fm_titles::fm_animation::Timebase::new(rate), 0, 0)
+                .unwrap();
+        let longer =
+            fm_titles::fm_animation::Clip::new(fm_titles::fm_animation::Timebase::new(rate), 10, 0)
+                .unwrap();
+        for checkpoint in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+            let template_path = store.assets_root().join("titles/unit.fmtitle");
+            fs::create_dir_all(template_path.parent().unwrap()).unwrap();
+            fs::write(
+                &template_path,
+                fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
+                    template: animated_title_template(0, empty.clone()),
+                    fonts: Vec::new(),
+                    clocks: Vec::new(),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let manifest = animated_title_project();
+            store.save(&manifest).unwrap();
+            let assets = BundleAssets {
+                titles: [(test_input_id(3), animated_title_template(0, empty.clone()))].into(),
+                luts: std::collections::BTreeMap::new(),
+            };
+            let mut control = ControlService::new(
+                restore_engine_with_titles(&manifest, &assets).unwrap(),
+                Policy::development(),
+                "unit-engine",
+                "unit-log",
+                ControlLimits::default(),
+            );
+            let server = test_server(&control);
+            let mut durable = manifest.clone();
+            {
+                let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+                for command in [
+                    test_command(
+                        "animate",
+                        "animate-key",
+                        CommandPayload::SetTitleAnimation {
+                            input: fm_protocol::WireInputId::from_domain(test_input_id(3)),
+                            base_revision: 0,
+                            clip: Box::new(fm_control::title_clip_to_wire(&longer)),
+                        },
+                    ),
+                    test_command(
+                        "remove",
+                        "remove-key",
+                        CommandPayload::RemoveInput {
+                            input: fm_protocol::WireInputId::from_domain(test_input_id(3)),
+                        },
+                    ),
+                ] {
+                    let outcome = execute_durable_command(
+                        &mut control,
+                        &journal,
+                        &mut durable,
+                        &operator(),
+                        &server,
+                        &command,
+                        0,
+                    )
+                    .unwrap();
+                    let result = &outcome.submission.output.result;
+                    assert!(
+                        matches!(result, CommandResult::Accepted { .. }),
+                        "{result:?}"
+                    );
+                }
+                if checkpoint {
+                    journal.settle(&durable).unwrap();
+                }
+            }
+            if !checkpoint {
+                load_and_recover(&store, false).unwrap();
+            }
+            let titles: Vec<String> = fs::read_dir(template_path.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(titles, ["unit.fmtitle"], "checkpoint={checkpoint}");
+            assert_eq!(
+                store
+                    .load_title_template(ANIMATED_TITLE_URI)
+                    .unwrap()
+                    .template
+                    .animation
+                    .clip,
+                longer,
+                "checkpoint={checkpoint}"
+            );
+        }
+    }
+
+    /// Regression: a client could import a LUT under the id of a removed
+    /// one, replacing its bundled file, so an older manifest, journal, or
+    /// autosave naming that id loaded different content. Bundled LUT files
+    /// are immutable: the import is refused as a non-retryable conflict and
+    /// the file is untouched; the same text under the same id is accepted.
+    #[test]
+    fn a_lut_import_never_replaces_a_bundled_file_with_different_content() {
+        use journal::DurableJournal;
+
+        const INVERT: &str =
+            "LUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n";
+        const IDENTITY: &str =
+            "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+        let manifest = test_project();
+        store.save(&manifest).unwrap();
+        // LUT 1 was imported and removed before: its file stays.
+        let one = NonZeroU32::new(1).unwrap();
+        store
+            .write_lut_source(fm_model::LutId::new(one), INVERT)
+            .unwrap();
+        let mut control = test_control(&manifest);
+        let server = test_server(&control);
+        let mut durable = manifest.clone();
+        let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+        let import = |key: &str, data: &str| {
+            test_command(
+                key,
+                &format!("{key}-key"),
+                CommandPayload::ImportGradeLut {
+                    lut: one,
+                    name: "Look".into(),
+                    data: data.into(),
+                },
+            )
+        };
+
+        let refused = execute_durable_command(
+            &mut control,
+            &journal,
+            &mut durable,
+            &operator(),
+            &server,
+            &import("reuse", IDENTITY),
+            0,
+        )
+        .unwrap();
+        let CommandResult::Rejected {
+            code, retryable, ..
+        } = &refused.submission.output.result
+        else {
+            panic!("{:?}", refused.submission.output.result);
+        };
+        assert_eq!(code, RejectionCode::Conflict.as_str());
+        assert!(!retryable);
+        assert_eq!(control.diagnostics().current_revision, 0);
+        assert_eq!(
+            fs::read_to_string(store.assets_root().join("luts/1.cube")).unwrap(),
+            INVERT
+        );
+
+        let same = execute_durable_command(
+            &mut control,
+            &journal,
+            &mut durable,
+            &operator(),
+            &server,
+            &import("same", INVERT),
+            0,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                same.submission.output.result,
+                CommandResult::Accepted { .. }
+            ),
+            "{:?}",
+            same.submission.output.result
+        );
     }
 
     /// Regression: a stored template whose animation has no wire encoding

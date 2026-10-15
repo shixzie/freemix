@@ -47,7 +47,11 @@ pub(crate) fn load_grade_luts(
 ///
 /// Called before the command's journal batch is appended, so a crash after
 /// the append always finds the file; a crash before it leaves an unreferenced
-/// file that a later import of the same id replaces.
+/// file. Bundled LUT files are immutable
+/// ([`ProjectStore::write_lut_source`]): the same text under the same id is
+/// accepted again (replay, redo, a retried import), while different text
+/// under an id that already has a file (a removed LUT, which older manifests
+/// and autosaves still name) is refused with [`fm_persistence::LutError::IdReused`].
 pub(crate) fn write_imported_lut(
     store: &ProjectStore,
     command: &CommandMessage,

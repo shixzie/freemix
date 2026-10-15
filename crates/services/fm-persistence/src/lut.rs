@@ -12,7 +12,6 @@ use std::{
     fmt,
     fs::{self, File},
     io::{self, Read as _},
-    num::NonZeroU32,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -52,6 +51,10 @@ pub enum LutError {
     Project(GradeEditError),
     /// Every candidate id is taken.
     NoAvailableId,
+    /// LUT `id` already has a bundled file with different content. A LUT
+    /// file is never replaced: manifests, journals, and autosaves that name
+    /// the id must keep finding the text they were written with.
+    IdReused(LutId),
 }
 
 impl fmt::Display for LutError {
@@ -74,6 +77,10 @@ impl fmt::Display for LutError {
             Self::Asset(error) => write!(formatter, "LUT asset: {error}"),
             Self::Project(error) => error.fmt(formatter),
             Self::NoAvailableId => formatter.write_str("no LUT id is available"),
+            Self::IdReused(id) => write!(
+                formatter,
+                "LUT id {id} was used before with different content; import it under a new id"
+            ),
         }
     }
 }
@@ -89,7 +96,8 @@ impl Error for LutError {
             | Self::TooLarge { .. }
             | Self::NotUtf8
             | Self::Mismatch { .. }
-            | Self::NoAvailableId => None,
+            | Self::NoAvailableId
+            | Self::IdReused(_) => None,
         }
     }
 }
@@ -131,7 +139,9 @@ fn recorded_size(lut: &CubeLut) -> Result<u32, LutError> {
 
 impl ProjectStore {
     /// Copies a `.cube` file into the bundle as `assets/luts/<id>.cube` and
-    /// registers it on `project` under `name` with the next free id.
+    /// registers it on `project` under `name` with the next free id: the
+    /// smallest above the highest registered one whose file does not exist,
+    /// wrapping to the lowest such id after `u32::MAX`.
     ///
     /// The project is changed only when the file was written; the caller
     /// saves it. A refused import leaves no file behind.
@@ -150,23 +160,11 @@ impl ProjectStore {
         let text = read_bounded(source)?;
         let (parsed, warnings) = parse_cube(&text).map_err(LutError::Parse)?;
         let size = recorded_size(&parsed)?;
-        let first = project
-            .luts()
-            .iter()
-            .map(|lut| lut.id.get().get())
-            .max()
-            .unwrap_or(0);
         let assets_root = self.assets_root();
-        let mut candidate = first;
-        let (id, destination) = loop {
-            candidate = candidate.checked_add(1).ok_or(LutError::NoAvailableId)?;
-            let id = LutId::new(NonZeroU32::new(candidate).ok_or(LutError::NoAvailableId)?);
-            // An orphaned file from an earlier, unsaved import keeps its id.
-            if fs::symlink_metadata(assets_root.join(lut_asset_key(id))).is_err() {
-                let destination = fsutil::create_parents_within(&assets_root, &lut_asset_key(id))?;
-                break (id, destination);
-            }
-        };
+        let id = self
+            .fresh_lut_id(project.luts())
+            .ok_or(LutError::NoAvailableId)?;
+        let destination = fsutil::create_parents_within(&assets_root, &lut_asset_key(id))?;
         let lut = ProjectLut {
             id,
             name: name.to_owned(),
@@ -184,6 +182,18 @@ impl ProjectStore {
             bytes: u64::try_from(text.len()).unwrap_or(u64::MAX),
             warnings,
         })
+    }
+
+    /// The id a new LUT of a project registering `luts` gets: never a
+    /// registered one, nor one whose bundled file exists (a removed LUT, or
+    /// an orphan of an unsaved import; see [`Self::write_lut_source`]).
+    /// See [`fm_model::next_free_id`] for the order.
+    pub(crate) fn fresh_lut_id(&self, luts: &[ProjectLut]) -> Option<LutId> {
+        let assets_root = self.assets_root();
+        fm_model::next_free_id(luts.iter().map(|lut| lut.id.get()), |candidate| {
+            fs::symlink_metadata(assets_root.join(lut_asset_key(LutId::new(candidate)))).is_ok()
+        })
+        .map(LutId::new)
     }
 
     /// Loads and parses one registered LUT from the bundle.
@@ -218,13 +228,19 @@ impl ProjectStore {
     }
 
     /// Writes `.cube` text the caller already validated (for example a LUT
-    /// imported through the engine) to `assets/luts/<id>.cube`, atomically
-    /// replacing any earlier file at that id.
+    /// imported through the engine) to `assets/luts/<id>.cube`.
+    ///
+    /// A bundled LUT file is immutable: when the id already has a file with
+    /// exactly this text nothing is written (journal replay, a redone
+    /// import), and any other existing file refuses the write. A removed
+    /// LUT's file stays in the bundle, so an older manifest, journal batch,
+    /// or autosave naming its id always loads the text it was written with.
     ///
     /// # Errors
     ///
-    /// Returns [`LutError::TooLarge`] above [`MAX_LUT_FILE_BYTES`] and
-    /// [`LutError::Io`] when the file cannot be written.
+    /// Returns [`LutError::TooLarge`] above [`MAX_LUT_FILE_BYTES`],
+    /// [`LutError::IdReused`] when the id's file holds other content, and
+    /// [`LutError::Io`] when the file cannot be read or written.
     pub fn write_lut_source(&self, id: LutId, text: &str) -> Result<(), LutError> {
         if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_LUT_FILE_BYTES {
             return Err(LutError::TooLarge {
@@ -232,6 +248,23 @@ impl ProjectStore {
             });
         }
         let destination = fsutil::create_parents_within(&self.assets_root(), &lut_asset_key(id))?;
+        match read_bounded(&destination) {
+            Ok(existing) if existing == text => return Ok(()),
+            Err(LutError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(LutError::Io(error)) => return Err(LutError::Io(error)),
+            Ok(_)
+            | Err(
+                LutError::NotRegularFile(_)
+                | LutError::TooLarge { .. }
+                | LutError::NotUtf8
+                | LutError::Parse(_)
+                | LutError::Mismatch { .. }
+                | LutError::Asset(_)
+                | LutError::Project(_)
+                | LutError::NoAvailableId
+                | LutError::IdReused(_),
+            ) => return Err(LutError::IdReused(id)),
+        }
         fsutil::write_atomically(&destination, text.as_bytes())?;
         Ok(())
     }

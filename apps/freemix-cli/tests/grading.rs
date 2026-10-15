@@ -364,3 +364,49 @@ fn refused_grade_edits_leave_the_project_unchanged() {
 
     assert_eq!(fs::read_to_string(&manifest).unwrap(), before);
 }
+
+/// Regression: a client may take `u32::MAX` as a LUT or library grade id,
+/// after which the CLI's `max + 1` allocation failed for good. Allocation
+/// takes the smallest unused id above the highest, wrapping to the lowest
+/// free one; a LUT id whose bundled file exists (a removed LUT, whose older
+/// manifests and autosaves still name that file) is never reused.
+#[test]
+fn ids_wrap_to_the_lowest_free_one_after_the_highest_is_taken() {
+    let root = Root::new("exhausted");
+    let project = new_project(&root);
+    let path = project.to_str().unwrap();
+    let store = ProjectStore::new(&project).unwrap();
+    let stored = store.load().unwrap();
+    let mut edited = stored.project().clone();
+    let top = NonZeroU32::new(u32::MAX).unwrap();
+    edited
+        .add_lut(fm_model::ProjectLut {
+            id: LutId::new(top),
+            name: "Top".into(),
+            kind: fm_grade::CubeKind::ThreeD,
+            size: 2,
+        })
+        .unwrap();
+    edited
+        .add_grade(fm_model::ProjectGrade {
+            id: GradeId::new(top),
+            name: "Top".into(),
+            grade: Grade::IDENTITY,
+        })
+        .unwrap();
+    store.save(&stored.with_project(edited).unwrap()).unwrap();
+    store
+        .write_lut_source(LutId::new(top), INVERT_CUBE)
+        .unwrap();
+    // LUT 1 was imported and removed earlier: its file stays, so does its id.
+    store
+        .write_lut_source(LutId::new(NonZeroU32::new(1).unwrap()), INVERT_CUBE)
+        .unwrap();
+
+    let cube = root.path("Second.cube");
+    fs::write(&cube, INVERT_CUBE).unwrap();
+    let imported = succeed(&["grade-import-lut", path, cube.to_str().unwrap()]);
+    assert!(imported.contains("asset://luts/2.cube"), "{imported}");
+    let saved = succeed(&["grade-set", path, "1", "--save-as", "Low"]);
+    assert!(saved.contains("saved library grade 1"), "{saved}");
+}

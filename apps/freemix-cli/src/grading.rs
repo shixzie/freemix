@@ -118,15 +118,13 @@ pub fn set(
         } else {
             let grade = build_grade(spec)?;
             if let Some(name) = save_as {
-                let next = project
-                    .grades()
-                    .iter()
-                    .map(|entry| entry.id.get().get())
-                    .max()
-                    .unwrap_or(0)
-                    .checked_add(1)
-                    .and_then(NonZeroU32::new)
-                    .ok_or_else(|| AppFailure("no grade id is available".into()))?;
+                // Above the highest id, wrapping to the lowest free one once
+                // a client has taken `u32::MAX`.
+                let next = fm_model::next_free_id(
+                    project.grades().iter().map(|entry| entry.id.get()),
+                    |_| false,
+                )
+                .ok_or_else(|| AppFailure("no grade id is available".into()))?;
                 let id = GradeId::new(next);
                 project
                     .add_grade(ProjectGrade { id, name, grade })

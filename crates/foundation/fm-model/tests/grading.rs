@@ -80,6 +80,34 @@ fn with_lut(id: u32) -> Grade {
     }
 }
 
+/// Ids go above the highest in use, never back into a gap, and wrap to the
+/// lowest free id only once `u32::MAX` is taken.
+#[test]
+fn ids_are_allocated_above_the_highest_and_wrap_after_u32_max() {
+    let ids = |values: &[u32]| {
+        values
+            .iter()
+            .map(|value| NonZeroU32::new(*value).unwrap())
+            .collect::<Vec<_>>()
+    };
+    let id = |value: u32| NonZeroU32::new(value);
+    assert_eq!(fm_model::next_free_id(ids(&[]), |_| false), id(1));
+    assert_eq!(fm_model::next_free_id(ids(&[1, 4]), |_| false), id(5));
+    assert_eq!(
+        fm_model::next_free_id(ids(&[1, 4]), |candidate| candidate.get() == 5),
+        id(6)
+    );
+    assert_eq!(
+        fm_model::next_free_id(ids(&[1, u32::MAX]), |_| false),
+        id(2)
+    );
+    assert_eq!(
+        fm_model::next_free_id(ids(&[1, u32::MAX - 1]), |candidate| candidate.get() <= 2
+            || candidate.get() == u32::MAX),
+        id(3)
+    );
+}
+
 #[test]
 fn lut_uris_name_bundled_files_by_id() {
     assert_eq!(lut_asset_uri(lut_id(7)), "asset://luts/7.cube");

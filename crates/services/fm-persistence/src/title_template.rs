@@ -543,25 +543,67 @@ impl ProjectStore {
                 .resolve_asset_uri(uri)
                 .map_err(TitleTemplateError::Asset)?;
             let staged = staged_template_copies(&path).map_err(TitleTemplateError::Io)?;
-            let (due, later): (Vec<_>, Vec<_>) = staged
-                .into_iter()
-                .partition(|(revision, _)| *revision <= through_revision);
-            if discard_later {
-                remove_staged(&later.into_iter().map(|(_, path)| path).collect::<Vec<_>>())
-                    .map_err(TitleTemplateError::Io)?;
-            }
-            let Some(((_, newest), older)) = due.split_last() else {
-                continue;
+            commit_staged_copies(&path, staged, through_revision, discard_later)
+                .map_err(TitleTemplateError::Io)?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::commit_staged_title_animations`] for every template under
+    /// `assets/` that has a staged copy, whether or not a title still names
+    /// it: an edit whose only title was removed afterwards is as durable as
+    /// any other, and a title added later must find the template as the
+    /// newest manifest left it. Staged copies of a template that no longer
+    /// exists are removed. Symbolic links are not followed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TitleTemplateError::Io`] when listing, renaming, or removing
+    /// fails.
+    pub fn commit_every_staged_title_animation(
+        &self,
+        through_revision: u64,
+        discard_later: bool,
+    ) -> Result<(), TitleTemplateError> {
+        let mut staged: BTreeMap<PathBuf, Vec<(u64, PathBuf)>> = BTreeMap::new();
+        let mut pending = vec![self.assets_root()];
+        while let Some(directory) = pending.pop() {
+            let entries = match std::fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(TitleTemplateError::Io(error)),
             };
-            remove_staged(
-                &older
-                    .iter()
-                    .map(|(_, path)| path.clone())
-                    .collect::<Vec<_>>(),
-            )
+            for entry in entries {
+                let entry = entry.map_err(TitleTemplateError::Io)?;
+                let file_type = entry.file_type().map_err(TitleTemplateError::Io)?;
+                if file_type.is_dir() {
+                    pending.push(entry.path());
+                    continue;
+                }
+                if !file_type.is_file() {
+                    continue;
+                }
+                let file_name = entry.file_name();
+                let Some((template, revision)) = file_name.to_str().and_then(staged_copy_name)
+                else {
+                    continue;
+                };
+                staged
+                    .entry(directory.join(template))
+                    .or_default()
+                    .push((revision, entry.path()));
+            }
+        }
+        for (path, mut copies) in staged {
+            copies.sort();
+            let template_exists =
+                std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file());
+            if template_exists {
+                commit_staged_copies(&path, copies, through_revision, discard_later)
+            } else {
+                remove_staged(&copies.into_iter().map(|(_, copy)| copy).collect::<Vec<_>>())
+            }
             .map_err(TitleTemplateError::Io)?;
-            std::fs::rename(newest, &path).map_err(TitleTemplateError::Io)?;
-            fsutil::sync_parent(&path).map_err(TitleTemplateError::Io)?;
         }
         Ok(())
     }
@@ -938,23 +980,69 @@ fn staged_template_copies(path: &Path) -> io::Result<Vec<(u64, PathBuf)>> {
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         let file_name = entry.file_name();
-        let Some(digits) = file_name
+        let Some(revision) = file_name
             .to_str()
             .and_then(|name| name.strip_prefix(&prefix))
+            .and_then(staged_revision)
         else {
             continue;
         };
-        if digits.is_empty() || (digits.len() > 1 && digits.starts_with('0')) {
-            continue;
-        }
-        if let Ok(revision) = digits.parse::<u64>()
-            && entry.file_type()?.is_file()
-        {
+        if entry.file_type()?.is_file() {
             copies.push((revision, entry.path()));
         }
     }
     copies.sort();
     Ok(copies)
+}
+
+/// The revision a staged copy's suffix names: canonical ASCII decimal only
+/// (no sign, no leading zero, no other text), within `u64`.
+fn staged_revision(digits: &str) -> Option<u64> {
+    if digits.is_empty()
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The template file name and revision of a staged copy's file name
+/// (`<template>.staged-<revision>`), if it is one.
+fn staged_copy_name(name: &str) -> Option<(&str, u64)> {
+    let (template, digits) = name.rsplit_once(".staged-")?;
+    if template.is_empty() {
+        return None;
+    }
+    Some((template, staged_revision(digits)?))
+}
+
+/// Makes the newest of `staged` (ascending by revision) at or before
+/// `through_revision` the template at `path`; see
+/// [`ProjectStore::commit_staged_title_animations`].
+fn commit_staged_copies(
+    path: &Path,
+    staged: Vec<(u64, PathBuf)>,
+    through_revision: u64,
+    discard_later: bool,
+) -> io::Result<()> {
+    let (due, later): (Vec<_>, Vec<_>) = staged
+        .into_iter()
+        .partition(|(revision, _)| *revision <= through_revision);
+    if discard_later {
+        remove_staged(&later.into_iter().map(|(_, path)| path).collect::<Vec<_>>())?;
+    }
+    let Some(((_, newest), older)) = due.split_last() else {
+        return Ok(());
+    };
+    remove_staged(
+        &older
+            .iter()
+            .map(|(_, path)| path.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    std::fs::rename(newest, path)?;
+    fsutil::sync_parent(path)
 }
 
 /// Removes `paths` (a missing one is fine) and syncs their directory.

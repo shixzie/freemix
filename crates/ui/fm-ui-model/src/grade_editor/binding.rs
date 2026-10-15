@@ -75,10 +75,34 @@ pub fn next_library_id(grading: &GradingStatus) -> Option<NonZeroU32> {
     first_free(grading.library.iter().map(|entry| entry.grade))
 }
 
-/// The smallest LUT id not in use.
+/// The id to import the next LUT under: never one the project used before.
+///
+/// A removed LUT's bundled file stays (older manifests and autosaves name
+/// it) and the daemon refuses an import that would replace it, so an id is
+/// not reused: allocation goes above the highest registered id, and past
+/// `issued`, the last id this client sent (an import the daemon refused
+/// moves on rather than repeating the same id). After `u32::MAX` it wraps to
+/// the lowest unregistered id; `None` only when every id is registered.
 #[must_use]
-pub fn next_lut_id(grading: &GradingStatus) -> Option<NonZeroU32> {
-    first_free(grading.luts.iter().map(|entry| entry.lut))
+pub fn next_lut_id(grading: &GradingStatus, issued: Option<NonZeroU32>) -> Option<NonZeroU32> {
+    let registered = |id: u32| grading.luts.iter().any(|entry| entry.lut.get() == id);
+    let highest = grading
+        .luts
+        .iter()
+        .map(|entry| entry.lut.get())
+        .max()
+        .unwrap_or(0);
+    let start = match issued {
+        Some(issued) if issued.get() > highest || highest == u32::MAX => issued.get(),
+        _ => highest,
+    };
+    start
+        .checked_add(1)
+        .into_iter()
+        .flat_map(|above| above..=u32::MAX)
+        .chain(1..=start)
+        .filter(|id| !registered(*id))
+        .find_map(NonZeroU32::new)
 }
 
 fn first_free(used: impl Iterator<Item = NonZeroU32>) -> Option<NonZeroU32> {
@@ -744,7 +768,7 @@ mod tests {
             });
         }
         assert_eq!(next_library_id(&grading), Some(id(3)));
-        assert_eq!(next_lut_id(&grading), Some(id(1)));
+        assert_eq!(next_lut_id(&grading, None), Some(id(1)));
         assert_eq!(
             library_name_problem("Look 2", &grading),
             Some(GradeNameProblem::Taken)
@@ -770,5 +794,29 @@ mod tests {
         assert_eq!(lut_id("asset://luts/film.cube"), None);
         let lut = GradeLut::new(lut_uri(id(7)), 500);
         assert_eq!(lut_id(&lut.asset_uri), Some(id(7)));
+    }
+
+    /// Regression: Studio imported under the smallest free LUT id, so a
+    /// removed LUT's id came straight back, and the daemon (whose bundled
+    /// LUT files are immutable) refused it. Ids go above the highest seen,
+    /// past the last one this session issued, and wrap after `u32::MAX`.
+    #[test]
+    fn lut_ids_are_not_reused() {
+        let mut grading = GradingStatus::default();
+        for lut in [1, 3] {
+            grading.luts.push(crate::GradeLutStatus {
+                lut: id(lut),
+                name: format!("LUT {lut}"),
+                kind: fm_grade::CubeKind::ThreeD,
+                size: 2,
+            });
+        }
+        assert_eq!(next_lut_id(&grading, None), Some(id(4)));
+        // LUT 4 was issued (and refused, or removed since): never again.
+        assert_eq!(next_lut_id(&grading, Some(id(4))), Some(id(5)));
+        assert_eq!(next_lut_id(&grading, Some(id(2))), Some(id(4)));
+        grading.luts[1].lut = id(u32::MAX);
+        assert_eq!(next_lut_id(&grading, None), Some(id(2)));
+        assert_eq!(next_lut_id(&grading, Some(id(2))), Some(id(3)));
     }
 }

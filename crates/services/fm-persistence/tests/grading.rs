@@ -426,6 +426,45 @@ fn lut_import_refuses_hostile_and_invalid_files_without_leaving_any() {
     );
 }
 
+/// Regression: a LUT id was reusable once its LUT was removed, and writing
+/// the new import replaced the bundled file, so an older manifest, journal,
+/// or autosave naming that id silently loaded different content of the same
+/// kind and size. A bundled LUT file is now immutable: rewriting the same
+/// text is idempotent (journal replay, a redone import), different text is
+/// refused, and import allocation skips every id whose file exists.
+#[test]
+fn bundled_lut_files_are_never_replaced_with_different_content() {
+    let temp = TestDirectory::new("immutable");
+    let store = temp.store("show.freemix");
+    let mut project = project();
+    let source = temp.file("invert.cube", INVERT_CUBE.as_bytes());
+    let first = store
+        .import_lut(&mut project, &source, "Invert")
+        .unwrap()
+        .lut;
+    assert_eq!(first.id, lut_id(1));
+    store.write_lut_source(lut_id(1), INVERT_CUBE).unwrap();
+
+    let other = "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";
+    assert!(matches!(
+        store.write_lut_source(lut_id(1), other),
+        Err(LutError::IdReused(id)) if id == lut_id(1)
+    ));
+    assert_eq!(
+        fs::read_to_string(store.assets_root().join("luts/1.cube")).unwrap(),
+        INVERT_CUBE
+    );
+    // The removed LUT's file keeps its id out of every later allocation.
+    project.remove_lut(lut_id(1)).unwrap();
+    let identity = temp.file("identity.cube", other.as_bytes());
+    let second = store
+        .import_lut(&mut project, &identity, "Identity")
+        .unwrap()
+        .lut;
+    assert_eq!(second.id, lut_id(2));
+    assert_eq!(&*store.load_lut_source(&first).unwrap().0, INVERT_CUBE);
+}
+
 #[test]
 fn loading_refuses_a_bundled_lut_that_no_longer_matches() {
     let temp = TestDirectory::new("mismatch");

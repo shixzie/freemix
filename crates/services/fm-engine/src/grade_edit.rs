@@ -15,6 +15,9 @@
 //! works like removing an input: it clears the redo stack and forgets every
 //! retained undo entry that names the LUT. Undoing an *import* (which carried
 //! its bytes in the command) removes the LUT again and is undoable as usual.
+//! Because the forgotten entries may include the grade edits of an input
+//! whose add is still undoable, undoing an input add is refused as history
+//! drift while that input carries any grade (removal would drop it for good).
 
 use core::fmt;
 use std::{collections::BTreeMap, sync::Arc};

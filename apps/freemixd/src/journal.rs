@@ -22,7 +22,8 @@
 //! matches the newest manifest, and journal replay re-applies exactly the
 //! edits the manifest does not hold yet.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 
 use fm_persistence::{JournalWriter, MutationBatch, ProjectPosition, ProjectStore, StoredProject};
 use fm_protocol::{
@@ -106,33 +107,20 @@ pub(crate) trait DurableStore {
     }
 }
 
-/// Every stored template URI a title input of `project` names.
-fn title_template_uris(project: &StoredProject) -> Vec<&str> {
-    project
-        .project()
-        .inputs()
-        .iter()
-        .filter_map(|input| match &input.kind {
-            fm_model::InputKind::Title(title) => Some(title.template_uri.as_str()),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Commits the staged template animations of `project`'s titles through its
-/// revision (see the module docs); `discard_later` also removes copies
-/// staged after it, whose batches will never be replayed.
+/// Commits every staged template animation in `store`'s bundle through
+/// `project`'s revision (see the module docs), including templates no title
+/// names any more: an edit is durable once a manifest covers its revision,
+/// whatever happened to its title afterwards. `discard_later` also removes
+/// copies staged after it, whose batches will never be replayed. Startup
+/// and recovery use this; a running daemon's checkpoints commit only the
+/// templates it staged ([`DurableJournal`]).
 pub(crate) fn commit_staged_title_animations(
     store: &ProjectStore,
     project: &StoredProject,
     discard_later: bool,
 ) -> AppResult<()> {
     store
-        .commit_staged_title_animations(
-            title_template_uris(project),
-            project.position().revision,
-            discard_later,
-        )
+        .commit_every_staged_title_animation(project.position().revision, discard_later)
         .map_err(|error| AppFailure(format!("staged title animation: {error}")))?;
     Ok(())
 }
@@ -145,6 +133,11 @@ pub(crate) fn commit_staged_title_animations(
 pub(crate) struct DurableJournal<'store> {
     writer: JournalWriter<'store>,
     pending: Cell<u64>,
+    /// Every template URI this run staged an animation for. Startup
+    /// recovery committed (or discarded) every copy staged before the run,
+    /// so these are the only templates a checkpoint can find staged —
+    /// including one whose last title was removed after its edit.
+    staged: RefCell<BTreeSet<String>>,
 }
 
 impl<'store> DurableJournal<'store> {
@@ -152,6 +145,7 @@ impl<'store> DurableJournal<'store> {
         Self {
             writer,
             pending: Cell::new(0),
+            staged: RefCell::new(BTreeSet::new()),
         }
     }
 
@@ -201,8 +195,22 @@ impl DurableStore for DurableJournal<'_> {
         }
         // An imported LUT's file is written before its batch, so every
         // manifest and journal that names the LUT finds the file.
-        crate::grading::write_imported_lut(self.writer.project_store(), command)
-            .map_err(|error| AppFailure(format!("imported LUT could not be written: {error}")))?;
+        crate::grading::write_imported_lut(self.writer.project_store(), command).map_err(
+            |error| -> Box<dyn std::error::Error> {
+                match error {
+                    // Not a durability failure: the same command can never
+                    // succeed, so it is refused as a conflict.
+                    fm_persistence::LutError::IdReused(_) => Box::new(crate::CommandRefusal {
+                        code: fm_command::RejectionCode::Conflict,
+                        retryable: false,
+                        message: error.to_string(),
+                    }),
+                    error => Box::new(AppFailure(format!(
+                        "imported LUT could not be written: {error}"
+                    ))),
+                }
+            },
+        )?;
         let sequence = self
             .writer
             .head_sequence()
@@ -228,7 +236,16 @@ impl DurableStore for DurableJournal<'_> {
         self.pending.set(0);
         // The manifest now holds every staged animation edit through its
         // revision; later ones still wait for their batches' checkpoint.
-        commit_staged_title_animations(self.writer.project_store(), project, false)
+        let staged = self.staged.borrow();
+        self.writer
+            .project_store()
+            .commit_staged_title_animations(
+                staged.iter().map(String::as_str),
+                project.position().revision,
+                false,
+            )
+            .map_err(|error| AppFailure(format!("staged title animation: {error}")))?;
+        Ok(())
     }
 
     fn stage_title_animations(
@@ -237,6 +254,7 @@ impl DurableStore for DurableJournal<'_> {
         animations: &[(String, fm_titles::TitleAnimation)],
     ) -> AppResult<()> {
         for (uri, animation) in animations {
+            self.staged.borrow_mut().insert(uri.clone());
             self.writer
                 .project_store()
                 .stage_title_animation(uri, revision, animation)

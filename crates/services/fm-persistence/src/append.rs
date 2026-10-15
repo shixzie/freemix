@@ -28,8 +28,6 @@ use std::{
     num::NonZeroU128,
 };
 
-use core::num::NonZeroU32;
-
 use fm_grade::Grade;
 use fm_model::{
     GradeId, GradeSource, InputKind, LutId, MAX_GRADE_NAME_BYTES, MAX_LUT_NAME_BYTES, Project,
@@ -365,10 +363,11 @@ impl ProjectStore {
             .collect::<BTreeSet<_>>();
 
         let mut grading = project.grading().clone();
-        let mut next_lut = next_u32(grading.luts.iter().map(|lut| lut.id.get()));
         let mut lut_map = BTreeMap::new();
         for lut in from.luts.iter().filter(|lut| used_luts.contains(&lut.id)) {
-            let id = LutId::new(allocate_u32(&mut next_lut)?);
+            let id = self
+                .fresh_lut_id(&grading.luts)
+                .ok_or(BundleError::IdSpaceExhausted)?;
             let (text, _) =
                 source
                     .load_lut_source(lut)
@@ -394,10 +393,14 @@ impl ProjectStore {
             report.luts.push((lut.id, id));
         }
 
-        let mut next_grade = next_u32(grading.grades.iter().map(|grade| grade.id.get()));
         let mut grade_map = BTreeMap::new();
         for grade in library {
-            let id = GradeId::new(allocate_u32(&mut next_grade)?);
+            let id = GradeId::new(
+                fm_model::next_free_id(grading.grades.iter().map(|grade| grade.id.get()), |_| {
+                    false
+                })
+                .ok_or(BundleError::IdSpaceExhausted)?,
+            );
             let name = unique_name(&grade.name, MAX_GRADE_NAME_BYTES, |candidate| {
                 grading.grades.iter().any(|other| other.name == candidate)
             })?;
@@ -448,18 +451,6 @@ fn relinked(grade: &Grade, luts: &BTreeMap<LutId, LutId>) -> Grade {
 /// Appended grades that do not fit the target (a full library or LUT table).
 const fn grading_failure(error: fm_model::GradeEditError) -> BundleError {
     BundleError::Grading(error)
-}
-
-fn next_u32(existing: impl Iterator<Item = NonZeroU32>) -> Option<NonZeroU32> {
-    existing
-        .max()
-        .map_or(NonZeroU32::new(1), |max| max.checked_add(1))
-}
-
-fn allocate_u32(next: &mut Option<NonZeroU32>) -> Result<NonZeroU32, BundleError> {
-    let id = next.ok_or(BundleError::IdSpaceExhausted)?;
-    *next = id.checked_add(1);
-    Ok(id)
 }
 
 struct IdMaps<'a> {

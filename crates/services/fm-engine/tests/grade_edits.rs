@@ -505,3 +505,76 @@ fn unknown_inputs_and_removed_inputs_drop_grades() {
     ));
     assert_eq!(grading(&engine).inputs.len(), 0);
 }
+
+/// Regression: LUT removal forgets the history entries that name the LUT,
+/// which can leave an input add on top of the stack while the added input
+/// still carries a grade those forgotten entries set. Undoing the add then
+/// removed the input with its grade, and redo re-added it ungraded. Undoing
+/// an add is refused as history drift while the added input is graded.
+#[test]
+fn undoing_an_input_add_never_drops_its_grade_after_a_lut_removal() {
+    let mut engine = engine();
+    accepted(&run(
+        &mut engine,
+        "import",
+        import(1, "Invert", INVERT_CUBE),
+    ));
+    accepted(&run(
+        &mut engine,
+        "add-4",
+        EngineCommand::AddInput {
+            input: input(4),
+            name: "Input 4".to_owned(),
+            source: fm_engine::EngineInputSource::Bars,
+        },
+    ));
+    accepted(&run(
+        &mut engine,
+        "grade-lut",
+        grade(EngineGradeEdit::SetInput {
+            input: input(4),
+            source: Some(GradeSource::Inline(Box::new(with_lut(1)))),
+        }),
+    ));
+    accepted(&run(
+        &mut engine,
+        "grade-cool",
+        grade(EngineGradeEdit::SetInput {
+            input: input(4),
+            source: Some(GradeSource::Inline(Box::new(cool()))),
+        }),
+    ));
+    accepted(&run(
+        &mut engine,
+        "remove-lut",
+        grade(EngineGradeEdit::RemoveLut { id: lut_id(1) }),
+    ));
+    // Both grade entries named the LUT and were forgotten; the add is on top.
+    let outcome = run(&mut engine, "undo-add", UNDO);
+    let refused = rejection(&outcome);
+    assert_eq!(refused.code, RejectionCode::Conflict, "{refused:?}");
+    assert_eq!(
+        EditRejectionKind::of(refused),
+        Some(EditRejectionKind::HistoryDrift)
+    );
+    assert!(engine.show().inputs().contains(&input(4)));
+    assert_eq!(
+        grading(&engine).inputs.get(&input(4)),
+        Some(&GradeSource::Inline(Box::new(cool())))
+    );
+
+    // Clearing the grade first makes the add undoable and redoable again
+    // (the clear is undone first, so it is cleared again by hand here).
+    accepted(&run(
+        &mut engine,
+        "clear",
+        grade(EngineGradeEdit::SetInput {
+            input: input(4),
+            source: None,
+        }),
+    ));
+    accepted(&run(&mut engine, "undo-clear", UNDO));
+    let outcome = run(&mut engine, "undo-add-graded", UNDO);
+    assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
+    assert!(grading(&engine).inputs.contains_key(&input(4)));
+}

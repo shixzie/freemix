@@ -94,6 +94,30 @@ pub fn lut_id_from_uri(uri: &str) -> Option<LutId> {
     digits.parse::<NonZeroU32>().ok().map(LutId::new)
 }
 
+/// Allocates a library grade or LUT id: the smallest id above the highest of
+/// `used` that `taken` does not claim, wrapping to the lowest id that is
+/// neither used nor taken once every id above the highest is (a client may
+/// name any id, `u32::MAX` included). `taken` adds ids that must not be
+/// reused although nothing uses them now, such as a removed LUT whose
+/// bundled file older manifests still name. `None` only when every id is
+/// claimed.
+#[must_use]
+pub fn next_free_id(
+    used: impl IntoIterator<Item = NonZeroU32>,
+    mut taken: impl FnMut(NonZeroU32) -> bool,
+) -> Option<NonZeroU32> {
+    let used: std::collections::BTreeSet<u32> = used.into_iter().map(NonZeroU32::get).collect();
+    let highest = used.last().copied().unwrap_or(0);
+    highest
+        .checked_add(1)
+        .into_iter()
+        .flat_map(|above| above..=u32::MAX)
+        .chain(1..=highest)
+        .filter(|id| !used.contains(id))
+        .filter_map(NonZeroU32::new)
+        .find(|id| !taken(*id))
+}
+
 /// A named grade in the project library.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectGrade {

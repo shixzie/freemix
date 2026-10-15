@@ -42,7 +42,10 @@
 //! re-appends it with the same identifier, name, and source. Undo is refused
 //! as drift unless the added input still exists under its recorded name at the
 //! end of the input order (where the add put it), so redo restores the same
-//! position. Undo discards the input's Master strip moves, which are live
+//! position. It is also refused as drift while the input carries a grade:
+//! removal drops the grade, and the edits that set it may have been
+//! forgotten (LUT removal forgets every entry naming the LUT), so redo could
+//! not bring it back. Clear the grade first. Undo discards the input's Master strip moves, which are live
 //! operations; redo restores the default strip, exactly as the add created it.
 //! Undo is refused like any removal while the input is on air or configured
 //! (Program, Preview, a transition, an overlay, or a Stinger slot), and while
@@ -509,6 +512,9 @@ fn reverses(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) 
         // Undoing an add removes the input it added. The input must still
         // carry the recorded name and sit at the end of the order, where the
         // add appended it, so that redo re-appends it to the same position.
+        // It must also be ungraded: removal drops the input's grade, and the
+        // edits that set it may no longer be in the history (LUT removal
+        // forgets them), so redo could not restore it.
         (
             EngineCommand::RemoveInput { input },
             EngineCommand::AddInput {
@@ -518,6 +524,7 @@ fn reverses(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) 
             input == added
                 && state.inputs().last() == Some(input)
                 && state.input_name(*input) == Some(name.as_str())
+                && !state.grading().inputs.contains_key(input)
         }
         // Undoing an import removes the LUT it imported, which must still be
         // the last LUT with the recorded name and text, so redo re-imports

@@ -2091,3 +2091,92 @@ fn staged_title_animations_commit_through_a_revision() {
         animation(20, 2)
     );
 }
+
+/// Regression: only names ending in a canonical decimal revision are staged
+/// copies. `staged-+5` was parsed as revision 5 (and committed over the
+/// template); signs, leading zeros, and other text are left alone.
+#[test]
+fn staged_copy_names_parse_revisions_strictly() {
+    let temp = TestDirectory::new("staged-strict");
+    let store = temp.store("show.freemix");
+    let source = write_source(&temp, "lower.fmtitle", &shape_template("Bar"));
+    let uri = store
+        .import_title_template(&source, &[])
+        .unwrap()
+        .template_uri;
+    let original = store.load_title_template(&uri).unwrap();
+    let mut edited = shape_template("Bar");
+    edited
+        .edit_animation(|clip| clip.set_phase_frames_keeping_keys(Phase::In, 10))
+        .unwrap();
+    store
+        .stage_title_animation(&uri, 5, &TitleAnimation::new(edited.animation.clip, 1))
+        .unwrap();
+    let titles = store.assets_root().join("titles");
+    let staged = fs::read(titles.join("lower.fmtitle.staged-5")).unwrap();
+    fs::remove_file(titles.join("lower.fmtitle.staged-5")).unwrap();
+    for name in [
+        "staged-+5",
+        "staged-05",
+        "staged- 5",
+        "staged-5 ",
+        "staged-٥",
+    ] {
+        fs::write(titles.join(format!("lower.fmtitle.{name}")), &staged).unwrap();
+    }
+
+    store
+        .commit_staged_title_animations([uri.as_str()], 9, true)
+        .unwrap();
+    store.commit_every_staged_title_animation(9, true).unwrap();
+    assert_eq!(store.load_title_template(&uri).unwrap(), original);
+    assert_eq!(assets_listing(&store).len(), 6);
+}
+
+/// Regression: a staged animation of a template no title references any
+/// more (its only title was removed after the edit) was never committed or
+/// discarded, so a title added offline later picked the stale edit up at the
+/// next start. Committing every staged copy in the bundle covers it, by the
+/// same revision rule as a referenced template.
+#[test]
+fn every_staged_copy_in_the_bundle_commits_through_a_revision() {
+    let temp = TestDirectory::new("staged-orphan");
+    let store = temp.store("show.freemix");
+    let source = write_source(&temp, "lower.fmtitle", &shape_template("Bar"));
+    let uri = store
+        .import_title_template(&source, &[])
+        .unwrap()
+        .template_uri;
+    let animation = |in_frames: u32, revision: u64| {
+        let mut template = shape_template("Bar");
+        template
+            .edit_animation(|clip| clip.set_phase_frames_keeping_keys(Phase::In, in_frames))
+            .unwrap();
+        TitleAnimation::new(template.animation.clip, revision)
+    };
+    store
+        .stage_title_animation(&uri, 5, &animation(10, 1))
+        .unwrap();
+    store
+        .stage_title_animation(&uri, 9, &animation(20, 2))
+        .unwrap();
+    // A staged copy whose template is gone is removed, never resurrected.
+    let titles = store.assets_root().join("titles");
+    fs::write(titles.join("gone.fmtitle.staged-3"), b"{}").unwrap();
+
+    store.commit_every_staged_title_animation(7, false).unwrap();
+    assert_eq!(
+        store.load_title_template(&uri).unwrap().template.animation,
+        animation(10, 1)
+    );
+    assert_eq!(
+        assets_listing(&store),
+        vec!["titles/lower.fmtitle", "titles/lower.fmtitle.staged-9"]
+    );
+    store.commit_every_staged_title_animation(7, true).unwrap();
+    assert_eq!(assets_listing(&store), vec!["titles/lower.fmtitle"]);
+    assert_eq!(
+        store.load_title_template(&uri).unwrap().template.animation,
+        animation(10, 1)
+    );
+}
