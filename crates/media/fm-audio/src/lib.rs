@@ -155,6 +155,12 @@ pub enum AudioError {
         denominator: u32,
     },
     CadenceBlockTooLarge(u128),
+    /// Making `parent` the parent of `group` would nest a group inside
+    /// itself.
+    GroupCycle {
+        group: MixerGroup,
+        parent: MixerGroup,
+    },
 }
 
 impl fmt::Display for AudioError {
@@ -241,6 +247,12 @@ impl fmt::Display for AudioError {
             Self::CadenceBlockTooLarge(samples) => write!(
                 formatter,
                 "video cadence requires up to {samples} audio samples in one block"
+            ),
+            Self::GroupCycle { group, parent } => write!(
+                formatter,
+                "group {} cannot nest inside group {}: groups must not form a cycle",
+                group.number(),
+                parent.number()
             ),
         }
     }
@@ -498,10 +510,15 @@ pub const MIXER_GROUP_COUNT: usize = 4;
 
 /// One VCA-style strip group, numbered `1..=MIXER_GROUP_COUNT`.
 ///
-/// A group carries no audio of its own. It scales and mutes the strips
-/// assigned to it: a member's effective gain is its own fader times the group
-/// fader (their dB values add), and a member is audible only while neither
-/// the strip nor its group is muted. Solo, balance, pan, delay, and
+/// A group carries no audio of its own. It scales, mutes, and solos the
+/// strips assigned to it: a member's effective gain is its own fader times
+/// the group fader (their dB values add), a member is audible only while
+/// neither the strip nor its group is muted, and soloing a group solos every
+/// member. Groups nest: a group may have a parent group, and a member then
+/// also follows every ancestor (the effective gain is the product of the
+/// strip fader and every group fader on the chain; any muted ancestor mutes
+/// and any soloed ancestor solos). Parents never form a cycle, so a chain is
+/// at most [`MIXER_GROUP_COUNT`] groups deep. Balance, pan, delay, and
 /// follow-video remain per strip.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct MixerGroup(u8);
@@ -550,6 +567,8 @@ impl Default for GroupState {
 struct GroupStrip {
     state: GroupState,
     ramp: GainRamp,
+    soloed: bool,
+    parent: Option<MixerGroup>,
 }
 
 impl GroupStrip {
@@ -560,8 +579,55 @@ impl GroupStrip {
                 muted: false,
             },
             ramp: GainRamp::immediate(Gain::UNITY),
+            soloed: false,
+            parent: None,
         }
     }
+}
+
+/// How a soloed strip is heard (AU-001).
+///
+/// - [`SoloMode::InPlace`] (solo-in-place, the default) gates Program: while
+///   any strip is soloed, every other strip is silent in Master, and the
+///   monitor bus follows Master.
+/// - [`SoloMode::Pfl`] (pre-fade listen) leaves Program untouched and routes
+///   each soloed strip's pre-fader signal (after delay and channel mapping,
+///   before the fader, group faders, balance, pan, mute, follow-video, and
+///   source envelopes) to the monitor bus.
+/// - [`SoloMode::Afl`] (after-fade listen) leaves Program untouched and
+///   routes each soloed strip's post-fader signal (strip and group faders,
+///   balance, and pan applied; mute, follow-video, and source envelopes not)
+///   to the monitor bus.
+///
+/// In PFL and AFL the monitor bus follows Master while nothing is soloed.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum SoloMode {
+    #[default]
+    InPlace,
+    Pfl,
+    Afl,
+}
+
+impl SoloMode {
+    /// Every mode in display order.
+    pub const ALL: [Self; 3] = [Self::InPlace, Self::Pfl, Self::Afl];
+
+    /// Whether a solo is heard on the monitor bus rather than gating Program.
+    #[must_use]
+    pub const fn listens(self) -> bool {
+        !matches!(self, Self::InPlace)
+    }
+}
+
+/// Which part of a strip one mixing pass renders.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StripTap {
+    /// The full Program contribution.
+    Program,
+    /// Pre-fader listen: unity gain, no balance, pan, or source envelope.
+    PreFader,
+    /// After-fader listen: faders, balance, and pan, no source envelope.
+    AfterFader,
 }
 
 /// An immutable, owned planar `f32` DSP/generator block.
@@ -1003,24 +1069,38 @@ impl InputStrip {
 }
 
 /// The per-sample ramps one strip steps while it is mixed.
+#[derive(Clone, Copy)]
 struct StripRamps {
     gain: GainRamp,
     balance: PositionRamp,
     pan: PositionRamp,
-    group: Option<GainRamp>,
+    /// The fader ramps of the strip's group and every ancestor group.
+    groups: [Option<GainRamp>; MIXER_GROUP_COUNT],
 }
 
 impl StripRamps {
     /// Advances every ramp one sample and returns `(gain, balance, pan)`,
-    /// where `gain` already includes the group fader.
+    /// where `gain` already includes every group fader on the chain.
     fn next(&mut self) -> (f32, f32, f32) {
-        let group = self.group.as_mut().map_or(1.0, GainRamp::next);
+        let groups = self
+            .groups
+            .iter_mut()
+            .flatten()
+            .fold(1.0, |gain, ramp| gain * ramp.next());
         (
-            self.gain.next() * group,
+            self.gain.next() * groups,
             self.balance.next(),
             self.pan.next(),
         )
     }
+}
+
+/// A strip's group membership resolved along the parent chain.
+#[derive(Clone, Copy)]
+struct ResolvedGroups {
+    muted: bool,
+    soloed: bool,
+    ramps: [Option<GainRamp>; MIXER_GROUP_COUNT],
 }
 
 /// Master summing behavior when a sample exceeds the normalized range.
@@ -1060,12 +1140,24 @@ pub struct InputMeterReadings {
     pub meters: MeterReadings,
 }
 
+/// The monitor (headphone) bus of one render, in Master channel order.
+///
+/// It carries Master unless [`Self::solo`] is set, in which case it carries
+/// the sum of the soloed strips' PFL or AFL taps (see [`SoloMode`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonitorOutput {
+    pub planes: Vec<Vec<f32>>,
+    pub meters: MeterReadings,
+    pub solo: bool,
+}
+
 /// Result of one Master bus render.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MasterOutput {
     pub block: AudioBlock,
     pub meters: MeterReadings,
     pub input_meters: Vec<InputMeterReadings>,
+    pub monitor: MonitorOutput,
 }
 
 /// Result of one timed Master bus render using the canonical media block.
@@ -1074,6 +1166,18 @@ pub struct TimedMasterOutput {
     pub block: fm_frame::AudioBlock,
     pub meters: MeterReadings,
     pub input_meters: Vec<InputMeterReadings>,
+    pub monitor: MonitorOutput,
+}
+
+/// Caller-owned meter slices for
+/// [`MasterMixer::mix_planar_timed_into_with_monitor`].
+pub struct MixerMeterSlices<'a> {
+    /// Master, in Master channel-layout order.
+    pub master: &'a mut [ChannelMeter],
+    /// Flat, ordered first by [`InputId`] then by Master channel order.
+    pub inputs: &'a mut [ChannelMeter],
+    /// The monitor bus, in Master channel-layout order.
+    pub monitor: &'a mut [ChannelMeter],
 }
 
 /// One borrowed planar source for allocation-free Master mixing.
@@ -1200,11 +1304,18 @@ struct MixedMaster {
     planes: Vec<Vec<f32>>,
     meters: MeterReadings,
     input_meters: Vec<InputMeterReadings>,
+    monitor: MonitorOutput,
 }
 
 struct RenderMeters {
     master: MeterReadings,
     inputs: Vec<InputMeterReadings>,
+}
+
+/// Where one render writes the monitor bus and its meters.
+struct MonitorTarget<'a> {
+    planes: &'a mut [Vec<f32>],
+    meters: Option<&'a mut [ChannelMeter]>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1250,6 +1361,7 @@ pub struct MasterMixer {
     format: AudioFormat,
     inputs: BTreeMap<InputId, InputStrip>,
     groups: [GroupStrip; MIXER_GROUP_COUNT],
+    solo_mode: SoloMode,
     clipping_policy: ClippingPolicy,
     retained_delay_bytes: usize,
 }
@@ -1268,6 +1380,7 @@ impl MasterMixer {
             format,
             inputs: BTreeMap::new(),
             groups: [GroupStrip::unity(); MIXER_GROUP_COUNT],
+            solo_mode: SoloMode::InPlace,
             clipping_policy: ClippingPolicy::default(),
             retained_delay_bytes: 0,
         })
@@ -1290,6 +1403,105 @@ impl MasterMixer {
 
     pub fn set_clipping_policy(&mut self, policy: ClippingPolicy) {
         self.clipping_policy = policy;
+    }
+
+    #[must_use]
+    pub const fn solo_mode(&self) -> SoloMode {
+        self.solo_mode
+    }
+
+    /// Chooses how a solo is heard; takes effect at the next rendered
+    /// sample.
+    pub fn set_solo_mode(&mut self, mode: SoloMode) {
+        self.solo_mode = mode;
+    }
+
+    /// Whether `group` itself is soloed (not counting its ancestors).
+    #[must_use]
+    pub const fn group_soloed(&self, group: MixerGroup) -> bool {
+        self.groups[group.index()].soloed
+    }
+
+    /// Solos or unsolos `group`, and with it every member strip and every
+    /// member of a nested child group; takes effect at the next rendered
+    /// sample.
+    pub fn set_group_soloed(&mut self, group: MixerGroup, soloed: bool) {
+        self.groups[group.index()].soloed = soloed;
+    }
+
+    /// The group `group` is nested in, if any.
+    #[must_use]
+    pub const fn group_parent(&self, group: MixerGroup) -> Option<MixerGroup> {
+        self.groups[group.index()].parent
+    }
+
+    /// Nests `group` inside `parent`, or makes it top-level.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioError::GroupCycle`] when `parent` is `group` itself or
+    /// already nested (at any depth) inside `group`. Nothing changes on
+    /// error.
+    pub fn set_group_parent(
+        &mut self,
+        group: MixerGroup,
+        parent: Option<MixerGroup>,
+    ) -> Result<(), AudioError> {
+        if let Some(parent) = parent
+            && self
+                .group_chain(Some(parent))
+                .any(|ancestor| ancestor == group)
+        {
+            return Err(AudioError::GroupCycle { group, parent });
+        }
+        self.groups[group.index()].parent = parent;
+        Ok(())
+    }
+
+    /// `first` and then each ancestor, bounded by [`MIXER_GROUP_COUNT`].
+    fn group_chain(&self, first: Option<MixerGroup>) -> impl Iterator<Item = MixerGroup> + '_ {
+        let mut next = first;
+        (0..MIXER_GROUP_COUNT).map_while(move |_| {
+            let group = next?;
+            next = self.groups[group.index()].parent;
+            Some(group)
+        })
+    }
+
+    fn resolve_groups(&self, first: Option<MixerGroup>) -> ResolvedGroups {
+        let mut resolved = ResolvedGroups {
+            muted: false,
+            soloed: false,
+            ramps: [None; MIXER_GROUP_COUNT],
+        };
+        for (slot, group) in self.group_chain(first).enumerate() {
+            let strip = &self.groups[group.index()];
+            resolved.muted |= strip.state.muted;
+            resolved.soloed |= strip.soloed;
+            resolved.ramps[slot] = Some(strip.ramp);
+        }
+        resolved
+    }
+
+    /// Whether `id`'s strip is soloed by itself or through any group on its
+    /// chain.
+    #[must_use]
+    pub fn input_effectively_soloed(&self, id: InputId) -> Option<bool> {
+        self.inputs
+            .get(&id)
+            .map(|strip| strip.state.soloed || self.resolve_groups(strip.state.group).soloed)
+    }
+
+    /// The effective linear fader gain of `id`'s strip right now: its own
+    /// fader times every group fader on its chain, mid-ramp included.
+    #[must_use]
+    pub fn current_effective_linear_gain(&self, id: InputId) -> Option<f32> {
+        self.inputs.get(&id).map(|strip| {
+            self.group_chain(strip.state.group)
+                .fold(strip.ramp.current, |gain, group| {
+                    gain * self.groups[group.index()].ramp.current
+                })
+        })
     }
 
     /// Adds one configured input atomically.
@@ -1552,6 +1764,7 @@ impl MasterMixer {
             strip.delay.copy_runtime_state_from(&source.delay);
         }
         self.groups = other.groups;
+        self.solo_mode = other.solo_mode;
         self.retained_delay_bytes = other.retained_delay_bytes;
         self.clipping_policy = other.clipping_policy;
         Ok(())
@@ -1595,6 +1808,7 @@ impl MasterMixer {
             block,
             meters: mixed.meters,
             input_meters: mixed.input_meters,
+            monitor: mixed.monitor,
         })
     }
 
@@ -1673,8 +1887,16 @@ impl MasterMixer {
         validate_sample_count(samples)?;
         validate_canonical_output(&self.format, samples)?;
         validate_timed_duration(output_timing, self.format.sample_rate, samples)?;
-        self.mix_block_views_into(samples, sources, active_video_inputs, output, false, None)
-            .map(drop)
+        self.mix_block_views_into(
+            samples,
+            sources,
+            active_video_inputs,
+            output,
+            false,
+            None,
+            None,
+        )
+        .map(drop)
     }
 
     /// Mixes borrowed planar sources and writes meters into caller-owned slices.
@@ -1707,8 +1929,70 @@ impl MasterMixer {
             output,
             false,
             Some(meters),
+            None,
         )
         .map(drop)
+    }
+
+    /// Like [`Self::mix_planar_timed_into_with_meters`], and also renders the
+    /// monitor bus into caller-owned `monitor` planes (one per Master
+    /// channel, at least `samples` long) with its meters.
+    ///
+    /// Returns whether the monitor bus carries a PFL/AFL solo (`true`) or
+    /// follows Master (`false`).
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::mix_planar_timed_into_with_meters`]
+    /// plus plane-shape and meter-count errors for the monitor bus.
+    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    pub fn mix_planar_timed_into_with_monitor(
+        &mut self,
+        output_timing: fm_frame::MediaTiming,
+        samples: usize,
+        sources: &[PlanarAudioSource<'_>],
+        active_video_inputs: &[InputId],
+        output: &mut [Vec<f32>],
+        monitor: &mut [Vec<f32>],
+        meters: MixerMeterSlices<'_>,
+    ) -> Result<bool, AudioError> {
+        validate_sample_count(samples)?;
+        validate_canonical_output(&self.format, samples)?;
+        validate_timed_duration(output_timing, self.format.sample_rate, samples)?;
+        let channels = self.format.channels.channels().len();
+        if meters.monitor.len() != channels {
+            return Err(AudioError::MeterCountMismatch {
+                expected: channels,
+                actual: meters.monitor.len(),
+            });
+        }
+        let solo = self.monitor_carries_solo();
+        self.mix_block_views_into(
+            samples,
+            sources,
+            active_video_inputs,
+            output,
+            false,
+            Some((meters.master, meters.inputs)),
+            Some(MonitorTarget {
+                planes: monitor,
+                meters: Some(meters.monitor),
+            }),
+        )?;
+        Ok(solo)
+    }
+
+    /// Whether the next render's monitor bus carries a PFL/AFL solo rather
+    /// than Master.
+    #[must_use]
+    pub fn monitor_carries_solo(&self) -> bool {
+        self.solo_mode.listens() && self.any_effectively_soloed()
+    }
+
+    fn any_effectively_soloed(&self) -> bool {
+        self.inputs
+            .values()
+            .any(|strip| strip.state.soloed || self.resolve_groups(strip.state.group).soloed)
     }
 
     fn timed_output(
@@ -1726,6 +2010,7 @@ impl MasterMixer {
             block,
             meters: mixed.meters,
             input_meters: mixed.input_meters,
+            monitor: mixed.monitor,
         })
     }
 
@@ -1737,6 +2022,8 @@ impl MasterMixer {
     ) -> Result<MixedMaster, AudioError> {
         let channels = self.format.channels.channels().len();
         let mut output = vec![vec![0.0; samples]; channels];
+        let mut monitor = vec![vec![0.0; samples]; channels];
+        let solo = self.monitor_carries_solo();
         let meters = self
             .mix_block_views_into(
                 samples,
@@ -1745,16 +2032,30 @@ impl MasterMixer {
                 &mut output,
                 true,
                 None,
+                Some(MonitorTarget {
+                    planes: &mut monitor,
+                    meters: None,
+                }),
             )?
             .expect("metering was requested");
+        let monitor_meters = measure_planes(&monitor);
         Ok(MixedMaster {
             planes: output,
             meters: meters.master,
             input_meters: meters.inputs,
+            monitor: MonitorOutput {
+                planes: monitor,
+                meters: monitor_meters,
+                solo,
+            },
         })
     }
 
-    #[allow(clippy::needless_range_loop)]
+    #[allow(
+        clippy::needless_range_loop,
+        clippy::too_many_arguments,
+        clippy::too_many_lines
+    )]
     fn mix_block_views_into<B: MixerBlockView, S: MixerSubmission<B>>(
         &mut self,
         samples: usize,
@@ -1763,11 +2064,15 @@ impl MasterMixer {
         output: &mut [Vec<f32>],
         measure_output: bool,
         mut meter_output: Option<(&mut [ChannelMeter], &mut [ChannelMeter])>,
+        mut monitor: Option<MonitorTarget<'_>>,
     ) -> Result<Option<RenderMeters>, AudioError> {
         validate_sample_count(samples)?;
         validate_mixer_submissions(samples, blocks, &self.inputs)?;
         let channels = self.format.channels.channels().len();
         validate_mixer_output_planes(samples, channels, output)?;
+        if let Some(monitor) = &monitor {
+            validate_mixer_output_planes(samples, channels, monitor.planes)?;
+        }
         if let Some((master_meters, input_meters)) = &meter_output {
             for (expected, actual) in [
                 (channels, master_meters.len()),
@@ -1781,7 +2086,17 @@ impl MasterMixer {
         for plane in output.iter_mut() {
             plane[..samples].fill(0.0);
         }
-        let any_soloed = self.inputs.values().any(|strip| strip.state.soloed);
+        let any_soloed = self.any_effectively_soloed();
+        let listen = self.solo_mode.listens() && any_soloed;
+        let tap = match self.solo_mode {
+            SoloMode::Pfl => StripTap::PreFader,
+            SoloMode::InPlace | SoloMode::Afl => StripTap::AfterFader,
+        };
+        if listen && let Some(monitor) = &mut monitor {
+            for plane in monitor.planes.iter_mut() {
+                plane[..samples].fill(0.0);
+            }
+        }
         let metering = measure_output || meter_output.is_some();
         let mut allocated_input_meters =
             measure_output.then(|| Vec::with_capacity(self.inputs.len()));
@@ -1789,30 +2104,47 @@ impl MasterMixer {
             let block = blocks.iter().find_map(|submission| {
                 (submission.input() == *id).then(|| (submission.block(), submission.source_gain()))
             });
-            let group = strip.state.group.map(|group| self.groups[group.index()]);
+            let groups = self.resolve_groups(strip.state.group);
+            let soloed = strip.state.soloed || groups.soloed;
             let audible = !strip.state.muted
-                && !group.is_some_and(|group| group.state.muted)
-                && (!any_soloed || strip.state.soloed)
+                && !groups.muted
+                && (listen || !any_soloed || soloed)
                 && (!strip.state.follow_video || active_video_inputs.contains(id));
             let mut meter_channels =
                 metering.then(|| [ChannelMeterAccumulator::default(); MAX_CHANNELS]);
+            let ramps = StripRamps {
+                gain: strip.ramp,
+                balance: strip.balance_ramp,
+                pan: strip.pan_ramp,
+                groups: groups.ramps,
+            };
             if audible {
-                let mut ramps = StripRamps {
-                    gain: strip.ramp,
-                    balance: strip.balance_ramp,
-                    pan: strip.pan_ramp,
-                    group: group.map(|group| group.ramp),
-                };
                 mix_audible_strip_samples(
                     samples,
                     &self.format.channels,
                     block,
                     strip,
-                    &mut ramps,
+                    &mut { ramps },
+                    StripTap::Program,
                     meter_channels
                         .as_mut()
                         .map(|meters| &mut meters[..channels]),
                     output,
+                )?;
+            }
+            if listen
+                && soloed
+                && let Some(monitor) = &mut monitor
+            {
+                mix_audible_strip_samples(
+                    samples,
+                    &self.format.channels,
+                    block,
+                    strip,
+                    &mut { ramps },
+                    tap,
+                    None,
+                    monitor.planes,
                 )?;
             }
             if metering {
@@ -1848,6 +2180,25 @@ impl MasterMixer {
             }
         }
         validate_finite_sample_prefix(output, samples)?;
+        if let Some(monitor) = &mut monitor {
+            if listen {
+                if self.clipping_policy == ClippingPolicy::Clamp {
+                    for plane in monitor.planes.iter_mut() {
+                        for sample in &mut plane[..samples] {
+                            *sample = sample.clamp(-1.0, 1.0);
+                        }
+                    }
+                }
+                validate_finite_sample_prefix(monitor.planes, samples)?;
+            } else {
+                for (target, source) in monitor.planes.iter_mut().zip(output.iter()) {
+                    target[..samples].copy_from_slice(&source[..samples]);
+                }
+            }
+            if let Some(meters) = &mut monitor.meters {
+                measure_plane_prefix_into(monitor.planes, samples, meters);
+            }
+        }
         if let Some((master_meters, _)) = &mut meter_output {
             measure_plane_prefix_into(output, samples, master_meters);
         }
@@ -1976,9 +2327,9 @@ fn validate_mixer_output_planes(
     Ok(())
 }
 
-/// Mixes one audible strip into the Master planes while stepping its ramps.
+/// Mixes one strip's `tap` into `output` while stepping its ramps.
 ///
-/// Steps a copy of the strip's ramps (and its group's fader ramp) once per
+/// Steps a copy of the strip's ramps (and its groups' fader ramps) once per
 /// sample; the mixer's own ramps advance in `commit_render` whether or not a
 /// strip is audible, so later blocks observe identical ramp positions.
 ///
@@ -1986,17 +2337,21 @@ fn validate_mixer_output_planes(
 ///
 /// Returns [`AudioError::NonFiniteSample`] when a contribution or metered
 /// accumulation is not finite.
-#[allow(clippy::needless_range_loop)]
+#[allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 fn mix_audible_strip_samples<B: MixerBlockView>(
     samples: usize,
     master_layout: &ChannelLayout,
     block: Option<(&B, SourceGain)>,
     strip: &InputStrip,
     ramps: &mut StripRamps,
+    tap: StripTap,
     mut meter_channels: Option<&mut [ChannelMeterAccumulator]>,
     output: &mut [Vec<f32>],
 ) -> Result<(), AudioError> {
-    let source_gain = block.map_or(SourceGain::UNITY, |(_, source_gain)| source_gain);
+    let source_gain = match tap {
+        StripTap::Program => block.map_or(SourceGain::UNITY, |(_, source_gain)| source_gain),
+        StripTap::PreFader | StripTap::AfterFader => SourceGain::UNITY,
+    };
     let pans = strip.pans();
     for sample in 0..samples {
         if let Some(meter_channels) = &mut meter_channels {
@@ -2004,7 +2359,10 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
                 meter.begin_sample();
             }
         }
-        let (strip_gain, balance, pan) = ramps.next();
+        let (strip_gain, balance, pan) = match (tap, ramps.next()) {
+            (StripTap::PreFader, _) => (1.0, 0.0, 0.0),
+            (StripTap::Program | StripTap::AfterFader, values) => values,
+        };
         // Centered (and every non-mono strip) is exactly unity.
         let pan = if pans && pan != 0.0 {
             pan_law(pan)

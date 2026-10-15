@@ -1,28 +1,37 @@
-//! Mixer strip labels and VCA-style strip groups (AU-001).
+//! Mixer strip labels, VCA-style strip groups, and the solo mode (AU-001).
 //!
 //! Every input's Master strip carries an optional operator label and an
 //! optional group; the show keeps [`fm_model::AUDIO_GROUP_COUNT`] groups,
-//! each with a name, a fader, and a mute. A group carries no audio of its
-//! own: a member's effective gain is its own fader plus the group fader in
-//! dB, and a member is audible only while neither the strip nor its group is
-//! muted (see `fm_audio::MixerGroup`).
+//! each with a name, a fader, a mute, a solo, and an optional parent group.
+//! A group carries no audio of its own: a member's effective gain is its own
+//! fader plus every group fader on its parent chain in dB, a member is
+//! audible only while neither the strip nor any group on the chain is muted,
+//! and a soloed group on the chain solos the member (see
+//! `fm_audio::MixerGroup`). Parents never form a cycle. The show's
+//! [`fm_model::AudioSoloMode`] chooses whether a solo gates Program
+//! (solo-in-place) or is heard on the monitor bus pre-fader (PFL) or
+//! after-fader (AFL).
 //!
 //! # Command classes
 //!
 //! - [`EngineAudioMixerEdit::SetLabel`], [`EngineAudioMixerEdit::SetGroup`],
-//!   and [`EngineAudioMixerEdit::RenameGroup`] change durable configuration.
+//!   [`EngineAudioMixerEdit::RenameGroup`],
+//!   [`EngineAudioMixerEdit::SetGroupParent`], and
+//!   [`EngineAudioMixerEdit::SetSoloMode`] change durable configuration.
 //!   They are project edits: refused while the project padlock (and, for a
 //!   strip, the input's padlock) is engaged, and undoable with the exact
-//!   previous label, membership, or name.
-//! - [`EngineAudioMixerEdit::SetGroupLevel`] moves a group fader or mute. Like
-//!   a strip fader move it is a live operation: never recorded, never
-//!   reverted by undo, and never blocked by a padlock.
+//!   previous label, membership, name, parent, or mode.
+//! - [`EngineAudioMixerEdit::SetGroupLevel`] moves a group fader or mute and
+//!   [`EngineAudioMixerEdit::SetGroupSolo`] solos a group. Like a strip
+//!   fader or solo they are live operations: never recorded, never reverted
+//!   by undo, and never blocked by a padlock.
 //!
-//! Membership and group levels reach the media plane on the command's target
-//! frame through [`crate::FrameResult::audio_mixer_updates`].
+//! Membership, group levels, solos, parents, and the solo mode reach the
+//! media plane on the command's target frame through
+//! [`crate::FrameResult::audio_mixer_updates`].
 
 use fm_command::{FieldIssue, Rejection, RejectionCode};
-use fm_model::AudioGroupNumber;
+use fm_model::{AudioGroupNumber, AudioSoloMode};
 use fm_types::InputId;
 
 use crate::{MAX_INPUT_AUDIO_GAIN_MILLIDB, MIN_INPUT_AUDIO_GAIN_MILLIDB, ShowState};
@@ -34,22 +43,47 @@ pub struct EngineAudioGroupState {
     pub muted: bool,
 }
 
-/// One strip group: its name and live fader state.
+/// One strip group: its name, live fader state and solo, and parent.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineAudioGroup {
     pub name: String,
     pub state: EngineAudioGroupState,
+    /// Whether the group is soloed, soloing every member. Live state.
+    pub soloed: bool,
+    /// The group this group is nested in. Durable configuration.
+    pub parent: Option<AudioGroupNumber>,
 }
 
 impl EngineAudioGroup {
-    /// The default group `number`: "Group N" at unity, unmuted.
+    /// The default group `number`: "Group N" at unity, unmuted, unsoloed,
+    /// and top-level.
     #[must_use]
     pub fn default_for(number: AudioGroupNumber) -> Self {
         Self {
             name: format!("Group {}", number.get()),
             state: EngineAudioGroupState::default(),
+            soloed: false,
+            parent: None,
         }
     }
+}
+
+/// Whether nesting `group` inside `parent` keeps `groups` cycle-free.
+#[must_use]
+pub fn audio_group_parent_is_acyclic(
+    groups: &[EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT],
+    group: AudioGroupNumber,
+    parent: Option<AudioGroupNumber>,
+) -> bool {
+    let mut next = parent;
+    for _ in 0..fm_model::AUDIO_GROUP_COUNT {
+        match next {
+            None => return true,
+            Some(ancestor) if ancestor == group => return false,
+            Some(ancestor) => next = groups[ancestor.index()].parent,
+        }
+    }
+    false
 }
 
 /// One mixer label, group, or group-level edit.
@@ -72,13 +106,25 @@ pub enum EngineAudioMixerEdit {
         group: AudioGroupNumber,
         state: EngineAudioGroupState,
     },
+    /// Solos or unsolos a group and with it every member. A live operation.
+    SetGroupSolo {
+        group: AudioGroupNumber,
+        soloed: bool,
+    },
+    /// Nests a group inside `parent`, or makes it top-level. A project edit.
+    SetGroupParent {
+        group: AudioGroupNumber,
+        parent: Option<AudioGroupNumber>,
+    },
+    /// Chooses solo-in-place, PFL, or AFL. A project edit.
+    SetSoloMode { mode: AudioSoloMode },
 }
 
 impl EngineAudioMixerEdit {
     /// Whether this edit is a live operation rather than a project edit.
     #[must_use]
     pub const fn is_live(&self) -> bool {
-        matches!(self, Self::SetGroupLevel { .. })
+        matches!(self, Self::SetGroupLevel { .. } | Self::SetGroupSolo { .. })
     }
 
     /// The input whose padlock covers this edit.
@@ -86,7 +132,11 @@ impl EngineAudioMixerEdit {
     pub const fn locked_input(&self) -> Option<InputId> {
         match self {
             Self::SetLabel { input, .. } | Self::SetGroup { input, .. } => Some(*input),
-            Self::RenameGroup { .. } | Self::SetGroupLevel { .. } => None,
+            Self::RenameGroup { .. }
+            | Self::SetGroupLevel { .. }
+            | Self::SetGroupSolo { .. }
+            | Self::SetGroupParent { .. }
+            | Self::SetSoloMode { .. } => None,
         }
     }
 
@@ -110,6 +160,18 @@ pub enum EngineAudioMixerUpdate {
         group: AudioGroupNumber,
         state: EngineAudioGroupState,
     },
+    /// A group was soloed or unsoloed.
+    GroupSolo {
+        group: AudioGroupNumber,
+        soloed: bool,
+    },
+    /// A group was nested in `parent`, or made top-level.
+    GroupParent {
+        group: AudioGroupNumber,
+        parent: Option<AudioGroupNumber>,
+    },
+    /// The solo mode changed.
+    SoloMode(AudioSoloMode),
 }
 
 impl EngineAudioMixerUpdate {
@@ -125,6 +187,15 @@ impl EngineAudioMixerUpdate {
                 group: *group,
                 state: *state,
             }),
+            EngineAudioMixerEdit::SetGroupSolo { group, soloed } => Some(Self::GroupSolo {
+                group: *group,
+                soloed: *soloed,
+            }),
+            EngineAudioMixerEdit::SetGroupParent { group, parent } => Some(Self::GroupParent {
+                group: *group,
+                parent: *parent,
+            }),
+            EngineAudioMixerEdit::SetSoloMode { mode } => Some(Self::SoloMode(*mode)),
             EngineAudioMixerEdit::SetLabel { .. } | EngineAudioMixerEdit::RenameGroup { .. } => {
                 None
             }
@@ -212,11 +283,31 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
             state.audio_group_mut(*group).state = *level;
             Ok(())
         }
+        EngineAudioMixerEdit::SetGroupSolo { group, soloed } => {
+            state.audio_group_mut(*group).soloed = *soloed;
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetGroupParent { group, parent } => {
+            if !audio_group_parent_is_acyclic(state.audio_groups(), *group, *parent) {
+                return Err(rejection(
+                    RejectionCode::InvalidCommand,
+                    "parent",
+                    "cycle",
+                    format!("{group} cannot be nested inside itself"),
+                ));
+            }
+            state.audio_group_mut(*group).parent = *parent;
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetSoloMode { mode } => {
+            state.set_audio_solo_mode(*mode);
+            Ok(())
+        }
     }
 }
 
 /// The exact edit that reverts project edit `edit` on `state`, or `None` for
-/// a live group level or an unknown input.
+/// a live group level or solo, or an unknown input.
 pub(crate) fn inverse(
     state: &ShowState,
     edit: &EngineAudioMixerEdit,
@@ -246,6 +337,17 @@ pub(crate) fn inverse(
                 name: state.audio_group(*group).name.clone(),
             })
         }
-        EngineAudioMixerEdit::SetGroupLevel { .. } => None,
+        EngineAudioMixerEdit::SetGroupParent { group, .. } => {
+            Some(EngineAudioMixerEdit::SetGroupParent {
+                group: *group,
+                parent: state.audio_group(*group).parent,
+            })
+        }
+        EngineAudioMixerEdit::SetSoloMode { .. } => Some(EngineAudioMixerEdit::SetSoloMode {
+            mode: state.audio_solo_mode(),
+        }),
+        EngineAudioMixerEdit::SetGroupLevel { .. } | EngineAudioMixerEdit::SetGroupSolo { .. } => {
+            None
+        }
     }
 }

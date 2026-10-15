@@ -11,8 +11,9 @@ mod scene_layer;
 mod version;
 
 pub use audio_mixer::{
-    AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, InputAudioLabel,
-    MAX_AUDIO_LABEL_BYTES, audio_group_is_valid, audio_label_is_valid, fade_to_black_affects,
+    AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioSoloMode,
+    InputAudioLabel, MAX_AUDIO_LABEL_BYTES, audio_group_is_valid, audio_label_is_valid,
+    fade_to_black_affects,
 };
 pub use codec::{
     CodecError, LineDecoder, MAX_BATCH_EVENTS, MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES,
@@ -30,11 +31,11 @@ pub use display_output::{
     WireActiveDisplay, WireDisplayOutputState, display_source_is_known,
 };
 pub use dto::{
-    AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, AudioMetersMessage, CapabilityReportMessage,
-    CapabilityReportSummary, ClientType, CommandMessage, CommandPayload, CommandResult,
-    DiagnosticsRequest, DiagnosticsResponse, DurableEvent, DurableEventBatch, DurableGap,
-    EditHistoryStatus, EditLockScope, EditLockStatus, EngineIdentity, ErrorMessage, EventCursor,
-    EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, FieldIssue,
+    AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, AudioMetersMessage, AudioMonitorMeters,
+    CapabilityReportMessage, CapabilityReportSummary, ClientType, CommandMessage, CommandPayload,
+    CommandResult, DiagnosticsRequest, DiagnosticsResponse, DurableEvent, DurableEventBatch,
+    DurableGap, EditHistoryStatus, EditLockScope, EditLockStatus, EngineIdentity, ErrorMessage,
+    EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, FieldIssue,
     HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
     HeartbeatMessage, InputAudioMeters, InputAudioStripStatus, InputStatus, LiveInputSource,
     MAX_AUDIO_METER_CHANNELS, MAX_EDIT_HISTORY_DEPTH, MAX_MONITOR_FRAME_HEIGHT,

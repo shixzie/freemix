@@ -1,6 +1,6 @@
-//! AU-001 and SW-004 at schema 39: strip pan, labels, groups, and the
-//! Fade-to-Black output selection round-trip exactly and strictly in
-//! `project.json`.
+//! AU-001 and SW-004 at schemas 39 and 42: strip pan, labels, groups (with
+//! solo and nesting), the solo mode, and the Fade-to-Black output selection
+//! round-trip exactly and strictly in `project.json`.
 
 use std::{
     fs,
@@ -10,9 +10,9 @@ use std::{
 };
 
 use fm_model::{
-    AudioBus, AudioGroup, AudioGroupNumber, Input, InputAudioStripState, InputGainMilliDb,
-    InputKind, InputPanBasisPoints, Output, Project, ProjectSettings, Rgba8, Scene, SimulatedAudio,
-    SimulatedInput, SimulatedVideo, SolidColor, StartupPolicy,
+    AudioBus, AudioGroup, AudioGroupNumber, AudioSoloMode, Input, InputAudioStripState,
+    InputGainMilliDb, InputKind, InputPanBasisPoints, Output, Project, ProjectSettings, Rgba8,
+    Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, StartupPolicy,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
@@ -143,9 +143,12 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
                 name: "Hosts".into(),
                 gain: InputGainMilliDb::new(-6_000).unwrap(),
                 muted: true,
+                soloed: true,
+                parent: AudioGroupNumber::new(3),
             },
         )
         .unwrap();
+    expected.set_audio_solo_mode(AudioSoloMode::Pfl);
     expected.set_fade_to_black_output(OutputId::new(id(41)), false);
     store.save(&stored(expected.clone())).unwrap();
 
@@ -156,6 +159,11 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         Some("Host \"mic\" 1")
     );
     assert_eq!(loaded.project().input_audio_group(host), Some(hosts));
+    assert_eq!(loaded.project().audio_solo_mode(), AudioSoloMode::Pfl);
+    assert_eq!(
+        loaded.project().audio_groups().get(hosts).parent,
+        AudioGroupNumber::new(3)
+    );
     assert!(
         !loaded
             .project()
@@ -168,13 +176,13 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 41"));
+    assert!(text.contains("\"schema_version\": 42"));
     assert!(text.contains(
         "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2}"
     ), "{text}");
     assert!(text.contains("\"follow_video\": true, \"label\": \"\", \"group\": null}"));
     assert!(text.contains(
-        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false}\n    ],\n    \"fade_to_black_excluded_outputs\": [41],\n    \"display_outputs\": []\n  },"
+        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"fade_to_black_excluded_outputs\": [41],\n    \"display_outputs\": []\n  },"
     ), "{text}");
 
     for (from, to) in [
@@ -183,13 +191,37 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         ("\"group\": 2}", "\"group\": \"2\"}"),
         ("\"pan_basis_points\": -2500", "\"pan_basis_points\": 10001"),
         (
-            "{\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false}\n",
-            "{\"name\": \"Group 4\", \"gain_milli_db\": 24001, \"muted\": false}\n",
+            "{\"name\": \"Group 4\", \"gain_milli_db\": 0,",
+            "{\"name\": \"Group 4\", \"gain_milli_db\": 24001,",
         ),
         (
-            ",\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false}",
+            ",\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}",
             "",
         ),
+        (
+            "\"soloed\": true, \"parent\": 3}",
+            "\"soloed\": 1, \"parent\": 3}",
+        ),
+        ("\"soloed\": true, \"parent\": 3}", "\"parent\": 3}"),
+        (
+            "\"soloed\": true, \"parent\": 3}",
+            "\"soloed\": true, \"parent\": 0}",
+        ),
+        (
+            "\"soloed\": true, \"parent\": 3}",
+            "\"soloed\": true, \"parent\": 5}",
+        ),
+        (
+            "\"soloed\": true, \"parent\": 3}",
+            "\"soloed\": true, \"parent\": \"3\"}",
+        ),
+        ("\"soloed\": true, \"parent\": 3}", "\"soloed\": true}"),
+        (
+            "\"audio_solo_mode\": \"pfl\"",
+            "\"audio_solo_mode\": \"PFL\"",
+        ),
+        ("\"audio_solo_mode\": \"pfl\"", "\"audio_solo_mode\": 1"),
+        ("\n    \"audio_solo_mode\": \"pfl\",", ""),
         (
             "\"fade_to_black_excluded_outputs\": [41]",
             "\"fade_to_black_excluded_outputs\": [41, 41]",
@@ -227,6 +259,11 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         (
             "\"fade_to_black_excluded_outputs\": [41]",
             "\"fade_to_black_excluded_outputs\": [99]",
+        ),
+        // Group 3 inside group 2 inside group 3.
+        (
+            "{\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}",
+            "{\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": 2}",
         ),
     ] {
         let invalid = text.replacen(from, to, 1);

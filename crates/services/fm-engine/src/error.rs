@@ -27,6 +27,8 @@ pub enum ShowError {
     InvalidAudioMixer(fm_model::AudioLabelError),
     /// A group fader is outside the strip gain range (AU-001).
     InvalidAudioGroupGain(i32),
+    /// A group parent would nest the group inside itself (AU-001).
+    AudioGroupCycle(fm_model::AudioGroupNumber),
     /// A display output slot's configuration is refused (OR-011); carries
     /// the [`fm_model::SetDisplayOutputError::code`].
     InvalidDisplayOutput(fm_types::display::DisplayOutputSlot, &'static str),
@@ -68,6 +70,9 @@ impl fmt::Display for ShowError {
             }
             Self::InvalidAudioGroupGain(gain) => {
                 write!(formatter, "audio group gain {gain} millidB is out of range")
+            }
+            Self::AudioGroupCycle(group) => {
+                write!(formatter, "{group} cannot be nested inside itself")
             }
             Self::UnknownOutput(output) => {
                 write!(formatter, "show does not contain output {output}")

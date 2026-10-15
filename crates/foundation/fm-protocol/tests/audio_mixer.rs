@@ -1,18 +1,19 @@
 //! Protocol 2.40 mixer strip labels, VCA-style strip groups, mono pan, and
-//! the Fade-to-Black output selection (AU-001, SW-004): the commands, the
-//! `audio_mixer_changed` and `fade_to_black_output_changed` durable events,
-//! and the snapshot fields — exactly, and strictly.
+//! the Fade-to-Black output selection (AU-001, SW-004), plus Protocol 2.44
+//! group solo, nested groups, the solo mode, and the monitor bus meters: the
+//! commands, the `audio_mixer_changed` and `fade_to_black_output_changed`
+//! durable events, and the snapshot fields — exactly, and strictly.
 
 use fm_protocol::{
-    AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, CURRENT_PROTOCOL_VERSION,
-    CommandMessage, CommandPayload, EditHistoryStatus, EditLockStatus, EngineIdentity, EventCursor,
-    EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, InputAudioLabel,
-    InputAudioStripStatus, InputStatus, ManualTransitionStatus, OverlayStatus, ProtocolVersion,
-    RecordingStatus, SnapshotMessage, WireInputId, WireMessage, WireOutputId, WireRecorderSlot,
-    decode_line, encode_line,
+    AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioSoloMode,
+    CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EditLockStatus,
+    EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState,
+    InputAudioLabel, InputAudioStripStatus, InputStatus, ManualTransitionStatus, OverlayStatus,
+    ProtocolVersion, RecordingStatus, SnapshotMessage, WireInputId, WireMessage, WireOutputId,
+    WireRecorderSlot, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.43\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.44\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -140,7 +141,10 @@ fn mixer() -> AudioMixerStatus {
         name: "Mics, wireless".into(),
         gain_millidb: -12_000,
         muted: true,
+        soloed: true,
+        parent: Some(3),
     };
+    status.solo_mode = AudioSoloMode::Pfl;
     status.labels = vec![
         InputAudioLabel {
             input: input(1),
@@ -155,11 +159,12 @@ fn mixer() -> AudioMixerStatus {
 }
 
 #[test]
-fn the_current_protocol_is_2_40() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 43));
+fn the_current_protocol_is_2_44() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 44));
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn mixer_commands_have_an_exact_wire_form() {
     let cases = [
         (
@@ -205,6 +210,45 @@ fn mixer_commands_have_an_exact_wire_form() {
             },
             "\tpayload=audio_group_level\tgroup=1\tgain_millidb=-6000\tmuted=1\n",
         ),
+        (
+            AudioMixerOperation::SetGroupSolo {
+                group: 2,
+                soloed: true,
+            },
+            "\tpayload=audio_group_solo\tgroup=2\tsoloed=1\n",
+        ),
+        (
+            AudioMixerOperation::SetGroupParent {
+                group: 2,
+                parent: Some(4),
+            },
+            "\tpayload=audio_group_parent\tgroup=2\tparent=4\n",
+        ),
+        (
+            AudioMixerOperation::SetGroupParent {
+                group: 2,
+                parent: None,
+            },
+            "\tpayload=audio_group_parent\tgroup=2\tparent=-\n",
+        ),
+        (
+            AudioMixerOperation::SetSoloMode {
+                mode: AudioSoloMode::InPlace,
+            },
+            "\tpayload=audio_solo_mode\tmode=sip\n",
+        ),
+        (
+            AudioMixerOperation::SetSoloMode {
+                mode: AudioSoloMode::Pfl,
+            },
+            "\tpayload=audio_solo_mode\tmode=pfl\n",
+        ),
+        (
+            AudioMixerOperation::SetSoloMode {
+                mode: AudioSoloMode::Afl,
+            },
+            "\tpayload=audio_solo_mode\tmode=afl\n",
+        ),
     ];
     for (operation, suffix) in cases {
         let line = round_trip(&command(CommandPayload::AudioMixer(operation.clone())));
@@ -233,6 +277,26 @@ fn mixer_commands_have_an_exact_wire_form() {
         }
         .is_live()
     );
+    assert!(
+        AudioMixerOperation::SetGroupSolo {
+            group: 1,
+            soloed: false
+        }
+        .is_live()
+    );
+    assert!(
+        !AudioMixerOperation::SetGroupParent {
+            group: 1,
+            parent: None
+        }
+        .is_live()
+    );
+    assert!(
+        !AudioMixerOperation::SetSoloMode {
+            mode: AudioSoloMode::Afl
+        }
+        .is_live()
+    );
 }
 
 #[test]
@@ -250,6 +314,16 @@ fn mixer_commands_are_strict() {
         "\tpayload=audio_group_level\tgroup=1\tgain_millidb=-0\tmuted=0",
         "\tpayload=audio_group_level\tgroup=1\tgain_millidb=0\tmuted=2",
         "\tpayload=audio_group_level\tgroup=1\tgain_millidb=0",
+        "\tpayload=audio_group_solo\tgroup=1\tsoloed=2",
+        "\tpayload=audio_group_solo\tgroup=5\tsoloed=1",
+        "\tpayload=audio_group_solo\tgroup=1",
+        "\tpayload=audio_group_parent\tgroup=1\tparent=1",
+        "\tpayload=audio_group_parent\tgroup=1\tparent=5",
+        "\tpayload=audio_group_parent\tgroup=1\tparent=",
+        "\tpayload=audio_group_parent\tgroup=0\tparent=-",
+        "\tpayload=audio_solo_mode\tmode=PFL",
+        "\tpayload=audio_solo_mode\tmode=",
+        "\tpayload=audio_solo_mode",
         "\tpayload=fade_to_black_output\toutput=0\taffected=1",
         "\tpayload=fade_to_black_output\toutput=7\taffected=true",
         "\tpayload=input_audio_strip\tinput=1\tgain_millidb=0\tbalance_basis_points=0\tmuted=0\tsoloed=0\tfollow_video=1\tdelay_samples=0",
@@ -261,6 +335,15 @@ fn mixer_commands_are_strict() {
             AudioMixerOperation::RenameGroup {
                 group: 5,
                 name: "x".into()
+            }
+        )))
+        .is_err()
+    );
+    assert!(
+        encode_line(&command(CommandPayload::AudioMixer(
+            AudioMixerOperation::SetGroupParent {
+                group: 2,
+                parent: Some(2)
             }
         )))
         .is_err()
@@ -307,7 +390,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     assert!(
         line.ends_with(
-            "\taudio_groups=Group%25201%7E0%7E0%2CMics%252C%2520wireless%7E-12000%7E1%2CGroup%25203%7E0%7E0%2CGroup%25204%7E0%7E0\tinput_audio_labels=1%7EHost%257Emic%2C2%7EGuest\tfade_to_black_excluded_outputs=8\tdisplay_outputs=\tdisplay_output_states=\n"
+            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\tinput_audio_labels=1%7EHost%257Emic%2C2%7EGuest\tfade_to_black_excluded_outputs=8\tdisplay_outputs=\tdisplay_output_states=\n"
         ),
         "{line}"
     );
@@ -359,12 +442,28 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
             "input_audio_labels=1%7EHost%257Emic%2C2%7EGuest",
             "input_audio_labels=1%7E",
         ),
-        ("%2CGroup%25204%7E0%7E0\t", "\t"),
+        ("%2CGroup%25204%7E0%7E0%7E0%7E-\t", "\t"),
         (
-            "%2CGroup%25204%7E0%7E0\t",
-            "%2CGroup%25204%7E0%7E0%2CGroup%25205%7E0%7E0\t",
+            "%2CGroup%25204%7E0%7E0%7E0%7E-\t",
+            "%2CGroup%25204%7E0%7E0%7E0%7E-%2CGroup%25205%7E0%7E0%7E0%7E-\t",
         ),
         ("Group%25203%7E0%7E0", "%7E0%7E0"),
+        // The 2.40 three-part group tuple is refused.
+        ("Group%25204%7E0%7E0%7E0%7E-", "Group%25204%7E0%7E0"),
+        (
+            "wireless%7E-12000%7E1%7E1%7E3",
+            "wireless%7E-12000%7E1%7E2%7E3",
+        ),
+        (
+            "wireless%7E-12000%7E1%7E1%7E3",
+            "wireless%7E-12000%7E1%7E1%7E2",
+        ),
+        (
+            "wireless%7E-12000%7E1%7E1%7E3",
+            "wireless%7E-12000%7E1%7E1%7E5",
+        ),
+        ("\taudio_solo_mode=pfl", "\taudio_solo_mode=solo"),
+        ("\taudio_solo_mode=pfl", ""),
     ] {
         assert!(valid.contains(from), "{from}");
         let malformed = valid.replace(from, to);
@@ -408,14 +507,35 @@ fn applying_operations_updates_the_replicated_mixer() {
         gain_millidb: -3_000,
         muted: true,
     });
+    status.apply(&AudioMixerOperation::SetGroupSolo {
+        group: 3,
+        soloed: true,
+    });
+    status.apply(&AudioMixerOperation::SetGroupParent {
+        group: 3,
+        parent: Some(1),
+    });
+    status.apply(&AudioMixerOperation::SetSoloMode {
+        mode: AudioSoloMode::Afl,
+    });
     assert_eq!(
         status.groups[2],
         AudioGroupStatus {
             name: "Band".into(),
             gain_millidb: -3_000,
             muted: true,
+            soloed: true,
+            parent: Some(1),
         }
     );
+    assert_eq!(status.solo_mode, AudioSoloMode::Afl);
+    assert!(status.solo_mode.listens());
+    assert_eq!(status.chain(Some(3)).collect::<Vec<_>>(), [3, 1]);
+    assert!(status.group_chain_soloed(Some(3)));
+    assert!(!status.group_chain_soloed(Some(1)));
+    // Nesting group 1 inside group 3 would close a cycle.
+    assert!(!status.parent_is_acyclic(1, Some(3)));
+    assert!(status.parent_is_acyclic(1, Some(2)));
     assert!(fm_protocol::fade_to_black_affects(&[output(8)], output(7)));
     assert!(!fm_protocol::fade_to_black_affects(&[output(8)], output(8)));
 }

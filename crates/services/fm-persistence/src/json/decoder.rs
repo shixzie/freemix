@@ -76,6 +76,7 @@ struct ProjectDto {
     transition_favorites: fm_model::TransitionFavorites,
     input_lifecycle: super::input_lifecycle::ParsedInputLifecycle,
     audio_groups: fm_model::AudioGroups,
+    audio_solo_mode: fm_model::AudioSoloMode,
     fade_to_black_excluded_outputs: std::collections::BTreeSet<fm_types::OutputId>,
     display_outputs: Vec<(
         fm_types::display::DisplayOutputSlot,
@@ -126,6 +127,7 @@ impl ProjectDto {
             )?,
             input_lifecycle: super::input_lifecycle::parse_input_lifecycle(&mut object)?,
             audio_groups: super::audio_mixer::parse_audio_groups(&mut object)?,
+            audio_solo_mode: super::audio_mixer::parse_audio_solo_mode(&mut object)?,
             fade_to_black_excluded_outputs:
                 super::audio_mixer::parse_fade_to_black_excluded_outputs(&mut object)?,
             display_outputs: super::display_output::parse_display_outputs(&mut object)?,
@@ -173,6 +175,7 @@ impl ProjectDto {
         }
         // Group names are reported by project validation.
         project.restore_audio_groups(self.audio_groups);
+        project.set_audio_solo_mode(self.audio_solo_mode);
         for scene in self.scenes {
             project.add_scene(scene);
         }

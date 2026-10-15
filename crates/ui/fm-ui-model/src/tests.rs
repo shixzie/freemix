@@ -2543,3 +2543,69 @@ fn replicates_mixer_labels_groups_and_fade_to_black_outputs() {
         );
     }
 }
+
+/// Protocol 2.44 (AU-001): group solo, group parents, and the solo mode
+/// replicate from events; a parent that would close a cycle is refused.
+#[test]
+fn replicates_group_solo_parents_and_solo_mode() {
+    use fm_protocol::{AudioMixerOperation, AudioSoloMode};
+
+    let project_id = project(13);
+    let mut model = ClientModel::new(project_id);
+    model.install_snapshot(snapshot(project_id, 1)).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    assert_eq!(
+        model.view().unwrap().audio_mixer.solo_mode,
+        AudioSoloMode::InPlace
+    );
+    let changes = [
+        AudioMixerOperation::SetSoloMode {
+            mode: AudioSoloMode::Pfl,
+        },
+        AudioMixerOperation::SetGroupParent {
+            group: 1,
+            parent: Some(2),
+        },
+        AudioMixerOperation::SetGroupSolo {
+            group: 2,
+            soloed: true,
+        },
+    ];
+    for (revision, change) in (2..).zip(changes) {
+        model
+            .apply_event(event(
+                project_id,
+                identity.clone(),
+                revision,
+                DurableChange::AudioMixerChanged(change),
+            ))
+            .unwrap();
+    }
+    let view = model.view().unwrap();
+    assert_eq!(view.audio_mixer.solo_mode, AudioSoloMode::Pfl);
+    assert_eq!(view.audio_mixer.groups[0].parent, Some(2));
+    assert!(view.audio_mixer.groups[1].soloed);
+    assert!(view.audio_mixer.group_chain_soloed(Some(1)));
+
+    for change in [
+        AudioMixerOperation::SetGroupParent {
+            group: 2,
+            parent: Some(1),
+        },
+        AudioMixerOperation::SetGroupSolo {
+            group: 5,
+            soloed: true,
+        },
+    ] {
+        assert!(
+            model
+                .apply_event(event(
+                    project_id,
+                    identity.clone(),
+                    5,
+                    DurableChange::AudioMixerChanged(change),
+                ))
+                .is_err()
+        );
+    }
+}

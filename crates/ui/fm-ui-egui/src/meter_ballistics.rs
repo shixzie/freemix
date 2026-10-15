@@ -109,6 +109,8 @@ pub(crate) enum MeterKey {
     /// A VCA group strip (1-4): the loudest of its member strips.
     Group(u8),
     Master,
+    /// The monitor (headphone) bus (AU-001).
+    Monitor,
 }
 
 /// Ballistic state for every visible meter.

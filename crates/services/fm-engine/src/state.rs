@@ -185,6 +185,8 @@ pub struct ShowState {
     input_audio_groups: BTreeMap<InputId, fm_model::AudioGroupNumber>,
     /// The strip groups, group 1 first (AU-001).
     audio_groups: [crate::EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT],
+    /// How a soloed strip is heard (AU-001).
+    audio_solo_mode: fm_model::AudioSoloMode,
     /// The configured fullscreen display outputs by slot (OR-011).
     display_outputs:
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
@@ -264,6 +266,7 @@ impl ShowState {
             input_audio_labels: BTreeMap::new(),
             input_audio_groups: BTreeMap::new(),
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
+            audio_solo_mode: fm_model::AudioSoloMode::InPlace,
             display_outputs: BTreeMap::new(),
         })
     }
@@ -632,12 +635,14 @@ impl ShowState {
         Ok(())
     }
 
-    /// Restores one strip group's name, fader, and mute.
+    /// Restores one strip group's name, fader, mute, solo, and parent.
     ///
     /// # Errors
     ///
-    /// Returns [`ShowError::InvalidAudioMixer`] for an unusable name and
-    /// [`ShowError::InvalidAudioGroupGain`] for an out-of-range fader.
+    /// Returns [`ShowError::InvalidAudioMixer`] for an unusable name,
+    /// [`ShowError::InvalidAudioGroupGain`] for an out-of-range fader, and
+    /// [`ShowError::AudioGroupCycle`] for a parent that would nest the group
+    /// inside itself.
     pub fn set_audio_group(
         &mut self,
         group: fm_model::AudioGroupNumber,
@@ -646,8 +651,26 @@ impl ShowState {
         fm_model::validate_audio_group_name(&value.name).map_err(ShowError::InvalidAudioMixer)?;
         crate::audio_mixer::validate_group_state(value.state)
             .map_err(|_| ShowError::InvalidAudioGroupGain(value.state.gain_millidb))?;
+        if !crate::audio_mixer::audio_group_parent_is_acyclic(
+            &self.audio_groups,
+            group,
+            value.parent,
+        ) {
+            return Err(ShowError::AudioGroupCycle(group));
+        }
         self.audio_groups[group.index()] = value;
         Ok(())
+    }
+
+    /// How a soloed strip is heard (AU-001).
+    #[must_use]
+    pub const fn audio_solo_mode(&self) -> fm_model::AudioSoloMode {
+        self.audio_solo_mode
+    }
+
+    /// Restores the solo mode.
+    pub const fn set_audio_solo_mode(&mut self, mode: fm_model::AudioSoloMode) {
+        self.audio_solo_mode = mode;
     }
 
     /// The configured fullscreen display outputs by slot (OR-011).

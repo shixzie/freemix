@@ -961,13 +961,19 @@ fn format_audio_mixer(state: &fm_ui_model::ProjectState) -> String {
         .zip(1_u8..)
         .map(|(group, number)| {
             format!(
-                "{number}:{:?}:{}:{}",
-                group.name, group.gain_millidb, group.muted
+                "{number}:{:?}:{}:{}:{}:{}",
+                group.name,
+                group.gain_millidb,
+                group.muted,
+                group.soloed,
+                group
+                    .parent
+                    .map_or_else(|| "-".to_owned(), |parent| parent.to_string())
             )
         })
         .collect::<Vec<_>>()
         .join(",");
-    format!("[{strips}]/[{groups}]")
+    format!("[{strips}]/[{groups}]/solo={}", mixer.solo_mode.token())
 }
 
 /// The outputs Fade to Black leaves live (SW-004).

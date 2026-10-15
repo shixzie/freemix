@@ -4,7 +4,7 @@
 use std::num::NonZeroU128;
 
 use fm_model::{
-    AUDIO_GROUP_COUNT, AudioBus, AudioGroup, AudioGroupNumber, AudioLabelError,
+    AUDIO_GROUP_COUNT, AudioBus, AudioGroup, AudioGroupNumber, AudioLabelError, AudioSoloMode,
     CURRENT_SCHEMA_VERSION, EntityRef, Input, InputAudioStripState, InputGainMilliDb, InputKind,
     InputPanBasisPoints, MAX_AUDIO_LABEL_BYTES, Output, Project, ProjectSettings, Rgba8, Scene,
     SetAudioMixerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, StartupPolicy,
@@ -86,7 +86,7 @@ fn project() -> Project {
 
 #[test]
 fn schema_39_defaults_center_pan_unlabelled_ungrouped_and_every_output_fading() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 41);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 42);
     let project = project();
     assert_eq!(
         project.input_audio_strip(input(10)).unwrap().pan,
@@ -99,7 +99,10 @@ fn schema_39_defaults_center_pan_unlabelled_ungrouped_and_every_output_fading() 
         assert_eq!(group.name, format!("Group {}", number.get()));
         assert_eq!(group.gain, InputGainMilliDb::UNITY);
         assert!(!group.muted);
+        assert!(!group.soloed);
+        assert_eq!(group.parent, None);
     }
+    assert_eq!(project.audio_solo_mode(), AudioSoloMode::InPlace);
     assert!(project.fade_to_black_excluded_outputs().is_empty());
     assert!(project.fade_to_black_affects(output(40)));
     assert_eq!(project.validate(), Ok(()));
@@ -158,6 +161,8 @@ fn labels_and_group_names_are_bounded_text() {
                 name: String::new(),
                 gain: InputGainMilliDb::UNITY,
                 muted: false,
+                soloed: false,
+                parent: None,
             },
         ),
         Err(SetAudioMixerError::Label(AudioLabelError::Empty))
@@ -221,6 +226,8 @@ fn restored_unusable_labels_and_names_fail_validation() {
             name: " ".into(),
             gain: InputGainMilliDb::UNITY,
             muted: false,
+            soloed: false,
+            parent: None,
         },
     );
     project.restore_audio_groups(groups);
@@ -233,4 +240,83 @@ fn restored_unusable_labels_and_names_fail_validation() {
     assert!(errors.iter().any(
         |error| error.field == "audio_groups.name" && error.kind == ValidationErrorKind::Empty
     ));
+}
+
+fn group(number: u8) -> AudioGroupNumber {
+    AudioGroupNumber::new(number).unwrap()
+}
+
+fn nested(project: &Project, number: u8, parent: Option<u8>) -> AudioGroup {
+    AudioGroup {
+        parent: parent.map(group),
+        ..project.audio_groups().get(group(number)).clone()
+    }
+}
+
+#[test]
+fn schema_42_solo_mode_tokens_round_trip() {
+    for (mode, token) in [
+        (AudioSoloMode::InPlace, "sip"),
+        (AudioSoloMode::Pfl, "pfl"),
+        (AudioSoloMode::Afl, "afl"),
+    ] {
+        assert_eq!(mode.token(), token);
+        assert_eq!(AudioSoloMode::from_token(token), Some(mode));
+    }
+    assert_eq!(AudioSoloMode::from_token("PFL"), None);
+    let mut project = project();
+    project.set_audio_solo_mode(AudioSoloMode::Afl);
+    assert_eq!(project.audio_solo_mode(), AudioSoloMode::Afl);
+    assert_eq!(project.validate(), Ok(()));
+}
+
+#[test]
+fn group_parents_nest_without_cycles() {
+    let mut project = project();
+    for (number, parent) in [(1, 2), (2, 3), (3, 4)] {
+        let value = nested(&project, number, Some(parent));
+        project.set_audio_group(group(number), value).unwrap();
+    }
+    assert_eq!(
+        project
+            .audio_groups()
+            .chain(Some(group(1)))
+            .map(AudioGroupNumber::get)
+            .collect::<Vec<_>>(),
+        [1, 2, 3, 4]
+    );
+    for (number, parent) in [(4, 1), (4, 4), (2, 1)] {
+        let value = nested(&project, number, Some(parent));
+        assert_eq!(
+            project.set_audio_group(group(number), value),
+            Err(SetAudioMixerError::GroupCycle(group(number)))
+        );
+    }
+    assert_eq!(project.audio_groups().get(group(4)).parent, None);
+    assert_eq!(project.validate(), Ok(()));
+
+    // A soloed group is plain state on the group.
+    let soloed = AudioGroup {
+        soloed: true,
+        ..project.audio_groups().get(group(2)).clone()
+    };
+    project.set_audio_group(group(2), soloed).unwrap();
+    assert!(project.audio_groups().get(group(2)).soloed);
+}
+
+#[test]
+fn restored_cyclic_group_parents_fail_validation() {
+    let mut project = project();
+    let mut groups = project.audio_groups().clone();
+    groups.set(group(1), nested(&project, 1, Some(2)));
+    groups.set(group(2), nested(&project, 2, Some(1)));
+    project.restore_audio_groups(groups);
+    assert!(!project.audio_groups().is_acyclic());
+    let errors = project.validate().unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.field == "audio_groups.parent"
+                && error.kind == ValidationErrorKind::Cycle)
+    );
 }

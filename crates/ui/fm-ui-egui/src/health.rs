@@ -501,6 +501,7 @@ mod tests {
             end_sample: 0,
             master: Vec::new(),
             inputs: Vec::new(),
+            monitor: None,
         });
         let mut tracker = HealthTracker::default();
         tracker.observe(&state, start);

@@ -1,7 +1,10 @@
-//! Mixer label, group, and Fade-to-Black output codec (Protocol 2.40).
+//! Mixer label, group, solo-mode, and Fade-to-Black output codec
+//! (Protocols 2.40 and 2.44).
 //!
 //! * `audio_groups` is four comma-separated `<name>~<gain_millidb>~<muted
-//!   0|1>` entries, group 1 first.
+//!   0|1>~<soloed 0|1>~<parent - or 1..=4>` entries, group 1 first; no group
+//!   is its own parent.
+//! * `audio_solo_mode` is `sip`, `pfl`, or `afl`.
 //! * `input_audio_labels` is a comma-separated list of `<input>~<label>`,
 //!   strictly ascending by input, each label non-empty (empty for none).
 //! * `fade_to_black_excluded_outputs` is a comma-separated, strictly
@@ -10,8 +13,8 @@
 //! Text inside a field is percent-escaped before it is joined.
 
 use crate::{
-    AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, CodecError,
-    InputAudioLabel, WireOutputId, audio_group_is_valid, audio_label_is_valid,
+    AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioSoloMode,
+    CodecError, InputAudioLabel, WireOutputId, audio_group_is_valid, audio_label_is_valid,
 };
 
 use super::MAX_LIST_ITEMS;
@@ -83,22 +86,45 @@ pub(super) fn decode_strip_group(value: &str) -> Option<Option<u8>> {
     parse_group("input_audio_strips", value).ok().map(Some)
 }
 
+fn parse_solo_mode(field: &'static str, value: &str) -> Result<AudioSoloMode, CodecError> {
+    AudioSoloMode::from_token(value).ok_or_else(|| invalid(field, value))
+}
+
+/// Encodes a group's parent: `-` or a group other than `group` itself.
+fn encode_parent(field: &'static str, group: u8, parent: Option<u8>) -> Result<String, CodecError> {
+    match parent {
+        None => Ok("-".to_owned()),
+        Some(parent) if audio_group_is_valid(parent) && parent != group => Ok(parent.to_string()),
+        Some(parent) => Err(invalid(field, parent.to_string())),
+    }
+}
+
+fn decode_parent(field: &'static str, group: u8, value: &str) -> Result<Option<u8>, CodecError> {
+    match decode_strip_group(value) {
+        Some(parent) if parent != Some(group) => Ok(parent),
+        _ => Err(invalid(field, value)),
+    }
+}
+
 /// Encodes a snapshot's `audio_groups`.
 pub(super) fn encode_groups(
     groups: &[AudioGroupStatus; AUDIO_GROUP_COUNT],
 ) -> Result<String, CodecError> {
     groups
         .iter()
-        .map(|group| {
+        .zip(1..)
+        .map(|(group, number)| {
             if !audio_label_is_valid(&group.name, false) {
                 return Err(invalid("audio_groups", group.name.clone()));
             }
             check_gain("audio_groups", group.gain_millidb)?;
             Ok(format!(
-                "{}~{}~{}",
+                "{}~{}~{}~{}~{}",
                 escape_bounded(&group.name)?,
                 group.gain_millidb,
-                u8::from(group.muted)
+                u8::from(group.muted),
+                u8::from(group.soloed),
+                encode_parent("audio_groups", number, group.parent)?
             ))
         })
         .collect::<Result<Vec<_>, _>>()
@@ -111,9 +137,10 @@ pub(super) fn decode_groups(
 ) -> Result<[AudioGroupStatus; AUDIO_GROUP_COUNT], CodecError> {
     let groups = value
         .split(',')
-        .map(|entry| {
+        .zip(1..)
+        .map(|(entry, number)| {
             let parts: Vec<&str> = entry.split('~').collect();
-            let [name, gain, muted] = parts.as_slice() else {
+            let [name, gain, muted, soloed, parent] = parts.as_slice() else {
                 return Err(invalid("audio_groups", entry));
             };
             let name = unescape(name)?;
@@ -124,6 +151,8 @@ pub(super) fn decode_groups(
                 name,
                 gain_millidb: parse_gain("audio_groups", gain)?,
                 muted: parse_flag("audio_groups", muted)?,
+                soloed: parse_flag("audio_groups", soloed)?,
+                parent: decode_parent("audio_groups", number, parent)?,
             })
         })
         .take(AUDIO_GROUP_COUNT + 1)
@@ -234,6 +263,7 @@ pub(super) fn encode_status(
     push: &mut Push<'_>,
 ) -> Result<(), CodecError> {
     push("audio_groups", encode_groups(&status.groups)?)?;
+    push("audio_solo_mode", status.solo_mode.token().to_owned())?;
     push("input_audio_labels", encode_labels(&status.labels)?)
 }
 
@@ -241,6 +271,7 @@ pub(super) fn encode_status(
 pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerStatus, CodecError> {
     Ok(AudioMixerStatus {
         groups: decode_groups(&fields.required("audio_groups")?)?,
+        solo_mode: parse_solo_mode("audio_solo_mode", &fields.required("audio_solo_mode")?)?,
         labels: decode_labels(&fields.required("input_audio_labels")?)?,
     })
 }
@@ -288,6 +319,22 @@ pub(super) fn encode_operation(
             push("gain_millidb", gain_millidb.to_string())?;
             push("muted", u8::from(*muted).to_string())
         }
+        AudioMixerOperation::SetGroupSolo { group, soloed } => {
+            if !audio_group_is_valid(*group) {
+                return Err(invalid("group", group.to_string()));
+            }
+            push("group", group.to_string())?;
+            push("soloed", u8::from(*soloed).to_string())
+        }
+        AudioMixerOperation::SetGroupParent { group, parent } => {
+            if !audio_group_is_valid(*group) {
+                return Err(invalid("group", group.to_string()));
+            }
+            let parent = encode_parent("parent", *group, *parent)?;
+            push("group", group.to_string())?;
+            push("parent", parent)
+        }
+        AudioMixerOperation::SetSoloMode { mode } => push("mode", mode.token().to_owned()),
     }
 }
 
@@ -329,6 +376,18 @@ pub(super) fn decode_operation(
             group: parse_group("group", &fields.required("group")?)?,
             gain_millidb: parse_gain("gain_millidb", &fields.required("gain_millidb")?)?,
             muted: parse_flag("muted", &fields.required("muted")?)?,
+        },
+        "audio_group_solo" => AudioMixerOperation::SetGroupSolo {
+            group: parse_group("group", &fields.required("group")?)?,
+            soloed: parse_flag("soloed", &fields.required("soloed")?)?,
+        },
+        "audio_group_parent" => {
+            let group = parse_group("group", &fields.required("group")?)?;
+            let parent = decode_parent("parent", group, &fields.required("parent")?)?;
+            AudioMixerOperation::SetGroupParent { group, parent }
+        }
+        "audio_solo_mode" => AudioMixerOperation::SetSoloMode {
+            mode: parse_solo_mode("mode", &fields.required("mode")?)?,
         },
         _ => return Ok(None),
     }))

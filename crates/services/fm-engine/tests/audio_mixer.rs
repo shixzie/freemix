@@ -13,7 +13,7 @@ use fm_engine::{
     EngineAudioMixerUpdate, EngineCommand, EngineCommandKind, EngineCommandOutcome, EngineEvent,
     EngineInputAudioStripState, ShowState,
 };
-use fm_model::AudioGroupNumber;
+use fm_model::{AudioGroupNumber, AudioSoloMode};
 use fm_switcher::FadeToBlackFrame;
 use fm_types::{FrameRate, InputId, OutputId};
 
@@ -445,4 +445,153 @@ fn fade_to_black_output_selection_is_undoable_and_realized_per_output() {
     redo(&mut engine, "redo");
     let frame = engine.tick().unwrap();
     assert_eq!(frame.fade_to_black_excluded_outputs, vec![output(2)]);
+}
+
+#[test]
+fn solo_mode_and_group_parents_are_undoable_project_edits_and_group_solo_is_live() {
+    let mut engine = engine();
+    let solo = mixer(EngineAudioMixerEdit::SetGroupSolo {
+        group: group(1),
+        soloed: true,
+    });
+    let parent = mixer(EngineAudioMixerEdit::SetGroupParent {
+        group: group(1),
+        parent: Some(group(2)),
+    });
+    let mode = mixer(EngineAudioMixerEdit::SetSoloMode {
+        mode: AudioSoloMode::Pfl,
+    });
+    assert_eq!(solo.kind(), EngineCommandKind::LiveOperation);
+    assert_eq!(parent.kind(), EngineCommandKind::ProjectEdit);
+    assert_eq!(mode.kind(), EngineCommandKind::ProjectEdit);
+    assert_eq!(engine.show().audio_solo_mode(), AudioSoloMode::InPlace);
+
+    accept(&mut engine, "mode", mode);
+    accept(&mut engine, "parent", parent);
+    let outcome = accept(&mut engine, "solo", solo);
+    assert!(outcome.events.iter().any(|event| matches!(
+        &event.payload,
+        EngineEvent::AudioMixerChanged(EngineAudioMixerEdit::SetGroupSolo { soloed: true, .. })
+    )));
+    assert_eq!(engine.show().audio_solo_mode(), AudioSoloMode::Pfl);
+    assert_eq!(engine.show().audio_group(group(1)).parent, Some(group(2)));
+    assert!(engine.show().audio_group(group(1)).soloed);
+    // Only the two project edits are recorded.
+    assert_eq!(engine.undo_entries().len(), 2);
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![
+            EngineAudioMixerUpdate::SoloMode(AudioSoloMode::Pfl),
+            EngineAudioMixerUpdate::GroupParent {
+                group: group(1),
+                parent: Some(group(2)),
+            },
+            EngineAudioMixerUpdate::GroupSolo {
+                group: group(1),
+                soloed: true,
+            },
+        ]
+    );
+
+    undo(&mut engine, "undo-parent");
+    assert_eq!(engine.show().audio_group(group(1)).parent, None);
+    // Undo never reverts the live solo.
+    assert!(engine.show().audio_group(group(1)).soloed);
+    undo(&mut engine, "undo-mode");
+    assert_eq!(engine.show().audio_solo_mode(), AudioSoloMode::InPlace);
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![
+            EngineAudioMixerUpdate::GroupParent {
+                group: group(1),
+                parent: None,
+            },
+            EngineAudioMixerUpdate::SoloMode(AudioSoloMode::InPlace),
+        ]
+    );
+    redo(&mut engine, "redo-mode");
+    redo(&mut engine, "redo-parent");
+    assert_eq!(engine.show().audio_solo_mode(), AudioSoloMode::Pfl);
+    assert_eq!(engine.show().audio_group(group(1)).parent, Some(group(2)));
+}
+
+#[test]
+fn group_parents_refuse_cycles_and_the_padlock_covers_parent_and_mode() {
+    let mut engine = engine();
+    for (child, parent) in [(1, 2), (2, 3), (3, 4)] {
+        accept(
+            &mut engine,
+            &format!("parent-{child}"),
+            mixer(EngineAudioMixerEdit::SetGroupParent {
+                group: group(child),
+                parent: Some(group(parent)),
+            }),
+        );
+    }
+    for (key, child, parent) in [("self", 2, 2), ("loop", 4, 1), ("short", 3, 1)] {
+        let outcome = execute(
+            &mut engine,
+            key,
+            mixer(EngineAudioMixerEdit::SetGroupParent {
+                group: group(child),
+                parent: Some(group(parent)),
+            }),
+        );
+        let rejection = rejection(&outcome);
+        assert_eq!(rejection.code, RejectionCode::InvalidCommand, "{key}");
+        assert!(rejection.message.contains("nested inside itself"), "{key}");
+    }
+    assert_eq!(engine.show().audio_group(group(4)).parent, None);
+    let mut show = engine.show().clone();
+    assert_eq!(
+        show.set_audio_group(
+            group(4),
+            fm_engine::EngineAudioGroup {
+                parent: Some(group(1)),
+                ..engine.show().audio_group(group(4)).clone()
+            },
+        ),
+        Err(fm_engine::ShowError::AudioGroupCycle(group(4)))
+    );
+
+    accept(
+        &mut engine,
+        "lock",
+        EngineCommand::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: true,
+        },
+    );
+    for (key, command) in [
+        (
+            "locked-parent",
+            mixer(EngineAudioMixerEdit::SetGroupParent {
+                group: group(4),
+                parent: None,
+            }),
+        ),
+        (
+            "locked-mode",
+            mixer(EngineAudioMixerEdit::SetSoloMode {
+                mode: AudioSoloMode::Afl,
+            }),
+        ),
+    ] {
+        let outcome = execute(&mut engine, key, command);
+        assert_eq!(
+            EditRejectionKind::of(rejection(&outcome)),
+            Some(EditRejectionKind::ProjectLocked),
+            "{key}"
+        );
+    }
+    accept(
+        &mut engine,
+        "live-solo",
+        mixer(EngineAudioMixerEdit::SetGroupSolo {
+            group: group(4),
+            soloed: true,
+        }),
+    );
 }

@@ -221,6 +221,7 @@ fn audio_meters(sequence: u64) -> AudioMetersMessage {
                 rms_millionths: 125_000,
             }],
         }],
+        monitor: None,
     }
 }
 

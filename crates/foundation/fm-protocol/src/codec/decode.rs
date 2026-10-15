@@ -461,7 +461,8 @@ fn decode_command_payload(
                 .expect("every listed payload is a lifecycle operation"),
         ),
         mixer @ ("audio_strip_label" | "audio_strip_group" | "audio_group_name"
-        | "audio_group_level") => CommandPayload::AudioMixer(
+        | "audio_group_level" | "audio_group_solo" | "audio_group_parent"
+        | "audio_solo_mode") => CommandPayload::AudioMixer(
             super::audio_mixer::decode_operation(mixer, fields)?
                 .expect("every listed payload is a mixer operation"),
         ),
@@ -2917,6 +2918,26 @@ fn decode_audio_meters(fields: &mut Fields) -> Result<AudioMetersMessage, CodecE
             })
             .collect::<Result<Vec<_>, _>>()?
     };
+    let monitor_value = fields.required("monitor")?;
+    let monitor = if monitor_value == "-" {
+        None
+    } else {
+        let invalid = || CodecError::InvalidField {
+            field: "monitor",
+            value: monitor_value.clone(),
+        };
+        let (source, channels) = monitor_value.split_once('~').ok_or_else(invalid)?;
+        let solo = match source {
+            "master" => false,
+            "solo" => true,
+            _ => return Err(invalid()),
+        };
+        let channels = decode_meter_channels(channels, "monitor")?;
+        if channels.len() != master.len() {
+            return Err(invalid());
+        }
+        Some(crate::AudioMonitorMeters { solo, channels })
+    };
     Ok(AudioMetersMessage {
         server,
         sequence,
@@ -2925,6 +2946,7 @@ fn decode_audio_meters(fields: &mut Fields) -> Result<AudioMetersMessage, CodecE
         end_sample,
         master,
         inputs,
+        monitor,
     })
 }
 

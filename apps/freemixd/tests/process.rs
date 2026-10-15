@@ -1826,7 +1826,9 @@ fn display_output_slots_without_a_presenter_wait_and_survive_restart() {
 }
 
 /// AU-001: strip labels and VCA groups are replicated project state; a
-/// muted group is reported for its member strips and survives a restart.
+/// muted group is reported for its member strips and survives a restart, as
+/// do the PFL solo mode, a nested group's parent, and a group solo
+/// (Protocol 2.44); a parent that would close a cycle is refused.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn strip_labels_and_group_mute_replicate_to_members_and_survive_restart() {
@@ -1861,6 +1863,17 @@ fn strip_labels_and_group_mute_replicate_to_members_and_survive_restart() {
             gain_millidb: -6_000,
             muted: true,
         },
+        fm_protocol::AudioMixerOperation::SetSoloMode {
+            mode: fm_protocol::AudioSoloMode::Pfl,
+        },
+        fm_protocol::AudioMixerOperation::SetGroupParent {
+            group: 2,
+            parent: Some(4),
+        },
+        fm_protocol::AudioMixerOperation::SetGroupSolo {
+            group: 4,
+            soloed: true,
+        },
     ];
     for (index, operation) in operations.iter().enumerate() {
         let id = format!("mixer-{index}");
@@ -1891,7 +1904,22 @@ fn strip_labels_and_group_mute_replicate_to_members_and_survive_restart() {
     assert!(matches!(
         client.next_result(),
         CommandResult::Rejected {
-            current_revision: 5,
+            current_revision: 8,
+            ..
+        }
+    ));
+    client.send(&command(
+        "mixer-cycle",
+        "mixer-cycle-key",
+        CommandPayload::AudioMixer(fm_protocol::AudioMixerOperation::SetGroupParent {
+            group: 4,
+            parent: Some(2),
+        }),
+    ));
+    assert!(matches!(
+        client.next_result(),
+        CommandResult::Rejected {
+            current_revision: 8,
             ..
         }
     ));
@@ -1917,6 +1945,13 @@ fn strip_labels_and_group_mute_replicate_to_members_and_survive_restart() {
         );
         assert_eq!(snapshot.audio_mixer.label(input(1)), "Host Mic");
         assert_eq!(snapshot.audio_mixer.label(input(2)), "");
+        assert_eq!(
+            snapshot.audio_mixer.solo_mode,
+            fm_protocol::AudioSoloMode::Pfl
+        );
+        assert_eq!(group.parent, Some(4));
+        assert!(snapshot.audio_mixer.groups[3].soloed);
+        assert!(snapshot.audio_mixer.group_chain_soloed(Some(2)));
     };
     let mut observer = daemon.connect();
     observer.handshake_as(Role::Viewer, None);
@@ -1939,6 +1974,14 @@ fn strip_labels_and_group_mute_replicate_to_members_and_survive_restart() {
     assert_eq!(project.input_audio_label(domain_input(1)), Some("Host Mic"));
     let stored = project.audio_groups().get(group);
     assert_eq!((stored.gain.get(), stored.muted), (-6_000, true));
+    assert_eq!(stored.parent, fm_model::AudioGroupNumber::new(4));
+    assert!(
+        project
+            .audio_groups()
+            .get(fm_model::AudioGroupNumber::new(4).unwrap())
+            .soloed
+    );
+    assert_eq!(project.audio_solo_mode(), fm_model::AudioSoloMode::Pfl);
 }
 
 /// `StreamStart` is an authorized transition-class command: its acceptance
@@ -5762,11 +5805,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.43.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 43));
+    // The previous protocol is refused; the current one is 2.44.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 44));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 42),
+        protocol: ProtocolVersion::new(2, 43),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5782,7 +5825,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 43)
+        ProtocolVersion::new(2, 44)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

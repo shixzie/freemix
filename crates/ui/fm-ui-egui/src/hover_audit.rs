@@ -10,7 +10,8 @@
 //! lifecycle (colour labels, badges, the category filter, the tile menu's
 //! Category and Colour label submenus, and the Replace source, Import
 //! files, and Categories dialogs), the mixer's strip labels, pan knobs,
-//! group assignment and group strips, the Fade-to-Black output menu, the
+//! group assignment, group strips (solo and parent group), the monitor
+//! strip with its solo-mode keys, the Fade-to-Black output menu, the
 //! Fullscreen outputs dialog (with and without a display list or a
 //! presenter, with a draft, for a viewer, and locked), and a
 //! disconnected console) in English
@@ -233,6 +234,12 @@ fn model(variant: Variant) -> ClientModel {
             mixer.groups[0].name = "Mics".into();
             mixer.groups[0].gain_millidb = -3_000;
             mixer.groups[1].muted = true;
+            // Group 2 sits inside group 3 (which then gets a strip) and is
+            // soloed in PFL, so the parent picker, group solo, and the
+            // monitor strip's solo listen are audited (Protocol 2.44).
+            mixer.groups[1].parent = Some(3);
+            mixer.groups[1].soloed = true;
+            mixer.solo_mode = fm_protocol::AudioSoloMode::Pfl;
             mixer.labels.push(fm_protocol::InputAudioLabel {
                 input: wire(1),
                 label: "Host Mic".into(),
@@ -707,6 +714,10 @@ fn meters() -> AudioMetersMessage {
                 channels: vec![channel(if value == 1 { 1_000_000 } else { 300_000 }); 2],
             })
             .collect(),
+        monitor: Some(fm_protocol::AudioMonitorMeters {
+            solo: true,
+            channels: vec![channel(300_000); 2],
+        }),
     }
 }
 

@@ -292,7 +292,7 @@ solo, follow-video, and delay take effect at the next rendered sample; restored 
 remain immediate. Balance is linear after channel mapping: negative values
 attenuate the right destination, positive values attenuate the left destination,
 and non-stereo destination labels remain at unity.
-Solo is solo-in-place across the logical Master strips: if any strip is soloed,
+In the default `sip` solo mode (see the `AU-001` boundary for PFL/AFL), solo is solo-in-place across the logical Master strips: if any strip is soloed,
 every non-soloed strip is gated. Mute and follow-video remain independent gates,
 so a muted or video-inactive soloed strip can intentionally produce silence.
 Local and remote CLI commands, Studio controls,
@@ -355,7 +355,7 @@ described in the `IN-026` boundary below.
 Studio now has a compact permission-gated gain fader with exact milli-dB entry
 and a latest-only compact peak/RMS meter display for Master and current inputs.
 Strip labels, pan, and VCA groups are described in the `AU-001` boundary
-below. There is still no PFL, microphone automix,
+below, including the PFL/AFL monitor bus. There is still no microphone automix,
 device-audio path, device-clock correction, native EQ/gate/compressor/limiter,
 or acceptance evidence. Local offline audio-bus send authoring and rename are
 next-open configuration only; they do not change IDs, sends, output routes,
@@ -1632,8 +1632,9 @@ camera destinations through read-only mono feeds that the type system keeps
 out of the program Master, proved by a compile-fail doctest. Remaining gaps:
 neither is wired into `MasterMixer`, the engine, persistence, protocol, or UI;
 level detection is per-block mean square without hold time or adaptive
-threshold; audio-follow-video automix is not modelled; strips do not yet
-provide pre-fader PFL taps; device selection is an opaque ID without I/O; and
+threshold; audio-follow-video automix is not modelled; `MasterMixer`'s
+own PFL/AFL monitor bus (`AU-001`) is separate from this monitor-bus
+selector; device selection is an opaque ID without I/O; and
 talkback is not delivered to guest or camera transports. Both rows remain
 planned.
 
@@ -2730,9 +2731,25 @@ per used group (rename, fader, mute); the transition panel and the Output
 menu carry an `Outputs n/m` menu of output checkboxes. `freemix-cli`
 provides `audio-label`, `audio-group`, `audio-group-name`,
 `audio-group-level`, `ftb-output`, `audio-strip --pan`, and their `remote-`
-forms. Remaining gaps: no PFL bus or solo-in-place per group, groups do
-not nest, no per-output fade durations, and `AU-001`/`SW-004` remain
-planned until their capability profiles are certified.
+forms. Protocol 2.44 (schema 42) adds a show-wide solo mode, group solo,
+and nested groups. `sip` keeps solo-in-place on Program; `pfl` and `afl`
+leave Program untouched and feed the soloed strips to a monitor bus that
+`MasterMixer` renders alongside Master (PFL after delay and mapping, before
+fader, groups, balance, pan, mute, and follow-video; AFL after the faders,
+balance, and pan), following Master when nothing is soloed. A soloed group
+solos its members; a group may nest in a parent (cycle-free, so a chain is
+at most four groups) and a member follows the whole chain: gains multiply,
+any muted group mutes, any soloed group solos. The solo mode and parents
+are padlocked, undoable project edits; group solo is a live operation and
+persists like the group fader. `audio_meters` carries the monitor bus
+meters; Studio's mixer adds an M/S pair and a parent menu on each group
+strip and a pinned monitor strip with SIP/PFL/AFL keys and its meter.
+`freemix-cli` adds `audio-group-solo`, `audio-group-parent`,
+`audio-solo-mode`, and their `remote-` forms. Remaining gaps: `freemixd`
+has no headphone or monitor device path, so the monitor bus is metered but
+not audible (Studio labels it meter-only); no per-output fade durations;
+and `AU-001`/`SW-004` remain planned until their capability profiles are
+certified.
 
 Current implementation boundary for item 2 browser title control (`GX-006`):
 `freemix-web` provides a transport-free title editor model over a narrow server

@@ -31,7 +31,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.43\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.44\tid=a\tidempotency_key=k";
 
 fn cursor() -> EventCursor {
     EventCursor {
@@ -95,7 +95,7 @@ fn base64url(bytes: &[u8]) -> String {
 
 #[test]
 fn protocol_version_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 43));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 44));
 }
 
 #[test]
@@ -437,7 +437,7 @@ fn snapshot_grade_state_count_is_bounded() {
 
     let line = encode_line(&sample_snapshot()).unwrap();
     assert!(
-        line.ends_with("\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%2CGroup%25202%7E0%7E0%2CGroup%25203%7E0%7E0%2CGroup%25204%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\n"),
+        line.ends_with("\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tdisplay_outputs=\tdisplay_output_states=\n"),
         "{line}"
     );
     let over = line.replace(

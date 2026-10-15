@@ -24,8 +24,8 @@ use std::{
 use fm_audio::{
     AudioCadenceOrigin, AudioRenderPlan, AudioSilenceSpan, AudioSynchronizerLimits, Balance,
     ChannelMapping, ChannelMeter, ClippingPolicy, ClockMappedAudioSynchronizer, GroupState,
-    InputState, MAX_CHANNEL_MAPPING_CHANNELS, MasterAudioInterval, MasterMixer, MixerGroup, Pan,
-    PlanarAudioSource, SourceGain,
+    InputState, MAX_CHANNEL_MAPPING_CHANNELS, MasterAudioInterval, MasterMixer, MixerGroup,
+    MixerMeterSlices, Pan, PlanarAudioSource, SoloMode, SourceGain,
 };
 use fm_clock::{
     ClockDomainId as MappingClockDomainId, ClockMapping, ClockSnapshot, ClockTime, FrameCadence,
@@ -483,6 +483,12 @@ pub struct NativeProjectPlan {
     audio_groups: BTreeMap<InputId, fm_model::AudioGroupNumber>,
     /// Every group's fader (millidB) and mute, group 1 first (AU-001).
     audio_group_levels: [(i32, bool); fm_model::AUDIO_GROUP_COUNT],
+    /// Every group's solo, group 1 first (AU-001).
+    audio_group_solos: [bool; fm_model::AUDIO_GROUP_COUNT],
+    /// Every group's parent group, group 1 first (AU-001).
+    audio_group_parents: [Option<fm_model::AudioGroupNumber>; fm_model::AUDIO_GROUP_COUNT],
+    /// How a soloed strip is heard (AU-001).
+    audio_solo_mode: fm_model::AudioSoloMode,
     stingers: BTreeMap<fm_switcher::StingerSlotId, NativeStingerConfig>,
     frame_rate: FrameRate,
     dimensions: VideoDimensions,
@@ -832,6 +838,11 @@ impl NativeProjectPlan {
                 let level = project.audio_groups().get(group);
                 (level.gain.get(), level.muted)
             }),
+            audio_group_solos: fm_model::AudioGroupNumber::ALL
+                .map(|group| project.audio_groups().get(group).soloed),
+            audio_group_parents: fm_model::AudioGroupNumber::ALL
+                .map(|group| project.audio_groups().get(group).parent),
+            audio_solo_mode: project.audio_solo_mode(),
             stingers,
             frame_rate: project.settings().frame_rate,
             dimensions,
@@ -917,6 +928,62 @@ impl NativeProjectPlan {
         muted: bool,
     ) {
         self.audio_group_levels[group.index()] = (gain_millidb, muted);
+    }
+
+    /// Records group `group`'s solo.
+    pub const fn set_audio_group_solo(&mut self, group: fm_model::AudioGroupNumber, soloed: bool) {
+        self.audio_group_solos[group.index()] = soloed;
+    }
+
+    /// Records group `group`'s parent group.
+    pub const fn set_audio_group_parent(
+        &mut self,
+        group: fm_model::AudioGroupNumber,
+        parent: Option<fm_model::AudioGroupNumber>,
+    ) {
+        self.audio_group_parents[group.index()] = parent;
+    }
+
+    /// Records the solo mode.
+    pub const fn set_audio_solo_mode(&mut self, mode: fm_model::AudioSoloMode) {
+        self.audio_solo_mode = mode;
+    }
+
+    /// The solo mode (AU-001).
+    #[must_use]
+    pub const fn audio_solo_mode(&self) -> fm_model::AudioSoloMode {
+        self.audio_solo_mode
+    }
+
+    /// Group `group`'s solo and parent group (AU-001).
+    #[must_use]
+    pub const fn audio_group_topology(
+        &self,
+        group: fm_model::AudioGroupNumber,
+    ) -> (bool, Option<fm_model::AudioGroupNumber>) {
+        (
+            self.audio_group_solos[group.index()],
+            self.audio_group_parents[group.index()],
+        )
+    }
+
+    /// Applies every group's solo and parent and the solo mode to `mixer`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the mixer's refusal of a cyclic parent; `mixer` may then hold
+    /// a partial topology, so callers apply this to a scratch clone.
+    fn apply_group_topology(&self, mixer: &mut MasterMixer) -> Result<(), NativeMasterError> {
+        mixer.set_solo_mode(native_solo_mode(self.audio_solo_mode));
+        for group in fm_model::AudioGroupNumber::ALL {
+            mixer.set_group_parent(native_mixer_group(group), None)?;
+        }
+        for group in fm_model::AudioGroupNumber::ALL {
+            let (soloed, parent) = self.audio_group_topology(group);
+            mixer.set_group_soloed(native_mixer_group(group), soloed);
+            mixer.set_group_parent(native_mixer_group(group), parent.map(native_mixer_group))?;
+        }
+        Ok(())
     }
 
     /// Every group's mixer state, group 1 first.
@@ -2797,6 +2864,12 @@ struct NativeAudioScratch {
     meter_inputs: Vec<InputId>,
     master_meters: Vec<ChannelMeter>,
     input_meters: Vec<ChannelMeter>,
+    /// The monitor (headphone) bus of the last render (AU-001). No device
+    /// carries it yet; it is metered and reported.
+    monitor: Vec<Vec<f32>>,
+    monitor_meters: Vec<ChannelMeter>,
+    /// Whether the last render's monitor bus carried a PFL/AFL solo.
+    monitor_solo: bool,
     meter_frame: Option<(u64, u64, u64)>,
 }
 
@@ -2809,6 +2882,10 @@ pub struct NativeAudioMeters<'a> {
     pub master: &'a [ChannelMeter],
     pub inputs: &'a [InputId],
     pub input_meters: &'a [ChannelMeter],
+    /// The monitor bus, in Master channel order (AU-001).
+    pub monitor: &'a [ChannelMeter],
+    /// Whether the monitor bus carried a PFL/AFL solo rather than Master.
+    pub monitor_solo: bool,
 }
 
 struct StagedAudioPadding {
@@ -2858,6 +2935,9 @@ impl NativeAudioScratch {
             inputs: Vec::with_capacity(source_count),
             master_meters: vec![ChannelMeter::default(); channels],
             input_meters: vec![ChannelMeter::default(); source_count * channels],
+            monitor: vec![vec![0.0; samples]; channels],
+            monitor_meters: vec![ChannelMeter::default(); channels],
+            monitor_solo: false,
             meter_inputs,
             meter_frame: None,
         }
@@ -3649,6 +3729,8 @@ impl NativeMasterRuntime {
             master: &self.scratch.master_meters,
             inputs: &self.scratch.meter_inputs,
             input_meters: &self.scratch.input_meters,
+            monitor: &self.scratch.monitor_meters,
+            monitor_solo: self.scratch.monitor_solo,
         })
     }
 
@@ -3673,6 +3755,8 @@ impl NativeMasterRuntime {
             mixer.set_group_state(group, state, 0)?;
             pending_mixer.set_group_state(group, state, 0)?;
         }
+        project.apply_group_topology(&mut mixer)?;
+        project.apply_group_topology(&mut pending_mixer)?;
         for (input, state, delay) in states {
             mixer
                 .set_input_delay(input, delay)
@@ -3694,9 +3778,11 @@ impl NativeMasterRuntime {
         self.live_audio.take()
     }
 
-    /// Applies a realized strip group membership or group level change
-    /// (AU-001) to the ordinary and clip-local mixers as one preflighted
-    /// transaction. A group fader ramps like a strip fader.
+    /// Applies a realized strip group membership, group level, group solo,
+    /// group parent, or solo-mode change (AU-001) to the ordinary and
+    /// clip-local mixers as one preflighted transaction. A group fader ramps
+    /// like a strip fader; solos, parents, and the mode take effect at the
+    /// next rendered sample.
     ///
     /// # Errors
     ///
@@ -3721,6 +3807,18 @@ impl NativeMasterRuntime {
                         native_group_state(state.gain_millidb, state.muted)?,
                         LIVE_INPUT_GAIN_RAMP_SAMPLES,
                     )?;
+                }
+                fm_engine::EngineAudioMixerUpdate::GroupSolo { group, soloed } => {
+                    mixer.set_group_soloed(native_mixer_group(group), soloed);
+                }
+                fm_engine::EngineAudioMixerUpdate::GroupParent { group, parent } => {
+                    mixer.set_group_parent(
+                        native_mixer_group(group),
+                        parent.map(native_mixer_group),
+                    )?;
+                }
+                fm_engine::EngineAudioMixerUpdate::SoloMode(mode) => {
+                    mixer.set_solo_mode(native_solo_mode(mode));
                 }
             }
             Ok(())
@@ -4555,7 +4653,7 @@ impl NativeMasterRuntime {
         };
         let active_video_inputs = &active_video_inputs[..active_video_input_count];
         if let Some(project) = project {
-            mix_project_audio_strips(
+            self.scratch.monitor_solo = mix_project_audio_strips(
                 &mut self.pending_mixer,
                 timing,
                 samples,
@@ -4565,10 +4663,14 @@ impl NativeMasterRuntime {
                 &self.sources,
                 &self.scratch.rendered,
                 &mut self.scratch.mix,
+                &mut self.scratch.monitor,
                 self.format.sample_rate,
                 &self.format.channels,
-                &mut self.scratch.master_meters,
-                &mut self.scratch.input_meters,
+                MixerMeterSlices {
+                    master: &mut self.scratch.master_meters,
+                    inputs: &mut self.scratch.input_meters,
+                    monitor: &mut self.scratch.monitor_meters,
+                },
             )?;
         } else {
             let primary = planar_audio_submission(
@@ -4599,43 +4701,52 @@ impl NativeMasterRuntime {
                 .flatten();
             match (primary, secondary) {
                 (Some(primary), Some(secondary)) => {
-                    self.pending_mixer.mix_planar_timed_into_with_meters(
-                        timing,
-                        samples,
-                        &[primary, secondary],
-                        active_video_inputs,
-                        &mut self.scratch.mix,
-                        (
-                            &mut self.scratch.master_meters,
-                            &mut self.scratch.input_meters,
-                        ),
-                    )?;
+                    self.scratch.monitor_solo =
+                        self.pending_mixer.mix_planar_timed_into_with_monitor(
+                            timing,
+                            samples,
+                            &[primary, secondary],
+                            active_video_inputs,
+                            &mut self.scratch.mix,
+                            &mut self.scratch.monitor,
+                            MixerMeterSlices {
+                                master: &mut self.scratch.master_meters,
+                                inputs: &mut self.scratch.input_meters,
+                                monitor: &mut self.scratch.monitor_meters,
+                            },
+                        )?;
                 }
                 (Some(submission), None) | (None, Some(submission)) => {
-                    self.pending_mixer.mix_planar_timed_into_with_meters(
-                        timing,
-                        samples,
-                        &[submission],
-                        active_video_inputs,
-                        &mut self.scratch.mix,
-                        (
-                            &mut self.scratch.master_meters,
-                            &mut self.scratch.input_meters,
-                        ),
-                    )?;
+                    self.scratch.monitor_solo =
+                        self.pending_mixer.mix_planar_timed_into_with_monitor(
+                            timing,
+                            samples,
+                            &[submission],
+                            active_video_inputs,
+                            &mut self.scratch.mix,
+                            &mut self.scratch.monitor,
+                            MixerMeterSlices {
+                                master: &mut self.scratch.master_meters,
+                                inputs: &mut self.scratch.input_meters,
+                                monitor: &mut self.scratch.monitor_meters,
+                            },
+                        )?;
                 }
                 (None, None) => {
-                    self.pending_mixer.mix_planar_timed_into_with_meters(
-                        timing,
-                        samples,
-                        &[],
-                        active_video_inputs,
-                        &mut self.scratch.mix,
-                        (
-                            &mut self.scratch.master_meters,
-                            &mut self.scratch.input_meters,
-                        ),
-                    )?;
+                    self.scratch.monitor_solo =
+                        self.pending_mixer.mix_planar_timed_into_with_monitor(
+                            timing,
+                            samples,
+                            &[],
+                            active_video_inputs,
+                            &mut self.scratch.mix,
+                            &mut self.scratch.monitor,
+                            MixerMeterSlices {
+                                master: &mut self.scratch.master_meters,
+                                inputs: &mut self.scratch.input_meters,
+                                monitor: &mut self.scratch.monitor_meters,
+                            },
+                        )?;
                 }
             }
         }
@@ -4816,6 +4927,8 @@ impl NativeStingerAudioRuntime {
                         .pending_mixer
                         .set_group_state(group, group_state, 0)?;
                 }
+                project.apply_group_topology(&mut stinger_master.mixer)?;
+                project.apply_group_topology(&mut stinger_master.pending_mixer)?;
                 stinger_master
                     .mixer
                     .set_input_delay(input, delay)
@@ -5496,11 +5609,11 @@ fn mix_project_audio_strips(
     sources: &BTreeMap<InputId, NativeAudioSource>,
     rendered: &BTreeMap<InputId, Vec<Vec<f32>>>,
     output: &mut [Vec<f32>],
+    monitor: &mut [Vec<f32>],
     sample_rate: fm_types::SampleRate,
     master_layout: &fm_types::ChannelLayout,
-    master_meters: &mut [ChannelMeter],
-    input_meters: &mut [ChannelMeter],
-) -> Result<(), NativeMasterError> {
+    meters: MixerMeterSlices<'_>,
+) -> Result<bool, NativeMasterError> {
     let mut first = None;
     for (&logical, route) in &project.audio_routes {
         let NativeAudioRoute::Leaf(physical) = *route else {
@@ -5521,15 +5634,15 @@ fn mix_project_audio_strips(
         }
     }
     let Some(first) = first else {
-        mixer.mix_planar_timed_into_with_meters(
+        return Ok(mixer.mix_planar_timed_into_with_monitor(
             timing,
             samples,
             &[],
             active_video_inputs,
             output,
-            (master_meters, input_meters),
-        )?;
-        return Ok(());
+            monitor,
+            meters,
+        )?);
     };
 
     let mut submissions = [first; MAX_NATIVE_AUDIO_STRIPS];
@@ -5557,15 +5670,15 @@ fn mix_project_audio_strips(
         *slot = submission;
         submission_count += 1;
     }
-    mixer.mix_planar_timed_into_with_meters(
+    Ok(mixer.mix_planar_timed_into_with_monitor(
         timing,
         samples,
         &submissions[..submission_count],
         active_video_inputs,
         output,
-        (master_meters, input_meters),
-    )?;
-    Ok(())
+        monitor,
+        meters,
+    )?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5638,6 +5751,15 @@ fn native_gain(milli_db: i32) -> Result<fm_audio::Gain, NativeMasterError> {
 
 const fn native_mixer_group(group: fm_model::AudioGroupNumber) -> MixerGroup {
     MixerGroup::ALL[group.index()]
+}
+
+/// The mixer solo mode for a model solo mode (AU-001).
+const fn native_solo_mode(mode: fm_model::AudioSoloMode) -> SoloMode {
+    match mode {
+        fm_model::AudioSoloMode::InPlace => SoloMode::InPlace,
+        fm_model::AudioSoloMode::Pfl => SoloMode::Pfl,
+        fm_model::AudioSoloMode::Afl => SoloMode::Afl,
+    }
 }
 
 fn native_group_state(gain_millidb: i32, muted: bool) -> Result<GroupState, NativeMasterError> {

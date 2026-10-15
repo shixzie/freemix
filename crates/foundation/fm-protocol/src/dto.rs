@@ -2461,6 +2461,18 @@ pub struct InputAudioMeters {
     pub channels: Vec<AudioMeterChannel>,
 }
 
+/// The monitor (headphone) bus meters of one interval (2.44, AU-001).
+///
+/// `solo` is set while the bus carries a PFL/AFL solo; otherwise it follows
+/// Master. On the wire this is `monitor=<master|solo>~<channels>`, or `-`
+/// when the sender has no monitor bus.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioMonitorMeters {
+    pub solo: bool,
+    /// One reading per Master channel, in Master channel order.
+    pub channels: Vec<AudioMeterChannel>,
+}
+
 /// Lossy, non-resumable audio meter sample for one native Program interval.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AudioMetersMessage {
@@ -2471,6 +2483,8 @@ pub struct AudioMetersMessage {
     pub end_sample: u64,
     pub master: Vec<AudioMeterChannel>,
     pub inputs: Vec<InputAudioMeters>,
+    /// The monitor bus, when the sender renders one (2.44).
+    pub monitor: Option<AudioMonitorMeters>,
 }
 
 /// Latest health of one local HLS output: playlist depth and free space.

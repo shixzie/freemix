@@ -119,5 +119,6 @@ pub fn inject(state: &mut StudioUiState) {
             channel(master_rms - 1.0, (master_rms + 7.0).min(-1.5)),
         ],
         inputs,
+        monitor: None,
     });
 }

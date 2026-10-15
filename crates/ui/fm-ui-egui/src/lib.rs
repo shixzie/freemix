@@ -171,6 +171,9 @@ pub enum StudioIntent {
         gain_millidb: i32,
         muted: bool,
     },
+    /// Any other mixer operation, sent as is (AU-001, Protocol 2.44: group
+    /// solo, group parent, and the solo mode).
+    AudioMixer(fm_protocol::AudioMixerOperation),
     /// Chooses whether Fade to Black fades one output (SW-004).
     SetFadeToBlackOutput { output: OutputId, affected: bool },
     /// Saves one fullscreen display-output slot (OR-011, Protocol 2.42).

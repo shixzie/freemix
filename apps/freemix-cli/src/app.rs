@@ -3577,6 +3577,21 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
                 muted,
             },
         },
+        AudioMixerArgs::GroupSolo {
+            group: number,
+            soloed,
+        } => fm_engine::EngineAudioMixerEdit::SetGroupSolo {
+            group: group(number)?,
+            soloed,
+        },
+        AudioMixerArgs::GroupParent {
+            group: number,
+            parent,
+        } => fm_engine::EngineAudioMixerEdit::SetGroupParent {
+            group: group(number)?,
+            parent: parent.map(group).transpose()?,
+        },
+        AudioMixerArgs::SoloMode { mode } => fm_engine::EngineAudioMixerEdit::SetSoloMode { mode },
     })
 }
 
@@ -3608,6 +3623,27 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 muted: state.muted,
             }
         }
+        fm_engine::EngineAudioMixerEdit::SetGroupSolo { group, soloed } => {
+            fm_protocol::AudioMixerOperation::SetGroupSolo {
+                group: group.get(),
+                soloed,
+            }
+        }
+        fm_engine::EngineAudioMixerEdit::SetGroupParent { group, parent } => {
+            fm_protocol::AudioMixerOperation::SetGroupParent {
+                group: group.get(),
+                parent: parent.map(fm_model::AudioGroupNumber::get),
+            }
+        }
+        fm_engine::EngineAudioMixerEdit::SetSoloMode { mode } => {
+            fm_protocol::AudioMixerOperation::SetSoloMode {
+                mode: match mode {
+                    fm_model::AudioSoloMode::InPlace => fm_protocol::AudioSoloMode::InPlace,
+                    fm_model::AudioSoloMode::Pfl => fm_protocol::AudioSoloMode::Pfl,
+                    fm_model::AudioSoloMode::Afl => fm_protocol::AudioSoloMode::Afl,
+                },
+            }
+        }
     })
 }
 
@@ -3637,9 +3673,12 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                     gain_millidb: value.gain.get(),
                     muted: value.muted,
                 },
+                soloed: value.soloed,
+                parent: value.parent,
             },
         )?;
     }
+    show.set_audio_solo_mode(project.audio_solo_mode());
     show.restore_fade_to_black_excluded_outputs(
         project.fade_to_black_excluded_outputs().iter().copied(),
     )?;
@@ -3686,22 +3725,29 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
             return Err(AppFailure(format!("project is missing input {input}")).into());
         }
     }
-    for (group, value) in fm_model::AudioGroupNumber::ALL
-        .into_iter()
-        .zip(show.audio_groups())
-    {
-        project
-            .set_audio_group(
-                group,
-                fm_model::AudioGroup {
-                    name: value.name.clone(),
-                    gain: InputGainMilliDb::new(value.state.gain_millidb)
-                        .expect("engine group gain is bounded by the model contract"),
-                    muted: value.state.muted,
-                },
-            )
-            .map_err(|error| AppFailure(format!("audio group {group}: {error}")))?;
+    // Parents are cleared first so an old parent never closes a transient
+    // cycle with a new one.
+    for nested in [false, true] {
+        for (group, value) in fm_model::AudioGroupNumber::ALL
+            .into_iter()
+            .zip(show.audio_groups())
+        {
+            project
+                .set_audio_group(
+                    group,
+                    fm_model::AudioGroup {
+                        name: value.name.clone(),
+                        gain: InputGainMilliDb::new(value.state.gain_millidb)
+                            .expect("engine group gain is bounded by the model contract"),
+                        muted: value.state.muted,
+                        soloed: value.soloed,
+                        parent: value.parent.filter(|_| nested),
+                    },
+                )
+                .map_err(|error| AppFailure(format!("audio group {group}: {error}")))?;
+        }
     }
+    project.set_audio_solo_mode(show.audio_solo_mode());
     let excluded = show.desired_switcher().fade_to_black_excluded_outputs();
     let outputs = project
         .outputs()
@@ -4820,6 +4866,9 @@ Usage:
   freemix-cli audio-group <show.freemix> <input> <1..4|none> [--key <key>] [--expect <revision>]
   freemix-cli audio-group-name <show.freemix> <group:1..4> <name> [--key <key>] [--expect <revision>]
   freemix-cli audio-group-level <show.freemix> <group:1..4> <gain-millidb> <muted:on|off> [--key <key>] [--expect <revision>]
+  freemix-cli audio-group-solo <show.freemix> <group:1..4> <soloed:on|off> [--key <key>] [--expect <revision>]
+  freemix-cli audio-group-parent <show.freemix> <group:1..4> <parent:1..4|none> [--key <key>] [--expect <revision>]
+  freemix-cli audio-solo-mode <show.freemix> <sip|pfl|afl> [--key <key>] [--expect <revision>]
   freemix-cli rename <show.freemix> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli input-reorder <show.freemix> <input> [<input>...] [--key <key>] [--expect <revision>]
   freemix-cli preview <show.freemix> <input> [--key <key>] [--expect <revision>]
@@ -4857,7 +4906,7 @@ Usage:
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
-  freemix-cli remote-audio-label|remote-audio-group|remote-audio-group-name|remote-audio-group-level <127.0.0.1:port> <arguments as above> [--key <key>] [--expect <revision>]
+  freemix-cli remote-audio-label|remote-audio-group|remote-audio-group-name|remote-audio-group-level|remote-audio-group-solo|remote-audio-group-parent|remote-audio-solo-mode <127.0.0.1:port> <arguments as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-rename <127.0.0.1:port> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> solid <input> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> bars <input> <name> [--key <key>] [--expect <revision>]

@@ -1,17 +1,20 @@
-//! Strip groups and Fade-to-Black output selection in `project.json`
-//! (schema 39, AU-001 and SW-004).
+//! Strip groups, the solo mode, and Fade-to-Black output selection in
+//! `project.json` (schemas 39 and 42, AU-001 and SW-004).
 //!
 //! ```text
 //! "audio_groups": [
-//!   {"name": "Group 1", "gain_milli_db": 0, "muted": false},
-//!   {"name": "Hosts", "gain_milli_db": -6000, "muted": true},
-//!   {"name": "Group 3", "gain_milli_db": 0, "muted": false},
-//!   {"name": "Group 4", "gain_milli_db": 0, "muted": false}
+//!   {"name": "Group 1", "gain_milli_db": 0, "muted": false, "soloed": false, "parent": 2},
+//!   {"name": "Hosts", "gain_milli_db": -6000, "muted": true, "soloed": false, "parent": null},
+//!   {"name": "Group 3", "gain_milli_db": 0, "muted": false, "soloed": true, "parent": null},
+//!   {"name": "Group 4", "gain_milli_db": 0, "muted": false, "soloed": false, "parent": null}
 //! ],
+//! "audio_solo_mode": "pfl",
 //! "fade_to_black_excluded_outputs": [5]
 //! ```
 //!
-//! Exactly [`AUDIO_GROUP_COUNT`] groups, group 1 first. Every strip in
+//! Exactly [`AUDIO_GROUP_COUNT`] groups, group 1 first; `parent` is a group
+//! number or `null`, and parents never form a cycle (checked by project
+//! validation). `audio_solo_mode` is `sip`, `pfl`, or `afl`. Every strip in
 //! `input_audio_strips` also carries `pan_basis_points`, `label` (empty for
 //! none), and `group` (a group number or `null`). Excluded outputs are
 //! strictly ascending output ids; every other output fades.
@@ -19,10 +22,12 @@
 use core::fmt::Write as _;
 use std::collections::BTreeSet;
 
-use fm_model::{AUDIO_GROUP_COUNT, AudioGroup, AudioGroups, InputGainMilliDb};
+use fm_model::{
+    AUDIO_GROUP_COUNT, AudioGroup, AudioGroupNumber, AudioGroups, AudioSoloMode, InputGainMilliDb,
+};
 use fm_types::OutputId;
 
-use super::{DecodeError, Object, Value, escape_string, parse_array, syntax};
+use super::{DecodeError, Object, Value, escape_string, parse_array, parse_optional, syntax};
 
 /// Writes `,\n    "audio_groups": [...]` and the FTB output exclusions.
 pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project) {
@@ -33,13 +38,25 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
         escape_string(output, &group.name);
         write!(
             output,
-            "\", \"gain_milli_db\": {}, \"muted\": {}}}",
+            "\", \"gain_milli_db\": {}, \"muted\": {}, \"soloed\": {}, \"parent\": ",
             group.gain.get(),
-            group.muted
+            group.muted,
+            group.soloed
         )
         .expect("writing to a string cannot fail");
+        match group.parent {
+            Some(parent) => write!(output, "{}}}", parent.get()),
+            None => write!(output, "null}}"),
+        }
+        .expect("writing to a string cannot fail");
     }
-    output.push_str("\n    ],\n    \"fade_to_black_excluded_outputs\": [");
+    write!(
+        output,
+        "\n    ],\n    \"audio_solo_mode\": \"{}\"",
+        project.audio_solo_mode().token()
+    )
+    .expect("writing to a string cannot fail");
+    output.push_str(",\n    \"fade_to_black_excluded_outputs\": [");
     for (index, id) in project.fade_to_black_excluded_outputs().iter().enumerate() {
         if index != 0 {
             output.push_str(", ");
@@ -63,8 +80,28 @@ pub(crate) fn parse_audio_groups(object: &mut Object) -> Result<AudioGroups, Dec
             ))
         })?;
         let muted = object.boolean("muted")?;
+        let soloed = object.boolean("soloed")?;
+        let parent = parse_optional(object.take("parent")?, |value| {
+            let Value::Number(number) = value else {
+                return Err(syntax("audio group parent must be a number or null"));
+            };
+            u8::try_from(number)
+                .ok()
+                .and_then(AudioGroupNumber::new)
+                .ok_or_else(|| {
+                    syntax(format!(
+                        "audio group parent must be 1 through {AUDIO_GROUP_COUNT}"
+                    ))
+                })
+        })?;
         object.finish()?;
-        Ok(AudioGroup { name, gain, muted })
+        Ok(AudioGroup {
+            name,
+            gain,
+            muted,
+            soloed,
+            parent,
+        })
     })?;
     let groups: [AudioGroup; AUDIO_GROUP_COUNT] = groups.try_into().map_err(|_| {
         syntax(format!(
@@ -72,6 +109,13 @@ pub(crate) fn parse_audio_groups(object: &mut Object) -> Result<AudioGroups, Dec
         ))
     })?;
     Ok(AudioGroups::new(groups))
+}
+
+/// Parses `"audio_solo_mode"` from the project object.
+pub(crate) fn parse_audio_solo_mode(object: &mut Object) -> Result<AudioSoloMode, DecodeError> {
+    let token = object.string("audio_solo_mode")?;
+    AudioSoloMode::from_token(&token)
+        .ok_or_else(|| syntax("audio_solo_mode must be \"sip\", \"pfl\", or \"afl\""))
 }
 
 /// Parses `"fade_to_black_excluded_outputs"` from the project object.

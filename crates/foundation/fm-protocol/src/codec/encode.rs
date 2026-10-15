@@ -2435,6 +2435,22 @@ fn encode_audio_meters(
     if inputs.len() > super::MAX_LIST_ITEMS {
         return Err(CodecError::TooManyItems("inputs"));
     }
+    let monitor = match &message.monitor {
+        None => "-".to_owned(),
+        Some(monitor) => {
+            if monitor.channels.len() != channels {
+                return Err(CodecError::InvalidField {
+                    field: "monitor",
+                    value: monitor.channels.len().to_string(),
+                });
+            }
+            format!(
+                "{}~{}",
+                if monitor.solo { "solo" } else { "master" },
+                encode_meter_channels(&monitor.channels, "monitor")?
+            )
+        }
+    };
     record.kind("audio_meters");
     encode_server_identity(record, &message.server)?;
     record.field("sequence", message.sequence)?;
@@ -2442,7 +2458,8 @@ fn encode_audio_meters(
     record.field("start_sample", message.start_sample)?;
     record.field("end_sample", message.end_sample)?;
     record.field_string("master", master)?;
-    record.field_string("inputs", inputs.join(";"))
+    record.field_string("inputs", inputs.join(";"))?;
+    record.field_string("monitor", monitor)
 }
 
 fn encode_meter_channels(

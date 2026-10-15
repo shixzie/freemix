@@ -3823,9 +3823,16 @@ fn validate_audio_mixer_change(
             fm_protocol::audio_group_is_valid(*group)
                 && fm_protocol::audio_label_is_valid(name, false)
         }
-        fm_protocol::AudioMixerOperation::SetGroupLevel { group, .. } => {
+        fm_protocol::AudioMixerOperation::SetGroupLevel { group, .. }
+        | fm_protocol::AudioMixerOperation::SetGroupSolo { group, .. } => {
             fm_protocol::audio_group_is_valid(*group)
         }
+        fm_protocol::AudioMixerOperation::SetGroupParent { group, parent } => {
+            fm_protocol::audio_group_is_valid(*group)
+                && parent.is_none_or(fm_protocol::audio_group_is_valid)
+                && state.audio_mixer.parent_is_acyclic(*group, *parent)
+        }
+        fm_protocol::AudioMixerOperation::SetSoloMode { .. } => true,
     };
     if valid {
         Ok(())

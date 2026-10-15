@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.43 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.44 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1199,6 +1199,45 @@ each crop, transform, key, and effect capable.
   `null`, `{"type": "chroma", ...}` or `{"type": "luma", ...}`), and stored
   effects must be one of the five kinds above.
 - 2.42 is refused.
+
+Protocol 2.44 adds a solo mode with a monitor bus, group solo, and nested
+VCA groups (`AU-001`).
+
+- New mixer commands (`ControlAudio` permission, announced by
+  `event=audio_mixer_changed` like every mixer operation):
+  - `audio_group_solo` (`group`, `soloed`: `0|1`) is a live operation like
+    `audio_group_level`: realized on the `audio` domain and not undoable.
+    A soloed group solos every member strip.
+  - `audio_group_parent` (`group`, `parent`: `1..=4` or `-`) nests a group
+    inside another. A member then follows every group on its parent chain:
+    the group gains add in dB (the linear gain is the product along the
+    chain), any muted group mutes, and any soloed group solos. A parent that
+    would form a cycle (including the group itself) is rejected, so a chain
+    is at most four groups.
+  - `audio_solo_mode` (`mode`: `sip`, `pfl`, or `afl`) chooses what a solo
+    does. `sip` (solo-in-place, the default) gates Program as before. `pfl`
+    and `afl` leave Program untouched and send the soloed strips to the
+    monitor bus: `pfl` taps after delay and channel mapping and before the
+    fader, groups, balance, pan, mute, and follow-video; `afl` taps after
+    the strip and group faders, balance, and pan, still ignoring mute and
+    follow-video. With nothing soloed, or in `sip`, the monitor bus follows
+    Master.
+  `audio_group_parent` and `audio_solo_mode` are project edits: undoable
+  with an exact inverse, journaled, realized on the `project` domain, and
+  refused under the project padlock.
+- Group entries in the snapshot's `audio_groups` are
+  `name~gain_millidb~muted~soloed~parent` (`parent` being `-` or a group
+  number), and the snapshot appends `audio_solo_mode` after
+  `audio_groups`.
+- `audio_meters` appends `monitor`: `-` when the server meters no monitor
+  bus, or `master~<channels>` / `solo~<channels>` (whether the bus
+  currently carries the solo listen or follows Master) with exactly as
+  many channels as `master`, in the same encoding.
+- Durability: group solos, group parents, and the solo mode are project
+  state (schema 42: each `audio_groups` entry's `soloed` and `parent`, and
+  the top-level `audio_solo_mode`). `freemixd` meters the monitor bus but
+  has no headphone device path yet, so the bus is not audible.
+- 2.43 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

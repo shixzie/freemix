@@ -1177,6 +1177,71 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::GroupNameHover,
         t("Renombrar este grupo (hasta 32 bytes)"),
     ),
+    (
+        Msg::GroupSoloOnHover,
+        t(
+            "Grupo en solo: todos sus canales, también los de los grupos anidados en él, están en solo; haga clic para liberarlo",
+        ),
+    ),
+    (
+        Msg::GroupSoloOffHover,
+        t("Poner en solo todos los canales de este grupo y de los grupos anidados en él"),
+    ),
+    (Msg::GroupParentNone, t("Nivel superior")),
+    (Msg::GroupParentIn, t("En {group}")),
+    (
+        Msg::GroupParentHover,
+        t(
+            "Anidar este grupo dentro de otro: el fader, el silencio y el solo del grupo padre también se aplican a cada canal miembro",
+        ),
+    ),
+    (
+        Msg::GroupParentItemHover,
+        t("Anidar este grupo dentro de {group}"),
+    ),
+    (
+        Msg::GroupParentNoneHover,
+        t("Sacar este grupo de su grupo padre"),
+    ),
+    (Msg::MonitorStrip, t("MON")),
+    (Msg::MonitorFollowsMaster, t("= MÁSTER")),
+    (Msg::MonitorSoloListen, t("ESCUCHA SOLO")),
+    (
+        Msg::MonitorStripHover,
+        t(
+            "Bus de monitoreo para auriculares: sigue al Máster hasta que un canal o grupo se pone en solo en modo PFL o AFL, y entonces lleva solo los canales en solo; el Programa nunca cambia",
+        ),
+    ),
+    (Msg::MonitorNoDevice, t("SOLO MEDIDOR")),
+    (
+        Msg::MonitorNoDeviceHover,
+        t(
+            "Este servidor mide el bus de monitoreo pero todavía no lo envía a un dispositivo de auriculares",
+        ),
+    ),
+    (Msg::SoloModeSip, t("SIP")),
+    (Msg::SoloModePfl, t("PFL")),
+    (Msg::SoloModeAfl, t("AFL")),
+    (
+        Msg::SoloModeHover,
+        t("Modo de solo: cómo se escuchan las teclas S"),
+    ),
+    (
+        Msg::SoloModeSipHover,
+        t("Solo en sitio: poner en solo silencia todos los demás canales en el Programa"),
+    ),
+    (
+        Msg::SoloModePflHover,
+        t(
+            "Escucha prefader: los canales en solo van al bus de monitoreo antes de su fader; el Programa no cambia",
+        ),
+    ),
+    (
+        Msg::SoloModeAflHover,
+        t(
+            "Escucha posfader: los canales en solo van al bus de monitoreo después de su fader; el Programa no cambia",
+        ),
+    ),
     (Msg::FtbOutputs, t("Salidas {affected}/{total}")),
     (
         Msg::FtbOutputsHover,

@@ -6068,6 +6068,15 @@ impl NativeDaemon {
                     fm_engine::EngineAudioMixerUpdate::GroupLevel { group, state } => {
                         project_plan.set_audio_group_level(group, state.gain_millidb, state.muted);
                     }
+                    fm_engine::EngineAudioMixerUpdate::GroupSolo { group, soloed } => {
+                        project_plan.set_audio_group_solo(group, soloed);
+                    }
+                    fm_engine::EngineAudioMixerUpdate::GroupParent { group, parent } => {
+                        project_plan.set_audio_group_parent(group, parent);
+                    }
+                    fm_engine::EngineAudioMixerUpdate::SoloMode(mode) => {
+                        project_plan.set_audio_solo_mode(mode);
+                    }
                 }
             }
             if project_plan.output_ids().is_empty() {
@@ -6706,6 +6715,15 @@ fn audio_meters_message(
                 channels: channels.iter().copied().map(protocol_audio_meter).collect(),
             })
             .collect(),
+        monitor: Some(fm_protocol::AudioMonitorMeters {
+            solo: meters.monitor_solo,
+            channels: meters
+                .monitor
+                .iter()
+                .copied()
+                .map(protocol_audio_meter)
+                .collect(),
+        }),
     }
 }
 
@@ -10385,9 +10403,12 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
                     gain_millidb: value.gain.get(),
                     muted: value.muted,
                 },
+                soloed: value.soloed,
+                parent: value.parent,
             },
         )?;
     }
+    show.set_audio_solo_mode(project.audio_solo_mode());
     show.restore_fade_to_black_excluded_outputs(
         project.fade_to_black_excluded_outputs().iter().copied(),
     )?;
@@ -10447,25 +10468,32 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
             );
         }
     }
-    for (group, value) in fm_model::AudioGroupNumber::ALL
-        .into_iter()
-        .zip(show.audio_groups())
-    {
-        let gain = InputGainMilliDb::new(value.state.gain_millidb)
-            .expect("engine group gain is bounded by the model contract");
-        project
-            .set_audio_group(
-                group,
-                fm_model::AudioGroup {
-                    name: value.name.clone(),
-                    gain,
-                    muted: value.state.muted,
-                },
-            )
-            .map_err(|error| {
-                AppFailure(format!("project cannot take audio group {group}: {error}"))
-            })?;
+    // Parents are cleared first so an old parent never closes a transient
+    // cycle with a new one.
+    for nested in [false, true] {
+        for (group, value) in fm_model::AudioGroupNumber::ALL
+            .into_iter()
+            .zip(show.audio_groups())
+        {
+            let gain = InputGainMilliDb::new(value.state.gain_millidb)
+                .expect("engine group gain is bounded by the model contract");
+            project
+                .set_audio_group(
+                    group,
+                    fm_model::AudioGroup {
+                        name: value.name.clone(),
+                        gain,
+                        muted: value.state.muted,
+                        soloed: value.soloed,
+                        parent: value.parent.filter(|_| nested),
+                    },
+                )
+                .map_err(|error| {
+                    AppFailure(format!("project cannot take audio group {group}: {error}"))
+                })?;
+        }
     }
+    project.set_audio_solo_mode(show.audio_solo_mode());
     let excluded = show.desired_switcher().fade_to_black_excluded_outputs();
     let outputs = project
         .outputs()

@@ -141,6 +141,13 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
             });
         }
     }
+    if !project.audio_groups().is_acyclic() {
+        errors.push(ValidationError {
+            entity: None,
+            field: "audio_groups.parent",
+            kind: ValidationErrorKind::Cycle,
+        });
+    }
     validate_display_outputs(project, errors);
     for &output in project.fade_to_black_excluded_outputs() {
         if !project

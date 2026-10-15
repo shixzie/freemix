@@ -2240,6 +2240,7 @@ fn intent_payload(
             gain_millidb,
             muted,
         }),
+        StudioIntent::AudioMixer(operation) => CommandPayload::AudioMixer(operation),
         StudioIntent::SetFadeToBlackOutput { output, affected } => {
             CommandPayload::SetFadeToBlackOutput {
                 output: WireOutputId::from_domain(output),
@@ -2929,6 +2930,7 @@ mod tests {
                         rms_millionths: 250_000,
                     }],
                     inputs: Vec::new(),
+                    monitor: None,
                 })) {
                     return;
                 }

@@ -1723,6 +1723,7 @@ mod tests {
                 rms_millionths: 250_000,
             }],
             inputs: Vec::new(),
+            monitor: None,
         }
     }
 

@@ -5782,6 +5782,8 @@ fn audio_mixer_edits_are_audio_controlled_replicated_and_undoable() {
             name: "Guests".into(),
             gain_millidb: -6_000,
             muted: true,
+            soloed: false,
+            parent: None,
         }
     );
     let strip = snapshot
@@ -5837,6 +5839,130 @@ fn audio_mixer_edits_are_audio_controlled_replicated_and_undoable() {
             .iter()
             .all(|strip| strip.group.is_none())
     );
+}
+
+/// Protocol 2.44 (AU-001): group solo is a live audio operation; the solo
+/// mode and group parents are audio-controlled undoable project edits that
+/// refuse cycles; all replicate exactly and reach the realized frame.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn group_solo_parents_and_solo_mode_are_replicated_and_realized() {
+    use fm_engine::EngineAudioMixerUpdate;
+    use fm_protocol::{AudioMixerOperation, AudioSoloMode};
+
+    let mut control = mixer_service();
+    let server = server_identity();
+    let group = |number| fm_model::AudioGroupNumber::new(number).unwrap();
+    for (key, operation) in [
+        (
+            "mode",
+            AudioMixerOperation::SetSoloMode {
+                mode: AudioSoloMode::Pfl,
+            },
+        ),
+        (
+            "parent",
+            AudioMixerOperation::SetGroupParent {
+                group: 1,
+                parent: Some(2),
+            },
+        ),
+        (
+            "solo",
+            AudioMixerOperation::SetGroupSolo {
+                group: 2,
+                soloed: true,
+            },
+        ),
+    ] {
+        let payload = CommandPayload::AudioMixer(operation.clone());
+        assert_eq!(
+            control.required_classes(&payload).primary(),
+            CommandClass::ControlAudio,
+            "{key}"
+        );
+        let denied = control
+            .submit(
+                &principal(Role::Graphics),
+                command(&format!("g-{key}"), &format!("g-{key}"), payload.clone()),
+                0,
+            )
+            .unwrap();
+        assert_eq!(rejection_code(&denied), Some("permission_denied"));
+        let submission = control
+            .submit(&principal(Role::Audio), command(key, key, payload), 0)
+            .unwrap();
+        assert!(
+            submission.is_accepted(),
+            "{key}: {:?}",
+            submission.output.result
+        );
+        assert_wire_exact(&control, &submission);
+        assert_eq!(
+            submission.output.events[0].payload,
+            EventPayload::AudioMixerChanged(operation)
+        );
+    }
+    let cycle = control
+        .submit(
+            &principal(Role::Audio),
+            command(
+                "cycle",
+                "cycle",
+                CommandPayload::AudioMixer(AudioMixerOperation::SetGroupParent {
+                    group: 2,
+                    parent: Some(1),
+                }),
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&cycle), Some("invalid_command"));
+
+    let snapshot = control.snapshot().snapshot.clone();
+    assert_eq!(snapshot.audio_mixer.solo_mode, AudioSoloMode::Pfl);
+    assert_eq!(snapshot.audio_mixer.groups[0].parent, Some(2));
+    assert!(snapshot.audio_mixer.groups[1].soloed);
+    assert!(snapshot.audio_mixer.group_chain_soloed(Some(1)));
+
+    let tick = control.tick(&server).unwrap();
+    assert_eq!(
+        tick.frame.audio_mixer_updates,
+        vec![
+            EngineAudioMixerUpdate::SoloMode(fm_model::AudioSoloMode::Pfl),
+            EngineAudioMixerUpdate::GroupParent {
+                group: group(1),
+                parent: Some(group(2)),
+            },
+            EngineAudioMixerUpdate::GroupSolo {
+                group: group(2),
+                soloed: true,
+            },
+        ]
+    );
+
+    // Undo reverts the parent and then the mode; the live solo stays.
+    for key in ["u1", "u2"] {
+        let undo = control
+            .submit(
+                &principal(Role::Admin),
+                command(
+                    key,
+                    key,
+                    CommandPayload::Undo {
+                        expected_edit: None,
+                    },
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(undo.is_accepted(), "{:?}", undo.output.result);
+        assert_wire_exact(&control, &undo);
+    }
+    let snapshot = control.snapshot().snapshot.clone();
+    assert_eq!(snapshot.audio_mixer.solo_mode, AudioSoloMode::InPlace);
+    assert_eq!(snapshot.audio_mixer.groups[0].parent, None);
+    assert!(snapshot.audio_mixer.groups[1].soloed);
 }
 
 /// Protocol 2.40 (SW-004): the Fade-to-Black output selection is a

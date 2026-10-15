@@ -14,7 +14,16 @@
 //! (AU-001). Every group with members gets a group strip between the input
 //! strips and Master: its fader adds to each member's gain and its mute
 //! silences them, while each member keeps its own fader. The group strip's
-//! meter is the loudest of its members' post-fader input meters.
+//! meter is the loudest of its members' post-fader input meters. A group
+//! strip also solos its members and, in the details, nests the group inside
+//! a parent group (which then also governs every member); a parent group
+//! with only nested groups gets a strip too.
+//!
+//! The `MON` strip beside Master meters the monitor (headphone) bus and
+//! chooses the solo mode: SIP gates Program to the soloed strips, while PFL
+//! and AFL leave Program alone and route the soloed strips to the monitor
+//! bus before or after their faders. While nothing is soloed in PFL or AFL
+//! the monitor bus follows Master.
 
 use egui::{
     Align2, Color32, CornerRadius, DragValue, FontFamily, FontId, Key, Rect, RichText, ScrollArea,
@@ -117,18 +126,33 @@ const FADER_STEP_MDB: i32 = 100;
 const FADER_KEY_STEP_MDB: i32 = 500;
 const FADER_CAP: Vec2 = Vec2::new(26.0, 14.0);
 
-/// The groups that have member strips, ascending, with their members.
+/// The groups that have member strips, directly or through a nested
+/// group, ascending, with those members.
 pub(crate) fn active_groups(view: &ClientView) -> Vec<(u8, Vec<fm_types::InputId>)> {
+    group_members(&view.audio_mixer, &view.input_audio_strips)
+}
+
+/// [`active_groups`] over a mixer status and its strips.
+pub(crate) fn group_members(
+    mixer: &fm_protocol::AudioMixerStatus,
+    strips: &[InputAudioStripStatus],
+) -> Vec<(u8, Vec<fm_types::InputId>)> {
     (1..=4_u8)
         .filter_map(|group| {
-            let members = view
-                .input_audio_strips
+            let members = strips
                 .iter()
-                .filter(|strip| strip.group == Some(group))
+                .filter(|strip| mixer.chain(strip.group).any(|member| member == group))
                 .map(|strip| strip.input)
                 .collect::<Vec<_>>();
             (!members.is_empty()).then_some((group, members))
         })
+        .collect()
+}
+
+/// The parents `group` may take without a cycle, ascending.
+pub(crate) fn parent_choices(mixer: &fm_protocol::AudioMixerStatus, group: u8) -> Vec<u8> {
+    (1..=4_u8)
+        .filter(|&parent| parent != group && mixer.parent_is_acyclic(group, Some(parent)))
         .collect()
 }
 
@@ -460,7 +484,7 @@ pub(crate) fn draw_mixer(
         return;
     };
     ballistics.retain(|key| match key {
-        MeterKey::Master => true,
+        MeterKey::Master | MeterKey::Monitor => true,
         MeterKey::Group(group) => active_groups(view)
             .iter()
             .any(|(active, _)| *active == group),
@@ -470,9 +494,9 @@ pub(crate) fn draw_mixer(
             .any(|strip| strip.input == input),
     });
     let audio_reason = unavailable_reason(state, Capability::Audio);
-    // Master stays pinned at the right edge; input strips scroll when the
-    // mixer is narrower than all strips.
-    let master_width = STRIP_WIDTH + 2.0 + STRIP_GAP;
+    // Monitor and Master stay pinned at the right edge; input strips scroll
+    // when the mixer is narrower than all strips.
+    let master_width = 2.0 * (STRIP_WIDTH + 2.0 + STRIP_GAP);
     let inputs_width = (ui.available_width() - master_width).max(STRIP_WIDTH);
     let mut clear = Vec::new();
     ui.horizontal_top(|ui| {
@@ -549,6 +573,35 @@ pub(crate) fn draw_mixer(
                     });
             },
         );
+        let monitor = state
+            .audio_meters
+            .as_ref()
+            .and_then(|meters| meters.monitor.as_ref());
+        let monitor_channels = monitor.map(|monitor| monitor.channels.as_slice());
+        let holds = ballistics
+            .update(MeterKey::Monitor, monitor_channels, dt_ms)
+            .to_vec();
+        if draw_monitor_strip(
+            ui,
+            view,
+            (
+                MeterFeed {
+                    channels: monitor_channels,
+                    holds: &holds,
+                    stale: meters_stale,
+                },
+                monitor.is_some_and(|monitor| monitor.solo),
+            ),
+            StripGate {
+                enabled,
+                reason: audio_reason,
+                details: *details,
+            },
+            fader_height,
+            intents,
+        ) {
+            clear.push(MeterKey::Monitor);
+        }
         let master = state
             .audio_meters
             .as_ref()
@@ -881,8 +934,9 @@ pub(crate) fn group_meter(
 }
 
 /// Draws one VCA group strip: name plate, peak readout, the group meter
-/// beside its fader, mute, and (with details) the group name. Returns
-/// `true` when the operator cleared its clip.
+/// beside its fader, mute and solo, and (with details) the group name and
+/// parent. Returns `true` when the operator cleared its clip.
+#[allow(clippy::too_many_lines)]
 fn draw_group_strip(
     ui: &mut Ui,
     view: &ClientView,
@@ -903,7 +957,9 @@ fn draw_group_strip(
     };
     let mut gain_millidb = status.gain_millidb;
     let mut muted = status.muted;
+    let mut soloed = status.soloed;
     let mut level_changed = false;
+    let mut solo_changed = false;
     let mut clear_clip = false;
     strip_frame(ui, accent_color(), |ui| {
         #[allow(clippy::cast_possible_truncation)] // at most 256 strips
@@ -948,18 +1004,37 @@ fn draw_group_strip(
                 {
                     intents.push(StudioIntent::RenameAudioGroup { group, name });
                 }
+                if let Some(parent) = group_parent_choice(ui, view, group, enabled, reason) {
+                    intents.push(StudioIntent::AudioMixer(
+                        fm_protocol::AudioMixerOperation::SetGroupParent { group, parent },
+                    ));
+                }
             });
         }
-        level_changed |= led_key(ui, enabled, &mut muted, "M", PROGRAM, STRIP_INNER_WIDTH)
-            .hint(
-                l.text(if muted {
-                    Msg::GroupMuteOnHover
-                } else {
-                    Msg::GroupMuteOffHover
-                }),
-                reason,
-            )
-            .changed();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let half = (STRIP_INNER_WIDTH - 3.0) / 2.0;
+            level_changed |= led_key(ui, enabled, &mut muted, "M", PROGRAM, half)
+                .hint(
+                    l.text(if muted {
+                        Msg::GroupMuteOnHover
+                    } else {
+                        Msg::GroupMuteOffHover
+                    }),
+                    reason,
+                )
+                .changed();
+            solo_changed = led_key(ui, enabled, &mut soloed, "S", AMBER, half)
+                .hint(
+                    l.text(if soloed {
+                        Msg::GroupSoloOnHover
+                    } else {
+                        Msg::GroupSoloOffHover
+                    }),
+                    reason,
+                )
+                .changed();
+        });
     });
     if level_changed {
         intents.push(StudioIntent::SetAudioGroupLevel {
@@ -968,6 +1043,152 @@ fn draw_group_strip(
             muted,
         });
     }
+    if solo_changed {
+        intents.push(StudioIntent::AudioMixer(
+            fm_protocol::AudioMixerOperation::SetGroupSolo { group, soloed },
+        ));
+    }
+    clear_clip
+}
+
+/// The group's parent picker: top level or any group that keeps the groups
+/// cycle-free. Returns the chosen parent (`Some(None)`: top level) when it
+/// changed.
+#[allow(clippy::option_option)]
+fn group_parent_choice(
+    ui: &mut Ui,
+    view: &ClientView,
+    group: u8,
+    enabled: bool,
+    reason: &str,
+) -> Option<Option<u8>> {
+    let l = l10n::locale(ui.ctx());
+    let current = view
+        .audio_mixer
+        .groups
+        .get(usize::from(group) - 1)
+        .and_then(|status| status.parent);
+    let mut chosen = current;
+    let selected = chosen.map_or_else(
+        || l.text(Msg::GroupParentNone).to_owned(),
+        |parent| {
+            l.format(
+                Msg::GroupParentIn,
+                &[("group", Arg::Str(group_name(view, parent)))],
+            )
+        },
+    );
+    ui.add_enabled_ui(enabled, |ui| {
+        egui::ComboBox::from_id_salt(("group-parent", group))
+            .selected_text(selected)
+            .width(STRIP_INNER_WIDTH)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, None, l.text(Msg::GroupParentNone))
+                    .on_hover_text(l.text(Msg::GroupParentNoneHover));
+                for parent in parent_choices(&view.audio_mixer, group) {
+                    let name = group_name(view, parent);
+                    ui.selectable_value(&mut chosen, Some(parent), name)
+                        .on_hover_text(
+                            l.format(Msg::GroupParentItemHover, &[("group", Arg::Str(name))]),
+                        );
+                }
+            })
+            .response
+            .hint(l.text(Msg::GroupParentHover), reason);
+    });
+    (chosen != current).then_some(chosen)
+}
+
+/// Draws the monitor-bus strip: what the bus carries, its meter, and the
+/// solo-mode keys. Returns `true` when the operator cleared its clip.
+fn draw_monitor_strip(
+    ui: &mut Ui,
+    view: &ClientView,
+    (feed, solo): (MeterFeed<'_>, bool),
+    gate: StripGate,
+    fader_height: f32,
+    intents: &mut Vec<StudioIntent>,
+) -> bool {
+    let l = l10n::locale(ui.ctx());
+    let StripGate {
+        enabled, reason, ..
+    } = gate;
+    let mut clear_clip = false;
+    let mode = view.audio_mixer.solo_mode;
+    strip_frame(ui, if solo { AMBER } else { accent_color() }, |ui| {
+        let (rect, response) = ui.allocate_exact_size(
+            Vec2::new(STRIP_INNER_WIDTH, NAME_PLATE_HEIGHT),
+            Sense::hover(),
+        );
+        ui.painter().text(
+            rect.left_top(),
+            Align2::LEFT_TOP,
+            l.text(Msg::MonitorStrip),
+            FontId::new(11.0, FontFamily::Proportional),
+            text_color(),
+        );
+        ui.painter().text(
+            rect.left_top() + Vec2::new(0.0, 15.0),
+            Align2::LEFT_TOP,
+            l.text(if solo {
+                Msg::MonitorSoloListen
+            } else {
+                Msg::MonitorFollowsMaster
+            }),
+            FontId::new(8.5, FontFamily::Proportional),
+            if solo { AMBER } else { muted_color() },
+        );
+        response.on_hover_text(l.text(Msg::MonitorStripHover));
+        clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some(), feed.stale);
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            // The mode keys take the rest of the meter's height.
+            clear_clip |= draw_meter(ui, feed, fader_height);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 3.0;
+                let width = ui.available_width();
+                for (choice, label, hover) in [
+                    (
+                        fm_protocol::AudioSoloMode::InPlace,
+                        Msg::SoloModeSip,
+                        Msg::SoloModeSipHover,
+                    ),
+                    (
+                        fm_protocol::AudioSoloMode::Pfl,
+                        Msg::SoloModePfl,
+                        Msg::SoloModePflHover,
+                    ),
+                    (
+                        fm_protocol::AudioSoloMode::Afl,
+                        Msg::SoloModeAfl,
+                        Msg::SoloModeAflHover,
+                    ),
+                ] {
+                    let mut on = mode == choice;
+                    if led_key(ui, enabled, &mut on, l.text(label), AMBER, width)
+                        .hint(
+                            &format!("{}\n{}", l.text(Msg::SoloModeHover), l.text(hover)),
+                            reason,
+                        )
+                        .changed()
+                        && mode != choice
+                    {
+                        intents.push(StudioIntent::AudioMixer(
+                            fm_protocol::AudioMixerOperation::SetSoloMode { mode: choice },
+                        ));
+                    }
+                }
+            });
+        });
+        ui.vertical_centered(|ui| {
+            let text = l.text(Msg::MonitorNoDevice);
+            let size = fitted_font_size(ui, text, crate::theme::legible(8.5), ui.available_width());
+            ui.add(
+                egui::Label::new(RichText::new(text).size(size).color(muted_color())).truncate(),
+            )
+            .on_hover_text(l.text(Msg::MonitorNoDeviceHover));
+        });
+    });
     clear_clip
 }
 
@@ -1883,6 +2104,35 @@ mod tests {
         );
         assert_eq!(group_meter(&inputs, &[id(4)]), None);
         assert_eq!(group_meter(&[], &[id(1)]), None);
+    }
+
+    #[test]
+    fn nested_groups_are_active_through_their_children_and_parents_stay_acyclic() {
+        let id = |value: u128| {
+            fm_types::InputId::new(core::num::NonZeroU128::new(value).expect("non-zero"))
+        };
+        let mut mixer = fm_protocol::AudioMixerStatus::default();
+        mixer.groups[0].parent = Some(2);
+        let strip = |input: u128, group: Option<u8>| fm_ui_model::InputAudioStripStatus {
+            input: id(input),
+            gain_millidb: 0,
+            balance_basis_points: 0,
+            pan_basis_points: 0,
+            group,
+            muted: false,
+            soloed: false,
+            follow_video: true,
+            delay_samples: 0,
+        };
+        let strips = [strip(1, Some(1)), strip(2, None), strip(3, Some(3))];
+        // Group 2 has no strips of its own but nests group 1.
+        assert_eq!(
+            group_members(&mixer, &strips),
+            vec![(1, vec![id(1)]), (2, vec![id(1)]), (3, vec![id(3)])]
+        );
+        // Group 2 may not nest inside group 1, its own child.
+        assert_eq!(parent_choices(&mixer, 2), vec![3, 4]);
+        assert_eq!(parent_choices(&mixer, 1), vec![2, 3, 4]);
     }
 
     #[test]

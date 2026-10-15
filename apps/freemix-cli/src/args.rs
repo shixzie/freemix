@@ -89,6 +89,12 @@ pub enum AudioMixerArgs {
         gain_millidb: i32,
         muted: bool,
     },
+    /// `audio-group-solo <group> <on|off>`.
+    GroupSolo { group: u8, soloed: bool },
+    /// `audio-group-parent <group> <1..4|none>`.
+    GroupParent { group: u8, parent: Option<u8> },
+    /// `audio-solo-mode <sip|pfl|afl>`.
+    SoloMode { mode: fm_model::AudioSoloMode },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1551,10 +1557,16 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-group"
         | "audio-group-name"
         | "audio-group-level"
+        | "audio-group-solo"
+        | "audio-group-parent"
+        | "audio-solo-mode"
         | "remote-audio-label"
         | "remote-audio-group"
         | "remote-audio-group-name"
-        | "remote-audio-group-level") => parse_audio_mixer(mixer, arguments),
+        | "remote-audio-group-level"
+        | "remote-audio-group-solo"
+        | "remote-audio-group-parent"
+        | "remote-audio-solo-mode") => parse_audio_mixer(mixer, arguments),
         output @ ("ftb-output" | "remote-ftb-output") => {
             parse_fade_to_black_output(output, arguments)
         }
@@ -2202,6 +2214,33 @@ fn parse_audio_mixer(
             group: audio_group_number(&required(&mut arguments, "group")?)?,
             name: nonblank(&mut arguments, "group name")?,
         },
+        "audio-group-solo" => AudioMixerArgs::GroupSolo {
+            group: audio_group_number(&required(&mut arguments, "group")?)?,
+            soloed: boolean_choice(&required(&mut arguments, "soloed")?, "soloed")?,
+        },
+        "audio-group-parent" => {
+            let group = audio_group_number(&required(&mut arguments, "group")?)?;
+            let parent = required(&mut arguments, "parent")?;
+            AudioMixerArgs::GroupParent {
+                group,
+                parent: if parent == "none" {
+                    None
+                } else {
+                    Some(audio_group_number(&parent)?)
+                },
+            }
+        }
+        "audio-solo-mode" => {
+            let mode = required(&mut arguments, "solo mode")?;
+            AudioMixerArgs::SoloMode {
+                mode: fm_model::AudioSoloMode::from_token(&mode).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "solo mode",
+                        value: mode,
+                    },
+                )?,
+            }
+        }
         _ => AudioMixerArgs::GroupLevel {
             group: audio_group_number(&required(&mut arguments, "group")?)?,
             gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
@@ -5992,6 +6031,65 @@ mod tests {
                 delay_samples: 48_000,
             })
         );
+    }
+
+    #[test]
+    fn mixer_group_solo_parent_and_solo_mode_commands_parse() {
+        assert_eq!(
+            parse(strings(&["audio-group-solo", "show.freemix", "3", "on"])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::GroupSolo {
+                    group: 3,
+                    soloed: true,
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "audio-group-parent",
+                "show.freemix",
+                "1",
+                "none"
+            ])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::GroupParent {
+                    group: 1,
+                    parent: None,
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-audio-solo-mode",
+                "127.0.0.1:9123",
+                "afl",
+                "--expect",
+                "4",
+            ])),
+            Ok(Command::RemoteAudioMixer {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                edit: AudioMixerArgs::SoloMode {
+                    mode: fm_model::AudioSoloMode::Afl,
+                },
+                key: None,
+                expected_revision: Some(4),
+            })
+        );
+        for bad in [
+            &["audio-group-solo", "show.freemix", "3", "yes"][..],
+            &["audio-group-parent", "show.freemix", "1", "5"],
+            &["audio-group-parent", "show.freemix", "0", "none"],
+            &["audio-solo-mode", "show.freemix", "PFL"],
+            &["remote-audio-solo-mode", "127.0.0.1:9123"],
+        ] {
+            assert!(parse(strings(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

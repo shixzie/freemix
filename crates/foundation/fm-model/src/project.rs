@@ -887,7 +887,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(41);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(42);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -929,6 +929,7 @@ pub struct Project {
     input_categories: Vec<crate::InputCategory>,
     input_lifecycle: BTreeMap<InputId, crate::InputLifecycle>,
     audio_groups: crate::AudioGroups,
+    audio_solo_mode: crate::AudioSoloMode,
     fade_to_black_excluded_outputs: BTreeSet<OutputId>,
     display_outputs:
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
@@ -961,6 +962,7 @@ impl Project {
             input_categories: Vec::new(),
             input_lifecycle: BTreeMap::new(),
             audio_groups: crate::AudioGroups::default(),
+            audio_solo_mode: crate::AudioSoloMode::InPlace,
             fade_to_black_excluded_outputs: BTreeSet::new(),
             display_outputs: BTreeMap::new(),
         }
@@ -1102,20 +1104,34 @@ impl Project {
         &self.audio_groups
     }
 
-    /// Replaces one strip group's name, fader, and mute.
+    /// Replaces one strip group's name, fader, mute, solo, and parent.
     ///
     /// # Errors
     ///
-    /// Returns [`SetAudioMixerError::Label`] for an unusable name. Nothing
-    /// changes on error.
+    /// Returns [`SetAudioMixerError::Label`] for an unusable name and
+    /// [`SetAudioMixerError::GroupCycle`] for a parent that would nest the
+    /// group inside itself. Nothing changes on error.
     pub fn set_audio_group(
         &mut self,
         group: crate::AudioGroupNumber,
         value: crate::AudioGroup,
     ) -> Result<(), SetAudioMixerError> {
         crate::validate_audio_group_name(&value.name).map_err(SetAudioMixerError::Label)?;
+        if !self.audio_groups.parent_is_acyclic(group, value.parent) {
+            return Err(SetAudioMixerError::GroupCycle(group));
+        }
         self.audio_groups.set(group, value);
         Ok(())
+    }
+
+    /// How a soloed strip is heard (AU-001, schema 42).
+    #[must_use]
+    pub const fn audio_solo_mode(&self) -> crate::AudioSoloMode {
+        self.audio_solo_mode
+    }
+
+    pub fn set_audio_solo_mode(&mut self, mode: crate::AudioSoloMode) {
+        self.audio_solo_mode = mode;
     }
 
     /// Replaces every strip group; names are reported by
@@ -3836,6 +3852,8 @@ pub struct InputAudioStrip {
 pub enum SetAudioMixerError {
     UnknownInput(InputId),
     Label(crate::AudioLabelError),
+    /// The parent would nest this group inside itself.
+    GroupCycle(crate::AudioGroupNumber),
 }
 
 impl std::fmt::Display for SetAudioMixerError {
@@ -3843,6 +3861,9 @@ impl std::fmt::Display for SetAudioMixerError {
         match self {
             Self::UnknownInput(input) => write!(formatter, "input {input} does not exist"),
             Self::Label(error) => error.fmt(formatter),
+            Self::GroupCycle(group) => {
+                write!(formatter, "{group} cannot be nested inside itself")
+            }
         }
     }
 }

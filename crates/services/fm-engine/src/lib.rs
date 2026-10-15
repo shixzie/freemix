@@ -18,6 +18,7 @@ mod title_animation;
 pub use animation_preset::EngineAnimationPresetEdit;
 pub use audio_mixer::{
     EngineAudioGroup, EngineAudioGroupState, EngineAudioMixerEdit, EngineAudioMixerUpdate,
+    audio_group_parent_is_acyclic,
 };
 pub use engine::{
     Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineEvent,
