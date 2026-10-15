@@ -258,7 +258,7 @@ fn model(variant: Variant) -> ClientModel {
         scenes: vec![wire(SCENE_INPUT)],
         frame_rate: FrameRate::new(25, 1).unwrap(),
         playlist_follows: true,
-        grade_states: 3,
+        grade_states: 4,
     };
     let mut model = ClientModel::new(project);
     model
@@ -352,6 +352,12 @@ fn model(variant: Variant) -> ClientModel {
         fm_protocol::GradeEntry::Input {
             input: wire(2),
             source: fm_protocol::WireGradeSource::Inline(Box::new(warm)),
+        },
+        // The scene's host layer carries the library look (Protocol 2.33).
+        fm_protocol::GradeEntry::Layer {
+            inputs: vec![wire(SCENE_INPUT)],
+            layer: scene_layer(1),
+            source: fm_protocol::WireGradeSource::Library(grade_id(1)),
         },
     ] {
         model
@@ -693,9 +699,10 @@ fn scenes(language: Language) -> Vec<Scene> {
         ));
     }
     // The Colour window: Simple on a graded camera, Advanced on Program
-    // with a library grade chosen and a name and LUT path typed, and locked
-    // by a missing permission and by the project padlock.
-    let colour: [(&str, Configure, StudioUiState); 4] = [
+    // with a library grade chosen and a name and LUT path typed, on a graded
+    // scene layer, and locked by a missing permission and by the project
+    // padlock.
+    let colour: [(&str, Configure, StudioUiState); 5] = [
         (
             "operator/colour",
             &|shell| shell.open_color(Some(GradeTarget::Input(input(2)))),
@@ -709,6 +716,16 @@ fn scenes(language: Language) -> Vec<Scene> {
                 shell.color.library_pick = core::num::NonZeroU32::new(1);
                 shell.color.library_name = "Evening".into();
                 shell.color.lut_path = "/luts/warm.cube".into();
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "operator/colour-layer",
+            &|shell| {
+                shell.open_color(Some(GradeTarget::Layer {
+                    input: input(SCENE_INPUT),
+                    layer: scene_layer(1),
+                }));
             },
             ready(true, Variant::default()),
         ),

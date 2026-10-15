@@ -31,7 +31,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.32\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.33\tid=a\tidempotency_key=k";
 
 fn cursor() -> EventCursor {
     EventCursor {
@@ -94,8 +94,8 @@ fn base64url(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn protocol_version_is_2_29() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 32));
+fn protocol_version_is_2_33() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 33));
 }
 
 #[test]
@@ -419,7 +419,8 @@ fn names_indices_and_lut_metadata_are_bounded() {
 
 #[test]
 fn snapshot_grade_state_count_is_bounded() {
-    assert_eq!(MAX_GRADE_STATES, 64 + 256 + 256 + 1);
+    assert_eq!(MAX_GRADE_STATES, 64 + 256 + 256 + 256 + 1);
+    assert_eq!(fm_protocol::MAX_GRADE_LAYERS, 256);
     let fits = |count: u16| -> Result<(), CodecError> {
         let WireMessage::Snapshot(mut snapshot) = sample_snapshot() else {
             unreachable!()
@@ -500,4 +501,109 @@ fn sample_snapshot() -> WireMessage {
         playlist_follows: false,
         grade_states: 0,
     })
+}
+
+fn layer(value: u32) -> fm_protocol::WireSceneLayerId {
+    fm_protocol::WireSceneLayerId::new(id(value))
+}
+
+/// Protocol 2.33: a scene layer's grade is set and cleared through a Scene
+/// input showing its scene, and replicated (`entry=layer`,
+/// `change=layer`) with every Scene input sharing it.
+#[test]
+fn scene_layer_grades_have_an_exact_wire_form() {
+    let cases = [
+        (
+            command(CommandPayload::SetLayerGrade {
+                input: input(4),
+                layer: layer(2),
+                source: Some(WireGradeSource::Library(id(3))),
+            }),
+            format!("{PREFIX}\tpayload=grade_layer_set\tinput=4\tlayer=2\tlibrary=3\n"),
+        ),
+        (
+            command(CommandPayload::SetLayerGrade {
+                input: input(4),
+                layer: layer(2),
+                source: None,
+            }),
+            format!("{PREFIX}\tpayload=grade_layer_clear\tinput=4\tlayer=2\n"),
+        ),
+    ];
+    for (message, expected) in cases {
+        assert_eq!(round_trip(&message), expected);
+    }
+    let state_line = round_trip(&state(GradeEntry::Layer {
+        inputs: vec![input(3), input(9)],
+        layer: layer(7),
+        source: WireGradeSource::Library(id(1)),
+    }));
+    assert!(
+        state_line.ends_with("\tentry=layer\tinputs=3%2C9\tlayer=7\tlibrary=1\n"),
+        "{state_line}"
+    );
+    let cleared = round_trip(&event(GradeChange::Layer {
+        inputs: vec![input(3)],
+        layer: layer(7),
+        source: None,
+    }));
+    assert!(
+        cleared.contains("\tchange=layer\tinputs=3\tlayer=7"),
+        "{cleared}"
+    );
+    for message in [
+        command(CommandPayload::SetLayerGrade {
+            input: input(u128::MAX),
+            layer: layer(u32::MAX),
+            source: Some(WireGradeSource::Inline(Box::new(rich()))),
+        }),
+        state(GradeEntry::Layer {
+            inputs: vec![input(1)],
+            layer: layer(1),
+            source: WireGradeSource::Inline(Box::new(rich())),
+        }),
+        event(GradeChange::Layer {
+            inputs: vec![input(1), input(2), input(u128::MAX)],
+            layer: layer(1),
+            source: Some(WireGradeSource::Inline(Box::new(rich()))),
+        }),
+    ] {
+        round_trip(&message);
+    }
+
+    // Layer ids are canonical and nonzero; a set needs exactly one source;
+    // a clear carries none; shared inputs are nonempty and ascending.
+    for tail in [
+        "\tpayload=grade_layer_set\tinput=4\tlayer=0\tlibrary=3\n",
+        "\tpayload=grade_layer_set\tinput=4\tlayer=02\tlibrary=3\n",
+        "\tpayload=grade_layer_set\tinput=4\tlibrary=3\n",
+        "\tpayload=grade_layer_set\tinput=4\tlayer=2\n",
+        "\tpayload=grade_layer_set\tlayer=2\tlibrary=3\n",
+        "\tpayload=grade_layer_clear\tinput=4\tlayer=2\tlibrary=3\n",
+        "\tpayload=grade_layer_clear\tinput=4\tlayer=4294967296\n",
+    ] {
+        let line = format!("{PREFIX}{tail}");
+        assert!(decode_line(&line).is_err(), "{line}");
+    }
+    for (from, to) in [
+        ("inputs=3%2C9", "inputs=9%2C3"),
+        ("inputs=3%2C9", "inputs=3%2C3"),
+        ("inputs=3%2C9", "inputs="),
+        ("\tinputs=3%2C9", ""),
+        ("layer=7", "layer=0"),
+    ] {
+        let bad = state_line.replacen(from, to, 1);
+        assert_ne!(bad, state_line);
+        assert!(decode_line(&bad).is_err(), "{bad}");
+    }
+    for inputs in [Vec::new(), vec![input(9), input(3)]] {
+        assert!(
+            encode_line(&state(GradeEntry::Layer {
+                inputs,
+                layer: layer(1),
+                source: WireGradeSource::Library(id(1)),
+            }))
+            .is_err()
+        );
+    }
 }

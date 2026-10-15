@@ -2243,6 +2243,77 @@ mod grading {
             "{error:?}"
         );
     }
+
+    /// Protocol 2.33: a scene layer grade replicates under every Scene input
+    /// showing its scene, after the input grades; `grade_changed` keeps it
+    /// current, and a layer record before an input record is out of order.
+    #[test]
+    fn scene_layer_grades_replicate_under_every_sharing_scene_input() {
+        let layer = fm_protocol::WireSceneLayerId::new(id(7));
+        let layer_state = |revision: u64| GradeStateMessage {
+            revision,
+            entry: GradeEntry::Layer {
+                inputs: vec![input(1), input(2)],
+                layer,
+                source: WireGradeSource::Library(id(1)),
+            },
+        };
+        let mut client = synchronizing(4, 5);
+        let mut ordered = states(4);
+        ordered.insert(3, layer_state(4));
+        for state in ordered {
+            assert_eq!(
+                client.intake(WireMessage::GradeState(state)).unwrap(),
+                Intake::GradeStateApplied
+            );
+        }
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let grading = client.model().state().unwrap().grading().clone();
+        for shown in [1, 2] {
+            assert_eq!(
+                grading.layer(input(shown).to_domain(), layer),
+                Some(&WireGradeSource::Library(id(1)))
+            );
+        }
+        client
+            .intake(WireMessage::Event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision: 5,
+                },
+                payload: EventPayload::GradeChanged(GradeChange::Layer {
+                    inputs: vec![input(1), input(2)],
+                    layer,
+                    source: None,
+                }),
+            }))
+            .unwrap();
+        assert!(client.model().state().unwrap().grading().layers.is_empty());
+
+        // A layer before the input grades, or naming an unknown input, is out
+        // of contract.
+        let mut client = synchronizing(4, 5);
+        for state in states(4).into_iter().take(2) {
+            client.intake(WireMessage::GradeState(state)).unwrap();
+        }
+        client
+            .intake(WireMessage::GradeState(layer_state(4)))
+            .unwrap();
+        resyncs(&mut client, states(4).remove(2));
+        let mut client = synchronizing(4, 1);
+        resyncs(
+            &mut client,
+            GradeStateMessage {
+                revision: 4,
+                entry: GradeEntry::Layer {
+                    inputs: vec![input(9)],
+                    layer,
+                    source: WireGradeSource::Inline(warm()),
+                },
+            },
+        );
+    }
 }
 
 /// Protocol 2.31 (GX-011 stage 5): a snapshot's Scene inputs complete with

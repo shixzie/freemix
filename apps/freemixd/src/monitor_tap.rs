@@ -38,6 +38,15 @@
 //! Any other realized input (or a scene or title the CPU reference cannot
 //! render honestly) produces no frame, so a client keeps its placeholder
 //! instead of seeing invented video.
+//!
+//! Grades (SW-019) apply as on the native path: a simulated input and a
+//! title input carry their input grade (a title overlay is graded on its
+//! straight colour, its alpha unchanged), each scene layer carries its
+//! source's input grade and then its own layer grade, and the program grade
+//! colours the composed Program picture after its overlays. Media inputs
+//! have no simulated picture, so there is nothing of theirs to grade; a
+//! Scene input's own input grade is not applied (as natively: grade its
+//! layers or the program instead).
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -345,6 +354,9 @@ struct ProgramKey {
 struct OverlaySource {
     image: Arc<ImageFrame>,
     alpha: AlphaMode,
+    /// The input grade the compositor applies (a keyed title's), or `None`
+    /// when `image` is already graded.
+    grade: Option<Arc<fm_compositor::CompiledGrade>>,
 }
 
 /// Renders realized Preview and Program from simulated inputs on a bounded
@@ -532,9 +544,14 @@ impl SimulatedMonitorTap {
             return self.scene_frame(input, state, project, used_scenes);
         }
         if title_render::title_of_input(project, input).is_some() {
-            return self
+            // A title over black carries its input grade like any input.
+            let flat = self
                 .title_frame(input, state, project)
-                .and_then(|rendered| rendered.flat.clone());
+                .and_then(|rendered| rendered.flat.clone())?;
+            return match self.grades.input(input) {
+                Some(grade) => fm_compositor::apply_grade(&flat, grade).ok().map(Arc::new),
+                None => Some(flat),
+            };
         }
         // Other non-simulated inputs are never registered, so they render
         // nothing. A simulated input carries its input grade.
@@ -583,6 +600,7 @@ impl SimulatedMonitorTap {
                     self.pipeline.as_ref()?,
                     state.frame,
                     state.scene_pose(input),
+                    &self.grades,
                 )
             })
             .map(Arc::new);
@@ -659,13 +677,15 @@ impl SimulatedMonitorTap {
             return Some(OverlaySource {
                 image,
                 alpha: AlphaMode::Premultiplied,
+                grade: self.grades.input(input).cloned(),
             });
         }
-        // Simulated and scene pictures are opaque.
+        // Simulated and scene pictures are opaque and already graded.
         let image = self.input_picture(input, state, project, used_scenes)?;
         Some(OverlaySource {
             image,
             alpha: AlphaMode::Straight,
+            grade: None,
         })
     }
 
@@ -836,12 +856,16 @@ fn composite_overlays(
     for (index, (overlay, source)) in overlays.iter().enumerate() {
         let token = SourceId::new(u64::try_from(index + 1).ok()?);
         let transform = overlay_transform(dimensions, overlay.position)?;
-        scene.push_layer(
-            SourceLayer::new(token, i32::try_from(index + 1).ok()?, transform)
-                .with_opacity(overlay.opacity)
-                .with_alpha_mode(source.alpha)
-                .with_inset_border(overlay_border_width(overlay.border, transform)),
-        );
+        let mut layer = SourceLayer::new(token, i32::try_from(index + 1).ok()?, transform)
+            .with_opacity(overlay.opacity)
+            .with_alpha_mode(source.alpha)
+            .with_inset_border(overlay_border_width(overlay.border, transform));
+        // The compositor grades a premultiplied title on its straight
+        // colour and never touches its alpha.
+        if let Some(grade) = &source.grade {
+            layer = layer.with_grade(Arc::clone(grade));
+        }
+        scene.push_layer(layer);
     }
     let (plan, _) = compile_scene(&scene, OutputTarget::Program).ok()?;
     let mut bindings = Vec::with_capacity(overlays.len() + 1);
@@ -2322,9 +2346,15 @@ mod tests {
             let full = simulated_pipeline_at(&project, width, height).unwrap();
             for input in scenes {
                 let scene = scene_render::scene_of_input(&project, input_id(input)).unwrap();
-                let fast =
-                    scene_render::render_scene(&project, scene, &monitor, 4, AnimSample::Hold)
-                        .unwrap();
+                let fast = scene_render::render_scene(
+                    &project,
+                    scene,
+                    &monitor,
+                    4,
+                    AnimSample::Hold,
+                    &CompiledProjectGrades::default(),
+                )
+                .unwrap();
                 let reference = scene_render::render_scene_at_project_size(
                     &project,
                     scene,
@@ -2382,7 +2412,15 @@ mod tests {
         let monitor = simulated_pipeline(&project).unwrap();
         let full = simulated_pipeline_at(&project, 1_920, 1_080).unwrap();
         let started = Instant::now();
-        scene_render::render_scene(&project, scene, &monitor, 4, AnimSample::Hold).unwrap();
+        scene_render::render_scene(
+            &project,
+            scene,
+            &monitor,
+            4,
+            AnimSample::Hold,
+            &CompiledProjectGrades::default(),
+        )
+        .unwrap();
         let fast = started.elapsed();
         let started = Instant::now();
         scene_render::render_scene_at_project_size(
@@ -2401,5 +2439,96 @@ mod tests {
             fast * 3 < reference,
             "monitor-size redraw took {fast:?}, project-size {reference:?}"
         );
+    }
+
+    fn exposure(millistops: i16) -> fm_grade::Grade {
+        fm_grade::Grade {
+            exposure_millistops: millistops,
+            ..fm_grade::Grade::IDENTITY
+        }
+    }
+
+    fn graded(grade: &fm_grade::Grade, rgb: [u8; 3]) -> [u8; 4] {
+        let [red, green, blue] = fm_grade::CompiledGrade::new(grade, None)
+            .unwrap()
+            .apply_rgb8(rgb);
+        [red, green, blue, 255]
+    }
+
+    fn compile_grades(tap: &mut SimulatedMonitorTap, project: &Project) {
+        tap.grades = Arc::new(CompiledProjectGrades::compile(project, &BTreeMap::new()).unwrap());
+    }
+
+    /// SW-019: a scene layer shows its source's input grade and then its own
+    /// layer grade, like the native compositor; the background is ungraded.
+    #[test]
+    fn scene_layers_carry_their_input_grade_then_their_layer_grade() {
+        let mut project = project(1_920, 1_080);
+        let quarter = layer(SourceRef::Input(input_id(1)), 0, 0, 960, 540);
+        let target =
+            fm_model::SceneLayerRef::new(SceneId::new(NonZeroU128::new(1).unwrap()), quarter.id);
+        add_scene(&mut project, 1, 10, vec![quarter]);
+        let warm = fm_grade::builtin_preset("warm").unwrap().grade.clone();
+        project
+            .set_input_grade(
+                input_id(1),
+                Some(fm_model::GradeSource::Inline(Box::new(warm.clone()))),
+            )
+            .unwrap();
+        project
+            .set_layer_grade(
+                target,
+                Some(fm_model::GradeSource::Inline(Box::new(exposure(-1_000)))),
+            )
+            .unwrap();
+        let mut tap = SimulatedMonitorTap::default();
+        compile_grades(&mut tap, &project);
+        let frames = tap.poll_state(state(1, 10, 1), &project, &server(), Instant::now(), true);
+        let program = decode(&frames[1].1);
+        let [red, green, blue, _] = graded(&warm, [7, 11, 13]);
+        let expected = graded(&exposure(-1_000), [red, green, blue]);
+        assert_ne!(expected, [7, 11, 13, 255]);
+        assert_rectangle(&program, (0, 0, 320, 180), expected, [20, 30, 40, 255]);
+        // Preview shows input 1 with only its input grade.
+        let preview = decode(&frames[0].1);
+        assert_eq!(pixel(&preview, 5, 5), graded(&warm, [7, 11, 13]));
+    }
+
+    /// SW-019: a title input's picture carries its input grade, flat on
+    /// Program and Preview as keyed over Program.
+    #[test]
+    fn title_pictures_and_keyed_title_overlays_carry_their_input_grade() {
+        let mut project = project(1_920, 1_080);
+        add_title(&mut project, 20, TITLE_URI, (200, 40, 10));
+        project
+            .set_input_grade(
+                input_id(20),
+                Some(fm_model::GradeSource::Inline(Box::new(exposure(-1_000)))),
+            )
+            .unwrap();
+        let darker = graded(&exposure(-1_000), [200, 40, 10]);
+        assert_ne!(darker, [200, 40, 10, 255]);
+        let server = server();
+        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
+        compile_grades(&mut tap, &project);
+        let frames = tap.poll_state(state(1, 20, 1), &project, &server, Instant::now(), true);
+        assert_rectangle(&decode(&frames[1].1), TITLE_BAR, darker, [0, 0, 0, 255]);
+
+        let mut realized = state(2, 1, 2);
+        realized.overlays = vec![overlay(
+            20,
+            255,
+            OverlayPositionPreset::FullFrame,
+            OverlayBorderPreset::None,
+        )];
+        let frames = tap.poll_state(
+            realized,
+            &project,
+            &server,
+            Instant::now() + Duration::from_millis(250),
+            true,
+        );
+        // The transparent background stays transparent under the grade.
+        assert_rectangle(&decode(&frames[1].1), TITLE_BAR, darker, [7, 11, 13, 255]);
     }
 }

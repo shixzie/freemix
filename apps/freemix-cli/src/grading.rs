@@ -2,16 +2,20 @@
 //!
 //! Grades are project edits: they rewrite `project.json` (refusing a bundle a
 //! daemon holds or with unapplied journal batches, like every local
-//! mutation) and honour the project and per-input padlocks. Imported LUTs
-//! are copied to `assets/luts/<id>.cube` and referenced by id.
+//! mutation) and honour the project and per-input padlocks (a scene layer's
+//! grade is covered by the padlock of every Scene input showing its scene).
+//! Imported LUTs are copied to `assets/luts/<id>.cube` and referenced by id.
 
 use std::{collections::BTreeMap, fmt::Write as _, num::NonZeroU32, path::Path, sync::Arc};
 
 use fm_engine::CompiledProjectGrades;
 use fm_grade::{BUILTIN_PRESETS, CubeLut, Grade, GradeLut, builtin_preset};
-use fm_model::{GradeId, GradeSource, LutId, Project, ProjectGrade, lut_asset_uri};
+use fm_model::{
+    GradeId, GradeSource, InputKind, LayerId, LutId, Project, ProjectGrade, SceneLayerRef,
+    lut_asset_uri,
+};
 use fm_persistence::ProjectStore;
-use fm_types::InputId;
+use fm_types::{InputId, SceneId};
 
 use crate::{
     app::{AppFailure, AppResult, inspect_stored_project, update_project},
@@ -25,14 +29,34 @@ fn input_id(input: u128) -> AppResult<InputId> {
     ))
 }
 
+fn layer_target(scene: u128, layer: u32) -> AppResult<SceneLayerRef> {
+    Ok(SceneLayerRef::new(
+        SceneId::new(
+            core::num::NonZeroU128::new(scene)
+                .ok_or_else(|| AppFailure("scene id must be nonzero".into()))?,
+        ),
+        LayerId::new(layer).ok_or_else(|| AppFailure("layer id must be nonzero".into()))?,
+    ))
+}
+
 fn check_unlocked(project: &Project, target: GradeTargetArg) -> AppResult<()> {
     if project.project_locked() {
         return Err(AppFailure("project is locked".into()).into());
     }
-    if let GradeTargetArg::Input(input) = target
-        && project.is_input_locked(input_id(input)?)
-    {
-        return Err(AppFailure(format!("input {input} is locked")).into());
+    match target {
+        GradeTargetArg::Input(input) if project.is_input_locked(input_id(input)?) => {
+            return Err(AppFailure(format!("input {input} is locked")).into());
+        }
+        GradeTargetArg::Layer { scene, layer } => {
+            let target = layer_target(scene, layer)?;
+            if let Some(locked) = project.inputs().iter().find(|input| {
+                matches!(input.kind, InputKind::Scene { scene_id, .. } if scene_id == target.scene)
+                    && project.is_input_locked(input.id)
+            }) {
+                return Err(AppFailure(format!("input {} is locked", locked.id)).into());
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -44,6 +68,9 @@ fn assign(
 ) -> AppResult<()> {
     let result = match target {
         GradeTargetArg::Input(input) => project.set_input_grade(input_id(input)?, source),
+        GradeTargetArg::Layer { scene, layer } => {
+            project.set_layer_grade(layer_target(scene, layer)?, source)
+        }
         GradeTargetArg::Program => project.set_program_grade(source),
     };
     result.map_err(|error| AppFailure(error.to_string()).into())
@@ -98,6 +125,7 @@ fn build_grade(spec: &GradeSpec) -> AppResult<Grade> {
 fn target_name(target: GradeTargetArg) -> String {
     match target {
         GradeTargetArg::Input(input) => format!("input {input}"),
+        GradeTargetArg::Layer { scene, layer } => format!("scene {scene} layer {layer}"),
         GradeTargetArg::Program => "program".into(),
     }
 }
@@ -231,6 +259,14 @@ pub fn list(path: &Path) -> AppResult<()> {
     for (input, source) in &project.grading().inputs {
         println!("input {input}: {}", describe_source(source));
     }
+    for (target, source) in &project.grading().layers {
+        println!(
+            "scene {} layer {}: {}",
+            target.scene,
+            target.layer,
+            describe_source(source)
+        );
+    }
     match project.program_grade() {
         Some(source) => println!("program: {}", describe_source(source)),
         None => println!("program: ungraded"),
@@ -242,7 +278,7 @@ pub fn list(path: &Path) -> AppResult<()> {
 /// render. A LUT that cannot be loaded is bypassed and reported.
 pub(crate) fn compiled_grades(path: &Path, project: &Project) -> AppResult<CompiledProjectGrades> {
     let grading = project.grading();
-    if grading.inputs.is_empty() && grading.program.is_none() {
+    if grading.inputs.is_empty() && grading.layers.is_empty() && grading.program.is_none() {
         return Ok(CompiledProjectGrades::default());
     }
     let store = ProjectStore::new(path)?;

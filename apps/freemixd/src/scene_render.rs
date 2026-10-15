@@ -24,6 +24,14 @@
 //! [`SceneSources`] cannot draw, effects the CPU reference rejects, crops and
 //! masks outside the project-size source, or nesting past those bounds yield
 //! `None` rather than an invented picture, exactly as at the project size.
+//!
+//! A composition grades like the native path (SW-019) when given the
+//! project's compiled grades: each leaf layer's source carries its input
+//! grade and then the layer's own scene layer grade, both applied by the
+//! compositor after the layer's effects and before its transform. A layer
+//! drawing a nested scene carries only its layer grade (a Scene input's own
+//! input grade is not applied), and the nested scene's layers carry their
+//! own layer grades.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -32,8 +40,9 @@ use fm_compositor::{
     CompositionPlan, CpuSourceFrame, CropRect, Effect, FlattenLimits, ImageFrame, OutputTarget,
     RectMask, Rgba8, Rotation, Scene, SourceId, SourceLayer, Transform, compile_scene, execute_cpu,
 };
+use fm_engine::CompiledProjectGrades;
 use fm_model::fm_animation::ClipState;
-use fm_model::{Input, InputKind, Project, SimulatedVideo, SourceRef};
+use fm_model::{Input, InputKind, Project, SceneLayerRef, SimulatedVideo, SourceRef};
 use fm_sim::SimulatedPipeline;
 use fm_types::{InputId, SceneId};
 
@@ -93,8 +102,9 @@ pub(crate) fn scene_of_input(project: &Project, input: InputId) -> Option<SceneI
 
 /// Composes `scene` at the `pipeline` dimensions (the fitted monitor size),
 /// mapping the scene's project-pixel geometry onto that grid, with every
-/// layer in the animation `pose` (see [`fm_model::Scene::posed`]). Returns `None`
-/// when the scene cannot be rendered honestly.
+/// layer in the animation `pose` (see [`fm_model::Scene::posed`]) and graded
+/// with `grades` (each leaf layer's input grade, then its own layer grade).
+/// Returns `None` when the scene cannot be rendered honestly.
 ///
 /// Edges map with the same rule nearest-neighbor downscaling samples by
 /// (output pixel `x` shows project pixel `floor(x * project / output)`), so a
@@ -107,6 +117,7 @@ pub(crate) fn render_scene(
     pipeline: &SimulatedPipeline,
     frame_number: u64,
     pose: ClipState,
+    grades: &CompiledProjectGrades,
 ) -> Option<ImageFrame> {
     let model = project
         .scenes()
@@ -119,13 +130,15 @@ pub(crate) fn render_scene(
         (pipeline.width(), pipeline.height()),
         frame_number,
         pose,
+        Some(grades),
     )
 }
 
 /// [`render_scene`] of a scene model rather than one of `project`'s (an
 /// exact scene preview renders the engine's scene, possibly with a draft
 /// animation) at the `size` grid, its leaves drawn by `sources`; its
-/// layers' inputs and nested scenes still come from `project`.
+/// layers' inputs and nested scenes still come from `project`. `grades`,
+/// when given, grades the layers as [`render_scene`] describes.
 pub(crate) fn render_scene_model(
     project: &Project,
     scene: &fm_model::Scene,
@@ -133,6 +146,7 @@ pub(crate) fn render_scene_model(
     (width, height): (u32, u32),
     frame_number: u64,
     pose: ClipState,
+    grades: Option<&CompiledProjectGrades>,
 ) -> Option<ImageFrame> {
     let dimensions = project.settings().video.dimensions;
     let grid = MonitorGrid {
@@ -142,7 +156,9 @@ pub(crate) fn render_scene_model(
         height,
     };
     let place = |layer: &fm_model::Layer| grid.layer(layer);
-    Composer::new(project, sources, (width, height), frame_number, &place).compose(scene, pose, 0)
+    Composer::new(project, sources, (width, height), frame_number, &place)
+        .with_grades(grades)
+        .compose(scene, pose, 0)
 }
 
 /// Composes at the project size and downscales: the reference the monitor
@@ -222,11 +238,13 @@ enum Feed {
 /// Maps one project-pixel layer onto the grid; `None` refuses the scene.
 type Place<'a> = &'a dyn Fn(&fm_model::Layer) -> Option<Placement>;
 
-/// One composition: its grid, its leaf sources, and the nested scenes it
-/// already composed (each at most once, [`MAX_NESTED_SCENES`] at most).
+/// One composition: its grid, its leaf sources, the grades it applies, and
+/// the nested scenes it already composed (each at most once,
+/// [`MAX_NESTED_SCENES`] at most).
 struct Composer<'a> {
     project: &'a Project,
     sources: &'a dyn SceneSources,
+    grades: Option<&'a CompiledProjectGrades>,
     width: u32,
     height: u32,
     frame_number: u64,
@@ -245,12 +263,43 @@ impl<'a> Composer<'a> {
         Self {
             project,
             sources,
+            grades: None,
             width,
             height,
             frame_number,
             place,
             nested: RefCell::new(BTreeMap::new()),
         }
+    }
+
+    /// Grades every layer with `grades` (SW-019); `None` composes ungraded.
+    fn with_grades(mut self, grades: Option<&'a CompiledProjectGrades>) -> Self {
+        self.grades = grades;
+        self
+    }
+
+    /// `layer` of `scene` graded: a leaf's input grade, then the layer's own
+    /// grade. A nested scene's picture carries only the layer grade; its
+    /// layers were graded when it was composed.
+    fn graded(
+        &self,
+        mut layer: SourceLayer,
+        scene: SceneId,
+        source: &fm_model::Layer,
+        feed: Feed,
+    ) -> SourceLayer {
+        let Some(grades) = self.grades else {
+            return layer;
+        };
+        if let Feed::Leaf(input) = feed
+            && let Some(grade) = grades.input(input)
+        {
+            layer = layer.with_grade(grade.clone());
+        }
+        if let Some(grade) = grades.layer(SceneLayerRef::new(scene, source.id)) {
+            layer = layer.with_layer_grade(grade.clone());
+        }
+        layer
     }
 
     fn input(&self, input: InputId) -> Option<&'a Input> {
@@ -365,7 +414,12 @@ impl<'a> Composer<'a> {
             };
             let next = SourceId::new(u64::try_from(sources.len()).ok()?);
             let token = *sources.entry(feed).or_insert(next);
-            composition.push_layer(compositor_layer(token, &placed));
+            composition.push_layer(self.graded(
+                compositor_layer(token, &placed),
+                model.id,
+                layer,
+                feed,
+            ));
         }
 
         let (plan, _) = compile_scene(&composition, OutputTarget::Program).ok()?;

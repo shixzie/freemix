@@ -38,8 +38,8 @@ pub use dto::{
     choose_handshake_outcome,
 };
 pub use dto::{
-    GradeChange, GradeEntry, GradeStateMessage, MAX_GRADE_LUT_IMPORT_BYTES, MAX_GRADE_NAME_BYTES,
-    MAX_GRADE_STATES, WireGradeSource,
+    GradeChange, GradeEntry, GradeStateMessage, MAX_GRADE_LAYERS, MAX_GRADE_LUT_IMPORT_BYTES,
+    MAX_GRADE_NAME_BYTES, MAX_GRADE_STATES, WireGradeSource,
 };
 pub use dto::{
     MAX_SCENE_ANIMATION_BYTES, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_LAYER_NAME_BYTES,

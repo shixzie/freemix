@@ -2,9 +2,9 @@ use fm_types::{BusId, InputId, MAX_INPUT_NAME_BYTES, OutputId, PixelFormat, Scen
 
 use crate::{
     CropRect, GradeSource, InputKind, Layer, LayerEffect, MAX_GRADE_NAME_BYTES, MAX_LUT_NAME_BYTES,
-    MAX_PROJECT_GRADES, MAX_PROJECT_LUTS, MAX_STREAM_TARGET_NAME_BYTES, Project, ProjectGrading,
-    ProjectSettings, RestartPolicy, SimulatedAudio, SourceRef, StreamTargetId, TitleFieldsError,
-    TitleInput,
+    MAX_PROJECT_GRADES, MAX_PROJECT_LAYER_GRADES, MAX_PROJECT_LUTS, MAX_STREAM_TARGET_NAME_BYTES,
+    Project, ProjectGrading, ProjectSettings, RestartPolicy, SimulatedAudio, SourceRef,
+    StreamTargetId, TitleFieldsError, TitleInput,
     cycles::{mark_alias_cycles, mark_audio_input_cycles, mark_bus_cycles, mark_scene_cycles},
     lut_id_from_uri, validate_title_fields,
 };
@@ -247,8 +247,42 @@ fn validate_grading(project: &Project, errors: &mut Vec<ValidationError>) {
         }
         validate_grade_source(errors, grading, source, entity, "input_grades.grade");
     }
+    validate_layer_grades(project, errors);
     if let Some(source) = &grading.program {
         validate_grade_source(errors, grading, source, None, "program_grade");
+    }
+}
+
+/// Validates the scene layer grades: the bound, that each scene and its
+/// layer exist, and each grade source.
+fn validate_layer_grades(project: &Project, errors: &mut Vec<ValidationError>) {
+    let grading = project.grading();
+    if grading.layers.len() > MAX_PROJECT_LAYER_GRADES {
+        push_error(
+            errors,
+            None,
+            "layer_grades",
+            ValidationErrorKind::OutOfRange,
+        );
+    }
+    for (target, source) in &grading.layers {
+        let entity = Some(EntityRef::Scene(target.scene));
+        match project.scene(target.scene) {
+            None => push_error(
+                errors,
+                entity,
+                "layer_grades.scene",
+                ValidationErrorKind::MissingReference(EntityRef::Scene(target.scene)),
+            ),
+            Some(scene) if scene.layer_by_id(target.layer).is_none() => push_error(
+                errors,
+                entity,
+                "layer_grades.layer",
+                ValidationErrorKind::MissingReference(EntityRef::Scene(target.scene)),
+            ),
+            Some(_) => {}
+        }
+        validate_grade_source(errors, grading, source, entity, "layer_grades.grade");
     }
 }
 

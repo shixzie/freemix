@@ -1372,3 +1372,83 @@ fn next_layer_id() -> fm_model::LayerId {
     fm_model::LayerId::new(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
         .expect("layer ids start at one")
 }
+
+#[test]
+fn append_keeps_scene_layer_grades_under_the_fresh_scene_ids() {
+    use fm_model::{GradeSource, ProjectGrade, ProjectGrading, SceneLayerRef};
+
+    let temp = TestDirectory::new("append-layer-grades");
+    let target_store = temp.store("target.freemix");
+    let source_store = temp.store("source.freemix");
+    let mut target = media_project(1, &[(1, "asset://a.mov")]);
+    target
+        .add_scene_input_checked(scene_id(1), "Main".into(), input_id(2), "Main".into())
+        .unwrap();
+    let target = stored(target);
+    target_store.save(&target).unwrap();
+    write_asset(&target_store, "a.mov", b"a");
+
+    // Source: scene 4 with two layers on input 1; layer one carries library
+    // grade 3, layer two an inline grade on LUT 6.
+    let mut source = media_project(2, &[(1, "asset://b.mov")]);
+    let host = layer("host", SourceRef::Input(input_id(1)));
+    let inset = layer("inset", SourceRef::Input(input_id(1)));
+    let (host_id, inset_id) = (host.id, inset.id);
+    source.add_scene(Scene {
+        id: scene_id(4),
+        name: "Two up".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![host, inset],
+        animation: fm_model::SceneAnimation::default(),
+    });
+    let mut grading = ProjectGrading::default();
+    grading.add_lut(film_lut(6)).unwrap();
+    grading
+        .insert_grade(
+            None,
+            ProjectGrade {
+                id: grade_id(3),
+                name: "Night".into(),
+                grade: graded_with_lut(6, -100),
+            },
+        )
+        .unwrap();
+    grading
+        .set_layer(
+            SceneLayerRef::new(scene_id(4), host_id),
+            Some(GradeSource::Library(grade_id(3))),
+        )
+        .unwrap();
+    grading
+        .set_layer(
+            SceneLayerRef::new(scene_id(4), inset_id),
+            Some(GradeSource::Inline(Box::new(graded_with_lut(6, 400)))),
+        )
+        .unwrap();
+    source.set_grading(grading);
+    source_store.save(&stored(source)).unwrap();
+    write_asset(&source_store, "b.mov", b"b");
+    source_store
+        .write_lut_source(lut_id(6), &cube(0.5))
+        .unwrap();
+
+    let (appended, report) = target_store.append_project(&target, &source_store).unwrap();
+    assert_eq!(report.scenes, [(scene_id(4), scene_id(2))]);
+    assert_eq!(report.luts, [(lut_id(6), lut_id(1))]);
+    assert_eq!(report.grades, [(grade_id(3), grade_id(1))]);
+    let grading = appended.project().grading();
+    assert_eq!(
+        grading
+            .layers
+            .get(&SceneLayerRef::new(scene_id(2), host_id)),
+        Some(&GradeSource::Library(grade_id(1)))
+    );
+    assert_eq!(
+        grading
+            .layers
+            .get(&SceneLayerRef::new(scene_id(2), inset_id)),
+        Some(&GradeSource::Inline(Box::new(graded_with_lut(1, 400))))
+    );
+    assert_eq!(grading.grades[0].grade, graded_with_lut(1, -100));
+    assert!(appended.project().validate().is_ok());
+}

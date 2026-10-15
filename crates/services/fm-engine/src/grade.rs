@@ -1,8 +1,10 @@
 //! Project grades compiled for rendering.
 //!
-//! [`CompiledProjectGrades`] turns a project's per-input and program grades
-//! into shared [`CompiledGrade`]s that scene builders attach to compositor
-//! layers (`SourceLayer::with_grade`) and to the composed Program picture.
+//! [`CompiledProjectGrades`] turns a project's per-input, per-scene-layer,
+//! and program grades into shared [`CompiledGrade`]s that scene builders
+//! attach to compositor layers (`SourceLayer::with_grade` for the source's
+//! input grade, then `SourceLayer::with_layer_grade` for the layer's own)
+//! and to the composed Program picture.
 //! A library grade used by several targets is compiled once and shared.
 //! Identity grades are omitted, so an ungraded or neutral target renders
 //! bit-exactly as before. A referenced LUT missing from the supplied set is
@@ -13,13 +15,16 @@ use core::fmt;
 use std::{collections::BTreeMap, sync::Arc};
 
 use fm_grade::{CompiledGrade, CubeLut, Grade, GradeError};
-use fm_model::{GradeId, GradeSource, LutId, Project, ProjectGrading, lut_id_from_uri};
+use fm_model::{
+    GradeId, GradeSource, LutId, Project, ProjectGrading, SceneLayerRef, lut_id_from_uri,
+};
 use fm_types::InputId;
 
 /// Compiled per-input and program grades of one project.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CompiledProjectGrades {
     inputs: BTreeMap<InputId, Arc<CompiledGrade>>,
+    layers: BTreeMap<SceneLayerRef, Arc<CompiledGrade>>,
     program: Option<Arc<CompiledGrade>>,
     missing_luts: Vec<LutId>,
 }
@@ -40,6 +45,7 @@ pub enum GradeCompileError {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GradeTarget {
     Input(InputId),
+    Layer(SceneLayerRef),
     Program,
 }
 
@@ -51,6 +57,10 @@ impl fmt::Display for GradeCompileError {
                 target: GradeTarget::Input(input),
                 error,
             } => write!(formatter, "input {input} grade is invalid: {error}"),
+            Self::Invalid {
+                target: GradeTarget::Layer(target),
+                error,
+            } => write!(formatter, "{target} grade is invalid: {error}"),
             Self::Invalid {
                 target: GradeTarget::Program,
                 error,
@@ -94,19 +104,16 @@ impl CompiledProjectGrades {
         };
         let mut inputs = BTreeMap::new();
         for (input, source) in &grading.inputs {
-            let grade = match source {
-                GradeSource::Library(id) => {
-                    let entry = grading
-                        .grade(*id)
-                        .ok_or(GradeCompileError::UnknownGrade(*id))?;
-                    compiler.library(*id, &entry.grade, GradeTarget::Input(*input))?
-                }
-                GradeSource::Inline(grade) => {
-                    compiler.compile(grade, GradeTarget::Input(*input))?
-                }
-            };
+            let grade = compiler.source(grading, source, GradeTarget::Input(*input))?;
             if !grade.is_identity() {
                 inputs.insert(*input, grade);
+            }
+        }
+        let mut layers = BTreeMap::new();
+        for (target, source) in &grading.layers {
+            let grade = compiler.source(grading, source, GradeTarget::Layer(*target))?;
+            if !grade.is_identity() {
+                layers.insert(*target, grade);
             }
         }
         let program = match &grading.program {
@@ -127,6 +134,7 @@ impl CompiledProjectGrades {
         missing_luts.dedup();
         Ok(Self {
             inputs,
+            layers,
             program,
             missing_luts,
         })
@@ -144,6 +152,19 @@ impl CompiledProjectGrades {
         &self.inputs
     }
 
+    /// The non-identity grade of one scene layer, if any.
+    #[must_use]
+    pub fn layer(&self, target: SceneLayerRef) -> Option<&Arc<CompiledGrade>> {
+        self.layers.get(&target)
+    }
+
+    /// Every graded scene layer with its non-identity grade, in scene then
+    /// layer order.
+    #[must_use]
+    pub const fn layers(&self) -> &BTreeMap<SceneLayerRef, Arc<CompiledGrade>> {
+        &self.layers
+    }
+
     /// The non-identity program grade, if any.
     #[must_use]
     pub const fn program(&self) -> Option<&Arc<CompiledGrade>> {
@@ -156,10 +177,10 @@ impl CompiledProjectGrades {
         &self.missing_luts
     }
 
-    /// Whether no input and not the program is graded.
+    /// Whether no input, no scene layer, and not the program is graded.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.inputs.is_empty() && self.program.is_none()
+        self.inputs.is_empty() && self.layers.is_empty() && self.program.is_none()
     }
 }
 
@@ -170,6 +191,23 @@ struct Compiler<'a> {
 }
 
 impl Compiler<'_> {
+    fn source(
+        &mut self,
+        grading: &ProjectGrading,
+        source: &GradeSource,
+        target: GradeTarget,
+    ) -> Result<Arc<CompiledGrade>, GradeCompileError> {
+        match source {
+            GradeSource::Library(id) => {
+                let entry = grading
+                    .grade(*id)
+                    .ok_or(GradeCompileError::UnknownGrade(*id))?;
+                self.library(*id, &entry.grade, target)
+            }
+            GradeSource::Inline(grade) => self.compile(grade, target),
+        }
+    }
+
     fn library(
         &mut self,
         id: GradeId,

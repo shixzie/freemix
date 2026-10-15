@@ -266,6 +266,7 @@ pub struct SourceLayer {
     key_refinement: Option<KeyRefinement>,
     effects: Vec<Effect>,
     grade: Option<Arc<CompiledGrade>>,
+    layer_grade: Option<Arc<CompiledGrade>>,
     overlay_inclusion: Option<OutputInclusion>,
     inset_border_width: u32,
     rotation_millidegrees: i32,
@@ -288,6 +289,7 @@ impl SourceLayer {
             key_refinement: None,
             effects: Vec::new(),
             grade: None,
+            layer_grade: None,
             overlay_inclusion: None,
             inset_border_width: 0,
             rotation_millidegrees: 0,
@@ -358,6 +360,16 @@ impl SourceLayer {
     #[must_use]
     pub fn with_grade(mut self, grade: Arc<CompiledGrade>) -> Self {
         self.grade = Some(grade);
+        self
+    }
+
+    /// Colour-grades the layer a second time, after [`Self::with_grade`]
+    /// (a source's input grade) and still before its transform: a scene
+    /// layer's own grade. Each grade quantizes to 8-bit straight colour on
+    /// the CPU path; the native GPU path runs one baked-LUT pass per grade.
+    #[must_use]
+    pub fn with_layer_grade(mut self, grade: Arc<CompiledGrade>) -> Self {
+        self.layer_grade = Some(grade);
         self
     }
 
@@ -454,6 +466,12 @@ impl SourceLayer {
     #[must_use]
     pub const fn grade(&self) -> Option<&Arc<CompiledGrade>> {
         self.grade.as_ref()
+    }
+
+    /// The layer's own grade, applied after [`Self::grade`].
+    #[must_use]
+    pub const fn layer_grade(&self) -> Option<&Arc<CompiledGrade>> {
+        self.layer_grade.as_ref()
     }
 
     #[must_use]

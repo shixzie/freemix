@@ -3666,6 +3666,108 @@ fn grade_commands_change_monitor_output_and_survive_restart() {
     daemon.stop();
 }
 
+/// SW-019, Protocol 2.33 end to end on the simulated path: a scene layer
+/// grade set through the Scene input showing the scene colours that layer
+/// on the Program monitor (after its input's grade), is replicated as a
+/// `grade_changed` layer change, and after a restart the snapshot announces
+/// it as a `grade_state` layer record and renders the same picture.
+#[test]
+fn scene_layer_grades_colour_the_scene_and_survive_restart() {
+    use fm_protocol::{GradeChange, GradeEntry, MonitorTap, WireGradeSource, WireSceneLayerId};
+
+    fn corner(image: &fm_protocol::MonitorImage) -> [u8; 4] {
+        // Monitor (5, 5) is project (15, 15): inside layer 2 and outside
+        // its inverted mask, so it shows input 1.
+        let offset = (5 * usize::from(image.width) + 5) * 4;
+        image.rgba[offset..offset + 4].try_into().unwrap()
+    }
+
+    let directory = TestDirectory::new("layer-grades");
+    let project_path = directory.project_path();
+    create_scene_program_project(&project_path);
+    let layer = WireSceneLayerId::new(NonZeroU32::new(2).unwrap());
+    let monochrome = fm_grade::Grade {
+        saturation_permille: 0,
+        ..fm_grade::Grade::IDENTITY
+    };
+
+    let graded = {
+        let daemon = Daemon::start_without_once(&project_path);
+        let (mut monitor, snapshot) = GradedMonitor::connect(&daemon, Role::Graphics);
+        assert_eq!(snapshot.grade_states, 0);
+        let program = monitor.image(MonitorTap::Program, "ungraded scene", |image| {
+            corner(image) == [12, 34, 56, 255]
+        });
+        assert_eq!(program.input, input(4));
+
+        monitor.client.send(&command(
+            "layer",
+            "layer-key",
+            CommandPayload::SetLayerGrade {
+                input: input(4),
+                layer,
+                source: Some(WireGradeSource::Inline(Box::new(monochrome.clone()))),
+            },
+        ));
+        // Monitor parts keep feeding their assemblers, so no group is torn.
+        let assemblers = &mut monitor.assemblers;
+        let changed = receive_within(
+            &mut monitor.client,
+            Duration::from_secs(10),
+            "layer grade change",
+            |message| match message {
+                WireMessage::Event(event) => match event.payload {
+                    fm_protocol::EventPayload::GradeChanged(change) => Some(change),
+                    _ => None,
+                },
+                WireMessage::MonitorFrame(part) => {
+                    assemblers[part.tap.index()].push(&part).unwrap();
+                    None
+                }
+                _ => None,
+            },
+        );
+        assert_eq!(
+            changed,
+            GradeChange::Layer {
+                inputs: vec![input(4)],
+                layer,
+                source: Some(WireGradeSource::Inline(Box::new(monochrome.clone()))),
+            }
+        );
+        let program = monitor.image(MonitorTap::Program, "grey scene layer", |image| {
+            let pixel = corner(image);
+            grey(pixel) && pixel != [12, 34, 56, 255]
+        });
+        drop(monitor);
+        daemon.stop();
+        corner(&program)
+    };
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let (mut monitor, snapshot) = GradedMonitor::connect(&daemon, Role::Graphics);
+    assert_eq!(snapshot.grade_states, 1);
+    let entry = loop {
+        if let WireMessage::GradeState(state) = monitor.client.receive() {
+            assert_eq!(state.revision, snapshot.revision);
+            break state.entry;
+        }
+    };
+    assert_eq!(
+        entry,
+        GradeEntry::Layer {
+            inputs: vec![input(4)],
+            layer,
+            source: WireGradeSource::Inline(Box::new(monochrome)),
+        }
+    );
+    monitor.image(MonitorTap::Program, "restored layer grade", |image| {
+        corner(image) == graded
+    });
+    drop(monitor);
+    daemon.stop();
+}
+
 const TITLE_TEMPLATE_KEY: &str = "titles/process-title.fmtitle";
 
 /// The stored template of the process title: one rectangle at (200, 100)
@@ -4959,11 +5061,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.32.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 32));
+    // The previous protocol is refused; the current one is 2.33.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 33));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 31),
+        protocol: ProtocolVersion::new(2, 32),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -4979,7 +5081,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 32)
+        ProtocolVersion::new(2, 33)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

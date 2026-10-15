@@ -1,11 +1,22 @@
 //! Grade edits: project grading changed through the engine's command path.
 //!
 //! The show holds the project's [`ProjectGrading`] (grade library, imported
-//! LUTs, per-input and program grades) and, for each imported LUT whose file
-//! was available, its exact `.cube` text and parsed table ([`EngineLut`]).
-//! Every [`EngineGradeEdit`] is a project edit: the edit padlock covers it
-//! (an input's padlock also covers that input's grade) and it is recorded in
-//! the undo history with an exact inverse, except LUT removal.
+//! LUTs, per-input, per-scene-layer, and program grades) and, for each
+//! imported LUT whose file was available, its exact `.cube` text and parsed
+//! table ([`EngineLut`]). Every [`EngineGradeEdit`] is a project edit: the
+//! edit padlock covers it (an input's padlock also covers that input's
+//! grade, and a Scene input's padlock the grades of its scene's layers) and
+//! it is recorded in the undo history with an exact inverse, except LUT
+//! removal.
+//!
+//! # Scene layer grades
+//!
+//! A layer grade belongs to a scene layer ([`SceneLayerRef`]); an edit names
+//! the scene through one of its Scene inputs ([`EngineGradeEdit::SetLayer`]),
+//! like a scene animation edit, so every Scene input showing the scene shows
+//! the change and every one of their padlocks covers it. Layer grades of
+//! scenes no Scene input shows are restored and saved unchanged but cannot
+//! be edited through the engine.
 //!
 //! # LUT removal is not undoable
 //!
@@ -25,10 +36,12 @@ use std::{collections::BTreeMap, sync::Arc};
 use fm_command::{FieldIssue, Rejection, RejectionCode};
 use fm_grade::{CubeError, CubeLut, Grade, parse_cube};
 use fm_model::{
-    GradeEditError, GradeId, GradeSource, LutId, MAX_LUT_FILE_BYTES, ProjectGrade, ProjectGrading,
-    ProjectLut, lut_id_from_uri,
+    GradeEditError, GradeId, GradeSource, LayerId, LutId, MAX_LUT_FILE_BYTES, ProjectGrade,
+    ProjectGrading, ProjectLut, SceneLayerRef, lut_id_from_uri,
 };
 use fm_types::InputId;
+
+use crate::ShowState;
 
 /// One imported LUT the show can render: its exact `.cube` text and the
 /// table parsed from it. Two LUTs are equal when their texts are.
@@ -99,6 +112,13 @@ pub enum EngineGradeEdit {
         input: InputId,
         source: Option<GradeSource>,
     },
+    /// Sets (`Some`) or clears (`None`) the grade of layer `layer` of the
+    /// scene Scene input `input` shows.
+    SetLayer {
+        input: InputId,
+        layer: LayerId,
+        source: Option<GradeSource>,
+    },
     /// Sets (`Some`) or clears (`None`) the program output grade.
     SetProgram { source: Option<GradeSource> },
     /// Inserts a library grade at `index` (the end when `None`).
@@ -138,7 +158,9 @@ impl EngineGradeEdit {
         };
         let source_names = |source: &Option<GradeSource>| matches!(source, Some(GradeSource::Inline(grade)) if grade_names(grade));
         match self {
-            Self::SetInput { source, .. } | Self::SetProgram { source } => source_names(source),
+            Self::SetInput { source, .. }
+            | Self::SetLayer { source, .. }
+            | Self::SetProgram { source } => source_names(source),
             Self::AddGrade { grade, .. } => grade_names(&grade.grade),
             Self::UpdateGrade { grade, .. } => grade_names(grade),
             Self::RemoveGrade { .. } => false,
@@ -146,19 +168,65 @@ impl EngineGradeEdit {
         }
     }
 
-    /// The input this edit grades, if any.
+    /// The input this edit grades, or the Scene input a layer edit names,
+    /// if any.
     #[must_use]
     pub const fn input(&self) -> Option<InputId> {
         match self {
-            Self::SetInput { input, .. } => Some(*input),
+            Self::SetInput { input, .. } | Self::SetLayer { input, .. } => Some(*input),
             _ => None,
         }
     }
 }
 
+/// The scene layer layer `layer` of the scene Scene input `input` shows.
+pub(crate) fn layer_target(
+    state: &ShowState,
+    input: InputId,
+    layer: LayerId,
+) -> Result<SceneLayerRef, Rejection> {
+    let scene = state.scene_input(input).ok_or_else(|| {
+        let message = format!("input {input} is not a scene");
+        Rejection::new(RejectionCode::NotFound, message.clone()).with_field(FieldIssue::new(
+            "input",
+            "unknown_scene",
+            message,
+        ))
+    })?;
+    let target = SceneLayerRef::new(scene.id(), layer);
+    if scene.scene.layer_by_id(layer).is_none() {
+        return Err(grade_rejection(&GradeEditError::UnknownLayer(target)));
+    }
+    Ok(target)
+}
+
+/// Applies one grade edit to the show.
+pub(crate) fn apply_show_grade_edit(
+    state: &mut ShowState,
+    edit: &EngineGradeEdit,
+) -> Result<(), Rejection> {
+    if let EngineGradeEdit::SetLayer {
+        input,
+        layer,
+        source,
+    } = edit
+    {
+        let target = layer_target(state, *input, *layer)?;
+        let (_, grading, _) = state.grading_parts_mut();
+        return grading
+            .set_layer(target, source.clone())
+            .map_err(|error| grade_rejection(&error));
+    }
+    let (inputs, grading, luts) = state.grading_parts_mut();
+    apply_grade_edit(inputs, grading, luts, edit)
+}
+
 /// Validates that `grading` and `luts` form a consistent show grading for
 /// `inputs`: every LUT, grade, and reference passes the same checks as an
 /// edit, every graded input exists, and every parsed LUT is registered.
+/// Layer grades are checked as grades; their scenes and layers are the
+/// project's to check (the show knows only the scenes its Scene inputs
+/// show).
 pub(crate) fn checked_grading(
     inputs: &[InputId],
     grading: ProjectGrading,
@@ -176,6 +244,9 @@ pub(crate) fn checked_grading(
             return Err(GradeEditError::UnknownInput(input));
         }
         checked.set_input(input, Some(source))?;
+    }
+    for (target, source) in grading.layers {
+        checked.set_layer(target, Some(source))?;
     }
     checked.set_program(grading.program)?;
     if let Some(unknown) = luts.keys().find(|id| checked.lut(**id).is_none()) {
@@ -210,6 +281,9 @@ pub(crate) fn apply_grade_edit(
             grading
                 .set_input(*input, source.clone())
                 .map_err(|error| grade_rejection(&error))
+        }
+        EngineGradeEdit::SetLayer { .. } => {
+            unreachable!("layer grade edits are applied by apply_show_grade_edit")
         }
         EngineGradeEdit::SetProgram { source } => grading
             .set_program(source.clone())
@@ -273,6 +347,8 @@ pub(crate) fn apply_grade_edit(
 pub(crate) fn grade_rejection(error: &GradeEditError) -> Rejection {
     let (code, field, issue) = match error {
         GradeEditError::UnknownInput(_) => (RejectionCode::NotFound, "input", "unknown_input"),
+        GradeEditError::UnknownScene(_) => (RejectionCode::NotFound, "input", "unknown_scene"),
+        GradeEditError::UnknownLayer(_) => (RejectionCode::NotFound, "layer", "unknown_layer"),
         GradeEditError::UnknownGrade(_) => (RejectionCode::NotFound, "grade", "unknown_grade"),
         GradeEditError::UnknownLut(_) => (RejectionCode::NotFound, "lut", "unknown_lut"),
         GradeEditError::DuplicateGradeId(_) => {
@@ -289,6 +365,9 @@ pub(crate) fn grade_rejection(error: &GradeEditError) -> Rejection {
             (RejectionCode::Conflict, "grade", "too_many_grades")
         }
         GradeEditError::TooManyLuts { .. } => (RejectionCode::Conflict, "lut", "too_many_luts"),
+        GradeEditError::TooManyLayerGrades { .. } => {
+            (RejectionCode::Conflict, "layer", "too_many_layer_grades")
+        }
         GradeEditError::LutSizeOutOfRange { .. } => {
             (RejectionCode::InvalidCommand, "data", "invalid_cube")
         }

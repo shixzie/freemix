@@ -3155,7 +3155,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ColorTargetHover,
         t(
-            "Qué corregir: una entrada (antes de mezclar, dondequiera que aparezca) o el Programa (después de las superposiciones, antes del fundido a negro)",
+            "Qué corregir: una entrada (antes de mezclar, dondequiera que aparezca), una capa de escena (dentro de su escena) o el Programa (después de las superposiciones, antes del fundido a negro)",
         ),
     ),
     (Msg::ColorTargetProgram, t("Salida de Programa")),
@@ -3167,6 +3167,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ColorTargetInputHover,
         t("Corregir esta entrada dondequiera que aparezca"),
     ),
+    (
+        Msg::ColorTargetLayerHover,
+        t(
+            "Corregir solo esta capa de escena: después de la corrección y los efectos de su entrada, antes de su posición y tamaño. Todas las entradas de escena que muestran la escena la muestran",
+        ),
+    ),
+    (Msg::ColorTargetLayerFallback, t("Capa")),
     (Msg::ColorGraded, t("corregida")),
     (
         Msg::ColorStatusOnAirHover,

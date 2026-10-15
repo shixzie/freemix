@@ -2283,6 +2283,11 @@ fn parse_title_animation_stretch(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GradeTargetArg {
     Input(u128),
+    /// One layer (by stable layer id) of one scene (by scene id).
+    Layer {
+        scene: u128,
+        layer: u32,
+    },
     Program,
 }
 
@@ -2310,6 +2315,13 @@ fn grade_target(arguments: &mut impl Iterator<Item = String>) -> Result<GradeTar
     let value = required(arguments, "grade target")?;
     if value == "program" {
         Ok(GradeTargetArg::Program)
+    } else if value == "layer" {
+        let scene = required(arguments, "scene id")?;
+        let layer = required(arguments, "layer id")?;
+        Ok(GradeTargetArg::Layer {
+            scene: number(&scene, "scene id")?,
+            layer: number(&layer, "layer id")?,
+        })
     } else {
         number(&value, "grade target (an input id or `program`)").map(GradeTargetArg::Input)
     }
@@ -4528,6 +4540,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn parses_grade_commands() {
         assert_eq!(
             parse(strings(&[
@@ -4577,6 +4590,38 @@ mod tests {
             Err(ArgsError::InvalidNumber {
                 field: "exposure",
                 value: "40000".into(),
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "grade-set",
+                "s",
+                "layer",
+                "4",
+                "2",
+                "--preset",
+                "warm"
+            ])),
+            Ok(Command::GradeSet {
+                path: PathBuf::from("s"),
+                target: GradeTargetArg::Layer { scene: 4, layer: 2 },
+                library: None,
+                spec: GradeSpec {
+                    preset: Some("warm".into()),
+                    ..GradeSpec::default()
+                },
+                save_as: None,
+            })
+        );
+        assert!(matches!(
+            parse(strings(&["grade-clear", "s", "layer", "4"])),
+            Err(ArgsError::MissingValue("layer id"))
+        ));
+        assert_eq!(
+            parse(strings(&["grade-clear", "s", "layer", "4", "2"])),
+            Ok(Command::GradeClear {
+                path: PathBuf::from("s"),
+                target: GradeTargetArg::Layer { scene: 4, layer: 2 },
             })
         );
         assert_eq!(

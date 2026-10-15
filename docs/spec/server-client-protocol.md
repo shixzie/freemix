@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.32 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.33 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -697,6 +697,33 @@ Protocol 2.32 adds exact scene previews (`GX-011`):
   TCP sessions receive previews; WebSocket sessions are refused with
   `unsupported`.
 - 2.31 is refused.
+
+Protocol 2.33 grades scene layers (`SW-019`):
+
+- `grade_layer_set` (`input`, `layer`, plus exactly one of `library` or
+  `grade`) and `grade_layer_clear` (`input`, `layer`) set or clear the grade
+  of layer `layer` (a canonical nonzero 32-bit decimal) of the scene Scene
+  input `input` shows. Like scene animation edits they address the scene
+  through any Scene input showing it, so every such input shows the change;
+  they are `EditProject`, undoable, and refused while the project or any
+  Scene input showing the scene is padlocked (`grade_library_update` of a
+  library grade a layer uses is likewise refused while one of those inputs
+  is padlocked). An input that is not a Scene input is `not_found`
+  (`unknown_scene`), as is a layer the scene lacks (`unknown_layer`). The
+  layer grade colours that layer after its source's input grade and before
+  the layer transform, on the native and simulated monitor paths.
+- `event=grade_changed` gains `change=layer` (`inputs`, the ascending
+  nonempty list of Scene inputs showing the scene, `layer`, and `library` or
+  `grade` unless cleared).
+- `grade_state` gains `entry=layer` with the same fields. Layer records
+  follow the input records, ordered by scene and then layer id, and are sent
+  only for scenes some Scene input shows; at most 256 layer grades, so
+  `grade_states` is at most 833 (64 LUTs, 256 library grades, 256 inputs,
+  256 layers, and the program). A layer record naming an input the
+  snapshot lacks, repeating a layer of one input, or arriving after the
+  program record forces a fresh snapshot.
+- Durability: layer grades are project state (schema 33, `layer_grades`).
+- 2.32 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

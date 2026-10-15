@@ -11,8 +11,9 @@ mod validation;
 pub use fm_animation;
 pub use grade::{
     GradeEditError, GradeId, GradeSource, LutId, MAX_GRADE_NAME_BYTES, MAX_LUT_FILE_BYTES,
-    MAX_LUT_NAME_BYTES, MAX_PROJECT_GRADES, MAX_PROJECT_LUTS, ProjectGrade, ProjectGrading,
-    ProjectLut, lut_asset_key, lut_asset_uri, lut_id_from_uri, next_free_id,
+    MAX_LUT_NAME_BYTES, MAX_PROJECT_GRADES, MAX_PROJECT_LAYER_GRADES, MAX_PROJECT_LUTS,
+    ProjectGrade, ProjectGrading, ProjectLut, SceneLayerRef, lut_asset_key, lut_asset_uri,
+    lut_id_from_uri, next_free_id,
 };
 pub use playlist::{
     MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_ENTRY_FRAMES, MAX_PLAYLIST_TRANSITION_FRAMES, Playlist,

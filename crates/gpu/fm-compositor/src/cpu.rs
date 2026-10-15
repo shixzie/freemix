@@ -233,9 +233,9 @@ pub fn execute_cpu(
         // touch alpha; run on premultiplied bytes they could lift a channel
         // above its alpha and the layer would be rejected as not
         // premultiplied.
-        let grade = layer.active_grade();
+        let graded = layer.active_grades().next().is_some();
         let straighten = layer.alpha_mode() == AlphaMode::Premultiplied
-            && (grade.is_some()
+            && (graded
                 || layer.effects().iter().any(|effect| {
                     !(effect.name() == "passthrough" && effect.parameters().is_empty())
                 }));
@@ -245,7 +245,7 @@ pub fn execute_cpu(
         for (effect_index, effect) in layer.effects().iter().enumerate() {
             frame = apply_effect(plan_index, effect_index, effect, &frame)?;
         }
-        if let Some(grade) = grade {
+        for grade in layer.active_grades() {
             frame = apply_grade(&frame, grade)?;
         }
         if layer.alpha_mode() == AlphaMode::Straight || straighten {

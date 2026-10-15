@@ -4073,13 +4073,13 @@ Usage:
       Renders the scene posed at frame f of the In or Out phase (or held
       at the In end, which takes no --frame) from the simulated sources,
       composed at the project canvas and scaled like render.
-  freemix-cli grade-set <show.freemix> <input-id|program> [--preset <id>] [--exposure <millistops>] [--temperature <t>] [--tint <t>] [--contrast <amount>] [--saturation <permille>] [--lut <lut-id> [--lut-strength <permille>]] [--save-as <name>]
-  freemix-cli grade-set <show.freemix> <input-id|program> --grade <grade-id>
+  freemix-cli grade-set <show.freemix> <input-id|layer <scene-id> <layer-id>|program> [--preset <id>] [--exposure <millistops>] [--temperature <t>] [--tint <t>] [--contrast <amount>] [--saturation <permille>] [--lut <lut-id> [--lut-strength <permille>]] [--save-as <name>]
+  freemix-cli grade-set <show.freemix> <input-id|layer <scene-id> <layer-id>|program> --grade <grade-id>
       Grades an input (before its scene-layer transform) or the program
       output. Values apply over a built-in preset (neutral, warm, cool,
       punchy, faded, bw); --save-as keeps the grade in the project library
       and assigns it by reference, --grade assigns a library grade.
-  freemix-cli grade-clear <show.freemix> <input-id|program>
+  freemix-cli grade-clear <show.freemix> <input-id|layer <scene-id> <layer-id>|program>
   freemix-cli grade-import-lut <show.freemix> <file.cube> [--name <name>]
       Copies a .cube LUT (at most 16 MiB, 65^3) to assets/luts/<id>.cube.
   freemix-cli grade-list <show.freemix>

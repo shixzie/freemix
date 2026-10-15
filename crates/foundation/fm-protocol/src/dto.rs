@@ -1290,6 +1290,15 @@ pub enum CommandPayload {
         input: WireInputId,
         source: Option<WireGradeSource>,
     },
+    /// Sets (`Some`) or clears (`None`) the grade of one layer of the scene
+    /// Scene input `input` shows (Protocol 2.33). Wire payloads
+    /// `grade_layer_set` and `grade_layer_clear`. Every Scene input showing
+    /// the scene shows the change.
+    SetLayerGrade {
+        input: WireInputId,
+        layer: WireSceneLayerId,
+        source: Option<WireGradeSource>,
+    },
     /// Sets (`Some`) or clears (`None`) the program output grade. Wire
     /// payloads `grade_program_set` and `grade_program_clear`.
     SetProgramGrade {
@@ -1386,9 +1395,12 @@ pub enum CommandPayload {
 pub const MAX_GRADE_LUT_IMPORT_BYTES: usize = 32 * 1024;
 /// Longest grade or LUT name, in UTF-8 bytes.
 pub const MAX_GRADE_NAME_BYTES: usize = 128;
+/// Most graded scene layers one project holds (Protocol 2.33).
+pub const MAX_GRADE_LAYERS: u16 = 256;
 /// Most `grade_state` records one snapshot announces: every LUT, library
-/// grade, input grade, and the program grade of a maximal project.
-pub const MAX_GRADE_STATES: u16 = 64 + 256 + 256 + 1;
+/// grade, input grade, scene layer grade, and the program grade of a
+/// maximal project.
+pub const MAX_GRADE_STATES: u16 = 64 + 256 + 256 + MAX_GRADE_LAYERS + 1;
 
 /// The grade one input or the program carries on the wire.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1421,6 +1433,13 @@ pub enum GradeEntry {
         input: WireInputId,
         source: WireGradeSource,
     },
+    /// The grade one scene layer carries (Protocol 2.33), with every Scene
+    /// input (ascending, at least one) showing its scene.
+    Layer {
+        inputs: Vec<WireInputId>,
+        layer: WireSceneLayerId,
+        source: WireGradeSource,
+    },
     /// The program output grade.
     Program { source: WireGradeSource },
 }
@@ -1430,8 +1449,9 @@ pub enum GradeEntry {
 /// A session writes exactly [`SnapshotMessage::grade_states`] of these after
 /// the snapshot's title states and playlist state and before any event:
 /// every LUT in import order, then every library grade in library order,
-/// then every graded input in ascending input order, then the program grade
-/// when there is one.
+/// then every graded input in ascending input order, then (Protocol 2.33)
+/// every graded layer of a scene some Scene input shows, in scene then
+/// layer order, then the program grade when there is one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GradeStateMessage {
     pub revision: u64,
@@ -1465,6 +1485,13 @@ pub enum GradeChange {
     /// An input's grade afterwards; `None` when it is ungraded.
     Input {
         input: WireInputId,
+        source: Option<WireGradeSource>,
+    },
+    /// A scene layer's grade afterwards (Protocol 2.33), with every Scene
+    /// input (ascending) showing its scene; `None` when it is ungraded.
+    Layer {
+        inputs: Vec<WireInputId>,
+        layer: WireSceneLayerId,
         source: Option<WireGradeSource>,
     },
     /// The program grade afterwards; `None` when it is ungraded.

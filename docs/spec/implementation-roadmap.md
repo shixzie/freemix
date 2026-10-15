@@ -2264,12 +2264,36 @@ mixes, scene layers, and overlays and each Program output after overlays and
 before Fade-to-Black through `NativeGradeRenderer` LUTs uploaded once per
 revision. Project append keeps appended inputs' grades, appending the
 library grades they use and copying the LUTs they reference under fresh
-ids (renamed on a clash). Remaining gaps: grades are per input, not per
-scene layer; the simulated monitor path does not grade scene, title, or
-media sources and native Stinger media is ungraded; presets cannot be
-exported between projects; and there is no Studio grading panel, wheel or
-curve editor, before/after split preview, or scopes beside it, so `SW-019`
-remains planned.
+ids (renamed on a clash). Project schema 33 adds per-scene-layer grades
+(`layer_grades`: `scene`, `layer`, and a library or inline `grade`; at most
+256, between `input_grades` and `program_grade`; schemas 32 and 34 are
+refused). Validation requires the scene and its layer to exist; removing a
+layer or a scene drops its grades, duplicating a scene input copies them to
+the new scene, and appending a project carries them to the fresh scene ids.
+`fm-compositor` applies `SourceLayer::with_layer_grade` after the source's
+input grade and before the layer transform (CPU: one exact table pass per
+grade; native: one LUT pass per grade), so a layer grade colours only that
+layer. `EngineGradeEdit::SetLayer` addresses a layer through any Scene
+input showing its scene (like a scene animation edit): it is undoable, and
+the padlock of every Scene input showing the scene covers it (and a
+`grade_library_update` of a library grade such a layer uses). Protocol 2.33
+carries `grade_layer_set`/`grade_layer_clear`, `change=layer` and
+`entry=layer` records naming every Scene input showing the scene (layer
+records follow the input records; at most 256), replicated by
+`fm-client`/`fm-ui-model`; Studio's Colour window lists each layer of each
+Scene input as a target, and `freemix-cli grade-set|grade-clear <show>
+layer <scene> <layer>` edits it offline and `render` shows it. The
+simulated monitor path grades scene layers (input grade, then layer grade),
+title pictures and keyed title overlays (their input grade), and the
+program, consistently with the native path; simulated media inputs have no
+picture to grade. The native path also grades Stinger media by its media
+input's grade. Remaining gaps: a Scene input's own input grade is not
+applied by either renderer (grade its layers instead); layer grades of a
+scene no Scene input shows are saved and restored but cannot be edited or
+replicated over the protocol; exact scene previews (`scene_preview_request`)
+render ungraded; the Colour window previews a layer target on a test still,
+not its live picture; and presets cannot be exported between projects
+except through project append, so `SW-019` remains planned.
 
 Current implementation boundary for item 2 browser title control (`GX-006`):
 `freemix-web` provides a transport-free title editor model over a narrow server

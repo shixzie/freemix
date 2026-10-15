@@ -671,6 +671,15 @@ fn grade_inverse(state: &ShowState, edit: &EngineGradeEdit) -> Option<EngineGrad
                     source: grading.inputs.get(input).cloned(),
                 })
         }
+        EngineGradeEdit::SetLayer { input, layer, .. } => {
+            crate::grade_edit::layer_target(state, *input, *layer)
+                .ok()
+                .map(|target| EngineGradeEdit::SetLayer {
+                    input: *input,
+                    layer: *layer,
+                    source: grading.layers.get(&target).cloned(),
+                })
+        }
         EngineGradeEdit::SetProgram { .. } => Some(EngineGradeEdit::SetProgram {
             source: grading.program.clone(),
         }),
@@ -735,12 +744,42 @@ pub(crate) fn check_edit_locks(
             }
             Ok(())
         }
-        // Every input graded with the library grade shows the edit.
+        // Every Scene input showing the graded layer's scene shows the edit.
+        EngineCommand::Grade(EngineGradeEdit::SetLayer { input, .. }) => {
+            match crate::scene_animation::scene_inputs_sharing(state, *input)
+                .into_iter()
+                .chain(std::iter::once(*input))
+                .find(|input| state.is_input_locked(*input))
+            {
+                Some(locked) => Err(EditRejection::InputLocked(locked)),
+                None => Ok(()),
+            }
+        }
+        // Every input graded with the library grade, and every Scene input
+        // showing a layer graded with it, shows the edit.
         EngineCommand::Grade(EngineGradeEdit::UpdateGrade { id, .. }) => {
-            match state.grading().inputs.iter().find(|(input, source)| {
-                **source == fm_model::GradeSource::Library(*id) && state.is_input_locked(**input)
-            }) {
-                Some((locked, _)) => Err(EditRejection::InputLocked(*locked)),
+            let library = fm_model::GradeSource::Library(*id);
+            let grading = state.grading();
+            let graded_inputs = grading
+                .inputs
+                .iter()
+                .filter(|(_, source)| **source == library)
+                .map(|(input, _)| *input);
+            let scene_inputs = state
+                .scene_inputs()
+                .iter()
+                .filter(|(_, scene)| {
+                    grading
+                        .layers
+                        .iter()
+                        .any(|(target, source)| target.scene == **scene && *source == library)
+                })
+                .map(|(input, _)| *input);
+            match graded_inputs
+                .chain(scene_inputs)
+                .find(|input| state.is_input_locked(*input))
+            {
+                Some(locked) => Err(EditRejection::InputLocked(locked)),
                 None => Ok(()),
             }
         }

@@ -1,6 +1,6 @@
-//! Project grading at schema 32: strict `project.json` encoding of the grade
-//! library, imported LUTs, and per-input and program grades; `.cube` import
-//! into `assets/luts/<id>.cube`; and LUT loading.
+//! Project grading at schema 33: strict `project.json` encoding of the grade
+//! library, imported LUTs, and per-input, per-scene-layer, and program
+//! grades; `.cube` import into `assets/luts/<id>.cube`; and LUT loading.
 
 use std::{
     collections::BTreeMap,
@@ -181,6 +181,7 @@ fn graded_project() -> Project {
             size: 33,
         }],
         inputs,
+        layers: std::collections::BTreeMap::new(),
         program: Some(GradeSource::Library(grade_id(9))),
     });
     project
@@ -189,13 +190,13 @@ fn graded_project() -> Project {
 const FULL_GRADE_JSON: &str = "{\"enabled\": true, \"white_balance\": {\"temperature\": -120, \"tint\": 45}, \"exposure_millistops\": -750, \"contrast\": {\"amount\": 200, \"pivot_bp\": 4500}, \"saturation_permille\": 1300, \"wheels\": {\"lift\": {\"x\": 10, \"y\": -20, \"master\": 30}, \"gamma\": {\"x\": -40, \"y\": 50, \"master\": -60}, \"gain\": {\"x\": 70, \"y\": 80, \"master\": 90}, \"offset\": {\"x\": 0, \"y\": 0, \"master\": -100}}, \"curves\": {\"master\": [{\"x\": 0, \"y\": 500}, {\"x\": 5000, \"y\": 5200}, {\"x\": 10000, \"y\": 9500}], \"red\": [{\"x\": 0, \"y\": 0}, {\"x\": 10000, \"y\": 10000}], \"green\": [{\"x\": 0, \"y\": 0}, {\"x\": 10000, \"y\": 10000}], \"blue\": [{\"x\": 0, \"y\": 0}, {\"x\": 10000, \"y\": 9000}]}, \"hue_curves\": {\"hue_vs_hue\": [{\"position\": 1200, \"value\": -300}], \"hue_vs_saturation\": [], \"luma_vs_saturation\": [{\"position\": 0, \"value\": -500}, {\"position\": 10000, \"value\": 200}]}, \"lut\": {\"asset_uri\": \"asset://luts/3.cube\", \"strength_permille\": 600}}";
 
 #[test]
-fn grading_round_trips_exactly_and_is_strict_at_schema_32() {
+fn grading_round_trips_exactly_and_is_strict_at_schema_33() {
     let temp = TestDirectory::new("round-trip");
     let store = temp.store("show.freemix");
     let expected = stored(graded_project());
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 32,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 33,\n"));
     let grading = format!(
         "\n    \"luts\": [{{\"id\": 3, \"name\": \"Film\", \"kind\": \"3d\", \"size\": 33}}],\
          \n    \"grades\": [{{\"id\": 9, \"name\": \"Night \\\"blue\\\"\", \"grade\": {FULL_GRADE_JSON}}}],\
@@ -287,18 +288,18 @@ fn grading_round_trips_exactly_and_is_strict_at_schema_32() {
 }
 
 #[test]
-fn schema_31_and_33_manifests_are_refused() {
-    let temp = TestDirectory::new("schema-31-33");
+fn schema_32_and_34_manifests_are_refused() {
+    let temp = TestDirectory::new("schema-32-34");
     let store = temp.store("show.freemix");
     store.save(&stored(graded_project())).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
 
     // The previous schema is refused outright; there is no migration path.
-    for found in [31, 33] {
+    for found in [32, 34] {
         fs::write(
             store.manifest_path(),
             encoded.replacen(
-                "\"schema_version\": 32",
+                "\"schema_version\": 33",
                 &format!("\"schema_version\": {found}"),
                 1,
             ),
@@ -309,7 +310,7 @@ fn schema_31_and_33_manifests_are_refused() {
             Err(StoreError::Validation(
                 ProjectValidationError::UnsupportedSchema {
                     found: f,
-                    supported: 32
+                    supported: 33
                 }
             )) if f == found
         ));
@@ -323,7 +324,7 @@ fn an_ungraded_project_writes_empty_grading() {
     store.save(&stored(project())).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
     assert!(encoded.contains(
-        ",\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"program_grade\": null\n  },"
+        ",\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"layer_grades\": [],\n    \"program_grade\": null\n  },"
     ));
     assert_eq!(store.load().unwrap(), stored(project()));
 }
@@ -541,4 +542,118 @@ fn portable_bundles_carry_imported_luts() {
         Err(BundleError::UnresolvedLut { uri }) if uri == "asset://luts/1.cube"
     ));
     assert!(!missing.root().exists());
+}
+
+fn scene_id(value: u128) -> fm_types::SceneId {
+    fm_types::SceneId::new(NonZeroU128::new(value).unwrap())
+}
+
+fn layer_ref(scene: u128, layer: u32) -> fm_model::SceneLayerRef {
+    fm_model::SceneLayerRef::new(scene_id(scene), fm_model::LayerId::new(layer).unwrap())
+}
+
+/// `graded_project()` plus scene 5 (Scene input 9) with layers 1 and 2;
+/// layer 2 carries library grade 9 and layer 1 an inline grade.
+fn layer_graded_project() -> Project {
+    let mut project = graded_project();
+    project
+        .add_scene_input_checked(scene_id(5), "Two up".into(), input_id(9), "Two up".into())
+        .unwrap();
+    for id in [1, 2] {
+        project
+            .add_layer_to_scene(
+                scene_id(5),
+                fm_model::Layer {
+                    id: fm_model::LayerId::new(id).unwrap(),
+                    name: format!("Layer {id}"),
+                    source: fm_model::SourceRef::Input(input_id(1)),
+                    enabled: true,
+                    geometry: fm_model::LayerGeometry::new(0, 0, 8, 4, fm_model::Rotation::Deg0),
+                    crop: None,
+                    mask: None,
+                    effects: Vec::new(),
+                    opacity: u8::MAX,
+                    z_order: 0,
+                },
+            )
+            .unwrap();
+    }
+    let mut inline = Grade::IDENTITY;
+    inline.exposure_millistops = 250;
+    project
+        .set_layer_grade(layer_ref(5, 1), Some(GradeSource::Inline(Box::new(inline))))
+        .unwrap();
+    project
+        .set_layer_grade(layer_ref(5, 2), Some(GradeSource::Library(grade_id(9))))
+        .unwrap();
+    project
+}
+
+#[test]
+fn layer_grades_round_trip_exactly_and_are_strict() {
+    let temp = TestDirectory::new("layer-grades");
+    let store = temp.store("show.freemix");
+    let expected = stored(layer_graded_project());
+    store.save(&expected).unwrap();
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    let library = "{\"scene\": 5, \"layer\": 2, \"grade\": {\"type\": \"library\", \"grade\": 9}}";
+    assert!(
+        encoded.contains("\n    \"layer_grades\": [{\"scene\": 5, \"layer\": 1, \"grade\": {\"type\": \"inline\", \"grade\": {\"enabled\": true, ")
+            && encoded.contains(&format!("}}}}, {library}],\n    \"program_grade\": ")),
+        "unexpected layer grades in {encoded}"
+    );
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded, expected);
+    assert_eq!(
+        loaded.project().grading().layers,
+        layer_graded_project().grading().layers
+    );
+
+    // Typed, closed, and listed once.
+    for malformed in [
+        encoded.replacen("\"layer_grades\": [", "\"layer_gradez\": [", 1),
+        encoded.replacen(library, "{\"scene\": 5, \"layer\": 0, \"grade\": {\"type\": \"library\", \"grade\": 9}}", 1),
+        encoded.replacen(library, "{\"scene\": 5, \"layer\": 2, \"grade\": {\"type\": \"library\", \"grade\": 9}, \"x\": 1}", 1),
+        encoded.replacen(library, "{\"scene\": 5, \"grade\": {\"type\": \"library\", \"grade\": 9}}", 1),
+        encoded.replacen(library, &format!("{library}, {library}"), 1),
+    ] {
+        assert_ne!(malformed, encoded);
+        fs::write(store.manifest_path(), &malformed).unwrap();
+        let result = store.load();
+        assert!(
+            matches!(result, Err(StoreError::MalformedManifest { .. })),
+            "accepted or misreported malformed layer grade: {result:?}"
+        );
+    }
+    // Dangling scenes, layers, and library grades are domain errors.
+    for invalid in [
+        encoded.replacen(
+            library,
+            "{\"scene\": 6, \"layer\": 2, \"grade\": {\"type\": \"library\", \"grade\": 9}}",
+            1,
+        ),
+        encoded.replacen(
+            library,
+            "{\"scene\": 5, \"layer\": 3, \"grade\": {\"type\": \"library\", \"grade\": 9}}",
+            1,
+        ),
+        encoded.replacen(
+            library,
+            "{\"scene\": 5, \"layer\": 2, \"grade\": {\"type\": \"library\", \"grade\": 8}}",
+            1,
+        ),
+    ] {
+        assert_ne!(invalid, encoded);
+        fs::write(store.manifest_path(), &invalid).unwrap();
+        let result = store.load();
+        assert!(
+            matches!(
+                result,
+                Err(StoreError::Validation(
+                    ProjectValidationError::DomainProject(_)
+                ))
+            ),
+            "accepted or misreported invalid layer grade: {result:?}"
+        );
+    }
 }

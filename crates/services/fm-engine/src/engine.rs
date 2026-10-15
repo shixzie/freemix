@@ -1543,8 +1543,7 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             });
         }
         if let EngineCommand::Grade(edit) = self.command {
-            let (inputs, grading, luts) = state.grading_parts_mut();
-            crate::grade_edit::apply_grade_edit(inputs, grading, luts, &edit)?;
+            crate::grade_edit::apply_show_grade_edit(state, &edit)?;
             events.push(EngineEvent::GradingChanged(edit));
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,

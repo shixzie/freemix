@@ -25,6 +25,7 @@ pub struct PlanLayer {
     key_refinement: Option<KeyRefinement>,
     effects: Vec<Effect>,
     grade: Option<Arc<CompiledGrade>>,
+    layer_grade: Option<Arc<CompiledGrade>>,
     overlay_inclusion: Option<OutputInclusion>,
     inset_border_width: u32,
     rotation_millidegrees: i32,
@@ -93,9 +94,21 @@ impl PlanLayer {
         self.grade.as_ref()
     }
 
-    /// The grade when it changes pixels; identity grades are skipped.
-    pub(crate) fn active_grade(&self) -> Option<&CompiledGrade> {
-        self.grade.as_deref().filter(|grade| !grade.is_identity())
+    /// The layer's own grade (a scene layer grade), applied after
+    /// [`Self::grade`].
+    #[must_use]
+    pub const fn layer_grade(&self) -> Option<&Arc<CompiledGrade>> {
+        self.layer_grade.as_ref()
+    }
+
+    /// The grades that change pixels, in order (the source grade, then the
+    /// layer grade); identity grades are skipped.
+    pub(crate) fn active_grades(&self) -> impl Iterator<Item = &CompiledGrade> + '_ {
+        self.grade
+            .as_deref()
+            .into_iter()
+            .chain(self.layer_grade.as_deref())
+            .filter(|grade| !grade.is_identity())
     }
 
     #[must_use]
@@ -449,6 +462,7 @@ pub fn compile_scene(
                 key_refinement: layer.key_refinement(),
                 effects: layer.effects().to_vec(),
                 grade: layer.grade().cloned(),
+                layer_grade: layer.layer_grade().cloned(),
                 overlay_inclusion: layer.overlay_inclusion(),
                 inset_border_width: layer.inset_border_width(),
                 rotation_millidegrees: layer.rotation_millidegrees(),

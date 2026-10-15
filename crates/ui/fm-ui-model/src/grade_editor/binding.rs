@@ -1,5 +1,6 @@
 //! Binds one [`GradeDocument`] to the replicated grade of one target (an
-//! input or the program) and turns draft edits into grade commands.
+//! input, a scene layer, or the program) and turns draft edits into grade
+//! commands.
 //!
 //! The authority owns the grade: [`GradeBinding::sync`] adopts every
 //! authority update while the draft is clean, and keeps a dirty draft (an
@@ -16,6 +17,7 @@ use core::time::Duration;
 use fm_grade::{Grade, LUT_URI_PREFIX};
 use fm_protocol::{
     CommandPayload, MAX_GRADE_LUT_IMPORT_BYTES, MAX_GRADE_NAME_BYTES, WireGradeSource, WireInputId,
+    WireSceneLayerId,
 };
 use fm_types::InputId;
 
@@ -29,6 +31,13 @@ pub const DRAG_SEND_INTERVAL: Duration = Duration::from_millis(120);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum GradeTarget {
     Input(InputId),
+    /// One layer of the scene Scene input `input` shows (Protocol 2.33).
+    /// The grade belongs to the scene: every Scene input showing it shares
+    /// it.
+    Layer {
+        input: InputId,
+        layer: WireSceneLayerId,
+    },
     /// The composed Program picture.
     Program,
 }
@@ -38,6 +47,7 @@ pub enum GradeTarget {
 pub fn target_source(grading: &GradingStatus, target: GradeTarget) -> Option<&WireGradeSource> {
     match target {
         GradeTarget::Input(input) => grading.inputs.get(&input),
+        GradeTarget::Layer { input, layer } => grading.layer(input, layer),
         GradeTarget::Program => grading.program.as_ref(),
     }
 }
@@ -211,6 +221,14 @@ impl GradeCommand {
                 source,
             },
             Self::Set {
+                target: GradeTarget::Layer { input, layer },
+                source,
+            } => CommandPayload::SetLayerGrade {
+                input: WireInputId::from_domain(input),
+                layer,
+                source,
+            },
+            Self::Set {
                 target: GradeTarget::Program,
                 source,
             } => CommandPayload::SetProgramGrade { source },
@@ -232,6 +250,17 @@ impl GradeCommand {
         Some(match payload.clone() {
             CommandPayload::SetInputGrade { input, source } => Self::Set {
                 target: GradeTarget::Input(input.to_domain()),
+                source,
+            },
+            CommandPayload::SetLayerGrade {
+                input,
+                layer,
+                source,
+            } => Self::Set {
+                target: GradeTarget::Layer {
+                    input: input.to_domain(),
+                    layer,
+                },
                 source,
             },
             CommandPayload::SetProgramGrade { source } => Self::Set {
@@ -549,6 +578,11 @@ mod tests {
             GradeTarget::Input(input) => {
                 if let Some(source) = source {
                     grading.inputs.insert(input, source);
+                }
+            }
+            GradeTarget::Layer { input, layer } => {
+                if let Some(source) = source {
+                    grading.layers.insert((input, layer), source);
                 }
             }
             GradeTarget::Program => grading.program = source,

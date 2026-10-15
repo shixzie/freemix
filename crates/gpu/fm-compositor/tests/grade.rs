@@ -252,3 +252,59 @@ fn compiled_plans_carry_the_layer_grade() {
     assert!(plan.layers()[0].grade().is_some());
     assert!(layer().grade().is_none());
 }
+
+/// A scene layer grade (SW-019) runs after the source's grade, both on
+/// straight colour before premultiplication and the transform: exactly the
+/// two grades applied in order to the source.
+#[test]
+fn a_layer_grade_runs_after_the_source_grade_and_before_the_transform() {
+    let straight = straight_pattern();
+    let input = warm_contrast();
+    let look = compiled(&Grade {
+        white_balance: WhiteBalance::new(-300, 60),
+        saturation_permille: 600,
+        ..Grade::IDENTITY
+    });
+    let expected =
+        premultiply(&apply_grade(&apply_grade(&straight, &input).unwrap(), &look).unwrap());
+    let both = plan(
+        layer()
+            .with_grade(input.clone())
+            .with_layer_grade(look.clone()),
+    );
+    assert_eq!(render(&both, &straight), expected);
+    // Order matters: the reverse chain is a different picture.
+    let reversed =
+        premultiply(&apply_grade(&apply_grade(&straight, &look).unwrap(), &input).unwrap());
+    assert_ne!(expected, reversed);
+    // A layer grade alone grades exactly like a source grade alone.
+    assert_eq!(
+        render(&plan(layer().with_layer_grade(look.clone())), &straight),
+        render(&plan(layer().with_grade(look.clone())), &straight)
+    );
+    // Premultiplied sources are straightened once around both grades.
+    let premultiplied = premultiply(&straight);
+    let premultiplied_layer = layer().with_alpha_mode(AlphaMode::Premultiplied);
+    assert_eq!(
+        render(
+            &plan(
+                premultiplied_layer
+                    .with_grade(input.clone())
+                    .with_layer_grade(look.clone())
+            ),
+            &premultiplied
+        ),
+        premultiply(
+            &apply_grade(
+                &apply_grade(&unpremultiply(&premultiplied), &input).unwrap(),
+                &look
+            )
+            .unwrap()
+        )
+    );
+    // The plan carries both grades.
+    let planned = &both.layers()[0];
+    assert!(Arc::ptr_eq(planned.grade().unwrap(), &input));
+    assert!(Arc::ptr_eq(planned.layer_grade().unwrap(), &look));
+    assert!(layer().layer_grade().is_none());
+}

@@ -248,6 +248,7 @@ impl ScenePreviewJob {
             size,
             self.frame,
             self.pose,
+            None,
         )
         .ok_or_else(unrenderable)?;
         let rgba = straight_rgba(image.pixels(), image.stride(), self.width, self.height)
@@ -455,6 +456,7 @@ mod tests {
             (WIDTH, HEIGHT),
             4,
             ClipState::Hold,
+            None,
         )
     }
 
@@ -498,8 +500,15 @@ mod tests {
             }
         }
         // The simulated monitor tap composes nested scenes the same way.
-        let tap = scene_render::render_scene(&project, scene_id(2), &pipeline, 4, ClipState::Hold)
-            .unwrap();
+        let tap = scene_render::render_scene(
+            &project,
+            scene_id(2),
+            &pipeline,
+            4,
+            ClipState::Hold,
+            &fm_engine::CompiledProjectGrades::default(),
+        )
+        .unwrap();
         assert_eq!(tap.pixels(), composed.pixels());
     }
 

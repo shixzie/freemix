@@ -175,7 +175,17 @@ impl ProjectStore {
             },
             &mut report,
         )?;
-        self.append_grading(&mut project, incoming, source, &input_map, &mut report)?;
+        self.append_grading(
+            &mut project,
+            incoming,
+            source,
+            &IdMaps {
+                inputs: &input_map,
+                scenes: &scene_map,
+                uris: &uri_map,
+            },
+            &mut report,
+        )?;
 
         let appended = target.with_project(project)?;
         Ok((appended, report))
@@ -323,48 +333,23 @@ impl ProjectStore {
 }
 
 impl ProjectStore {
-    /// Carries the appended inputs' grades, the library grades they use,
-    /// and the LUTs those grades reference into `project`, copying each LUT
-    /// file into this bundle under its fresh id.
-    fn append_grading(
+    /// Copies each of `incoming`'s LUTs in `used` into this bundle under a
+    /// fresh id, registering it in `grading`; returns the id map.
+    fn append_luts(
         &self,
-        project: &mut Project,
+        grading: &mut fm_model::ProjectGrading,
         incoming: &Project,
         source: &ProjectStore,
-        input_map: &BTreeMap<InputId, InputId>,
+        used: &BTreeSet<LutId>,
         report: &mut AppendReport,
-    ) -> Result<(), BundleError> {
-        let from = incoming.grading();
-        if from.inputs.is_empty() {
-            return Ok(());
-        }
-        let used_grades = from
-            .inputs
-            .values()
-            .filter_map(|source| match source {
-                GradeSource::Library(id) => Some(*id),
-                GradeSource::Inline(_) => None,
-            })
-            .collect::<BTreeSet<_>>();
-        let library = from
-            .grades
-            .iter()
-            .filter(|grade| used_grades.contains(&grade.id))
-            .collect::<Vec<_>>();
-        let used_luts = library
-            .iter()
-            .map(|grade| &grade.grade)
-            .chain(from.inputs.values().filter_map(|source| match source {
-                GradeSource::Inline(grade) => Some(grade.as_ref()),
-                GradeSource::Library(_) => None,
-            }))
-            .filter_map(|grade| grade.lut.as_ref())
-            .filter_map(|lut| lut_id_from_uri(&lut.asset_uri))
-            .collect::<BTreeSet<_>>();
-
-        let mut grading = project.grading().clone();
+    ) -> Result<BTreeMap<LutId, LutId>, BundleError> {
         let mut lut_map = BTreeMap::new();
-        for lut in from.luts.iter().filter(|lut| used_luts.contains(&lut.id)) {
+        for lut in incoming
+            .grading()
+            .luts
+            .iter()
+            .filter(|lut| used.contains(&lut.id))
+        {
             let id = self
                 .fresh_lut_id(&grading.luts)
                 .ok_or(BundleError::IdSpaceExhausted)?;
@@ -392,6 +377,53 @@ impl ProjectStore {
             lut_map.insert(lut.id, id);
             report.luts.push((lut.id, id));
         }
+        Ok(lut_map)
+    }
+
+    /// Carries the appended inputs' and scene layers' grades, the library
+    /// grades they use, and the LUTs those grades reference into `project`,
+    /// copying each LUT file into this bundle under its fresh id.
+    fn append_grading(
+        &self,
+        project: &mut Project,
+        incoming: &Project,
+        source: &ProjectStore,
+        maps: &IdMaps<'_>,
+        report: &mut AppendReport,
+    ) -> Result<(), BundleError> {
+        let from = incoming.grading();
+        if from.inputs.is_empty() && from.layers.is_empty() {
+            return Ok(());
+        }
+        let used_grades = from
+            .inputs
+            .values()
+            .chain(from.layers.values())
+            .filter_map(|source| match source {
+                GradeSource::Library(id) => Some(*id),
+                GradeSource::Inline(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let library = from
+            .grades
+            .iter()
+            .filter(|grade| used_grades.contains(&grade.id))
+            .collect::<Vec<_>>();
+        let used_luts = library
+            .iter()
+            .map(|grade| &grade.grade)
+            .chain(from.inputs.values().chain(from.layers.values()).filter_map(
+                |source| match source {
+                    GradeSource::Inline(grade) => Some(grade.as_ref()),
+                    GradeSource::Library(_) => None,
+                },
+            ))
+            .filter_map(|grade| grade.lut.as_ref())
+            .filter_map(|lut| lut_id_from_uri(&lut.asset_uri))
+            .collect::<BTreeSet<_>>();
+
+        let mut grading = project.grading().clone();
+        let lut_map = self.append_luts(&mut grading, incoming, source, &used_luts, report)?;
 
         let mut grade_map = BTreeMap::new();
         for grade in library {
@@ -418,18 +450,28 @@ impl ProjectStore {
             report.grades.push((grade.id, id));
         }
 
+        let mapped = |source: &GradeSource| match source {
+            GradeSource::Library(id) => GradeSource::Library(grade_map[id]),
+            GradeSource::Inline(grade) => GradeSource::Inline(Box::new(relinked(grade, &lut_map))),
+        };
         for (input, source) in &from.inputs {
-            let Some(&target) = input_map.get(input) else {
+            let Some(&target) = maps.inputs.get(input) else {
                 continue;
             };
-            let source = match source {
-                GradeSource::Library(id) => GradeSource::Library(grade_map[id]),
-                GradeSource::Inline(grade) => {
-                    GradeSource::Inline(Box::new(relinked(grade, &lut_map)))
-                }
+            grading
+                .set_input(target, Some(mapped(source)))
+                .map_err(grading_failure)?;
+        }
+        // Appended scenes keep their layer ids.
+        for (target, source) in &from.layers {
+            let Some(&scene) = maps.scenes.get(&target.scene) else {
+                continue;
             };
             grading
-                .set_input(target, Some(source))
+                .set_layer(
+                    fm_model::SceneLayerRef::new(scene, target.layer),
+                    Some(mapped(source)),
+                )
                 .map_err(grading_failure)?;
         }
         project.set_grading(grading);

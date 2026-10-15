@@ -578,3 +578,229 @@ fn undoing_an_input_add_never_drops_its_grade_after_a_lut_removal() {
     assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
     assert!(grading(&engine).inputs.contains_key(&input(4)));
 }
+
+fn layer_engine() -> Engine {
+    use fm_model::{
+        Layer, LayerGeometry, LayerId, Rgba8, Rotation, Scene, SceneAnimation, SourceRef,
+    };
+    let mut show = ShowState::new(
+        "layer grade show",
+        [1, 2, 3, 4, 5]
+            .into_iter()
+            .map(|value| (input(value), format!("Input {value}")))
+            .collect(),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    // Inputs 3 and 4 show scene 7 (layers 1 and 2); input 5 shows scene 8.
+    let scene = |id: u128| Scene {
+        id: fm_types::SceneId::new(NonZeroU128::new(id).unwrap()),
+        name: format!("Scene {id}"),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: [1, 2]
+            .into_iter()
+            .map(|layer| Layer {
+                id: LayerId::new(layer).unwrap(),
+                name: format!("Layer {layer}"),
+                source: SourceRef::Input(input(1)),
+                enabled: true,
+                geometry: LayerGeometry::new(0, 0, 16, 9, Rotation::Deg0),
+                crop: None,
+                mask: None,
+                effects: Vec::new(),
+                opacity: u8::MAX,
+                z_order: 0,
+            })
+            .collect(),
+        animation: SceneAnimation::default(),
+    };
+    for (value, id) in [(3, 7), (4, 7), (5, 8)] {
+        show.set_scene_input(input(value), scene(id), 32, 18)
+            .unwrap();
+    }
+    Engine::new(
+        show,
+        FrameRate::new(25, 1).unwrap(),
+        ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+    )
+}
+
+fn layer_ref(scene: u128, layer: u32) -> fm_model::SceneLayerRef {
+    fm_model::SceneLayerRef::new(
+        fm_types::SceneId::new(NonZeroU128::new(scene).unwrap()),
+        fm_model::LayerId::new(layer).unwrap(),
+    )
+}
+
+fn set_layer(value: u128, layer: u32, source: Option<GradeSource>) -> EngineCommand {
+    grade(EngineGradeEdit::SetLayer {
+        input: input(value),
+        layer: fm_model::LayerId::new(layer).unwrap(),
+        source,
+    })
+}
+
+/// SW-019: a scene layer takes a library or inline grade through any Scene
+/// input showing its scene; the edit is undoable, emits its event, and
+/// compiles into the show's layer grades.
+#[test]
+fn scene_layer_grades_undo_redo_and_compile() {
+    let mut engine = layer_engine();
+    assert_eq!(set_layer(3, 1, None).kind(), EngineCommandKind::ProjectEdit);
+    accepted(&run(&mut engine, "add", add(1, "Night", cool())));
+    let library = GradeSource::Library(grade_id(1));
+    let outcome = run(&mut engine, "set", set_layer(3, 1, Some(library.clone())));
+    accepted(&outcome);
+    assert_eq!(
+        outcome.events[0].payload,
+        EngineEvent::GradingChanged(EngineGradeEdit::SetLayer {
+            input: input(3),
+            layer: fm_model::LayerId::new(1).unwrap(),
+            source: Some(library.clone()),
+        })
+    );
+    assert_eq!(
+        grading(&engine).layers.get(&layer_ref(7, 1)),
+        Some(&library)
+    );
+    let compiled = engine.show().compiled_grades().unwrap();
+    assert!(compiled.layer(layer_ref(7, 1)).is_some());
+    assert!(compiled.layer(layer_ref(7, 2)).is_none());
+    assert!(compiled.input(input(3)).is_none());
+
+    // The library grade is now in use by the layer.
+    let outcome = run(
+        &mut engine,
+        "remove-used",
+        grade(EngineGradeEdit::RemoveGrade { id: grade_id(1) }),
+    );
+    assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
+
+    // Editing through the other Scene input of scene 7 replaces the grade;
+    // undo restores the library grade, then nothing.
+    let inline = GradeSource::Inline(Box::new(warm()));
+    accepted(&run(
+        &mut engine,
+        "replace",
+        set_layer(4, 1, Some(inline.clone())),
+    ));
+    assert_eq!(grading(&engine).layers.get(&layer_ref(7, 1)), Some(&inline));
+    accepted(&run(&mut engine, "undo-1", UNDO));
+    assert_eq!(
+        grading(&engine).layers.get(&layer_ref(7, 1)),
+        Some(&library)
+    );
+    let outcome = run(&mut engine, "undo-2", UNDO);
+    accepted(&outcome);
+    assert!(grading(&engine).layers.is_empty());
+    assert!(
+        engine
+            .show()
+            .compiled_grades()
+            .unwrap()
+            .layer(layer_ref(7, 1))
+            .is_none()
+    );
+    accepted(&run(&mut engine, "redo-1", REDO));
+    accepted(&run(&mut engine, "redo-2", REDO));
+    assert_eq!(grading(&engine).layers.get(&layer_ref(7, 1)), Some(&inline));
+
+    // Scene 8 is a different scene.
+    accepted(&run(
+        &mut engine,
+        "other",
+        set_layer(5, 2, Some(library.clone())),
+    ));
+    assert_eq!(grading(&engine).layers.len(), 2);
+    accepted(&run(&mut engine, "clear", set_layer(3, 1, None)));
+    assert_eq!(
+        grading(&engine).layers.keys().copied().collect::<Vec<_>>(),
+        [layer_ref(8, 2)]
+    );
+
+    // Unknown targets are refused without effect.
+    for (key, command, field, issue) in [
+        (
+            "not-scene",
+            set_layer(2, 1, Some(inline.clone())),
+            "input",
+            "unknown_scene",
+        ),
+        (
+            "no-layer",
+            set_layer(3, 9, Some(inline.clone())),
+            "layer",
+            "unknown_layer",
+        ),
+        (
+            "no-grade",
+            set_layer(3, 1, Some(GradeSource::Library(grade_id(9)))),
+            "grade",
+            "unknown_grade",
+        ),
+    ] {
+        let outcome = run(&mut engine, key, command);
+        let rejection = rejection(&outcome);
+        assert_eq!(rejection.code, RejectionCode::NotFound, "{key}");
+        assert!(
+            rejection
+                .fields
+                .iter()
+                .any(|field_issue| field_issue.field == field && field_issue.code == issue),
+            "{key}: {rejection:?}"
+        );
+    }
+    assert_eq!(grading(&engine).layers.len(), 1);
+}
+
+/// A layer grade is part of every Scene input showing the scene: each of
+/// their padlocks guards it, as does the padlock of an input whose layers
+/// use a library grade being updated.
+#[test]
+fn padlocks_of_every_scene_input_guard_its_layer_grades() {
+    let mut engine = layer_engine();
+    accepted(&run(&mut engine, "add", add(1, "Night", cool())));
+    accepted(&run(
+        &mut engine,
+        "use",
+        set_layer(3, 2, Some(GradeSource::Library(grade_id(1)))),
+    ));
+    accepted(&run(
+        &mut engine,
+        "lock",
+        EngineCommand::SetEditLock {
+            scope: EditLockScope::Input(input(4)),
+            locked: true,
+        },
+    ));
+    for (key, command) in [
+        (
+            "through-unlocked",
+            set_layer(3, 1, Some(GradeSource::Inline(Box::new(warm())))),
+        ),
+        ("through-locked", set_layer(4, 1, None)),
+        (
+            "update-library",
+            grade(EngineGradeEdit::UpdateGrade {
+                id: grade_id(1),
+                name: "Night".into(),
+                grade: Box::new(warm()),
+            }),
+        ),
+    ] {
+        let outcome = run(&mut engine, key, command);
+        assert_eq!(
+            EditRejectionKind::of(rejection(&outcome)),
+            Some(EditRejectionKind::InputLocked),
+            "{key}"
+        );
+    }
+    assert_eq!(grading(&engine).layers.len(), 1);
+    // Scene 8 shares nothing with the locked input.
+    accepted(&run(
+        &mut engine,
+        "other-scene",
+        set_layer(5, 1, Some(GradeSource::Inline(Box::new(warm())))),
+    ));
+}

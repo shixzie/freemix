@@ -176,7 +176,7 @@ fn input_and_program_grades_render_and_round_trip_through_the_saved_project() {
     assert!(
         fs::read_to_string(project.join("project.json"))
             .unwrap()
-            .contains("\"schema_version\": 32")
+            .contains("\"schema_version\": 33")
     );
     let listed = succeed(&["grade-list", path]);
     assert!(listed.contains("input 1: inline enabled=true exposure=1000 temperature=250"));
@@ -409,4 +409,90 @@ fn ids_wrap_to_the_lowest_free_one_after_the_highest_is_taken() {
     assert!(imported.contains("asset://luts/2.cube"), "{imported}");
     let saved = succeed(&["grade-set", path, "1", "--save-as", "Low"]);
     assert!(saved.contains("saved library grade 1"), "{saved}");
+}
+
+/// SW-019: `grade-set <show> layer <scene> <layer>` grades one scene layer
+/// after its input's grade; the grade is listed, saved, rendered, guarded by
+/// the padlock of the Scene input showing the scene, cleared, and dropped
+/// with its layer.
+#[test]
+fn scene_layer_grades_run_after_the_input_grade_and_follow_their_layer() {
+    let root = Root::new("layer");
+    let project = new_project(&root);
+    let path = project.to_str().unwrap();
+    let manifest = project.join("project.json");
+    succeed(&["scene-input-add", path, "3", "11", "Program"]);
+    succeed(&["scene-layer-add", path, "11", "2", "0", "Layer"]);
+    succeed(&["preview", path, "3"]);
+    succeed(&["cut", path]);
+    assert_eq!(solid(&render(&project, &root.path("plain.ppm"))), INPUT_2);
+
+    let darker = Grade {
+        exposure_millistops: -1000,
+        ..Grade::IDENTITY
+    };
+    let set = succeed(&["grade-set", path, "layer", "11", "1", "--exposure", "-1000"]);
+    assert!(set.contains("scene 11 layer 1"), "{set}");
+    assert_eq!(
+        solid(&render(&project, &root.path("layer.ppm"))),
+        compiled(&darker).apply_rgb8(INPUT_2)
+    );
+    // The input grade runs first, then the layer's.
+    succeed(&["grade-set", path, "2", "--preset", "warm"]);
+    let warm = &builtin_preset("warm").unwrap().grade;
+    assert_eq!(
+        solid(&render(&project, &root.path("both.ppm"))),
+        compiled(&darker).apply_rgb8(compiled(warm).apply_rgb8(INPUT_2))
+    );
+    let listed = succeed(&["grade-list", path]);
+    assert!(
+        listed.contains("scene 11 layer 1: inline"),
+        "missing layer grade in {listed}"
+    );
+    let stored = ProjectStore::new(&project).unwrap().load().unwrap();
+    let target = fm_model::SceneLayerRef::new(
+        fm_types::SceneId::new(NonZeroU128::new(11).unwrap()),
+        fm_model::LayerId::new(1).unwrap(),
+    );
+    assert_eq!(
+        stored.project().layer_grade(target),
+        Some(&GradeSource::Inline(Box::new(darker)))
+    );
+
+    // Unknown scenes and layers are refused; so is a layer of a scene whose
+    // Scene input is padlocked.
+    let before = fs::read_to_string(&manifest).unwrap();
+    fail(
+        &["grade-set", path, "layer", "12", "1", "--preset", "warm"],
+        "scene 12 does not exist",
+    );
+    fail(
+        &["grade-set", path, "layer", "11", "5", "--preset", "warm"],
+        "scene 11 layer 5 does not exist",
+    );
+    let locked = before.replacen(
+        "\"edit_locks\": {\"project\": false, \"inputs\": [",
+        "\"edit_locks\": {\"project\": false, \"inputs\": [3",
+        1,
+    );
+    assert_ne!(locked, before);
+    fs::write(&manifest, &locked).unwrap();
+    fail(
+        &["grade-clear", path, "layer", "11", "1"],
+        "input 3 is locked",
+    );
+    assert_eq!(fs::read_to_string(&manifest).unwrap(), locked);
+    fs::write(&manifest, &before).unwrap();
+
+    succeed(&["grade-clear", path, "layer", "11", "1"]);
+    assert_eq!(
+        solid(&render(&project, &root.path("cleared.ppm"))),
+        compiled(warm).apply_rgb8(INPUT_2)
+    );
+
+    // Removing the layer drops its grade.
+    succeed(&["grade-set", path, "layer", "11", "1", "--preset", "cool"]);
+    succeed(&["scene-layer-remove", path, "11", "0"]);
+    let listed = succeed(&["grade-list", path]);
+    assert!(!listed.contains("scene 11 layer"), "{listed}");
 }

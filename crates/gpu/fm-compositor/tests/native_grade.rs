@@ -841,3 +841,50 @@ fn full_stack_grades_stay_within_the_lattice_interpolation_bound() {
         }
     });
 }
+
+/// A scene layer grade (SW-019) runs as a second LUT pass after the
+/// source's grade, matching the CPU chain (each grade quantized to 8-bit
+/// there) within twice the single-grade budget.
+#[test]
+fn chained_source_and_layer_grades_match_cpu_composition() {
+    let Some(harness) = Harness::new("chained_source_and_layer_grades_match_cpu_composition")
+    else {
+        return;
+    };
+    block_on(async {
+        let renderer = NativeCompositionRenderer::new(&harness.context)
+            .await
+            .unwrap();
+        let ramp = ramps();
+        let source = harness.import(&ramp).await;
+        let warm = compiled(&BUILTIN_PRESETS[1].grade, None);
+        let full = primary_curves_lut_grade();
+        let (width, height) = (ramp.width(), ramp.height());
+        let mut scene = Scene::new(width, height, Rgba8::new(0, 0, 0, 255)).unwrap();
+        scene.push_layer(
+            SourceLayer::new(
+                SourceId::new(1),
+                0,
+                Transform::new(0, 0, width, height, Rotation::Deg0),
+            )
+            .with_grade(warm.clone())
+            .with_layer_grade(full.clone()),
+        );
+        let plan = compile_scene(&scene, OutputTarget::Program).unwrap().0;
+        let expected = execute_cpu(&plan, &[CpuSourceFrame::new(SourceId::new(1), &ramp)]).unwrap();
+        let composed = renderer
+            .render(
+                &harness.context,
+                &plan,
+                &[NativeSourceFrame::new(SourceId::new(1), source.texture())],
+            )
+            .await
+            .unwrap();
+        let actual = harness.display(&composed).await;
+        let mut stats = ErrorStats::default();
+        for (actual, expected) in actual.iter().zip(rgb_pixels(&expected)) {
+            stats.add(*actual, expected, opaque(expected));
+        }
+        stats.assert_within("chained grades", MAX_ERROR * 2, MEAN_ERROR * 2.0);
+    });
+}

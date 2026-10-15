@@ -1,13 +1,14 @@
 //! Wire mapping of the grade commands, the `grade_changed` event, and the
-//! `grade_state` records that follow a snapshot (Protocol 2.28).
+//! `grade_state` records that follow a snapshot (Protocol 2.28; scene layer
+//! grades 2.33).
 
 use std::sync::Arc;
 
 use fm_engine::{Engine, EngineCommand, EngineGradeEdit};
-use fm_model::{GradeId, GradeSource, LutId, ProjectGrade};
+use fm_model::{GradeId, GradeSource, LayerId, LutId, ProjectGrade, SceneLayerRef};
 use fm_protocol::{
     CommandPayload, EventPayload, GradeChange, GradeEntry, GradeStateMessage, WireGradeSource,
-    WireInputId,
+    WireInputId, WireSceneLayerId,
 };
 
 // The wire carries exactly the grading the project holds, so the protocol's
@@ -17,8 +18,13 @@ const _: () = {
     assert!(fm_protocol::MAX_GRADE_NAME_BYTES == fm_model::MAX_LUT_NAME_BYTES);
     assert!(
         fm_protocol::MAX_GRADE_STATES as usize
-            == fm_model::MAX_PROJECT_LUTS + fm_model::MAX_PROJECT_GRADES + 256 + 1
+            == fm_model::MAX_PROJECT_LUTS
+                + fm_model::MAX_PROJECT_GRADES
+                + 256
+                + fm_model::MAX_PROJECT_LAYER_GRADES
+                + 1
     );
+    assert!(fm_protocol::MAX_GRADE_LAYERS as usize == fm_model::MAX_PROJECT_LAYER_GRADES);
     assert!(fm_model::MAX_PROJECT_GRADES <= fm_protocol::MAX_LIST_ITEMS);
     assert!(fm_protocol::MAX_GRADE_LUT_IMPORT_BYTES as u64 <= fm_model::MAX_LUT_FILE_BYTES);
 };
@@ -42,6 +48,15 @@ pub fn grade_engine_command(payload: &CommandPayload) -> EngineCommand {
     EngineCommand::Grade(match payload {
         CommandPayload::SetInputGrade { input, source } => EngineGradeEdit::SetInput {
             input: input.to_domain(),
+            source: source.as_ref().map(domain_source),
+        },
+        CommandPayload::SetLayerGrade {
+            input,
+            layer,
+            source,
+        } => EngineGradeEdit::SetLayer {
+            input: input.to_domain(),
+            layer: LayerId::from_non_zero(layer.get()),
             source: source.as_ref().map(domain_source),
         },
         CommandPayload::SetProgramGrade { source } => EngineGradeEdit::SetProgram {
@@ -85,6 +100,15 @@ pub fn wire_grade_payload(edit: &EngineGradeEdit) -> CommandPayload {
     match edit {
         EngineGradeEdit::SetInput { input, source } => CommandPayload::SetInputGrade {
             input: WireInputId::from_domain(*input),
+            source: source.as_ref().map(wire_source),
+        },
+        EngineGradeEdit::SetLayer {
+            input,
+            layer,
+            source,
+        } => CommandPayload::SetLayerGrade {
+            input: WireInputId::from_domain(*input),
+            layer: WireSceneLayerId::new(layer.non_zero()),
             source: source.as_ref().map(wire_source),
         },
         EngineGradeEdit::SetProgram { source } => CommandPayload::SetProgramGrade {
@@ -136,6 +160,22 @@ pub fn grade_changed(engine: &Engine, edit: &EngineGradeEdit) -> EventPayload {
             input: WireInputId::from_domain(*input),
             source: grading.inputs.get(input).map(wire_source),
         },
+        EngineGradeEdit::SetLayer { input, layer, .. } => {
+            let scene = engine
+                .show()
+                .scene_inputs()
+                .get(input)
+                .copied()
+                .expect("an accepted layer grade edit names a Scene input");
+            GradeChange::Layer {
+                inputs: scene_inputs(engine, scene),
+                layer: WireSceneLayerId::new(layer.non_zero()),
+                source: grading
+                    .layers
+                    .get(&SceneLayerRef::new(scene, *layer))
+                    .map(wire_source),
+            }
+        }
         EngineGradeEdit::SetProgram { .. } => GradeChange::Program {
             source: grading.program.as_ref().map(wire_source),
         },
@@ -157,8 +197,38 @@ pub fn grade_changed(engine: &Engine, edit: &EngineGradeEdit) -> EventPayload {
     })
 }
 
+/// Every Scene input (ascending) of `engine` showing `scene`.
+fn scene_inputs(engine: &Engine, scene: fm_types::SceneId) -> Vec<WireInputId> {
+    engine
+        .show()
+        .scene_inputs()
+        .iter()
+        .filter(|(_, shown)| **shown == scene)
+        .map(|(input, _)| WireInputId::from_domain(*input))
+        .collect()
+}
+
+/// Every layer grade of a scene some Scene input of `engine` shows, in scene
+/// then layer order, with those Scene inputs.
+fn replicated_layers(engine: &Engine) -> impl Iterator<Item = GradeEntry> + '_ {
+    engine
+        .show()
+        .grading()
+        .layers
+        .iter()
+        .filter_map(|(target, source)| {
+            let inputs = scene_inputs(engine, target.scene);
+            (!inputs.is_empty()).then(|| GradeEntry::Layer {
+                inputs,
+                layer: WireSceneLayerId::new(target.layer.non_zero()),
+                source: wire_source(source),
+            })
+        })
+}
+
 /// Every grading item of `engine` as the `grade_state` records that follow
-/// a snapshot: LUTs, library grades, input grades, then the program grade.
+/// a snapshot: LUTs, library grades, input grades, the layer grades of
+/// scenes a Scene input shows, then the program grade.
 pub fn grade_states(engine: &Engine) -> Vec<GradeStateMessage> {
     let revision = engine.revision().get();
     let grading = engine.show().grading();
@@ -185,6 +255,7 @@ pub fn grade_states(engine: &Engine) -> Vec<GradeStateMessage> {
     });
     luts.chain(library)
         .chain(inputs)
+        .chain(replicated_layers(engine))
         .chain(program)
         .map(|entry| GradeStateMessage { revision, entry })
         .collect()
@@ -196,6 +267,7 @@ pub fn grade_state_count(engine: &Engine) -> u16 {
     let count = grading.luts.len()
         + grading.grades.len()
         + grading.inputs.len()
+        + replicated_layers(engine).count()
         + usize::from(grading.program.is_some());
     u16::try_from(count).expect("project grading is bounded")
 }

@@ -511,7 +511,8 @@ impl NativeCompositionRenderer {
     /// premultiplied-alpha textures. Compositor-owned plan, source identifier,
     /// format, crop, and transform validation completes before output allocation;
     /// opaque GPU context ownership is validated by `fm-gpu` at submission.
-    /// Graded layers first run one grade pass each over their whole source
+    /// Graded layers first run one grade pass per grade (the source grade,
+    /// then the layer grade) over their whole source
     /// texture (grades precede crop, transform, mask, and opacity, as on the
     /// CPU path). Layers are then submitted in plan order as one bounded,
     /// premultiplied source-over render pass without readback.
@@ -562,29 +563,32 @@ impl NativeCompositionRenderer {
         context: &NativeContext,
         layer: &PreparedLayer<'_>,
     ) -> Result<Option<NativeTexture>, NativeCompositionError> {
-        let Some(grade) = layer.grade else {
-            return Ok(None);
-        };
-        let Some(lut) = self
-            .grade_cache
-            .lut(&self.grade, context, grade)
-            .await
-            .map_err(|error| grade_error(layer.source, error))?
-        else {
-            return Ok(None);
-        };
-        self.grade
-            .apply(context, &lut, layer.texture)
-            .await
-            .map(Some)
-            .map_err(|error| grade_error(layer.source, error))
+        let mut graded: Option<NativeTexture> = None;
+        for grade in &layer.grades {
+            let Some(lut) = self
+                .grade_cache
+                .lut(&self.grade, context, grade)
+                .await
+                .map_err(|error| grade_error(layer.source, error))?
+            else {
+                continue;
+            };
+            let texture = self
+                .grade
+                .apply(context, &lut, graded.as_ref().unwrap_or(layer.texture))
+                .await
+                .map_err(|error| grade_error(layer.source, error))?;
+            graded = Some(texture);
+        }
+        Ok(graded)
     }
 }
 
 struct PreparedLayer<'a> {
     source: SourceId,
     texture: &'a NativeTexture,
-    grade: Option<&'a Arc<CompiledGrade>>,
+    /// Non-identity grades in order: the source grade, then the layer's own.
+    grades: Vec<&'a Arc<CompiledGrade>>,
     uniform: [u8; COMPOSITION_UNIFORM_SIZE],
 }
 
@@ -623,7 +627,12 @@ fn validate_composition<'a>(
         prepared.push(PreparedLayer {
             source: layer.source(),
             texture,
-            grade: layer.grade().filter(|grade| !grade.is_identity()),
+            grades: layer
+                .grade()
+                .into_iter()
+                .chain(layer.layer_grade())
+                .filter(|grade| !grade.is_identity())
+                .collect(),
             uniform: encode_composition_uniform(
                 layer.transform(),
                 crop,

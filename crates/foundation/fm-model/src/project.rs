@@ -9,6 +9,7 @@ use crate::{
     EntityRef, ValidationError, ValidationErrorKind,
     grade::{
         GradeEditError, GradeId, GradeSource, LutId, ProjectGrade, ProjectGrading, ProjectLut,
+        SceneLayerRef,
     },
     playlist::Playlist,
     scene_animation::{LayerId, SceneAnimation, SceneAnimationError},
@@ -805,7 +806,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(32);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(33);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1014,6 +1015,12 @@ impl Project {
         self.grading.inputs.get(&input)
     }
 
+    /// The grade one scene layer carries, if any.
+    #[must_use]
+    pub fn layer_grade(&self, layer: SceneLayerRef) -> Option<&GradeSource> {
+        self.grading.layers.get(&layer)
+    }
+
     /// The program output grade, if any.
     #[must_use]
     pub const fn program_grade(&self) -> Option<&GradeSource> {
@@ -1100,6 +1107,27 @@ impl Project {
             return Err(GradeEditError::UnknownInput(input));
         }
         self.grading.set_input(input, grade)
+    }
+
+    /// Sets or clears one scene layer's grade.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown scene or layer, an unknown library grade, an
+    /// invalid inline grade, and a new graded layer beyond
+    /// [`crate::MAX_PROJECT_LAYER_GRADES`].
+    pub fn set_layer_grade(
+        &mut self,
+        layer: SceneLayerRef,
+        grade: Option<GradeSource>,
+    ) -> Result<(), GradeEditError> {
+        let scene = self
+            .scene(layer.scene)
+            .ok_or(GradeEditError::UnknownScene(layer.scene))?;
+        if scene.layer_by_id(layer.layer).is_none() {
+            return Err(GradeEditError::UnknownLayer(layer));
+        }
+        self.grading.set_layer(layer, grade)
     }
 
     /// Sets or clears the program output grade.
@@ -1556,6 +1584,15 @@ impl Project {
         scene.id = new_scene;
         scene.name = scene_name;
         candidate.scenes.push(scene);
+        // The copy keeps its layers' grades.
+        let graded = self
+            .grading
+            .layers
+            .iter()
+            .filter(|(target, _)| target.scene == source_scene)
+            .map(|(target, source)| (SceneLayerRef::new(new_scene, target.layer), source.clone()))
+            .collect::<Vec<_>>();
+        candidate.grading.layers.extend(graded);
         candidate.add_input(Input {
             id: new_input,
             name: input_name,
@@ -1639,6 +1676,7 @@ impl Project {
             return Err(RemoveSceneError::OutputReference { output, scene });
         }
         self.scenes.retain(|candidate| candidate.id != scene);
+        self.grading.remove_scene_layers(scene);
         Ok(())
     }
 
@@ -1787,6 +1825,10 @@ impl Project {
             });
         }
         let layer = target.layers.remove(index);
+        // The removed layer's grade goes with it.
+        self.grading
+            .layers
+            .remove(&SceneLayerRef::new(scene, layer.id));
         // The removed layer's tracks go with it.
         let animated = target
             .animation

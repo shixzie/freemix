@@ -11044,6 +11044,7 @@ fn command_base_ticks(
         | CommandPayload::ApplySceneAnimationPreset { .. }
         | CommandPayload::StretchSceneAnimation { .. }
         | CommandPayload::SetInputGrade { .. }
+        | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
         | CommandPayload::AddLibraryGrade { .. }
         | CommandPayload::UpdateLibraryGrade { .. }

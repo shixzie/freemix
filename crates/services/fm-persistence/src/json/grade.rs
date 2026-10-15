@@ -5,6 +5,7 @@
 //! "luts": [{"id": 1, "name": "Film", "kind": "3d", "size": 33}],
 //! "grades": [{"id": 1, "name": "Warm", "grade": GRADE}],
 //! "input_grades": [{"input": 7, "grade": SOURCE}],
+//! "layer_grades": [{"scene": 3, "layer": 2, "grade": SOURCE}],
 //! "program_grade": null | SOURCE
 //! ```
 //!
@@ -19,8 +20,10 @@ use fm_grade::{
     Contrast, CubeKind, Curve, CurvePoint, Grade, GradeLut, HueCurve, HueCurves, HuePoint,
     RgbCurves, Wheel, Wheels, WhiteBalance,
 };
-use fm_model::{GradeId, GradeSource, LutId, ProjectGrade, ProjectGrading, ProjectLut};
-use fm_types::InputId;
+use fm_model::{
+    GradeId, GradeSource, LayerId, LutId, ProjectGrade, ProjectGrading, ProjectLut, SceneLayerRef,
+};
+use fm_types::{InputId, SceneId};
 
 use super::{
     DecodeError, Object, Value, escape_string, parse_array, parse_optional, syntax, unknown_enum,
@@ -59,6 +62,20 @@ pub(crate) fn write_grading(output: &mut String, grading: &ProjectGrading) {
             output.push_str(", ");
         }
         write!(output, "{{\"input\": {input}, \"grade\": ").expect("writing to a string");
+        write_source(output, source);
+        output.push('}');
+    }
+    output.push_str("],\n    \"layer_grades\": [");
+    for (index, (target, source)) in grading.layers.iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(
+            output,
+            "{{\"scene\": {}, \"layer\": {}, \"grade\": ",
+            target.scene, target.layer
+        )
+        .expect("writing to a string");
         write_source(output, source);
         output.push('}');
     }
@@ -213,11 +230,22 @@ pub(crate) fn parse_grading(object: &mut Object) -> Result<ProjectGrading, Decod
             )));
         }
     }
+    let mut layers = BTreeMap::new();
+    for (target, source) in parse_array(
+        object.take("layer_grades")?,
+        "layer_grades",
+        parse_layer_grade,
+    )? {
+        if layers.insert(target, source).is_some() {
+            return Err(syntax(format!("layer_grades must not list {target} twice")));
+        }
+    }
     let program = parse_optional(object.take("program_grade")?, parse_source)?;
     Ok(ProjectGrading {
         grades,
         luts,
         inputs,
+        layers,
         program,
     })
 }
@@ -269,6 +297,15 @@ fn parse_input_grade(value: Value) -> Result<(InputId, GradeSource), DecodeError
     let source = parse_source(object.take("grade")?)?;
     object.finish()?;
     Ok((input, source))
+}
+
+fn parse_layer_grade(value: Value) -> Result<(SceneLayerRef, GradeSource), DecodeError> {
+    let mut object = Object::new(value, "layer grade")?;
+    let scene = SceneId::new(object.nonzero_u128("scene")?);
+    let layer = LayerId::from_non_zero(nonzero_u32(&mut object, "layer")?);
+    let source = parse_source(object.take("grade")?)?;
+    object.finish()?;
+    Ok((SceneLayerRef::new(scene, layer), source))
 }
 
 fn parse_source(value: Value) -> Result<GradeSource, DecodeError> {

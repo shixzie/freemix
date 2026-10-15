@@ -1304,7 +1304,21 @@ fn decode_lut_metadata(
     Ok((lut, name, kind, size))
 }
 
-/// Decodes the grade commands (Protocol 2.28).
+/// Decodes a scene layer id (`layer`, Protocol 2.33): a canonical nonzero
+/// 32-bit decimal.
+fn decode_grade_layer(fields: &mut Fields) -> Result<WireSceneLayerId, CodecError> {
+    parse_grade_id("layer", &fields.required("layer")?).map(WireSceneLayerId::new)
+}
+
+/// Decodes the Scene inputs showing a graded layer's scene: nonempty,
+/// ascending, and unique.
+fn decode_grade_layer_inputs(fields: &mut Fields) -> Result<Vec<WireInputId>, CodecError> {
+    let inputs = parse_input_ids(&fields.required("inputs")?)?;
+    validate_animation_inputs(&inputs)?;
+    Ok(inputs)
+}
+
+/// Decodes the grade commands (Protocol 2.28; layer grades 2.33).
 fn decode_grade_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
     Ok(match name {
         "grade_input_set" => CommandPayload::SetInputGrade {
@@ -1313,6 +1327,16 @@ fn decode_grade_command(fields: &mut Fields, name: &str) -> Result<CommandPayloa
         },
         "grade_input_clear" => CommandPayload::SetInputGrade {
             input: fields.canonical_input("input")?,
+            source: None,
+        },
+        "grade_layer_set" => CommandPayload::SetLayerGrade {
+            input: fields.canonical_input("input")?,
+            layer: decode_grade_layer(fields)?,
+            source: Some(decode_required_grade_source(fields)?),
+        },
+        "grade_layer_clear" => CommandPayload::SetLayerGrade {
+            input: fields.canonical_input("input")?,
+            layer: decode_grade_layer(fields)?,
             source: None,
         },
         "grade_program_set" => CommandPayload::SetProgramGrade {
@@ -1375,6 +1399,11 @@ fn decode_grade_state(fields: &mut Fields) -> Result<GradeStateMessage, CodecErr
             input: fields.canonical_input("input")?,
             source: decode_required_grade_source(fields)?,
         },
+        "layer" => GradeEntry::Layer {
+            inputs: decode_grade_layer_inputs(fields)?,
+            layer: decode_grade_layer(fields)?,
+            source: decode_required_grade_source(fields)?,
+        },
         "program" => GradeEntry::Program {
             source: decode_required_grade_source(fields)?,
         },
@@ -1414,6 +1443,11 @@ fn decode_grade_change(fields: &mut Fields) -> Result<GradeChange, CodecError> {
         },
         "input" => GradeChange::Input {
             input: fields.canonical_input("input")?,
+            source: decode_grade_source(fields, true)?,
+        },
+        "layer" => GradeChange::Layer {
+            inputs: decode_grade_layer_inputs(fields)?,
+            layer: decode_grade_layer(fields)?,
             source: decode_grade_source(fields, true)?,
         },
         "program" => GradeChange::Program {

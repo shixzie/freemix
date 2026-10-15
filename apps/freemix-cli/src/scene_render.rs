@@ -100,9 +100,10 @@ impl std::error::Error for SceneRenderError {}
 /// the output divides the project size evenly (1920x1080 to 640x360, for
 /// example) each authored edge lands on an exact output pixel.
 ///
-/// Each layer carries its input's grade (applied by the compositor after
-/// the layer's effects and before its transform), and the program grade
-/// colours the composed picture before it is scaled.
+/// Each layer carries its input's grade and then its own scene layer grade
+/// (both applied by the compositor after the layer's effects and before its
+/// transform), and the program grade colours the composed picture before
+/// it is scaled.
 ///
 /// `pose` is the point of the scene's animation drawn
 /// ([`fm_model::Scene::posed`] with the pipeline size as the canvas).
@@ -166,6 +167,9 @@ pub(crate) fn render_scene(
         let mut source_layer = compositor_layer(token, layer);
         if let Some(grade) = grades.input(input.id) {
             source_layer = source_layer.with_grade(grade.clone());
+        }
+        if let Some(grade) = grades.layer(fm_model::SceneLayerRef::new(scene, layer.id)) {
+            source_layer = source_layer.with_layer_grade(grade.clone());
         }
         composition.push_layer(source_layer);
     }

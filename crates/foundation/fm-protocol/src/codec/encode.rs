@@ -232,6 +232,7 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }) => encode_playlist_command(record, payload)?,
         payload @ (CommandPayload::SetInputGrade { .. }
+        | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
         | CommandPayload::AddLibraryGrade { .. }
         | CommandPayload::UpdateLibraryGrade { .. }
@@ -1143,6 +1144,25 @@ fn encode_grade_command(record: &mut Record, payload: &CommandPayload) -> Result
                 .as_ref()
                 .map_or(Ok(()), |source| encode_grade_source(record, source))
         }
+        CommandPayload::SetLayerGrade {
+            input,
+            layer,
+            source,
+        } => {
+            record.field(
+                "payload",
+                if source.is_some() {
+                    "grade_layer_set"
+                } else {
+                    "grade_layer_clear"
+                },
+            )?;
+            record.field("input", input)?;
+            record.field("layer", layer)?;
+            source
+                .as_ref()
+                .map_or(Ok(()), |source| encode_grade_source(record, source))
+        }
         CommandPayload::SetProgramGrade { source } => {
             record.field(
                 "payload",
@@ -1219,6 +1239,17 @@ fn encode_grade_state(record: &mut Record, message: &GradeStateMessage) -> Resul
             record.field("input", input)?;
             encode_grade_source(record, source)
         }
+        GradeEntry::Layer {
+            inputs,
+            layer,
+            source,
+        } => {
+            validate_animation_inputs(inputs)?;
+            record.field("entry", "layer")?;
+            record.field_string("inputs", input_ids(inputs)?)?;
+            record.field("layer", layer)?;
+            encode_grade_source(record, source)
+        }
         GradeEntry::Program { source } => {
             record.field("entry", "program")?;
             encode_grade_source(record, source)
@@ -1265,6 +1296,19 @@ fn encode_grade_change(record: &mut Record, change: &GradeChange) -> Result<(), 
         GradeChange::Input { input, source } => {
             record.field("change", "input")?;
             record.field("input", input)?;
+            source
+                .as_ref()
+                .map_or(Ok(()), |source| encode_grade_source(record, source))
+        }
+        GradeChange::Layer {
+            inputs,
+            layer,
+            source,
+        } => {
+            validate_animation_inputs(inputs)?;
+            record.field("change", "layer")?;
+            record.field_string("inputs", input_ids(inputs)?)?;
+            record.field("layer", layer)?;
             source
                 .as_ref()
                 .map_or(Ok(()), |source| encode_grade_source(record, source))

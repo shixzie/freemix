@@ -331,6 +331,7 @@ fn validation_reports_every_unchecked_grading_problem() {
             lut(1, "Dup"),
         ],
         inputs,
+        layers: std::collections::BTreeMap::new(),
         program: Some(GradeSource::Inline(Box::new(Grade {
             saturation_permille: 3001,
             ..Grade::IDENTITY
@@ -361,4 +362,176 @@ fn validation_reports_every_unchecked_grading_problem() {
         ValidationErrorKind::MissingReference(EntityRef::Grade(grade_id(5)))
     ));
     assert!(has("program_grade", ValidationErrorKind::OutOfRange));
+}
+
+fn scene_id(value: u128) -> fm_types::SceneId {
+    fm_types::SceneId::new(NonZeroU128::new(value).unwrap())
+}
+
+fn layer_ref(scene: u128, layer: u32) -> fm_model::SceneLayerRef {
+    fm_model::SceneLayerRef::new(scene_id(scene), fm_model::LayerId::new(layer).unwrap())
+}
+
+/// `project()` plus scene 5 (shown by Scene input 9) with layers 1 and 2,
+/// both showing input 1.
+fn scene_project() -> Project {
+    let mut project = project();
+    project
+        .add_scene_input_checked(scene_id(5), "Two up".into(), input_id(9), "Two up".into())
+        .unwrap();
+    for (id, name) in [(1, "Left"), (2, "Right")] {
+        project
+            .add_layer_to_scene(
+                scene_id(5),
+                fm_model::Layer {
+                    id: fm_model::LayerId::new(id).unwrap(),
+                    name: name.into(),
+                    source: fm_model::SourceRef::Input(input_id(1)),
+                    enabled: true,
+                    geometry: fm_model::LayerGeometry::new(0, 0, 32, 18, fm_model::Rotation::Deg0),
+                    crop: None,
+                    mask: None,
+                    effects: Vec::new(),
+                    opacity: u8::MAX,
+                    z_order: 0,
+                },
+            )
+            .unwrap();
+    }
+    project
+}
+
+#[test]
+fn scene_layers_take_library_or_inline_grades_that_follow_their_layer() {
+    let mut project = scene_project();
+    project.add_lut(lut(3, "Film")).unwrap();
+    project
+        .add_grade(ProjectGrade {
+            id: grade_id(1),
+            name: "Night".into(),
+            grade: with_lut(3),
+        })
+        .unwrap();
+    project
+        .set_layer_grade(layer_ref(5, 1), Some(GradeSource::Library(grade_id(1))))
+        .unwrap();
+    project
+        .set_layer_grade(layer_ref(5, 2), Some(GradeSource::Inline(Box::new(warm()))))
+        .unwrap();
+    assert_eq!(project.validate(), Ok(()));
+    assert_eq!(
+        project.layer_grade(layer_ref(5, 1)),
+        Some(&GradeSource::Library(grade_id(1)))
+    );
+    // A layer grade keeps its library grade and (through it) its LUT in use.
+    assert!(project.grading().grade_in_use(grade_id(1)));
+    assert!(project.grading().lut_in_use(lut_id(3)));
+    assert_eq!(project.grading().referenced_luts(), vec![lut_id(3)]);
+    assert_eq!(
+        project.remove_grade(grade_id(1)),
+        Err(GradeEditError::GradeInUse(grade_id(1)))
+    );
+
+    // Unknown scenes, layers, and library grades are refused.
+    assert_eq!(
+        project.set_layer_grade(layer_ref(6, 1), Some(GradeSource::Inline(Box::new(warm())))),
+        Err(GradeEditError::UnknownScene(scene_id(6)))
+    );
+    assert_eq!(
+        project.set_layer_grade(layer_ref(5, 3), Some(GradeSource::Inline(Box::new(warm())))),
+        Err(GradeEditError::UnknownLayer(layer_ref(5, 3)))
+    );
+    assert_eq!(
+        project.set_layer_grade(layer_ref(5, 1), Some(GradeSource::Library(grade_id(8)))),
+        Err(GradeEditError::UnknownGrade(grade_id(8)))
+    );
+
+    // Duplicating the scene copies its layers' grades to the copy.
+    project
+        .duplicate_scene_input_checked(
+            scene_id(5),
+            scene_id(6),
+            "Copy".into(),
+            input_id(10),
+            "Copy".into(),
+        )
+        .unwrap();
+    assert_eq!(
+        project.layer_grade(layer_ref(6, 2)),
+        Some(&GradeSource::Inline(Box::new(warm())))
+    );
+
+    // Removing a layer drops its grade; removing a scene drops all of its.
+    project.remove_layer_from_scene(scene_id(5), 0).unwrap();
+    assert_eq!(project.layer_grade(layer_ref(5, 1)), None);
+    assert!(project.layer_grade(layer_ref(5, 2)).is_some());
+    project.remove_input(input_id(10)).unwrap();
+    project.remove_scene(scene_id(6)).unwrap();
+    assert!(
+        project
+            .grading()
+            .layers
+            .keys()
+            .all(|target| target.scene == scene_id(5))
+    );
+    // Clearing the last use frees the library grade.
+    assert!(!project.grading().grade_in_use(grade_id(1)));
+    project.set_layer_grade(layer_ref(5, 2), None).unwrap();
+    assert!(project.grading().layers.is_empty());
+    assert_eq!(project.validate(), Ok(()));
+}
+
+#[test]
+fn layer_grades_are_bounded_and_validated() {
+    let mut grading = ProjectGrading::default();
+    for layer in 1..=u32::try_from(fm_model::MAX_PROJECT_LAYER_GRADES).unwrap() {
+        grading
+            .set_layer(
+                layer_ref(5, layer),
+                Some(GradeSource::Inline(Box::new(warm()))),
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        grading.set_layer(
+            layer_ref(5, 9_999),
+            Some(GradeSource::Inline(Box::new(warm())))
+        ),
+        Err(GradeEditError::TooManyLayerGrades {
+            maximum: fm_model::MAX_PROJECT_LAYER_GRADES
+        })
+    );
+    // Replacing an existing layer's grade is not a new one.
+    grading
+        .set_layer(layer_ref(5, 1), Some(GradeSource::Inline(Box::new(warm()))))
+        .unwrap();
+
+    // Validation reports dangling scenes, layers, and grades.
+    let mut project = scene_project();
+    let mut grading = ProjectGrading::default();
+    grading
+        .layers
+        .insert(layer_ref(7, 1), GradeSource::Inline(Box::new(warm())));
+    grading
+        .layers
+        .insert(layer_ref(5, 4), GradeSource::Library(grade_id(2)));
+    project.set_grading(grading);
+    let errors = project.validate().unwrap_err();
+    let has = |field: &str, kind: ValidationErrorKind| {
+        errors
+            .iter()
+            .any(|error| error.field == field && error.kind == kind)
+    };
+    assert!(has(
+        "layer_grades.scene",
+        ValidationErrorKind::MissingReference(EntityRef::Scene(scene_id(7)))
+    ));
+    assert!(has(
+        "layer_grades.layer",
+        ValidationErrorKind::MissingReference(EntityRef::Scene(scene_id(5)))
+    ));
+    assert!(has(
+        "layer_grades.grade",
+        ValidationErrorKind::MissingReference(EntityRef::Grade(grade_id(2)))
+    ));
 }

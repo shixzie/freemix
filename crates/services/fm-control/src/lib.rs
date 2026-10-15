@@ -1492,6 +1492,7 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::ApplySceneAnimationPreset { .. }
         | CommandPayload::StretchSceneAnimation { .. }
         | CommandPayload::SetInputGrade { .. }
+        | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
         | CommandPayload::AddLibraryGrade { .. }
         | CommandPayload::UpdateLibraryGrade { .. }
@@ -1664,6 +1665,7 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }) => playlist::playlist_engine_command(payload),
         payload @ (CommandPayload::SetInputGrade { .. }
+        | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
         | CommandPayload::AddLibraryGrade { .. }
         | CommandPayload::UpdateLibraryGrade { .. }

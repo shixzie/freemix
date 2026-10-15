@@ -1,5 +1,5 @@
 //! Project colour grading: a named grade library, imported `.cube` LUTs, and
-//! the grade each input and the program output carry.
+//! the grade each input, each scene layer, and the program output carry.
 //!
 //! Grades are [`fm_grade::Grade`] values. A grade is either kept in the
 //! project library ([`ProjectGrade`], referenced by [`GradeId`]) or stored
@@ -15,10 +15,14 @@ use std::collections::BTreeMap;
 use fm_grade::{
     CubeKind, Grade, LUT_URI_PREFIX, MAX_CUBE_1D_SIZE, MAX_CUBE_3D_EDGE, MIN_CUBE_SIZE,
 };
-use fm_types::InputId;
+use fm_types::{InputId, SceneId};
+
+use crate::LayerId;
 
 /// Most named grades one project library may hold.
 pub const MAX_PROJECT_GRADES: usize = 256;
+/// Most graded scene layers one project may hold.
+pub const MAX_PROJECT_LAYER_GRADES: usize = 256;
 /// Most imported LUTs one project may hold.
 pub const MAX_PROJECT_LUTS: usize = 64;
 /// Longest grade name, in UTF-8 bytes.
@@ -155,7 +159,29 @@ impl ProjectLut {
     }
 }
 
-/// The grade one target (an input or the program output) carries.
+/// One layer of one scene: the target of a scene layer grade. Ordered by
+/// scene, then layer.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SceneLayerRef {
+    pub scene: SceneId,
+    pub layer: LayerId,
+}
+
+impl SceneLayerRef {
+    #[must_use]
+    pub const fn new(scene: SceneId, layer: LayerId) -> Self {
+        Self { scene, layer }
+    }
+}
+
+impl fmt::Display for SceneLayerRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "scene {} layer {}", self.scene, self.layer)
+    }
+}
+
+/// The grade one target (an input, a scene layer, or the program output)
+/// carries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GradeSource {
     /// A grade from the project library.
@@ -174,6 +200,10 @@ pub struct ProjectGrading {
     /// Per-input grades, in input id order. An input without an entry is
     /// ungraded.
     pub inputs: BTreeMap<InputId, GradeSource>,
+    /// Per-scene-layer grades, in scene then layer id order. A layer grade
+    /// colours that layer after its source's input grade and its effects
+    /// and before its transform. A layer without an entry is ungraded.
+    pub layers: BTreeMap<SceneLayerRef, GradeSource>,
     /// The program output grade, applied to the composed Program picture.
     pub program: Option<GradeSource>,
 }
@@ -198,7 +228,17 @@ impl ProjectGrading {
         }
     }
 
-    /// Whether any library grade, input, or the program references `lut`.
+    /// Every target grade: the input grades, the layer grades, then the
+    /// program grade.
+    pub fn targets(&self) -> impl Iterator<Item = &GradeSource> {
+        self.inputs
+            .values()
+            .chain(self.layers.values())
+            .chain(self.program.iter())
+    }
+
+    /// Whether any library grade, input, scene layer, or the program
+    /// references `lut`.
     #[must_use]
     pub fn lut_in_use(&self, lut: LutId) -> bool {
         let uses = |grade: &Grade| {
@@ -209,35 +249,31 @@ impl ProjectGrading {
         };
         self.grades.iter().any(|entry| uses(&entry.grade))
             || self
-                .inputs
-                .values()
-                .chain(self.program.iter())
+                .targets()
                 .any(|source| matches!(source, GradeSource::Inline(grade) if uses(grade)))
     }
 
-    /// Whether any input or the program references library grade `id`.
+    /// Whether any input, scene layer, or the program references library
+    /// grade `id`.
     #[must_use]
     pub fn grade_in_use(&self, id: GradeId) -> bool {
-        self.inputs
-            .values()
-            .chain(self.program.iter())
+        self.targets()
             .any(|source| *source == GradeSource::Library(id))
     }
 
-    /// The LUTs referenced by a library grade, an input, or the program, in
-    /// id order. Unregistered or non-canonical references are omitted.
+    /// The LUTs referenced by a library grade, an input, a scene layer, or
+    /// the program, in id order. Unregistered or non-canonical references
+    /// are omitted.
     #[must_use]
     pub fn referenced_luts(&self) -> Vec<LutId> {
         let mut luts = self
             .grades
             .iter()
             .map(|entry| &entry.grade)
-            .chain(self.inputs.values().chain(self.program.iter()).filter_map(
-                |source| match source {
-                    GradeSource::Inline(grade) => Some(grade.as_ref()),
-                    GradeSource::Library(_) => None,
-                },
-            ))
+            .chain(self.targets().filter_map(|source| match source {
+                GradeSource::Inline(grade) => Some(grade.as_ref()),
+                GradeSource::Library(_) => None,
+            }))
             .filter_map(|grade| grade.lut.as_ref())
             .filter_map(|lut| lut_id_from_uri(&lut.asset_uri))
             .filter(|id| self.lut(*id).is_some())
@@ -418,6 +454,42 @@ impl ProjectGrading {
         Ok(())
     }
 
+    /// Sets or clears one scene layer's grade without checking that the
+    /// scene and layer exist (the caller owns the scenes).
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown library grade, an invalid inline grade, and a new
+    /// graded layer beyond [`MAX_PROJECT_LAYER_GRADES`].
+    pub fn set_layer(
+        &mut self,
+        layer: SceneLayerRef,
+        grade: Option<GradeSource>,
+    ) -> Result<(), GradeEditError> {
+        match grade {
+            Some(source) => {
+                self.check_source(&source)?;
+                if !self.layers.contains_key(&layer)
+                    && self.layers.len() >= MAX_PROJECT_LAYER_GRADES
+                {
+                    return Err(GradeEditError::TooManyLayerGrades {
+                        maximum: MAX_PROJECT_LAYER_GRADES,
+                    });
+                }
+                self.layers.insert(layer, source);
+            }
+            None => {
+                self.layers.remove(&layer);
+            }
+        }
+        Ok(())
+    }
+
+    /// Drops every layer grade of `scene`.
+    pub fn remove_scene_layers(&mut self, scene: SceneId) {
+        self.layers.retain(|target, _| target.scene != scene);
+    }
+
     /// Sets or clears the program output grade.
     ///
     /// # Errors
@@ -469,6 +541,11 @@ pub(crate) fn grade_name_error(name: &str, maximum: usize) -> Option<GradeEditEr
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GradeEditError {
     UnknownInput(InputId),
+    /// The scene does not exist, or (for an engine edit) no Scene input
+    /// shows it.
+    UnknownScene(SceneId),
+    /// The scene has no layer with this id.
+    UnknownLayer(SceneLayerRef),
     UnknownGrade(GradeId),
     UnknownLut(LutId),
     DuplicateGradeId(GradeId),
@@ -484,6 +561,9 @@ pub enum GradeEditError {
         maximum: usize,
     },
     TooManyLuts {
+        maximum: usize,
+    },
+    TooManyLayerGrades {
         maximum: usize,
     },
     LutSizeOutOfRange {
@@ -507,6 +587,8 @@ impl fmt::Display for GradeEditError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownInput(input) => write!(formatter, "input {input} does not exist"),
+            Self::UnknownScene(scene) => write!(formatter, "scene {scene} does not exist"),
+            Self::UnknownLayer(target) => write!(formatter, "{target} does not exist"),
             Self::UnknownGrade(id) => write!(formatter, "grade {id} does not exist"),
             Self::UnknownLut(id) => write!(formatter, "LUT {id} does not exist"),
             Self::DuplicateGradeId(id) => write!(formatter, "grade id {id} is already used"),
@@ -527,6 +609,9 @@ impl fmt::Display for GradeEditError {
             }
             Self::TooManyLuts { maximum } => {
                 write!(formatter, "a project holds at most {maximum} LUTs")
+            }
+            Self::TooManyLayerGrades { maximum } => {
+                write!(formatter, "a project grades at most {maximum} scene layers")
             }
             Self::LutSizeOutOfRange { kind, size } => {
                 write!(formatter, "{kind:?} LUT size {size} is out of range")

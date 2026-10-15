@@ -1346,6 +1346,7 @@ impl Client {
             | CommandPayload::PlaylistControl { .. }
             | CommandPayload::PlaylistAdvance { .. }
             | CommandPayload::SetInputGrade { .. }
+            | CommandPayload::SetLayerGrade { .. }
             | CommandPayload::SetProgramGrade { .. }
             | CommandPayload::AddLibraryGrade { .. }
             | CommandPayload::UpdateLibraryGrade { .. }

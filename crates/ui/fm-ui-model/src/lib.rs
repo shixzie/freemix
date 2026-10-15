@@ -2922,7 +2922,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     state.edit_locks.set(EditLockTarget::Input(input), false);
     state.titles.retain(|title| title.input != input);
     state.scenes.retain(|scene| scene.input != input);
-    state.grading.inputs.remove(&input);
+    state.grading.remove_input(input);
     // A settled-off overlay forgets a removed input it retained.
     for overlay in state
         .desired_overlays

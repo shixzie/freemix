@@ -4606,3 +4606,108 @@ fn scene_settle_ticks_cover_exactly_the_phases_a_switch_starts() {
     );
     assert_eq!(prepared.scene_settle_ticks(1), 1);
 }
+
+/// SW-019, Protocol 2.33: a scene layer grade is an `EditProject` command
+/// through one Scene input; its `grade_changed` event and `grade_state`
+/// record name every Scene input showing the scene, and undo clears it.
+#[test]
+fn scene_layer_grades_replicate_to_every_scene_input_sharing_the_scene() {
+    use fm_protocol::{GradeChange, GradeEntry, WireGradeSource, WireSceneLayerId};
+
+    let (mut control, _) = scene_control();
+    let shared = vec![
+        WireInputId::from_domain(input(4)),
+        WireInputId::from_domain(input(5)),
+    ];
+    let layer = WireSceneLayerId::new(core::num::NonZeroU32::new(9).unwrap());
+    let warm = Box::new(fm_grade::builtin_preset("warm").unwrap().grade.clone());
+    let set = CommandPayload::SetLayerGrade {
+        input: WireInputId::from_domain(input(5)),
+        layer,
+        source: Some(WireGradeSource::Inline(warm.clone())),
+    };
+    assert_eq!(
+        control.required_classes(&set).primary(),
+        CommandClass::EditProject
+    );
+    let denied = control
+        .submit(&principal(Role::Viewer), command("v", "v", set.clone()), 0)
+        .unwrap();
+    assert!(!denied.is_accepted());
+    let accepted = control
+        .submit(&principal(Role::Graphics), command("s", "s", set), 0)
+        .unwrap();
+    assert!(accepted.is_accepted(), "{:?}", accepted.output.result);
+    assert_eq!(
+        accepted.output.events[0].payload,
+        EventPayload::GradeChanged(GradeChange::Layer {
+            inputs: shared.clone(),
+            layer,
+            source: Some(WireGradeSource::Inline(warm.clone())),
+        })
+    );
+    assert_eq!(control.snapshot().snapshot.grade_states, 1);
+    assert_eq!(
+        control
+            .grade_states()
+            .into_iter()
+            .map(|state| state.entry)
+            .collect::<Vec<_>>(),
+        [GradeEntry::Layer {
+            inputs: shared.clone(),
+            layer,
+            source: WireGradeSource::Inline(warm),
+        }]
+    );
+    let compiled = control.compiled_grades().unwrap();
+    assert!(
+        compiled
+            .layer(fm_model::SceneLayerRef::new(
+                fm_types::SceneId::new(NonZeroU128::new(40).unwrap()),
+                fm_model::LayerId::new(9).unwrap()
+            ))
+            .is_some()
+    );
+
+    // An unknown layer is refused.
+    let unknown = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "x",
+                "x",
+                CommandPayload::SetLayerGrade {
+                    input: WireInputId::from_domain(input(4)),
+                    layer: WireSceneLayerId::new(core::num::NonZeroU32::new(2).unwrap()),
+                    source: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(!unknown.is_accepted());
+
+    let undone = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "u",
+                "u",
+                CommandPayload::Undo {
+                    expected_edit: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    assert_eq!(
+        undone.output.events[0].payload,
+        EventPayload::GradeChanged(GradeChange::Layer {
+            inputs: shared,
+            layer,
+            source: None,
+        })
+    );
+    assert_eq!(control.snapshot().snapshot.grade_states, 0);
+}
