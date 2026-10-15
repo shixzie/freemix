@@ -160,7 +160,12 @@ impl StudioShell {
                         intents,
                     );
                 }
-                SideTab::Titles => self.titles.draw(ui, state, intents),
+                SideTab::Titles => {
+                    self.titles.draw(ui, state, intents);
+                    if let Some(title) = self.titles.take_animate_request() {
+                        self.open_animation(Some(title));
+                    }
+                }
                 SideTab::Playlist => self.playlist.draw(ui, state, intents),
             });
     }

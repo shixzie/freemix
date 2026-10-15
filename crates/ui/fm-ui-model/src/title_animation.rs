@@ -10,6 +10,11 @@
 //! [`ExactPreviewRequest`] of its [`crate::animation_editor::PreviewScheduler`]
 //! into a `title_preview_request` with [`preview_request`], matching the
 //! answer back with [`preview_request_id`].
+//!
+//! [`TitleAnimationBinding`] packages all of that for a Studio window: it
+//! owns the document, recognises its own saves, flags conflicts, paces
+//! auto-saves and exact previews, and takes the template's [`TitleDesign`]
+//! (canvas and element outlines) when the host can read it.
 
 use std::sync::Arc;
 
@@ -21,6 +26,13 @@ use fm_protocol::{
 use fm_types::InputId;
 
 use crate::animation_editor::{AnimDocument, ExactPreviewRequest, PreviewRequestId};
+
+mod binding;
+
+pub use binding::{
+    AnimationRefusal, AnimationSaveStatus, DEFAULT_CANVAS, PREVIEW_MIN_INTERVAL, PREVIEW_TIMEOUT,
+    TitleAnimationBinding, TitleDesign, preview_size,
+};
 
 /// The document type an editor of one title template uses.
 pub type TitleAnimDocument = AnimDocument<WireTitleElementId>;

@@ -1,5 +1,6 @@
 //! Native Studio application, TCP runtime, and optional daemon supervision.
 
+mod animation;
 mod args;
 #[cfg(feature = "capture-meter-signal")]
 mod capture_signal;

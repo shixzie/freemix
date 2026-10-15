@@ -3,8 +3,8 @@ use std::{env, error::Error, fmt, net::SocketAddr, time::Duration};
 use fm_client::{
     Client, ConnectionState, ReconnectBackoff, SessionEvent, TcpSession, TcpSessionError,
 };
-use fm_protocol::{CommandMessage, CommandPayload, HeartbeatMessage};
-use fm_ui_egui::TitleUpdate;
+use fm_protocol::{CommandMessage, CommandPayload, HeartbeatMessage, TitlePreviewRequest};
+use fm_ui_egui::{TitleAnimationRefusal, TitleUpdate};
 
 use crate::titles::TitleRelay;
 
@@ -101,6 +101,11 @@ pub struct StudioRuntime {
     transport: ControlTransport,
     /// Correlates title-editor commands with this session's results.
     titles: TitleRelay,
+    /// The latest refused or lost exact title preview; every publication
+    /// carries it so the UI cannot miss it.
+    preview_failed: Option<String>,
+    /// The latest refused title animation save, carried the same way.
+    animation_refusal: Option<TitleAnimationRefusal>,
 }
 
 impl StudioRuntime {
@@ -152,6 +157,8 @@ impl StudioRuntime {
             session: TcpSession::new(client),
             transport,
             titles: TitleRelay::default(),
+            preview_failed: None,
+            animation_refusal: None,
         })
     }
 
@@ -163,6 +170,45 @@ impl StudioRuntime {
     #[must_use]
     pub const fn session_mut(&mut self) -> &mut TcpSession {
         &mut self.session
+    }
+
+    /// The control transport this runtime connects with.
+    #[must_use]
+    pub const fn transport(&self) -> ControlTransport {
+        self.transport
+    }
+
+    /// Sends one exact title preview request. A request that cannot be
+    /// sent (no raw TCP connection, or the write failed) is recorded as
+    /// failed for the UI instead; previews are lossy and never retried.
+    pub(crate) fn send_title_preview(&mut self, request: TitlePreviewRequest) {
+        let request_id = request.request_id.clone();
+        let sent = self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self.session.send_title_preview(request).is_ok();
+        if !sent {
+            self.preview_failed = Some(request_id);
+        }
+    }
+
+    /// Records that the server refused or dropped preview `request_id`.
+    pub(crate) fn note_preview_failure(&mut self, request_id: &str) {
+        self.preview_failed = Some(request_id.to_owned());
+    }
+
+    /// The latest refused or lost exact preview.
+    pub(crate) fn preview_failure(&self) -> Option<&str> {
+        self.preview_failed.as_deref()
+    }
+
+    /// Records a refused title animation save.
+    pub(crate) fn note_animation_refusal(&mut self, refusal: TitleAnimationRefusal) {
+        self.animation_refusal = Some(refusal);
+    }
+
+    /// The latest refused title animation save.
+    pub(crate) const fn animation_refusal(&self) -> Option<&TitleAnimationRefusal> {
+        self.animation_refusal.as_ref()
     }
 
     pub(crate) const fn titles_mut(&mut self) -> &mut TitleRelay {

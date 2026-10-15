@@ -97,6 +97,16 @@ impl Notice {
     }
 }
 
+/// A preset chosen for an element the document has no outline for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PresetRequest<T> {
+    pub target: T,
+    pub phase: fm_animation::Phase,
+    pub preset: fm_animation::AnimationPreset,
+    /// The preset's length; a shorter phase is lengthened to it.
+    pub frames: u32,
+}
+
 /// UI state the caller keeps between frames, next to its [`AnimDocument`].
 #[derive(Clone, Debug)]
 pub struct AnimationTimelineState<T> {
@@ -106,6 +116,20 @@ pub struct AnimationTimelineState<T> {
     pub keyboard_active: bool,
     /// The property row `K` and the value field act on (Advanced mode).
     pub active_row: Option<TrackKey<T>>,
+    /// Why the animation may not be edited now (catalog English, for
+    /// example a padlock or a missing permission). While set, every edit
+    /// control is disabled with this reason; playback, scrubbing,
+    /// selection, copy, and the mode switch keep working.
+    pub lock_reason: Option<&'static str>,
+    /// Presets of elements the document has no outline for (so no
+    /// geometry): `None` disables them, `Some(Ok(()))` turns each choice
+    /// into a [`PresetRequest`] for the caller to apply elsewhere (the
+    /// server knows the geometry), and `Some(Err(reason))` disables them
+    /// with that reason (catalog English).
+    pub outside_presets: Option<Result<(), &'static str>>,
+    /// Preset choices for elements without an outline, oldest first; the
+    /// caller takes them.
+    pub preset_requests: Vec<PresetRequest<T>>,
     pub(crate) notice: Option<Notice>,
     last_time: Option<f64>,
     length_edit: Option<u32>,
@@ -121,6 +145,9 @@ impl<T> Default for AnimationTimelineState<T> {
         Self {
             keyboard_active: false,
             active_row: None,
+            lock_reason: None,
+            outside_presets: None,
+            preset_requests: Vec::new(),
             notice: None,
             last_time: None,
             length_edit: None,
@@ -315,6 +342,7 @@ fn header<T: Copy + Ord>(
 ) {
     let idle = document.drag().is_none();
     let busy = l.text(Msg::AnimReasonDrag);
+    let lock = state.lock_reason.map(|reason| l.tr(reason));
     ui.horizontal(|ui| {
         ui.label(section_label(l.text(Msg::AnimSection)))
             .on_hover_text(l.text(Msg::AnimSectionHover));
@@ -373,18 +401,19 @@ fn header<T: Copy + Ord>(
         let mut length = state.length_edit.unwrap_or_else(|| document.phase_frames());
         let response = ui
             .add_enabled(
-                idle,
+                idle && lock.is_none(),
                 DragValue::new(&mut length)
                     .range(0..=MAX_PHASE_FRAMES)
                     .speed(0.25)
                     .suffix(" fr"),
             )
-            .hint_in(l, l.text(Msg::AnimLengthHover), busy);
+            .hint_in(l, l.text(Msg::AnimLengthHover), lock.unwrap_or(busy));
         if response.changed() {
             state.length_edit = Some(length);
         }
         if !(response.dragged() || response.has_focus())
             && let Some(length) = state.length_edit.take()
+            && lock.is_none()
             && length != document.phase_frames()
             && let Err(error) = document.set_phase_duration(document.phase(), length)
         {

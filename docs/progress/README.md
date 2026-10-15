@@ -313,6 +313,7 @@ the counts and lock chips.
 | `studio-console-spanish-hover-help.png` | `--lang es`, REC 2 recording and O1 taken (`TOMAR`), hovering `FUNDIDO`: the Spanish help line with its shortcut (`Fundir Previo a Programa con la duración compartida  [F]`); the `▸ DETALLES` and `▸ GAN · BAL · RET` disclosure keys stand in for the hidden advanced controls. |
 | `color-panel.png` | The standalone colour grading panel (SW-019), rendered offscreen from the real widget by `cargo test -p fm-ui-egui write_color_panel_screenshot -- --ignored` (CPU rasterizer, no window). Top, Simple mode with the Warm look plus contrast: live look thumbnails of the preview picture, the gradient sliders, auto balance, the graded preview, and the RGB parade. Bottom, Advanced mode: the basic sliders with pivot, Lift/Gamma/Gain/Offset wheels with masters and reset keys, the master curve, the LUT slot (the LUT asset is not loaded, so previews say so), the wipe compare with its handle, and the vectorscope with 75% bar targets. |
 | `studio-color.png` | 1920x1080 `--role admin`, Guest Remote (colour bars) cut to Program, its tile menu `Grade…` (also View › Colour… or Ctrl+G) opening the Studio Colour window bound to input 4, then the Warm look clicked: the grade went to freemixd as a `grade_input_set` command (REV 8 to 9), the target now reads `04 · Guest Remote · graded` with the `ON AIR` status, the Program monitor shows the server-applied warm grade, and the panel preview (held last ungraded frame, so the grade is not applied twice) shows the draft applied locally on CPU. Above the panel: the Library combo/Apply, Save to library, LUT import path with its 32 KiB limit caption pointing to `freemix-cli grade-import-lut`. |
+| `studio-animation.png` | 1920x1080 `--role admin` (GX-011), the demo show plus title input 8 "Lower Third" imported from a four-element `lower-third.fmtitle` (Bar, Accent, Name, Role) whose In phase was built with `freemix-cli title-animation-preset` (slide-from-left, wipe, fade, slide-from-bottom) and `title-animation-stretch` to 30 frames: Titles tab, the row's `Animate…` (also its context menu, View › Animate title…, or Ctrl+Shift+A) opening the Studio Animation window bound to the replicated `title_animation_state`, `Advanced` clicked, the ruler clicked at frame 11 and Element 1's Position X key selected. The canvas is the server's exact preview of frame 11 (`EXACT PREVIEW` badge; `title_preview_request` at 640x360, QOI parts) with the bar sliding in and the text wiping on; below, the four animated elements' tracks, the easing picker, and the Position X value graph. The caption under the header says the protocol does not carry the element layout yet, so elements are numbered, their presets are applied on the server (`title_animation_preset`), and no wireframe proxy is drawn. Dragging a key shows `FAST PREVIEW` with draft frames and auto-saves on release as `title_animation_set` (REV 5 to 6). |
 
 UI round 11 (RC-018, discoverable operator UI) gave every interactive
 control hover help in every shipped language: one line saying what it does
@@ -614,6 +615,27 @@ the scratch `FREEMIX_STUDIO_PREFS` file before launching Studio, then starts
 REC 2 and takes O1; `-spanish-high-contrast.png` repeats it with `--lang es`
 (clicking `TOMAR`). Typing into Studio's fields with `xdotool type` also needs
 `xdotool windowfocus` first.
+
+The animation capture imports a schema 31 `lower-third.fmtitle` (a 1920x1080
+template: rectangles Bar (fill from a Bar colour field) and Accent, and texts
+Name and Role in DejaVu Sans Bold and DejaVu Sans) as input 8, animates it
+offline, and runs Studio with `--role admin`:
+
+```sh
+freemix-cli title-input-add demo.freemix --id 8 --name "Lower Third" \
+    --template lower-third.fmtitle \
+    --font "DejaVu Sans=$D/DejaVuSans.ttf" --font "DejaVu Sans Bold=$D/DejaVuSans-Bold.ttf"
+T=asset://titles/lower-third.fmtitle
+freemix-cli title-animation-preset demo.freemix $T 1 --phase in --preset slide-from-left --frames 18
+freemix-cli title-animation-preset demo.freemix $T 2 --phase in --preset wipe --frames 12
+freemix-cli title-animation-preset demo.freemix $T 3 --phase in --preset fade --frames 24
+freemix-cli title-animation-preset demo.freemix $T 4 --phase in --preset slide-from-bottom --frames 24
+freemix-cli title-animation-stretch demo.freemix $T --phase in --frames 30
+freemix-cli title-animation-preset demo.freemix $T 1 --phase out --preset fade --frames 15
+```
+
+It clicks `TITLES`, the row's `Animate…`, `Advanced`, the ruler at frame 11
+(x 784, y 584), and the first Position X key (x 831, y 613).
 
 The hover-help captures take O1, move the pointer onto the `FADE` (or
 `FUNDIDO`) key with `xdotool mousemove`, nudge it by a pixel so egui sees a

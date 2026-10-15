@@ -70,6 +70,8 @@ pub(crate) struct TitlesPanel {
     /// Move keyboard focus to the editor's first field on the next draw,
     /// after a title row was selected.
     focus_field: bool,
+    /// The title whose `Animate…` key or menu item was chosen this frame.
+    animate: Option<InputId>,
 }
 
 /// The text field of `field` in `title`'s editor.
@@ -148,6 +150,16 @@ impl TitlesPanel {
         }
     }
 
+    /// The selected title, if any.
+    pub(crate) const fn selected(&self) -> Option<InputId> {
+        self.selected
+    }
+
+    /// The title the operator asked to animate this frame, if any.
+    pub(crate) const fn take_animate_request(&mut self) -> Option<InputId> {
+        self.animate.take()
+    }
+
     #[cfg(test)]
     pub(crate) const fn editor(&self) -> &TitleEditor {
         &self.editor
@@ -176,9 +188,34 @@ impl TitlesPanel {
         let view = state.view.as_ref();
         for entry in &list {
             let row = TitleRow::new(l, entry, view, Some(entry.title) == self.selected);
-            if draw_title_row(ui, &row).clicked() {
+            let (response, animate) = ui
+                .horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let width = (ui.available_width() - ANIMATE_KEY_WIDTH - 4.0).max(120.0);
+                    let response = draw_title_row(ui, &row, width);
+                    let animate = animate_key(ui, l);
+                    (response, animate)
+                })
+                .inner;
+            ui.add_space(2.0);
+            let mut chosen = animate.clicked();
+            response.context_menu(|ui| {
+                if ui
+                    .button(l.text(Msg::TitleAnimate))
+                    .on_hover_text(animate_hover(l))
+                    .clicked()
+                {
+                    chosen = true;
+                    ui.close();
+                }
+            });
+            if response.clicked() {
                 self.selected = Some(entry.title);
                 self.focus_field = true;
+            }
+            if chosen {
+                self.selected = Some(entry.title);
+                self.animate = Some(entry.title);
             }
         }
         ui.add_space(4.0);
@@ -914,15 +951,37 @@ impl<'a> TitleRow<'a> {
 
 const TITLE_ROW_HEIGHT: f32 = 34.0;
 const BADGE_WIDTH: f32 = 84.0;
+/// Width of the `Animate…` key beside each title row.
+const ANIMATE_KEY_WIDTH: f32 = 72.0;
 
-/// One fixed-height, clickable title row: lamp, name, edit markers, and the
-/// air badge.
-fn draw_title_row(ui: &mut Ui, row: &TitleRow<'_>) -> Response {
+/// The hover help of the `Animate…` key and menu item.
+fn animate_hover(l: Locale) -> String {
+    l10n::with_key(
+        l,
+        l.text(Msg::TitleAnimateHover),
+        crate::studio_animation::ANIMATION_SHORTCUT,
+    )
+}
+
+/// The `Animate…` key beside a title row.
+fn animate_key(ui: &mut Ui, l: Locale) -> Response {
+    ui.add(
+        Button::new(
+            RichText::new(l.text(Msg::TitleAnimate))
+                .size(crate::theme::legible(10.5))
+                .color(text_color()),
+        )
+        .min_size(Vec2::new(ANIMATE_KEY_WIDTH, TITLE_ROW_HEIGHT)),
+    )
+    .on_hover_text(animate_hover(l))
+}
+
+/// One fixed-height, clickable title row `width` wide: lamp, name, edit
+/// markers, and the air badge.
+fn draw_title_row(ui: &mut Ui, row: &TitleRow<'_>, width: f32) -> Response {
     let l = l10n::locale(ui.ctx());
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(ui.available_width(), TITLE_ROW_HEIGHT),
-        Sense::click(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, TITLE_ROW_HEIGHT), Sense::click());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let tone = row.badge.tone();
@@ -1010,7 +1069,6 @@ fn draw_title_row(ui: &mut Ui, row: &TitleRow<'_>) -> Response {
             );
         }
     }
-    ui.add_space(2.0);
     response.on_hover_text(l.format(Msg::TitleRowHover, &[("name", Arg::Str(&row.name))]))
 }
 

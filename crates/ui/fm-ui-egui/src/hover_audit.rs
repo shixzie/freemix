@@ -42,7 +42,10 @@
 //! grading panel is audited the same way: Simple and Advanced modes, fresh
 //! (with its keys disabled for a reason) and edited (with a LUT, compare
 //! slots, a copied grade, bypass, the wipe compare, and a hue curve), and
-//! with a refused edit showing.
+//! with a refused edit showing. The Studio Animation window is audited in
+//! the console: Simple mode without a known design (presets applied on the
+//! server), Advanced mode with a design, keys selected and an active row, a
+//! conflict, a padlock, and a session without permissions.
 
 use core::fmt::Write as _;
 use core::num::NonZeroU128;
@@ -299,6 +302,15 @@ fn model(variant: Variant) -> ClientModel {
             ],
         })
         .unwrap();
+    // The lower third's animation for the Animation window.
+    model
+        .apply_title_animation_state(fm_protocol::TitleAnimationStateMessage {
+            revision: 10,
+            input: wire(TITLE_INPUT),
+            animation_revision: 4,
+            clip: Box::new(title_clip()),
+        })
+        .unwrap();
     // A LUT, a library grade, and a graded camera for the Colour window.
     let grade_id = |value: u32| core::num::NonZeroU32::new(value).unwrap();
     let mut night = fm_grade::Grade::IDENTITY;
@@ -397,6 +409,64 @@ fn meters() -> AudioMetersMessage {
                 channels: vec![channel(if value == 1 { 1_000_000 } else { 300_000 }); 2],
             })
             .collect(),
+    }
+}
+
+fn title_element(value: u128) -> fm_protocol::WireTitleElementId {
+    fm_protocol::WireTitleElementId::new(NonZeroU128::new(value).unwrap())
+}
+
+/// The lower third's animation: the bar slides and fades in, the name
+/// fades in after it, and both fade out.
+fn title_clip() -> fm_protocol::WireTitleClip {
+    let keys = |from: i64, to: i64, end: u32| {
+        vec![
+            Keyframe::new(0, Value::Scalar(from), Easing::Linear),
+            Keyframe::new(end, Value::Scalar(to), Easing::CubicOut),
+        ]
+    };
+    let track = |element: u128, phase, property, keys| {
+        Track::new(TrackKey::new(title_element(element), phase, property), keys)
+    };
+    Clip::from_tracks(
+        Timebase::new(FrameRate::new(25, 1).unwrap()),
+        20,
+        10,
+        vec![
+            track(1, Phase::In, Property::Opacity, keys(0, 255, 12)),
+            track(1, Phase::In, Property::PositionX, keys(-400, 0, 16)),
+            track(2, Phase::In, Property::Opacity, keys(0, 255, 20)),
+            track(1, Phase::Out, Property::Opacity, keys(255, 0, 10)),
+            track(2, Phase::Out, Property::Opacity, keys(255, 0, 8)),
+        ],
+    )
+    .unwrap()
+}
+
+/// The lower third's design: its bar and name.
+fn title_design() -> fm_ui_model::title_animation::TitleDesign {
+    fm_ui_model::title_animation::TitleDesign {
+        canvas: (1_920, 1_080),
+        elements: vec![
+            TargetOutline::new(
+                title_element(1),
+                "Bar",
+                TargetKind::Shape,
+                TargetBounds::new(120, 840, 900, 140),
+            ),
+            TargetOutline::new(
+                title_element(2),
+                "Name",
+                TargetKind::Text,
+                TargetBounds::new(160, 860, 700, 60),
+            ),
+            TargetOutline::new(
+                title_element(3),
+                "Logo",
+                TargetKind::Image,
+                TargetBounds::new(1_040, 840, 140, 140),
+            ),
+        ],
     }
 }
 
@@ -592,12 +662,79 @@ fn scenes(language: Language) -> Vec<Scene> {
     for (name, open, state) in colour {
         scenes.push(Scene::console(name, shell(open), state));
     }
+    scenes.extend(animation_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
         shell(&|_| {}),
         StudioUiState::new(StudioConnectionStatus::Backoff),
     ));
     scenes
+}
+
+/// The Studio Animation window on the lower third: Simple mode without a
+/// design, Advanced mode with a design, a selection, and an active row, a
+/// conflict, a padlock, and a viewer.
+fn animation_scenes(locale: Locale) -> Vec<Scene> {
+    let title = input(TITLE_INPUT);
+    let bar = TrackKey::new(title_element(1), Phase::In, Property::Opacity);
+    let prepare = |state: &StudioUiState, configure: &dyn Fn(&mut StudioShell)| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.side_tab = SideTab::Titles;
+        shell.open_animation(Some(title));
+        shell.animation.sync(&egui::Context::default(), state);
+        configure(&mut shell);
+        shell
+    };
+    let advanced = |shell: &mut StudioShell| {
+        shell.set_title_design(title, title_design());
+        let binding = shell.animation_binding_mut(title).unwrap();
+        let document = binding.document_mut();
+        document.set_mode(EditorMode::Advanced);
+        document.set_selection(&KeySelection::from_iter([KeyRef {
+            track: bar,
+            frame: 12,
+        }]));
+        document.set_playhead(8);
+        document.copy_selection().unwrap();
+        shell.animation.timeline.active_row = Some(bar);
+    };
+    let operator = || {
+        let mut state = ready(true, Variant::default());
+        state.title_previews = true;
+        state
+    };
+    let locked = ready(
+        true,
+        Variant {
+            locked: true,
+            ..Variant::default()
+        },
+    );
+    let scenes: [(&str, Configure, StudioUiState); 5] = [
+        ("operator/animation", &|_| {}, operator()),
+        ("operator/animation-advanced", &advanced, operator()),
+        (
+            "operator/animation-conflict",
+            &|shell| {
+                advanced(shell);
+                let binding = shell.animation_binding_mut(title).unwrap();
+                binding.document_mut().extend_phase(Phase::In, 30).unwrap();
+                binding.refused(fm_ui_model::title_animation::AnimationRefusal::Conflict);
+            },
+            operator(),
+        ),
+        ("operator/animation-locked", &advanced, locked),
+        (
+            "viewer/animation",
+            &|_| {},
+            ready(false, Variant::default()),
+        ),
+    ];
+    scenes
+        .into_iter()
+        .map(|(name, configure, state)| Scene::console(name, prepare(&state, configure), state))
+        .collect()
 }
 
 /// IN 50 frames / OUT 25 frames at 25 fps with two elements: a lower

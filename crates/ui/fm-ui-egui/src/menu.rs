@@ -501,6 +501,16 @@ impl StudioShell {
         ) {
             self.open_color(None);
         }
+        if item(
+            ui,
+            true,
+            l.text(Msg::AnimMenuItem),
+            Some(crate::ANIMATION_SHORTCUT),
+            l.text(Msg::AnimMenuHover),
+            "",
+        ) {
+            self.open_animation(None);
+        }
         ui.separator();
         heading(ui, l.text(Msg::ViewPanels));
         ui.checkbox(&mut self.layout.show_input_bank, l.text(Msg::InputBank))

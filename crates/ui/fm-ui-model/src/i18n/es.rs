@@ -2591,6 +2591,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::AnimGraphReadout, t("fotograma {frame}: {value}")),
     (Msg::AnimElement, t("Elemento")),
+    (Msg::AnimElementNumbered, t("Elemento {n}")),
     (Msg::AnimNoElements, t("No hay elementos que animar")),
     (
         Msg::AnimNothingAnimated,
@@ -3314,5 +3315,162 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t(
             "La vista previa corrige esta imagen en este equipo, así que arrastrar es instantáneo; el servidor aplica la corrección a los monitores",
         ),
+    ),
+    // Studio Animation window (GX-011).
+    (Msg::AnimMenuItem, t("Animar título…")),
+    (
+        Msg::AnimMenuHover,
+        t("Abrir la ventana Animación para animar los elementos de un título"),
+    ),
+    (
+        Msg::ShortcutAnimation,
+        t("Abrir o cerrar la ventana Animación"),
+    ),
+    (Msg::TitleAnimate, t("Animar…")),
+    (
+        Msg::TitleAnimateHover,
+        t(
+            "Abrir este título en la ventana Animación: un preajuste por elemento, fotogramas clave y una vista previa exacta",
+        ),
+    ),
+    (Msg::AnimWinSection, t("Animar")),
+    (
+        Msg::AnimWinSectionHover,
+        t(
+            "La animación de entrada y salida de los elementos de un título. Se guarda en la plantilla del título, así que la reproduce cada entrada que usa la plantilla",
+        ),
+    ),
+    (Msg::AnimWinTitleHover, t("Qué título animar")),
+    (Msg::AnimWinTitleOptionHover, t("Animar {name}")),
+    (Msg::AnimWinNoTitles, t("Ningún título que animar")),
+    (
+        Msg::AnimWinNoTitlesDetail,
+        t("Añada una entrada de título al show y elija Animar… en su fila de la pestaña Títulos."),
+    ),
+    (Msg::AnimStatusSaved, t("GUARDADO")),
+    (
+        Msg::AnimStatusSavedHover,
+        t("El servidor tiene esta animación; la próxima toma la reproduce"),
+    ),
+    (Msg::AnimStatusUnsaved, t("SIN GUARDAR")),
+    (
+        Msg::AnimStatusUnsavedHover,
+        t(
+            "Cambios aún sin guardar. Con el guardado automático se guardan al soltar un arrastre; si no, pulse Guardar",
+        ),
+    ),
+    (Msg::AnimStatusSaving, t("GUARDANDO")),
+    (
+        Msg::AnimStatusSavingHover,
+        t("Se envió su cambio; esperando a que el servidor lo confirme"),
+    ),
+    (
+        Msg::AnimStatusConflictHover,
+        t(
+            "Otra persona cambió esta animación mientras usted la editaba. Recargue la suya o sobrescríbala con la de usted",
+        ),
+    ),
+    (
+        Msg::AnimStatusRefusedHover,
+        t(
+            "El servidor rechazó el último guardado, así que no sale al aire. Edite de nuevo o pulse Guardar para reintentar",
+        ),
+    ),
+    (Msg::AnimAutoSave, t("Guardado automático")),
+    (
+        Msg::AnimAutoSaveHover,
+        t(
+            "Guardar cada cambio en cuanto lo termina (al soltar el ratón). Desactivado: los cambios se quedan en este equipo hasta que pulse Guardar",
+        ),
+    ),
+    (
+        Msg::AnimSaveHover,
+        t("Guardar ahora esta animación en la plantilla del título"),
+    ),
+    (
+        Msg::AnimRevertHover,
+        t("Descartar los cambios sin guardar y volver a la animación guardada"),
+    ),
+    (Msg::AnimReasonSaved, t("no hay cambios sin guardar")),
+    (Msg::AnimReasonSaving, t("ya hay un guardado en camino")),
+    (
+        Msg::AnimReasonConflict,
+        t("resuelva primero el conflicto: recargue la suya o sobrescriba"),
+    ),
+    (
+        Msg::AnimReasonAnimationPending,
+        t("la animación del título aún se está sincronizando"),
+    ),
+    (
+        Msg::AnimReasonPreviewTransport,
+        t("las vistas previas exactas necesitan una conexión TCP directa con el servidor"),
+    ),
+    (Msg::AnimOnion, t("Papel cebolla")),
+    (
+        Msg::AnimOnionHover,
+        t(
+            "Mientras arrastra o recorre la línea de tiempo, mostrar contornos tenues unos fotogramas antes (azul) y después (ámbar) del cabezal",
+        ),
+    ),
+    (
+        Msg::AnimConflictBanner,
+        t("Otra persona cambió esta animación mientras usted la editaba."),
+    ),
+    (Msg::AnimReloadTheirs, t("Recargar la suya")),
+    (
+        Msg::AnimReloadTheirsHover,
+        t("Descartar sus cambios y cargar la animación que tiene ahora el servidor"),
+    ),
+    (Msg::AnimOverwrite, t("Sobrescribir")),
+    (
+        Msg::AnimOverwriteHover,
+        t("Conservar su versión y guardarla encima de la otra"),
+    ),
+    (Msg::AnimClose, t("Cerrar la ventana Animación")),
+    (Msg::AnimBadgeExact, t("VISTA EXACTA")),
+    (
+        Msg::AnimBadgeExactHover,
+        t("Renderizada por el servidor tal como saldrá al aire este fotograma"),
+    ),
+    (Msg::AnimBadgeFast, t("VISTA RÁPIDA")),
+    (
+        Msg::AnimBadgeFastHover,
+        t(
+            "Contornos de los elementos dibujados en este equipo para que arrastrar sea instantáneo; el fotograma exacto llega cuando se detiene",
+        ),
+    ),
+    (
+        Msg::AnimBadgeProxyHover,
+        t("Contornos de los elementos dibujados en este equipo. {reason}"),
+    ),
+    (
+        Msg::AnimCanvasHover,
+        t(
+            "El título en el cabezal. Recorra la regla de la línea de tiempo; arrastre claves o barras para cambiar los tiempos",
+        ),
+    ),
+    (
+        Msg::AnimCanvasCaption,
+        t("{phase} · fotograma {frame} de {total}"),
+    ),
+    (
+        Msg::AnimCanvasEmpty,
+        t("Esperando la primera vista previa…"),
+    ),
+    (
+        Msg::AnimDesignUnavailable,
+        t(
+            "El servidor aún no comparte la disposición de los elementos de este título: solo se listan los elementos que ya se mueven, sus preajustes se aplican en el servidor y no se dibujan contornos.",
+        ),
+    ),
+    (
+        Msg::AnimReasonServerPreset,
+        t(
+            "guarde o revierta primero sus cambios: los preajustes de este elemento se aplican en el servidor",
+        ),
+    ),
+    (
+        Msg::AnimPreviewUnavailable,
+        t("Las vistas previas exactas no están disponibles: {reason}."),
     ),
 ];

@@ -34,10 +34,11 @@ use fm_ui_model::title_editor::{TitleAccess, title_payload};
 #[cfg(test)]
 use fm_protocol::{AudioMeterChannel, AudioMetersMessage};
 
+use crate::animation;
 use crate::osc::{OscAction, OscReceiver};
 use crate::{
-    LifecycleState, PreferenceStore, SavedPreferences, StudioConfig, StudioRuntime,
-    preferences_path,
+    ControlTransport, LifecycleState, PreferenceStore, SavedPreferences, StudioConfig,
+    StudioRuntime, preferences_path,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -135,6 +136,12 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             current_update.soloed = update.soloed.or(current_update.soloed);
             current_update.follow_video = update.follow_video.or(current_update.follow_video);
             current_update.delay_samples = update.delay_samples.or(current_update.delay_samples);
+            true
+        }
+        // Exact previews are latest-wins: a newer request replaces a queued
+        // one.
+        (StudioIntent::TitlePreview(current), StudioIntent::TitlePreview(incoming)) => {
+            *current = incoming;
             true
         }
         // A newer draft of the same target's grade replaces a queued one:
@@ -301,6 +308,10 @@ impl StudioApp {
 
     fn enqueue_intent(&mut self, intent: StudioIntent) {
         let title_request = intent.title_request();
+        let preview = match &intent {
+            StudioIntent::TitlePreview(request) => Some(request.request_id.clone()),
+            _ => None,
+        };
         let result = self
             .requests
             .as_ref()
@@ -315,6 +326,11 @@ impl StudioApp {
             }
             // Nor a grade command: its draft stays, marked not on air.
             self.shell.abandon_grade_requests();
+            // An animation draft stays unsaved and is sent again.
+            self.shell.abandon_animation_requests();
+            if let Some(request_id) = preview {
+                self.shell.title_preview_unsent(&request_id);
+            }
             self.handle_enqueue_error(error);
         }
     }
@@ -356,6 +372,7 @@ impl StudioApp {
         // Nothing will answer the title or grade commands it was pursuing.
         self.shell.abandon_title_requests();
         self.shell.abandon_grade_requests();
+        self.shell.abandon_animation_requests();
         if !self.shutdown_sent {
             reconcile_finished_worker(&mut self.state, &mut self.updates, failed);
         }
@@ -446,6 +463,7 @@ impl eframe::App for StudioApp {
                 self.enqueue_intent(intent);
             }
         }
+
         if let Err(error) = self.preferences.observe(
             self.shell.locale(),
             self.shell.layout(),
@@ -974,6 +992,12 @@ fn run_worker(
         }
         match requests.try_recv() {
             Ok(WorkerRequest::Shutdown) | Err(TryRecvError::Disconnected) => break,
+            Ok(WorkerRequest::Intent(StudioIntent::TitlePreview(request))) => {
+                if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
+                    break;
+                }
+                continue;
+            }
             Ok(WorkerRequest::Intent(intent)) => {
                 if !recovery.defer_intent(&mut runtime, intent, publisher) {
                     break;
@@ -995,7 +1019,18 @@ fn run_worker(
                     | SessionEvent::StreamStatus { .. },
                 )) => true,
                 // Lossy monitor parts publish only once a frame completes.
-                Ok(Some(SessionEvent::MonitorFrame { complete, .. })) => complete,
+                Ok(Some(
+                    SessionEvent::MonitorFrame { complete, .. }
+                    | SessionEvent::TitlePreview { complete, .. },
+                )) => complete,
+                Ok(Some(SessionEvent::ServerError(error)))
+                    if animation::preview_error_id(&error).is_some() =>
+                {
+                    runtime.note_preview_failure(
+                        animation::preview_error_id(&error).unwrap_or_default(),
+                    );
+                    true
+                }
                 Ok(Some(SessionEvent::Disconnected { cause, .. })) => {
                     recovery.visible_error = Some(format!("Disconnected while idle: {cause:?}"));
                     recovery.reconnect_wait = ReconnectWait::from_runtime(&runtime);
@@ -1032,6 +1067,11 @@ fn run_worker(
         );
         match requests.recv_timeout(timeout) {
             Ok(WorkerRequest::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
+            Ok(WorkerRequest::Intent(StudioIntent::TitlePreview(request))) => {
+                if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
+                    break;
+                }
+            }
             Ok(WorkerRequest::Intent(intent)) => {
                 if recovery.active() || !recovery.deferred_intents.is_empty() {
                     if !recovery.defer_intent(&mut runtime, intent, publisher) {
@@ -1066,6 +1106,27 @@ fn run_worker(
     }
 }
 
+/// Sends an exact title preview request at once: previews are lossy and
+/// latest-wins, so they never queue behind commands. One that cannot be
+/// sent now is reported failed so the window asks again later.
+fn handle_preview_request(
+    runtime: &mut StudioRuntime,
+    request: fm_protocol::TitlePreviewRequest,
+    publisher: &StatePublisher,
+    recovery: &WorkerRecovery,
+) -> bool {
+    let request_id = request.request_id.clone();
+    if recovery.active() {
+        runtime.note_preview_failure(&request_id);
+    } else {
+        runtime.send_title_preview(request);
+    }
+    if runtime.preview_failure() == Some(request_id.as_str()) {
+        return publish_recovery_runtime(runtime, publisher, recovery);
+    }
+    true
+}
+
 fn handle_worker_intent(
     runtime: &mut StudioRuntime,
     intent: StudioIntent,
@@ -1074,6 +1135,13 @@ fn handle_worker_intent(
     publisher: &StatePublisher,
     recovery: &mut WorkerRecovery,
 ) -> bool {
+    // A preview deferred behind a command goes out as soon as it is next.
+    let intent = match intent {
+        StudioIntent::TitlePreview(request) => {
+            return handle_preview_request(runtime, request, publisher, recovery);
+        }
+        intent => intent,
+    };
     let title_request = intent.title_request();
     if recovery.terminal_uncertainties.len() == TERMINAL_UNCERTAINTY_CAPACITY {
         recovery.visible_error = Some(format!(
@@ -1367,7 +1435,16 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::RuntimeEvent { .. }
                         | SessionEvent::Event { .. }
                         | SessionEvent::StreamStatus { .. } => Some(true),
-                        SessionEvent::MonitorFrame { complete, .. } => Some(*complete),
+                        SessionEvent::MonitorFrame { complete, .. }
+                        | SessionEvent::TitlePreview { complete, .. } => Some(*complete),
+                        SessionEvent::ServerError(error)
+                            if animation::preview_error_id(error).is_some() =>
+                        {
+                            runtime.note_preview_failure(
+                                animation::preview_error_id(error).unwrap_or_default(),
+                            );
+                            Some(true)
+                        }
                         _ => None,
                     };
                     if let Some(publish) = publish {
@@ -1424,6 +1501,10 @@ fn begin_intent(
         StudioIntent::Title(command) => Some(command.clone()),
         _ => None,
     };
+    let carries_base_revision = matches!(
+        intent,
+        StudioIntent::Title(_) | StudioIntent::TitleAnimation(_)
+    );
     let payload = intent_payload(intent, view.as_ref())?;
     let expected_revision = view
         .as_ref()
@@ -1432,9 +1513,9 @@ fn begin_intent(
     let key = keys
         .next()
         .ok_or_else(|| "Studio idempotency key space is exhausted".to_owned())?;
-    // A title command carries its own base revision; an unrelated project
-    // change must not refuse it.
-    let expected_revision = title.is_none().then_some(expected_revision);
+    // A title or title animation command carries its own base revision; an
+    // unrelated project change must not refuse it.
+    let expected_revision = (!carries_base_revision).then_some(expected_revision);
     let command = runtime
         .queue_command(payload, key, expected_revision, None)
         .map_err(|error| format!("Could not queue command: {error}"))?;
@@ -1638,6 +1719,11 @@ fn consume_command_sequence(
         } => {
             let refusal = catalogue_refusal(runtime.session().client(), command_id, &result);
             let grade = grade_refusal(runtime.session().client(), command_id);
+            if let Some(refusal) =
+                animation::animation_refusal(runtime.session().client(), command_id, &result)
+            {
+                runtime.note_animation_refusal(refusal);
+            }
             publication.rejection(
                 runtime,
                 fm_ui_egui::command_rejection_message(code, message, fields),
@@ -1807,10 +1893,21 @@ fn receive_command_event(
         }
         // Lossy monitor parts are status, never command records: they are not
         // counted and publish only once a frame completes.
-        if let SessionEvent::MonitorFrame { complete, .. } = event {
+        if let SessionEvent::MonitorFrame { complete, .. }
+        | SessionEvent::TitlePreview { complete, .. } = event
+        {
             if complete {
                 publication.update(runtime, *deferred_rejections)?;
             }
+            continue;
+        }
+        // A refused exact preview is no command record either.
+        if let SessionEvent::ServerError(error) = &event
+            && let Some(request_id) = animation::preview_error_id(error)
+        {
+            let request_id = request_id.to_owned();
+            runtime.note_preview_failure(&request_id);
+            publication.update(runtime, *deferred_rejections)?;
             continue;
         }
         count_record(consumed)?;
@@ -2111,6 +2208,10 @@ fn intent_payload(
             .map_err(|error| format!("Cannot send title command: {error}"))?,
         StudioIntent::Playlist(intent) => playlist_payload(intent),
         StudioIntent::Grade(command) => command.payload(),
+        StudioIntent::TitleAnimation(payload) => payload,
+        StudioIntent::TitlePreview(_) => {
+            return Err("An exact title preview request is not a command".to_owned());
+        }
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
             if !view.inputs.contains(&input) {
@@ -2289,6 +2390,15 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
     state.catalogue_pending = catalogue_pending_requests(client);
     state.error = error.or(lifecycle_error);
     state.title_updates = runtime.take_title_updates(ready);
+    state.title_previews = runtime.transport() == ControlTransport::Tcp;
+    if ready {
+        state.title_preview = runtime
+            .session()
+            .latest_title_preview()
+            .map(|(image, _)| image.clone());
+    }
+    state.title_preview_failed = runtime.preview_failure().map(str::to_owned);
+    state.title_animation_refusal = runtime.animation_refusal().cloned();
     state
 }
 
@@ -5300,6 +5410,37 @@ mod tests {
             }
         }
 
+        /// Element 1 fades in over `in_frames` (Out phase 10 frames).
+        fn title_clip(in_frames: u32) -> fm_protocol::WireTitleClip {
+            use fm_animation::{
+                Easing, Keyframe, Phase, Property, Timebase, Track, TrackKey, Value,
+            };
+            let element = fm_protocol::WireTitleElementId::new(NonZeroU128::new(1).unwrap());
+            fm_protocol::WireTitleClip::from_tracks(
+                Timebase::new(fm_types::FrameRate::new(25, 1).unwrap()),
+                in_frames,
+                10,
+                vec![Track::new(
+                    TrackKey::new(element, Phase::In, Property::Opacity),
+                    vec![
+                        Keyframe::new(0, Value::Scalar(0), Easing::Linear),
+                        Keyframe::new(in_frames, Value::Scalar(255), Easing::Linear),
+                    ],
+                )],
+            )
+            .unwrap()
+        }
+
+        /// The title's animation at the snapshot: animation revision 2.
+        fn title_animation_state() -> fm_protocol::TitleAnimationStateMessage {
+            fm_protocol::TitleAnimationStateMessage {
+                revision: title_snapshot().revision,
+                input: title_input(),
+                animation_revision: 2,
+                clip: Box::new(title_clip(10)),
+            }
+        }
+
         fn command(request: u64, body: TitleCommandBody) -> TitleCommand {
             TitleCommand {
                 request,
@@ -5468,6 +5609,7 @@ mod tests {
             )));
             peer.send(&WireMessage::Snapshot(title_snapshot()));
             peer.send(&WireMessage::TitleState(title_state()));
+            peer.send(&WireMessage::TitleAnimationState(title_animation_state()));
             let mut answered = false;
             loop {
                 let Some(line) = peer.next_line() else {
@@ -5588,6 +5730,252 @@ mod tests {
             request_sender.send(WorkerRequest::Shutdown).unwrap();
             worker.join().unwrap();
             server.join().unwrap();
+        }
+
+        /// A small test preview with some transparent pixels.
+        fn preview_pixels() -> (u16, u16, Vec<u8>) {
+            let (width, height) = (64_u16, 36_u16);
+            let pixels = (0..usize::from(width) * usize::from(height))
+                .flat_map(|index| {
+                    let value = u8::try_from(index % 251).unwrap();
+                    [value, 255 - value, 40, if index % 7 == 0 { 0 } else { 255 }]
+                })
+                .collect();
+            (width, height, pixels)
+        }
+
+        /// Serves the title show with its animation: accepts the first
+        /// `title_animation_set` (result, `title_animation_changed`,
+        /// realization), refuses the second as stale, and answers each exact
+        /// preview request with a rendered frame.
+        fn serve_worker_animation(
+            listener: &TcpListener,
+            command_seen: &SyncSender<(Option<u64>, CommandPayload)>,
+        ) {
+            let mut peer = HeartbeatPeer::accept(listener);
+            peer.handshake_request();
+            let handshake = heartbeat_handshake(HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            });
+            let server = handshake.server.clone();
+            peer.send(&WireMessage::HandshakeResponse(handshake));
+            peer.send(&WireMessage::Snapshot(title_snapshot()));
+            peer.send(&WireMessage::TitleState(title_state()));
+            peer.send(&WireMessage::TitleAnimationState(title_animation_state()));
+            let mut answered = 0;
+            loop {
+                let Some(line) = peer.next_line() else {
+                    return;
+                };
+                match decode_line(&line).unwrap() {
+                    WireMessage::Heartbeat(heartbeat) => {
+                        if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
+                            HeartbeatAcknowledgementMessage {
+                                server: heartbeat.server,
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        )) {
+                            return;
+                        }
+                    }
+                    WireMessage::Command(command) => {
+                        command_seen
+                            .send((command.expected_revision, command.payload.clone()))
+                            .unwrap();
+                        let revision = title_snapshot().revision + 1;
+                        if answered == 0 {
+                            answered += 1;
+                            let CommandPayload::SetTitleAnimation { clip, .. } = command.payload
+                            else {
+                                panic!("expected title_animation_set");
+                            };
+                            peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                                id: command.id,
+                                revision,
+                                scheduled_frame: None,
+                            }));
+                            peer.send(&WireMessage::Event(EventMessage {
+                                payload: EventPayload::TitleAnimationChanged {
+                                    inputs: vec![title_input()],
+                                    animation_revision: 3,
+                                    clip,
+                                },
+                                ..command_event(revision)
+                            }));
+                            peer.send(&WireMessage::RuntimeEvent(command_runtime_event(revision)));
+                        } else {
+                            peer.send(&WireMessage::CommandResult(CommandResult::Rejected {
+                                id: command.id,
+                                code: "conflict".to_owned(),
+                                message: "the animation changed".to_owned(),
+                                fields: vec![fm_protocol::FieldIssue {
+                                    field: "base_revision".to_owned(),
+                                    code: "revision_conflict".to_owned(),
+                                    message: "animation revision is 9".to_owned(),
+                                }],
+                                current_revision: revision,
+                                retryable: false,
+                            }));
+                        }
+                    }
+                    WireMessage::TitlePreviewRequest(request) => {
+                        assert_eq!(request.input, title_input());
+                        let (width, height, pixels) = preview_pixels();
+                        let qoi = fm_protocol::encode_qoi_rgba(width, height, &pixels).unwrap();
+                        for part in fm_protocol::title_preview_parts(
+                            &server,
+                            &request.request_id,
+                            request.input,
+                            3,
+                            request.clip.is_some(),
+                            width,
+                            height,
+                            &qoi,
+                        ) {
+                            peer.send(&WireMessage::TitlePreviewFrame(part));
+                        }
+                    }
+                    other => panic!("unexpected peer message: {other:?}"),
+                }
+            }
+        }
+
+        #[test]
+        fn worker_saves_animation_edits_reports_conflicts_and_shows_exact_previews() {
+            use fm_animation::Phase;
+            use fm_ui_model::title_animation::{
+                AnimationRefusal, AnimationSaveStatus, AuthoritySync, TitleAnimationBinding,
+            };
+
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (command_seen, commands) = sync_channel(4);
+            let server = thread::spawn(move || serve_worker_animation(&listener, &command_seen));
+            let (request_sender, updates, worker) =
+                spawn_existing_worker(address, "title-animation-test");
+            let input = title_input().to_domain();
+            let animation = |state: &StudioUiState| {
+                state
+                    .project_state
+                    .as_ref()
+                    .and_then(|project| project.title(input))
+                    .and_then(|title| title.animation.clone())
+            };
+            let ready = receive_state_where(&updates, |state| {
+                state.connection_status == StudioConnectionStatus::Ready
+                    && animation(state).is_some()
+            });
+            assert!(ready.title_previews, "TCP sessions request exact previews");
+            let mut binding = TitleAnimationBinding::new(input, &animation(&ready).unwrap());
+
+            // An edit is saved as `title_animation_set` on its base revision,
+            // without a project revision precondition.
+            binding.document_mut().extend_phase(Phase::In, 20).unwrap();
+            let payload = binding.poll_save(true).unwrap();
+            request_sender
+                .send(WorkerRequest::Intent(StudioIntent::TitleAnimation(payload)))
+                .unwrap();
+            let (expected, sent) = commands.recv_timeout(HEARTBEAT_TEST_TIMEOUT).unwrap();
+            assert_eq!(expected, None);
+            let CommandPayload::SetTitleAnimation {
+                input: wire,
+                base_revision,
+                clip,
+            } = sent
+            else {
+                panic!("expected title_animation_set, got {sent:?}");
+            };
+            assert_eq!((wire, base_revision), (title_input(), 2));
+            assert_eq!(clip.in_frames(), 20);
+            let saved = receive_state_where(&updates, |state| {
+                state.pending_commands == 0
+                    && animation(state).is_some_and(|status| status.revision == 3)
+            });
+            assert!(saved.error.is_none(), "{:?}", saved.error);
+            assert_eq!(
+                binding.sync(&animation(&saved).unwrap()),
+                AuthoritySync::Saved
+            );
+            assert_eq!(binding.status(), AnimationSaveStatus::Saved);
+
+            // A stale save is refused as a conflict, published for the window.
+            binding.document_mut().extend_phase(Phase::In, 30).unwrap();
+            let payload = binding.poll_save(true).unwrap();
+            request_sender
+                .send(WorkerRequest::Intent(StudioIntent::TitleAnimation(payload)))
+                .unwrap();
+            let (_, sent) = commands.recv_timeout(HEARTBEAT_TEST_TIMEOUT).unwrap();
+            assert!(matches!(
+                sent,
+                CommandPayload::SetTitleAnimation {
+                    base_revision: 3,
+                    ..
+                }
+            ));
+            let refused =
+                receive_state_where(&updates, |state| state.title_animation_refusal.is_some());
+            let refusal = refused.title_animation_refusal.unwrap();
+            assert_eq!(refusal.input, input);
+            assert!(refusal.conflict);
+            binding.refused(AnimationRefusal::Conflict);
+            assert_eq!(binding.status(), AnimationSaveStatus::Conflict);
+
+            // The draft's exact preview comes back as a decoded image.
+            binding.want_preview(Duration::ZERO);
+            let request = binding
+                .poll_preview(Duration::from_secs(1), true)
+                .expect("a preview is due");
+            assert!(request.clip.is_some(), "the unsaved draft is previewed");
+            let request_id = request.request_id.clone();
+            request_sender
+                .send(WorkerRequest::Intent(StudioIntent::TitlePreview(request)))
+                .unwrap();
+            let previewed = receive_state_where(&updates, |state| {
+                state
+                    .title_preview
+                    .as_ref()
+                    .is_some_and(|image| image.request_id == request_id)
+            });
+            let image = previewed.title_preview.unwrap();
+            let (width, height, pixels) = preview_pixels();
+            assert_eq!(
+                (image.width, image.height, image.draft),
+                (width, height, true)
+            );
+            assert_eq!(&image.rgba[..], &pixels[..]);
+            assert!(binding.receive_preview(&request_id).is_some());
+            assert!(previewed.title_preview_failed.is_none());
+
+            request_sender.send(WorkerRequest::Shutdown).unwrap();
+            worker.join().unwrap();
+            server.join().unwrap();
+        }
+
+        #[test]
+        fn queued_exact_previews_coalesce_to_the_latest() {
+            let request = |id: &str| fm_protocol::TitlePreviewRequest {
+                protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                request_id: id.to_owned(),
+                input: title_input(),
+                sample: fm_protocol::TitlePreviewSample::Hold,
+                width: 64,
+                height: 36,
+                clip: None,
+            };
+            let mut pending = PendingIntents::new();
+            pending
+                .push(StudioIntent::TitlePreview(request("anim-preview-1")))
+                .unwrap();
+            pending
+                .push(StudioIntent::TitlePreview(request("anim-preview-2")))
+                .unwrap();
+            let queued: Vec<_> = pending.intents.iter().cloned().collect();
+            assert_eq!(
+                queued,
+                vec![StudioIntent::TitlePreview(request("anim-preview-2"))]
+            );
+            assert!(intent_payload(StudioIntent::TitlePreview(request("x")), None).is_err());
         }
     }
 }

@@ -456,3 +456,19 @@ fn a_pinned_locale_words_the_whole_timeline_and_its_notices() {
     );
     assert_eq!(output.transport.len(), TimelineAction::ALL.len());
 }
+
+#[test]
+fn elements_without_an_outline_are_numbered_and_keep_their_active_row() {
+    let mut harness = Harness::new(EditorMode::Advanced);
+    harness.document.set_targets([]);
+    let output = harness.idle();
+    let row = harness.key_position(&output, Property::PositionX, 10);
+    harness.click(row);
+    let (_, full) = harness.frame(Vec::new());
+    assert_eq!(harness.state.active_row, Some(track(Property::PositionX)));
+    assert!(
+        painted_text(&full).iter().any(|text| text == "Element 1"),
+        "{:?}",
+        painted_text(&full)
+    );
+}

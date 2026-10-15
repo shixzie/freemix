@@ -2127,10 +2127,18 @@ unsaved draft clip at an In/Hold/Out/static sample through `render_sampled`
 only). `fm-client` replicates the clip and assembles previews, and
 `fm-ui-model` adapts the headless `AnimDocument` to the authority (reset,
 saved, or conflict) and turns its exact preview requests into wire
-requests. Remaining gaps: scene layers are not animated, Studio does not yet
-wire the timeline, curve editor, and scrubbed preview to the daemon, and
-production clocks and images are not drawn by the CLI frame render, so
-`GX-011` remains planned.
+requests. Studio's Animation window (stage 4b; Titles row `Animate…`, View
+menu, Ctrl+Shift+A) binds one draft per title to the replicated clip: edits
+auto-save on release as `title_animation_set` on their base revision, a
+change under unsaved edits offers Reload theirs or Overwrite, padlocks and
+missing `EditProject` disable editing with reasons, and the canvas shows the
+debounced, latest-wins exact preview of the draft at the playhead (badged
+exact or fast). Remaining gaps: the protocol does not replicate a template's
+element layout (names, kinds, bounds), so Studio lists only elements that
+already move, applies their presets on the server, and draws no wireframe
+proxy or onion skins; scene layers are not animated; and production clocks
+and images are not drawn by the CLI frame render, so `GX-011` remains
+planned.
 
 Current implementation boundary for the color grading suite (`SW-019`):
 `fm-grade` is the pure, all-integer grade model (white balance, exposure,

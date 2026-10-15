@@ -27,9 +27,11 @@ pub(super) fn draw<T: Copy + Ord>(
     state: &mut AnimationTimelineState<T>,
     geometry: &TrackGeometry,
 ) {
-    // The active row follows the shown phase and must still exist.
+    // The active row follows the shown phase and must still exist: its
+    // element in the design, or (without an outline) its track.
     if let Some(row) = state.active_row
-        && (row.phase != document.phase() || document.target(row.target).is_none())
+        && (row.phase != document.phase()
+            || (document.target(row.target).is_none() && document.clip().track(row).is_none()))
     {
         state.active_row = None;
     }
@@ -68,8 +70,11 @@ fn easing_picker<T: Copy + Ord>(
         (Some(easing), false) => text::easing_name(l, easing).to_owned(),
         (None, false) => l.text(Msg::AnimEaseMixed).to_owned(),
     };
-    let enabled = !empty && document.drag().is_none();
-    let reason = if empty {
+    let lock = state.lock_reason.map(|reason| l.tr(reason));
+    let enabled = !empty && document.drag().is_none() && lock.is_none();
+    let reason = if let Some(lock) = lock {
+        lock
+    } else if empty {
         l.text(Msg::AnimReasonNoSelection)
     } else {
         l.text(Msg::AnimReasonDrag)
@@ -181,9 +186,10 @@ fn value_field<T: Copy + Ord>(
                 #[allow(clippy::cast_precision_loss)]
                 |(low, high)| (low as f64 / divisor, high as f64 / divisor),
             );
+            let lock = state.lock_reason.map(|reason| l.tr(reason));
             let response = ui
                 .add_enabled(
-                    document.drag().is_none(),
+                    document.drag().is_none() && lock.is_none(),
                     DragValue::new(&mut shown)
                         .range(range.0..=range.1)
                         .speed(if divisor > 10.0 { 0.5 } else { 1.0 })
@@ -196,13 +202,14 @@ fn value_field<T: Copy + Ord>(
                         Msg::AnimValueHover,
                         &[("property", Arg::Str(text::property_name(l, row.property)))],
                     ),
-                    l.text(Msg::AnimReasonDrag),
+                    lock.unwrap_or(l.text(Msg::AnimReasonDrag)),
                 );
             if response.changed() {
                 state.value_edit = Some(shown);
             }
             if !(response.dragged() || response.has_focus())
                 && let Some(edited) = state.value_edit.take()
+                && lock.is_none()
             {
                 #[allow(clippy::cast_possible_truncation)] // Clamped by the range above.
                 let stored = (edited * divisor).round() as i64;
@@ -233,8 +240,11 @@ fn add_property_menu<T: Copy + Ord>(
         .map(|outline| (outline.target, outline.name.clone()))
         .collect();
     let mut chosen = None;
-    let enabled = document.drag().is_none() && !targets.is_empty();
-    let reason = if targets.is_empty() {
+    let lock = state.lock_reason.map(|reason| l.tr(reason));
+    let enabled = document.drag().is_none() && !targets.is_empty() && lock.is_none();
+    let reason = if let Some(lock) = lock {
+        lock
+    } else if targets.is_empty() {
         l.text(Msg::AnimReasonNoTargets)
     } else {
         l.text(Msg::AnimReasonDrag)

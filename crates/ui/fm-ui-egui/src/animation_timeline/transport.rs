@@ -102,6 +102,9 @@ pub fn action_spec<T: Copy + Ord>(
     let l = locale;
     let dragging = document.drag().is_some();
     let busy = dragging.then(|| l.text(Msg::AnimReasonDrag));
+    // Edits wait for the lock first; reading the animation never does.
+    let lock = state.lock_reason.map(|reason| l.tr(reason));
+    let edit_busy = lock.or(busy);
     let no_selection = document
         .selection()
         .is_empty()
@@ -150,7 +153,7 @@ pub fn action_spec<T: Copy + Ord>(
         TimelineAction::KeyAtPlayhead => (
             l.text(Msg::AnimKeyButton),
             l.text(Msg::AnimKeyHover),
-            busy.or_else(|| match document.mode() {
+            edit_busy.or_else(|| match document.mode() {
                 EditorMode::Simple => Some(l.text(Msg::AnimReasonSimpleKey)),
                 EditorMode::Advanced => state
                     .active_row
@@ -162,7 +165,7 @@ pub fn action_spec<T: Copy + Ord>(
         TimelineAction::Delete => (
             l.text(Msg::AnimDelete),
             l.text(Msg::AnimDeleteHover),
-            busy.or(no_selection),
+            edit_busy.or(no_selection),
             false,
         ),
         TimelineAction::Copy => (
@@ -174,7 +177,7 @@ pub fn action_spec<T: Copy + Ord>(
         TimelineAction::Paste => (
             l.text(Msg::AnimPaste),
             l.text(Msg::AnimPasteHover),
-            busy.or_else(|| {
+            edit_busy.or_else(|| {
                 document
                     .clipboard()
                     .is_none_or(|clipboard| clipboard.keys.is_empty())
@@ -185,13 +188,15 @@ pub fn action_spec<T: Copy + Ord>(
         TimelineAction::Undo => (
             l.text(Msg::Undo),
             l.text(Msg::AnimUndoHover),
-            busy.or_else(|| (!document.can_undo()).then(|| l.text(Msg::AnimReasonNothingToUndo))),
+            edit_busy
+                .or_else(|| (!document.can_undo()).then(|| l.text(Msg::AnimReasonNothingToUndo))),
             false,
         ),
         TimelineAction::Redo => (
             l.text(Msg::Redo),
             l.text(Msg::AnimRedoHover),
-            busy.or_else(|| (!document.can_redo()).then(|| l.text(Msg::AnimReasonNothingToRedo))),
+            edit_busy
+                .or_else(|| (!document.can_redo()).then(|| l.text(Msg::AnimReasonNothingToRedo))),
             false,
         ),
         TimelineAction::ToggleMode => match document.mode() {
@@ -462,6 +467,9 @@ pub(super) fn handle_keys<T: Copy + Ord>(
                     if document.drag().is_none() {
                         document.step(delta);
                     }
+                } else if let Some(reason) = state.lock_reason {
+                    let locale = state.locale();
+                    state.notice = Some(super::Notice::hint(locale.tr(reason)));
                 } else if let Err(error) = document.nudge_selection(delta) {
                     // A nudge is not a transport action; only its refusal
                     // is reported.

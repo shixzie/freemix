@@ -20,9 +20,10 @@ use egui::{
     Ui, Vec2,
 };
 use fm_protocol::{
-    AudioMetersMessage, LiveInputSource, ManualTransitionKind, ManualTransitionPosition,
-    MonitorFrameOrigin, MonitorImage, MonitorTap, StreamStatusMessage, WireOverlayChannelId,
-    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    AudioMetersMessage, CommandPayload, LiveInputSource, ManualTransitionKind,
+    ManualTransitionPosition, MonitorFrameOrigin, MonitorImage, MonitorTap, StreamStatusMessage,
+    TitlePreviewImage, TitlePreviewRequest, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId, WireStreamTargetId,
 };
 use fm_types::{InputId, OutputId};
 use fm_ui_model::grade_editor::GradeCommand;
@@ -57,6 +58,7 @@ mod playlist;
 mod preferences;
 mod stinger_config;
 mod stream_control;
+mod studio_animation;
 mod studio_color;
 mod theme;
 mod titles;
@@ -91,6 +93,7 @@ pub use stinger_config::{
     stinger_remove_intent, stinger_setup_block_reason,
 };
 pub use stream_control::{StreamAction, stream_action, stream_command_pending};
+pub use studio_animation::{ANIMATION_SHORTCUT, TitleAnimationRefusal};
 pub use studio_color::{COLOR_SHORTCUT, GradeLutFile, GradeLutRequest, GradeRefusal};
 pub use titles::TitleUpdate;
 
@@ -239,6 +242,16 @@ pub enum StudioIntent {
     /// Sends one grade command from the Colour window: a target's grade,
     /// a library save, or a LUT import.
     Grade(GradeCommand),
+    /// Saves a title template's animation from the Animation window: a
+    /// `title_animation_set`, `title_animation_preset`, or
+    /// `title_animation_stretch` payload that carries its own base
+    /// revision.
+    TitleAnimation(CommandPayload),
+    /// Asks for an exact title preview. Not a command: the worker sends it
+    /// as a `title_preview_request` (latest wins) and the answer arrives as
+    /// [`StudioUiState::title_preview`] or
+    /// [`StudioUiState::title_preview_failed`].
+    TitlePreview(TitlePreviewRequest),
 }
 
 impl StudioIntent {
@@ -373,6 +386,15 @@ pub struct StudioUiState {
     pub title_updates: Vec<TitleUpdate>,
     /// The latest refused grade command, published once with its rejection.
     pub grade_refusal: Option<GradeRefusal>,
+    /// The latest refused title animation save (kept until another one is
+    /// refused; the Animation window acts on each command id once).
+    pub title_animation_refusal: Option<TitleAnimationRefusal>,
+    /// Whether this connection carries exact title previews (raw TCP only).
+    pub title_previews: bool,
+    /// The latest assembled exact title preview of this session.
+    pub title_preview: Option<TitlePreviewImage>,
+    /// The `request_id` of the latest refused or lost exact title preview.
+    pub title_preview_failed: Option<String>,
 }
 
 impl StudioUiState {
@@ -405,6 +427,10 @@ impl StudioUiState {
             title_access: TitleAccess::new(false, false, false),
             title_updates: Vec::new(),
             grade_refusal: None,
+            title_animation_refusal: None,
+            title_previews: false,
+            title_preview: None,
+            title_preview_failed: None,
         }
     }
 
@@ -771,7 +797,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 17] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 18] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -863,6 +889,13 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 17] = [
         group: ShortcutGroup::Console,
         keys: studio_color::COLOR_SHORTCUT,
         action: Msg::ShortcutColor.en(),
+        key: None,
+    },
+    // Handled by [`StudioShell::toggle_animation_on_key`].
+    ShortcutEntry {
+        group: ShortcutGroup::Console,
+        keys: studio_animation::ANIMATION_SHORTCUT,
+        action: Msg::ShortcutAnimation.en(),
         key: None,
     },
     ShortcutEntry {
@@ -1109,6 +1142,8 @@ pub struct StudioShell {
     show_preferences: bool,
     /// The Colour window and its grade draft.
     color: studio_color::ColorWindow,
+    /// The Animation window and its title animation drafts.
+    animation: studio_animation::AnimationWindow,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1298,6 +1333,7 @@ impl StudioShell {
     fn toggle_windows_on_keys(&mut self, ui: &mut Ui) {
         self.toggle_help_on_key(ui);
         self.toggle_color_on_key(ui);
+        self.toggle_animation_on_key(ui);
     }
 
     /// Whether a dialog, menu, or popup owns the keyboard. Dialogs are modal
@@ -1310,6 +1346,7 @@ impl StudioShell {
             || self.add_input.is_some()
             || self.remove_input.is_some()
             || self.color_owns_keyboard()
+            || self.animation_owns_keyboard()
             || egui::Popup::is_any_open(context)
     }
 
@@ -1456,7 +1493,7 @@ impl StudioShell {
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
-        self.draw_color_window(ui.ctx(), state, &mut intents);
+        self.draw_tool_windows(ui.ctx(), state, &mut intents);
         self.track_catalogue_intents(ui.ctx(), state, &intents);
         theme::paint_focus_ring(ui.ctx());
         intents
@@ -1728,6 +1765,7 @@ impl Default for StudioShell {
             default_locale: Locale::ENGLISH,
             show_preferences: false,
             color: studio_color::ColorWindow::default(),
+            animation: studio_animation::AnimationWindow::default(),
         }
     }
 }
@@ -2256,7 +2294,7 @@ mod tests {
             .iter()
             .filter(|entry| entry.group == ShortcutGroup::Console)
             .collect();
-        assert_eq!(console.len(), 6);
+        assert_eq!(console.len(), 7);
         assert_eq!(console[0].keys, Msg::KeyHelp.en());
         assert!(console.iter().all(|entry| entry.key.is_none()));
         // Every group has entries, and every entry's group is drawn.

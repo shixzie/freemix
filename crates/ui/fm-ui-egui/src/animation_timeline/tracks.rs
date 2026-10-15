@@ -20,7 +20,7 @@ use fm_ui_model::animation_editor::{
 
 use fm_ui_model::i18n::{Arg, Locale, Msg};
 
-use super::{AnimationTimelineState, Notice, text};
+use super::{AnimationTimelineState, Notice, PresetRequest, text};
 use crate::gating::Hint;
 use crate::theme::{
     ACCENT_FILL, AMBER, ERROR, accent_color, border_color, border_strong_color, faded, legible,
@@ -173,9 +173,28 @@ pub fn target_keys<T: Copy + Ord>(document: &AnimDocument<T>, target: T) -> KeyS
         .collect()
 }
 
+/// An element's name: its outline's, or "Element N" numbering the animated
+/// elements without an outline in id order.
 fn target_name<T: Copy + Ord>(l: Locale, document: &AnimDocument<T>, target: T) -> String {
     document.target(target).map_or_else(
-        || l.text(Msg::AnimElement).to_owned(),
+        || {
+            let mut unknown: Vec<T> = document
+                .clip()
+                .tracks()
+                .iter()
+                .map(|track| track.key.target)
+                .filter(|candidate| document.target(*candidate).is_none())
+                .collect();
+            unknown.sort_unstable();
+            unknown.dedup();
+            unknown
+                .iter()
+                .position(|candidate| *candidate == target)
+                .map_or_else(
+                    || l.text(Msg::AnimElement).to_owned(),
+                    |index| l.format(Msg::AnimElementNumbered, &[("n", Arg::from(index + 1))]),
+                )
+        },
         |outline| outline.name.clone(),
     )
 }
@@ -432,6 +451,15 @@ fn handle_pointer<T: Copy + Ord>(
                 _ => Some(DragStart::SelectionBox),
             },
             Hit::Outside => None,
+        };
+        // A lock keeps scrubbing and box selection but no edit drags.
+        let start = match (state.lock_reason, start) {
+            (Some(reason), Some(DragStart::Key(_) | DragStart::Retime(_))) => {
+                let locale = state.locale();
+                state.notice = Some(Notice::hint(locale.tr(reason)));
+                None
+            }
+            (_, start) => start,
         };
         // Key drags move by the pointer's travel from the press frame, so the
         // key follows the pointer without jumping by the hit slop.
@@ -808,11 +836,21 @@ fn labels<T: Copy + Ord>(
                     font.clone(),
                     text_color(),
                 );
-                let enabled = document.drag().is_none() && document.target(target).is_some();
-                let reason = if document.drag().is_some() {
+                let lock = state.lock_reason.map(|reason| l.tr(reason));
+                let outline = document.target(target).is_some();
+                let outside = match state.outside_presets {
+                    _ if outline => None,
+                    None => Some(l.text(Msg::AnimReasonUnknownTarget)),
+                    Some(Ok(())) => None,
+                    Some(Err(reason)) => Some(l.tr(reason)),
+                };
+                let enabled = lock.is_none() && document.drag().is_none() && outside.is_none();
+                let reason = if let Some(lock) = lock {
+                    lock
+                } else if document.drag().is_some() {
                     l.text(Msg::AnimReasonDrag)
                 } else {
-                    l.text(Msg::AnimReasonUnknownTarget)
+                    outside.unwrap_or_default()
                 };
                 ui.scope_builder(UiBuilder::new().max_rect(picker_rect), |ui| {
                     ui.add_enabled_ui(enabled, |ui| {
@@ -846,6 +884,15 @@ fn labels<T: Copy + Ord>(
         } else {
             (nominal_fps(document) / 2).max(1)
         };
+        if document.target(target).is_none() {
+            state.preset_requests.push(PresetRequest {
+                target,
+                phase: document.phase(),
+                preset,
+                frames: duration,
+            });
+            return;
+        }
         match document.apply_preset(target, document.phase(), preset, duration) {
             Ok(()) => state.notice = None,
             Err(error) => state.notice = Some(Notice::error(l, &error)),
