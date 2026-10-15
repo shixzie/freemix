@@ -435,3 +435,95 @@ fn an_unanimated_title_holds_at_once_and_leaves_with_the_channel_transition() {
     tick_to(&mut engine, 15);
     assert!(!engine.realized_switcher().overlay(channel(1)).is_active());
 }
+
+#[test]
+fn a_submitted_title_cue_is_refused_and_never_realized() {
+    let mut engine = engine();
+    let outcome = execute(
+        &mut engine,
+        "cue",
+        EngineCommand::RealizeTitle(fm_engine::TitleCue {
+            input: input(TITLE),
+            channel: channel(1),
+            action: fm_engine::TitleCueAction::Take,
+            timing: TitleAirTiming::of(&template().animation),
+        }),
+    );
+    let rejection = &outcome.receipt.rejected().unwrap().rejection;
+    assert_eq!(
+        rejection.code,
+        RejectionCode::InvalidCommand,
+        "{rejection:?}"
+    );
+    let result = engine.tick().unwrap();
+    assert!(!result.overlays[channel(1).index()].is_active());
+    assert_eq!(title_on(&result), None);
+}
+
+#[test]
+fn a_plain_take_of_a_leaving_title_on_its_channel_ends_the_out_phase() {
+    let mut engine = engine();
+    accept(&mut engine, "take", take(3));
+    tick_to(&mut engine, 25);
+    accept(&mut engine, "off", off_air());
+    tick_to(&mut engine, 30);
+    assert_eq!(engine.titles_on_air()[0].frame.phase, TitleAirPhase::Out);
+
+    // The operator puts the title back with a plain overlay take: it is on
+    // air the plain way, in its Hold pose, not still animating out (and
+    // then snapping back to Hold while on air).
+    accept(
+        &mut engine,
+        "plain-take",
+        EngineCommand::TakeOverlay {
+            channel: channel(3),
+            source: input(TITLE),
+        },
+    );
+    let result = engine.tick().unwrap();
+    assert!(result.overlays[channel(3).index()].is_active());
+    assert!(!result.overlays[channel(3).index()].is_transitioning());
+    assert_eq!(title_on(&result), None);
+    assert_eq!(engine.titles_on_air(), Vec::new());
+    assert!(engine.snapshot().is_ok());
+}
+
+#[test]
+fn a_plain_off_fading_past_the_out_phase_still_ends_with_it() {
+    let mut engine = engine();
+    accept(
+        &mut engine,
+        "fade",
+        EngineCommand::ConfigureOverlayTransition {
+            channel: channel(3),
+            transition: OverlayTransitionKind::Fade,
+            duration_frames: 30,
+        },
+    );
+    accept(&mut engine, "take", take(3));
+    tick_to(&mut engine, 25);
+    accept(&mut engine, "off", off_air());
+    tick_to(&mut engine, 30);
+    // A plain off while the title plays Out (frames 25..37) fades the
+    // channel over 30 frames, past the end of the Out phase.
+    accept(
+        &mut engine,
+        "plain-off",
+        EngineCommand::OverlayOff {
+            channel: channel(3),
+        },
+    );
+    tick_to(&mut engine, 36);
+    let last_out = engine.tick().unwrap();
+    assert_eq!(last_out.frame.get(), 36);
+    assert_eq!(title_on(&last_out).unwrap().frame.phase, TitleAirPhase::Out);
+    // The title animated out: it never comes back in its Hold pose.
+    let after = engine.tick().unwrap();
+    assert_eq!(title_on(&after), None);
+    assert!(
+        !after.overlays[channel(3).index()].is_active(),
+        "the channel goes off when the Out phase ends"
+    );
+    assert!(!engine.realized_switcher().overlay(channel(3)).is_active());
+    assert!(engine.snapshot().is_ok());
+}

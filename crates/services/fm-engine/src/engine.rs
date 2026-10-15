@@ -1087,6 +1087,14 @@ impl Engine {
                     self.frame_rate,
                 )?
             } else {
+                // A plain take on a title's channel ends its animation, even
+                // when it takes the same title: it is on air the plain way.
+                if let EngineCommand::TakeOverlay { channel, .. }
+                | EngineCommand::TakeNextOverlay { channel } = &scheduled.action
+                {
+                    self.title_air
+                        .retain(|_, (shown_on, _)| shown_on != channel);
+                }
                 apply_runtime(&mut self.realized_switcher, scheduled.action)?
             };
             events.extend(command_events);
@@ -1112,6 +1120,22 @@ impl Engine {
             events.push(event);
         }
         let next = frame.saturating_add(1);
+        // A title's channel goes off when its Out phase ends, even if a plain
+        // overlay off replaced the hold with a longer fade.
+        for (input, (channel, air)) in &self.title_air {
+            if air.is_leaving()
+                && air.at(next).is_none()
+                && self
+                    .realized_switcher
+                    .overlay_channels_showing(*input)
+                    .any(|shown_on| shown_on == *channel)
+            {
+                events.extend(
+                    self.realized_switcher
+                        .request_overlay_off_after(*channel, 0),
+                );
+            }
+        }
         self.title_air.retain(|_, (_, air)| air.at(next).is_some());
 
         Ok(FrameResult {

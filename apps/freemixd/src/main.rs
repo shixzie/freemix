@@ -5532,7 +5532,7 @@ impl NativeDaemon {
         self.titles.observe_frame(projected);
         // An animating title holds the frame until its projected pose is
         // ingested (bounded), so each In and Out frame airs as projected.
-        let titles_covered = self.titles.covered(projected);
+        let titles_covered = self.titles.covered(projected, self.next_deadline()?);
         let audio_covered = self
             .master
             .service_project_next_frame(projected, &self.project_plan)?;

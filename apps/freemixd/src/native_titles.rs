@@ -38,9 +38,11 @@
 //! renders that pose at that frame. [`NativeTitleSources::covered`] then
 //! holds the frame until every title the engine tracks on an overlay has
 //! ingested the pose of exactly that frame, so the first In frame, each
-//! phase frame, and the last Out frame go to air as projected. A render
-//! slower than [`MAX_TITLE_POSE_WAIT`] stops holding the frame, which then
-//! shows the previous pose; such frames are counted.
+//! phase frame, and the last Out frame go to air as projected. A frame is
+//! held at most [`MAX_TITLE_POSE_WAIT`] past its host deadline and then
+//! shows the latest pose ingested; such frames are counted. The bound is
+//! from the deadline, so a renderer slower than the frame rate costs the
+//! output clock at most that bound in total, not on every phase frame.
 //!
 //! Production clock elements read their template's clocks in the daemon's
 //! clock domain (see [`title_render::TitleTime`]): the monotonic clock is the
@@ -221,9 +223,8 @@ struct WorkerState {
     poses: BTreeMap<InputId, (AnimSample, u64)>,
     /// The pose of the frame each title last ingested.
     ingested: BTreeMap<InputId, AnimSample>,
-    /// The projected frame the loop is holding for title poses, and since
-    /// when.
-    waiting: Option<(u64, Instant)>,
+    /// The last projected frame counted in `late_poses`.
+    late_frame: Option<u64>,
     renders: u64,
     failed_renders: u64,
     /// Frames realized before an animating title's pose was ingested.
@@ -412,14 +413,17 @@ impl NativeTitleSources {
         }
     }
 
-    /// Whether `projected` may be realized: every title the engine tracks
-    /// on an overlay has ingested the pose of exactly this frame, or the
-    /// frame has waited [`MAX_TITLE_POSE_WAIT`] for it.
-    pub(crate) fn covered(&self, projected: &FrameResult) -> bool {
-        self.covered_at(projected.frame.get(), &projected_poses(projected))
+    /// Whether `projected`, due at host instant `deadline`, may be realized:
+    /// every title the engine tracks on an overlay has ingested the pose of
+    /// exactly this frame, or the frame is [`MAX_TITLE_POSE_WAIT`] past its
+    /// deadline. The bound is measured from the deadline, not from when the
+    /// frame started waiting, so a renderer that cannot keep up delays the
+    /// output by at most the bound in total rather than on every frame.
+    pub(crate) fn covered(&self, projected: &FrameResult, deadline: Instant) -> bool {
+        self.covered_at(projected.frame.get(), &projected_poses(projected), deadline)
     }
 
-    fn covered_at(&self, frame: u64, poses: &[(InputId, AnimSample)]) -> bool {
+    fn covered_at(&self, frame: u64, poses: &[(InputId, AnimSample)], deadline: Instant) -> bool {
         if self.worker.is_none() {
             return true;
         }
@@ -433,23 +437,16 @@ impl NativeTitleSources {
                     != *pose
         });
         if !pending {
-            state.waiting = None;
             return true;
         }
-        let since = match state.waiting {
-            Some((waiting, since)) if waiting == frame => since,
-            _ => {
-                let now = Instant::now();
-                state.waiting = Some((frame, now));
-                now
-            }
-        };
-        if since.elapsed() < MAX_TITLE_POSE_WAIT {
+        if Instant::now() < deadline + MAX_TITLE_POSE_WAIT {
             return false;
         }
-        state.late_poses = state.late_poses.saturating_add(1);
-        // Realize this frame late once; the next frame waits afresh.
-        state.waiting = Some((frame.saturating_add(1), Instant::now()));
+        // Count each frame realized with a stale pose once.
+        if state.late_frame != Some(frame) {
+            state.late_frame = Some(frame);
+            state.late_poses = state.late_poses.saturating_add(1);
+        }
         true
     }
 
@@ -946,18 +943,20 @@ mod tests {
         // Off air the title is seeded in its Hold pose: fully faded in.
         assert_eq!(bar_alpha(&seeds[0].1), 255);
         let first = [(input_id(20), ClipState::In(ClipPosition::frame(0)))];
-        // The take frame is held until its pose is ingested.
-        assert!(!sources.covered_at(5, &first));
+        // The take frame is held, even past its deadline, until its pose is
+        // ingested.
+        let due = Instant::now();
+        assert!(!sources.covered_at(5, &first, due));
         sources.observe_poses(5, &first);
         let rendered = wait_for_frame(&sources);
         assert_eq!(bar_alpha(&rendered[0].1), 0);
-        assert!(sources.covered_at(5, &first));
+        assert!(sources.covered_at(5, &first, due));
 
         // Half way through the In phase.
         let half = [(input_id(20), ClipState::In(ClipPosition::frame(5)))];
         sources.observe_poses(10, &half);
         assert_eq!(bar_alpha(&wait_for_frame(&sources)[0].1), 127);
-        assert!(sources.covered_at(10, &half));
+        assert!(sources.covered_at(10, &half, Instant::now()));
 
         // Settled: the Hold pose renders once, then nothing while it holds.
         sources.observe_poses(15, &[(input_id(20), ClipState::Hold)]);
@@ -968,13 +967,43 @@ mod tests {
         assert_eq!(sources.take_completed().len(), 0);
         assert_eq!(sources.render_counts(), renders);
 
-        // A pose never rendered stops holding the frame after the bound and
-        // is counted late.
+        // A pose never rendered stops holding the frame once it is the
+        // bound past its deadline, and is counted late once.
         let stalled = [(input_id(20), ClipState::In(ClipPosition::frame(9)))];
-        assert!(!sources.covered_at(20, &stalled));
+        let due = Instant::now();
+        assert!(!sources.covered_at(20, &stalled, due));
         thread::sleep(MAX_TITLE_POSE_WAIT);
-        assert!(sources.covered_at(20, &stalled));
+        assert!(sources.covered_at(20, &stalled, due));
+        assert!(sources.covered_at(20, &stalled, due));
         assert_eq!(sources.late_poses(), 1);
+    }
+
+    #[test]
+    fn a_renderer_that_cannot_keep_up_delays_the_output_by_the_bound_once() {
+        use fm_titles::fm_animation::{ClipPosition, ClipState};
+
+        let project = project(&[(20, title(FADE_URI, 0, [200, 100, 50, 255]))]);
+        let (sources, _) = NativeTitleSources::start(assets(), &project, domain()).unwrap();
+        // Frames 0..5 of an In phase at 50 fps whose poses are never
+        // ingested (the renderer is slower than the frame rate). The first
+        // frame waits out the bound past its deadline; the output is then
+        // already that late, so the following frames, whose deadlines have
+        // all passed by the bound, do not each wait it again.
+        let origin = Instant::now();
+        let period = Duration::from_millis(20);
+        let deadline = |frame: u32| origin + period * frame;
+        let pose = |frame: u32| [(input_id(20), ClipState::In(ClipPosition::frame(frame)))];
+        assert!(!sources.covered_at(0, &pose(0), deadline(0)));
+        thread::sleep(MAX_TITLE_POSE_WAIT + period * 5);
+        let started = Instant::now();
+        for frame in 0..5 {
+            assert!(
+                sources.covered_at(u64::from(frame), &pose(frame), deadline(frame)),
+                "frame {frame} waits afresh"
+            );
+        }
+        assert!(started.elapsed() < MAX_TITLE_POSE_WAIT);
+        assert_eq!(sources.late_poses(), 5);
     }
 
     #[test]
@@ -1470,7 +1499,7 @@ mod daemon_tests {
                 assert!(Instant::now() < deadline, "the pose was never rendered");
                 thread::sleep(Duration::from_millis(2));
             }
-            assert!(titles.covered(&frame));
+            assert!(titles.covered(&frame, Instant::now()));
             if frame.overlays[channel.index()].is_active() {
                 mirror.take_overlay(channel, id(2)).unwrap();
             } else {
