@@ -1170,18 +1170,36 @@ fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, fader_height: f32) -> boo
             draw_meter_scale(ui, fader_height);
         });
         ui.vertical_centered(|ui| {
+            // One line: the tap label shrinks to the strip instead of
+            // wrapping mid-word when high contrast enlarges small text.
+            let text = l.text(Msg::MasterTap);
+            let size = fitted_font_size(ui, text, crate::theme::legible(8.5), ui.available_width());
             ui.add(
-                egui::Label::new(
-                    RichText::new(l.text(Msg::MasterTap))
-                        .size(crate::theme::legible(8.5))
-                        .color(muted_color()),
-                )
-                .wrap(),
+                egui::Label::new(RichText::new(text).size(size).color(muted_color())).truncate(),
             )
             .on_hover_text(l.text(Msg::MasterTapHover));
         });
     });
     clear_clip
+}
+
+/// The largest proportional font size up to `size` (and no smaller than
+/// 7 pt) at which `text` fits `width` on one line.
+fn fitted_font_size(ui: &Ui, text: &str, size: f32, width: f32) -> f32 {
+    let natural = ui
+        .painter()
+        .layout_no_wrap(
+            text.to_owned(),
+            FontId::new(size, FontFamily::Proportional),
+            Color32::WHITE,
+        )
+        .size()
+        .x;
+    if natural <= width || natural <= 0.0 {
+        size
+    } else {
+        (size * width / natural).floor().max(7.0)
+    }
 }
 
 /// Width of a meter well for `bars` channel bars, including its tick gutter.

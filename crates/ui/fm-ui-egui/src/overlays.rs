@@ -42,6 +42,19 @@ pub(crate) fn draw_overlays(
     });
 }
 
+/// The row's `TAKE` key: accent-filled only while it can act, so a TAKE
+/// that cannot (disconnected, no permission, no Preview source) reads as an
+/// unlit key like every other disabled key; its tooltip gives the reason.
+fn take_key(text: &str, enabled: bool) -> Button<'static> {
+    let key = small_button(text).min_size(Vec2::new(0.0, OVERLAY_ROW_HEIGHT - 2.0));
+    if enabled {
+        key.fill(crate::theme::ACCENT_FILL)
+            .stroke(Stroke::new(1.0, accent_color().gamma_multiply(0.6)))
+    } else {
+        key
+    }
+}
+
 /// Vertical gap between overlay rows.
 const OVERLAY_ROW_GAP: f32 = 4.0;
 /// Height of an overlay row's header controls.
@@ -157,14 +170,9 @@ fn draw_overlay_channel(
                             egui::Sense::hover(),
                         )
                         .0;
+                    let take_enabled = enabled && source.is_some();
                     if ui
-                        .add_enabled(
-                            enabled && source.is_some(),
-                            small_button(l.text(Msg::TakeKey))
-                                .min_size(Vec2::new(0.0, OVERLAY_ROW_HEIGHT - 2.0))
-                                .fill(crate::theme::ACCENT_FILL)
-                                .stroke(Stroke::new(1.0, accent_color().gamma_multiply(0.6))),
-                        )
+                        .add_enabled(take_enabled, take_key(l.text(Msg::TakeKey), take_enabled))
                         .hint(
                             l.text(Msg::OverlayTakeHover),
                             why(enabled, reason, Msg::ReasonNoPreviewSource.en()),

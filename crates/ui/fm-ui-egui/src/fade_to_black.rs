@@ -81,7 +81,7 @@ pub(super) fn draw_fade_to_black(
         // desired target permits (to black while live, to live while black).
         let (label, active, enabled, hover) = if black {
             (
-                "FTB  ON",
+                l.text(Msg::FtbOnKey),
                 false,
                 availability.to_live,
                 with_key(l, l.text(Msg::FtbReverseHover), "B"),

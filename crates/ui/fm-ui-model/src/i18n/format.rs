@@ -240,6 +240,51 @@ impl Locale {
         }
         out
     }
+
+    /// A key or key combination as printed on this language's keyboards
+    /// (`Ctrl+Shift+A` reads `Ctrl+Mayús+A` in Spanish). A whole catalog
+    /// text such as [`Msg::KeyClick`] is translated first; then each key
+    /// name word (`Shift`, `Enter`, `Space`, …) is replaced, so separators
+    /// and single-character keys (`+`, `-`, `=`, `·`) pass through.
+    #[must_use]
+    pub fn keys(self, combo: &str) -> String {
+        let combo = self.tr(combo);
+        let names: &[(&str, &str)] = match self.language {
+            Language::English => return combo.to_owned(),
+            Language::Spanish => &[
+                ("Shift", "Mayús"),
+                ("Enter", "Intro"),
+                ("Return", "Intro"),
+                ("Space", "Espacio"),
+                ("Delete", "Supr"),
+                ("Backspace", "Retroceso"),
+                ("Home", "Inicio"),
+                ("End", "Fin"),
+                ("PageUp", "RePág"),
+                ("PageDown", "AvPág"),
+            ],
+        };
+        let mut out = String::with_capacity(combo.len() + 4);
+        let mut word = String::new();
+        let flush = |word: &mut String, out: &mut String| {
+            let name = names
+                .iter()
+                .find(|(english, _)| *english == word.as_str())
+                .map_or(word.as_str(), |(_, local)| local);
+            out.push_str(name);
+            word.clear();
+        };
+        for character in combo.chars() {
+            if character.is_alphanumeric() {
+                word.push(character);
+            } else {
+                flush(&mut word, &mut out);
+                out.push(character);
+            }
+        }
+        flush(&mut word, &mut out);
+        out
+    }
 }
 
 const MONTHS: [Msg; 12] = [

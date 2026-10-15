@@ -298,3 +298,18 @@ fn every_animation_editor_refusal_has_a_message() {
     }
     assert_eq!(Msg::anim_editor_error("anim-editor-something-new"), None);
 }
+
+#[test]
+fn key_combinations_use_the_keyboard_names_of_the_language() {
+    assert_eq!(Locale::ENGLISH.keys("Ctrl+Shift+A"), "Ctrl+Shift+A");
+    assert_eq!(ES.keys("Ctrl+Shift+A"), "Ctrl+Mayús+A");
+    assert_eq!(ES.keys("Ctrl+Shift+Z"), "Ctrl+Mayús+Z");
+    assert_eq!(ES.keys("Ctrl+= · Ctrl+-"), "Ctrl+= · Ctrl+-");
+    assert_eq!(ES.keys("Shift+Enter"), "Mayús+Intro");
+    assert_eq!(ES.keys("Esc"), "Esc");
+    // A whole catalog text is translated first.
+    assert_eq!(ES.keys(Msg::KeyClick.en()), "Clic");
+    assert_eq!(ES.keys(Msg::KeyTabEnter.en()), "Tab · Intro");
+    // A word that merely contains a key name is left alone.
+    assert_eq!(ES.keys("Shifted"), "Shifted");
+}

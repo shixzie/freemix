@@ -678,6 +678,7 @@ pub(crate) fn draw_monitor(
         } else {
             AMBER
         };
+        badge_backing(&painter, badge_rect);
         painter.rect_filled(badge_rect, CornerRadius::same(3), fill);
         painter.galley(
             Align2::CENTER_CENTER
@@ -693,6 +694,7 @@ pub(crate) fn draw_monitor(
             canvas_area.min + Vec2::new(10.0, 10.0),
             Vec2::new(44.0, 18.0),
         );
+        badge_backing(&painter, badge);
         painter.rect_filled(badge, CornerRadius::same(3), PROGRAM);
         painter.text(
             badge.center(),
@@ -721,6 +723,18 @@ pub(crate) fn draw_monitor(
         None => caption.note,
     };
     response.on_hover_text(tooltip);
+}
+
+/// A dark ring behind a badge drawn over the picture, so a badge keeps its
+/// edge on any picture: an amber `SIMULATED` badge on an amber source (or a
+/// red `FTB` badge on red) still reads as a badge, while on the usual dark
+/// or mid-tone picture the ring disappears into it.
+fn badge_backing(painter: &egui::Painter, badge: Rect) {
+    painter.rect_filled(
+        badge.expand(2.0),
+        CornerRadius::same(5),
+        Color32::from_black_alpha(215),
+    );
 }
 
 /// One line of text centered on `center`, ending in `…` when it is wider

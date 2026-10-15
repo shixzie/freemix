@@ -164,6 +164,44 @@ pub(crate) const UI_SCALE_SHORTCUT: &str = "Ctrl+= · Ctrl+-";
 /// Key text of the UI scale reset shortcut.
 pub(crate) const UI_SCALE_RESET_SHORTCUT: &str = "Ctrl+0";
 
+/// A caption whose command-line options (`--lang`, `--clock`) are set in
+/// monospace, so their double hyphen reads as typed instead of running
+/// together like a dash in the proportional caption font.
+pub(crate) fn option_caption(text: &str) -> egui::text::LayoutJob {
+    let size = crate::theme::legible(crate::theme::CAPTION_SIZE);
+    let plain = egui::TextFormat {
+        font_id: egui::FontId::proportional(size),
+        color: crate::theme::muted_color(),
+        ..Default::default()
+    };
+    let option = egui::TextFormat {
+        font_id: egui::FontId::monospace(size),
+        ..plain.clone()
+    };
+    let mut job = egui::text::LayoutJob::default();
+    for (index, word) in text.split(' ').enumerate() {
+        if index > 0 {
+            job.append(" ", 0.0, plain.clone());
+        }
+        // Trailing punctuation (`--clock,`) stays in the caption font.
+        let (name, rest) = if word.starts_with("--") {
+            let end = word
+                .find(|c: char| !(c.is_alphanumeric() || c == '-'))
+                .unwrap_or(word.len());
+            word.split_at(end)
+        } else {
+            ("", word)
+        };
+        if !name.is_empty() {
+            job.append(name, 0.0, option.clone());
+        }
+        if !rest.is_empty() {
+            job.append(rest, 0.0, plain.clone());
+        }
+    }
+    job
+}
+
 /// Width of the Preferences window.
 const PREFERENCES_WIDTH: f32 = 460.0;
 /// Size of one UI scale preset key.
@@ -349,7 +387,7 @@ impl StudioShell {
 
         ui.add_space(8.0);
         ui.separator();
-        ui.add(egui::Label::new(caption(l.text(Msg::PrefsSavedNote))).wrap());
+        ui.add(egui::Label::new(option_caption(l.text(Msg::PrefsSavedNote))).wrap());
         ui.add_space(6.0);
         let mut done = false;
         ui.horizontal(|ui| {
@@ -421,6 +459,19 @@ impl StudioShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_line_options_in_the_saved_note_are_set_in_monospace() {
+        let job = option_caption("A --lang or --clock, option wins.");
+        assert_eq!(job.text, "A --lang or --clock, option wins.");
+        let monospace: Vec<&str> = job
+            .sections
+            .iter()
+            .filter(|section| section.format.font_id.family == egui::FontFamily::Monospace)
+            .map(|section| &job.text[section.byte_range.start.0..section.byte_range.end.0])
+            .collect();
+        assert_eq!(monospace, ["--lang", "--clock"]);
+    }
 
     #[test]
     fn ui_scale_clamps_parses_and_steps_through_presets() {

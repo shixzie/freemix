@@ -330,7 +330,7 @@ fn item(
     let l = l10n::locale(ui.ctx());
     let hover = match shortcut {
         Some(shortcut) => {
-            button = button.shortcut_text(RichText::new(shortcut).color(muted_color()));
+            button = button.shortcut_text(RichText::new(l.keys(shortcut)).color(muted_color()));
             l10n::with_key(l, hover, shortcut)
         }
         None => hover.to_owned(),
@@ -470,9 +470,12 @@ impl StudioShell {
         );
         ui.separator();
         if ui
-            .add(Button::new(l.text(Msg::MenuPreferences)).shortcut_text(
-                RichText::new(crate::preferences::PREFERENCES_SHORTCUT).color(muted_color()),
-            ))
+            .add(
+                Button::new(l.text(Msg::MenuPreferences)).shortcut_text(
+                    RichText::new(l.keys(crate::preferences::PREFERENCES_SHORTCUT))
+                        .color(muted_color()),
+                ),
+            )
             .on_hover_text(l.text(Msg::MenuPreferencesHover))
             .clicked()
         {
@@ -1223,7 +1226,7 @@ impl StudioShell {
                                             .iter()
                                             .filter(|entry| entry.group == group)
                                         {
-                                            key_cap(ui, l.tr(entry.keys));
+                                            key_cap(ui, &l.keys(entry.keys));
                                             ui.label(
                                                 RichText::new(l.tr(entry.action))
                                                     .color(text_color()),
@@ -1353,26 +1356,35 @@ pub(crate) fn help_modal(
     close || response.should_close()
 }
 
-/// A fixed-width key cap such as `C` or `1 – 8`, so the action column aligns.
+/// Minimum width of the key column, so the action column aligns.
+const KEY_CAP_COLUMN: f32 = 104.0;
+
+/// The width of a key cap for `keys`: the text plus padding, at least
+/// 28 px. A long combination widens its cap (and so the grid's key column)
+/// instead of overflowing it.
+fn key_cap_width(ui: &Ui, keys: &str) -> f32 {
+    let text = ui
+        .painter()
+        .layout_no_wrap(
+            keys.to_owned(),
+            egui::FontId::new(11.5, egui::FontFamily::Monospace),
+            text_color(),
+        )
+        .size()
+        .x;
+    (text + 16.0).max(28.0)
+}
+
+/// A key cap such as `C` or `1 – 8` in a column at least
+/// [`KEY_CAP_COLUMN`] wide, so the action column aligns.
 fn key_cap(ui: &mut Ui, keys: &str) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(104.0, 22.0), egui::Sense::hover());
-    let painter = ui.painter();
-    let cap = egui::Rect::from_min_size(
-        rect.min,
-        Vec2::new(
-            (painter
-                .layout_no_wrap(
-                    keys.to_owned(),
-                    egui::FontId::new(11.5, egui::FontFamily::Monospace),
-                    text_color(),
-                )
-                .size()
-                .x
-                + 16.0)
-                .clamp(28.0, rect.width()),
-            rect.height(),
-        ),
+    let width = key_cap_width(ui, keys);
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(width.max(KEY_CAP_COLUMN), 22.0),
+        egui::Sense::hover(),
     );
+    let painter = ui.painter();
+    let cap = egui::Rect::from_min_size(rect.min, Vec2::new(width, rect.height()));
     painter.rect_filled(
         cap,
         egui::CornerRadius::same(3),
@@ -1448,7 +1460,7 @@ fn lockable_item(
                 .color(Tone::Pending.color()),
         );
     } else if let Some(shortcut) = shortcut {
-        button = button.shortcut_text(RichText::new(shortcut).color(muted_color()));
+        button = button.shortcut_text(RichText::new(l.keys(shortcut)).color(muted_color()));
     }
     ui.add_enabled(enabled, button)
         .hint(hover, reason)

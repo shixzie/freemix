@@ -135,10 +135,10 @@ pub(crate) fn thumbnail_tap(
 /// Short tag naming where a tile thumbnail came from.
 pub(crate) fn thumbnail_tag(tap: MonitorTap, origin: MonitorFrameOrigin) -> &'static str {
     match (tap, origin) {
-        (MonitorTap::Program, MonitorFrameOrigin::Simulated) => "PGM TAP · SIM",
-        (MonitorTap::Preview, MonitorFrameOrigin::Simulated) => "PVW TAP · SIM",
-        (MonitorTap::Program, MonitorFrameOrigin::Native) => "PGM TAP",
-        (MonitorTap::Preview, MonitorFrameOrigin::Native) => "PVW TAP",
+        (MonitorTap::Program, MonitorFrameOrigin::Simulated) => Msg::ThumbPgmTapSim.en(),
+        (MonitorTap::Preview, MonitorFrameOrigin::Simulated) => Msg::ThumbPvwTapSim.en(),
+        (MonitorTap::Program, MonitorFrameOrigin::Native) => Msg::ThumbPgmTap.en(),
+        (MonitorTap::Preview, MonitorFrameOrigin::Native) => Msg::ThumbPvwTap.en(),
     }
 }
 
@@ -317,6 +317,10 @@ impl StudioShell {
                                             && input_edit_lock_reason(state, input).is_none(),
                                         locked: input_edit_lock_reason(state, input).is_some(),
                                         removal: self.remove_input_gate(state, input),
+                                        grade_reason: crate::studio_color::grade_lock_reason(
+                                            state,
+                                            fm_ui_model::grade_editor::GradeTarget::Input(input),
+                                        ),
                                         move_locks: [
                                             InputMoveDirection::Up,
                                             InputMoveDirection::Down,
@@ -526,7 +530,7 @@ impl StudioShell {
         let item =
             |ui: &mut Ui, enabled: bool, label: &str, shortcut: &str, hover: &str, reason: &str| {
                 let mut button = egui::Button::new(label);
-                let mark = l.tr(shortcut);
+                let mark = l.keys(shortcut);
                 if let Some(color) = mark_color(shortcut) {
                     button = button.shortcut_text(
                         RichText::new(mark)
@@ -577,13 +581,16 @@ impl StudioShell {
         ) {
             intents.extend(tile_intents(input, TileGesture::Cut, gates));
         }
+        // Grading is a project edit: like Rename and Move, `Grade…` is
+        // offered only to a session that may edit this input, and says why
+        // not otherwise (View › Colour still opens the window to look).
         if item(
             ui,
-            true,
+            tile.grade_reason.is_none(),
             l.text(Msg::ColorTileItem),
             if locked { LOCKED_MARK } else { "" },
             l.text(Msg::ColorTileHover),
-            "",
+            tile.grade_reason.unwrap_or(""),
         ) {
             self.open_color(Some(fm_ui_model::grade_editor::GradeTarget::Input(input)));
         }
@@ -1043,6 +1050,9 @@ struct TileContext<'a> {
     move_locks: [Option<&'static str>; 2],
     /// Whether this input may be removed, and why not.
     removal: CatalogueAvailability,
+    /// Why this input's grade cannot be edited (no `edit_project`, not
+    /// ready, or a padlock), if it cannot.
+    grade_reason: Option<&'static str>,
 }
 
 /// Per-frame facts that change how one tile is painted.
@@ -1101,7 +1111,9 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             Color32::WHITE,
         );
         let tag = painter.layout_no_wrap(
-            thumbnail_tag(tap, picture.facts.origin).to_owned(),
+            l10n::locale(ui.ctx())
+                .tr(thumbnail_tag(tap, picture.facts.origin))
+                .to_owned(),
             FontId::new(9.0, FontFamily::Proportional),
             text_color(),
         );

@@ -46,11 +46,25 @@ pub(crate) fn disabled_text(locale: Locale, action: &str, reason: &str) -> Strin
     }
 }
 
-/// `{action}  [{key}]`: an action with its keyboard shortcut, for tooltips.
+/// A host message (such as the connection error) in the console language:
+/// each `; `-joined part that is catalog English is translated, anything
+/// else (daemon text, diagnostics) passes through.
+pub(crate) fn host_message(locale: Locale, text: &str) -> String {
+    text.split("; ")
+        .map(|part| locale.tr(part))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// `{action}  [{key}]`: an action with its keyboard shortcut (in the
+/// language's key names, see [`Locale::keys`]), for tooltips.
 pub(crate) fn with_key(locale: Locale, action: &str, key: &str) -> String {
     locale.format(
         Msg::KeyHint,
-        &[("action", Arg::Str(action)), ("key", Arg::Str(key))],
+        &[
+            ("action", Arg::Str(action)),
+            ("key", Arg::Str(&locale.keys(key))),
+        ],
     )
 }
 
@@ -137,6 +151,20 @@ mod tests {
             "Añadir  [Intro]"
         );
         assert_eq!(frames(Locale::ENGLISH, 30), "30 fr");
+        // Connection errors arrive as catalog English and are worded here.
+        assert_eq!(
+            host_message(spanish, Msg::ConnErrRefused.en()),
+            "El daemon rechazó la conexión: puede que aún no esté en marcha"
+        );
+        assert_eq!(
+            host_message(spanish, &format!("{}; disk full", Msg::ConnErrClosed.en())),
+            "El daemon cerró la conexión; disk full"
+        );
+        // Modifier names follow the language's keyboards.
+        assert_eq!(
+            with_key(spanish, "Animación", "Ctrl+Shift+A"),
+            "Animación  [Ctrl+Mayús+A]"
+        );
     }
 
     #[test]

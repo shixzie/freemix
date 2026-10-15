@@ -295,7 +295,8 @@ fn target_label(l: Locale, state: &StudioUiState, target: GradeTarget) -> String
 
 const fn status_look(status: GradeSyncStatus) -> (Msg, Msg, Tone) {
     match status {
-        GradeSyncStatus::OnAir => (Msg::OverlayOnAir, Msg::ColorStatusOnAirHover, Tone::Ready),
+        // The grade is what Program shows: on-air red, as every ON AIR mark.
+        GradeSyncStatus::OnAir => (Msg::OverlayOnAir, Msg::ColorStatusOnAirHover, Tone::OnAir),
         GradeSyncStatus::Editing => (
             Msg::ColorStatusEditing,
             Msg::ColorStatusEditingHover,

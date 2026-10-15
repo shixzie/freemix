@@ -360,8 +360,18 @@ fn console_style(style: &mut egui::Style) {
     style.spacing.icon_width = 14.0;
     style.spacing.icon_width_inner = 8.0;
     style.spacing.slider_rail_height = 6.0;
-    style.spacing.scroll.bar_width = 6.0;
-    style.spacing.scroll.floating = true;
+    // Floating bars that stay visible (dimmed) while idle and reserve their
+    // own lane: an operator must see at a glance that the input bank, the
+    // side panel, or the mixer holds more than fits, not discover it by
+    // hovering.
+    style.spacing.scroll = egui::style::ScrollStyle {
+        bar_width: 8.0,
+        floating_width: 4.0,
+        floating_allocated_width: 6.0,
+        dormant_background_opacity: 0.35,
+        dormant_handle_opacity: 0.8,
+        ..egui::style::ScrollStyle::floating()
+    };
     style.animation_time = 0.08;
 }
 

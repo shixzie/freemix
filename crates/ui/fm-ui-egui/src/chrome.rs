@@ -667,7 +667,10 @@ fn bar_divider(ui: &mut Ui) {
 pub(crate) fn status_message(l: Locale, state: &StudioUiState) -> (String, Color32) {
     if let Some(error) = &state.error {
         return (
-            l.format(Msg::StatusError, &[("message", Arg::Str(error))]),
+            l.format(
+                Msg::StatusError,
+                &[("message", Arg::Str(&crate::l10n::host_message(l, error)))],
+            ),
             ERROR,
         );
     }

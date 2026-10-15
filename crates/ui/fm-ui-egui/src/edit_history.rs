@@ -95,6 +95,7 @@ impl HistoryActionAvailability {
             HistoryVerb::Undo => (Msg::Undo, Msg::UndoHoverAt),
             HistoryVerb::Redo => (Msg::Redo, Msg::RedoHoverAt),
         };
+        let shortcut = locale.keys(shortcut);
         match self.expected_edit {
             Some(edit) => format!(
                 "{}  [{shortcut}]\n{steps}",

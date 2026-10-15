@@ -241,6 +241,25 @@ fn draw_manual_transition(
             );
         });
     });
+    let in_flight = matches!(desired, ManualTransitionStatus::Active(_))
+        || matches!(realized, ManualTransitionStatus::Active(_));
+    if !*details && in_flight {
+        // With the details closed, the position and Commit/Cancel keys
+        // take the start keys' row while a transition is in flight (the
+        // start keys cannot act then), so the column keeps its height and
+        // the console below does not jump.
+        ui.horizontal(|ui| {
+            draw_manual_position(
+                ui,
+                desired,
+                availability.active_controls,
+                active_reason,
+                intents,
+            );
+            draw_manual_terminal_buttons(ui, availability.active_controls, active_reason, intents);
+        });
+        return;
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
         draw_manual_start_buttons(
@@ -251,9 +270,7 @@ fn draw_manual_transition(
             intents,
         );
     });
-    let in_flight = matches!(desired, ManualTransitionStatus::Active(_))
-        || matches!(realized, ManualTransitionStatus::Active(_));
-    if !(*details || in_flight) {
+    if !*details {
         return;
     }
     ui.horizontal(|ui| {
@@ -677,16 +694,36 @@ fn draw_manual_position(
         let l = l10n::locale(ui.ctx());
         let position_label = ui.label(field_label(l.text(Msg::PositionShort)));
         let mut position = desired_manual_position(desired).basis_points();
-        let response = ui
-            .add_enabled(
-                enabled,
-                DragValue::new(&mut position)
-                    .range(
-                        ManualTransitionPosition::START.basis_points()
-                            ..=ManualTransitionPosition::END.basis_points(),
-                    )
-                    .suffix(" bp"),
+        // A fixed-width readout sized for the widest value, so Commit and
+        // Cancel stay put while the position grows from `0 bp` to
+        // `10000 bp`.
+        let font = egui::TextStyle::Monospace.resolve(ui.style());
+        let widest = ui
+            .painter()
+            .layout_no_wrap(
+                format!("{} bp", ManualTransitionPosition::END.basis_points()),
+                font,
+                text_color(),
             )
+            .size()
+            .x;
+        let readout = Vec2::new(
+            widest + 2.0 * ui.spacing().button_padding.x + 4.0,
+            ui.spacing().interact_size.y,
+        );
+        let response = ui
+            .add_enabled_ui(enabled, |ui| {
+                ui.add_sized(
+                    readout,
+                    DragValue::new(&mut position)
+                        .range(
+                            ManualTransitionPosition::START.basis_points()
+                                ..=ManualTransitionPosition::END.basis_points(),
+                        )
+                        .suffix(" bp"),
+                )
+            })
+            .inner
             .labelled_by(position_label.id)
             .hint(l.text(Msg::PositionHover), reason);
         if response.changed() {

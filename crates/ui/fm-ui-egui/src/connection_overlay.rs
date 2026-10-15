@@ -36,7 +36,10 @@ pub(crate) fn connection_card(l: Locale, state: &StudioUiState) -> Option<Connec
     // A terminal failure already shows its error as the detail.
     let last_error = match state.connection_status {
         StudioConnectionStatus::Failed => None,
-        _ => state.error.clone(),
+        _ => state
+            .error
+            .as_deref()
+            .map(|error| crate::l10n::host_message(l, error)),
     };
     let card = |title: Msg, detail: String, tone| {
         Some(ConnectionCard {
@@ -86,10 +89,10 @@ pub(crate) fn connection_card(l: Locale, state: &StudioUiState) -> Option<Connec
         ),
         StudioConnectionStatus::Failed => card(
             Msg::StatusIdleFailed,
-            state
-                .error
-                .clone()
-                .unwrap_or_else(|| l.text(Msg::CardFailedDetail).to_owned()),
+            state.error.as_deref().map_or_else(
+                || l.text(Msg::CardFailedDetail).to_owned(),
+                |error| crate::l10n::host_message(l, error),
+            ),
             CardTone::Error,
         ),
         StudioConnectionStatus::ProtocolMismatch => card(

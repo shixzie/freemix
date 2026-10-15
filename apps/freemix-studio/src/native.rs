@@ -12,7 +12,8 @@ use std::{
 
 use eframe::egui;
 use fm_client::{
-    Client, ClientError, CommandStatus, CommandUncertainty, SessionEvent, SyncMode, TcpSessionError,
+    Client, ClientError, CommandStatus, CommandUncertainty, DisconnectCause, SessionEvent,
+    SyncMode, TcpSessionError,
 };
 use fm_protocol::{
     CommandPayload, CommandResult, DurableGap, EditLockScope, MonitorTap, OverlayBorderPreset,
@@ -29,6 +30,7 @@ use fm_ui_egui::{
 };
 use fm_ui_model::ClientView;
 use fm_ui_model::grade_editor::GradeCommand;
+use fm_ui_model::i18n::Msg;
 use fm_ui_model::title_editor::{TitleAccess, title_payload};
 
 #[cfg(test)]
@@ -567,16 +569,28 @@ fn state_mailbox(repaint_context: egui::Context) -> (StatePublisher, StateUpdate
 }
 
 impl StatePublisher {
-    /// Replaces the latest state. Title updates are delivered exactly once:
-    /// a state the UI has not taken yet hands its updates on to this one.
+    /// Replaces the latest state. One-shot facts are delivered exactly once:
+    /// a state the UI has not taken yet hands its title updates, its input
+    /// and grade refusals, and (on the same connection state) its error on
+    /// to this one, so a meter or monitor publication landing before the
+    /// UI's next frame cannot swallow a command's refusal.
     fn publish(&self, mut state: StudioUiState) -> bool {
         let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(previous) = latest.take()
-            && !previous.title_updates.is_empty()
-        {
-            let mut updates = previous.title_updates;
-            updates.append(&mut state.title_updates);
-            state.title_updates = updates;
+        if let Some(previous) = latest.take() {
+            if !previous.title_updates.is_empty() {
+                let mut updates = previous.title_updates;
+                updates.append(&mut state.title_updates);
+                state.title_updates = updates;
+            }
+            if state.catalogue_refusal.is_none() {
+                state.catalogue_refusal = previous.catalogue_refusal;
+            }
+            if state.grade_refusal.is_none() {
+                state.grade_refusal = previous.grade_refusal;
+            }
+            if state.error.is_none() && state.connection_status == previous.connection_status {
+                state.error = previous.error;
+            }
         }
         *latest = Some(state);
         drop(latest);
@@ -949,7 +963,10 @@ fn initialize_worker(
             let reconnect_wait = is_recoverable_failure(&error)
                 .then(|| ReconnectWait::from_runtime(&runtime))
                 .flatten();
-            (Some(format!("Connection failed: {error}")), reconnect_wait)
+            (
+                Some(failure_text("Connection failed", &error)),
+                reconnect_wait,
+            )
         }
     };
     let mut recovery = WorkerRecovery::new(visible_error, reconnect_wait);
@@ -1033,7 +1050,7 @@ fn run_worker(
                     true
                 }
                 Ok(Some(SessionEvent::Disconnected { cause, .. })) => {
-                    recovery.visible_error = Some(format!("Disconnected while idle: {cause:?}"));
+                    recovery.visible_error = Some(disconnect_cause_text(cause).to_owned());
                     recovery.reconnect_wait = ReconnectWait::from_runtime(&runtime);
                     true
                 }
@@ -1049,7 +1066,7 @@ fn run_worker(
                 }
                 Ok(None) => false,
                 Err(error) => {
-                    recovery.visible_error = Some(format!("Idle receive failed: {error}"));
+                    recovery.visible_error = Some(failure_text("Idle receive failed", &error));
                     if is_recoverable_failure(&error) {
                         recovery.reconnect_wait = ReconnectWait::from_runtime(&runtime);
                     }
@@ -1289,7 +1306,7 @@ fn handle_worker_timeout(
                 recovery.reconnect_wait = None;
             }
             Err(error) => {
-                recovery.visible_error = Some(format!("Reconnect failed: {error}"));
+                recovery.visible_error = Some(failure_text("Reconnect failed", &error));
                 if is_resync_failure(&error) {
                     recovery.realization_uncertain = true;
                 }
@@ -1965,8 +1982,56 @@ fn require_snapshot_reconnect(runtime: &mut StudioRuntime) -> Result<ReconnectWa
         .ok_or_else(|| WorkerFailure::Fatal("Snapshot reconnect did not enter backoff".to_owned()))
 }
 
+/// The operator sentence for a lost control connection: catalog English
+/// that the console words in its language, instead of the transport's
+/// debug text (`TCP session disconnected (Io(ConnectionRefused)); …`). The
+/// attempt number and retry delay are already on the reconnect card.
+fn disconnect_cause_text(cause: DisconnectCause) -> &'static str {
+    use std::io::ErrorKind;
+    match cause {
+        DisconnectCause::Eof => Msg::ConnErrClosed.en(),
+        DisconnectCause::ServerShutdown => Msg::ConnErrShutdown.en(),
+        DisconnectCause::Io(ErrorKind::ConnectionRefused) => Msg::ConnErrRefused.en(),
+        DisconnectCause::Io(
+            ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::BrokenPipe
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::NotConnected,
+        ) => Msg::ConnErrInterrupted.en(),
+        DisconnectCause::Io(ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
+            Msg::ConnErrTimedOut.en()
+        }
+        DisconnectCause::Io(
+            ErrorKind::NotFound
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkUnreachable
+            | ErrorKind::NetworkDown,
+        ) => Msg::ConnErrUnreachable.en(),
+        DisconnectCause::Io(_) => Msg::ConnErrNetwork.en(),
+    }
+}
+
+/// [`disconnect_cause_text`] for an error that is a lost connection.
+const fn connection_loss_cause(error: &crate::StudioError) -> Option<DisconnectCause> {
+    match error {
+        crate::StudioError::Session(TcpSessionError::Disconnected { cause, .. }) => Some(*cause),
+        _ => None,
+    }
+}
+
+/// `{context}: {error}`, or just the operator sentence when the error is a
+/// lost connection.
+fn failure_text(context: &str, error: &crate::StudioError) -> String {
+    connection_loss_cause(error).map_or_else(
+        || format!("{context}: {error}"),
+        |cause| disconnect_cause_text(cause).to_owned(),
+    )
+}
+
 fn worker_error(context: &str, error: &crate::StudioError) -> WorkerFailure {
-    let message = format!("{context}: {error}");
+    let message = failure_text(context, error);
     if is_resync_failure(error) {
         WorkerFailure::Resync(message)
     } else if is_transport_failure(error) {
@@ -2014,9 +2079,7 @@ fn unexpected_failure(expected: &str, event: &SessionEvent) -> WorkerFailure {
             ));
         }
         SessionEvent::Disconnected { cause, .. } => {
-            return WorkerFailure::Transport(format!(
-                "Disconnected while awaiting {expected}: {cause:?}"
-            ));
+            return WorkerFailure::Transport(disconnect_cause_text(*cause).to_owned());
         }
         _ => format!("Unexpected response while awaiting {expected}: {event:?}"),
     };
@@ -3055,6 +3118,54 @@ mod tests {
         );
         drop(updates);
         assert!(!publisher.publish(StudioUiState::new(StudioConnectionStatus::Failed)));
+    }
+
+    #[test]
+    fn one_shot_refusals_survive_a_later_publication_before_the_ui_reads() {
+        // A refused input removal is published in exactly one state; the
+        // next meter or monitor publication used to replace it before the
+        // UI's frame took it, so the request vanished without its refusal.
+        let (publisher, updates) = state_mailbox(egui::Context::default());
+        let refusal = CatalogueRefusal {
+            command_id: "remove-1".to_owned(),
+            request: CatalogueRequest::Remove {
+                input: WireInputId::new(NonZeroU128::new(1).unwrap()).to_domain(),
+            },
+            code: "conflict".to_owned(),
+            reason: Some("input_in_use".to_owned()),
+            message: "input 1 cannot be removed: it is on Program".to_owned(),
+        };
+        let grade = GradeRefusal {
+            command_id: "grade-1".to_owned(),
+            target: None,
+        };
+        let mut refused = StudioUiState::new(StudioConnectionStatus::Ready);
+        refused.catalogue_refusal = Some(refusal.clone());
+        refused.grade_refusal = Some(grade.clone());
+        refused.error = Some("Command rejected (conflict): input 1 is on Program".to_owned());
+        assert!(publisher.publish(refused));
+        // A meter update lands before the frame reads the mailbox.
+        assert!(publisher.publish(StudioUiState::new(StudioConnectionStatus::Ready)));
+        let seen = updates.try_recv().unwrap();
+        assert_eq!(seen.catalogue_refusal, Some(refusal));
+        assert_eq!(seen.grade_refusal, Some(grade));
+        assert_eq!(
+            seen.error.as_deref(),
+            Some("Command rejected (conflict): input 1 is on Program")
+        );
+        // Delivered once: the next state no longer carries them.
+        assert!(publisher.publish(StudioUiState::new(StudioConnectionStatus::Ready)));
+        let next = updates.try_recv().unwrap();
+        assert_eq!(next.catalogue_refusal, None);
+        assert_eq!(next.grade_refusal, None);
+        assert_eq!(next.error, None);
+        // A connection change does not carry an older error into the new
+        // connection state.
+        let mut lost = StudioUiState::new(StudioConnectionStatus::Backoff);
+        lost.error = Some("The daemon closed the connection".to_owned());
+        assert!(publisher.publish(lost));
+        assert!(publisher.publish(StudioUiState::new(StudioConnectionStatus::Ready)));
+        assert_eq!(updates.try_recv().unwrap().error, None);
     }
 
     #[test]

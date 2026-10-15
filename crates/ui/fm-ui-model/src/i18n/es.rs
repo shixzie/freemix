@@ -125,7 +125,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::ReasonNoStreamTargets,
-        t("el show no tiene destinos de stream configurados"),
+        t("el show no tiene destinos de transmisión configurados"),
     ),
     (
         Msg::ReasonNoStingerConfigured,
@@ -201,15 +201,15 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::BadgeRec, t("REC")),
     (
         Msg::LiveHoverLive,
-        t("Un destino de stream informa que está en vivo"),
+        t("Un destino de transmisión informa que está en vivo"),
     ),
     (
         Msg::LiveHoverDesired,
-        t("Un destino de stream debe estar activo pero no informa que esté en vivo"),
+        t("Un destino de transmisión debe estar activo pero no informa que esté en vivo"),
     ),
     (
         Msg::LiveHoverIdle,
-        t("Ningún destino de stream debe estar activo"),
+        t("Ningún destino de transmisión debe estar activo"),
     ),
     (
         Msg::RecHoverRecording,
@@ -364,6 +364,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     // Toasts.
     (Msg::ToastNotice, t("AVISO")),
     (Msg::ToastError, t("ERROR")),
+    (Msg::FtbOnKey, t("FTB  ACTIVO")),
+    (Msg::ThumbPgmTapSim, t("VISTA PGM · SIM")),
+    (Msg::ThumbPvwTapSim, t("VISTA PVW · SIM")),
+    (Msg::ThumbPgmTap, t("VISTA PGM")),
+    (Msg::ThumbPvwTap, t("VISTA PVW")),
     (Msg::ToastUncertain, t("RESULTADO INCIERTO")),
     (Msg::ToastDone, t("HECHO")),
     (
@@ -463,7 +468,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::ViewSidePanel, t("Panel lateral")),
     (
         Msg::ViewSidePanelHover,
-        t("Muestra u oculta grabación, streams, overlays, stingers y títulos"),
+        t("Muestra u oculta grabación, transmisiones, overlays, stingers y títulos"),
     ),
     (Msg::ViewStatusBar, t("Barra de estado")),
     (
@@ -594,8 +599,8 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::RecorderHover,
         t("{label}: ranura {slot} de grabación de Programa"),
     ),
-    (Msg::StreamsHeading, t("Streams")),
-    (Msg::NoStreamTargets, t("Sin destinos de stream")),
+    (Msg::StreamsHeading, t("Transmisiones")),
+    (Msg::NoStreamTargets, t("Sin destinos de transmisión")),
     (Msg::StartStream, t("Iniciar {name}")),
     (Msg::StopStream, t("Detener {name}")),
     (
@@ -1304,6 +1309,25 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::CardReconnectAttempt,
         t("Conexión perdida · intento {attempt} · reintento en {delay}"),
     ),
+    (
+        Msg::ConnErrRefused,
+        t("El daemon rechazó la conexión: puede que aún no esté en marcha"),
+    ),
+    (
+        Msg::ConnErrInterrupted,
+        t("La conexión con el daemon se interrumpió"),
+    ),
+    (Msg::ConnErrTimedOut, t("El daemon dejó de responder")),
+    (
+        Msg::ConnErrUnreachable,
+        t("No se puede llegar a la dirección del daemon"),
+    ),
+    (
+        Msg::ConnErrNetwork,
+        t("Un error de red interrumpió la conexión con el daemon"),
+    ),
+    (Msg::ConnErrClosed, t("El daemon cerró la conexión")),
+    (Msg::ConnErrShutdown, t("El daemon se apagó")),
     (Msg::CardDisconnected, t("Desconectado")),
     (
         Msg::CardDisconnectedDetail,
@@ -1415,11 +1439,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::StreamsNoneConfigured,
-        t("No hay destinos de stream configurados"),
+        t("No hay destinos de transmisión configurados"),
     ),
     (
         Msg::StreamsNotSynced,
-        t("Estado de streams sin sincronizar"),
+        t("Estado de transmisiones sin sincronizar"),
     ),
     (
         Msg::StreamRowHover,
@@ -1429,15 +1453,15 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::StopKey, t("DETENER")),
     (
         Msg::StartStreamTarget,
-        t("Iniciar el destino de stream «{name}»"),
+        t("Iniciar el destino de transmisión «{name}»"),
     ),
     (
         Msg::StopStreamTarget,
-        t("Detener el destino de stream «{name}»"),
+        t("Detener el destino de transmisión «{name}»"),
     ),
     (
         Msg::ReasonStreamPending,
-        t("un comando anterior para este destino de stream sigue pendiente"),
+        t("un comando anterior para este destino de transmisión sigue pendiente"),
     ),
     // Overlay diagnostic line.
     (

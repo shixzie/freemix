@@ -3729,6 +3729,62 @@ mod tests {
         out
     }
 
+    /// Where one exact painted string sits, if it was painted.
+    fn painted_at(output: &egui::FullOutput, wanted: &str) -> Option<egui::Pos2> {
+        fn find(shape: &egui::Shape, wanted: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == wanted => Some(text.pos),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| find(shape, wanted)),
+                _ => None,
+            }
+        }
+        output
+            .shapes
+            .iter()
+            .find_map(|clipped| find(&clipped.shape, wanted))
+    }
+
+    #[test]
+    fn starting_a_manual_transition_keeps_the_lower_row_and_its_keys_in_place() {
+        let context = egui::Context::default();
+        let idle = recording_state([false, false], false);
+        let mut flying = idle.clone();
+        let view = flying.view.as_mut().unwrap();
+        let active = |position| {
+            ManualTransitionStatus::Active(ActiveManualTransition {
+                kind: ManualTransitionKind::Fade,
+                from: view.switcher.desired.program,
+                to: view.switcher.desired.preview,
+                interval_start: ManualTransitionPosition::START,
+                position,
+            })
+        };
+        let early = active(ManualTransitionPosition::new(5).unwrap());
+        let late = active(ManualTransitionPosition::new(9_500).unwrap());
+        view.switcher.desired_manual_transition = early;
+        view.switcher.realized_manual_transition = early;
+        let mut later = flying.clone();
+        let later_view = later.view.as_mut().unwrap();
+        later_view.switcher.desired_manual_transition = late;
+        later_view.switcher.realized_manual_transition = late;
+
+        let mut shell = StudioShell::default();
+        let mut settle = |state: &StudioUiState| {
+            let _ = run_frame(&context, &mut shell, state);
+            run_frame(&context, &mut shell, state)
+        };
+        let bank = |output: &egui::FullOutput| painted_at(output, "INPUT BANK").unwrap();
+        let idle_bank = bank(&settle(&idle));
+        let early_output = settle(&flying);
+        assert_eq!(bank(&early_output), idle_bank, "the lower row moved");
+        // The position readout keeps its width, so COMMIT does not shift
+        // as the value grows.
+        let commit = painted_at(&early_output, "COMMIT").unwrap();
+        let late_output = settle(&later);
+        assert_eq!(painted_at(&late_output, "COMMIT").unwrap(), commit);
+        assert_eq!(bank(&late_output), idle_bank);
+    }
+
     #[test]
     fn the_console_draws_in_the_chosen_language_from_the_next_frame() {
         use fm_ui_model::i18n::Language;
