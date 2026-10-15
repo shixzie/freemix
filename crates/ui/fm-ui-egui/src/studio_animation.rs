@@ -831,12 +831,14 @@ impl StudioShell {
             binding.abandon_in_flight();
         }
         self.animation.preset_pending = None;
+        self.abandon_designer_requests();
     }
 
     /// Records that the exact preview `request_id` never reached the
     /// worker.
     pub fn title_preview_unsent(&mut self, request_id: &str) {
         self.animation.preview_failed(request_id);
+        self.designer_preview_unsent(request_id, Duration::ZERO);
     }
 
     /// `Ctrl+Shift+A` opens or closes the Animation window (on the title
@@ -870,7 +872,7 @@ impl StudioShell {
         self.animation.open && self.animation.timeline.keyboard_active
     }
 
-    /// Draws the Colour and Animation windows.
+    /// Draws the Colour and Animation windows and the layer designer.
     pub(crate) fn draw_tool_windows(
         &mut self,
         context: &egui::Context,
@@ -879,6 +881,7 @@ impl StudioShell {
     ) {
         self.draw_color_window(context, state, intents);
         self.draw_animation_window(context, state, intents);
+        self.draw_designer_window(context, state, intents);
     }
 
     /// Follows the authority for every draft and, when the window is open
@@ -1143,6 +1146,7 @@ impl StudioShell {
         let scenes = animatable_scenes(state);
         let docked = &mut self.layout.animation_docked;
         let window = &mut self.animation;
+        let designer = &mut self.designer;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let section_hover = if window.editing_scene {
@@ -1176,6 +1180,22 @@ impl StudioShell {
                 window.scene_timeline.clear_notice();
             }
             ui.separator();
+            if window.editing_scene
+                && let Some(scene) = window
+                    .scene
+                    .and_then(|input| state.project_state.as_ref()?.scene(input)?.scene)
+                && ui
+                    .add(small_button(l.text(Msg::DesignOpen)))
+                    .on_hover_text(l10n::with_key(
+                        l,
+                        l.text(Msg::DesignOpenHover),
+                        crate::SCENE_DESIGNER_SHORTCUT,
+                    ))
+                    .clicked()
+            {
+                designer.open = true;
+                designer.scene = Some(scene);
+            }
             let (dock_text, dock_hover) = if *docked {
                 (Msg::AnimFloat, Msg::AnimFloatHover)
             } else {

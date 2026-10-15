@@ -155,8 +155,8 @@ commands = ["cargo test -p fm-switcher --test switcher", "cargo test -p fm-switc
 [[tests]]
 id = "accept-sw-006"
 state = "present"
-paths = ["crates/gpu/fm-compositor/tests/golden.rs", "crates/gpu/fm-compositor/tests/rotation.rs", "crates/foundation/fm-model/tests/project_validation.rs", "crates/foundation/fm-model/tests/scene_animation.rs", "apps/freemix-cli/tests/e2e.rs"]
-commands = ["cargo test -p fm-compositor --test golden", "cargo test -p fm-compositor --test rotation", "cargo test -p fm-model --test project_validation", "cargo test -p fm-model --test scene_animation", "cargo test -p freemix-cli --test e2e"]
+paths = ["crates/gpu/fm-compositor/tests/golden.rs", "crates/gpu/fm-compositor/tests/rotation.rs", "crates/foundation/fm-model/tests/project_validation.rs", "crates/foundation/fm-model/tests/scene_animation.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-model/tests/scene_designer.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-compositor --test golden", "cargo test -p fm-compositor --test rotation", "cargo test -p fm-model --test project_validation", "cargo test -p fm-model --test scene_animation", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-model --test scene_designer", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-sw-007"
 state = "present"

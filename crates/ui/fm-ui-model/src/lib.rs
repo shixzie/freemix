@@ -38,6 +38,7 @@ mod animation_presets;
 pub mod grade_editor;
 mod grading;
 pub mod i18n;
+pub mod scene_designer;
 pub mod title_animation;
 pub mod title_editor;
 

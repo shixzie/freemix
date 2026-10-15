@@ -607,6 +607,22 @@ impl StudioShell {
                 direction: InputMoveDirection::Down,
             });
         }
+        // A Scene input on Preview: its scene in the layer designer, which
+        // opens to look even when edits are locked.
+        let scene =
+            preview.and_then(|(_, input)| state.project_state.as_ref()?.scene(input)?.scene);
+        if let Some(scene) = scene
+            && item(
+                ui,
+                true,
+                l.text(Msg::DesignOpen),
+                Some(crate::SCENE_DESIGNER_SHORTCUT),
+                l.text(Msg::DesignOpenHover),
+                "",
+            )
+        {
+            self.open_designer(Some(scene));
+        }
     }
 
     fn view_menu(&mut self, ui: &mut Ui) {
@@ -631,6 +647,16 @@ impl StudioShell {
             "",
         ) {
             self.open_animation(None);
+        }
+        if item(
+            ui,
+            true,
+            l.text(Msg::DesignMenuItem),
+            Some(crate::SCENE_DESIGNER_SHORTCUT),
+            l.text(Msg::DesignMenuHover),
+            "",
+        ) {
+            self.open_designer(None);
         }
         ui.separator();
         heading(ui, l.text(Msg::ViewPanels));

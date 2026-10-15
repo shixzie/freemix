@@ -2522,6 +2522,35 @@ the edited grade and imports a file by typed path through the protocol's
 `grade_lut_import` and `grade_library_add`, so it refuses LUTs over the
 32 KiB wire cap with a pointer to `grade-import`.
 
+Current implementation boundary for the layer designer (`SW-006`):
+`fm-ui-model::scene_designer` is the headless designer over a scene's
+replicated `scene_layout_state`: exact turned-frame geometry and
+hit-testing, move (the whole selection), corner and edge scale (Shift
+keeps the aspect), rotate (Shift steps 15 degrees; the stored result is
+the nearest quarter turn), and crop (Alt on an edge, in source pixels),
+each one undo step; numeric fields for position, size, zoom, rotation,
+opacity, visibility, crop, rectangular mask and invert; list restacking
+and forward/backward/front/back; and snapping to canvas edges and centre,
+action-safe (93%) and title-safe (90%) areas, and the other layers' edges
+and centres, reporting the guides (Shift disables it while moving, Ctrl or
+Cmd for any drag, a toolbar toggle for all of it). Studio's Layer designer
+window (View › Design scene layout…, Edit › Preview input › Design
+layout…, the Animation window's scene mode, Ctrl+Shift+L) draws the
+server's exact `scene_preview_request` picture under the draft's outlines,
+handles, crop edges, masks, safe areas, and guides, paces those previews,
+and gates the draft on `edit_project`, the project padlock, and the
+padlock of any Scene input showing the scene. The protocol has no live
+scene layer edit command, so the draft is never sent: `Copy as commands`
+exports it as the existing next-open `freemix-cli scene-layer-move`,
+`scene-layer-geometry`, `scene-layer-appearance`, `scene-layer-crop`
+(`-clear`), and `scene-layer-mask` (`-clear`) commands. The replicated
+layout omits each layer's crop, mask, and z-order, so the draft starts
+them uncropped, unmasked, and in list order; the model stores rotation
+only as quarter turns and has no anchor point (the designer shows and
+pivots on the centre). `SW-006` remains planned until live scene layer
+edit commands, the wire crop/mask/z-order, arbitrary stored rotation, and
+an anchor exist.
+
 Current implementation boundary for item 2 browser title control (`GX-006`):
 `freemix-web` provides a transport-free title editor model over a narrow server
 port, reusing `fm-titles` field identities, types, and values. Per-field drafts

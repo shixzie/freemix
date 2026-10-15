@@ -61,6 +61,7 @@ mod panels;
 mod playlist;
 mod preferences;
 mod preset_files;
+mod scene_designer;
 mod stinger_config;
 mod stream_control;
 mod studio_animation;
@@ -97,6 +98,7 @@ pub use playlist::{
 };
 pub use preferences::Appearance;
 pub use preset_files::{ExportLut, ExportedLut, ImportedLut, PresetFileAnswer, PresetFileRequest};
+pub use scene_designer::SCENE_DESIGNER_SHORTCUT;
 pub use stinger_config::{
     default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
     stinger_remove_intent, stinger_setup_block_reason,
@@ -846,7 +848,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 19] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 20] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -951,6 +953,13 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 19] = [
         group: ShortcutGroup::Console,
         keys: studio_animation::ANIMATION_SHORTCUT,
         action: Msg::ShortcutAnimation.en(),
+        key: None,
+    },
+    // Handled by [`StudioShell::toggle_designer_on_key`].
+    ShortcutEntry {
+        group: ShortcutGroup::Console,
+        keys: scene_designer::SCENE_DESIGNER_SHORTCUT,
+        action: Msg::ShortcutSceneDesigner.en(),
         key: None,
     },
     ShortcutEntry {
@@ -1227,6 +1236,8 @@ pub struct StudioShell {
     color: studio_color::ColorWindow,
     /// The Animation window and its title animation drafts.
     animation: studio_animation::AnimationWindow,
+    /// The layer designer and its scene layout drafts (SW-006).
+    designer: scene_designer::DesignerWindow,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1425,6 +1436,7 @@ impl StudioShell {
         self.toggle_help_on_key(ui);
         self.toggle_color_on_key(ui);
         self.toggle_animation_on_key(ui);
+        self.toggle_designer_on_key(ui);
     }
 
     /// Whether a dialog, menu, or popup owns the keyboard. Dialogs are modal
@@ -1438,6 +1450,7 @@ impl StudioShell {
             || self.remove_input.is_some()
             || self.color_owns_keyboard()
             || self.animation_owns_keyboard()
+            || self.designer_owns_keyboard()
             || egui::Popup::is_any_open(context)
     }
 
@@ -1864,6 +1877,7 @@ impl Default for StudioShell {
             show_preferences: false,
             color: studio_color::ColorWindow::default(),
             animation: studio_animation::AnimationWindow::default(),
+            designer: scene_designer::DesignerWindow::default(),
         }
     }
 }
@@ -2393,7 +2407,7 @@ mod tests {
             .iter()
             .filter(|entry| entry.group == ShortcutGroup::Console)
             .collect();
-        assert_eq!(console.len(), 7);
+        assert_eq!(console.len(), 8);
         assert_eq!(console[0].keys, Msg::KeyHelp.en());
         assert!(console.iter().all(|entry| entry.key.is_none()));
         // Every group has entries, and every entry's group is drawn.

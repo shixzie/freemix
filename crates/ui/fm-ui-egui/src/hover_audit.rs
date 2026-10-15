@@ -47,7 +47,10 @@
 //! with a refused edit showing. The Studio Animation window is audited in
 //! the console: Simple mode without a known design (presets applied on the
 //! server), Advanced mode with a design, keys selected and an active row, a
-//! conflict, a padlock, and a session without permissions.
+//! conflict, a padlock, and a session without permissions. The layer
+//! designer is audited in the console too: nothing selected, an edited
+//! draft with one layer selected, two layers selected, a padlock, and a
+//! viewer.
 //!
 //! The audits are hidden public entry points ([`check`],
 //! [`check_timeline`], [`check_color_panel`]) so the integration target
@@ -854,6 +857,7 @@ fn scenes(language: Language) -> Vec<Scene> {
         scenes.push(Scene::console(name, shell(open), state));
     }
     scenes.extend(animation_scenes(locale));
+    scenes.extend(designer_scenes(locale));
     scenes.extend(transition_menu_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
@@ -861,6 +865,77 @@ fn scenes(language: Language) -> Vec<Scene> {
         StudioUiState::new(StudioConnectionStatus::Backoff),
     ));
     scenes
+}
+
+/// The audit's show (Scene input 3 showing scene 30, whose layers are Host
+/// and Guest) with exact previews, for the layer designer's tests.
+#[cfg(test)]
+pub(crate) fn designer_fixture(operator: bool, locked: bool) -> (StudioUiState, fm_types::SceneId) {
+    let mut state = ready(
+        operator,
+        Variant {
+            locked,
+            ..Variant::default()
+        },
+    );
+    state.title_previews = true;
+    (state, scene_id())
+}
+
+/// The layer designer (SW-006): nothing selected, one layer selected with
+/// a crop and an inverted mask in the draft (every field and the draft
+/// buttons enabled), two layers selected, the project padlock, and a
+/// viewer.
+fn designer_scenes(locale: Locale) -> Vec<Scene> {
+    use fm_ui_model::scene_designer::Field;
+    let prepare = |state: &StudioUiState, configure: &dyn Fn(&mut StudioShell)| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.open_scene_designer(scene_id());
+        shell
+            .designer
+            .sync(&egui::Context::default(), state, core::time::Duration::ZERO);
+        configure(&mut shell);
+        shell
+    };
+    let unchanged = |_: &mut StudioShell| {};
+    let edited = |shell: &mut StudioShell| {
+        let document = shell.scene_layout_draft_mut(scene_id()).unwrap();
+        document.select(scene_layer(1), false);
+        document.set_field(Field::CropLeft, 40.0);
+        document.set_field(Field::Masked, 1.0);
+        document.set_field(Field::MaskInverted, 1.0);
+        document.undo();
+        document.set_field(Field::MaskInverted, 1.0);
+    };
+    let both = |shell: &mut StudioShell| {
+        let document = shell.scene_layout_draft_mut(scene_id()).unwrap();
+        document.select(scene_layer(1), false);
+        document.select(scene_layer(2), true);
+    };
+    let operator = || {
+        let mut state = ready(true, Variant::default());
+        state.title_previews = true;
+        state
+    };
+    let locked = ready(
+        true,
+        Variant {
+            locked: true,
+            ..Variant::default()
+        },
+    );
+    let scenes: Vec<(&str, Configure, StudioUiState)> = vec![
+        ("operator/designer", &unchanged, operator()),
+        ("operator/designer-edited", &edited, operator()),
+        ("operator/designer-multi", &both, operator()),
+        ("operator/designer-locked", &edited, locked),
+        ("viewer/designer", &both, ready(false, Variant::default())),
+    ];
+    scenes
+        .into_iter()
+        .map(|(name, configure, state)| Scene::console(name, prepare(&state, configure), state))
+        .collect()
 }
 
 /// The right-click menus of the transition column and overlay channels,

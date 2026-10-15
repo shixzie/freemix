@@ -264,6 +264,12 @@ impl StudioApp {
             crate::ConnectionConfig::Existing(_) => None,
         };
         let mut shell = StudioShell::default();
+        // The layer designer's copied commands name the supervised show.
+        shell.set_project_path(
+            project_bundle
+                .as_ref()
+                .map(|path| path.display().to_string()),
+        );
         let env = |name: &str| std::env::var(name).ok();
         let path = preferences_path(env);
         let (saved, preferences_notice) = path.as_deref().map_or_else(

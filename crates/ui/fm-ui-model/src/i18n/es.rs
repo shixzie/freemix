@@ -3713,6 +3713,309 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::AnimKindVideo, t("Vídeo")),
     (Msg::AnimKindGroup, t("Grupo")),
     (Msg::AnimKindOther, t("Otro elemento")),
+    // Studio layer designer (SW-006).
+    (Msg::DesignMenuItem, t("Diseñar la escena…")),
+    (
+        Msg::DesignMenuHover,
+        t(
+            "Abrir el diseñador de capas: mover, escalar, recortar, girar y apilar las capas de una escena sobre su lienzo, o escribir valores exactos",
+        ),
+    ),
+    (
+        Msg::ShortcutSceneDesigner,
+        t("Abrir o cerrar el diseñador de capas"),
+    ),
+    (Msg::DesignOpen, t("Diseñar capas…")),
+    (
+        Msg::DesignOpenHover,
+        t(
+            "Abrir esta escena en el diseñador de capas para mover, escalar, recortar y apilar sus capas",
+        ),
+    ),
+    (Msg::DesignTitle, t("Diseñador de capas")),
+    (
+        Msg::DesignTitleHover,
+        t(
+            "Organice las capas de una escena: arrastre en el lienzo o escriba valores exactos. Cada arrastre o cambio de campo es un paso de deshacer del borrador",
+        ),
+    ),
+    (Msg::DesignScenePickHover, t("Qué escena diseñar")),
+    (
+        Msg::DesignSceneOptionHover,
+        t("Diseñar las capas de la escena {name}"),
+    ),
+    (Msg::DesignSceneFallback, t("Escena {id}")),
+    (Msg::DesignNoScenes, t("Ninguna escena que diseñar")),
+    (
+        Msg::DesignNoScenesDetail,
+        t(
+            "El show aún no tiene escenas. Añada una entrada de escena sin conexión (freemix-cli scene-input-add) y vuelva a abrir el diseñador.",
+        ),
+    ),
+    (
+        Msg::DesignWaiting,
+        t("Esperando la composición de la escena…"),
+    ),
+    (Msg::DesignClose, t("Cerrar el diseñador de capas")),
+    (
+        Msg::DesignUndoHover,
+        t("Deshacer el último cambio del borrador ({action})"),
+    ),
+    (
+        Msg::DesignRedoHover,
+        t("Rehacer el cambio del borrador ({action})"),
+    ),
+    (
+        Msg::DesignReasonNothingToUndo,
+        t("no hay ningún cambio del borrador que deshacer"),
+    ),
+    (
+        Msg::DesignReasonNothingToRedo,
+        t("no hay ningún cambio del borrador que rehacer"),
+    ),
+    (Msg::DesignActionMove, t("mover")),
+    (Msg::DesignActionNudge, t("desplazar")),
+    (Msg::DesignActionScale, t("escalar")),
+    (Msg::DesignActionRotate, t("girar")),
+    (Msg::DesignActionCrop, t("recortar")),
+    (Msg::DesignActionField, t("cambio de campo")),
+    (Msg::DesignActionReorder, t("reapilar")),
+    (Msg::DesignStatusMatches, t("IGUAL AL SERVIDOR")),
+    (
+        Msg::DesignStatusMatchesHover,
+        t("El borrador es la composición que informó el servidor"),
+    ),
+    (
+        Msg::DesignStatusDraft,
+        plural("{count} CAMBIO", "{count} CAMBIOS"),
+    ),
+    (
+        Msg::DesignStatusDraftHover,
+        t(
+            "Cambios guardados en este equipo. La escena del servidor no cambia hasta aplicarlos con freemix-cli",
+        ),
+    ),
+    (
+        Msg::DesignLiveBanner,
+        t(
+            "La edición de capas en vivo no está disponible: el servidor no tiene un comando para editar capas de escena, así que las escenas se cambian sin conexión. Copie el borrador como comandos de freemix-cli y ejecútelos sobre el proyecto con el show detenido.",
+        ),
+    ),
+    (
+        Msg::DesignBaseChanged,
+        t(
+            "La composición de esta escena cambió en el servidor mientras tenía cambios en el borrador. Revierta para partir de ella.",
+        ),
+    ),
+    (
+        Msg::DesignRevertHover,
+        t("Descartar el borrador y volver a la composición del servidor"),
+    ),
+    (Msg::DesignReasonClean, t("el borrador no tiene cambios")),
+    (Msg::DesignCopyCli, t("Copiar como comandos")),
+    (
+        Msg::DesignCopyCliHover,
+        t("Copiar el borrador como comandos scene-layer de freemix-cli para {project}"),
+    ),
+    (
+        Msg::DesignCopied,
+        plural(
+            "Copiado {count} comando de freemix-cli del borrador de capas",
+            "Copiados {count} comandos de freemix-cli del borrador de capas",
+        ),
+    ),
+    (Msg::DesignSnap, t("Ajustar")),
+    (
+        Msg::DesignSnapHover,
+        t(
+            "Ajustar bordes y centros movidos al lienzo, a las zonas seguras y a otras capas, con guías. Mantenga Mayús al mover, o Ctrl en cualquier arrastre, para colocar libremente",
+        ),
+    ),
+    (Msg::DesignSafeAreas, t("Zonas seguras")),
+    (
+        Msg::DesignSafeAreasHover,
+        t("Mostrar las zonas seguras de acción (93%) y de títulos (90%) y ajustar a ellas"),
+    ),
+    (Msg::DesignSnapLayers, t("Bordes de capas")),
+    (
+        Msg::DesignSnapLayersHover,
+        t("Ajustar a los bordes y centros de las demás capas"),
+    ),
+    (
+        Msg::DesignCanvasHover,
+        t(
+            "Haga clic en una capa para seleccionarla (Mayús añade). Arrastre para mover; los tiradores de esquina y de borde escalan (Mayús mantiene la proporción); el tirador superior la gira (Mayús: pasos de 15°, guardada en cuartos de vuelta); Alt y arrastrar un borde recorta. Las flechas desplazan 1 px (Mayús: 10 px); Esc cancela un arrastre",
+        ),
+    ),
+    (Msg::DesignBadgeExact, t("IMAGEN DEL SERVIDOR")),
+    (
+        Msg::DesignBadgeExactHover,
+        t(
+            "La composición de la escena tal como está guardada en el servidor, con sus fuentes en vivo; los contornos muestran su borrador",
+        ),
+    ),
+    (Msg::DesignBadgeNone, t("SOLO CONTORNOS")),
+    (
+        Msg::DesignBadgeNoneHover,
+        t("Sin imagen exacta de la escena: {reason}"),
+    ),
+    (
+        Msg::DesignReasonNoSceneInput,
+        t("ninguna entrada de escena muestra esta escena"),
+    ),
+    (
+        Msg::DesignReasonWaitingPicture,
+        t("la primera imagen está en camino"),
+    ),
+    (Msg::DesignLayers, t("Capas")),
+    (
+        Msg::DesignLayersHover,
+        t(
+            "Las capas de la escena, la superior primero. Haga clic para seleccionar (Mayús o Ctrl añade); arrastre una fila para reapilar",
+        ),
+    ),
+    (
+        Msg::DesignLayerRowHover,
+        t("{name} · {source} · posición {position} de {count} en la pila. Arrastre para reapilar"),
+    ),
+    (Msg::DesignLayerUnnamed, t("Capa {id}")),
+    (Msg::DesignSourceInput, t("entrada {name}")),
+    (Msg::DesignSourceScene, t("escena {name}")),
+    (Msg::DesignForward, t("Adelante")),
+    (
+        Msg::DesignForwardHover,
+        t("Subir las capas seleccionadas un puesto en la pila"),
+    ),
+    (Msg::DesignBackward, t("Atrás")),
+    (
+        Msg::DesignBackwardHover,
+        t("Bajar las capas seleccionadas un puesto en la pila"),
+    ),
+    (Msg::DesignToFront, t("Al frente")),
+    (
+        Msg::DesignToFrontHover,
+        t("Subir las capas seleccionadas a lo más alto de la pila"),
+    ),
+    (Msg::DesignToBack, t("Al fondo")),
+    (
+        Msg::DesignToBackHover,
+        t("Bajar las capas seleccionadas al fondo de la pila"),
+    ),
+    (
+        Msg::DesignReasonNoSelection,
+        t("seleccione primero una capa"),
+    ),
+    (
+        Msg::DesignReasonTop,
+        t("la selección ya está arriba del todo"),
+    ),
+    (Msg::DesignReasonBottom, t("la selección ya está al fondo")),
+    (Msg::DesignInspector, t("Inspector")),
+    (
+        Msg::DesignInspectorHover,
+        t(
+            "Valores exactos de la capa seleccionada. Con varias seleccionadas, un cambio se aplica a todas. Arrastre un valor para variarlo o haga clic para escribirlo",
+        ),
+    ),
+    (
+        Msg::DesignNothingSelected,
+        t("Seleccione una capa en el lienzo o en la lista."),
+    ),
+    (
+        Msg::DesignMultiSelected,
+        plural("{count} capa seleccionada", "{count} capas seleccionadas"),
+    ),
+    (Msg::DesignGroupPosition, t("Posición")),
+    (Msg::DesignGroupSize, t("Tamaño")),
+    (Msg::DesignGroupLook, t("Aspecto")),
+    (Msg::DesignGroupCrop, t("Recorte")),
+    (Msg::DesignGroupMask, t("Máscara")),
+    (Msg::DesignGroupStack, t("Pila")),
+    (Msg::DesignGroupAnchor, t("Ancla")),
+    (
+        Msg::DesignXHover,
+        t("Desplazamiento X: el borde izquierdo de la capa en el lienzo, en píxeles"),
+    ),
+    (
+        Msg::DesignYHover,
+        t("Desplazamiento Y: el borde superior de la capa en el lienzo, en píxeles"),
+    ),
+    (
+        Msg::DesignWidthHover,
+        t("Ancho de la capa antes de girarla, en píxeles"),
+    ),
+    (
+        Msg::DesignHeightHover,
+        t("Alto de la capa antes de girarla, en píxeles"),
+    ),
+    (
+        Msg::DesignZoomHover,
+        t(
+            "Zoom: el ancho de la capa como porcentaje del ancho del lienzo. Al cambiarlo se escalan ambos lados respecto al centro",
+        ),
+    ),
+    (
+        Msg::DesignRotationHover,
+        t(
+            "Girar la capa en sentido horario respecto a su centro. Las capas guardadas giran en cuartos de vuelta; anime cualquier ángulo en la ventana Animación",
+        ),
+    ),
+    (
+        Msg::DesignRotationOptionHover,
+        t("Girar la capa {angle}° en sentido horario"),
+    ),
+    (
+        Msg::DesignOpacityHover,
+        t("Opacidad de la capa, en porcentaje"),
+    ),
+    (Msg::DesignVisible, t("Visible")),
+    (Msg::DesignVisibleHover, t("Si la capa se dibuja o no")),
+    (
+        Msg::DesignCropHover,
+        t(
+            "Recortar estos píxeles de la fuente por el borde {edge}; la imagen recortada llena la capa. Alt y arrastrar un tirador de borde en el lienzo recorta a mano",
+        ),
+    ),
+    (Msg::DesignEdgeLeft, t("izquierdo")),
+    (Msg::DesignEdgeTop, t("superior")),
+    (Msg::DesignEdgeRight, t("derecho")),
+    (Msg::DesignEdgeBottom, t("inferior")),
+    (
+        Msg::DesignMaskHover,
+        t("Mostrar solo un rectángulo de la imagen recortada (invertida: todo menos él)"),
+    ),
+    (Msg::DesignMaskInvert, t("Invertir")),
+    (
+        Msg::DesignMaskInvertHover,
+        t("Conservar lo que queda fuera del rectángulo de la máscara"),
+    ),
+    (
+        Msg::DesignMaskFieldHover,
+        t("{field} del rectángulo de la máscara, en píxeles de la fuente recortada"),
+    ),
+    (Msg::DesignReasonNoMask, t("active primero la máscara")),
+    (Msg::DesignStackPosition, t("{position} de {count}")),
+    (
+        Msg::DesignStackHover,
+        t(
+            "Dónde está la capa en la pila (1 es el fondo); reapile con los botones o arrastrando filas en la lista",
+        ),
+    ),
+    (Msg::DesignAnchorCentre, t("Centro")),
+    (
+        Msg::DesignAnchorHover,
+        t(
+            "Las capas giran y hacen zoom respecto a su centro, marcado con una cruz en el lienzo; las capas guardadas no tienen un punto de anclaje móvil",
+        ),
+    ),
+    (
+        Msg::DesignUnreported,
+        t(
+            "El servidor no informa del recorte, la máscara ni el orden z, así que empiezan sin recorte, sin máscara y en el orden de la lista; solo sus cambios en ellos se convierten en comandos.",
+        ),
+    ),
+    (Msg::DesignReadoutAngle, t("{free}° · guardado {stored}°")),
+    (Msg::DesignReadoutCrop, t("Recorte {edge} {pixels} px")),
     // User animation presets and shared preset files (GX-011, SW-019).
     (Msg::AnimMyPresets, t("Mis preajustes")),
     (
