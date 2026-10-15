@@ -347,11 +347,15 @@ impl WindowGeometry {
     pub const MAX_OFFSET: i32 = 32_000;
 
     /// A geometry from a window's inner size and outer position, clamped
-    /// to the kept ranges.
+    /// to the kept ranges. An unmeasurable (NaN) side is the smallest kept,
+    /// and a position with an unmeasurable coordinate is unknown.
     #[must_use]
     pub fn from_points(size: (f32, f32), position: Option<(f32, f32)>) -> Self {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped first
         let clamp_side = |value: f32| {
+            if value.is_nan() {
+                return Self::MIN_SIDE;
+            }
             value
                 .round()
                 .clamp(f32::from(Self::MIN_SIDE), f32::from(Self::MAX_SIDE)) as u16
@@ -364,7 +368,9 @@ impl WindowGeometry {
         };
         Self {
             size: (clamp_side(size.0), clamp_side(size.1)),
-            position: position.map(|(x, y)| (offset(x), offset(y))),
+            position: position
+                .filter(|(x, y)| !x.is_nan() && !y.is_nan())
+                .map(|(x, y)| (offset(x), offset(y))),
         }
     }
 

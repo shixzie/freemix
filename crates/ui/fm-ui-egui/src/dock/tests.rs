@@ -435,3 +435,13 @@ fn window_geometry_is_clamped_from_points() {
         }
     );
 }
+
+#[test]
+fn unmeasurable_window_points_still_make_a_readable_geometry() {
+    let geometry = WindowGeometry::from_points((f32::NAN, 500.0), Some((f32::NAN, 40.0)));
+    assert_eq!(WindowGeometry::decode(&geometry.encode()), Some(geometry));
+    assert_eq!(geometry.size, (WindowGeometry::MIN_SIDE, 500));
+    assert_eq!(geometry.position, None);
+    let geometry = WindowGeometry::from_points((800.0, f32::NAN), Some((10.0, f32::INFINITY)));
+    assert_eq!(WindowGeometry::decode(&geometry.encode()), Some(geometry));
+}

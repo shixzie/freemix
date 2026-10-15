@@ -216,7 +216,8 @@ impl ConsoleLayout {
         }
     }
 
-    /// Adds (or replaces, by name) one saved layout.
+    /// Adds (or replaces, by name, ignoring case as the name check does)
+    /// one saved layout.
     fn apply_saved_layout(&mut self, value: &str) {
         let Some(layout) = NamedLayout::decode(value) else {
             self.rejected = true;
@@ -225,7 +226,7 @@ impl ConsoleLayout {
         if let Some(existing) = self
             .saved_layouts
             .iter_mut()
-            .find(|saved| saved.name == layout.name)
+            .find(|saved| saved.name.to_lowercase() == layout.name.to_lowercase())
         {
             *existing = layout;
         } else if self.saved_layouts.len() < crate::dock::MAX_SAVED_LAYOUTS {

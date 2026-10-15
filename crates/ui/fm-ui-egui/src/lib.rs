@@ -1372,6 +1372,7 @@ impl StudioShell {
             saved_layouts: core::mem::take(&mut self.layout.saved_layouts),
             ..ConsoleLayout::default()
         };
+        self.dock_ui.maximized = None;
     }
 
     /// Returns the console's UI language and clock preference.

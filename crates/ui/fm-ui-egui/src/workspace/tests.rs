@@ -954,3 +954,227 @@ fn render_the_default_layout_for_review() {
         .unwrap();
     }
 }
+
+#[test]
+fn tiny_windows_and_maximised_tiles_draw_without_panicking() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    for size in [vec2(1.0, 1.0), vec2(40.0, 30.0), vec2(200.0, 120.0)] {
+        frame_at(&context, &mut shell, &state, size, Vec::new());
+        shell.dock_ui.maximized = Some(PanelId::Overlays);
+        frame_at(&context, &mut shell, &state, size, Vec::new());
+        shell.dock_ui.maximized = None;
+    }
+}
+
+/// Maximises `panel`'s tile and draws until the workspace has seen it.
+fn maximise(
+    context: &egui::Context,
+    shell: &mut StudioShell,
+    state: &StudioUiState,
+    panel: PanelId,
+) {
+    frame(context, shell, state, Vec::new());
+    shell.apply_dock_action(context, DockAction::ToggleMaximized(panel));
+    frame(context, shell, state, Vec::new());
+    frame(context, shell, state, Vec::new());
+    assert_eq!(shell.dock_ui.maximized, Some(panel));
+}
+
+#[test]
+fn closing_or_popping_out_the_maximised_tab_keeps_its_tile_maximised() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    for action in [DockAction::Close, DockAction::PopOut] {
+        let mut shell = StudioShell::default();
+        maximise(&context, &mut shell, &state, PanelId::Overlays);
+        shell.apply_dock_action(&context, action(PanelId::Overlays));
+        frame(&context, &mut shell, &state, Vec::new());
+        // The rest of the group stays maximised.
+        assert_eq!(shell.dock_ui.maximized, Some(PanelId::Stingers));
+        assert_eq!(
+            shell.dock_ui.tile_rects.keys().copied().collect::<Vec<_>>(),
+            vec![PanelId::Stingers]
+        );
+    }
+    // Closing a lone maximised tile restores the others.
+    let mut shell = StudioShell::default();
+    maximise(&context, &mut shell, &state, PanelId::Mixer);
+    shell.apply_dock_action(&context, DockAction::Close(PanelId::Mixer));
+    frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(shell.dock_ui.maximized, None);
+    assert_eq!(shell.dock_ui.tile_rects.len(), 6);
+}
+
+#[test]
+fn a_panel_docked_beside_a_maximised_tile_restores_the_tiles() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    // Docked back from its window, beside the maximised tile.
+    let mut shell = StudioShell::default();
+    shell.layout.dock.pop_out(PanelId::Program, None);
+    maximise(&context, &mut shell, &state, PanelId::Mixer);
+    shell
+        .layout
+        .dock
+        .move_panel(PanelId::Program, PanelId::Mixer, DropZone::Left);
+    frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(shell.dock_ui.maximized, None);
+    assert!(shell.dock_ui.tile_rects.contains_key(&PanelId::Program));
+    // Reopened from View › Panels.
+    let mut shell = StudioShell::default();
+    shell.layout.dock.close(PanelId::Program);
+    maximise(&context, &mut shell, &state, PanelId::Mixer);
+    shell.layout.dock.show(PanelId::Program);
+    frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(shell.dock_ui.maximized, None);
+    // A tab dragged out of the maximised group to beside it.
+    let mut shell = StudioShell::default();
+    maximise(&context, &mut shell, &state, PanelId::Overlays);
+    shell.apply_dock_action(
+        &context,
+        DockAction::Move(PanelId::Titles, PanelId::Overlays, DropZone::Left),
+    );
+    frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(shell.dock_ui.maximized, None);
+    assert!(shell.dock_ui.tile_rects.contains_key(&PanelId::Titles));
+    // Tabbed into the maximised group, it shows there.
+    let mut shell = StudioShell::default();
+    shell.layout.dock.pop_out(PanelId::Program, None);
+    maximise(&context, &mut shell, &state, PanelId::Mixer);
+    shell
+        .layout
+        .dock
+        .move_panel(PanelId::Program, PanelId::Mixer, DropZone::Center);
+    frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(shell.dock_ui.maximized, Some(PanelId::Mixer));
+}
+
+#[test]
+fn applying_or_resetting_a_layout_restores_maximised_tiles() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    shell.layout.saved_layouts.push(NamedLayout {
+        name: "Compact".into(),
+        layout: LayoutPreset::Compact.layout(),
+    });
+    let applies: [fn(&mut StudioShell, &egui::Context); 3] = [
+        |shell, _| shell.apply_preset(LayoutPreset::AudioFocus),
+        |shell, _| shell.apply_saved_layout(0),
+        |shell, context| shell.reset_layout(context),
+    ];
+    for apply in applies {
+        maximise(&context, &mut shell, &state, PanelId::Mixer);
+        apply(&mut shell, &context);
+        frame(&context, &mut shell, &state, Vec::new());
+        assert_eq!(shell.dock_ui.maximized, None);
+        assert!(shell.dock_ui.tile_rects.len() > 1);
+    }
+}
+
+#[test]
+fn a_minimised_window_keeps_its_last_place() {
+    let context = egui::Context::default();
+    let outcome = |info: egui::ViewportInfo| {
+        let mut raw = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, SCREEN)),
+            ..RawInput::default()
+        };
+        raw.viewports.insert(ViewportId::ROOT, info);
+        context.begin_pass(raw);
+        let ui = Ui::new(
+            context.clone(),
+            Id::new("fm-dock-test"),
+            UiBuilder::new().layer_id(LayerId::background()),
+        );
+        let outcome = window_outcome(&ui, ViewportClass::Immediate, false);
+        drop(ui);
+        let _ = context.end_pass();
+        outcome
+    };
+    let placed = egui::ViewportInfo {
+        inner_rect: Some(Rect::from_min_size(pos2(100.0, 130.0), vec2(640.0, 400.0))),
+        outer_rect: Some(Rect::from_min_size(pos2(100.0, 100.0), vec2(640.0, 430.0))),
+        minimized: Some(false),
+        ..egui::ViewportInfo::default()
+    };
+    assert_eq!(
+        outcome(placed).geometry,
+        Some(WindowGeometry {
+            size: (640, 400),
+            position: Some((100, 100)),
+        })
+    );
+    // Windows parks a minimised window at -32000, -32000.
+    let minimised = egui::ViewportInfo {
+        inner_rect: Some(Rect::from_min_size(
+            pos2(-32_000.0, -32_000.0),
+            vec2(160.0, 0.0),
+        )),
+        outer_rect: Some(Rect::from_min_size(
+            pos2(-32_000.0, -32_000.0),
+            vec2(160.0, 28.0),
+        )),
+        minimized: Some(true),
+        ..egui::ViewportInfo::default()
+    };
+    assert_eq!(outcome(minimised).geometry, None);
+}
+
+#[test]
+fn enter_right_after_typing_saves_the_name_as_typed() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    shell.open_layout_name_dialog(None);
+    frame(&context, &mut shell, &state, Vec::new());
+    frame(&context, &mut shell, &state, Vec::new());
+    frame(
+        &context,
+        &mut shell,
+        &state,
+        vec![Event::Text("Live".into())],
+    );
+    // The last key and Enter arrive in one frame.
+    frame(
+        &context,
+        &mut shell,
+        &state,
+        vec![
+            Event::Text("2".into()),
+            Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ],
+    );
+    let names: Vec<_> = shell
+        .layout
+        .saved_layouts
+        .iter()
+        .map(|saved| saved.name.as_str())
+        .collect();
+    assert_eq!(names, ["Live2"]);
+    assert!(!shell.layout_dialog_open());
+}
+
+#[test]
+fn saved_layout_names_differing_only_in_case_are_one_layout() {
+    let mut layout = ConsoleLayout::default();
+    let compact = NamedLayout {
+        name: "Live".into(),
+        layout: LayoutPreset::Compact.layout(),
+    };
+    let audio = NamedLayout {
+        name: "LIVE".into(),
+        layout: LayoutPreset::AudioFocus.layout(),
+    };
+    assert!(layout.apply_preference("layout.saved", &compact.encode()));
+    assert!(layout.apply_preference("layout.saved", &audio.encode()));
+    assert_eq!(layout.saved_layouts, vec![audio]);
+}

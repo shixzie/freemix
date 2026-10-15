@@ -158,6 +158,9 @@ pub(crate) struct DockUi {
     dragging: Option<DragSource>,
     /// The tile shown alone over the whole workspace, by a panel in it.
     pub(crate) maximized: Option<PanelId>,
+    /// The maximised tile's panels and every docked panel when the
+    /// workspace last drew it, to notice a panel docked out of sight.
+    maximized_seen: Option<MaximizedSeen>,
     /// Where a popped-out panel would dock, previewed in the main window.
     remote_drop: Option<RemoteDrop>,
     /// The main window's inside top-left on screen, in whole points, when
@@ -165,6 +168,42 @@ pub(crate) struct DockUi {
     main_origin: Option<[i32; 2]>,
     /// The open Save / Rename layout dialog.
     pub(crate) name_dialog: Option<LayoutNameDialog>,
+}
+
+/// What the workspace last drew while a tile was maximised.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MaximizedSeen {
+    group: Vec<PanelId>,
+    docked: Vec<PanelId>,
+}
+
+/// The panel whose tile stays maximised after the layout changed from
+/// `seen`: the tile follows its remaining tabs when `maximized` is closed
+/// or popped out, and every tile comes back (`None`) when a panel is
+/// docked outside it, where it would be out of sight.
+fn follow_maximized(
+    dock: &DockLayout,
+    maximized: PanelId,
+    seen: Option<&MaximizedSeen>,
+) -> Option<(PanelId, Vec<PanelId>)> {
+    let panel = if dock.is_docked(maximized) {
+        maximized
+    } else {
+        seen?.group.iter().copied().find(|p| dock.is_docked(*p))?
+    };
+    let Some(DockNode::Tabs { panels: group, .. }) = dock.tab_group(panel) else {
+        return None;
+    };
+    if let Some(seen) = seen {
+        let hidden = dock
+            .docked()
+            .into_iter()
+            .any(|p| !group.contains(&p) && (seen.group.contains(&p) || !seen.docked.contains(&p)));
+        if hidden {
+            return None;
+        }
+    }
+    Some((panel, group))
 }
 
 /// A laid-out tab group.
@@ -570,17 +609,27 @@ impl StudioShell {
         let Some(root) = self.layout.dock.root().cloned() else {
             self.dock_ui.tile_rects.clear();
             self.dock_ui.maximized = None;
+            self.dock_ui.maximized_seen = None;
             self.draw_empty_workspace(ui, area);
             return area;
         };
         // A maximised tile is laid out alone over the whole area.
+        let followed = self.dock_ui.maximized.and_then(|panel| {
+            follow_maximized(
+                &self.layout.dock,
+                panel,
+                self.dock_ui.maximized_seen.as_ref(),
+            )
+        });
+        self.dock_ui.maximized = followed.as_ref().map(|(panel, _)| *panel);
+        self.dock_ui.maximized_seen = followed.map(|(_, group)| MaximizedSeen {
+            group,
+            docked: self.layout.dock.docked(),
+        });
         let maximized = self
             .dock_ui
             .maximized
             .and_then(|panel| self.layout.dock.tab_group(panel));
-        if maximized.is_none() {
-            self.dock_ui.maximized = None;
-        }
         let (tiles, splitters) = layout_tiles(maximized.as_ref().unwrap_or(&root), area);
         let mut actions = Vec::new();
         for tile in &tiles {
@@ -1488,6 +1537,7 @@ impl StudioShell {
     pub(crate) fn apply_preset(&mut self, preset: LayoutPreset) {
         self.layout.dock = preset.layout();
         self.dock_ui.dragging = None;
+        self.dock_ui.maximized = None;
     }
 
     /// Applies the saved layout at `index`.
@@ -1495,6 +1545,7 @@ impl StudioShell {
         if let Some(saved) = self.layout.saved_layouts.get(index) {
             self.layout.dock = saved.layout.clone();
             self.dock_ui.dragging = None;
+            self.dock_ui.maximized = None;
         }
     }
 
@@ -1529,10 +1580,10 @@ impl StudioShell {
         } else {
             Msg::LayoutSaveTitle
         };
-        let name = dialog.name.trim().to_owned();
-        let problem = check_layout_name(&name, &self.layout.saved_layouts, dialog.rename).err();
         let full = dialog.rename.is_none()
             && self.layout.saved_layouts.len() >= crate::dock::MAX_SAVED_LAYOUTS;
+        let saved_layouts = &self.layout.saved_layouts;
+        let mut name = String::new();
         let mut submit = false;
         let mut cancel = false;
         let close =
@@ -1549,6 +1600,10 @@ impl StudioShell {
                     field.request_focus();
                     dialog.focus_pending = false;
                 }
+                // Checked as edited this frame, so Enter right after the
+                // last key saves the name as typed.
+                dialog.name.trim().clone_into(&mut name);
+                let problem = check_layout_name(&name, saved_layouts, dialog.rename).err();
                 let reason = if full {
                     Some(Msg::LayoutTooMany)
                 } else {
@@ -1689,7 +1744,9 @@ pub(crate) fn tool_popout_frame(
     window_outcome(ui, class, dock_back)
 }
 
-/// Reads a native window's close request and place.
+/// Reads a native window's close request and place. A minimised window
+/// reports no place worth keeping (Windows parks it at -32000, -32000),
+/// so its last place stands.
 fn window_outcome(ui: &Ui, class: ViewportClass, dock_back: bool) -> WindowOutcome {
     if class == ViewportClass::EmbeddedWindow {
         return WindowOutcome {
@@ -1699,9 +1756,10 @@ fn window_outcome(ui: &Ui, class: ViewportClass, dock_back: bool) -> WindowOutco
     }
     ui.input(|input| {
         let viewport = input.viewport();
+        let minimized = viewport.minimized == Some(true);
         WindowOutcome {
             dock_back: dock_back || viewport.close_requested(),
-            geometry: viewport.inner_rect.map(|inner| {
+            geometry: viewport.inner_rect.filter(|_| !minimized).map(|inner| {
                 WindowGeometry::from_points(
                     (inner.width(), inner.height()),
                     viewport.outer_rect.map(|outer| (outer.min.x, outer.min.y)),
