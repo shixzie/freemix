@@ -2099,6 +2099,8 @@ mod tests {
         };
         let wire = WireInputId::from_domain;
         let snapshot = SnapshotMessage {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,
@@ -2116,6 +2118,8 @@ mod tests {
             outputs: Vec::new(),
             input_audio_strips: [1, 2]
                 .map(|value| fm_protocol::InputAudioStripStatus {
+                    pan_basis_points: 0,
+                    group: None,
                     input: wire(input(value)),
                     gain_millidb: 0,
                     balance_basis_points: 0,

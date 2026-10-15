@@ -49,7 +49,7 @@ use fm_video::{ImageFrame, write_ppm};
 
 use crate::{
     args::{
-        Command, ManualTransitionKind, OverlayBorder as CliOverlayBorder,
+        AudioMixerArgs, Command, ManualTransitionKind, OverlayBorder as CliOverlayBorder,
         OverlayPosition as CliOverlayPosition, OverlayTransition as CliOverlayTransition,
         StingerAudioPolicy as CliStingerAudioPolicy, StingerFallback as CliStingerFallback,
         StreamSpec, TBarAction,
@@ -687,6 +687,7 @@ pub fn run(command: Command) -> AppResult<()> {
             input,
             gain_millidb,
             balance_basis_points,
+            pan_basis_points,
             muted,
             soloed,
             follow_video,
@@ -698,6 +699,7 @@ pub fn run(command: Command) -> AppResult<()> {
                 state: engine_audio_strip_state(
                     gain_millidb,
                     balance_basis_points,
+                    pan_basis_points,
                     muted,
                     soloed,
                     follow_video,
@@ -1016,6 +1018,60 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::AudioMixer {
+            path,
+            edit,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::AudioMixer(engine_audio_mixer_edit(edit)?),
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteAudioMixer {
+            address,
+            edit,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AudioMixer(wire_audio_mixer_operation(edit)?),
+            key,
+            expected_revision,
+        )?,
+        Command::FadeToBlackOutput {
+            path,
+            output,
+            affected,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetFadeToBlackOutput {
+                output: output_id(output)?,
+                affected,
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteFadeToBlackOutput {
+            address,
+            output,
+            affected,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetFadeToBlackOutput {
+                output: fm_protocol::WireOutputId::from_domain(output_id(output)?),
+                affected,
+            },
+            key,
+            expected_revision,
+        )?,
         Command::FadeToBlack {
             path,
             target,
@@ -1039,6 +1095,7 @@ pub fn run(command: Command) -> AppResult<()> {
             input,
             gain_millidb,
             balance_basis_points,
+            pan_basis_points,
             muted,
             soloed,
             follow_video,
@@ -1048,6 +1105,9 @@ pub fn run(command: Command) -> AppResult<()> {
         } => remote::execute(
             address,
             fm_protocol::CommandPayload::SetInputAudioStrip {
+                pan_basis_points: fm_model::InputPanBasisPoints::new(pan_basis_points)
+                    .ok_or_else(|| AppFailure("pan must be in -10000..=10000 basis points".into()))?
+                    .get(),
                 input: fm_protocol::WireInputId::new(
                     NonZeroU128::new(input)
                         .ok_or_else(|| AppFailure("input ID must be nonzero".into()))?,
@@ -1991,6 +2051,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     project.reorder_inputs(snapshot.show().inputs())?;
     sync_input_names(&mut project, snapshot.show())?;
     sync_input_audio_strips(&mut project, snapshot.show())?;
+    sync_audio_mixer(&mut project, snapshot.show())?;
     sync_stream_running(&mut project, snapshot.show())?;
     sync_recording_desired(&mut project, snapshot.show());
     sync_input_lifecycle(&mut project, snapshot.show());
@@ -3294,6 +3355,9 @@ fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
     if let Some(state) = manual.realized {
         realized.restore_t_bar(restored_t_bar(state)?)?;
     }
+    for &output in project.fade_to_black_excluded_outputs() {
+        let _ = realized.set_fade_to_black_output(output, false);
+    }
     let fade_to_black = stored.runtime_fade_to_black();
     show.restore_fade_to_black(fade_to_black.desired.target_active);
     realized.restore_settled_fade_to_black(fade_to_black.realized.target_active);
@@ -3325,12 +3389,16 @@ fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
 fn engine_audio_strip_state(
     gain_millidb: i32,
     balance_basis_points: i32,
+    pan_basis_points: i32,
     muted: bool,
     soloed: bool,
     follow_video: bool,
     delay_samples: u32,
 ) -> AppResult<EngineInputAudioStripState> {
     Ok(EngineInputAudioStripState {
+        pan_basis_points: fm_model::InputPanBasisPoints::new(pan_basis_points)
+            .ok_or_else(|| AppFailure("pan must be in -10000..=10000 basis points".into()))?
+            .get(),
         gain_millidb: InputGainMilliDb::new(gain_millidb)
             .ok_or_else(|| AppFailure("gain must be in -96000..=24000 millidB".into()))?
             .get(),
@@ -3346,11 +3414,84 @@ fn engine_audio_strip_state(
     })
 }
 
+/// The engine edit for a parsed mixer command.
+fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineAudioMixerEdit> {
+    let group = |number: u8| {
+        fm_model::AudioGroupNumber::new(number)
+            .ok_or_else(|| AppFailure("group must be 1..=4".into()))
+    };
+    Ok(match edit {
+        AudioMixerArgs::Label { input, label } => fm_engine::EngineAudioMixerEdit::SetLabel {
+            input: input_id(input)?,
+            label,
+        },
+        AudioMixerArgs::Group {
+            input,
+            group: number,
+        } => fm_engine::EngineAudioMixerEdit::SetGroup {
+            input: input_id(input)?,
+            group: number.map(group).transpose()?,
+        },
+        AudioMixerArgs::GroupName {
+            group: number,
+            name,
+        } => fm_engine::EngineAudioMixerEdit::RenameGroup {
+            group: group(number)?,
+            name,
+        },
+        AudioMixerArgs::GroupLevel {
+            group: number,
+            gain_millidb,
+            muted,
+        } => fm_engine::EngineAudioMixerEdit::SetGroupLevel {
+            group: group(number)?,
+            state: fm_engine::EngineAudioGroupState {
+                gain_millidb: InputGainMilliDb::new(gain_millidb)
+                    .ok_or_else(|| AppFailure("gain must be in -96000..=24000 millidB".into()))?
+                    .get(),
+                muted,
+            },
+        },
+    })
+}
+
+/// The wire operation for a parsed mixer command.
+fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::AudioMixerOperation> {
+    Ok(match engine_audio_mixer_edit(edit)? {
+        fm_engine::EngineAudioMixerEdit::SetLabel { input, label } => {
+            fm_protocol::AudioMixerOperation::SetLabel {
+                input: fm_protocol::WireInputId::from_domain(input),
+                label,
+            }
+        }
+        fm_engine::EngineAudioMixerEdit::SetGroup { input: id, group } => {
+            fm_protocol::AudioMixerOperation::SetGroup {
+                input: fm_protocol::WireInputId::from_domain(id),
+                group: group.map(fm_model::AudioGroupNumber::get),
+            }
+        }
+        fm_engine::EngineAudioMixerEdit::RenameGroup { group, name } => {
+            fm_protocol::AudioMixerOperation::RenameGroup {
+                group: group.get(),
+                name,
+            }
+        }
+        fm_engine::EngineAudioMixerEdit::SetGroupLevel { group, state } => {
+            fm_protocol::AudioMixerOperation::SetGroupLevel {
+                group: group.get(),
+                gain_millidb: state.gain_millidb,
+                muted: state.muted,
+            }
+        }
+    })
+}
+
 fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppResult<()> {
     for strip in project.input_audio_strips() {
         show.set_input_audio_strip(
             strip.input,
             EngineInputAudioStripState {
+                pan_basis_points: strip.state.pan.get(),
                 gain_millidb: strip.state.gain.get(),
                 balance_basis_points: strip.state.balance.get(),
                 muted: strip.state.muted,
@@ -3359,6 +3500,65 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                 delay_samples: strip.state.delay_samples.get(),
             },
         )?;
+        show.set_input_audio_label(strip.input, strip.label.clone())?;
+        show.set_input_audio_group(strip.input, strip.group)?;
+    }
+    for (group, value) in project.audio_groups().iter() {
+        show.set_audio_group(
+            group,
+            fm_engine::EngineAudioGroup {
+                name: value.name.clone(),
+                state: fm_engine::EngineAudioGroupState {
+                    gain_millidb: value.gain.get(),
+                    muted: value.muted,
+                },
+            },
+        )?;
+    }
+    show.restore_fade_to_black_excluded_outputs(
+        project.fade_to_black_excluded_outputs().iter().copied(),
+    )?;
+    Ok(())
+}
+
+/// Folds the show's strip labels, groups, and Fade-to-Black output
+/// selection (AU-001, SW-004) into the project.
+fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    for &input in show.inputs() {
+        let label = show.input_audio_label(input);
+        if project.input_audio_label(input) != Some(label) {
+            project
+                .set_input_audio_label(input, label.to_owned())
+                .map_err(|error| AppFailure(format!("input {input} strip label: {error}")))?;
+        }
+        if !project.set_input_audio_group(input, show.input_audio_group(input)) {
+            return Err(AppFailure(format!("project is missing input {input}")).into());
+        }
+    }
+    for (group, value) in fm_model::AudioGroupNumber::ALL
+        .into_iter()
+        .zip(show.audio_groups())
+    {
+        project
+            .set_audio_group(
+                group,
+                fm_model::AudioGroup {
+                    name: value.name.clone(),
+                    gain: InputGainMilliDb::new(value.state.gain_millidb)
+                        .expect("engine group gain is bounded by the model contract"),
+                    muted: value.state.muted,
+                },
+            )
+            .map_err(|error| AppFailure(format!("audio group {group}: {error}")))?;
+    }
+    let excluded = show.desired_switcher().fade_to_black_excluded_outputs();
+    let outputs = project
+        .outputs()
+        .iter()
+        .map(|output| output.id)
+        .collect::<Vec<_>>();
+    for output in outputs {
+        project.set_fade_to_black_output(output, !excluded.contains(&output));
     }
     Ok(())
 }
@@ -3369,6 +3569,8 @@ fn sync_input_audio_strips(project: &mut Project, show: &ShowState) -> AppResult
             AppFailure(format!("project is missing audio strip for input {input}"))
         })?;
         let strip = InputAudioStripState {
+            pan: fm_model::InputPanBasisPoints::new(state.pan_basis_points)
+                .expect("engine input audio pan is bounded by the model contract"),
             gain: InputGainMilliDb::new(state.gain_millidb)
                 .expect("engine input audio gain is bounded by the model contract"),
             balance: InputBalanceBasisPoints::new(state.balance_basis_points)
@@ -4414,7 +4616,11 @@ Usage:
   freemix-cli audio-buses <show.freemix>
   freemix-cli scenes <show.freemix>
   freemix-cli asset-audit <show.freemix>
-  freemix-cli audio-strip <show.freemix> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000>
+  freemix-cli audio-strip <show.freemix> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp:-10000..=10000>]
+  freemix-cli audio-label <show.freemix> <input> <label (empty clears)> [--key <key>] [--expect <revision>]
+  freemix-cli audio-group <show.freemix> <input> <1..4|none> [--key <key>] [--expect <revision>]
+  freemix-cli audio-group-name <show.freemix> <group:1..4> <name> [--key <key>] [--expect <revision>]
+  freemix-cli audio-group-level <show.freemix> <group:1..4> <gain-millidb> <muted:on|off> [--key <key>] [--expect <revision>]
   freemix-cli rename <show.freemix> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli input-reorder <show.freemix> <input> [<input>...] [--key <key>] [--expect <revision>]
   freemix-cli preview <show.freemix> <input> [--key <key>] [--expect <revision>]
@@ -4445,9 +4651,11 @@ Usage:
   freemix-cli tbar-commit <show.freemix> [--key <key>] [--expect <revision>]
   freemix-cli tbar-cancel <show.freemix> [--key <key>] [--expect <revision>]
   freemix-cli ftb <show.freemix> <live|black> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli ftb-output <show.freemix> <output> <affected:on|off> [--key <key>] [--expect <revision>]
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
-  freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--key <key>] [--expect <revision>]
+  freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-audio-label|remote-audio-group|remote-audio-group-name|remote-audio-group-level <127.0.0.1:port> <arguments as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-rename <127.0.0.1:port> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> solid <input> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> bars <input> <name> [--key <key>] [--expect <revision>]
@@ -4495,6 +4703,7 @@ Usage:
   freemix-cli remote-tbar-commit <127.0.0.1:port> [--key <key>] [--expect <revision>]
   freemix-cli remote-tbar-cancel <127.0.0.1:port> [--key <key>] [--expect <revision>]
   freemix-cli remote-ftb <127.0.0.1:port> <live|black> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli remote-ftb-output <127.0.0.1:port> <output> <affected:on|off> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-start <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-stop <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-record-start <127.0.0.1:port> [--recorder <1|2>] [--key <key>] [--expect <revision>]

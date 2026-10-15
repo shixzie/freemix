@@ -36,6 +36,8 @@ pub struct SwitcherState {
     transition: Option<TransitionState>,
     t_bar: Option<TBarState>,
     fade_to_black: FadeToBlackController,
+    /// Outputs Fade to Black leaves live; every other output fades.
+    fade_to_black_excluded: BTreeSet<OutputId>,
     overlays: [OverlayChannelState; OVERLAY_CHANNEL_COUNT],
     stingers: [StingerSlotState; STINGER_SLOT_COUNT],
     streams: Vec<DesiredStream>,
@@ -62,6 +64,7 @@ impl SwitcherState {
             transition: None,
             t_bar: None,
             fade_to_black: FadeToBlackController::default(),
+            fade_to_black_excluded: BTreeSet::new(),
             overlays: std::array::from_fn(|_| OverlayChannelState::empty()),
             stingers: std::array::from_fn(|_| StingerSlotState::empty()),
             streams: Vec::new(),
@@ -314,6 +317,55 @@ impl SwitcherState {
         self.fade_to_black.frame()
     }
 
+    /// Whether Fade to Black fades `output` (SW-004). Every output fades
+    /// unless excluded with [`SwitcherCommand::SetFadeToBlackOutput`].
+    #[must_use]
+    pub fn fade_to_black_affects(&self, output: OutputId) -> bool {
+        !self.fade_to_black_excluded.contains(&output)
+    }
+
+    /// The outputs Fade to Black leaves live, ascending.
+    #[must_use]
+    pub const fn fade_to_black_excluded_outputs(&self) -> &BTreeSet<OutputId> {
+        &self.fade_to_black_excluded
+    }
+
+    /// This frame's Fade-to-Black interval as `output` shows it: the shared
+    /// interval when FTB affects the output, otherwise settled live.
+    #[must_use]
+    pub fn fade_to_black_frame_for(&self, output: OutputId) -> FadeToBlackFrame {
+        if self.fade_to_black_affects(output) {
+            self.fade_to_black.frame()
+        } else {
+            FadeToBlackFrame::LIVE
+        }
+    }
+
+    /// The current Fade-to-Black position as `output` shows it.
+    #[must_use]
+    pub fn fade_to_black_position_for(&self, output: OutputId) -> FadeToBlackPosition {
+        if self.fade_to_black_affects(output) {
+            self.fade_to_black.position()
+        } else {
+            FadeToBlackPosition::LIVE
+        }
+    }
+
+    /// Chooses whether Fade to Black fades `output`.
+    #[must_use]
+    pub fn set_fade_to_black_output(
+        &mut self,
+        output: OutputId,
+        affected: bool,
+    ) -> Vec<SwitcherEvent> {
+        if affected {
+            self.fade_to_black_excluded.remove(&output);
+        } else {
+            self.fade_to_black_excluded.insert(output);
+        }
+        vec![SwitcherEvent::FadeToBlackOutputChanged { output, affected }]
+    }
+
     #[must_use]
     pub fn overlays(&self) -> &[OverlayChannelState; OVERLAY_CHANNEL_COUNT] {
         &self.overlays
@@ -471,6 +523,9 @@ impl SwitcherState {
                 output,
                 included,
             } => Ok(self.set_overlay_output_inclusion(channel, output, included)),
+            SwitcherCommand::SetFadeToBlackOutput { output, affected } => {
+                Ok(self.set_fade_to_black_output(output, affected))
+            }
             SwitcherCommand::SetStreamRunning { target, running } => {
                 self.set_stream_running(target, running)
             }

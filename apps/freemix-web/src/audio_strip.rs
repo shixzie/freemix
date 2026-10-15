@@ -57,6 +57,7 @@ impl AudioStripControls {
         input: InputId,
         gain_millidb: i32,
         balance_basis_points: i32,
+        pan_basis_points: i32,
         muted: bool,
         soloed: bool,
         follow_video: bool,
@@ -67,9 +68,12 @@ impl AudioStripControls {
         ((Self::MIN_GAIN_MILLIDB..=Self::MAX_GAIN_MILLIDB).contains(&gain_millidb)
             && (Self::MIN_BALANCE_BASIS_POINTS..=Self::MAX_BALANCE_BASIS_POINTS)
                 .contains(&balance_basis_points)
+            && (Self::MIN_BALANCE_BASIS_POINTS..=Self::MAX_BALANCE_BASIS_POINTS)
+                .contains(&pan_basis_points)
             && delay_samples <= Self::MAX_DELAY_SAMPLES
             && self.control_state(connection_state, session).is_enabled())
         .then_some(CommandPayload::SetInputAudioStrip {
+            pan_basis_points,
             input: WireInputId::from_domain(input),
             gain_millidb,
             balance_basis_points,
@@ -120,6 +124,7 @@ mod tests {
                 input(7),
                 -6_000,
                 2_500,
+                -5_000,
                 true,
                 true,
                 false,
@@ -128,6 +133,7 @@ mod tests {
                 Some(&ready)
             ),
             Some(CommandPayload::SetInputAudioStrip {
+                pan_basis_points: -5_000,
                 input: WireInputId::from_domain(input(7)),
                 gain_millidb: -6_000,
                 balance_basis_points: 2_500,
@@ -142,6 +148,7 @@ mod tests {
                 input(7),
                 24_001,
                 0,
+                -5_000,
                 false,
                 false,
                 true,
@@ -156,6 +163,7 @@ mod tests {
                 input(7),
                 0,
                 0,
+                -5_000,
                 false,
                 false,
                 true,
@@ -170,6 +178,7 @@ mod tests {
                 input(7),
                 0,
                 10_001,
+                -5_000,
                 false,
                 false,
                 true,

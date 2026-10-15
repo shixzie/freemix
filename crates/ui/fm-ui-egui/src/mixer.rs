@@ -7,6 +7,13 @@
 //! no new meter message has arrived for over a second the meters keep the
 //! last sample dimmed, each readout reads `STALE`, and the header carries a
 //! `STALE` badge with the message age, as stale monitor frames do.
+//!
+//! Each strip carries a pan knob (placing a mono source with the -3 dB
+//! constant-power law) separate from the stereo balance trim, an optional
+//! operator label shown on its name plate, and an optional VCA group
+//! (AU-001). Every group with members gets a group strip between the input
+//! strips and Master: its fader adds to each member's gain and its mute
+//! silences them, while each member keeps its own fader.
 
 use egui::{
     Align2, Color32, CornerRadius, DragValue, FontFamily, FontId, Key, Rect, RichText, ScrollArea,
@@ -39,9 +46,14 @@ const STRIP_GAP: f32 = 6.0;
 const MIN_FADER_HEIGHT: f32 = 120.0;
 const MAX_FADER_HEIGHT: f32 = 620.0;
 /// Vertical space a strip needs besides its fader and meters.
-const STRIP_CHROME_HEIGHT: f32 = 224.0;
-/// Height of the gain, balance, and delay entry rows inside the chrome.
-const ENTRY_ROWS_HEIGHT: f32 = 72.0;
+const STRIP_CHROME_HEIGHT: f32 = 302.0;
+/// Height of the label, group, gain, balance, and delay entry rows inside
+/// the chrome.
+const ENTRY_ROWS_HEIGHT: f32 = 124.0;
+/// Height of the pan knob row.
+const PAN_ROW_HEIGHT: f32 = 24.0;
+/// Longest strip label or group name, in UTF-8 bytes.
+const MAX_LABEL_BYTES: usize = fm_protocol::MAX_AUDIO_LABEL_BYTES;
 /// Fixed height of the strip name plate (two lines of name).
 const NAME_PLATE_HEIGHT: f32 = 30.0;
 /// Height of the peak-hold readout above the meter.
@@ -103,6 +115,39 @@ pub(crate) const FADER_TICKS: [(i32, &str); 7] = [
 const FADER_STEP_MDB: i32 = 100;
 const FADER_KEY_STEP_MDB: i32 = 500;
 const FADER_CAP: Vec2 = Vec2::new(26.0, 14.0);
+
+/// The groups that have member strips, ascending, with their members.
+pub(crate) fn active_groups(view: &ClientView) -> Vec<(u8, Vec<fm_types::InputId>)> {
+    (1..=4_u8)
+        .filter_map(|group| {
+            let members = view
+                .input_audio_strips
+                .iter()
+                .filter(|strip| strip.group == Some(group))
+                .map(|strip| strip.input)
+                .collect::<Vec<_>>();
+            (!members.is_empty()).then_some((group, members))
+        })
+        .collect()
+}
+
+/// The display name of `group` in `view`.
+pub(crate) fn group_name(view: &ClientView, group: u8) -> &str {
+    view.audio_mixer
+        .groups
+        .get(usize::from(group).saturating_sub(1))
+        .map_or("", |status| status.name.as_str())
+}
+
+/// The longest prefix of `text` within [`MAX_LABEL_BYTES`] bytes, cut at a
+/// character boundary.
+pub(crate) fn bounded_label(text: &str) -> &str {
+    let mut end = text.len().min(MAX_LABEL_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
 
 /// Total width the mixer wants for `strips` input strips plus Master.
 #[allow(clippy::cast_precision_loss)] // strip counts are tiny
@@ -468,6 +513,20 @@ pub(crate) fn draw_mixer(
                                     clear.push(key);
                                 }
                             }
+                            for (group, members) in active_groups(view) {
+                                draw_group_strip(
+                                    ui,
+                                    view,
+                                    (group, members.len()),
+                                    StripGate {
+                                        enabled,
+                                        reason: audio_reason,
+                                        details: *details,
+                                    },
+                                    fader_height,
+                                    intents,
+                                );
+                            }
                         });
                     });
             },
@@ -565,8 +624,9 @@ fn strip_frame(ui: &mut Ui, accent: Color32, add_contents: impl FnOnce(&mut Ui))
 }
 
 /// The strip name plate: a key cap with the input's ordinal (tally-tinted)
-/// and up to two lines of name, ending in an ellipsis; full name on hover.
-fn name_plate(ui: &mut Ui, ordinal: Option<usize>, name: &str, tally: TallyState) {
+/// and up to two lines of name, ending in an ellipsis; `hover` names the
+/// strip in full.
+fn name_plate(ui: &mut Ui, ordinal: Option<usize>, name: &str, hover: &str, tally: TallyState) {
     let (rect, response) = ui.allocate_exact_size(
         Vec2::new(STRIP_INNER_WIDTH, NAME_PLATE_HEIGHT),
         Sense::hover(),
@@ -618,7 +678,247 @@ fn name_plate(ui: &mut Ui, ordinal: Option<usize>, name: &str, tally: TallyState
         let galley = painter.layout_job(job);
         painter.galley(pos2(text_left, rect.min.y), galley, text_color());
     }
-    response.on_hover_text(name);
+    response.on_hover_text(hover);
+}
+
+/// A compact pan knob with its readout: drag sideways or up and down to
+/// move it, double-click to center, Left/Right nudge 5 % while focused.
+/// `changed()` reports a new position.
+fn pan_knob(ui: &mut Ui, pan: &mut i32, enabled: bool, width: f32) -> egui::Response {
+    let l = l10n::locale(ui.ctx());
+    let sense = if enabled {
+        Sense::click_and_drag()
+    } else {
+        Sense::hover()
+    };
+    let (rect, mut response) =
+        ui.allocate_exact_size(Vec2::new(width, PAN_ROW_HEIGHT - 4.0), sense);
+    let original = *pan;
+    if enabled {
+        if response.dragged() {
+            let delta = response.drag_delta();
+            #[allow(clippy::cast_possible_truncation)] // bounded pointer deltas
+            let step = ((delta.x - delta.y) * 100.0).round() as i32;
+            *pan = (*pan + step).clamp(-10_000, 10_000);
+        }
+        if response.double_clicked() {
+            *pan = 0;
+        }
+        if response.clicked() {
+            response.request_focus();
+        }
+        if response.has_focus() {
+            let (left, right) = ui.input(|input| {
+                (
+                    input.key_pressed(Key::ArrowLeft),
+                    input.key_pressed(Key::ArrowRight),
+                )
+            });
+            if left {
+                *pan = (*pan - 500).max(-10_000);
+            }
+            if right {
+                *pan = (*pan + 500).min(10_000);
+            }
+        }
+    }
+    if *pan != original {
+        response.mark_changed();
+    }
+    if ui.is_rect_visible(rect) {
+        let dim = if enabled { 1.0 } else { 0.45 };
+        let painter = ui.painter();
+        let radius = rect.height() / 2.0 - 1.0;
+        let center = pos2(rect.min.x + radius + 1.0, rect.center().y);
+        painter.circle_filled(
+            center,
+            radius,
+            if response.hovered() && enabled {
+                widget_hover_color()
+            } else {
+                widget_color()
+            },
+        );
+        painter.circle_stroke(
+            center,
+            radius,
+            Stroke::new(crate::theme::line_width(), border_strong_color()),
+        );
+        // -135° (full left) through 0° (up, center) to +135° (full right).
+        #[allow(clippy::cast_precision_loss)] // bounded basis points
+        let angle = (*pan as f32 / 10_000.0) * 135.0_f32.to_radians();
+        let tip = center + Vec2::new(angle.sin(), -angle.cos()) * (radius - 2.0);
+        painter.line_segment(
+            [center, tip],
+            Stroke::new(2.0, accent_color().gamma_multiply(dim)),
+        );
+        painter.text(
+            pos2(rect.max.x, rect.center().y),
+            Align2::RIGHT_CENTER,
+            format!(
+                "{} {}",
+                l.text(Msg::PanPrefix),
+                format_balance(f64::from(*pan))
+            ),
+            FontId::new(10.0, FontFamily::Monospace),
+            text_dim_color().gamma_multiply(dim),
+        );
+    }
+    response
+}
+
+/// A one-line label editor that commits on Enter or focus loss. Returns the
+/// edited text when it differs from `current`. `id` keys the in-progress
+/// text; `placeholder` shows while the label is empty.
+fn label_entry(
+    ui: &mut Ui,
+    id: impl core::hash::Hash + core::fmt::Debug,
+    current: &str,
+    enabled: bool,
+    (placeholder, hover, reason): (&str, &str, &str),
+) -> Option<String> {
+    let id = ui.make_persistent_id(id);
+    let mut text = ui
+        .data_mut(|data| data.get_temp::<String>(id))
+        .unwrap_or_else(|| current.to_owned());
+    let response = ui
+        .add_enabled(
+            enabled,
+            egui::TextEdit::singleline(&mut text)
+                .char_limit(MAX_LABEL_BYTES)
+                .hint_text(placeholder)
+                .font(egui::TextStyle::Monospace),
+        )
+        .hint(hover, reason);
+    let text = bounded_label(&text).to_owned();
+    if response.has_focus() {
+        ui.data_mut(|data| data.insert_temp(id, text));
+        None
+    } else {
+        ui.data_mut(|data| data.remove::<String>(id));
+        (response.lost_focus() && text != current).then_some(text)
+    }
+}
+
+/// The strip's group picker. Returns the chosen group (`Some(None)`: no
+/// group) when it changed.
+#[allow(clippy::option_option)]
+fn group_choice(
+    ui: &mut Ui,
+    view: &ClientView,
+    status: &InputAudioStripStatus,
+    enabled: bool,
+    reason: &str,
+) -> Option<Option<u8>> {
+    let l = l10n::locale(ui.ctx());
+    let mut chosen = status.group;
+    let selected = chosen.map_or_else(
+        || l.text(Msg::StripGroupNone).to_owned(),
+        |group| group_name(view, group).to_owned(),
+    );
+    ui.add_enabled_ui(enabled, |ui| {
+        egui::ComboBox::from_id_salt(("strip-group", status.input.get()))
+            .selected_text(selected)
+            .width(STRIP_INNER_WIDTH)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut chosen, None, l.text(Msg::StripGroupNone))
+                    .on_hover_text(l.text(Msg::StripGroupNoneHover));
+                for group in 1..=4_u8 {
+                    let name = group_name(view, group);
+                    ui.selectable_value(&mut chosen, Some(group), name)
+                        .on_hover_text(
+                            l.format(Msg::StripGroupItemHover, &[("group", Arg::Str(name))]),
+                        );
+                }
+            })
+            .response
+            .hint(l.text(Msg::StripGroupHover), reason);
+    });
+    (chosen != status.group).then_some(chosen)
+}
+
+/// Draws one VCA group strip: name plate, fader, mute, and (with details)
+/// the group name.
+fn draw_group_strip(
+    ui: &mut Ui,
+    view: &ClientView,
+    (group, members): (u8, usize),
+    gate: StripGate,
+    fader_height: f32,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let StripGate {
+        enabled,
+        reason,
+        details,
+    } = gate;
+    let Some(status) = view.audio_mixer.groups.get(usize::from(group) - 1) else {
+        return;
+    };
+    let mut gain_millidb = status.gain_millidb;
+    let mut muted = status.muted;
+    let mut level_changed = false;
+    strip_frame(ui, accent_color(), |ui| {
+        #[allow(clippy::cast_possible_truncation)] // at most 256 strips
+        let plate_hover = l.format(
+            Msg::GroupStripPlateHover,
+            &[
+                ("group", Arg::Str(&status.name)),
+                ("count", Arg::from(members as u32)),
+            ],
+        );
+        name_plate(ui, None, &status.name, &plate_hover, TallyState::default());
+        // The group strip has no meter; its fader takes the strip width.
+        let (_, _) =
+            ui.allocate_exact_size(Vec2::new(STRIP_INNER_WIDTH, READOUT_HEIGHT), Sense::hover());
+        level_changed |= fader(
+            ui,
+            &mut gain_millidb,
+            enabled,
+            muted,
+            STRIP_INNER_WIDTH,
+            fader_height,
+        )
+        .hint(l.text(Msg::GroupFaderHover), reason)
+        .changed();
+        let (_, _) = ui.allocate_exact_size(
+            Vec2::new(STRIP_INNER_WIDTH, PAN_ROW_HEIGHT - 4.0),
+            Sense::hover(),
+        );
+        if details {
+            ui.vertical_centered_justified(|ui| {
+                if let Some(name) = label_entry(
+                    ui,
+                    ("group-name", group),
+                    &status.name,
+                    enabled,
+                    (&status.name, l.text(Msg::GroupNameHover), reason),
+                )
+                .filter(|name| !name.trim().is_empty())
+                {
+                    intents.push(StudioIntent::RenameAudioGroup { group, name });
+                }
+            });
+        }
+        level_changed |= led_key(ui, enabled, &mut muted, "M", PROGRAM, STRIP_INNER_WIDTH)
+            .hint(
+                l.text(if muted {
+                    Msg::GroupMuteOnHover
+                } else {
+                    Msg::GroupMuteOffHover
+                }),
+                reason,
+            )
+            .changed();
+    });
+    if level_changed {
+        intents.push(StudioIntent::SetAudioGroupLevel {
+            group,
+            gain_millidb,
+            muted,
+        });
+    }
 }
 
 /// The peak-hold readout: the held level, or a red `CLIP` while latched.
@@ -722,7 +1022,22 @@ fn draw_input_strip(
         reason,
         details,
     } = gate;
-    let name = label_for_input(l, view, status.input);
+    let input_name = label_for_input(l, view, status.input);
+    let strip_label = view.audio_label(status.input).to_owned();
+    let (name, plate_hover) = if strip_label.is_empty() {
+        (input_name.clone(), input_name.clone())
+    } else {
+        (
+            strip_label.clone(),
+            l.format(
+                Msg::StripNamePlateHover,
+                &[
+                    ("label", Arg::Str(&strip_label)),
+                    ("name", Arg::Str(&input_name)),
+                ],
+            ),
+        )
+    };
     let ordinal = view
         .inputs
         .iter()
@@ -736,6 +1051,8 @@ fn draw_input_strip(
     };
     let mut gain_millidb = status.gain_millidb;
     let mut balance_basis_points = status.balance_basis_points;
+    let mut pan_basis_points = status.pan_basis_points;
+    let mut pan_changed = false;
     let mut muted = status.muted;
     let mut soloed = status.soloed;
     let mut follow_video = status.follow_video;
@@ -748,7 +1065,7 @@ fn draw_input_strip(
     let mut delay_changed = false;
     let mut clear_clip = false;
     strip_frame(ui, accent, |ui| {
-        name_plate(ui, ordinal, &name, tally);
+        name_plate(ui, ordinal, &name, &plate_hover, tally);
         clear_clip |= peak_box(ui, feed.holds, feed.channels.is_some(), feed.stale);
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -772,8 +1089,29 @@ fn draw_input_strip(
             )
             .changed();
         });
+        pan_changed = pan_knob(ui, &mut pan_basis_points, enabled, STRIP_INNER_WIDTH)
+            .hint(l.text(Msg::PanHover), reason)
+            .changed();
         if details {
             ui.vertical_centered_justified(|ui| {
+                if let Some(label) = label_entry(
+                    ui,
+                    ("strip-label", status.input.get()),
+                    &strip_label,
+                    enabled,
+                    (&input_name, l.text(Msg::StripLabelHover), reason),
+                ) {
+                    intents.push(StudioIntent::SetAudioStripLabel {
+                        input: status.input,
+                        label,
+                    });
+                }
+                if let Some(group) = group_choice(ui, view, status, enabled, reason) {
+                    intents.push(StudioIntent::SetAudioStripGroup {
+                        input: status.input,
+                        group,
+                    });
+                }
                 let entry_changed = ui
                     .add_enabled(
                         enabled,
@@ -852,6 +1190,7 @@ fn draw_input_strip(
     let update = InputAudioStripUpdate {
         gain_millidb: gain_changed.then_some(gain_millidb),
         balance_basis_points: balance_changed.then_some(balance_basis_points),
+        pan_basis_points: pan_changed.then_some(pan_basis_points),
         muted: mute_changed.then_some(muted),
         soloed: solo_changed.then_some(soloed),
         follow_video: follow_changed.then_some(follow_video),

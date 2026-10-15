@@ -48,6 +48,8 @@ fn input_audio_strips() -> Vec<InputAudioStripStatus> {
     [input(1), input(2), input(3)]
         .into_iter()
         .map(|input| InputAudioStripStatus {
+            pan_basis_points: 0,
+            group: None,
             input,
             gain_millidb: 0,
             balance_basis_points: 0,
@@ -78,6 +80,8 @@ fn recordings() -> Vec<RecordingStatus> {
 
 fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
     ProjectSnapshot {
+        audio_mixer: fm_protocol::AudioMixerStatus::default(),
+        fade_to_black_excluded_outputs: Vec::new(),
         cursor: ProjectCursor {
             project_id,
             engine: engine("engine-a", 1, "log-a"),
@@ -1397,6 +1401,8 @@ mod titles {
     fn edit_history_protocol_snapshot() -> fm_protocol::SnapshotMessage {
         let wire = |value| WireInputId::from_domain(input(value));
         fm_protocol::SnapshotMessage {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             engine: engine("engine-a", 1, "log-a"),
             revision: 10,
             show_name: "Show".into(),
@@ -2447,4 +2453,89 @@ fn input_lifecycle_changes_reduce_into_labels_catalogue_and_availability() {
             .iter()
             .all(|status| status.offline.is_none())
     );
+}
+
+/// Protocol 2.40 (AU-001, SW-004): mixer labels, groups, and the
+/// Fade-to-Black output selection replicate from the snapshot and events.
+#[test]
+fn replicates_mixer_labels_groups_and_fade_to_black_outputs() {
+    use fm_protocol::{AudioMixerOperation, WireInputId};
+
+    let project_id = project(12);
+    let mut model = ClientModel::new(project_id);
+    let mut initial = snapshot(project_id, 1);
+    initial.fade_to_black_excluded_outputs = vec![output(2)];
+    initial.audio_mixer.labels = vec![fm_protocol::InputAudioLabel {
+        input: WireInputId::from_domain(input(1)),
+        label: "Host".into(),
+    }];
+    model.install_snapshot(initial).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+    let view = model.view().unwrap();
+    assert_eq!(view.audio_label(input(1)), "Host");
+    assert!(!view.fade_to_black_affects(output(2)));
+    assert!(view.fade_to_black_affects(output(1)));
+
+    let changes = [
+        DurableChange::AudioMixerChanged(AudioMixerOperation::SetGroup {
+            input: WireInputId::from_domain(input(3)),
+            group: Some(2),
+        }),
+        DurableChange::AudioMixerChanged(AudioMixerOperation::SetLabel {
+            input: WireInputId::from_domain(input(3)),
+            label: "Guest".into(),
+        }),
+        DurableChange::AudioMixerChanged(AudioMixerOperation::SetGroupLevel {
+            group: 2,
+            gain_millidb: -6_000,
+            muted: true,
+        }),
+        DurableChange::FadeToBlackOutputChanged {
+            output: output(1),
+            affected: false,
+        },
+        DurableChange::FadeToBlackOutputChanged {
+            output: output(2),
+            affected: true,
+        },
+    ];
+    for (revision, change) in (2..).zip(changes) {
+        model
+            .apply_event(event(project_id, identity.clone(), revision, change))
+            .unwrap();
+    }
+    let view = model.view().unwrap();
+    assert_eq!(view.audio_label(input(3)), "Guest");
+    assert_eq!(
+        view.input_audio_strips
+            .iter()
+            .find(|strip| strip.input == input(3))
+            .unwrap()
+            .group,
+        Some(2)
+    );
+    assert!(view.audio_mixer.groups[1].muted);
+    assert_eq!(view.audio_mixer.groups[1].gain_millidb, -6_000);
+    assert_eq!(view.fade_to_black_excluded_outputs, vec![output(1)]);
+
+    // Changes naming an unknown input, group, or output are refused.
+    for (revision, change) in [
+        DurableChange::AudioMixerChanged(AudioMixerOperation::SetGroup {
+            input: WireInputId::from_domain(input(9)),
+            group: Some(1),
+        }),
+        DurableChange::FadeToBlackOutputChanged {
+            output: output(9),
+            affected: false,
+        },
+    ]
+    .into_iter()
+    .map(|change| (7, change))
+    {
+        assert!(
+            model
+                .apply_event(event(project_id, identity.clone(), revision, change))
+                .is_err()
+        );
+    }
 }

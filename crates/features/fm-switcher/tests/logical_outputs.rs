@@ -642,3 +642,99 @@ fn disabled_slots_produce_no_plan_and_resolution_is_deterministic() {
     assert!(first.output(slot(1)).is_none());
     assert_eq!(routing.enabled().count(), 1);
 }
+
+#[test]
+fn fade_to_black_fades_only_the_outputs_it_affects() {
+    let mut routing = four_outputs();
+    routing
+        .configure(
+            slot(4),
+            Some(
+                LogicalOutputConfig::program(output(4))
+                    .with_source(OutputSource::MultiView(vec![MultiViewCell::Program])),
+            ),
+        )
+        .unwrap();
+    routing
+        .configure(
+            slot(2),
+            Some(LogicalOutputConfig::program(output(2)).with_overlays(OverlayPolicy::Clean)),
+        )
+        .unwrap();
+    let mut switcher = switcher();
+    assert!(switcher.fade_to_black_affects(output(2)));
+    let events = switcher
+        .apply(SwitcherCommand::SetFadeToBlackOutput {
+            output: output(2),
+            affected: false,
+        })
+        .unwrap();
+    assert_eq!(
+        events,
+        vec![fm_switcher::SwitcherEvent::FadeToBlackOutputChanged {
+            output: output(2),
+            affected: false,
+        }]
+    );
+    let _ = switcher
+        .apply(SwitcherCommand::SetFadeToBlackOutput {
+            output: output(4),
+            affected: false,
+        })
+        .unwrap();
+    switcher.request_fade_to_black(true, 1).unwrap();
+    let _ = switcher.advance_frame_events();
+    assert_eq!(
+        switcher.fade_to_black_position(),
+        FadeToBlackPosition::BLACK
+    );
+
+    let frame = resolve(&routing, &switcher, None);
+    // Output 1 is affected: Program is black.
+    assert_eq!(
+        background(plan(&frame, 1)).fade_to_black,
+        FadeToBlackPosition::BLACK
+    );
+    // Output 2 shows the same Program, live.
+    assert_eq!(
+        background(plan(&frame, 2)),
+        settled(FeedLayer::Input(input(1)))
+    );
+    // A multiview's Program cell follows its own output's selection.
+    let OutputVideo::MultiView(cells) = &plan(&frame, 4).video else {
+        panic!("expected a multiview");
+    };
+    assert_eq!(
+        cells[0].feed,
+        CellFeed::Background(settled(FeedLayer::Input(input(1))))
+    );
+    assert_eq!(
+        switcher.fade_to_black_frame_for(output(2)),
+        fm_switcher::FadeToBlackFrame::LIVE
+    );
+    assert_eq!(
+        switcher.fade_to_black_frame_for(output(1)),
+        switcher.fade_to_black_frame()
+    );
+
+    // Re-including the output fades it too.
+    let _ = switcher
+        .apply(SwitcherCommand::SetFadeToBlackOutput {
+            output: output(2),
+            affected: true,
+        })
+        .unwrap();
+    assert_eq!(
+        switcher
+            .fade_to_black_excluded_outputs()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![output(4)]
+    );
+    let frame = resolve(&routing, &switcher, None);
+    assert_eq!(
+        background(plan(&frame, 2)).fade_to_black,
+        FadeToBlackPosition::BLACK
+    );
+}

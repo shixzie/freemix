@@ -427,6 +427,8 @@ mod tests {
     fn view(locks: &EditLocks, history: EditHistoryStatus) -> fm_ui_model::ClientView {
         let project = fm_types::ProjectId::new(NonZeroU128::new(1).unwrap());
         let mut snapshot = fm_protocol::SnapshotMessage {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             engine: fm_protocol::EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,
@@ -444,6 +446,8 @@ mod tests {
             outputs: Vec::new(),
             input_audio_strips: [1, 2]
                 .map(|id| fm_protocol::InputAudioStripStatus {
+                    pan_basis_points: 0,
+                    group: None,
                     input: fm_protocol::WireInputId::from_domain(input(id)),
                     gain_millidb: 0,
                     balance_basis_points: 0,

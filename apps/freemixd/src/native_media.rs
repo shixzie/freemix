@@ -23,8 +23,9 @@ use std::{
 
 use fm_audio::{
     AudioCadenceOrigin, AudioRenderPlan, AudioSilenceSpan, AudioSynchronizerLimits, Balance,
-    ChannelMapping, ChannelMeter, ClippingPolicy, ClockMappedAudioSynchronizer, InputState,
-    MAX_CHANNEL_MAPPING_CHANNELS, MasterAudioInterval, MasterMixer, PlanarAudioSource, SourceGain,
+    ChannelMapping, ChannelMeter, ClippingPolicy, ClockMappedAudioSynchronizer, GroupState,
+    InputState, MAX_CHANNEL_MAPPING_CHANNELS, MasterAudioInterval, MasterMixer, MixerGroup, Pan,
+    PlanarAudioSource, SourceGain,
 };
 use fm_clock::{
     ClockDomainId as MappingClockDomainId, ClockMapping, ClockSnapshot, ClockTime, FrameCadence,
@@ -447,6 +448,10 @@ pub struct NativeProjectPlan {
     video_routes: BTreeMap<InputId, NativeVideoRoute>,
     audio_routes: BTreeMap<InputId, NativeAudioRoute>,
     audio_strips: BTreeMap<InputId, InputAudioStripState>,
+    /// Every strip's group membership (AU-001).
+    audio_groups: BTreeMap<InputId, fm_model::AudioGroupNumber>,
+    /// Every group's fader (millidB) and mute, group 1 first (AU-001).
+    audio_group_levels: [(i32, bool); fm_model::AUDIO_GROUP_COUNT],
     stingers: BTreeMap<fm_switcher::StingerSlotId, NativeStingerConfig>,
     frame_rate: FrameRate,
     dimensions: VideoDimensions,
@@ -780,6 +785,15 @@ impl NativeProjectPlan {
                 .iter()
                 .map(|strip| (strip.input, strip.state))
                 .collect(),
+            audio_groups: project
+                .input_audio_strips()
+                .iter()
+                .filter_map(|strip| strip.group.map(|group| (strip.input, group)))
+                .collect(),
+            audio_group_levels: fm_model::AudioGroupNumber::ALL.map(|group| {
+                let level = project.audio_groups().get(group);
+                (level.gain.get(), level.muted)
+            }),
             stingers,
             frame_rate: project.settings().frame_rate,
             dimensions,
@@ -821,6 +835,59 @@ impl NativeProjectPlan {
     #[must_use]
     pub fn audio_strip(&self, input: InputId) -> Option<InputAudioStripState> {
         self.audio_strips.get(&input).copied()
+    }
+
+    /// The group `input`'s strip belongs to (AU-001).
+    #[must_use]
+    pub fn audio_group(&self, input: InputId) -> Option<fm_model::AudioGroupNumber> {
+        self.audio_groups.get(&input).copied()
+    }
+
+    /// Group `group`'s fader in millidB and mute (AU-001).
+    #[must_use]
+    pub const fn audio_group_level(&self, group: fm_model::AudioGroupNumber) -> (i32, bool) {
+        self.audio_group_levels[group.index()]
+    }
+
+    /// Moves `input`'s strip into `group`, or out of every group.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-route error for an input without a strip.
+    pub fn set_input_audio_group(
+        &mut self,
+        input: InputId,
+        group: Option<fm_model::AudioGroupNumber>,
+    ) -> Result<(), NativeMasterError> {
+        if !self.audio_strips.contains_key(&input) {
+            return Err(NativeMasterError::MissingAudioRoute { input });
+        }
+        match group {
+            Some(group) => self.audio_groups.insert(input, group),
+            None => self.audio_groups.remove(&input),
+        };
+        Ok(())
+    }
+
+    /// Records group `group`'s fader and mute.
+    pub const fn set_audio_group_level(
+        &mut self,
+        group: fm_model::AudioGroupNumber,
+        gain_millidb: i32,
+        muted: bool,
+    ) {
+        self.audio_group_levels[group.index()] = (gain_millidb, muted);
+    }
+
+    /// Every group's mixer state, group 1 first.
+    fn native_group_states(&self) -> Result<Vec<(MixerGroup, GroupState)>, NativeMasterError> {
+        fm_model::AudioGroupNumber::ALL
+            .into_iter()
+            .map(|group| {
+                let (gain, muted) = self.audio_group_level(group);
+                Ok((native_mixer_group(group), native_group_state(gain, muted)?))
+            })
+            .collect()
     }
 
     /// Updates the exact-current strip controls used by subsequent native planning.
@@ -2886,6 +2953,9 @@ pub struct NativeMasterRuntime {
     stinger_audio: Option<NativeStingerAudioPlayback>,
     collect_output: bool,
     failed: bool,
+    /// The last rendered block before Fade to Black, kept only while Fade
+    /// to Black is fading and some output is excluded from it (SW-004).
+    live_audio: Option<AudioBlock>,
 }
 
 impl NativeMasterRuntime {
@@ -3283,6 +3353,7 @@ impl NativeMasterRuntime {
             stinger_audio: None,
             collect_output: true,
             failed: false,
+            live_audio: None,
         })
     }
 
@@ -3500,6 +3571,10 @@ impl NativeMasterRuntime {
             .collect::<Result<Vec<_>, NativeMasterError>>()?;
         let mut mixer = self.mixer.clone();
         let mut pending_mixer = self.pending_mixer.clone();
+        for (group, state) in project.native_group_states()? {
+            mixer.set_group_state(group, state, 0)?;
+            pending_mixer.set_group_state(group, state, 0)?;
+        }
         for (input, state, delay) in states {
             mixer
                 .set_input_delay(input, delay)
@@ -3512,6 +3587,76 @@ impl NativeMasterRuntime {
         }
         self.mixer = mixer;
         self.pending_mixer = pending_mixer;
+        Ok(())
+    }
+
+    /// The last rendered block as it was before Fade to Black, while Fade
+    /// to Black is fading and some output is excluded from it (SW-004).
+    pub const fn take_live_audio(&mut self) -> Option<AudioBlock> {
+        self.live_audio.take()
+    }
+
+    /// Applies a realized strip group membership or group level change
+    /// (AU-001) to the ordinary and clip-local mixers as one preflighted
+    /// transaction. A group fader ramps like a strip fader.
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-route or mixer resource-bound failure without changing
+    /// any mixer.
+    pub fn apply_audio_mixer_update(
+        &mut self,
+        update: fm_engine::EngineAudioMixerUpdate,
+    ) -> Result<(), NativeMasterError> {
+        let apply = |mixer: &mut MasterMixer| -> Result<(), NativeMasterError> {
+            match update {
+                fm_engine::EngineAudioMixerUpdate::Membership { input, group } => {
+                    let Some(mut state) = mixer.input_state(input) else {
+                        return Ok(());
+                    };
+                    state.group = group.map(native_mixer_group);
+                    mixer.set_input_state(input, state, 0)?;
+                }
+                fm_engine::EngineAudioMixerUpdate::GroupLevel { group, state } => {
+                    mixer.set_group_state(
+                        native_mixer_group(group),
+                        native_group_state(state.gain_millidb, state.muted)?,
+                        LIVE_INPUT_GAIN_RAMP_SAMPLES,
+                    )?;
+                }
+            }
+            Ok(())
+        };
+        if let fm_engine::EngineAudioMixerUpdate::Membership { input, .. } = update
+            && self.mixer.input_state(input).is_none()
+        {
+            return Err(NativeMasterError::MissingAudioRoute { input });
+        }
+        let mut mixer = self.mixer.clone();
+        let mut pending_mixer = self.pending_mixer.clone();
+        apply(&mut mixer)?;
+        apply(&mut pending_mixer)?;
+        let mut stinger_mixers = Vec::new();
+        if let Some(playback) = &self.stinger_audio {
+            for (&media, master) in &playback.masters {
+                let mut stinger_mixer = master.mixer.clone();
+                let mut stinger_pending_mixer = master.pending_mixer.clone();
+                apply(&mut stinger_mixer)?;
+                apply(&mut stinger_pending_mixer)?;
+                stinger_mixers.push((media, stinger_mixer, stinger_pending_mixer));
+            }
+        }
+        self.mixer = mixer;
+        self.pending_mixer = pending_mixer;
+        if let Some(playback) = &mut self.stinger_audio {
+            for (media, mixer, pending_mixer) in stinger_mixers {
+                let Some(master) = playback.masters.get_mut(&media) else {
+                    return Err(NativeMasterError::InvalidFormat);
+                };
+                master.mixer = mixer;
+                master.pending_mixer = pending_mixer;
+            }
+        }
         Ok(())
     }
 
@@ -3529,10 +3674,13 @@ impl NativeMasterRuntime {
     ) -> Result<(), NativeMasterError> {
         let delay = usize::try_from(strip.delay_samples.get())
             .map_err(|_| NativeMasterError::BoundsExceeded)?;
-        let state = native_audio_input_state(strip)?;
-        if self.mixer.input_state(input).is_none() {
-            return Err(NativeMasterError::MissingAudioRoute { input });
-        }
+        let mut state = native_audio_input_state(strip)?;
+        // A strip move keeps the strip's group (AU-001).
+        state.group = self
+            .mixer
+            .input_state(input)
+            .ok_or(NativeMasterError::MissingAudioRoute { input })?
+            .group;
 
         let mut mixer = self.mixer.clone();
         let mut pending_mixer = self.pending_mixer.clone();
@@ -4433,6 +4581,24 @@ impl NativeMasterRuntime {
                 .ok_or(NativeMasterError::DecodeContract { input })?
                 .commit_render(render_plan)?;
         }
+        // Outputs Fade to Black leaves live (SW-004) record and stream the
+        // mix before the fade.
+        self.live_audio = if frame.fade_to_black != FadeToBlackFrame::LIVE
+            && !frame.fade_to_black_excluded_outputs.is_empty()
+        {
+            Some(AudioBlock::new(
+                timing,
+                self.format.sample_rate,
+                self.format.channels.clone(),
+                self.scratch
+                    .mix
+                    .iter()
+                    .map(|plane| plane[..samples].to_vec())
+                    .collect(),
+            )?)
+        } else {
+            None
+        };
         apply_fade_to_black_audio(&mut self.scratch.mix, samples, frame.fade_to_black);
         // Canonical ownership is required by the returned/recorded frame. The
         // diagnostic collecting sink also retains its own bounded clone; these
@@ -4544,6 +4710,14 @@ impl NativeStingerAudioRuntime {
                 }
                 let state = native_input_state(project, input)?;
                 let delay = native_input_delay(project, input)?;
+                for (group, group_state) in project.native_group_states()? {
+                    stinger_master
+                        .mixer
+                        .set_group_state(group, group_state, 0)?;
+                    stinger_master
+                        .pending_mixer
+                        .set_group_state(group, group_state, 0)?;
+                }
                 stinger_master
                     .mixer
                     .set_input_delay(input, delay)
@@ -5349,20 +5523,40 @@ fn native_input_state(
     let state = project
         .audio_strip(input)
         .ok_or(NativeMasterError::MissingAudioRoute { input })?;
-    native_audio_input_state(state)
+    let mut state = native_audio_input_state(state)?;
+    state.group = project.audio_group(input).map(native_mixer_group);
+    Ok(state)
 }
 
-fn native_audio_input_state(state: InputAudioStripState) -> Result<InputState, NativeMasterError> {
-    let milli_db = state.gain.get();
+/// A bounded millidB fader as a mixer gain.
+fn native_gain(milli_db: i32) -> Result<fm_audio::Gain, NativeMasterError> {
     let whole_db = i16::try_from(milli_db / 1_000).expect("persisted gain is bounded");
     let fractional_milli_db =
         i16::try_from(milli_db % 1_000).expect("persisted gain remainder fits i16");
+    Ok(fm_audio::Gain::from_db(
+        f32::from(whole_db) + f32::from(fractional_milli_db) / 1_000.0,
+    )?)
+}
+
+const fn native_mixer_group(group: fm_model::AudioGroupNumber) -> MixerGroup {
+    MixerGroup::ALL[group.index()]
+}
+
+fn native_group_state(gain_millidb: i32, muted: bool) -> Result<GroupState, NativeMasterError> {
+    Ok(GroupState {
+        gain: native_gain(gain_millidb)?,
+        muted,
+    })
+}
+
+/// A strip's mixer state without its group, which the project plan keeps.
+fn native_audio_input_state(state: InputAudioStripState) -> Result<InputState, NativeMasterError> {
     Ok(InputState {
-        gain: fm_audio::Gain::from_db(
-            f32::from(whole_db) + f32::from(fractional_milli_db) / 1_000.0,
-        )?,
+        gain: native_gain(state.gain.get())?,
         balance: Balance::from_basis_points(state.balance.get())
             .ok_or(NativeMasterError::InvalidFormat)?,
+        pan: Pan::from_basis_points(state.pan.get()).ok_or(NativeMasterError::InvalidFormat)?,
+        group: None,
         muted: state.muted,
         soloed: state.soloed,
         follow_video: state.follow_video,
@@ -7517,7 +7711,6 @@ impl NativeMediaRuntime {
             return Err(NativeSourceRenderError::ResourceBounds);
         }
         let plan = native_project_mix_plan(project, frame.program)?;
-        let fade_to_black = native_fade_to_black_plan(frame.fade_to_black)?;
         let overlay_sets = outputs
             .iter()
             .map(|output| {
@@ -7585,6 +7778,11 @@ impl NativeMediaRuntime {
                     .map_err(NativeSourceRenderError::Grade)?,
                 None => composed,
             };
+            // Fade to Black fades only the outputs it affects (SW-004).
+            let fade_to_black =
+                native_fade_to_black_plan(output.map_or(frame.fade_to_black, |output| {
+                    frame.fade_to_black_for(output)
+                }))?;
             let texture = self
                 .fade_to_black_renderer
                 .render(&self.context, fade_to_black, &composed)
@@ -8531,6 +8729,8 @@ mod tests {
         mix_end_numerator: u32,
     ) -> FrameResult {
         FrameResult {
+            audio_mixer_updates: Vec::new(),
+            fade_to_black_excluded_outputs: Vec::new(),
             fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
             overlays: std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty()),
             input_audio_strip_updates: Vec::new(),
@@ -8626,6 +8826,7 @@ mod tests {
             NativeAudioLimits::default().max_retained_blocks,
         );
         NativeMasterRuntime {
+            live_audio: None,
             format,
             frame_rate: FrameRate::new(25, 1).unwrap(),
             clock_domain: ClockDomainId::new(NonZeroU128::new(9).unwrap()),
@@ -8672,6 +8873,7 @@ mod tests {
             NativeAudioLimits::default().max_retained_blocks,
         );
         NativeMasterRuntime {
+            live_audio: None,
             format,
             frame_rate: FrameRate::new(25, 1).unwrap(),
             clock_domain: ClockDomainId::new(NonZeroU128::new(9).unwrap()),
@@ -9429,6 +9631,7 @@ mod tests {
         assert!(project.set_input_audio_strip(
             inactive,
             InputAudioStripState {
+                pan: fm_model::InputPanBasisPoints::CENTER,
                 gain: InputGainMilliDb::new(-6_021).unwrap(),
                 balance: InputBalanceBasisPoints::CENTER,
                 delay_samples: InputDelaySamples::default(),
@@ -9486,6 +9689,7 @@ mod tests {
         assert!(project.set_input_audio_strip(
             primary,
             InputAudioStripState {
+                pan: fm_model::InputPanBasisPoints::CENTER,
                 gain: InputGainMilliDb::new(-6_021).unwrap(),
                 balance: InputBalanceBasisPoints::CENTER,
                 delay_samples: InputDelaySamples::default(),
@@ -9497,6 +9701,7 @@ mod tests {
         assert!(project.set_input_audio_strip(
             secondary,
             InputAudioStripState {
+                pan: fm_model::InputPanBasisPoints::CENTER,
                 gain: InputGainMilliDb::UNITY,
                 balance: InputBalanceBasisPoints::CENTER,
                 delay_samples: InputDelaySamples::default(),
@@ -9524,6 +9729,7 @@ mod tests {
         assert!(project.set_input_audio_strip(
             secondary,
             InputAudioStripState {
+                pan: fm_model::InputPanBasisPoints::CENTER,
                 gain: InputGainMilliDb::UNITY,
                 balance: InputBalanceBasisPoints::CENTER,
                 delay_samples: InputDelaySamples::default(),
@@ -9552,6 +9758,7 @@ mod tests {
         add_scene_input(&mut project, input(2), scene(10), Some(input(1)));
         add_scene(&mut project, scene(10), Vec::new());
         let persisted = InputAudioStripState {
+            pan: fm_model::InputPanBasisPoints::CENTER,
             gain: InputGainMilliDb::new(-12_000).unwrap(),
             balance: InputBalanceBasisPoints::new(-2_500).unwrap(),
             delay_samples: InputDelaySamples::new(17).unwrap(),
@@ -9561,6 +9768,7 @@ mod tests {
         };
         assert!(project.set_input_audio_strip(input(1), persisted));
         let alias_persisted = InputAudioStripState {
+            pan: fm_model::InputPanBasisPoints::CENTER,
             gain: InputGainMilliDb::new(-6_000).unwrap(),
             balance: InputBalanceBasisPoints::new(2_500).unwrap(),
             delay_samples: InputDelaySamples::new(23).unwrap(),
@@ -9617,6 +9825,7 @@ mod tests {
         assert!(project.set_input_audio_strip(
             input(1),
             InputAudioStripState {
+                pan: fm_model::InputPanBasisPoints::CENTER,
                 gain: InputGainMilliDb::new(-6_021).unwrap(),
                 balance: InputBalanceBasisPoints::CENTER,
                 delay_samples: InputDelaySamples::default(),
@@ -9696,6 +9905,7 @@ mod tests {
         });
 
         let updated = InputAudioStripState {
+            pan: fm_model::InputPanBasisPoints::CENTER,
             gain: InputGainMilliDb::new(-6_000).unwrap(),
             balance: InputBalanceBasisPoints::new(2_500).unwrap(),
             muted: false,
@@ -11566,6 +11776,118 @@ mod tests {
         second.fade_to_black = switcher.fade_to_black_frame();
         let black = master.render_project_frame_audio(&second, &plan).unwrap();
         assert!(black.plane(0).unwrap().iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn native_master_keeps_unfaded_audio_for_outputs_excluded_from_fade_to_black() {
+        let active = input(1);
+        let preview = input(2);
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, active);
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let mut master = audio_test_master(&[(active, 1.0)], 2);
+        master.realize_project_audio(&plan).unwrap();
+        let mut switcher = SwitcherState::new(vec![active, preview], active, preview).unwrap();
+        switcher.request_fade_to_black(true, 1).unwrap();
+
+        // Every output fades: no unfaded mix is kept.
+        assert!(master.service_next_frame().unwrap());
+        let mut first = frame_result(0, active, None);
+        first.fade_to_black = switcher.fade_to_black_frame();
+        let _ = master.render_project_frame_audio(&first, &plan).unwrap();
+        assert!(master.take_live_audio().is_none());
+
+        // An excluded output hears the mix before the fade while the faded
+        // block reaches silence.
+        let _ = switcher.advance_frame_events();
+        assert!(master.service_next_frame().unwrap());
+        let mut second = frame_result(1, active, None);
+        second.fade_to_black = switcher.fade_to_black_frame();
+        second.fade_to_black_excluded_outputs = vec![output(7)];
+        let black = master.render_project_frame_audio(&second, &plan).unwrap();
+        assert!(black.plane(0).unwrap().iter().all(|sample| *sample == 0.0));
+        let live = master.take_live_audio().unwrap();
+        assert_eq!(live.sample_count(), black.sample_count());
+        assert!(
+            live.plane(0)
+                .unwrap()
+                .iter()
+                .all(|sample| (*sample - 1.0).abs() < 1.0e-6)
+        );
+        assert!(master.take_live_audio().is_none());
+    }
+
+    #[test]
+    fn group_mute_and_fader_reach_member_strips_in_native_mixers() {
+        let source = input(1);
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, source);
+        let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let mut master = audio_test_master(&[(source, 1.0)], 4);
+        master.realize_project_audio(&plan).unwrap();
+        let group = fm_model::AudioGroupNumber::new(3).unwrap();
+
+        master
+            .apply_audio_mixer_update(fm_engine::EngineAudioMixerUpdate::Membership {
+                input: source,
+                group: Some(group),
+            })
+            .unwrap();
+        assert_eq!(
+            master.mixer.input_state(source).unwrap().group,
+            Some(native_mixer_group(group))
+        );
+        assert_eq!(
+            master.pending_mixer.input_state(source).unwrap().group,
+            Some(native_mixer_group(group))
+        );
+        master
+            .apply_audio_mixer_update(fm_engine::EngineAudioMixerUpdate::GroupLevel {
+                group,
+                state: fm_engine::EngineAudioGroupState {
+                    gain_millidb: 0,
+                    muted: true,
+                },
+            })
+            .unwrap();
+        // The group mute ramps down within the block (240 samples), then the
+        // member is silent although its own strip is unmuted at unity.
+        assert!(master.service_next_frame().unwrap());
+        let muted = master
+            .render_project_frame_audio(&frame_result(0, source, None), &plan)
+            .unwrap();
+        assert!(
+            muted.plane(0).unwrap()[LIVE_INPUT_GAIN_RAMP_SAMPLES..]
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        assert!(!master.mixer.input_state(source).unwrap().muted);
+
+        // Unmuting at -6 dB makes the member play at the group gain.
+        master
+            .apply_audio_mixer_update(fm_engine::EngineAudioMixerUpdate::GroupLevel {
+                group,
+                state: fm_engine::EngineAudioGroupState {
+                    gain_millidb: -6_000,
+                    muted: false,
+                },
+            })
+            .unwrap();
+        assert!(master.service_next_frame().unwrap());
+        let unmuted = master
+            .render_project_frame_audio(&frame_result(1, source, None), &plan)
+            .unwrap();
+        let expected = 10.0_f32.powf(-6.0 / 20.0);
+        let sample = *unmuted.plane(0).unwrap().last().unwrap();
+        assert!((sample - expected).abs() < 1.0e-4, "{sample} != {expected}");
+
+        assert!(matches!(
+            master.apply_audio_mixer_update(fm_engine::EngineAudioMixerUpdate::Membership {
+                input: input(99),
+                group: Some(group),
+            }),
+            Err(NativeMasterError::MissingAudioRoute { input: missing }) if missing == input(99)
+        ));
     }
 
     #[test]

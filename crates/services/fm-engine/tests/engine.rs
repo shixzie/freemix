@@ -449,6 +449,7 @@ fn reorder_inputs_preserves_id_references_and_rejects_invalid_orders_atomically(
 fn input_audio_strip_is_durable_and_realized_on_its_scheduled_frame() {
     let mut engine = engine();
     let state = EngineInputAudioStripState {
+        pan_basis_points: 0,
         gain_millidb: -6_000,
         balance_basis_points: 2_500,
         muted: true,
@@ -522,6 +523,7 @@ fn input_audio_strip_rejects_unknown_inputs_and_out_of_range_values() {
                     EngineCommand::SetInputAudioStrip {
                         input,
                         state: EngineInputAudioStripState {
+                            pan_basis_points: 0,
                             gain_millidb,
                             balance_basis_points,
                             muted: false,

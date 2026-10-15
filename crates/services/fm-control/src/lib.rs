@@ -16,6 +16,7 @@ use std::{
 };
 
 mod animation_preset;
+mod audio_mixer;
 mod automation;
 mod grade;
 mod input_lifecycle;
@@ -1761,8 +1762,10 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::InputLifecycle(_)
-        | EngineCommand::SceneLayer(_) => "project",
-        EngineCommand::SetInputAudioStrip { .. } => "audio",
+        | EngineCommand::SceneLayer(_)
+        | EngineCommand::SetFadeToBlackOutput { .. } => "project",
+        EngineCommand::AudioMixer(edit) if !edit.is_live() => "project",
+        EngineCommand::SetInputAudioStrip { .. } | EngineCommand::AudioMixer(_) => "audio",
         EngineCommand::Media(_) => "media",
         _ => "switcher",
     }
@@ -1835,9 +1838,15 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
             CommandClass::Transition
         }
         CommandPayload::Media { operation, .. } => media_command_class(*operation),
-        CommandPayload::SetInputAudioStrip { .. } => CommandClass::ControlAudio,
+        // Mixer labels and groups are project edits an audio operator owns.
+        CommandPayload::SetInputAudioStrip { .. } | CommandPayload::AudioMixer(_) => {
+            CommandClass::ControlAudio
+        }
         CommandPayload::SelectPreview { .. } => CommandClass::SelectPreview,
-        CommandPayload::Cut
+        // Which outputs Fade to Black fades belongs to the switcher operator
+        // (like overlay output inclusion).
+        CommandPayload::SetFadeToBlackOutput { .. }
+        | CommandPayload::Cut
         | CommandPayload::Fade { .. }
         | CommandPayload::AlphaFade { .. }
         | CommandPayload::Slide { .. }
@@ -1889,6 +1898,7 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
         input,
         gain_millidb,
         balance_basis_points,
+        pan_basis_points,
         muted,
         soloed,
         follow_video,
@@ -1902,6 +1912,7 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
         state: EngineInputAudioStripState {
             gain_millidb: *gain_millidb,
             balance_basis_points: *balance_basis_points,
+            pan_basis_points: *pan_basis_points,
             muted: *muted,
             soloed: *soloed,
             follow_video: *follow_video,
@@ -1951,6 +1962,13 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
             EngineCommand::InputLifecycle(input_lifecycle::engine_edit(operation))
         }
         CommandPayload::SceneLayer(edit) => scene_layer::scene_layer_engine_command(edit),
+        CommandPayload::AudioMixer(operation) => audio_mixer::engine_command(operation),
+        CommandPayload::SetFadeToBlackOutput { output, affected } => {
+            EngineCommand::SetFadeToBlackOutput {
+                output: output.to_domain(),
+                affected: *affected,
+            }
+        }
         payload @ (CommandPayload::Stinger { .. }
         | CommandPayload::ConfigureStinger { .. }
         | CommandPayload::RemoveStinger { .. }) => stinger_engine_command(payload),
@@ -2382,6 +2400,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         EngineCommand::SceneAnimation(edit) => {
             return scene_animation::wire_scene_animation_payload(edit);
         }
+        command @ (EngineCommand::AudioMixer(_) | EngineCommand::SetFadeToBlackOutput { .. }) => {
+            return audio_mixer::wire_edit_payload(command);
+        }
         _ => return None,
     })
 }
@@ -2705,6 +2726,13 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     }) {
         return scene_layer::scene_layout_changed(engine, edit);
     }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| audio_mixer::changed(&event.payload))
+    {
+        return payload;
+    }
     if let Some(slot) = outcome.events.iter().find_map(|event| {
         let EngineEvent::TransitionFavoriteChanged { slot } = &event.payload else {
             return None;
@@ -2931,6 +2959,8 @@ fn snapshot_record(
         transition_favorites: transition::wire_favorites(engine),
         media_states: media::media_state_count(engine),
         input_categories: input_lifecycle::wire_categories(engine.show()),
+        audio_mixer: audio_mixer::wire_status(engine.show()),
+        fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),
     };
     SnapshotRecord {
         cursor: EventCursor {
@@ -2950,6 +2980,11 @@ fn protocol_input_audio_strips(engine: &Engine) -> Vec<InputAudioStripStatus> {
             input: WireInputId::from_domain(input),
             gain_millidb: state.gain_millidb,
             balance_basis_points: state.balance_basis_points,
+            pan_basis_points: state.pan_basis_points,
+            group: engine
+                .show()
+                .input_audio_group(input)
+                .map(fm_model::AudioGroupNumber::get),
             muted: state.muted,
             soloed: state.soloed,
             follow_video: state.follow_video,

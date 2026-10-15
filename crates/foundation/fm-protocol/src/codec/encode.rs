@@ -310,6 +310,17 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("kind", kind.token())?;
             record.field("duration_frames", duration_frames)?;
         }
+        CommandPayload::AudioMixer(operation) => {
+            record.field("payload", operation.payload())?;
+            super::audio_mixer::encode_operation(operation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::SetFadeToBlackOutput { output, affected } => {
+            record.field("payload", "fade_to_black_output")?;
+            record.field("output", output)?;
+            record.field("affected", u8::from(*affected))?;
+        }
         CommandPayload::SceneLayer(edit) => {
             record.field("payload", edit.operation.payload())?;
             super::scene_layer::encode_scene_layer_edit(edit, &mut |name, value| {
@@ -1052,6 +1063,7 @@ fn encode_input_audio_strip_command(
         input,
         gain_millidb,
         balance_basis_points,
+        pan_basis_points,
         muted,
         soloed,
         follow_video,
@@ -1064,6 +1076,7 @@ fn encode_input_audio_strip_command(
     record.field("input", input)?;
     record.field("gain_millidb", gain_millidb)?;
     record.field("balance_basis_points", balance_basis_points)?;
+    record.field("pan_basis_points", pan_basis_points)?;
     record.field("muted", u8::from(*muted))?;
     record.field("soloed", u8::from(*soloed))?;
     record.field("follow_video", u8::from(*follow_video))?;
@@ -1308,6 +1321,13 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     record.field_string(
         "input_categories",
         super::input_lifecycle::encode_categories(&message.input_categories)?,
+    )?;
+    super::audio_mixer::encode_status(&message.audio_mixer, &mut |name, value| {
+        record.field_string(name, value)
+    })?;
+    record.field_string(
+        "fade_to_black_excluded_outputs",
+        super::audio_mixer::encode_excluded_outputs(&message.fade_to_black_excluded_outputs)?,
     )
 }
 
@@ -1636,46 +1656,34 @@ fn encode_input_audio_strips(
         });
     }
     let mut inputs = BTreeSet::new();
+    let mut encoded = Vec::with_capacity(strips.len());
     for status in strips {
+        let entry = format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            status.input,
+            status.gain_millidb,
+            status.balance_basis_points,
+            status.pan_basis_points,
+            u8::from(status.muted),
+            u8::from(status.soloed),
+            u8::from(status.follow_video),
+            status.delay_samples,
+            super::audio_mixer::encode_strip_group(status.group)?,
+        );
         if !(-96_000..=24_000).contains(&status.gain_millidb)
             || !(-10_000..=10_000).contains(&status.balance_basis_points)
+            || !(-10_000..=10_000).contains(&status.pan_basis_points)
             || status.delay_samples > 48_000
             || !inputs.insert(status.input.get())
         {
             return Err(CodecError::InvalidField {
                 field: "input_audio_strips",
-                value: format!(
-                    "{}:{}:{}:{}:{}:{}:{}",
-                    status.input,
-                    status.gain_millidb,
-                    status.balance_basis_points,
-                    u8::from(status.muted),
-                    u8::from(status.soloed),
-                    u8::from(status.follow_video),
-                    status.delay_samples
-                ),
+                value: entry,
             });
         }
+        encoded.push(entry);
     }
-    record.field_string(
-        "input_audio_strips",
-        strips
-            .iter()
-            .map(|status| {
-                format!(
-                    "{}:{}:{}:{}:{}:{}:{}",
-                    status.input,
-                    status.gain_millidb,
-                    status.balance_basis_points,
-                    u8::from(status.muted),
-                    u8::from(status.soloed),
-                    u8::from(status.follow_video),
-                    status.delay_samples
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-    )
+    record.field_string("input_audio_strips", encoded.join(","))
 }
 
 const fn overlay_position(position: crate::OverlayPositionPreset) -> &'static str {
@@ -1854,6 +1862,18 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         }
         EventPayload::AnimationPresetChanged(change) => {
             encode_animation_preset_changed(record, change)?;
+        }
+        EventPayload::AudioMixerChanged(operation) => {
+            record.field("event", "audio_mixer_changed")?;
+            record.field("operation", operation.payload())?;
+            super::audio_mixer::encode_operation(operation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        EventPayload::FadeToBlackOutputChanged { output, affected } => {
+            record.field("event", "fade_to_black_output_changed")?;
+            record.field("output", output)?;
+            record.field("affected", u8::from(*affected))?;
         }
         EventPayload::SceneLayoutChanged { edit, layout } => {
             let layers = encode_scene_layers(layout)?;

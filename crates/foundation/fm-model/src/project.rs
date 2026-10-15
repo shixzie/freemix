@@ -846,7 +846,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(38);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(39);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -887,6 +887,8 @@ pub struct Project {
     transition_favorites: crate::TransitionFavorites,
     input_categories: Vec<crate::InputCategory>,
     input_lifecycle: BTreeMap<InputId, crate::InputLifecycle>,
+    audio_groups: crate::AudioGroups,
+    fade_to_black_excluded_outputs: BTreeSet<OutputId>,
 }
 
 impl Project {
@@ -915,6 +917,8 @@ impl Project {
             transition_favorites: crate::TransitionFavorites::default(),
             input_categories: Vec::new(),
             input_lifecycle: BTreeMap::new(),
+            audio_groups: crate::AudioGroups::default(),
+            fade_to_black_excluded_outputs: BTreeSet::new(),
         }
     }
 
@@ -976,6 +980,127 @@ impl Project {
             .iter()
             .find(|strip| strip.input == input)
             .map(|strip| strip.state)
+    }
+
+    /// The operator label of `input`'s strip (empty: show the input name).
+    #[must_use]
+    pub fn input_audio_label(&self, input: InputId) -> Option<&str> {
+        self.input_audio_strips
+            .iter()
+            .find(|strip| strip.input == input)
+            .map(|strip| strip.label.as_str())
+    }
+
+    /// The strip group `input`'s strip belongs to, if any.
+    #[must_use]
+    pub fn input_audio_group(&self, input: InputId) -> Option<crate::AudioGroupNumber> {
+        self.input_audio_strips
+            .iter()
+            .find(|strip| strip.input == input)
+            .and_then(|strip| strip.group)
+    }
+
+    /// Sets the operator label of `input`'s strip; empty clears it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::UnknownInput`] or
+    /// [`SetAudioMixerError::Label`]. Nothing changes on error.
+    pub fn set_input_audio_label(
+        &mut self,
+        input: InputId,
+        label: String,
+    ) -> Result<(), SetAudioMixerError> {
+        crate::validate_audio_strip_label(&label).map_err(SetAudioMixerError::Label)?;
+        let strip = self
+            .input_audio_strips
+            .iter_mut()
+            .find(|strip| strip.input == input)
+            .ok_or(SetAudioMixerError::UnknownInput(input))?;
+        strip.label = label;
+        Ok(())
+    }
+
+    /// Restores a persisted strip label without validating it; an unusable
+    /// label is reported by [`Self::validate`].
+    pub fn restore_input_audio_label(&mut self, input: InputId, label: String) {
+        if let Some(strip) = self
+            .input_audio_strips
+            .iter_mut()
+            .find(|strip| strip.input == input)
+        {
+            strip.label = label;
+        }
+    }
+
+    /// Assigns `input`'s strip to `group`, or to none.
+    ///
+    /// Returns `false` when `input` is not part of this project.
+    pub fn set_input_audio_group(
+        &mut self,
+        input: InputId,
+        group: Option<crate::AudioGroupNumber>,
+    ) -> bool {
+        let Some(strip) = self
+            .input_audio_strips
+            .iter_mut()
+            .find(|strip| strip.input == input)
+        else {
+            return false;
+        };
+        strip.group = group;
+        true
+    }
+
+    /// The project's strip groups (AU-001, schema 39).
+    #[must_use]
+    pub const fn audio_groups(&self) -> &crate::AudioGroups {
+        &self.audio_groups
+    }
+
+    /// Replaces one strip group's name, fader, and mute.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::Label`] for an unusable name. Nothing
+    /// changes on error.
+    pub fn set_audio_group(
+        &mut self,
+        group: crate::AudioGroupNumber,
+        value: crate::AudioGroup,
+    ) -> Result<(), SetAudioMixerError> {
+        crate::validate_audio_group_name(&value.name).map_err(SetAudioMixerError::Label)?;
+        self.audio_groups.set(group, value);
+        Ok(())
+    }
+
+    /// Replaces every strip group; names are reported by
+    /// [`Self::validate`].
+    pub fn restore_audio_groups(&mut self, groups: crate::AudioGroups) {
+        self.audio_groups = groups;
+    }
+
+    /// The project outputs Fade to Black leaves live (SW-004, schema 39).
+    /// Every other output, including one added later, fades.
+    #[must_use]
+    pub const fn fade_to_black_excluded_outputs(&self) -> &BTreeSet<OutputId> {
+        &self.fade_to_black_excluded_outputs
+    }
+
+    /// Whether Fade to Black fades `output`.
+    #[must_use]
+    pub fn fade_to_black_affects(&self, output: OutputId) -> bool {
+        !self.fade_to_black_excluded_outputs.contains(&output)
+    }
+
+    /// Chooses whether Fade to Black fades `output`. Unknown outputs are
+    /// reported by [`Self::validate`].
+    pub fn set_fade_to_black_output(&mut self, output: OutputId, affected: bool) {
+        if affected {
+            self.fade_to_black_excluded_outputs.remove(&output);
+        } else {
+            self.fade_to_black_excluded_outputs.insert(output);
+        }
     }
 
     #[must_use]
@@ -1277,6 +1402,8 @@ impl Project {
         self.input_audio_strips.push(InputAudioStrip {
             input: input.id,
             state: InputAudioStripState::default(),
+            label: String::new(),
+            group: None,
         });
         self.inputs.push(input);
     }
@@ -1507,6 +1634,7 @@ impl Project {
             .ok_or(DuplicateInputError::UnknownInput(source))?
             .clone();
         let strip = self.input_audio_strip(source);
+        let group = self.input_audio_group(source);
         let lifecycle = self.input_lifecycle(source);
         self.add_input_checked(Input {
             id: input,
@@ -1518,6 +1646,9 @@ impl Project {
         if let Some(strip) = strip {
             self.set_input_audio_strip(input, strip);
         }
+        // The duplicate keeps the strip's group but not its label, which
+        // names the original.
+        self.set_input_audio_group(input, group);
         self.restore_input_lifecycle(
             input,
             crate::InputLifecycle {
@@ -3043,6 +3174,7 @@ impl Project {
             });
         }
         self.outputs.retain(|candidate| candidate.id != output);
+        self.fade_to_black_excluded_outputs.remove(&output);
         Ok(())
     }
 
@@ -3456,6 +3588,35 @@ impl InputBalanceBasisPoints {
     }
 }
 
+/// Exact persisted mono pan position in one-hundredth of a percent (schema
+/// 39).
+///
+/// `-10000` is hard left, zero is centered, and `10000` is hard right. Pan
+/// positions a mono source with the -3 dB constant-power law (see
+/// `fm_audio::Pan`); balance trims a stereo signal.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub struct InputPanBasisPoints(i32);
+
+impl InputPanBasisPoints {
+    pub const MIN: i32 = -10_000;
+    pub const MAX: i32 = 10_000;
+    pub const CENTER: Self = Self(0);
+
+    #[must_use]
+    pub const fn new(value: i32) -> Option<Self> {
+        if value >= Self::MIN && value <= Self::MAX {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+}
+
 /// Exact nonnegative per-input delay in 48 kHz samples.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InputDelaySamples(u32);
@@ -3484,6 +3645,7 @@ impl InputDelaySamples {
 pub struct InputAudioStripState {
     pub gain: InputGainMilliDb,
     pub balance: InputBalanceBasisPoints,
+    pub pan: InputPanBasisPoints,
     pub delay_samples: InputDelaySamples,
     pub muted: bool,
     pub soloed: bool,
@@ -3495,6 +3657,7 @@ impl Default for InputAudioStripState {
         Self {
             gain: InputGainMilliDb::UNITY,
             balance: InputBalanceBasisPoints::CENTER,
+            pan: InputPanBasisPoints::CENTER,
             delay_samples: InputDelaySamples::ZERO,
             muted: false,
             soloed: false,
@@ -3503,12 +3666,34 @@ impl Default for InputAudioStripState {
     }
 }
 
-/// Input identity paired with its persisted strip state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Input identity paired with its persisted strip state, label, and group.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputAudioStrip {
     pub input: InputId,
     pub state: InputAudioStripState,
+    /// Operator label (schema 39); empty shows the input name.
+    pub label: String,
+    /// The strip group the strip belongs to (schema 39).
+    pub group: Option<crate::AudioGroupNumber>,
 }
+
+/// Why a mixer label, group, or group name edit is refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetAudioMixerError {
+    UnknownInput(InputId),
+    Label(crate::AudioLabelError),
+}
+
+impl std::fmt::Display for SetAudioMixerError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "input {input} does not exist"),
+            Self::Label(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for SetAudioMixerError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InputKind {

@@ -77,6 +77,8 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         position: FadeToBlackPosition::LIVE,
     };
     let strip = |value| fm_protocol::InputAudioStripStatus {
+        pan_basis_points: 0,
+        group: None,
         input: wire(value),
         gain_millidb: 0,
         balance_basis_points: 0,
@@ -86,6 +88,8 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         delay_samples: 0,
     };
     let snapshot = SnapshotMessage {
+        audio_mixer: fm_protocol::AudioMixerStatus::default(),
+        fade_to_black_excluded_outputs: Vec::new(),
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -666,6 +670,8 @@ mod scenes {
             position: FadeToBlackPosition::LIVE,
         };
         let strip = |value| fm_protocol::InputAudioStripStatus {
+            pan_basis_points: 0,
+            group: None,
             input: wire(value),
             gain_millidb: 0,
             balance_basis_points: 0,
@@ -680,6 +686,8 @@ mod scenes {
         }
         inputs.push((SCENE, "Two up"));
         let snapshot = SnapshotMessage {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,

@@ -107,12 +107,12 @@ fn favourites_round_trip_exactly_and_are_strict() {
     );
     let manifest = directory.path("show.freemix/project.json");
     let text = fs::read_to_string(&manifest).unwrap();
-    assert!(text.contains("\"schema_version\": 38"));
+    assert!(text.contains("\"schema_version\": 39"));
     let fragment = "\"animation_presets\": [],\n    \"transition_favorites\": [\n      \
                     {\"effect\": \"cross_zoom\", \"duration_frames\": 12},\n      \
                     {\"effect\": \"cut\", \"duration_frames\": 1},\n      \
                     {\"effect\": \"stinger\", \"slot\": 3, \"duration_frames\": 45},\n      \
-                    {\"effect\": \"vertical_slide\", \"duration_frames\": 3600}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": []\n  },";
+                    {\"effect\": \"vertical_slide\", \"duration_frames\": 3600}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": [],\n    \"audio_groups\": [";
     assert!(text.contains(fragment), "{text}");
 
     for (from, to) in [

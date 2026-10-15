@@ -1118,8 +1118,72 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::BalanceHover,
-        t("Balance estéreo: L100 todo a la izquierda, C centro, R100 todo a la derecha"),
+        t(
+            "Balance estéreo: atenúa el lado izquierdo o derecho de una fuente estéreo sin moverla; L100 todo a la izquierda, C centro, R100 todo a la derecha",
+        ),
     ),
+    (Msg::PanPrefix, t("PANO")),
+    (
+        Msg::PanHover,
+        t(
+            "Panorama: sitúa una fuente mono entre los altavoces izquierdo y derecho con sonoridad constante (-3 dB en el centro, +3 dB del todo a un lado); L100 todo a la izquierda, C centro, R100 todo a la derecha; doble clic para centrar",
+        ),
+    ),
+    (Msg::StripLabelHint, t("Etiqueta")),
+    (
+        Msg::StripLabelHover,
+        t(
+            "Etiqueta que muestra este canal del mezclador en lugar del nombre de la entrada (hasta 32 bytes); bórrela para volver a mostrar el nombre de la entrada",
+        ),
+    ),
+    (Msg::StripNamePlateHover, t("{label} (entrada {name})")),
+    (Msg::StripGroupNone, t("Sin grupo")),
+    (
+        Msg::StripGroupHover,
+        t(
+            "Grupo VCA: el fader del grupo se suma a la ganancia de este canal y el silencio del grupo lo calla, sin cambiar el fader propio del canal",
+        ),
+    ),
+    (Msg::StripGroupItemHover, t("Asignar este canal a {group}")),
+    (Msg::StripGroupNoneHover, t("Sacar este canal de su grupo")),
+    (
+        Msg::GroupStripPlateHover,
+        t("{group}: un grupo VCA de {count} canales; no lleva audio propio"),
+    ),
+    (
+        Msg::GroupFaderHover,
+        t(
+            "Fader del grupo: se suma a la ganancia de cada canal miembro; arrastre; doble clic para 0 dB",
+        ),
+    ),
+    (
+        Msg::GroupMuteOnHover,
+        t("Grupo silenciado: todos sus canales están callados; haga clic para reactivarlos"),
+    ),
+    (
+        Msg::GroupMuteOffHover,
+        t("Silenciar todos los canales de este grupo"),
+    ),
+    (
+        Msg::GroupNameHover,
+        t("Renombrar este grupo (hasta 32 bytes)"),
+    ),
+    (Msg::FtbOutputs, t("Salidas {affected}/{total}")),
+    (
+        Msg::FtbOutputsHover,
+        t(
+            "Elija qué salidas funde el fundido a negro; las salidas sin marcar siguen en directo mientras las demás se funden",
+        ),
+    ),
+    (
+        Msg::FtbOutputFadesHover,
+        t("{output} se funde con el fundido a negro; desmárquela para mantenerla en directo"),
+    ),
+    (
+        Msg::FtbOutputLiveHover,
+        t("{output} sigue en directo durante el fundido a negro; márquela para fundirla también"),
+    ),
+    (Msg::FtbOutputsMenu, t("Salidas del fundido a negro")),
     (Msg::DelayPrefix, t("RET")),
     (
         Msg::DelayHover,

@@ -463,6 +463,11 @@ pub(crate) fn apply(
                     .set_input_audio_strip(input, strip)
                     .map_err(|_| unknown_input(input))?;
             }
+            // The duplicate keeps the strip's group (AU-001) but not its
+            // label, which names the original.
+            staged
+                .set_input_audio_group(input, state.input_audio_group(*source))
+                .map_err(|_| unknown_input(input))?;
             let original = state.input_lifecycle(*source);
             staged.set_input_lifecycle_unchecked(
                 input,

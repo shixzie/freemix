@@ -324,6 +324,16 @@ pub enum EngineCommand {
     /// Edits one layer of a scene live (SW-006; see
     /// [`crate::EngineSceneLayerEdit`]). A project edit.
     SceneLayer(crate::EngineSceneLayerEdit),
+    /// Labels a mixer strip, assigns it to a group, renames a group (project
+    /// edits), or moves a group fader or mute (a live operation) (AU-001;
+    /// see [`crate::EngineAudioMixerEdit`]).
+    AudioMixer(crate::EngineAudioMixerEdit),
+    /// Chooses whether Fade to Black fades `output` (SW-004). A project
+    /// edit, undone by restoring the previous choice.
+    SetFadeToBlackOutput {
+        output: OutputId,
+        affected: bool,
+    },
 }
 
 /// What an accepted title command does on air.
@@ -454,6 +464,15 @@ pub enum EngineEvent {
     /// A live scene layer edit (or its undo or redo) was accepted (SW-006);
     /// the scene afterwards is read from [`ShowState::scene`].
     SceneLayoutChanged(crate::EngineSceneLayerEdit),
+    /// A mixer label, group, or group level edit (or its undo or redo) was
+    /// accepted (AU-001); the mixer afterwards is read from [`ShowState`].
+    AudioMixerChanged(crate::EngineAudioMixerEdit),
+    /// Fade to Black now fades `output` or leaves it live (SW-004); the
+    /// selection is read from the desired switcher.
+    FadeToBlackOutputChanged {
+        output: OutputId,
+        affected: bool,
+    },
 }
 
 /// Engine-level desired status of one stream target; realization is owned by
@@ -567,6 +586,12 @@ pub struct FrameResult {
     pub overlays: [OverlayChannelState; OVERLAY_CHANNEL_COUNT],
     pub events: Vec<SwitcherEvent>,
     pub input_audio_strip_updates: Vec<(InputId, EngineInputAudioStripState)>,
+    /// Strip group membership and group level changes realized this frame,
+    /// in acceptance order (AU-001).
+    pub audio_mixer_updates: Vec<crate::EngineAudioMixerUpdate>,
+    /// The outputs Fade to Black leaves live this frame, ascending (SW-004);
+    /// see [`Self::fade_to_black_for`].
+    pub fade_to_black_excluded_outputs: Vec<OutputId>,
     /// Every title taken with [`EngineCommand::TakeTitle`] that this frame
     /// shows on an overlay channel, ascending by input, with the pose to
     /// render it in. A title on air any other way (Program, a transition, a
@@ -581,6 +606,19 @@ pub struct FrameResult {
     pub media: Vec<crate::EngineMediaFrame>,
     pub revision: Revision,
     pub runtime_generation: RuntimeGeneration,
+}
+
+impl FrameResult {
+    /// This frame's Fade-to-Black interval as `output` shows it: the shared
+    /// interval when Fade to Black affects the output, otherwise live.
+    #[must_use]
+    pub fn fade_to_black_for(&self, output: OutputId) -> FadeToBlackFrame {
+        if self.fade_to_black_excluded_outputs.contains(&output) {
+            FadeToBlackFrame::LIVE
+        } else {
+            self.fade_to_black
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1272,6 +1310,8 @@ impl Engine {
                 && !matches!(&command, EngineCommand::TitleAnimation(_))
                 && !matches!(&command, EngineCommand::SceneAnimation(_))
                 && !matches!(&command, EngineCommand::SceneLayer(_))
+                && !matches!(&command, EngineCommand::AudioMixer(_))
+                && !matches!(&command, EngineCommand::SetFadeToBlackOutput { .. })
                 && !matches!(&command, EngineCommand::AnimationPreset(_))
                 && !matches!(&command, EngineCommand::SetTransitionFavorite { .. })
                 && !matches!(&command, EngineCommand::Media(_))
@@ -1419,6 +1459,7 @@ impl Engine {
     ///
     /// Returns a typed error if the clock, scheduler, switcher, or runtime
     /// generation cannot advance.
+    #[allow(clippy::too_many_lines)]
     pub fn tick(&mut self) -> Result<FrameResult, EngineError> {
         let deadline = self
             .scheduler
@@ -1437,11 +1478,17 @@ impl Engine {
 
         let mut events = Vec::new();
         let mut input_audio_strip_updates = Vec::new();
+        let mut audio_mixer_updates = Vec::new();
         let mut media_operations = BTreeMap::<InputId, usize>::new();
         let frame = tick.deadline.frame.get();
         for scheduled in tick.actions {
             if let EngineCommand::SetInputAudioStrip { input, state } = scheduled.action {
                 input_audio_strip_updates.push((input, state));
+            }
+            if let EngineCommand::AudioMixer(edit) = &scheduled.action
+                && let Some(update) = crate::EngineAudioMixerUpdate::of(edit)
+            {
+                audio_mixer_updates.push(update);
             }
             let command_events = if let EngineCommand::Media(command) = scheduled.action {
                 *media_operations.entry(command.input).or_default() += 1;
@@ -1471,6 +1518,12 @@ impl Engine {
 
         let program = self.realized_switcher.program_frame();
         let fade_to_black = self.realized_switcher.fade_to_black_frame();
+        let fade_to_black_excluded_outputs = self
+            .realized_switcher
+            .fade_to_black_excluded_outputs()
+            .iter()
+            .copied()
+            .collect();
         let overlays = self.realized_switcher.overlays().clone();
         // A plain overlay command that replaced or removed a title's source
         // ends its animation.
@@ -1523,6 +1576,8 @@ impl Engine {
             overlays,
             events,
             input_audio_strip_updates,
+            audio_mixer_updates,
+            fade_to_black_excluded_outputs,
             titles,
             scenes,
             media: self.tick_media(&media_operations),
@@ -1673,6 +1728,8 @@ fn validate_idle_restore(
         || show.desired_switcher().fade_to_black() != realized_switcher.fade_to_black()
         || show.desired_switcher().fade_to_black_position()
             != realized_switcher.fade_to_black_position()
+        || show.desired_switcher().fade_to_black_excluded_outputs()
+            != realized_switcher.fade_to_black_excluded_outputs()
         || show.desired_switcher().stingers() != realized_switcher.stingers()
         || show.desired_switcher().overlays() != realized_switcher.overlays()
         || show.desired_switcher().streams() != realized_switcher.streams()
@@ -1838,6 +1895,32 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::AudioMixer(edit) = self.command {
+            crate::audio_mixer::apply(state, &edit)?;
+            events.push(EngineEvent::AudioMixerChanged(edit));
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
+        if let EngineCommand::SetFadeToBlackOutput { output, affected } = self.command {
+            if !state
+                .outputs()
+                .iter()
+                .any(|(candidate, _)| *candidate == output)
+            {
+                return Err(Rejection::new(
+                    RejectionCode::NotFound,
+                    format!("show does not contain output {output}"),
+                ));
+            }
+            let _ = state
+                .desired_switcher_mut()
+                .set_fade_to_black_output(output, affected);
+            events.push(EngineEvent::FadeToBlackOutputChanged { output, affected });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::AnimationPreset(edit) = self.command {
             crate::animation_preset::apply(state.animation_presets_mut(), &edit)?;
             events.push(EngineEvent::AnimationPresetsChanged(edit));
@@ -1935,6 +2018,18 @@ impl EngineMutation {
                     RejectionCode::InvalidCommand,
                     format!(
                         "input audio balance must be between \
+                         {MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS} and \
+                         {MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS} basis points"
+                    ),
+                ));
+            }
+            if !(MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS..=MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS)
+                .contains(&strip_state.pan_basis_points)
+            {
+                return Err(Rejection::new(
+                    RejectionCode::InvalidCommand,
+                    format!(
+                        "input audio pan must be between \
                          {MIN_INPUT_AUDIO_BALANCE_BASIS_POINTS} and \
                          {MAX_INPUT_AUDIO_BALANCE_BASIS_POINTS} basis points"
                     ),
@@ -2136,6 +2231,8 @@ impl EngineMutation {
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::SceneAnimation(_)
             | EngineCommand::SceneLayer(_)
+            | EngineCommand::AudioMixer(_)
+            | EngineCommand::SetFadeToBlackOutput { .. }
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
@@ -2485,11 +2582,15 @@ fn apply_runtime(
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::SceneAnimation(_)
             | EngineCommand::SceneLayer(_)
+            | EngineCommand::AudioMixer(_)
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
     ) {
         return Ok(Vec::new());
+    }
+    if let EngineCommand::SetFadeToBlackOutput { output, affected } = command {
+        return switcher.apply(SwitcherCommand::SetFadeToBlackOutput { output, affected });
     }
     if let EngineCommand::InputLifecycle(edit) = &command {
         return realize_input_lifecycle(switcher, edit);
@@ -2641,6 +2742,8 @@ fn apply_runtime(
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::SceneLayer(_)
+        | EngineCommand::AudioMixer(_)
+        | EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
@@ -2808,6 +2911,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::SceneLayer(_)
+        | EngineCommand::AudioMixer(_)
+        | EngineCommand::SetFadeToBlackOutput { .. }
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)

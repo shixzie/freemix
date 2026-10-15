@@ -137,6 +137,14 @@ impl FakeRemoteServer {
         Self { address, worker }
     }
 
+    /// Serves one remote command, its durable event, and its realization.
+    fn start_edit(edit: RemoteEdit) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || serve_edit(&listener, &edit));
+        Self { address, worker }
+    }
+
     fn start_stinger() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -747,6 +755,8 @@ fn serve_streams_snapshot_peer(
     write_message(
         &mut writer,
         &WireMessage::Snapshot(SnapshotMessage {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             engine: engine.clone(),
             revision: 1,
             show_name: "Remote Contract".into(),
@@ -818,6 +828,7 @@ fn serve_audio_strip(listener: &TcpListener) {
     assert_command(
         &command,
         &CommandPayload::SetInputAudioStrip {
+            pan_basis_points: 0,
             input: input(2),
             gain_millidb: -6_000,
             balance_basis_points: 2_500,
@@ -853,6 +864,8 @@ fn serve_audio_strip(listener: &TcpListener) {
                 overlays: OverlayStatus::empty_channels(),
                 input_audio_strips: vec![
                     fm_protocol::InputAudioStripStatus {
+                        pan_basis_points: 0,
+                        group: None,
                         input: input(1),
                         gain_millidb: 0,
                         balance_basis_points: 0,
@@ -862,6 +875,8 @@ fn serve_audio_strip(listener: &TcpListener) {
                         delay_samples: 0,
                     },
                     fm_protocol::InputAudioStripStatus {
+                        pan_basis_points: 0,
+                        group: None,
                         input: input(2),
                         gain_millidb: -6_000,
                         balance_basis_points: 2_500,
@@ -883,6 +898,65 @@ fn serve_audio_strip(listener: &TcpListener) {
             sequence: 1,
             event: RuntimeLifecycleEvent::Realized {
                 domain: "audio".into(),
+                manual_transition: fm_protocol::ManualTransitionStatus::Inactive,
+                fade_to_black: live_fade_to_black(),
+            },
+        }),
+    );
+}
+
+/// One remote command a fake server accepts and replicates.
+struct RemoteEdit {
+    role: Role,
+    key: &'static str,
+    payload: CommandPayload,
+    event: EventPayload,
+    domain: &'static str,
+}
+
+fn serve_edit(listener: &TcpListener, edit: &RemoteEdit) {
+    let engine = EngineIdentity {
+        engine_id: "project-42".into(),
+        state_epoch: 1,
+        log_id: "fake-remote-log".into(),
+    };
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request_role(read_message(&mut reader), edit.role);
+    write_handshake_role(&mut writer, &engine, 0, edit.role);
+    let WireMessage::Command(command) = read_message(&mut reader) else {
+        panic!("expected remote {} command", edit.key);
+    };
+    assert_command(&command, &edit.payload, edit.key, 0);
+    write_message(
+        &mut writer,
+        &WireMessage::CommandResult(CommandResult::Accepted {
+            id: command.id,
+            revision: 1,
+            scheduled_frame: Some(1),
+        }),
+    );
+    write_message(
+        &mut writer,
+        &WireMessage::Event(EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            cursor: EventCursor {
+                engine: engine.clone(),
+                revision: 1,
+            },
+            payload: edit.event.clone(),
+        }),
+    );
+    write_message(
+        &mut writer,
+        &WireMessage::RuntimeEvent(RuntimeEventMessage {
+            server: server_identity(&engine),
+            revision: 1,
+            generation: 1,
+            sequence: 1,
+            event: RuntimeLifecycleEvent::Realized {
+                domain: edit.domain.into(),
                 manual_transition: fm_protocol::ManualTransitionStatus::Inactive,
                 fade_to_black: live_fade_to_black(),
             },
@@ -1522,6 +1596,8 @@ fn write_handshake_snapshot(
     write_message(
         writer,
         &WireMessage::Snapshot(SnapshotMessage {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             engine: engine.clone(),
             revision,
             show_name: "Remote Contract".into(),
@@ -1614,6 +1690,8 @@ fn write_handshake_version_with_fade_to_black(
     write_message(
         writer,
         &WireMessage::Snapshot(SnapshotMessage {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             engine: engine.clone(),
             revision,
             show_name: "Remote Contract".into(),
@@ -1786,6 +1864,8 @@ fn input_audio_strips() -> Vec<fm_protocol::InputAudioStripStatus> {
     [input(1), input(2)]
         .into_iter()
         .map(|input| fm_protocol::InputAudioStripStatus {
+            pan_basis_points: 0,
+            group: None,
             input,
             gain_millidb: 0,
             balance_basis_points: 0,
@@ -2416,6 +2496,104 @@ fn remote_audio_strip_preserves_controls_and_replicated_state() {
     assert!(stdout(&output).contains(
         "AudioStrips=[1:\"Camera\":0:0:false:false:true:0,2:\"Slides\":-6000:2500:true:true:false:2400]"
     ));
+    server.finish();
+}
+
+/// AU-001 and SW-004 remotely: a group label edit is a project edit for the
+/// Audio role, a group fader is live audio, and the Fade-to-Black output
+/// choice is an Operator project edit; each prints the replicated state.
+#[test]
+fn remote_mixer_and_fade_to_black_output_commands_replicate() {
+    let label = fm_protocol::AudioMixerOperation::SetLabel {
+        input: input(2),
+        label: "Slides L/R".into(),
+    };
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Audio,
+        key: "remote-label",
+        payload: CommandPayload::AudioMixer(label.clone()),
+        event: EventPayload::AudioMixerChanged(label),
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-audio-label",
+        &server.address(),
+        "2",
+        "Slides L/R",
+        "--key",
+        "remote-label",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("Mixer=[1:0:-:\"\",2:0:-:\"Slides L/R\"]/[1:\"Group 1\":0:false,"),
+        "{}",
+        stdout(&output)
+    );
+    server.finish();
+
+    let level = fm_protocol::AudioMixerOperation::SetGroupLevel {
+        group: 3,
+        gain_millidb: -6_000,
+        muted: true,
+    };
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Audio,
+        key: "remote-group-level",
+        payload: CommandPayload::AudioMixer(level.clone()),
+        event: EventPayload::AudioMixerChanged(level),
+        domain: "audio",
+    });
+    let output = invoke(&[
+        "remote-audio-group-level",
+        &server.address(),
+        "3",
+        "-6000",
+        "on",
+        "--key",
+        "remote-group-level",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("3:\"Group 3\":-6000:true"),
+        "{}",
+        stdout(&output)
+    );
+    server.finish();
+
+    let auxiliary = fm_protocol::WireOutputId::new(NonZeroU128::new(31).unwrap());
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Operator,
+        key: "remote-ftb-output",
+        payload: CommandPayload::SetFadeToBlackOutput {
+            output: auxiliary,
+            affected: false,
+        },
+        event: EventPayload::FadeToBlackOutputChanged {
+            output: auxiliary,
+            affected: false,
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-ftb-output",
+        &server.address(),
+        "31",
+        "off",
+        "--key",
+        "remote-ftb-output",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(
+        stdout(&output).contains("FtbExcluded=[31]"),
+        "{}",
+        stdout(&output)
+    );
     server.finish();
 }
 
@@ -3235,7 +3413,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 38,
+  "schema_version": 39,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -3442,7 +3620,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 38", "\"schema_version\": 37"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 39", "\"schema_version\": 38"),
     )
     .unwrap();
     assert_failure_contains(
@@ -3456,7 +3634,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 37 is unsupported; expected 38",
+        "title template schema 38 is unsupported; expected 39",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -3474,7 +3652,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 38,
+  "schema_version": 39,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -3737,7 +3915,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 38,
+  "schema_version": 39,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -3967,7 +4145,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 38,
+  "schema_version": 39,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4064,7 +4242,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 38,
+  "schema_version": 39,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5139,13 +5317,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        38
+        39
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 38);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 39);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5158,7 +5336,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 38);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 39);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -5234,7 +5412,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        38
+        39
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -5242,7 +5420,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 38);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 39);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -5252,7 +5430,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 38);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 39);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -5260,7 +5438,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 38);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 39);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -6001,6 +6179,121 @@ fn project_rename_preserves_runtime_state_and_rejects_blank_name() {
     fs::remove_dir_all(context.root).unwrap();
 }
 
+/// AU-001 and SW-004 through the local CLI: strip pan, labels, groups, group
+/// levels, and the outputs Fade to Black fades persist in `project.json`;
+/// unknown outputs and groups are refused without touching the project.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn local_mixer_labels_groups_pan_and_fade_to_black_outputs_persist() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    assert_success(&invoke_bounded(&[
+        "audio-strip",
+        context.project_path(),
+        "1",
+        "0",
+        "0",
+        "off",
+        "off",
+        "on",
+        "0",
+        "--pan",
+        "-5000",
+    ]));
+    for arguments in [
+        vec!["audio-label", context.project_path(), "1", "Host Mic"],
+        vec!["audio-group", context.project_path(), "1", "2"],
+        vec!["audio-group", context.project_path(), "2", "2"],
+        vec!["audio-group-name", context.project_path(), "2", "Mics"],
+        vec![
+            "audio-group-level",
+            context.project_path(),
+            "2",
+            "-6000",
+            "on",
+        ],
+        vec!["audio-bus-add", context.project_path(), "20", "Master"],
+        vec![
+            "scene-input-add",
+            context.project_path(),
+            "10",
+            "10",
+            "Program",
+        ],
+        vec![
+            "output-add",
+            context.project_path(),
+            "30",
+            "10",
+            "20",
+            "Primary",
+        ],
+        vec![
+            "output-add",
+            context.project_path(),
+            "31",
+            "10",
+            "20",
+            "Confidence",
+        ],
+        vec!["ftb-output", context.project_path(), "31", "off"],
+    ] {
+        assert_success(&invoke_bounded(&arguments));
+    }
+    // Refusals leave only a rejected idempotency receipt behind.
+    assert_failure_contains(
+        &invoke_bounded(&["ftb-output", context.project_path(), "99", "off"]),
+        "show does not contain output 99",
+    );
+    assert!(
+        !invoke_bounded(&["audio-group", context.project_path(), "99", "1"])
+            .status
+            .success()
+    );
+
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let project = stored.project();
+    let input = |value| InputId::new(NonZeroU128::new(value).unwrap());
+    let output = |value| OutputId::new(NonZeroU128::new(value).unwrap());
+    let group = fm_model::AudioGroupNumber::new(2).unwrap();
+    assert_eq!(
+        project.input_audio_strip(input(1)).unwrap().pan.get(),
+        -5_000
+    );
+    assert_eq!(project.input_audio_label(input(1)), Some("Host Mic"));
+    assert_eq!(project.input_audio_group(input(1)), Some(group));
+    assert_eq!(project.input_audio_group(input(2)), Some(group));
+    let stored_group = project.audio_groups().get(group);
+    assert_eq!(
+        (
+            stored_group.name.as_str(),
+            stored_group.gain.get(),
+            stored_group.muted
+        ),
+        ("Mics", -6_000, true)
+    );
+    assert!(project.fade_to_black_affects(output(30)));
+    assert!(!project.fade_to_black_affects(output(31)));
+
+    // Clearing the label and taking the output back restores the defaults.
+    assert_success(&invoke_bounded(&[
+        "audio-label",
+        context.project_path(),
+        "1",
+        "",
+    ]));
+    assert_success(&invoke_bounded(&[
+        "ftb-output",
+        context.project_path(),
+        "31",
+        "on",
+    ]));
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    assert_eq!(stored.project().input_audio_label(input(1)), Some(""));
+    assert!(stored.project().fade_to_black_affects(output(31)));
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 #[test]
 fn local_audio_bus_rename_persists_exact_name_and_preserves_runtime_state() {
     let context = ContractContext::new();
@@ -6552,7 +6845,7 @@ fn local_scene_input_remove_is_atomic_across_input_and_scene() {
             .input_audio_strips()
             .iter()
             .filter(|strip| strip.input != removed_input)
-            .copied()
+            .cloned()
             .collect::<Vec<_>>()
     );
     assert_eq!(

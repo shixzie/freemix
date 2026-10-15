@@ -67,6 +67,8 @@ impl EngineInputSource {
 pub struct EngineInputAudioStripState {
     pub gain_millidb: i32,
     pub balance_basis_points: i32,
+    /// Mono source position (AU-001); balance trims a stereo signal.
+    pub pan_basis_points: i32,
     pub muted: bool,
     pub soloed: bool,
     pub follow_video: bool,
@@ -78,6 +80,7 @@ impl Default for EngineInputAudioStripState {
         Self {
             gain_millidb: 0,
             balance_basis_points: 0,
+            pan_basis_points: 0,
             muted: false,
             soloed: false,
             follow_video: true,
@@ -174,6 +177,12 @@ pub struct ShowState {
     input_lifecycle: BTreeMap<InputId, fm_model::InputLifecycle>,
     /// The replaceable source of every input that has one (IN-026).
     input_sources: BTreeMap<InputId, fm_model::InputSourceSpec>,
+    /// Every non-empty strip label (AU-001).
+    input_audio_labels: BTreeMap<InputId, String>,
+    /// Every strip's group membership (AU-001).
+    input_audio_groups: BTreeMap<InputId, fm_model::AudioGroupNumber>,
+    /// The strip groups, group 1 first (AU-001).
+    audio_groups: [crate::EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT],
 }
 
 impl ShowState {
@@ -246,6 +255,9 @@ impl ShowState {
             input_categories: Vec::new(),
             input_lifecycle: BTreeMap::new(),
             input_sources: BTreeMap::new(),
+            input_audio_labels: BTreeMap::new(),
+            input_audio_groups: BTreeMap::new(),
+            audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
         })
     }
 
@@ -486,6 +498,8 @@ impl ShowState {
         self.media.remove(&input);
         self.input_lifecycle.remove(&input);
         self.input_sources.remove(&input);
+        self.input_audio_labels.remove(&input);
+        self.input_audio_groups.remove(&input);
         Ok(())
     }
 
@@ -519,6 +533,137 @@ impl ShowState {
             .get_mut(&input)
             .ok_or(ShowError::UnknownInput(input))?;
         *strip = state;
+        Ok(())
+    }
+
+    /// The operator label of `input`'s strip; empty when unlabelled or
+    /// unknown.
+    #[must_use]
+    pub fn input_audio_label(&self, input: InputId) -> &str {
+        self.input_audio_labels
+            .get(&input)
+            .map_or("", String::as_str)
+    }
+
+    /// Every non-empty strip label, ascending by input.
+    #[must_use]
+    pub const fn input_audio_labels(&self) -> &BTreeMap<InputId, String> {
+        &self.input_audio_labels
+    }
+
+    /// The group `input`'s strip belongs to, if any.
+    #[must_use]
+    pub fn input_audio_group(&self, input: InputId) -> Option<fm_model::AudioGroupNumber> {
+        self.input_audio_groups.get(&input).copied()
+    }
+
+    /// Every strip's group membership, ascending by input.
+    #[must_use]
+    pub const fn input_audio_groups(&self) -> &BTreeMap<InputId, fm_model::AudioGroupNumber> {
+        &self.input_audio_groups
+    }
+
+    /// The strip groups, group 1 first.
+    #[must_use]
+    pub const fn audio_groups(&self) -> &[crate::EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT] {
+        &self.audio_groups
+    }
+
+    #[must_use]
+    pub const fn audio_group(&self, group: fm_model::AudioGroupNumber) -> &crate::EngineAudioGroup {
+        &self.audio_groups[group.index()]
+    }
+
+    pub(crate) const fn audio_group_mut(
+        &mut self,
+        group: fm_model::AudioGroupNumber,
+    ) -> &mut crate::EngineAudioGroup {
+        &mut self.audio_groups[group.index()]
+    }
+
+    /// Sets the operator label of `input`'s strip; empty clears it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] for an input outside the show and
+    /// [`ShowError::InvalidAudioMixer`] for an unusable label.
+    pub fn set_input_audio_label(
+        &mut self,
+        input: InputId,
+        label: String,
+    ) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        fm_model::validate_audio_strip_label(&label).map_err(ShowError::InvalidAudioMixer)?;
+        if label.is_empty() {
+            self.input_audio_labels.remove(&input);
+        } else {
+            self.input_audio_labels.insert(input, label);
+        }
+        Ok(())
+    }
+
+    /// Assigns `input`'s strip to `group`, or to none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] for an input outside the show.
+    pub fn set_input_audio_group(
+        &mut self,
+        input: InputId,
+        group: Option<fm_model::AudioGroupNumber>,
+    ) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        match group {
+            Some(group) => self.input_audio_groups.insert(input, group),
+            None => self.input_audio_groups.remove(&input),
+        };
+        Ok(())
+    }
+
+    /// Restores one strip group's name, fader, and mute.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidAudioMixer`] for an unusable name and
+    /// [`ShowError::InvalidAudioGroupGain`] for an out-of-range fader.
+    pub fn set_audio_group(
+        &mut self,
+        group: fm_model::AudioGroupNumber,
+        value: crate::EngineAudioGroup,
+    ) -> Result<(), ShowError> {
+        fm_model::validate_audio_group_name(&value.name).map_err(ShowError::InvalidAudioMixer)?;
+        crate::audio_mixer::validate_group_state(value.state)
+            .map_err(|_| ShowError::InvalidAudioGroupGain(value.state.gain_millidb))?;
+        self.audio_groups[group.index()] = value;
+        Ok(())
+    }
+
+    /// Restores which outputs Fade to Black leaves live (SW-004).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownOutput`] for an output outside the show's
+    /// output roster.
+    pub fn restore_fade_to_black_excluded_outputs(
+        &mut self,
+        excluded: impl IntoIterator<Item = OutputId>,
+    ) -> Result<(), ShowError> {
+        for output in excluded {
+            if !self
+                .outputs
+                .iter()
+                .any(|(candidate, _)| *candidate == output)
+            {
+                return Err(ShowError::UnknownOutput(output));
+            }
+            let _ = self
+                .desired_switcher
+                .set_fade_to_black_output(output, false);
+        }
         Ok(())
     }
 

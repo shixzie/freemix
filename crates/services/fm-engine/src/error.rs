@@ -23,6 +23,12 @@ pub enum ShowError {
     /// The input category list or a lifecycle entry is invalid; carries the
     /// [`fm_model::InputLifecycleError::code`] (IN-026).
     InvalidInputLifecycle(&'static str),
+    /// A strip label or group name is unusable (AU-001).
+    InvalidAudioMixer(fm_model::AudioLabelError),
+    /// A group fader is outside the strip gain range (AU-001).
+    InvalidAudioGroupGain(i32),
+    /// An output is not part of the show's output roster.
+    UnknownOutput(OutputId),
     Switcher(SwitcherError),
 }
 
@@ -52,6 +58,13 @@ impl fmt::Display for ShowError {
                     formatter,
                     "input categories or lifecycle are invalid: {code}"
                 )
+            }
+            Self::InvalidAudioMixer(error) => error.fmt(formatter),
+            Self::InvalidAudioGroupGain(gain) => {
+                write!(formatter, "audio group gain {gain} millidB is out of range")
+            }
+            Self::UnknownOutput(output) => {
+                write!(formatter, "show does not contain output {output}")
             }
             Self::Switcher(error) => error.fmt(formatter),
         }

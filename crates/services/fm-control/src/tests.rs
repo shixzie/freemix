@@ -1319,6 +1319,8 @@ fn command_result_is_represented_before_its_events() {
             input_audio_strips: [input(1), input(2), input(3)]
                 .into_iter()
                 .map(|input| fm_protocol::InputAudioStripStatus {
+                    pan_basis_points: 0,
+                    group: None,
                     input: WireInputId::from_domain(input),
                     gain_millidb: 0,
                     balance_basis_points: 0,
@@ -1343,6 +1345,7 @@ fn input_audio_strip_flows_through_authorization_snapshot_event_and_frame() {
                 "audio-strip",
                 "audio-strip-key",
                 CommandPayload::SetInputAudioStrip {
+                    pan_basis_points: 0,
                     input: WireInputId::from_domain(input(2)),
                     gain_millidb: -6_000,
                     balance_basis_points: 2_500,
@@ -1389,6 +1392,7 @@ fn input_audio_strip_flows_through_authorization_snapshot_event_and_frame() {
         [(
             input(2),
             EngineInputAudioStripState {
+                pan_basis_points: 0,
                 gain_millidb: -6_000,
                 balance_basis_points: 2_500,
                 muted: true,
@@ -5647,4 +5651,261 @@ fn scene_layer_edits_replicate_the_whole_layout_and_undo_exactly() {
         )
         .unwrap();
     assert_eq!(rejection_code(&unknown), Some("not_found"));
+}
+
+fn mixer_service() -> ControlService {
+    let show = ShowState::new(
+        "show",
+        named_inputs([input(1), input(2), input(3)]),
+        input(1),
+        input(2),
+    )
+    .unwrap()
+    .with_outputs(vec![
+        (output(7), "Program".to_owned()),
+        (output(8), "Confidence".to_owned()),
+    ])
+    .unwrap();
+    let engine = Engine::new(
+        show,
+        FrameRate::new(60, 1).unwrap(),
+        ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+    );
+    ControlService::new(
+        engine,
+        Policy::production(),
+        "engine-a",
+        "log-a",
+        ControlLimits {
+            retained_events: 16,
+            max_subscribers: 4,
+            subscriber_queue: 16,
+        },
+    )
+}
+
+/// Protocol 2.40 (AU-001): strip labels, group membership, group names and
+/// group levels are audio-controlled, replicated exactly in events and the
+/// snapshot, undoable (except live levels), and realized on the frame.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn audio_mixer_edits_are_audio_controlled_replicated_and_undoable() {
+    use fm_engine::{EngineAudioGroupState, EngineAudioMixerUpdate};
+    use fm_protocol::AudioMixerOperation;
+
+    let mut control = mixer_service();
+    let server = server_identity();
+    let label = CommandPayload::AudioMixer(AudioMixerOperation::SetLabel {
+        input: WireInputId::from_domain(input(2)),
+        label: "Guest mic".into(),
+    });
+    assert_eq!(
+        control.required_classes(&label).primary(),
+        CommandClass::ControlAudio
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Graphics),
+            command("g", "g", label.clone()),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    let applied = control
+        .submit(&principal(Role::Audio), command("a1", "a1", label), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    assert_wire_exact(&control, &applied);
+    assert_eq!(
+        applied.output.events[0].payload,
+        EventPayload::AudioMixerChanged(AudioMixerOperation::SetLabel {
+            input: WireInputId::from_domain(input(2)),
+            label: "Guest mic".into(),
+        })
+    );
+    for (key, operation) in [
+        (
+            "a2",
+            AudioMixerOperation::SetGroup {
+                input: WireInputId::from_domain(input(2)),
+                group: Some(3),
+            },
+        ),
+        (
+            "a3",
+            AudioMixerOperation::RenameGroup {
+                group: 3,
+                name: "Guests".into(),
+            },
+        ),
+        (
+            "a4",
+            AudioMixerOperation::SetGroupLevel {
+                group: 3,
+                gain_millidb: -6_000,
+                muted: true,
+            },
+        ),
+    ] {
+        let submission = control
+            .submit(
+                &principal(Role::Audio),
+                command(key, key, CommandPayload::AudioMixer(operation.clone())),
+                0,
+            )
+            .unwrap();
+        assert!(submission.is_accepted(), "{key}");
+        assert_wire_exact(&control, &submission);
+        assert_eq!(
+            submission.output.events[0].payload,
+            EventPayload::AudioMixerChanged(operation)
+        );
+    }
+    let snapshot = control.snapshot().snapshot.clone();
+    assert_eq!(
+        snapshot
+            .audio_mixer
+            .label(WireInputId::from_domain(input(2))),
+        "Guest mic"
+    );
+    assert_eq!(
+        snapshot.audio_mixer.groups[2],
+        fm_protocol::AudioGroupStatus {
+            name: "Guests".into(),
+            gain_millidb: -6_000,
+            muted: true,
+        }
+    );
+    let strip = snapshot
+        .input_audio_strips
+        .iter()
+        .find(|strip| strip.input == WireInputId::from_domain(input(2)))
+        .unwrap();
+    assert_eq!(strip.group, Some(3));
+
+    let tick = control.tick(&server).unwrap();
+    assert_eq!(
+        tick.frame.audio_mixer_updates,
+        vec![
+            EngineAudioMixerUpdate::Membership {
+                input: input(2),
+                group: fm_model::AudioGroupNumber::new(3),
+            },
+            EngineAudioMixerUpdate::GroupLevel {
+                group: fm_model::AudioGroupNumber::new(3).unwrap(),
+                state: EngineAudioGroupState {
+                    gain_millidb: -6_000,
+                    muted: true,
+                },
+            },
+        ]
+    );
+
+    // Undo (which also needs EditProject) reverts the rename, then the
+    // membership; the live level stays.
+    for key in ["u1", "u2"] {
+        let undo = control
+            .submit(
+                &principal(Role::Admin),
+                command(
+                    key,
+                    key,
+                    CommandPayload::Undo {
+                        expected_edit: None,
+                    },
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(undo.is_accepted(), "{:?}", undo.output.result);
+        assert_wire_exact(&control, &undo);
+    }
+    let snapshot = control.snapshot().snapshot.clone();
+    assert_eq!(snapshot.audio_mixer.groups[2].name, "Group 3");
+    assert!(snapshot.audio_mixer.groups[2].muted);
+    assert!(
+        snapshot
+            .input_audio_strips
+            .iter()
+            .all(|strip| strip.group.is_none())
+    );
+}
+
+/// Protocol 2.40 (SW-004): the Fade-to-Black output selection is a
+/// switcher-operator project edit, replicated and undoable.
+#[test]
+fn fade_to_black_output_selection_is_operator_controlled_and_undoable() {
+    let mut control = mixer_service();
+    let payload = CommandPayload::SetFadeToBlackOutput {
+        output: fm_protocol::WireOutputId::from_domain(output(8)),
+        affected: false,
+    };
+    assert_eq!(
+        control.required_classes(&payload).primary(),
+        CommandClass::Transition
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Audio),
+            command("a", "a", payload.clone()),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    let applied = control
+        .submit(&principal(Role::Operator), command("o", "o", payload), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    assert_wire_exact(&control, &applied);
+    assert_eq!(
+        applied.output.events[0].payload,
+        EventPayload::FadeToBlackOutputChanged {
+            output: fm_protocol::WireOutputId::from_domain(output(8)),
+            affected: false,
+        }
+    );
+    assert_eq!(
+        control.snapshot().snapshot.fade_to_black_excluded_outputs,
+        vec![fm_protocol::WireOutputId::from_domain(output(8))]
+    );
+    let unknown = control
+        .submit(
+            &principal(Role::Operator),
+            command(
+                "x",
+                "x",
+                CommandPayload::SetFadeToBlackOutput {
+                    output: fm_protocol::WireOutputId::from_domain(output(9)),
+                    affected: false,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&unknown), Some("not_found"));
+    let undo = control
+        .submit(
+            &principal(Role::Admin),
+            command(
+                "u",
+                "u",
+                CommandPayload::Undo {
+                    expected_edit: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(undo.is_accepted(), "{:?}", undo.output.result);
+    assert_eq!(
+        undo.output.events[0].payload,
+        EventPayload::FadeToBlackOutputChanged {
+            output: fm_protocol::WireOutputId::from_domain(output(8)),
+            affected: true,
+        }
+    );
+    assert_eq!(
+        control.snapshot().snapshot.fade_to_black_excluded_outputs,
+        Vec::new()
+    );
 }

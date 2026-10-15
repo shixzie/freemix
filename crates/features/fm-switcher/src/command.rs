@@ -52,6 +52,11 @@ pub enum SwitcherCommand {
         output: OutputId,
         included: bool,
     },
+    /// Chooses whether Fade to Black fades `output` (SW-004).
+    SetFadeToBlackOutput {
+        output: OutputId,
+        affected: bool,
+    },
     SetStreamRunning {
         target: StreamTargetId,
         running: bool,
@@ -144,6 +149,10 @@ pub enum SwitcherEvent {
         channel: OverlayChannelId,
         output: OutputId,
         included: bool,
+    },
+    FadeToBlackOutputChanged {
+        output: OutputId,
+        affected: bool,
     },
     StingerPreloadChanged {
         slot: StingerSlotId,

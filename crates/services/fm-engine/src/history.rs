@@ -11,15 +11,18 @@
 //!   library ([`crate::EngineAnimationPresetEdit`]), the input lifecycle
 //!   ([`crate::EngineInputLifecycleEdit`]: duplicate, source replacement,
 //!   categories, colour labels, pause, close, batch import, and multi-input
-//!   removal), and live scene layer edits ([`crate::EngineSceneLayerEdit`]:
+//!   removal), live scene layer edits ([`crate::EngineSceneLayerEdit`]:
 //!   geometry, appearance, crop, mask, z-order, position, add, and remove,
-//!   each with an exact inverse). They are rejected while
+//!   each with an exact inverse), mixer strip labels, group membership, and
+//!   group names ([`crate::EngineAudioMixerEdit`]), and the Fade-to-Black
+//!   output selection. They are rejected while
 //!   the edit padlock covers them (an input's padlock also covers its
 //!   grade), and all but input and LUT removal are recorded in the undo
 //!   history.
 //! - **Live operations** act on what is on air or being delivered: Preview
 //!   selection, cuts and transitions (including Stinger playback and the
-//!   T-bar), overlay take/update/off/queue, Fade to Black, audio strip moves,
+//!   T-bar), overlay take/update/off/queue, Fade to Black, audio strip and
+//!   group fader moves,
 //!   streaming, recording, and title content (field edits, title take, and
 //!   title off-air: content, not layout). They are never recorded, never
 //!   reverted by undo or redo, and never blocked by a padlock, so a locked
@@ -151,7 +154,15 @@ impl EngineCommand {
             | Self::SceneLayer(_)
             | Self::AnimationPreset(_)
             | Self::SetTransitionFavorite { .. }
+            | Self::SetFadeToBlackOutput { .. }
             | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
+            Self::AudioMixer(edit) => {
+                if edit.is_live() {
+                    EngineCommandKind::LiveOperation
+                } else {
+                    EngineCommandKind::ProjectEdit
+                }
+            }
             Self::Media(command) => {
                 if command.operation.is_transport() {
                     EngineCommandKind::LiveOperation
@@ -693,6 +704,7 @@ fn names_input(command: &EngineCommand, input: InputId) -> bool {
         EngineCommand::SceneAnimation(edit) => edit.input == input,
         EngineCommand::InputLifecycle(edit) => edit.names_input(input),
         EngineCommand::SceneLayer(edit) => edit.names_input(input),
+        EngineCommand::AudioMixer(edit) => edit.names_input(input),
         _ => false,
     }
 }
@@ -759,6 +771,17 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::SceneLayer(edit) => {
             crate::scene_layer::inverse(state, edit).map(EngineCommand::SceneLayer)
         }
+        EngineCommand::AudioMixer(edit) => {
+            crate::audio_mixer::inverse(state, edit).map(EngineCommand::AudioMixer)
+        }
+        EngineCommand::SetFadeToBlackOutput { output, .. } => state
+            .outputs()
+            .iter()
+            .any(|(candidate, _)| candidate == output)
+            .then(|| EngineCommand::SetFadeToBlackOutput {
+                output: *output,
+                affected: switcher.fade_to_black_affects(*output),
+            }),
         EngineCommand::SetTransitionFavorite { slot, .. } => state
             .transition_favorites()
             .get(*slot)
@@ -859,6 +882,10 @@ pub(crate) fn check_edit_locks(
             }
             Ok(())
         }
+        EngineCommand::AudioMixer(edit) => match edit.locked_input() {
+            Some(input) if state.is_input_locked(input) => Err(EditRejection::InputLocked(input)),
+            _ => Ok(()),
+        },
         EngineCommand::InputLifecycle(edit) => {
             match edit
                 .locked_inputs()

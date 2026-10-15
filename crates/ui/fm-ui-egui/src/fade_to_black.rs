@@ -128,6 +128,7 @@ pub(super) fn draw_fade_to_black(
                     .speed(1.0),
             )
             .hint(l.text(Msg::FtbDurationHover), reason);
+            draw_fade_to_black_outputs(ui, state, intents);
         });
     });
     let phase = fade_to_black_phase(l, desired, realized);
@@ -179,6 +180,67 @@ pub(super) fn draw_fade_to_black(
             color,
         );
     }
+}
+
+/// The outputs Fade to Black fades, as a menu of one checkbox per project
+/// output (SW-004): an unticked output stays live while the others fade.
+/// Drawn beside the FTB key and in the Output menu; nothing without
+/// outputs.
+pub(crate) fn draw_fade_to_black_outputs(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let Some(view) = &state.view else {
+        return;
+    };
+    if view.outputs.is_empty() {
+        return;
+    }
+    let l = l10n::locale(ui.ctx());
+    let enabled = state.connection_status.controls_enabled() && state.can_transition;
+    let reason = unavailable_reason(state, Capability::Transition);
+    let affected = view
+        .outputs
+        .iter()
+        .filter(|output| view.fade_to_black_affects(output.output))
+        .count();
+    #[allow(clippy::cast_possible_truncation)] // at most 256 outputs
+    let label = l.format(
+        Msg::FtbOutputs,
+        &[
+            ("affected", Arg::from(affected as u32)),
+            ("total", Arg::from(view.outputs.len() as u32)),
+        ],
+    );
+    ui.menu_button(label, |ui| {
+        for output in &view.outputs {
+            let mut fades = view.fade_to_black_affects(output.output);
+            let hover = l.format(
+                if fades {
+                    Msg::FtbOutputFadesHover
+                } else {
+                    Msg::FtbOutputLiveHover
+                },
+                &[("output", Arg::Str(&output.name))],
+            );
+            if ui
+                .add_enabled(
+                    enabled,
+                    egui::Checkbox::new(&mut fades, output.name.as_str()),
+                )
+                .hint(&hover, reason)
+                .changed()
+            {
+                intents.push(StudioIntent::SetFadeToBlackOutput {
+                    output: output.output,
+                    affected: fades,
+                });
+            }
+        }
+    })
+    .response
+    .hint(l.text(Msg::FtbOutputsHover), reason);
 }
 
 /// How prominently the Fade-to-Black status line is drawn.

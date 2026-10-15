@@ -1,5 +1,6 @@
 //! Transport-neutral wire DTOs and newline-delimited control codec.
 
+mod audio_mixer;
 mod codec;
 mod dto;
 mod input_lifecycle;
@@ -8,6 +9,10 @@ mod monitor_image;
 mod scene_layer;
 mod version;
 
+pub use audio_mixer::{
+    AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, InputAudioLabel,
+    MAX_AUDIO_LABEL_BYTES, audio_group_is_valid, audio_label_is_valid, fade_to_black_affects,
+};
 pub use codec::{
     CodecError, LineDecoder, MAX_BATCH_EVENTS, MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES,
     MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH,

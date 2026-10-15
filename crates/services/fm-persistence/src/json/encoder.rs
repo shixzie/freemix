@@ -115,6 +115,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     super::animation_preset::write_animation_presets(output, project.animation_presets());
     super::transition_favorite::write_transition_favorites(output, project.transition_favorites());
     super::input_lifecycle::write_input_lifecycle(output, project);
+    super::audio_mixer::write_audio_mixer(output, project);
     output.push_str("\n  },");
 }
 
@@ -515,15 +516,22 @@ fn write_input_audio_strips(output: &mut String, project: &fm_model::Project) {
         item_prefix(output, index, 6);
         write!(
             output,
-            "{{\"input\": {}, \"gain_milli_db\": {}, \"balance_basis_points\": {}, \"delay_samples\": {}, \"muted\": {}, \"soloed\": {}, \"follow_video\": {}}}",
+            "{{\"input\": {}, \"gain_milli_db\": {}, \"balance_basis_points\": {}, \"pan_basis_points\": {}, \"delay_samples\": {}, \"muted\": {}, \"soloed\": {}, \"follow_video\": {}, \"label\": \"",
             strip.input,
             strip.state.gain.get(),
             strip.state.balance.get(),
+            strip.state.pan.get(),
             strip.state.delay_samples.get(),
             strip.state.muted,
             strip.state.soloed,
             strip.state.follow_video,
         )
+        .expect("writing to a string cannot fail");
+        escape_string(output, &strip.label);
+        match strip.group {
+            Some(group) => write!(output, "\", \"group\": {}}}", group.get()),
+            None => write!(output, "\", \"group\": null}}"),
+        }
         .expect("writing to a string cannot fail");
     }
     array_end(output, project.input_audio_strips().is_empty(), 4);

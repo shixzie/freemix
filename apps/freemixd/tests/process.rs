@@ -1572,6 +1572,256 @@ fn remote_input_rename_is_authorized_replicated_replay_safe_and_survives_restart
     );
 }
 
+/// The next durable event, skipping runtime and other records.
+fn next_event_payload(client: &mut Client) -> fm_protocol::EventPayload {
+    loop {
+        if let WireMessage::Event(event) = client.receive() {
+            return event.payload;
+        }
+    }
+}
+
+fn create_two_output_project(path: &Path) {
+    let mut project = canonical_project();
+    project.add_output(Output {
+        id: output_id(2),
+        name: "Confidence output".into(),
+        video_source: scene_id(1),
+        audio_source: bus_id(1),
+        startup: StartupPolicy::ReconcileDesiredState,
+        required_capabilities: vec!["simulation.output".into()],
+    });
+    let project = StoredProject::from_project(
+        project,
+        RuntimeRouting {
+            desired_program_id: Some(domain_input(1)),
+            realized_program_id: Some(domain_input(1)),
+            desired_preview_id: Some(domain_input(2)),
+            realized_preview_id: Some(domain_input(2)),
+        },
+        ProjectPosition {
+            revision: 0,
+            state_epoch: 1,
+            event_sequence: 0,
+            frames_rendered: 0,
+            runtime_generation: 0,
+            clock_time_nanos: 0,
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    ProjectStore::new(path).unwrap().save(&project).unwrap();
+}
+
+/// SW-004: Fade to Black fades only the outputs chosen for it. Excluding an
+/// output is an accepted, replicated project edit, an unknown output is
+/// refused, a later Fade to Black still runs, and the choice survives a
+/// restart.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn fade_to_black_excludes_an_unselected_output_and_survives_restart() {
+    let directory = TestDirectory::new("ftb-outputs");
+    let project_path = directory.project_path();
+    create_two_output_project(&project_path);
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Operator, None);
+    let snapshot = client.receive_snapshot();
+    assert_eq!(snapshot.fade_to_black_excluded_outputs, Vec::new());
+
+    let confidence = fm_protocol::WireOutputId::from_domain(output_id(2));
+    client.send(&command(
+        "ftb-output",
+        "ftb-output-key",
+        CommandPayload::SetFadeToBlackOutput {
+            output: confidence,
+            affected: false,
+        },
+    ));
+    assert!(matches!(
+        client.next_result(),
+        CommandResult::Accepted { id, revision: 1, .. } if id == "ftb-output"
+    ));
+    assert_eq!(
+        next_event_payload(&mut client),
+        fm_protocol::EventPayload::FadeToBlackOutputChanged {
+            output: confidence,
+            affected: false,
+        }
+    );
+
+    client.send(&command(
+        "ftb-unknown",
+        "ftb-unknown-key",
+        CommandPayload::SetFadeToBlackOutput {
+            output: fm_protocol::WireOutputId::from_domain(output_id(9)),
+            affected: false,
+        },
+    ));
+    assert!(matches!(
+        client.next_result(),
+        CommandResult::Rejected { code, current_revision: 1, .. } if code == "not_found"
+    ));
+
+    client.send(&command(
+        "ftb-on",
+        "ftb-on-key",
+        CommandPayload::FadeToBlack {
+            active: true,
+            duration_frames: 1,
+        },
+    ));
+    assert!(matches!(
+        client.next_result(),
+        CommandResult::Accepted { id, revision: 2, .. } if id == "ftb-on"
+    ));
+    drop(client);
+
+    let mut observer = daemon.connect();
+    observer.handshake_as(Role::Viewer, None);
+    let snapshot = observer.receive_snapshot();
+    assert_eq!(snapshot.fade_to_black_excluded_outputs, vec![confidence]);
+    assert!(!fm_protocol::fade_to_black_affects(
+        &snapshot.fade_to_black_excluded_outputs,
+        confidence
+    ));
+    assert!(fm_protocol::fade_to_black_affects(
+        &snapshot.fade_to_black_excluded_outputs,
+        fm_protocol::WireOutputId::from_domain(output_id(1))
+    ));
+    drop(observer);
+    daemon.stop();
+
+    let daemon = Daemon::start(&project_path);
+    let mut restarted = daemon.connect();
+    restarted.handshake_as(Role::Viewer, None);
+    let snapshot = restarted.receive_snapshot();
+    assert_eq!(snapshot.fade_to_black_excluded_outputs, vec![confidence]);
+    drop(restarted);
+    daemon.wait_success();
+
+    let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    assert!(!persisted.project().fade_to_black_affects(output_id(2)));
+    assert!(persisted.project().fade_to_black_affects(output_id(1)));
+}
+
+/// AU-001: strip labels and VCA groups are replicated project state; a
+/// muted group is reported for its member strips and survives a restart.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn strip_labels_and_group_mute_replicate_to_members_and_survive_restart() {
+    let directory = TestDirectory::new("mixer-groups");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Operator, None);
+    client.receive_snapshot();
+
+    let operations = [
+        fm_protocol::AudioMixerOperation::SetLabel {
+            input: input(1),
+            label: "Host Mic".into(),
+        },
+        fm_protocol::AudioMixerOperation::SetGroup {
+            input: input(1),
+            group: Some(2),
+        },
+        fm_protocol::AudioMixerOperation::SetGroup {
+            input: input(3),
+            group: Some(2),
+        },
+        fm_protocol::AudioMixerOperation::RenameGroup {
+            group: 2,
+            name: "Mics".into(),
+        },
+        fm_protocol::AudioMixerOperation::SetGroupLevel {
+            group: 2,
+            gain_millidb: -6_000,
+            muted: true,
+        },
+    ];
+    for (index, operation) in operations.iter().enumerate() {
+        let id = format!("mixer-{index}");
+        client.send(&command(
+            &id,
+            &format!("{id}-key"),
+            CommandPayload::AudioMixer(operation.clone()),
+        ));
+        let revision = u64::try_from(index + 1).unwrap();
+        assert!(matches!(
+            client.next_result(),
+            CommandResult::Accepted { id: accepted, revision: got, .. }
+                if accepted == id && got == revision
+        ));
+        assert_eq!(
+            next_event_payload(&mut client),
+            fm_protocol::EventPayload::AudioMixerChanged(operation.clone())
+        );
+    }
+    client.send(&command(
+        "mixer-bad-group",
+        "mixer-bad-group-key",
+        CommandPayload::AudioMixer(fm_protocol::AudioMixerOperation::SetGroup {
+            input: input(9),
+            group: Some(1),
+        }),
+    ));
+    assert!(matches!(
+        client.next_result(),
+        CommandResult::Rejected {
+            current_revision: 5,
+            ..
+        }
+    ));
+    drop(client);
+
+    let assert_snapshot = |snapshot: &fm_protocol::SnapshotMessage| {
+        let group_of = |value: u128| {
+            snapshot
+                .input_audio_strips
+                .iter()
+                .find(|strip| strip.input == input(value))
+                .unwrap()
+                .group
+        };
+        assert_eq!(
+            (group_of(1), group_of(2), group_of(3)),
+            (Some(2), None, Some(2))
+        );
+        let group = &snapshot.audio_mixer.groups[1];
+        assert_eq!(
+            (group.name.as_str(), group.gain_millidb, group.muted),
+            ("Mics", -6_000, true)
+        );
+        assert_eq!(snapshot.audio_mixer.label(input(1)), "Host Mic");
+        assert_eq!(snapshot.audio_mixer.label(input(2)), "");
+    };
+    let mut observer = daemon.connect();
+    observer.handshake_as(Role::Viewer, None);
+    assert_snapshot(&observer.receive_snapshot());
+    drop(observer);
+    daemon.stop();
+
+    let daemon = Daemon::start(&project_path);
+    let mut restarted = daemon.connect();
+    restarted.handshake_as(Role::Viewer, None);
+    assert_snapshot(&restarted.receive_snapshot());
+    drop(restarted);
+    daemon.wait_success();
+
+    let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    let project = persisted.project();
+    let group = fm_model::AudioGroupNumber::new(2).unwrap();
+    assert_eq!(project.input_audio_group(domain_input(1)), Some(group));
+    assert_eq!(project.input_audio_group(domain_input(3)), Some(group));
+    assert_eq!(project.input_audio_label(domain_input(1)), Some("Host Mic"));
+    let stored = project.audio_groups().get(group);
+    assert_eq!((stored.gain.get(), stored.muted), (-6_000, true));
+}
+
 /// `StreamStart` is an authorized transition-class command: its acceptance
 /// publishes a durable event, an unknown target is rejected without state
 /// change, and the desired running flag survives a kill plus journal recovery.
@@ -5286,11 +5536,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.39.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 39));
+    // The previous protocol is refused; the current one is 2.40.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 40));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 38),
+        protocol: ProtocolVersion::new(2, 39),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5306,7 +5556,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 39)
+        ProtocolVersion::new(2, 40)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

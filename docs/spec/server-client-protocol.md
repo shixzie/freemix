@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.39 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.40 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1035,6 +1035,50 @@ layer id whether or not a Scene input shows the scene.
 - Durability: tilt and anchor are project state (schema 38, each layer
   geometry's `tilt_millidegrees`, `anchor_x`, and `anchor_y`).
 - 2.38 is refused.
+
+Protocol 2.40 completes the per-input mixer strip (`AU-001`: pan, labels,
+and VCA groups) and lets Fade to Black fade only chosen outputs (`SW-004`).
+
+- `input_audio_strip` gains `pan_basis_points` (`-10000..=10000`, after
+  `balance_basis_points`). Pan places a mono strip with a -3 dB
+  constant-power law (0 dB per side at centre, `+3 dB` on the hard side,
+  silent on the other); balance trims the sides of a stereo strip without
+  moving it. Pan is ignored for strips with more than one channel.
+- Strip tuples (`input_audio_strips` in the snapshot and
+  `desired_switcher`) are `input:gain:balance:pan:muted:soloed:afv:delay:group`,
+  `group` being `-` or `1..=4`.
+- Mixer commands, `payload=` then fields; `ControlAudio` permission:
+  - `audio_strip_label` (`input`, `label`: at most 32 bytes, no control
+    characters; empty clears it and Studio shows the input name),
+    `audio_strip_group` (`input`, `group`: `1..=4` or `-`), and
+    `audio_group_name` (`group`, `name`: non-blank, at most 32 bytes) are
+    project edits: undoable with an exact inverse, journaled, realized on
+    the `project` domain, and refused under the project padlock and (for
+    the strip edits) the strip input's padlock.
+  - `audio_group_level` (`group`, `gain_millidb`: `-96000..=24000`,
+    `muted`: `0|1`) is a live operation like a strip fader, realized on
+    the `audio` domain and not part of the undo history.
+  A group is a VCA: a member's effective gain is its strip gain plus the
+  group gain in dB, and a muted group silences every member without
+  changing the member strips' own mute. Groups carry no audio of their own.
+- `fade_to_black_output` (`output`, `affected`: `0|1`; `Transition`
+  permission) chooses whether Fade to Black fades one project output. It is
+  an undoable project edit realized on the `project` domain; an unknown
+  output is `not_found`. Every output is affected by default, including
+  outputs added later; an excluded output keeps showing and sounding the
+  unfaded Program while the others fade (logical outputs, fullscreen,
+  recordings, and stream targets that follow it alike).
+- `event=audio_mixer_changed` (`operation` naming the command payload, then
+  its fields) and `event=fade_to_black_output_changed` (`output`,
+  `affected`) announce each accepted edit and its undo or redo.
+- The snapshot appends, after `input_categories`: `audio_groups` (four
+  escaped `name~gain_millidb~muted` entries, group 1 first),
+  `input_audio_labels` (sparse escaped `input~label`, strictly ascending
+  by input), and `fade_to_black_excluded_outputs` (strictly ascending
+  output ids).
+- Durability: pan, labels, groups, group levels, and the excluded outputs
+  are project state (schema 39).
+- 2.39 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

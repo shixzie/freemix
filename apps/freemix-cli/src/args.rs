@@ -74,6 +74,23 @@ pub enum TBarAction {
     Cancel,
 }
 
+/// One parsed mixer label, group, or group-level command (AU-001).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AudioMixerArgs {
+    /// `audio-label <input> <label>`; an empty label clears it.
+    Label { input: u128, label: String },
+    /// `audio-group <input> <1..4|none>`.
+    Group { input: u128, group: Option<u8> },
+    /// `audio-group-name <group> <name>`.
+    GroupName { group: u8, name: String },
+    /// `audio-group-level <group> <gain millidB> <muted on|off>`.
+    GroupLevel {
+        group: u8,
+        gain_millidb: i32,
+        muted: bool,
+    },
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FadeToBlackTarget {
     Live,
@@ -698,6 +715,7 @@ pub enum Command {
         input: u128,
         gain_millidb: i32,
         balance_basis_points: i32,
+        pan_basis_points: i32,
         muted: bool,
         soloed: bool,
         follow_video: bool,
@@ -847,6 +865,35 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Chooses whether Fade to Black fades an output (SW-004).
+    FadeToBlackOutput {
+        path: PathBuf,
+        output: u128,
+        affected: bool,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteFadeToBlackOutput {
+        address: SocketAddr,
+        output: u128,
+        affected: bool,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Labels a strip, assigns it to a group, renames a group, or moves a
+    /// group fader (AU-001).
+    AudioMixer {
+        path: PathBuf,
+        edit: AudioMixerArgs,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteAudioMixer {
+        address: SocketAddr,
+        edit: AudioMixerArgs,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     RemoteStatus {
         address: SocketAddr,
     },
@@ -858,6 +905,7 @@ pub enum Command {
         input: u128,
         gain_millidb: i32,
         balance_basis_points: i32,
+        pan_basis_points: i32,
         muted: bool,
         soloed: bool,
         follow_video: bool,
@@ -1426,6 +1474,17 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             Ok(Command::AssetAudit { path })
         }
         "audio-strip" => parse_audio_strip(arguments),
+        mixer @ ("audio-label"
+        | "audio-group"
+        | "audio-group-name"
+        | "audio-group-level"
+        | "remote-audio-label"
+        | "remote-audio-group"
+        | "remote-audio-group-name"
+        | "remote-audio-group-level") => parse_audio_mixer(mixer, arguments),
+        output @ ("ftb-output" | "remote-ftb-output") => {
+            parse_fade_to_black_output(output, arguments)
+        }
         "rename" => parse_rename(arguments),
         "input-reorder" => parse_reorder(arguments, false),
         "preview" => {
@@ -1987,16 +2046,140 @@ fn parse_audio_strip(mut arguments: impl Iterator<Item = String>) -> Result<Comm
     let soloed = boolean_choice(&required(&mut arguments, "soloed")?, "soloed")?;
     let follow_video = boolean_choice(&required(&mut arguments, "follow video")?, "follow video")?;
     let delay_samples = number(&required(&mut arguments, "delay samples")?, "delay samples")?;
+    let mut arguments = arguments.peekable();
+    let pan_basis_points = pan_option(&mut arguments)?;
     reject_extra(&mut arguments)?;
     Ok(Command::AudioStrip {
         path,
         input,
         gain_millidb,
         balance_basis_points,
+        pan_basis_points,
         muted,
         soloed,
         follow_video,
         delay_samples,
+    })
+}
+
+/// An optional trailing `--pan <basis points>` (AU-001); centre otherwise.
+fn pan_option(
+    arguments: &mut std::iter::Peekable<impl Iterator<Item = String>>,
+) -> Result<i32, ArgsError> {
+    if arguments.peek().is_some_and(|argument| argument == "--pan") {
+        arguments.next();
+        number(
+            &required(arguments, "pan basis points")?,
+            "pan basis points",
+        )
+    } else {
+        Ok(0)
+    }
+}
+
+fn audio_group_number(value: &str) -> Result<u8, ArgsError> {
+    match value.parse::<u8>() {
+        Ok(group @ 1..=4) if group.to_string() == value => Ok(group),
+        _ => Err(ArgsError::InvalidChoice {
+            field: "group",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+fn parse_audio_mixer(
+    command: &str,
+    arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let mut arguments = arguments.peekable();
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let edit = match command.trim_start_matches("remote-") {
+        "audio-label" => AudioMixerArgs::Label {
+            input: number(&required(&mut arguments, "input")?, "input")?,
+            label: required(&mut arguments, "label")?,
+        },
+        "audio-group" => {
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let group = required(&mut arguments, "group")?;
+            AudioMixerArgs::Group {
+                input,
+                group: if group == "none" {
+                    None
+                } else {
+                    Some(audio_group_number(&group)?)
+                },
+            }
+        }
+        "audio-group-name" => AudioMixerArgs::GroupName {
+            group: audio_group_number(&required(&mut arguments, "group")?)?,
+            name: nonblank(&mut arguments, "group name")?,
+        },
+        _ => AudioMixerArgs::GroupLevel {
+            group: audio_group_number(&required(&mut arguments, "group")?)?,
+            gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
+            muted: boolean_choice(&required(&mut arguments, "muted")?, "muted")?,
+        },
+    };
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::AudioMixer {
+            path,
+            edit,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteAudioMixer {
+            address,
+            edit,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("a mixer command names a project or an address"),
+    })
+}
+
+fn parse_fade_to_black_output(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let address = if remote {
+        Some(socket_address(&required(&mut arguments, "address")?)?)
+    } else {
+        None
+    };
+    let path = if remote {
+        None
+    } else {
+        Some(required_path(&mut arguments, "project path")?)
+    };
+    let output = number(&required(&mut arguments, "output")?, "output")?;
+    let affected = boolean_choice(&required(&mut arguments, "affected")?, "affected")?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::FadeToBlackOutput {
+            path,
+            output,
+            affected,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteFadeToBlackOutput {
+            address,
+            output,
+            affected,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("an FTB output command names a project or an address"),
     })
 }
 
@@ -3730,12 +3913,15 @@ fn parse_remote_audio_strip(
     let soloed = boolean_choice(&required(&mut arguments, "soloed")?, "soloed")?;
     let follow_video = boolean_choice(&required(&mut arguments, "follow video")?, "follow video")?;
     let delay_samples = number(&required(&mut arguments, "delay samples")?, "delay samples")?;
+    let mut arguments = arguments.peekable();
+    let pan_basis_points = pan_option(&mut arguments)?;
     let (key, expected_revision) = command_options(arguments)?;
     Ok(Command::RemoteAudioStrip {
         address,
         input,
         gain_millidb,
         balance_basis_points,
+        pan_basis_points,
         muted,
         soloed,
         follow_video,
@@ -5453,12 +5639,97 @@ mod tests {
                 input: 7,
                 gain_millidb: -6_000,
                 balance_basis_points: 2_500,
+                pan_basis_points: 0,
                 muted: true,
                 soloed: true,
                 follow_video: false,
                 delay_samples: 48_000,
             })
         );
+    }
+
+    #[test]
+    fn mixer_label_group_and_ftb_output_commands_parse() {
+        assert_eq!(
+            parse(strings(&["audio-label", "show.freemix", "7", "Host mic"])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::Label {
+                    input: 7,
+                    label: "Host mic".into(),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&["audio-group", "show.freemix", "7", "none"])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::Group {
+                    input: 7,
+                    group: None,
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-audio-group-level",
+                "127.0.0.1:9123",
+                "2",
+                "-6000",
+                "on",
+                "--key",
+                "vca",
+            ])),
+            Ok(Command::RemoteAudioMixer {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                edit: AudioMixerArgs::GroupLevel {
+                    group: 2,
+                    gain_millidb: -6_000,
+                    muted: true,
+                },
+                key: Some("vca".into()),
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-ftb-output",
+                "127.0.0.1:9123",
+                "8",
+                "off"
+            ])),
+            Ok(Command::RemoteFadeToBlackOutput {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                output: 8,
+                affected: false,
+                key: None,
+                expected_revision: None,
+            })
+        );
+        for bad in [
+            &["audio-group", "show.freemix", "7", "5"][..],
+            &["audio-group", "show.freemix", "7", "01"],
+            &["audio-group-name", "show.freemix", "1", " "],
+            &["ftb-output", "show.freemix", "8", "maybe"],
+            &[
+                "audio-strip",
+                "show.freemix",
+                "7",
+                "0",
+                "0",
+                "off",
+                "off",
+                "on",
+                "0",
+                "--pan",
+            ],
+        ] {
+            assert!(parse(strings(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -5474,6 +5745,8 @@ mod tests {
                 "off",
                 "on",
                 "2400",
+                "--pan",
+                "-7500",
                 "--key",
                 "delay",
                 "--expect",
@@ -5484,6 +5757,7 @@ mod tests {
                 input: 7,
                 gain_millidb: -6_000,
                 balance_basis_points: -2_500,
+                pan_basis_points: -7_500,
                 muted: false,
                 soloed: false,
                 follow_video: true,

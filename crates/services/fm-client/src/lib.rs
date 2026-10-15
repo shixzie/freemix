@@ -1450,6 +1450,8 @@ impl Client {
             | CommandPayload::Media { .. }
             | CommandPayload::InputLifecycle(_)
             | CommandPayload::SceneLayer(_)
+            | CommandPayload::AudioMixer(_)
+            | CommandPayload::SetFadeToBlackOutput { .. }
             | CommandPayload::Stinger { .. }
             | CommandPayload::ConfigureStinger { .. }
             | CommandPayload::RemoveStinger { .. }

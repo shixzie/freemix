@@ -119,6 +119,8 @@ fn strips() -> Vec<InputAudioStripStatus> {
     [CAMERA, SLIDES, GUEST]
         .into_iter()
         .map(|value| InputAudioStripStatus {
+            pan_basis_points: 0,
+            group: None,
             input: wire(value),
             gain_millidb: 0,
             balance_basis_points: 0,
@@ -146,6 +148,8 @@ fn snapshot_locked(
     edit_locks: fm_protocol::EditLockStatus,
 ) -> WireMessage {
     on_wire(WireMessage::Snapshot(SnapshotMessage {
+        audio_mixer: fm_protocol::AudioMixerStatus::default(),
+        fade_to_black_excluded_outputs: Vec::new(),
         engine: engine(),
         revision,
         show_name: "Morning Show".to_owned(),

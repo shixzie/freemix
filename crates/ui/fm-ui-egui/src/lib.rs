@@ -126,6 +126,8 @@ const MIN_LOWER_ROW_HEIGHT: f32 = 370.0;
 pub struct InputAudioStripUpdate {
     pub gain_millidb: Option<i32>,
     pub balance_basis_points: Option<i32>,
+    /// Mono source position (AU-001).
+    pub pan_basis_points: Option<i32>,
     pub muted: Option<bool>,
     pub soloed: Option<bool>,
     pub follow_video: Option<bool>,
@@ -153,6 +155,20 @@ pub enum StudioIntent {
         input: InputId,
         update: InputAudioStripUpdate,
     },
+    /// Labels one input's mixer strip; empty shows the input name (AU-001).
+    SetAudioStripLabel { input: InputId, label: String },
+    /// Assigns one input's strip to a group (`1..=4`) or to none (AU-001).
+    SetAudioStripGroup { input: InputId, group: Option<u8> },
+    /// Renames one strip group (AU-001).
+    RenameAudioGroup { group: u8, name: String },
+    /// Moves one strip group's fader or mute (AU-001).
+    SetAudioGroupLevel {
+        group: u8,
+        gain_millidb: i32,
+        muted: bool,
+    },
+    /// Chooses whether Fade to Black fades one output (SW-004).
+    SetFadeToBlackOutput { output: OutputId, affected: bool },
     /// Selects an input on the Preview bus.
     SelectPreview(InputId),
     /// Performs an immediate Cut transition.
@@ -1785,10 +1801,9 @@ impl StudioShell {
         dt_ms: u32,
         intents: &mut Vec<StudioIntent>,
     ) {
-        let strips = state
-            .view
-            .as_ref()
-            .map_or(0, |view| view.input_audio_strips.len());
+        let strips = state.view.as_ref().map_or(0, |view| {
+            view.input_audio_strips.len() + mixer::active_groups(view).len()
+        });
         let available = ui.available_width();
         let height = ui.available_height().max(MIN_LOWER_ROW_HEIGHT);
         let show_bank = self.layout.show_input_bank;
@@ -2743,6 +2758,8 @@ mod tests {
 
     fn recording_view(recordings: [bool; RECORDER_SLOT_COUNT]) -> ClientView {
         ClientView {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             cursor: ProjectCursor::from_resume_cursor(
                 fm_types::ProjectId::new(NonZeroU128::new(1).unwrap()),
                 fm_protocol::ResumeCursor {
@@ -3382,6 +3399,7 @@ mod tests {
                 update: InputAudioStripUpdate {
                     gain_millidb: Some(-6_000),
                     balance_basis_points: Some(2_500),
+                    pan_basis_points: Some(-1_000),
                     muted: Some(true),
                     soloed: Some(true),
                     follow_video: Some(false),
@@ -3393,6 +3411,7 @@ mod tests {
                 update: InputAudioStripUpdate {
                     gain_millidb: Some(-6_000),
                     balance_basis_points: Some(2_500),
+                    pan_basis_points: Some(-1_000),
                     muted: Some(true),
                     soloed: Some(true),
                     follow_video: Some(false),

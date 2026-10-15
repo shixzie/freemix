@@ -1,4 +1,5 @@
 mod animation;
+mod audio_mixer;
 mod decode;
 mod encode;
 mod grade;

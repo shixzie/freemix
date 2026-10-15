@@ -1,4 +1,5 @@
 mod animation_preset;
+mod audio_mixer;
 mod decoder;
 mod encoder;
 mod grade;

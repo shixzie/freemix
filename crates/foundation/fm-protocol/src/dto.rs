@@ -1405,6 +1405,8 @@ pub enum CommandPayload {
         input: WireInputId,
         gain_millidb: i32,
         balance_basis_points: i32,
+        /// Mono source position, `-10_000..=10_000` (Protocol 2.40).
+        pan_basis_points: i32,
         muted: bool,
         soloed: bool,
         follow_video: bool,
@@ -1724,6 +1726,15 @@ pub enum CommandPayload {
     /// project padlock and by the padlock of every Scene input showing the
     /// scene.
     SceneLayer(crate::SceneLayerEdit),
+    /// A mixer label, group, or group-level operation (Protocol 2.40,
+    /// AU-001; see [`crate::AudioMixerOperation`]).
+    AudioMixer(crate::AudioMixerOperation),
+    /// Chooses whether Fade to Black fades `output` (Protocol 2.40, SW-004).
+    /// A project edit, undoable.
+    SetFadeToBlackOutput {
+        output: WireOutputId,
+        affected: bool,
+    },
 }
 
 /// Most presets one animation preset library holds (Protocol 2.34).
@@ -2044,6 +2055,10 @@ pub struct InputAudioStripStatus {
     pub input: WireInputId,
     pub gain_millidb: i32,
     pub balance_basis_points: i32,
+    /// Mono source position (Protocol 2.40); balance trims stereo.
+    pub pan_basis_points: i32,
+    /// The strip's group, `1..=4` (Protocol 2.40).
+    pub group: Option<u8>,
     pub muted: bool,
     pub soloed: bool,
     pub follow_video: bool,
@@ -2122,6 +2137,11 @@ pub struct SnapshotMessage {
     pub media_states: u16,
     /// The project's input category list in display order (Protocol 2.38).
     pub input_categories: Vec<crate::InputCategoryStatus>,
+    /// Strip labels and groups (Protocol 2.40).
+    pub audio_mixer: crate::AudioMixerStatus,
+    /// The outputs Fade to Black leaves live, ascending (Protocol 2.40);
+    /// empty when it fades every output.
+    pub fade_to_black_excluded_outputs: Vec<WireOutputId>,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -2237,6 +2257,14 @@ pub enum EventPayload {
     SceneLayoutChanged {
         edit: crate::SceneLayerEdit,
         layout: Box<WireSceneLayout>,
+    },
+    /// A mixer label, group, or group-level operation (or its undo or
+    /// redo) was accepted (Protocol 2.40).
+    AudioMixerChanged(crate::AudioMixerOperation),
+    /// Fade to Black now fades `output` or leaves it live (Protocol 2.40).
+    FadeToBlackOutputChanged {
+        output: WireOutputId,
+        affected: bool,
     },
     /// An animation preset library edit (or its undo or redo) was accepted
     /// (Protocol 2.34).

@@ -170,6 +170,10 @@ pub struct InputAudioStripStatus {
     pub input: InputId,
     pub gain_millidb: i32,
     pub balance_basis_points: i32,
+    /// Mono source position (Protocol 2.40); balance trims stereo.
+    pub pan_basis_points: i32,
+    /// The strip's group, `1..=4` (Protocol 2.40).
+    pub group: Option<u8>,
     pub muted: bool,
     pub soloed: bool,
     pub follow_video: bool,
@@ -441,6 +445,10 @@ pub struct ProjectSnapshot {
     pub input_lifecycle: Vec<InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
     pub input_categories: Vec<InputCategoryStatus>,
+    /// Strip labels and groups (Protocol 2.40).
+    pub audio_mixer: fm_protocol::AudioMixerStatus,
+    /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
+    pub fade_to_black_excluded_outputs: Vec<OutputId>,
 }
 
 impl ProjectSnapshot {
@@ -526,6 +534,12 @@ impl ProjectSnapshot {
             media_states: message.media_states,
             input_lifecycle,
             input_categories: message.input_categories,
+            audio_mixer: message.audio_mixer,
+            fade_to_black_excluded_outputs: message
+                .fade_to_black_excluded_outputs
+                .into_iter()
+                .map(fm_protocol::WireOutputId::to_domain)
+                .collect(),
         }
     }
 }
@@ -633,6 +647,14 @@ pub enum DurableChange {
     InputLifecycleChanged {
         operation: InputLifecycleOperation,
         added: Vec<(InputId, String)>,
+    },
+    /// An accepted mixer label, group, or group-level operation (Protocol
+    /// 2.40).
+    AudioMixerChanged(fm_protocol::AudioMixerOperation),
+    /// Fade to Black now fades `output` or leaves it live (Protocol 2.40).
+    FadeToBlackOutputChanged {
+        output: OutputId,
+        affected: bool,
     },
 }
 
@@ -814,6 +836,15 @@ impl DurableProjectEvent {
                     layout: Arc::from(layout),
                 }
             }
+            EventPayload::AudioMixerChanged(operation) => {
+                DurableChange::AudioMixerChanged(operation)
+            }
+            EventPayload::FadeToBlackOutputChanged { output, affected } => {
+                DurableChange::FadeToBlackOutputChanged {
+                    output: output.to_domain(),
+                    affected,
+                }
+            }
         };
         Self {
             cursor: ProjectCursor {
@@ -903,9 +934,25 @@ pub struct ProjectState {
     input_lifecycle: BTreeMap<InputId, InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
     input_categories: Vec<InputCategoryStatus>,
+    /// Strip labels and groups (Protocol 2.40).
+    audio_mixer: fm_protocol::AudioMixerStatus,
+    /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
+    fade_to_black_excluded_outputs: Vec<OutputId>,
 }
 
 impl ProjectState {
+    /// Returns the replicated strip labels and groups (Protocol 2.40).
+    #[must_use]
+    pub const fn audio_mixer(&self) -> &fm_protocol::AudioMixerStatus {
+        &self.audio_mixer
+    }
+
+    /// Returns the outputs Fade to Black leaves live, ascending.
+    #[must_use]
+    pub fn fade_to_black_excluded_outputs(&self) -> &[OutputId] {
+        &self.fade_to_black_excluded_outputs
+    }
+
     /// Returns input `input`'s replicated lifecycle (Protocol 2.38).
     #[must_use]
     pub fn input_lifecycle(&self, input: InputId) -> InputLifecycleStatus {
@@ -1188,9 +1235,26 @@ pub struct ClientView {
     pub input_lifecycle: Vec<InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
     pub input_categories: Vec<InputCategoryStatus>,
+    /// Strip labels and groups (Protocol 2.40).
+    pub audio_mixer: fm_protocol::AudioMixerStatus,
+    /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
+    pub fade_to_black_excluded_outputs: Vec<OutputId>,
 }
 
 impl ClientView {
+    /// The operator label of `input`'s strip; empty when unlabelled.
+    #[must_use]
+    pub fn audio_label(&self, input: InputId) -> &str {
+        self.audio_mixer
+            .label(fm_protocol::WireInputId::from_domain(input))
+    }
+
+    /// Whether Fade to Black fades `output`.
+    #[must_use]
+    pub fn fade_to_black_affects(&self, output: OutputId) -> bool {
+        !self.fade_to_black_excluded_outputs.contains(&output)
+    }
+
     /// Returns input `input`'s lifecycle, or the default for an unknown
     /// input.
     #[must_use]
@@ -1470,6 +1534,9 @@ pub enum ModelError {
     /// A scene animation change names no, unordered, unknown, incomplete,
     /// or stale Scene inputs.
     InvalidSceneChange(InputId),
+    /// A mixer or Fade-to-Black output change names an unknown input,
+    /// group, or output, or carries an unusable label (Protocol 2.40).
+    InvalidAudioMixerChange,
 }
 
 impl fmt::Display for ModelError {
@@ -1597,6 +1664,9 @@ impl fmt::Display for ModelError {
             ),
             Self::InvalidSceneChange(input) => {
                 write!(formatter, "scene {input} animation change does not apply")
+            }
+            Self::InvalidAudioMixerChange => {
+                formatter.write_str("mixer or Fade to Black output change does not apply")
             }
         }
     }
@@ -1796,6 +1866,8 @@ impl ClientModel {
                 .map(|input| state.input_lifecycle(*input))
                 .collect(),
             input_categories: state.input_categories.clone(),
+            audio_mixer: state.audio_mixer.clone(),
+            fade_to_black_excluded_outputs: state.fade_to_black_excluded_outputs.clone(),
         })
     }
 
@@ -2006,6 +2078,8 @@ impl ClientModel {
             media_states_pending: snapshot.media_states,
             input_lifecycle,
             input_categories: snapshot.input_categories,
+            audio_mixer: snapshot.audio_mixer,
+            fade_to_black_excluded_outputs: snapshot.fade_to_black_excluded_outputs,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -3167,6 +3241,16 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         DurableChange::InputLifecycleChanged { operation, added } => {
             return input_lifecycle::validate(operation, added, state);
         }
+        DurableChange::AudioMixerChanged(operation) => {
+            return validate_audio_mixer_change(operation, state);
+        }
+        DurableChange::FadeToBlackOutputChanged { output, .. } => {
+            return if state.outputs.iter().any(|status| status.output == *output) {
+                Ok(())
+            } else {
+                Err(ModelError::InvalidAudioMixerChange)
+            };
+        }
         DurableChange::TitleChanged { .. } => return validate_title_change(change, state),
         DurableChange::GradeChanged(change) => return validate_grade_change(change, state),
         DurableChange::AnimationPresetChanged(change) => {
@@ -3352,6 +3436,8 @@ fn apply_input_added(state: &mut ProjectState, input: InputId, name: String) {
             input,
             gain_millidb: 0,
             balance_basis_points: 0,
+            pan_basis_points: 0,
+            group: None,
             muted: false,
             soloed: false,
             follow_video: true,
@@ -3378,6 +3464,12 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     state.grading.remove_input(input);
     state.media.remove(&input);
     state.input_lifecycle.remove(&input);
+    state
+        .audio_mixer
+        .apply(&fm_protocol::AudioMixerOperation::SetLabel {
+            input: fm_protocol::WireInputId::from_domain(input),
+            label: String::new(),
+        });
     // A settled-off overlay forgets a removed input it retained.
     for overlay in state
         .desired_overlays
@@ -3420,6 +3512,28 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::InputRemoved { input } => apply_input_removed(state, input),
         DurableChange::InputLifecycleChanged { operation, added } => {
             input_lifecycle::apply(state, operation, added);
+        }
+        DurableChange::AudioMixerChanged(operation) => {
+            if let fm_protocol::AudioMixerOperation::SetGroup { input, group } = &operation
+                && let Some(strip) = state
+                    .input_audio_strips
+                    .iter_mut()
+                    .find(|strip| strip.input == input.to_domain())
+            {
+                strip.group = *group;
+            }
+            state.audio_mixer.apply(&operation);
+        }
+        DurableChange::FadeToBlackOutputChanged { output, affected } => {
+            state
+                .fade_to_black_excluded_outputs
+                .retain(|candidate| *candidate != output);
+            if !affected {
+                let index = state
+                    .fade_to_black_excluded_outputs
+                    .partition_point(|candidate| candidate.get() < output.get());
+                state.fade_to_black_excluded_outputs.insert(index, output);
+            }
         }
         DurableChange::DesiredSwitcher {
             selection,
@@ -3537,6 +3651,34 @@ fn protocol_stingers(stingers: Vec<fm_protocol::StingerStatus>) -> Vec<StingerSt
         .collect()
 }
 
+/// Validates a replicated mixer operation against the current project.
+fn validate_audio_mixer_change(
+    operation: &fm_protocol::AudioMixerOperation,
+    state: &ProjectState,
+) -> Result<(), ModelError> {
+    let known = |input: &fm_protocol::WireInputId| state.inputs.contains(&input.to_domain());
+    let valid = match operation {
+        fm_protocol::AudioMixerOperation::SetLabel { input, label } => {
+            known(input) && fm_protocol::audio_label_is_valid(label, true)
+        }
+        fm_protocol::AudioMixerOperation::SetGroup { input, group } => {
+            known(input) && group.is_none_or(fm_protocol::audio_group_is_valid)
+        }
+        fm_protocol::AudioMixerOperation::RenameGroup { group, name } => {
+            fm_protocol::audio_group_is_valid(*group)
+                && fm_protocol::audio_label_is_valid(name, false)
+        }
+        fm_protocol::AudioMixerOperation::SetGroupLevel { group, .. } => {
+            fm_protocol::audio_group_is_valid(*group)
+        }
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(ModelError::InvalidAudioMixerChange)
+    }
+}
+
 fn protocol_input_audio_strips(
     strips: Vec<fm_protocol::InputAudioStripStatus>,
 ) -> Vec<InputAudioStripStatus> {
@@ -3546,6 +3688,8 @@ fn protocol_input_audio_strips(
             input: status.input.to_domain(),
             gain_millidb: status.gain_millidb,
             balance_basis_points: status.balance_basis_points,
+            pan_basis_points: status.pan_basis_points,
+            group: status.group,
             muted: status.muted,
             soloed: status.soloed,
             follow_video: status.follow_video,

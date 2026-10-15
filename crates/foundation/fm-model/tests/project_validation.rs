@@ -1984,6 +1984,7 @@ fn persisted_input_gain_is_exact_and_bounded() {
     assert_eq!(
         InputAudioStripState::default(),
         InputAudioStripState {
+            pan: fm_model::InputPanBasisPoints::CENTER,
             gain: InputGainMilliDb::UNITY,
             balance: InputBalanceBasisPoints::CENTER,
             delay_samples: InputDelaySamples::ZERO,

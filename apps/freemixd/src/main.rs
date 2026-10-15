@@ -3528,6 +3528,46 @@ fn build_stream_groups(
     Ok(groups)
 }
 
+/// The Program audio of one realized frame: the faded mix every output Fade
+/// to Black affects hears, and, while it fades and excludes some output, the
+/// mix before the fade (SW-004).
+#[cfg(feature = "native-media")]
+struct CaptureAudio<'a> {
+    faded: AudioBlock,
+    live: Option<AudioBlock>,
+    excluded: &'a [fm_types::OutputId],
+}
+
+#[cfg(feature = "native-media")]
+impl CaptureAudio<'_> {
+    /// The mix a capture of `selected` hears.
+    fn for_output(
+        &self,
+        selected: Option<fm_types::OutputId>,
+        project_outputs: &[NativeOutputFrame],
+    ) -> &AudioBlock {
+        match &self.live {
+            Some(live)
+                if capture_output_id(selected, project_outputs)
+                    .is_some_and(|output| self.excluded.contains(&output)) =>
+            {
+                live
+            }
+            _ => &self.faded,
+        }
+    }
+}
+
+/// The project output a capture of `selected` follows: the selection, or
+/// the first realized output when it selects none.
+#[cfg(feature = "native-media")]
+fn capture_output_id(
+    selected: Option<fm_types::OutputId>,
+    project_outputs: &[NativeOutputFrame],
+) -> Option<fm_types::OutputId> {
+    selected.or_else(|| project_outputs.first().map(NativeOutputFrame::output))
+}
+
 /// Resolves an optional project output selection against the realized per-output
 /// entries for a frame, falling back to `unbound_output` when the project
 /// declares no outputs.
@@ -5012,8 +5052,20 @@ impl NativeDaemon {
         runtime: &NativeMediaRuntime,
         project_outputs: &[NativeOutputFrame],
         unbound_output: Option<&NativeTexture>,
-        audio: AudioBlock,
+        audio: CaptureAudio<'_>,
     ) {
+        // A slot recording an output Fade to Black leaves live records the
+        // mix before the fade (SW-004); every other slot records the faded
+        // mix.
+        let live_slot = |slot_index: usize| {
+            audio.live.is_some()
+                && capture_output_id(record_outputs[slot_index], project_outputs)
+                    .is_some_and(|output| audio.excluded.contains(&output))
+        };
+        let live_slots = [live_slot(0), live_slot(1)];
+        let CaptureAudio {
+            faded: audio, live, ..
+        } = audio;
         let mut resolved: [Option<&NativeTexture>; RECORDER_SLOTS] = [None, None];
         for (slot_index, slot) in recorders.iter_mut().enumerate() {
             let ProgramRecording::Running(recorder) = slot else {
@@ -5029,12 +5081,16 @@ impl NativeDaemon {
                 recorder.fail("capture:missing_output".to_owned(), true);
             }
         }
-        // A clone is made only when both slots actually run and resolve a
-        // texture; the first resolved slot consumes the produced block.
-        let two_capturing = resolved[0].is_some() && resolved[1].is_some();
-        let second = two_capturing.then(|| audio.clone());
-        let mut pending = [Some(audio), second];
-        let mut feed = 0;
+        // A clone is made only when both slots actually run, resolve a
+        // texture, and record the same mix; the first such slot consumes the
+        // produced block.
+        let mut faded = Some(audio);
+        let mut live = live;
+        let mut remaining = [false, true].map(|wanted_live| {
+            (0..RECORDER_SLOTS)
+                .filter(|&slot| resolved[slot].is_some() && live_slots[slot] == wanted_live)
+                .count()
+        });
         for (slot_index, slot) in recorders.iter_mut().enumerate() {
             let ProgramRecording::Running(recorder) = slot else {
                 continue;
@@ -5042,13 +5098,21 @@ impl NativeDaemon {
             let Some(program) = resolved[slot_index] else {
                 continue;
             };
-            let Some(entry) = pending.get_mut(feed) else {
+            let kind = usize::from(live_slots[slot_index]);
+            let source = if live_slots[slot_index] {
+                &mut live
+            } else {
+                &mut faded
+            };
+            remaining[kind] -= 1;
+            let block = if remaining[kind] == 0 {
+                source.take()
+            } else {
+                source.clone()
+            };
+            let Some(block) = block else {
                 continue;
             };
-            let Some(block) = entry.take() else {
-                continue;
-            };
-            feed += 1;
             recorder.capture(runtime, program, block);
         }
     }
@@ -5073,10 +5137,13 @@ impl NativeDaemon {
         runtime: &NativeMediaRuntime,
         project_outputs: &[NativeOutputFrame],
         unbound_output: Option<&NativeTexture>,
-        audio: &AudioBlock,
+        capture_audio: &CaptureAudio<'_>,
     ) {
-        let sequence = audio.timing().sequence();
+        let sequence = capture_audio.faded.timing().sequence();
         for group in stream_groups.iter_mut() {
+            // A target streaming an output Fade to Black leaves live streams
+            // the mix before the fade (SW-004).
+            let audio = capture_audio.for_output(Some(group.core.output), project_outputs);
             let members = group.core.members.clone();
             // A route joins this frame only when it was asked to run, never
             // latched a failure, and was not deliberately stopped.
@@ -5735,6 +5802,8 @@ impl NativeDaemon {
         let latest_output = &mut self.latest_output;
         let latest_project_outputs = &mut self.latest_project_outputs;
         let mut audio = None;
+        let mut live_audio = None;
+        let mut fade_to_black_excluded = Vec::new();
         let mut monitor_frame = None;
         let outcome = control.tick_with_realizer(server, |frame| {
             debug_assert_eq!(projected_frame, Some(frame));
@@ -5747,6 +5816,19 @@ impl NativeDaemon {
                 project_plan
                     .set_input_audio_strip(input, strip)
                     .map_err(NativeRealizationError::Audio)?;
+            }
+            for &update in &frame.audio_mixer_updates {
+                master
+                    .apply_audio_mixer_update(update)
+                    .map_err(NativeRealizationError::Audio)?;
+                match update {
+                    fm_engine::EngineAudioMixerUpdate::Membership { input, group } => project_plan
+                        .set_input_audio_group(input, group)
+                        .map_err(NativeRealizationError::Audio)?,
+                    fm_engine::EngineAudioMixerUpdate::GroupLevel { group, state } => {
+                        project_plan.set_audio_group_level(group, state.gain_millidb, state.muted);
+                    }
+                }
             }
             if project_plan.output_ids().is_empty() {
                 let output = runtime
@@ -5775,6 +5857,8 @@ impl NativeDaemon {
                 .render_project_frame_audio(frame, project_plan)
                 .map_err(NativeRealizationError::Audio)?;
             audio = Some(block);
+            live_audio = master.take_live_audio();
+            fade_to_black_excluded.clone_from(&frame.fade_to_black_excluded_outputs);
             Ok::<(), NativeRealizationError>(())
         })?;
         if let Some(meters) = master.take_audio_meters() {
@@ -5804,7 +5888,7 @@ impl NativeDaemon {
         let stream_audio = if self.streams.is_empty() {
             None
         } else {
-            audio.clone()
+            audio.clone().map(|audio| (audio, live_audio.clone()))
         };
         if let Some(audio) = audio {
             self.rotate_due_recorders(audio.timing().sequence());
@@ -5814,10 +5898,14 @@ impl NativeDaemon {
                 &self.runtime,
                 &self.latest_project_outputs,
                 self.latest_output.as_ref(),
-                audio,
+                CaptureAudio {
+                    faded: audio,
+                    live: live_audio,
+                    excluded: &fade_to_black_excluded,
+                },
             );
         }
-        if let Some(audio) = stream_audio {
+        if let Some((audio, live)) = stream_audio {
             Self::capture_streams(
                 &mut self.streams,
                 &mut self.stream_groups,
@@ -5825,7 +5913,11 @@ impl NativeDaemon {
                 &self.runtime,
                 &self.latest_project_outputs,
                 self.latest_output.as_ref(),
-                &audio,
+                &CaptureAudio {
+                    faded: audio,
+                    live,
+                    excluded: &fade_to_black_excluded,
+                },
             );
         }
         if let Some((frame, input)) = monitor_frame {
@@ -9607,6 +9699,11 @@ fn restore_engine_with_titles(
     restore_input_audio_strips(&mut show, canonical)?;
     let mut realized = SwitcherState::new(input_ids, realized_program, realized_preview)?
         .with_streams(stream_inventory)?;
+    // The Fade-to-Black output selection is project configuration, seeded
+    // into both switchers like the recording flags below.
+    for &output in canonical.fade_to_black_excluded_outputs() {
+        let _ = realized.set_fade_to_black_output(output, false);
+    }
     for target in canonical
         .stream_targets()
         .iter()
@@ -9806,12 +9903,81 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
             EngineInputAudioStripState {
                 gain_millidb: strip.state.gain.get(),
                 balance_basis_points: strip.state.balance.get(),
+                pan_basis_points: strip.state.pan.get(),
                 muted: strip.state.muted,
                 soloed: strip.state.soloed,
                 follow_video: strip.state.follow_video,
                 delay_samples: strip.state.delay_samples.get(),
             },
         )?;
+        show.set_input_audio_label(strip.input, strip.label.clone())?;
+        show.set_input_audio_group(strip.input, strip.group)?;
+    }
+    for (group, value) in project.audio_groups().iter() {
+        show.set_audio_group(
+            group,
+            fm_engine::EngineAudioGroup {
+                name: value.name.clone(),
+                state: fm_engine::EngineAudioGroupState {
+                    gain_millidb: value.gain.get(),
+                    muted: value.muted,
+                },
+            },
+        )?;
+    }
+    show.restore_fade_to_black_excluded_outputs(
+        project.fade_to_black_excluded_outputs().iter().copied(),
+    )?;
+    Ok(())
+}
+
+/// Folds the show's strip labels, groups, and Fade-to-Black output
+/// selection (AU-001, SW-004) into the stored project.
+fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -> AppResult<()> {
+    for &input in show.inputs() {
+        let label = show.input_audio_label(input);
+        if project.input_audio_label(input) != Some(label) {
+            project
+                .set_input_audio_label(input, label.to_owned())
+                .map_err(|error| {
+                    AppFailure(format!(
+                        "project cannot take input {input}'s strip label: {error}"
+                    ))
+                })?;
+        }
+        if !project.set_input_audio_group(input, show.input_audio_group(input)) {
+            return Err(
+                AppFailure(format!("project is missing audio strip for input {input}")).into(),
+            );
+        }
+    }
+    for (group, value) in fm_model::AudioGroupNumber::ALL
+        .into_iter()
+        .zip(show.audio_groups())
+    {
+        let gain = InputGainMilliDb::new(value.state.gain_millidb)
+            .expect("engine group gain is bounded by the model contract");
+        project
+            .set_audio_group(
+                group,
+                fm_model::AudioGroup {
+                    name: value.name.clone(),
+                    gain,
+                    muted: value.state.muted,
+                },
+            )
+            .map_err(|error| {
+                AppFailure(format!("project cannot take audio group {group}: {error}"))
+            })?;
+    }
+    let excluded = show.desired_switcher().fade_to_black_excluded_outputs();
+    let outputs = project
+        .outputs()
+        .iter()
+        .map(|output| output.id)
+        .collect::<Vec<_>>();
+    for output in outputs {
+        project.set_fade_to_black_output(output, !excluded.contains(&output));
     }
     Ok(())
 }
@@ -9822,6 +9988,8 @@ fn model_audio_strip_state(state: EngineInputAudioStripState) -> InputAudioStrip
             .expect("engine input audio gain is bounded by the model contract"),
         balance: InputBalanceBasisPoints::new(state.balance_basis_points)
             .expect("engine input audio balance is bounded by the model contract"),
+        pan: fm_model::InputPanBasisPoints::new(state.pan_basis_points)
+            .expect("engine input audio pan is bounded by the model contract"),
         muted: state.muted,
         soloed: state.soloed,
         follow_video: state.follow_video,
@@ -11527,6 +11695,8 @@ fn command_base_ticks(
         | CommandPayload::Media { .. }
         | CommandPayload::InputLifecycle(_)
         | CommandPayload::SceneLayer(_)
+        | CommandPayload::AudioMixer(_)
+        | CommandPayload::SetFadeToBlackOutput { .. }
         | CommandPayload::UpdateOverlay { .. }
         | CommandPayload::SetOverlayOutputInclusion { .. }
         | CommandPayload::ConfigureOverlayTransition { .. }
@@ -11699,6 +11869,7 @@ fn stored_project_with_receipts(
     sync_project_titles(&mut project, show)?;
     sync_project_scenes(&mut project, show)?;
     sync_project_input_lifecycle(&mut project, show)?;
+    sync_project_audio_mixer(&mut project, show)?;
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
@@ -18058,6 +18229,7 @@ mod tests {
                 "audio-strip",
                 "audio-strip-key",
                 CommandPayload::SetInputAudioStrip {
+                    pan_basis_points: 0,
                     input: fm_protocol::WireInputId::from_domain(test_input_id(1)),
                     gain_millidb: -9_000,
                     balance_basis_points: 2_500,
@@ -18077,6 +18249,7 @@ mod tests {
         assert_eq!(
             checkpoint.project().input_audio_strip(test_input_id(1)),
             Some(InputAudioStripState {
+                pan: fm_model::InputPanBasisPoints::CENTER,
                 gain: InputGainMilliDb::new(-9_000).unwrap(),
                 balance: InputBalanceBasisPoints::new(2_500).unwrap(),
                 muted: true,
@@ -18393,6 +18566,7 @@ mod tests {
         assert!(project.set_input_audio_strip(
             test_input_id(1),
             InputAudioStripState {
+                pan: fm_model::InputPanBasisPoints::CENTER,
                 gain: InputGainMilliDb::new(-3_000).unwrap(),
                 balance: InputBalanceBasisPoints::CENTER,
                 delay_samples: InputDelaySamples::default(),

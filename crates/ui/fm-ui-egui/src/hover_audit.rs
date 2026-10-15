@@ -9,7 +9,9 @@
 //! locked project, Fade-to-Black and a running playlist, toasts, the input
 //! lifecycle (colour labels, badges, the category filter, the tile menu's
 //! Category and Colour label submenus, and the Replace source, Import
-//! files, and Categories dialogs), and a disconnected console) in English
+//! files, and Categories dialogs), the mixer's strip labels, pan knobs,
+//! group assignment and group strips, the Fade-to-Black output menu, and a
+//! disconnected console) in English
 //! and Spanish, and inspects what egui itself recorded for the pass, so no
 //! drawing code has to opt in and a widget added without help cannot slip
 //! past:
@@ -220,6 +222,22 @@ fn model(variant: Variant) -> ClientModel {
         ManualTransitionStatus::Inactive
     };
     let snapshot = SnapshotMessage {
+        // Strips 1 and 2 share a renamed group, strip 4 sits in a muted
+        // group, strip 1 is labelled, and the Clean Feed stays live under
+        // Fade to Black, so group strips, labels, and the FTB output menu
+        // are audited (AU-001, SW-004).
+        audio_mixer: {
+            let mut mixer = fm_protocol::AudioMixerStatus::default();
+            mixer.groups[0].name = "Mics".into();
+            mixer.groups[0].gain_millidb = -3_000;
+            mixer.groups[1].muted = true;
+            mixer.labels.push(fm_protocol::InputAudioLabel {
+                input: wire(1),
+                label: "Host Mic".into(),
+            });
+            mixer
+        },
+        fade_to_black_excluded_outputs: vec![output(2)],
         engine: EngineIdentity {
             engine_id: "e".into(),
             state_epoch: 1,
@@ -246,6 +264,12 @@ fn model(variant: Variant) -> ClientModel {
         ],
         input_audio_strips: (1..=6)
             .map(|value| fm_protocol::InputAudioStripStatus {
+                pan_basis_points: if value == 1 { -2_500 } else { 0 },
+                group: match value {
+                    1 | 2 => Some(1),
+                    4 => Some(2),
+                    _ => None,
+                },
                 input: wire(value),
                 gain_millidb: 0,
                 balance_basis_points: 0,

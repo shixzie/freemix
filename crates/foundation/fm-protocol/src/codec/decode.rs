@@ -409,6 +409,7 @@ fn decode_command_payload(
             input: fields.input("input")?,
             gain_millidb: fields.parse_required("gain_millidb")?,
             balance_basis_points: fields.parse_required("balance_basis_points")?,
+            pan_basis_points: fields.parse_required("pan_basis_points")?,
             muted: fields.boolean("muted")?,
             soloed: fields.boolean("soloed")?,
             follow_video: fields.boolean("follow_video")?,
@@ -446,6 +447,15 @@ fn decode_command_payload(
             super::input_lifecycle::decode_lifecycle_operation(lifecycle, fields)?
                 .expect("every listed payload is a lifecycle operation"),
         ),
+        mixer @ ("audio_strip_label" | "audio_strip_group" | "audio_group_name"
+        | "audio_group_level") => CommandPayload::AudioMixer(
+            super::audio_mixer::decode_operation(mixer, fields)?
+                .expect("every listed payload is a mixer operation"),
+        ),
+        "fade_to_black_output" => CommandPayload::SetFadeToBlackOutput {
+            output: decode_output(fields, "output")?,
+            affected: fields.boolean("affected")?,
+        },
         layer if layer.starts_with("scene_layer_") => CommandPayload::SceneLayer(
             super::scene_layer::decode_scene_layer_edit(layer, fields)?.ok_or_else(|| {
                 CodecError::InvalidField {
@@ -1483,6 +1493,10 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         input_categories: super::input_lifecycle::decode_categories(
             &fields.required("input_categories")?,
         )?,
+        audio_mixer: super::audio_mixer::decode_status(fields)?,
+        fade_to_black_excluded_outputs: super::audio_mixer::decode_excluded_outputs(
+            &fields.required("fade_to_black_excluded_outputs")?,
+        )?,
     })
 }
 
@@ -1728,10 +1742,12 @@ fn decode_input_audio_strips(
             let input = parts.next().ok_or_else(invalid)?;
             let gain_millidb = parts.next().ok_or_else(invalid)?;
             let balance_basis_points = parts.next().ok_or_else(invalid)?;
+            let pan_basis_points = parts.next().ok_or_else(invalid)?;
             let muted = parts.next().ok_or_else(invalid)?;
             let soloed = parts.next().ok_or_else(invalid)?;
             let follow_video = parts.next().ok_or_else(invalid)?;
             let delay_samples = parts.next().ok_or_else(invalid)?;
+            let group = parts.next().ok_or_else(invalid)?;
             if parts.next().is_some() {
                 return Err(invalid());
             }
@@ -1739,6 +1755,8 @@ fn decode_input_audio_strips(
                 input: parse_input(input).ok_or_else(invalid)?,
                 gain_millidb: gain_millidb.parse().map_err(|_| invalid())?,
                 balance_basis_points: balance_basis_points.parse().map_err(|_| invalid())?,
+                pan_basis_points: pan_basis_points.parse().map_err(|_| invalid())?,
+                group: super::audio_mixer::decode_strip_group(group).ok_or_else(invalid)?,
                 muted: match muted {
                     "0" => false,
                     "1" => true,
@@ -1758,6 +1776,7 @@ fn decode_input_audio_strips(
             };
             if !(-96_000..=24_000).contains(&status.gain_millidb)
                 || !(-10_000..=10_000).contains(&status.balance_basis_points)
+                || !(-10_000..=10_000).contains(&status.pan_basis_points)
                 || status.delay_samples > 48_000
                 || !inputs.insert(status.input.get())
             {
@@ -2066,6 +2085,21 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             active: fields.boolean("active")?,
         },
         "media_changed" => decode_media_changed(fields)?,
+        "audio_mixer_changed" => {
+            let operation = fields.required("operation")?;
+            EventPayload::AudioMixerChanged(
+                super::audio_mixer::decode_operation(&operation, fields)?.ok_or(
+                    CodecError::InvalidField {
+                        field: "operation",
+                        value: operation,
+                    },
+                )?,
+            )
+        }
+        "fade_to_black_output_changed" => EventPayload::FadeToBlackOutputChanged {
+            output: decode_output(fields, "output")?,
+            affected: fields.boolean("affected")?,
+        },
         "scene_layout_changed" => {
             let operation = fields.required("operation")?;
             let edit = super::scene_layer::decode_scene_layer_edit(&operation, fields)?.ok_or(

@@ -604,6 +604,11 @@ fn append_inputs(
         if let Some(strip) = incoming.input_audio_strip(input.id) {
             project.set_input_audio_strip(id, strip);
         }
+        // The strip label travels with the input; group numbers belong to
+        // the incoming project's own groups, so membership does not.
+        if let Some(label) = incoming.input_audio_label(input.id) {
+            project.restore_input_audio_label(id, label.to_owned());
+        }
     }
 
     Ok(())

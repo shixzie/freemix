@@ -469,6 +469,8 @@ fn input_audio_strips(first: InputId, second: InputId) -> Vec<fm_protocol::Input
     inputs
         .into_iter()
         .map(|input| fm_protocol::InputAudioStripStatus {
+            pan_basis_points: 0,
+            group: None,
             input: WireInputId::from_domain(input),
             gain_millidb: 0,
             balance_basis_points: 0,

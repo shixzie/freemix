@@ -134,10 +134,29 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             current_update.balance_basis_points = update
                 .balance_basis_points
                 .or(current_update.balance_basis_points);
+            current_update.pan_basis_points =
+                update.pan_basis_points.or(current_update.pan_basis_points);
             current_update.muted = update.muted.or(current_update.muted);
             current_update.soloed = update.soloed.or(current_update.soloed);
             current_update.follow_video = update.follow_video.or(current_update.follow_video);
             current_update.delay_samples = update.delay_samples.or(current_update.delay_samples);
+            true
+        }
+        // A group fader drag sends the latest level, never a backlog.
+        (
+            StudioIntent::SetAudioGroupLevel {
+                group: current_group,
+                gain_millidb: current_gain,
+                muted: current_muted,
+            },
+            StudioIntent::SetAudioGroupLevel {
+                group,
+                gain_millidb,
+                muted,
+            },
+        ) if *current_group == group => {
+            *current_gain = gain_millidb;
+            *current_muted = muted;
             true
         }
         // Exact previews (title or scene) are latest-wins: a newer request
@@ -1623,6 +1642,7 @@ fn resolve_input_audio_strip(
         .find(|strip| strip.input == input)
         .ok_or_else(|| "Cannot edit audio: input is no longer available".to_owned())?;
     Ok(CommandPayload::SetInputAudioStrip {
+        pan_basis_points: update.pan_basis_points.unwrap_or(strip.pan_basis_points),
         input: WireInputId::from_domain(input),
         gain_millidb: update.gain_millidb.unwrap_or(strip.gain_millidb),
         balance_basis_points: update
@@ -2171,6 +2191,39 @@ fn intent_payload(
         }
         StudioIntent::SetInputAudioStrip { input, update } => {
             return resolve_input_audio_strip(view, input, update);
+        }
+        StudioIntent::SetAudioStripLabel { input, label } => {
+            CommandPayload::AudioMixer(fm_protocol::AudioMixerOperation::SetLabel {
+                input: WireInputId::from_domain(input),
+                label,
+            })
+        }
+        StudioIntent::SetAudioStripGroup { input, group } => {
+            CommandPayload::AudioMixer(fm_protocol::AudioMixerOperation::SetGroup {
+                input: WireInputId::from_domain(input),
+                group,
+            })
+        }
+        StudioIntent::RenameAudioGroup { group, name } => {
+            CommandPayload::AudioMixer(fm_protocol::AudioMixerOperation::RenameGroup {
+                group,
+                name,
+            })
+        }
+        StudioIntent::SetAudioGroupLevel {
+            group,
+            gain_millidb,
+            muted,
+        } => CommandPayload::AudioMixer(fm_protocol::AudioMixerOperation::SetGroupLevel {
+            group,
+            gain_millidb,
+            muted,
+        }),
+        StudioIntent::SetFadeToBlackOutput { output, affected } => {
+            CommandPayload::SetFadeToBlackOutput {
+                output: WireOutputId::from_domain(output),
+                affected,
+            }
         }
         StudioIntent::SelectPreview(input) => CommandPayload::SelectPreview {
             input: WireInputId::from_domain(input),
@@ -2958,6 +3011,8 @@ mod tests {
     fn heartbeat_snapshot() -> SnapshotMessage {
         let input = WireInputId::new(NonZeroU128::new(2).unwrap());
         SnapshotMessage {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             engine: EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,
@@ -2972,6 +3027,8 @@ mod tests {
             }],
             outputs: Vec::new(),
             input_audio_strips: vec![InputAudioStripStatus {
+                pan_basis_points: 0,
+                group: None,
                 input,
                 gain_millidb: 0,
                 balance_basis_points: 0,
@@ -3528,6 +3585,7 @@ mod tests {
             update: InputAudioStripUpdate {
                 gain_millidb: Some(REQUEST_CAPACITY as i32),
                 balance_basis_points: Some(-(REQUEST_CAPACITY as i32)),
+                pan_basis_points: None,
                 muted: Some(false),
                 soloed: Some(false),
                 follow_video: Some(false),
@@ -4816,6 +4874,7 @@ mod tests {
                 },
             ),
             Ok(CommandPayload::SetInputAudioStrip {
+                pan_basis_points: 0,
                 input: WireInputId::from_domain(input),
                 gain_millidb: 0,
                 balance_basis_points: 0,
@@ -4853,6 +4912,7 @@ mod tests {
                 },
             ),
             Ok(CommandPayload::SetInputAudioStrip {
+                pan_basis_points: 0,
                 input: WireInputId::from_domain(input),
                 gain_millidb: 0,
                 balance_basis_points: 0,
@@ -5297,6 +5357,87 @@ mod tests {
             ),
             Ok(CommandPayload::RecordStop {
                 recorder: wire_recorder(2)
+            })
+        );
+    }
+
+    #[test]
+    fn mixer_and_fade_to_black_output_intents_map_to_their_payloads() {
+        let input = WireInputId::new(NonZeroU128::new(9).unwrap()).to_domain();
+        let output = WireOutputId::new(NonZeroU128::new(4).unwrap()).to_domain();
+        assert_eq!(
+            intent_payload(
+                StudioIntent::SetAudioStripLabel {
+                    input,
+                    label: "Host".to_owned()
+                },
+                None
+            ),
+            Ok(CommandPayload::AudioMixer(
+                fm_protocol::AudioMixerOperation::SetLabel {
+                    input: WireInputId::from_domain(input),
+                    label: "Host".to_owned(),
+                }
+            ))
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::SetAudioStripGroup {
+                    input,
+                    group: Some(2)
+                },
+                None
+            ),
+            Ok(CommandPayload::AudioMixer(
+                fm_protocol::AudioMixerOperation::SetGroup {
+                    input: WireInputId::from_domain(input),
+                    group: Some(2),
+                }
+            ))
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::RenameAudioGroup {
+                    group: 2,
+                    name: "Mics".to_owned()
+                },
+                None
+            ),
+            Ok(CommandPayload::AudioMixer(
+                fm_protocol::AudioMixerOperation::RenameGroup {
+                    group: 2,
+                    name: "Mics".to_owned(),
+                }
+            ))
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::SetAudioGroupLevel {
+                    group: 2,
+                    gain_millidb: -6_000,
+                    muted: true
+                },
+                None
+            ),
+            Ok(CommandPayload::AudioMixer(
+                fm_protocol::AudioMixerOperation::SetGroupLevel {
+                    group: 2,
+                    gain_millidb: -6_000,
+                    muted: true,
+                }
+            ))
+        );
+        assert_eq!(
+            intent_payload(
+                StudioIntent::SetFadeToBlackOutput {
+                    output,
+                    affected: false
+                },
+                None
+            ),
+            Ok(CommandPayload::SetFadeToBlackOutput {
+                output: WireOutputId::from_domain(output),
+                affected: false,
             })
         );
     }

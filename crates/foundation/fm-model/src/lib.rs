@@ -1,4 +1,5 @@
 mod animation_preset;
+mod audio_mixer;
 mod cycles;
 mod grade;
 mod input_lifecycle;
@@ -16,6 +17,10 @@ mod validation;
 pub use animation_preset::{
     AnimationPresetError, AnimationPresetId, AnimationPresetLibrary,
     MAX_ANIMATION_PRESET_NAME_BYTES, MAX_PROJECT_ANIMATION_PRESETS, UserAnimationPreset,
+};
+pub use audio_mixer::{
+    AUDIO_GROUP_COUNT, AudioGroup, AudioGroupNumber, AudioGroups, AudioLabelError,
+    MAX_AUDIO_LABEL_BYTES, validate_audio_group_name, validate_audio_strip_label,
 };
 pub use fm_animation;
 pub use grade::{
@@ -52,17 +57,18 @@ pub use project::{
     AddAudioBusError, AddOutputError, AddSceneInputError, AddSceneLayerError, AddStreamTargetError,
     AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DuplicateInputError,
     DuplicateSceneInputError, Input, InputAudioStrip, InputAudioStripState,
-    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, InputReference, Layer,
-    LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry, MainMix, MixFeed, Output,
-    OutputFormat, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RecorderSlotError,
-    RectMask, RelinkMediaInputError, RemoveAudioBusError, RemoveInputError, RemoveOutputError,
-    RemoveSceneError, RemoveStreamTargetError, RenameAudioBusError, RenameOutputError,
-    RenameProjectError, RenameSceneError, ReplaceInputError, RestartPolicy, Rgba8, Rotation, Scene,
-    SceneInputAudioSourceError, SceneLayerError, SchemaVersion, SetInputLockError,
-    SetOutputRouteError, SetOutputStartupError, SetSceneAnimationError, SetSceneBackgroundError,
-    SetSceneLayersError, SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo,
-    SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
-    StingerMissingMediaFallback, StingerSlotNumber, UpdateStreamTargetError,
+    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, InputPanBasisPoints,
+    InputReference, Layer, LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry, MainMix,
+    MixFeed, Output, OutputFormat, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot,
+    RecorderSlotError, RectMask, RelinkMediaInputError, RemoveAudioBusError, RemoveInputError,
+    RemoveOutputError, RemoveSceneError, RemoveStreamTargetError, RenameAudioBusError,
+    RenameOutputError, RenameProjectError, RenameSceneError, ReplaceInputError, RestartPolicy,
+    Rgba8, Rotation, Scene, SceneInputAudioSourceError, SceneLayerError, SchemaVersion,
+    SetAudioMixerError, SetInputLockError, SetOutputRouteError, SetOutputStartupError,
+    SetSceneAnimationError, SetSceneBackgroundError, SetSceneLayersError, SetStingerError,
+    SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
+    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
+    UpdateStreamTargetError,
 };
 pub use resolve::{
     AudioRoute, FrameContext, LayerSource, MixFeedHistory, MixSelection, RenderSource,

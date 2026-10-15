@@ -120,6 +120,39 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
                 kind: ValidationErrorKind::MissingReference(EntityRef::Input(strip.input)),
             });
         }
+        if crate::validate_audio_strip_label(&strip.label).is_err() {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(strip.input)),
+                field: "audio_strip.label",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+    }
+    for (_, group) in project.audio_groups().iter() {
+        if crate::validate_audio_group_name(&group.name).is_err() {
+            errors.push(ValidationError {
+                entity: None,
+                field: "audio_groups.name",
+                kind: if group.name.trim().is_empty() {
+                    ValidationErrorKind::Empty
+                } else {
+                    ValidationErrorKind::OutOfRange
+                },
+            });
+        }
+    }
+    for &output in project.fade_to_black_excluded_outputs() {
+        if !project
+            .outputs()
+            .iter()
+            .any(|candidate| candidate.id == output)
+        {
+            errors.push(ValidationError {
+                entity: None,
+                field: "fade_to_black_excluded_outputs",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Output(output)),
+            });
+        }
     }
 }
 

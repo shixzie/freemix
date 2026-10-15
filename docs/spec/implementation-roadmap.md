@@ -354,7 +354,8 @@ colours, pause, close, offline, source replacement, and batch import are
 described in the `IN-026` boundary below.
 Studio now has a compact permission-gated gain fader with exact milli-dB entry
 and a latest-only compact peak/RMS meter display for Master and current inputs.
-There is still no PFL, strip-name editor, strip groups, microphone automix,
+Strip labels, pan, and VCA groups are described in the `AU-001` boundary
+below. There is still no PFL, microphone automix,
 device-audio path, device-clock correction, native EQ/gate/compressor/limiter,
 or acceptance evidence. Local offline audio-bus send authoring and rename are
 next-open configuration only; they do not change IDs, sends, output routes,
@@ -2611,6 +2612,32 @@ was started with, so a layer added live with a new source is drawn after
 the next start; masks stay rectangular and hard-edged; and `SW-006`
 remains planned until its cross-platform capability profiles are
 certified.
+
+Current implementation boundary for the mixer strip (`AU-001`) and Fade to
+Black outputs (`SW-004`): Protocol 2.40 adds strip pan, labels, and four
+VCA strip groups, and the choice of outputs Fade to Black fades. `fm-audio`
+pans a mono strip with a -3 dB constant-power law (`gL = sqrt(2)*cos`,
+`gR = sqrt(2)*sin` of `(pan+1)*pi/4`: unity per side at centre, +3 dB on
+the hard side) and keeps balance for stereo strips; a group member's gain
+is its strip gain plus the group gain in dB, ramped like a strip fader, and
+a muted group silences its members without touching their own mute. The
+model stores pan, labels, groups, and the excluded outputs (schema 39);
+labels, membership, and group names are padlocked, undoable project edits,
+the group fader and mute are live audio operations, and the output choice
+is an undoable project edit. The switcher keeps the excluded outputs (every
+output fades by default, including outputs added later); the simulated
+renderer and the native daemon draw an excluded logical output, the
+fullscreen output, and recordings and streams that follow it unfaded, and
+the native master hands those captures the mix before the fade. Studio's
+mixer shows the label on each strip's name plate with a label field and a
+group menu in the strip details, a pan knob beside balance, and one strip
+per used group (rename, fader, mute); the transition panel and the Output
+menu carry an `Outputs n/m` menu of output checkboxes. `freemix-cli`
+provides `audio-label`, `audio-group`, `audio-group-name`,
+`audio-group-level`, `ftb-output`, `audio-strip --pan`, and their `remote-`
+forms. Remaining gaps: no PFL bus or solo-in-place per group, groups do
+not nest, no per-output fade durations, and `AU-001`/`SW-004` remain
+planned until their capability profiles are certified.
 
 Current implementation boundary for item 2 browser title control (`GX-006`):
 `freemix-web` provides a transport-free title editor model over a narrow server

@@ -1420,6 +1420,8 @@ mod tests {
     /// `Solid Colour 1`, and `Guest`.
     fn snapshot() -> fm_protocol::SnapshotMessage {
         fm_protocol::SnapshotMessage {
+            audio_mixer: fm_protocol::AudioMixerStatus::default(),
+            fade_to_black_excluded_outputs: Vec::new(),
             engine: fm_protocol::EngineIdentity {
                 engine_id: "e".into(),
                 state_epoch: 1,
@@ -1442,6 +1444,8 @@ mod tests {
             outputs: Vec::new(),
             input_audio_strips: [1, 2, 3, 4]
                 .map(|id| fm_protocol::InputAudioStripStatus {
+                    pan_basis_points: 0,
+                    group: None,
                     input: wire(id),
                     gain_millidb: 0,
                     balance_basis_points: 0,

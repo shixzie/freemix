@@ -971,6 +971,17 @@ impl StudioShell {
                 duration_frames: self.fade_to_black_duration_frames,
             });
         }
+        if state
+            .view
+            .as_ref()
+            .is_some_and(|view| !view.outputs.is_empty())
+        {
+            ui.horizontal(|ui| {
+                ui.label(l.text(Msg::FtbOutputsMenu))
+                    .on_hover_text(l.text(Msg::FtbOutputsHover));
+                fade_to_black::draw_fade_to_black_outputs(ui, state, intents);
+            });
+        }
         ui.separator();
         heading(ui, l.text(Msg::ManualTBarHeading));
         let session_ok = state.connection_status.controls_enabled()

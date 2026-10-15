@@ -36,7 +36,10 @@
 //!
 //! - `Program` and `Mix(MixId::MAIN)` read [`SwitcherState::program_frame`],
 //!   including any running timed or manual transition, and carry the current
-//!   Fade-to-Black position.
+//!   Fade-to-Black position when Fade to Black affects the output's
+//!   [`OutputId`] ([`SwitcherState::fade_to_black_affects`]); an excluded
+//!   output shows Program live. Program cells of a multiview follow the
+//!   multiview output's own selection.
 //! - `Preview` shows the switcher Preview input as a settled, unfaded layer.
 //! - `Input(id)` shows that input as a settled, unfaded layer.
 //! - `Mix(n)` for a secondary mix copies that mix's [`MixFrame`] background,
@@ -670,7 +673,7 @@ fn resolve_output(
 ) -> Result<OutputRenderPlan, OutputRoutingError> {
     let (video, overlays, follow_audio) = match &config.source {
         OutputSource::Program => (
-            OutputVideo::Background(program_background(context.switcher)),
+            OutputVideo::Background(program_background(context.switcher, config.output)),
             main_overlays(context.switcher),
             AudioSource::Master,
         ),
@@ -691,7 +694,7 @@ fn resolve_output(
             )
         }
         OutputSource::Mix(mix) if mix.is_main() => (
-            OutputVideo::Background(program_background(context.switcher)),
+            OutputVideo::Background(program_background(context.switcher, config.output)),
             main_overlays(context.switcher),
             AudioSource::Master,
         ),
@@ -706,7 +709,7 @@ fn resolve_output(
         OutputSource::MultiView(cells) => {
             let cells = cells
                 .iter()
-                .map(|cell| resolve_cell(slot, *cell, context, resolved))
+                .map(|cell| resolve_cell(slot, config.output, *cell, context, resolved))
                 .collect::<Result<Vec<_>, _>>()?;
             (
                 OutputVideo::MultiView(cells),
@@ -748,14 +751,17 @@ fn resolve_output(
 
 fn resolve_cell(
     slot: LogicalOutputSlot,
+    output: OutputId,
     cell: MultiViewCell,
     context: &RoutingContext<'_>,
     resolved: &[Option<Result<OutputRenderPlan, OutputRoutingError>>; LOGICAL_OUTPUT_COUNT],
 ) -> Result<MultiViewCellPlan, OutputRoutingError> {
     let feed = match cell {
-        MultiViewCell::Program => CellFeed::Background(program_background(context.switcher)),
+        MultiViewCell::Program => {
+            CellFeed::Background(program_background(context.switcher, output))
+        }
         MultiViewCell::Mix(mix) if mix.is_main() => {
-            CellFeed::Background(program_background(context.switcher))
+            CellFeed::Background(program_background(context.switcher, output))
         }
         MultiViewCell::Preview => CellFeed::Background(BackgroundPlan::settled(FeedLayer::Input(
             context.switcher.preview(),
@@ -800,7 +806,7 @@ fn require_mix<'a>(
         .ok_or(OutputRoutingError::UnknownMix { slot, mix })
 }
 
-fn program_background(switcher: &SwitcherState) -> BackgroundPlan {
+fn program_background(switcher: &SwitcherState, output: OutputId) -> BackgroundPlan {
     let frame = switcher.program_frame();
     BackgroundPlan {
         primary: FeedLayer::Input(frame.primary),
@@ -808,7 +814,7 @@ fn program_background(switcher: &SwitcherState) -> BackgroundPlan {
         transition_kind: frame.transition_kind,
         mix_numerator: frame.mix_numerator,
         mix_denominator: frame.mix_denominator,
-        fade_to_black: switcher.fade_to_black_position(),
+        fade_to_black: switcher.fade_to_black_position_for(output),
     }
 }
 

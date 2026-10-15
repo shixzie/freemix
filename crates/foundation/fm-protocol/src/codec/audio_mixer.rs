@@ -1,0 +1,335 @@
+//! Mixer label, group, and Fade-to-Black output codec (Protocol 2.40).
+//!
+//! * `audio_groups` is four comma-separated `<name>~<gain_millidb>~<muted
+//!   0|1>` entries, group 1 first.
+//! * `input_audio_labels` is a comma-separated list of `<input>~<label>`,
+//!   strictly ascending by input, each label non-empty (empty for none).
+//! * `fade_to_black_excluded_outputs` is a comma-separated, strictly
+//!   ascending list of output ids (empty for none).
+//!
+//! Text inside a field is percent-escaped before it is joined.
+
+use crate::{
+    AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, CodecError,
+    InputAudioLabel, WireOutputId, audio_group_is_valid, audio_label_is_valid,
+};
+
+use super::MAX_LIST_ITEMS;
+use super::media::{FieldSource, Push};
+use super::value::{escape_bounded, parse_canonical_input, parse_canonical_u64, unescape};
+
+/// Smallest group fader, the strip gain floor.
+const MIN_GROUP_GAIN_MILLIDB: i32 = -96_000;
+/// Largest group fader, the strip gain ceiling.
+const MAX_GROUP_GAIN_MILLIDB: i32 = 24_000;
+
+fn invalid(field: &'static str, value: impl Into<String>) -> CodecError {
+    CodecError::InvalidField {
+        field,
+        value: value.into(),
+    }
+}
+
+fn parse_flag(field: &'static str, value: &str) -> Result<bool, CodecError> {
+    match value {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(invalid(field, value)),
+    }
+}
+
+fn parse_gain(field: &'static str, value: &str) -> Result<i32, CodecError> {
+    value
+        .parse::<i32>()
+        .ok()
+        .filter(|gain| {
+            (MIN_GROUP_GAIN_MILLIDB..=MAX_GROUP_GAIN_MILLIDB).contains(gain)
+                && gain.to_string() == value
+        })
+        .ok_or_else(|| invalid(field, value))
+}
+
+fn parse_group(field: &'static str, value: &str) -> Result<u8, CodecError> {
+    parse_canonical_u64(value)
+        .and_then(|number| u8::try_from(number).ok())
+        .filter(|group| audio_group_is_valid(*group))
+        .ok_or_else(|| invalid(field, value))
+}
+
+fn check_gain(field: &'static str, gain: i32) -> Result<(), CodecError> {
+    if (MIN_GROUP_GAIN_MILLIDB..=MAX_GROUP_GAIN_MILLIDB).contains(&gain) {
+        Ok(())
+    } else {
+        Err(invalid(field, gain.to_string()))
+    }
+}
+
+/// Encodes a strip's group inside an `input_audio_strips` tuple.
+pub(super) fn encode_strip_group(group: Option<u8>) -> Result<String, CodecError> {
+    match group {
+        None => Ok("-".to_owned()),
+        Some(group) if audio_group_is_valid(group) => Ok(group.to_string()),
+        Some(group) => Err(invalid("input_audio_strips", group.to_string())),
+    }
+}
+
+/// Decodes a strip's group inside an `input_audio_strips` tuple: `None`
+/// when malformed, `Some(None)` for no group.
+#[allow(clippy::option_option)]
+pub(super) fn decode_strip_group(value: &str) -> Option<Option<u8>> {
+    if value == "-" {
+        return Some(None);
+    }
+    parse_group("input_audio_strips", value).ok().map(Some)
+}
+
+/// Encodes a snapshot's `audio_groups`.
+pub(super) fn encode_groups(
+    groups: &[AudioGroupStatus; AUDIO_GROUP_COUNT],
+) -> Result<String, CodecError> {
+    groups
+        .iter()
+        .map(|group| {
+            if !audio_label_is_valid(&group.name, false) {
+                return Err(invalid("audio_groups", group.name.clone()));
+            }
+            check_gain("audio_groups", group.gain_millidb)?;
+            Ok(format!(
+                "{}~{}~{}",
+                escape_bounded(&group.name)?,
+                group.gain_millidb,
+                u8::from(group.muted)
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|groups| groups.join(","))
+}
+
+/// Decodes a snapshot's `audio_groups`.
+pub(super) fn decode_groups(
+    value: &str,
+) -> Result<[AudioGroupStatus; AUDIO_GROUP_COUNT], CodecError> {
+    let groups = value
+        .split(',')
+        .map(|entry| {
+            let parts: Vec<&str> = entry.split('~').collect();
+            let [name, gain, muted] = parts.as_slice() else {
+                return Err(invalid("audio_groups", entry));
+            };
+            let name = unescape(name)?;
+            if !audio_label_is_valid(&name, false) {
+                return Err(invalid("audio_groups", entry));
+            }
+            Ok(AudioGroupStatus {
+                name,
+                gain_millidb: parse_gain("audio_groups", gain)?,
+                muted: parse_flag("audio_groups", muted)?,
+            })
+        })
+        .take(AUDIO_GROUP_COUNT + 1)
+        .collect::<Result<Vec<_>, _>>()?;
+    groups
+        .try_into()
+        .map_err(|_| invalid("audio_groups", value))
+}
+
+/// Encodes a snapshot's `input_audio_labels`.
+pub(super) fn encode_labels(labels: &[InputAudioLabel]) -> Result<String, CodecError> {
+    if labels.len() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("input_audio_labels"));
+    }
+    let mut previous = None;
+    labels
+        .iter()
+        .map(|entry| {
+            if entry.label.is_empty()
+                || !audio_label_is_valid(&entry.label, true)
+                || previous.is_some_and(|previous| previous >= entry.input.get())
+            {
+                return Err(invalid("input_audio_labels", entry.label.clone()));
+            }
+            previous = Some(entry.input.get());
+            Ok(format!("{}~{}", entry.input, escape_bounded(&entry.label)?))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|labels| labels.join(","))
+}
+
+/// Decodes a snapshot's `input_audio_labels`.
+pub(super) fn decode_labels(value: &str) -> Result<Vec<InputAudioLabel>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split(',').take(MAX_LIST_ITEMS + 1).count() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("input_audio_labels"));
+    }
+    let mut previous = None;
+    value
+        .split(',')
+        .map(|entry| {
+            let (input, label) = entry
+                .split_once('~')
+                .ok_or_else(|| invalid("input_audio_labels", entry))?;
+            let input =
+                parse_canonical_input(input).ok_or_else(|| invalid("input_audio_labels", entry))?;
+            let label = unescape(label)?;
+            if label.is_empty()
+                || !audio_label_is_valid(&label, true)
+                || previous.is_some_and(|previous| previous >= input.get())
+            {
+                return Err(invalid("input_audio_labels", entry));
+            }
+            previous = Some(input.get());
+            Ok(InputAudioLabel { input, label })
+        })
+        .collect()
+}
+
+/// Encodes the outputs Fade to Black leaves live.
+pub(super) fn encode_excluded_outputs(outputs: &[WireOutputId]) -> Result<String, CodecError> {
+    if outputs.len() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("fade_to_black_excluded_outputs"));
+    }
+    if outputs
+        .windows(2)
+        .any(|pair| pair[0].get() >= pair[1].get())
+    {
+        return Err(invalid("fade_to_black_excluded_outputs", "unordered"));
+    }
+    Ok(outputs
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+/// Decodes the outputs Fade to Black leaves live.
+pub(super) fn decode_excluded_outputs(value: &str) -> Result<Vec<WireOutputId>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split(',').take(MAX_LIST_ITEMS + 1).count() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("fade_to_black_excluded_outputs"));
+    }
+    let outputs = value
+        .split(',')
+        .map(|output| {
+            parse_canonical_input(output)
+                .map(|id| WireOutputId::new(id.get()))
+                .ok_or_else(|| invalid("fade_to_black_excluded_outputs", output))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if outputs
+        .windows(2)
+        .any(|pair| pair[0].get() >= pair[1].get())
+    {
+        return Err(invalid("fade_to_black_excluded_outputs", value));
+    }
+    Ok(outputs)
+}
+
+/// Encodes the snapshot mixer fields.
+pub(super) fn encode_status(
+    status: &AudioMixerStatus,
+    push: &mut Push<'_>,
+) -> Result<(), CodecError> {
+    push("audio_groups", encode_groups(&status.groups)?)?;
+    push("input_audio_labels", encode_labels(&status.labels)?)
+}
+
+/// Decodes the snapshot mixer fields.
+pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerStatus, CodecError> {
+    Ok(AudioMixerStatus {
+        groups: decode_groups(&fields.required("audio_groups")?)?,
+        labels: decode_labels(&fields.required("input_audio_labels")?)?,
+    })
+}
+
+/// Encodes an operation's fields (not its payload token).
+pub(super) fn encode_operation(
+    operation: &AudioMixerOperation,
+    push: &mut Push<'_>,
+) -> Result<(), CodecError> {
+    match operation {
+        AudioMixerOperation::SetLabel { input, label } => {
+            if !audio_label_is_valid(label, true) {
+                return Err(invalid("label", label.clone()));
+            }
+            push("input", input.to_string())?;
+            push("label", label.clone())
+        }
+        AudioMixerOperation::SetGroup { input, group } => {
+            push("input", input.to_string())?;
+            push(
+                "group",
+                encode_strip_group(*group).map_err(|_| invalid("group", format!("{group:?}")))?,
+            )
+        }
+        AudioMixerOperation::RenameGroup { group, name } => {
+            if !audio_group_is_valid(*group) {
+                return Err(invalid("group", group.to_string()));
+            }
+            if !audio_label_is_valid(name, false) {
+                return Err(invalid("name", name.clone()));
+            }
+            push("group", group.to_string())?;
+            push("name", name.clone())
+        }
+        AudioMixerOperation::SetGroupLevel {
+            group,
+            gain_millidb,
+            muted,
+        } => {
+            if !audio_group_is_valid(*group) {
+                return Err(invalid("group", group.to_string()));
+            }
+            check_gain("gain_millidb", *gain_millidb)?;
+            push("group", group.to_string())?;
+            push("gain_millidb", gain_millidb.to_string())?;
+            push("muted", u8::from(*muted).to_string())
+        }
+    }
+}
+
+/// Decodes an operation named by `payload`, or `None` for another payload.
+pub(super) fn decode_operation(
+    payload: &str,
+    fields: &mut dyn FieldSource,
+) -> Result<Option<AudioMixerOperation>, CodecError> {
+    let input = |fields: &mut dyn FieldSource| {
+        let value = fields.required("input")?;
+        parse_canonical_input(&value).ok_or_else(|| invalid("input", value))
+    };
+    Ok(Some(match payload {
+        "audio_strip_label" => {
+            let input = input(fields)?;
+            let label = fields.optional("label").unwrap_or_default();
+            if !audio_label_is_valid(&label, true) {
+                return Err(invalid("label", label));
+            }
+            AudioMixerOperation::SetLabel { input, label }
+        }
+        "audio_strip_group" => {
+            let input = input(fields)?;
+            let value = fields.required("group")?;
+            AudioMixerOperation::SetGroup {
+                input,
+                group: decode_strip_group(&value).ok_or_else(|| invalid("group", value))?,
+            }
+        }
+        "audio_group_name" => {
+            let group = parse_group("group", &fields.required("group")?)?;
+            let name = fields.required("name")?;
+            if !audio_label_is_valid(&name, false) {
+                return Err(invalid("name", name));
+            }
+            AudioMixerOperation::RenameGroup { group, name }
+        }
+        "audio_group_level" => AudioMixerOperation::SetGroupLevel {
+            group: parse_group("group", &fields.required("group")?)?,
+            gain_millidb: parse_gain("gain_millidb", &fields.required("gain_millidb")?)?,
+            muted: parse_flag("muted", &fields.required("muted")?)?,
+        },
+        _ => return Ok(None),
+    }))
+}

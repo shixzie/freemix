@@ -162,8 +162,9 @@ pub fn execute(
         | CommandCompletion::Padlock
         | CommandCompletion::Playlist { edit: true }
         | CommandCompletion::Media { transport: false } => Role::Graphics,
-        CommandCompletion::Audio => Role::Audio,
-        CommandCompletion::Switcher
+        CommandCompletion::Audio | CommandCompletion::Mixer { .. } => Role::Audio,
+        CommandCompletion::FadeToBlackOutput
+        | CommandCompletion::Switcher
         | CommandCompletion::Favorite
         | CommandCompletion::Playlist { edit: false }
         | CommandCompletion::Media { transport: true }
@@ -214,6 +215,15 @@ enum CommandCompletion {
     Media {
         transport: bool,
     },
+    /// A mixer label, group, or group-level command (Protocol 2.40):
+    /// completes on `audio_mixer_changed` and project (edits) or audio (live
+    /// group levels) realization.
+    Mixer {
+        live: bool,
+    },
+    /// A Fade-to-Black output choice (Protocol 2.40): completes on
+    /// `fade_to_black_output_changed` and project realization.
+    FadeToBlackOutput,
 }
 
 impl CommandCompletion {
@@ -226,6 +236,10 @@ impl CommandCompletion {
             | CommandPayload::InputLifecycle(_)
             | CommandPayload::SetTitleFields { .. } => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
+            CommandPayload::AudioMixer(operation) => Self::Mixer {
+                live: operation.is_live(),
+            },
+            CommandPayload::SetFadeToBlackOutput { .. } => Self::FadeToBlackOutput,
             CommandPayload::Undo { .. } | CommandPayload::Redo { .. } => Self::History,
             CommandPayload::SetEditLock { .. } => Self::Padlock,
             CommandPayload::TakeTitle { fields, .. } => Self::TitleTake {
@@ -245,10 +259,13 @@ impl CommandCompletion {
 
     fn realizes(self, domain: &str) -> bool {
         match self {
-            Self::Project | Self::Padlock | Self::Favorite | Self::Playlist { edit: true } => {
-                domain == "project"
-            }
-            Self::Audio => domain == "audio",
+            Self::Project
+            | Self::Padlock
+            | Self::Favorite
+            | Self::Playlist { edit: true }
+            | Self::Mixer { live: false }
+            | Self::FadeToBlackOutput => domain == "project",
+            Self::Audio | Self::Mixer { live: true } => domain == "audio",
             Self::Media { .. } => domain == "media",
             Self::Switcher | Self::TitleTake { .. } | Self::Playlist { edit: false } => {
                 domain == "switcher"
@@ -507,6 +524,14 @@ impl Remote {
                         EventPayload::MediaChanged { .. } => {
                             matches!(completion, CommandCompletion::Media { .. })
                         }
+                        EventPayload::AudioMixerChanged(_) => matches!(
+                            completion,
+                            CommandCompletion::Mixer { .. } | CommandCompletion::History
+                        ),
+                        EventPayload::FadeToBlackOutputChanged { .. } => matches!(
+                            completion,
+                            CommandCompletion::FadeToBlackOutput | CommandCompletion::History
+                        ),
                     };
                     if matches_revision && !expected_event {
                         return Err(RemoteFailure(
@@ -552,7 +577,7 @@ impl Remote {
             .ok_or_else(|| RemoteFailure("remote project cursor is unavailable".into()))?;
         let switcher = state.switcher();
         println!(
-            "project_id={} show={:?} revision={} frame=unavailable Program(desired={}, realized={}) Preview(desired={}, realized={}) TBar(desired={}, realized={}) FTB(desired={}, realized={}) AudioStrips={} Streams={} Recording=desired={} Overlays(desired={}, realized={}) Inputs={} Outputs={} EditLocks={} History={} Titles={}",
+            "project_id={} show={:?} revision={} frame=unavailable Program(desired={}, realized={}) Preview(desired={}, realized={}) TBar(desired={}, realized={}) FTB(desired={}, realized={}) AudioStrips={} Streams={} Recording=desired={} Overlays(desired={}, realized={}) Inputs={} Outputs={} EditLocks={} History={} Titles={} Mixer={} FtbExcluded={}",
             self.project_id,
             state.show_name(),
             cursor.revision,
@@ -574,6 +599,8 @@ impl Remote {
             format_edit_locks(state.edit_locks()),
             format_edit_history(state.edit_history()),
             format_titles(state.titles()),
+            format_audio_mixer(state),
+            format_fade_to_black_excluded(state),
         );
         if let Some(playlist) = state.playlist() {
             println!(
@@ -778,6 +805,54 @@ fn format_input_audio_strips(state: &fm_ui_model::ProjectState) -> String {
                     status.delay_samples
                 )
             })
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// Strip pan, groups, and labels, then the group faders (AU-001):
+/// `[input:pan:group|-:"label",...]/[n:"name":gain:muted,...]`.
+fn format_audio_mixer(state: &fm_ui_model::ProjectState) -> String {
+    let mixer = state.audio_mixer();
+    let strips = state
+        .input_audio_strips()
+        .iter()
+        .map(|status| {
+            format!(
+                "{}:{}:{}:{:?}",
+                status.input,
+                status.pan_basis_points,
+                status
+                    .group
+                    .map_or_else(|| "-".to_owned(), |group| group.to_string()),
+                mixer.label(fm_protocol::WireInputId::from_domain(status.input)),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let groups = mixer
+        .groups
+        .iter()
+        .zip(1_u8..)
+        .map(|(group, number)| {
+            format!(
+                "{number}:{:?}:{}:{}",
+                group.name, group.gain_millidb, group.muted
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{strips}]/[{groups}]")
+}
+
+/// The outputs Fade to Black leaves live (SW-004).
+fn format_fade_to_black_excluded(state: &fm_ui_model::ProjectState) -> String {
+    format!(
+        "[{}]",
+        state
+            .fade_to_black_excluded_outputs()
+            .iter()
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",")
     )

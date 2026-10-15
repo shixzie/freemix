@@ -2,14 +2,15 @@ use std::{collections::BTreeMap, num::NonZeroU128};
 
 use fm_model::{
     AudioBus, BusSend, CropRect, Input, InputAudioStrip, InputAudioStripState,
-    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerAnchor,
-    LayerEffect, LayerGeometry, MainMix, MixFeed, Output, Playlist, PlaylistEntry, PlaylistLoop,
-    PlaylistRunState, PlaylistTransition, PlaylistTransitionKind, Project, ProjectGrading,
-    ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RectMask, RestartPolicy, Rgba8, Rotation,
-    Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
-    StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback, StingerSlotNumber,
-    StreamEndpoint, StreamKey, StreamLadder, StreamLadderRung, StreamProtocol, StreamTarget,
-    StreamTargetId, TitleFieldEntry, TitleFieldId, TitleFieldValue, TitleInput,
+    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, InputPanBasisPoints,
+    Layer, LayerAnchor, LayerEffect, LayerGeometry, MainMix, MixFeed, Output, Playlist,
+    PlaylistEntry, PlaylistLoop, PlaylistRunState, PlaylistTransition, PlaylistTransitionKind,
+    Project, ProjectGrading, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RectMask,
+    RestartPolicy, Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo,
+    SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
+    StingerMissingMediaFallback, StingerSlotNumber, StreamEndpoint, StreamKey, StreamLadder,
+    StreamLadderRung, StreamProtocol, StreamTarget, StreamTargetId, TitleFieldEntry, TitleFieldId,
+    TitleFieldValue, TitleInput,
 };
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, ChromaLocation, ColorMetadata, ColorPrimaries,
@@ -74,6 +75,8 @@ struct ProjectDto {
     animation_presets: fm_model::AnimationPresetLibrary,
     transition_favorites: fm_model::TransitionFavorites,
     input_lifecycle: super::input_lifecycle::ParsedInputLifecycle,
+    audio_groups: fm_model::AudioGroups,
+    fade_to_black_excluded_outputs: std::collections::BTreeSet<fm_types::OutputId>,
 }
 
 struct EditLocks {
@@ -118,6 +121,9 @@ impl ProjectDto {
                 &mut object,
             )?,
             input_lifecycle: super::input_lifecycle::parse_input_lifecycle(&mut object)?,
+            audio_groups: super::audio_mixer::parse_audio_groups(&mut object)?,
+            fade_to_black_excluded_outputs:
+                super::audio_mixer::parse_fade_to_black_excluded_outputs(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -156,7 +162,12 @@ impl ProjectDto {
                 project.set_input_audio_strip(strip.input, strip.state),
                 "validated input audio strip must reference an input"
             );
+            project.set_input_audio_group(strip.input, strip.group);
+            // An unusable label is reported by project validation.
+            project.restore_input_audio_label(strip.input, strip.label);
         }
+        // Group names are reported by project validation.
+        project.restore_audio_groups(self.audio_groups);
         for scene in self.scenes {
             project.add_scene(scene);
         }
@@ -200,6 +211,10 @@ impl ProjectDto {
         project.restore_input_categories(self.input_lifecycle.categories);
         for (input, lifecycle) in self.input_lifecycle.entries {
             project.restore_input_lifecycle(input, lifecycle);
+        }
+        // Unknown outputs are reported by project validation.
+        for output in self.fade_to_black_excluded_outputs {
+            project.set_fade_to_black_output(output, false);
         }
         project
     }
@@ -264,10 +279,32 @@ fn parse_input_audio_strip(value: Value) -> Result<InputAudioStrip, DecodeError>
                     ))
                 },
             )?,
+            pan: InputPanBasisPoints::new(object.i32("pan_basis_points")?).ok_or_else(|| {
+                syntax(format!(
+                    "input pan_basis_points must be between {} and {}",
+                    InputPanBasisPoints::MIN,
+                    InputPanBasisPoints::MAX
+                ))
+            })?,
             muted: object.boolean("muted")?,
             soloed: object.boolean("soloed")?,
             follow_video: object.boolean("follow_video")?,
         },
+        label: object.string("label")?,
+        group: parse_optional(object.take("group")?, |value| {
+            let Value::Number(number) = value else {
+                return Err(syntax("input audio strip group must be a number or null"));
+            };
+            u8::try_from(number)
+                .ok()
+                .and_then(fm_model::AudioGroupNumber::new)
+                .ok_or_else(|| {
+                    syntax(format!(
+                        "input audio strip group must be 1 through {}",
+                        fm_model::AUDIO_GROUP_COUNT
+                    ))
+                })
+        })?,
     };
     object.finish()?;
     Ok(strip)

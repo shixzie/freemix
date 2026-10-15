@@ -72,6 +72,8 @@ fn input_statuses() -> Vec<fm_protocol::InputStatus> {
 fn control() -> FakeControl {
     let engine = engine();
     let snapshot = SnapshotMessage {
+        audio_mixer: fm_protocol::AudioMixerStatus::default(),
+        fade_to_black_excluded_outputs: Vec::new(),
         engine: engine.clone(),
         revision: 4,
         show_name: "show".into(),
@@ -150,6 +152,8 @@ fn input_audio_strips() -> Vec<fm_protocol::InputAudioStripStatus> {
     [input(1), input(2)]
         .into_iter()
         .map(|input| fm_protocol::InputAudioStripStatus {
+            pan_basis_points: 0,
+            group: None,
             input,
             gain_millidb: 0,
             balance_basis_points: 0,

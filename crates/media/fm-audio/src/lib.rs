@@ -412,6 +412,158 @@ impl Balance {
     }
 }
 
+/// Exact mono pan position in one-hundredth of a percent.
+///
+/// Pan *positions* a mono source in the stereo image, while [`Balance`]
+/// *trims* the two sides of a signal that is already stereo. A strip has both:
+/// pan acts only when the strip's source layout is mono, and balance then
+/// acts on the destination channels exactly as it does for any strip.
+///
+/// # Pan law
+///
+/// Pan uses the -3 dB constant-power (sine/cosine) law, referenced to 0 dB at
+/// center. For the normalized position `p` in `-1.0..=1.0`:
+///
+/// ```text
+/// theta  = (p + 1) * pi / 4
+/// gain_L = sqrt(2) * cos(theta)
+/// gain_R = sqrt(2) * sin(theta)
+/// ```
+///
+/// - Center leaves both sides at unity, so a centered mono strip keeps its
+///   level and a project that never pans is unaffected.
+/// - `gain_L^2 + gain_R^2 = 2` at every position: the acoustic power is
+///   constant across the sweep, so a source does not dip or swell as it
+///   moves.
+/// - A hard pan is +3 dB (`sqrt(2)`) on the panned side and silence on the
+///   other; equivalently, the center sits 3 dB below a hard pan.
+///
+/// Destination labels other than Left and Right (center, LFE, surrounds)
+/// are unchanged.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Pan(i32);
+
+impl Pan {
+    pub const MIN_BASIS_POINTS: i32 = -10_000;
+    pub const MAX_BASIS_POINTS: i32 = 10_000;
+    pub const CENTER: Self = Self(0);
+
+    #[must_use]
+    pub const fn from_basis_points(value: i32) -> Option<Self> {
+        if value >= Self::MIN_BASIS_POINTS && value <= Self::MAX_BASIS_POINTS {
+            Some(Self(value))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn basis_points(self) -> i32 {
+        self.0
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn normalized(self) -> f32 {
+        self.0 as f32 / Self::MAX_BASIS_POINTS as f32
+    }
+
+    /// The exact pan-law gains `(left, right)` at this position.
+    #[must_use]
+    pub fn gains(self) -> (f32, f32) {
+        pan_law(self.normalized())
+    }
+}
+
+/// The documented [`Pan`] law at normalized position `position`.
+fn pan_law(position: f32) -> (f32, f32) {
+    let theta = (f64::from(position) + 1.0) * std::f64::consts::FRAC_PI_4;
+    #[allow(clippy::cast_possible_truncation)]
+    (
+        (std::f64::consts::SQRT_2 * theta.cos()) as f32,
+        (std::f64::consts::SQRT_2 * theta.sin()) as f32,
+    )
+}
+
+/// The pan-law gain of `gains` (`(left, right)`) toward `destination`.
+const fn pan_gain(gains: (f32, f32), destination: fm_types::Channel) -> f32 {
+    match destination {
+        fm_types::Channel::Left => gains.0,
+        fm_types::Channel::Right => gains.1,
+        _ => 1.0,
+    }
+}
+
+/// Number of VCA-style strip groups on the Master mixer.
+pub const MIXER_GROUP_COUNT: usize = 4;
+
+/// One VCA-style strip group, numbered `1..=MIXER_GROUP_COUNT`.
+///
+/// A group carries no audio of its own. It scales and mutes the strips
+/// assigned to it: a member's effective gain is its own fader times the group
+/// fader (their dB values add), and a member is audible only while neither
+/// the strip nor its group is muted. Solo, balance, pan, delay, and
+/// follow-video remain per strip.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct MixerGroup(u8);
+
+impl MixerGroup {
+    /// Every group in ascending order.
+    pub const ALL: [Self; MIXER_GROUP_COUNT] = [Self(1), Self(2), Self(3), Self(4)];
+
+    #[must_use]
+    pub const fn new(number: u8) -> Option<Self> {
+        if number >= 1 && number as usize <= MIXER_GROUP_COUNT {
+            Some(Self(number))
+        } else {
+            None
+        }
+    }
+
+    #[must_use]
+    pub const fn number(self) -> u8 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize - 1
+    }
+}
+
+/// User-visible state of one [`MixerGroup`] fader.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroupState {
+    pub gain: Gain,
+    pub muted: bool,
+}
+
+impl Default for GroupState {
+    fn default() -> Self {
+        Self {
+            gain: Gain::UNITY,
+            muted: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GroupStrip {
+    state: GroupState,
+    ramp: GainRamp,
+}
+
+impl GroupStrip {
+    const fn unity() -> Self {
+        Self {
+            state: GroupState {
+                gain: Gain::UNITY,
+                muted: false,
+            },
+            ramp: GainRamp::immediate(Gain::UNITY),
+        }
+    }
+}
+
 /// An immutable, owned planar `f32` DSP/generator block.
 ///
 /// Timed media interchange uses [`fm_frame::AudioBlock`]; this type is for
@@ -666,9 +818,13 @@ impl AudioGenerator for ImpulseGenerator {
 pub struct InputState {
     pub gain: Gain,
     pub balance: Balance,
+    /// Mono source position; see [`Pan`] for the law and when it applies.
+    pub pan: Pan,
     pub muted: bool,
     pub soloed: bool,
     pub follow_video: bool,
+    /// The VCA-style group this strip belongs to, if any.
+    pub group: Option<MixerGroup>,
 }
 
 impl Default for InputState {
@@ -676,9 +832,11 @@ impl Default for InputState {
         Self {
             gain: Gain::UNITY,
             balance: Balance::CENTER,
+            pan: Pan::CENTER,
             muted: false,
             soloed: false,
             follow_video: false,
+            group: None,
         }
     }
 }
@@ -760,16 +918,16 @@ struct GainRamp {
     remaining: u16,
 }
 
+/// A per-sample ramp of a normalized balance or pan position.
 #[derive(Clone, Copy, Debug)]
-struct BalanceRamp {
+struct PositionRamp {
     current: f32,
     target: f32,
     remaining: u16,
 }
 
-impl BalanceRamp {
-    fn immediate(balance: Balance) -> Self {
-        let value = balance.normalized();
+impl PositionRamp {
+    const fn immediate(value: f32) -> Self {
         Self {
             current: value,
             target: value,
@@ -777,8 +935,8 @@ impl BalanceRamp {
         }
     }
 
-    fn set(&mut self, target: Balance, samples: usize) {
-        self.target = target.normalized();
+    fn set(&mut self, target: f32, samples: usize) {
+        self.target = target;
         self.remaining = u16::try_from(samples).expect("validated ramp length fits in u16");
         if samples == 0 {
             self.current = self.target;
@@ -832,8 +990,37 @@ struct InputStrip {
     mapping: ChannelMapping,
     state: InputState,
     ramp: GainRamp,
-    balance_ramp: BalanceRamp,
+    balance_ramp: PositionRamp,
+    pan_ramp: PositionRamp,
     delay: SampleDelay,
+}
+
+impl InputStrip {
+    /// Whether pan applies: the strip's source is mono.
+    fn pans(&self) -> bool {
+        self.format.channels.channels().len() == 1
+    }
+}
+
+/// The per-sample ramps one strip steps while it is mixed.
+struct StripRamps {
+    gain: GainRamp,
+    balance: PositionRamp,
+    pan: PositionRamp,
+    group: Option<GainRamp>,
+}
+
+impl StripRamps {
+    /// Advances every ramp one sample and returns `(gain, balance, pan)`,
+    /// where `gain` already includes the group fader.
+    fn next(&mut self) -> (f32, f32, f32) {
+        let group = self.group.as_mut().map_or(1.0, GainRamp::next);
+        (
+            self.gain.next() * group,
+            self.balance.next(),
+            self.pan.next(),
+        )
+    }
 }
 
 /// Master summing behavior when a sample exceeds the normalized range.
@@ -1062,6 +1249,7 @@ impl ChannelMeterAccumulator {
 pub struct MasterMixer {
     format: AudioFormat,
     inputs: BTreeMap<InputId, InputStrip>,
+    groups: [GroupStrip; MIXER_GROUP_COUNT],
     clipping_policy: ClippingPolicy,
     retained_delay_bytes: usize,
 }
@@ -1079,6 +1267,7 @@ impl MasterMixer {
         Ok(Self {
             format,
             inputs: BTreeMap::new(),
+            groups: [GroupStrip::unity(); MIXER_GROUP_COUNT],
             clipping_policy: ClippingPolicy::default(),
             retained_delay_bytes: 0,
         })
@@ -1131,7 +1320,8 @@ impl MasterMixer {
         let channels = format.channels.channels().len();
         let delay = SampleDelay::zero(channels);
         let ramp = GainRamp::immediate(state.gain);
-        let balance_ramp = BalanceRamp::immediate(state.balance);
+        let balance_ramp = PositionRamp::immediate(state.balance.normalized());
+        let pan_ramp = PositionRamp::immediate(state.pan.normalized());
         self.inputs.insert(
             id,
             InputStrip {
@@ -1140,6 +1330,7 @@ impl MasterMixer {
                 state,
                 ramp,
                 balance_ramp,
+                pan_ramp,
                 delay,
             },
         );
@@ -1204,6 +1395,45 @@ impl MasterMixer {
     }
 
     #[must_use]
+    pub fn current_normalized_pan(&self, id: InputId) -> Option<f32> {
+        self.inputs.get(&id).map(|strip| strip.pan_ramp.current)
+    }
+
+    #[must_use]
+    pub const fn group_state(&self, group: MixerGroup) -> GroupState {
+        self.groups[group.index()].state
+    }
+
+    /// The group fader's current linear gain, mid-ramp included.
+    #[must_use]
+    pub const fn current_group_linear_gain(&self, group: MixerGroup) -> f32 {
+        self.groups[group.index()].ramp.current
+    }
+
+    /// Replaces one group's fader and mute and schedules its linear gain
+    /// ramp. A mute change takes effect at the next rendered sample, like a
+    /// strip mute.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioError::RampTooLong`] for an excessive ramp. No state is
+    /// changed on error.
+    pub fn set_group_state(
+        &mut self,
+        group: MixerGroup,
+        state: GroupState,
+        ramp_samples: usize,
+    ) -> Result<(), AudioError> {
+        if ramp_samples > MAX_RAMP_SAMPLES {
+            return Err(AudioError::RampTooLong(ramp_samples));
+        }
+        let strip = &mut self.groups[group.index()];
+        strip.ramp.set(state.gain, ramp_samples);
+        strip.state = state;
+        Ok(())
+    }
+
+    #[must_use]
     pub fn input_delay_samples(&self, id: InputId) -> Option<usize> {
         self.inputs
             .get(&id)
@@ -1256,9 +1486,11 @@ impl MasterMixer {
         Ok(())
     }
 
-    /// Replaces input state and schedules linear gain and balance ramps.
+    /// Replaces input state and schedules linear gain, balance, and pan
+    /// ramps.
     ///
-    /// Mute and follow-video changes take effect at the next rendered sample.
+    /// Mute, follow-video, and group changes take effect at the next rendered
+    /// sample.
     ///
     /// # Errors
     ///
@@ -1278,7 +1510,10 @@ impl MasterMixer {
             .get_mut(&id)
             .ok_or(AudioError::UnknownInput(id))?;
         strip.ramp.set(state.gain, ramp_samples);
-        strip.balance_ramp.set(state.balance, ramp_samples);
+        strip
+            .balance_ramp
+            .set(state.balance.normalized(), ramp_samples);
+        strip.pan_ramp.set(state.pan.normalized(), ramp_samples);
         strip.state = state;
         Ok(())
     }
@@ -1313,20 +1548,27 @@ impl MasterMixer {
             strip.state = source.state;
             strip.ramp = source.ramp;
             strip.balance_ramp = source.balance_ramp;
+            strip.pan_ramp = source.pan_ramp;
             strip.delay.copy_runtime_state_from(&source.delay);
         }
+        self.groups = other.groups;
         self.retained_delay_bytes = other.retained_delay_bytes;
         self.clipping_policy = other.clipping_policy;
         Ok(())
     }
 
-    /// Clears gain/balance-ramp and delay history while preserving configured
-    /// strip state, mappings, delay lengths, and clipping policy.
+    /// Clears gain/balance/pan-ramp and delay history while preserving
+    /// configured strip and group state, mappings, delay lengths, and
+    /// clipping policy.
     pub fn reset_runtime_state(&mut self) {
         for strip in self.inputs.values_mut() {
             strip.ramp = GainRamp::immediate(strip.state.gain);
-            strip.balance_ramp = BalanceRamp::immediate(strip.state.balance);
+            strip.balance_ramp = PositionRamp::immediate(strip.state.balance.normalized());
+            strip.pan_ramp = PositionRamp::immediate(strip.state.pan.normalized());
             strip.delay.reset();
+        }
+        for group in &mut self.groups {
+            group.ramp = GainRamp::immediate(group.state.gain);
         }
     }
 
@@ -1547,30 +1789,31 @@ impl MasterMixer {
             let block = blocks.iter().find_map(|submission| {
                 (submission.input() == *id).then(|| (submission.block(), submission.source_gain()))
             });
+            let group = strip.state.group.map(|group| self.groups[group.index()]);
             let audible = !strip.state.muted
+                && !group.is_some_and(|group| group.state.muted)
                 && (!any_soloed || strip.state.soloed)
                 && (!strip.state.follow_video || active_video_inputs.contains(id));
-            let mut ramp = strip.ramp;
-            let mut balance_ramp = strip.balance_ramp;
             let mut meter_channels =
                 metering.then(|| [ChannelMeterAccumulator::default(); MAX_CHANNELS]);
             if audible {
+                let mut ramps = StripRamps {
+                    gain: strip.ramp,
+                    balance: strip.balance_ramp,
+                    pan: strip.pan_ramp,
+                    group: group.map(|group| group.ramp),
+                };
                 mix_audible_strip_samples(
                     samples,
                     &self.format.channels,
                     block,
                     strip,
-                    &mut (&mut ramp, &mut balance_ramp),
+                    &mut ramps,
                     meter_channels
                         .as_mut()
                         .map(|meters| &mut meters[..channels]),
                     output,
                 )?;
-            } else {
-                for _ in 0..samples {
-                    ramp.next();
-                    balance_ramp.next();
-                }
             }
             if metering {
                 let readings = meter_channels.expect("input metering was requested");
@@ -1637,6 +1880,12 @@ impl MasterMixer {
             for _ in 0..samples {
                 strip.ramp.next();
                 strip.balance_ramp.next();
+                strip.pan_ramp.next();
+            }
+        }
+        for group in &mut self.groups {
+            for _ in 0..samples {
+                group.ramp.next();
             }
         }
     }
@@ -1729,8 +1978,9 @@ fn validate_mixer_output_planes(
 
 /// Mixes one audible strip into the Master planes while stepping its ramps.
 ///
-/// Advances `ramp` and `balance_ramp` exactly once per sample, mirroring the
-/// inaudible path so later strips observe identical ramp positions.
+/// Steps a copy of the strip's ramps (and its group's fader ramp) once per
+/// sample; the mixer's own ramps advance in `commit_render` whether or not a
+/// strip is audible, so later blocks observe identical ramp positions.
 ///
 /// # Errors
 ///
@@ -1742,24 +1992,31 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
     master_layout: &ChannelLayout,
     block: Option<(&B, SourceGain)>,
     strip: &InputStrip,
-    ramps: &mut (&mut GainRamp, &mut BalanceRamp),
+    ramps: &mut StripRamps,
     mut meter_channels: Option<&mut [ChannelMeterAccumulator]>,
     output: &mut [Vec<f32>],
 ) -> Result<(), AudioError> {
     let source_gain = block.map_or(SourceGain::UNITY, |(_, source_gain)| source_gain);
+    let pans = strip.pans();
     for sample in 0..samples {
         if let Some(meter_channels) = &mut meter_channels {
             for meter in &mut meter_channels[..master_layout.channels().len()] {
                 meter.begin_sample();
             }
         }
-        let strip_gain = ramps.0.next();
-        let balance = ramps.1.next();
+        let (strip_gain, balance, pan) = ramps.next();
+        // Centered (and every non-mono strip) is exactly unity.
+        let pan = if pans && pan != 0.0 {
+            pan_law(pan)
+        } else {
+            (1.0, 1.0)
+        };
         let source_gain = source_gain.at_sample(sample, samples);
         for (source, destination, coefficient) in strip.mapping.compiled_routes() {
             let input = block.map(|(block, _)| block.planes()[source].as_slice());
             let delayed = strip.delay.preview_sample(source, sample, input);
-            let balance_gain = balance_gain(balance, master_layout.channels()[destination]);
+            let label = master_layout.channels()[destination];
+            let balance_gain = balance_gain(balance, label) * pan_gain(pan, label);
             let contribution = delayed * strip_gain * balance_gain * source_gain * coefficient;
             let mapped = output[destination][sample] + contribution;
             if !mapped.is_finite() {
@@ -2768,6 +3025,8 @@ mod tests {
                 format.clone(),
                 ChannelMapping::identity(mono_format().channels).unwrap(),
                 InputState {
+                    pan: Pan::CENTER,
+                    group: None,
                     gain: Gain::from_db(-6.020_6).unwrap(),
                     balance: Balance::CENTER,
                     muted: false,
@@ -2782,6 +3041,8 @@ mod tests {
                 format,
                 ChannelMapping::identity(mono_format().channels).unwrap(),
                 InputState {
+                    pan: Pan::CENTER,
+                    group: None,
                     gain: Gain::UNITY,
                     balance: Balance::CENTER,
                     muted: false,
@@ -2802,6 +3063,8 @@ mod tests {
             assert_close(*sample, 0.25);
         }
         let muted = InputState {
+            pan: Pan::CENTER,
+            group: None,
             gain: Gain::UNITY,
             balance: Balance::CENTER,
             muted: true,
@@ -2957,6 +3220,8 @@ mod tests {
                 alias,
                 source,
                 InputState {
+                    pan: Pan::CENTER,
+                    group: None,
                     gain: Gain::from_db(-6.020_6).unwrap(),
                     balance: Balance::CENTER,
                     muted: false,
