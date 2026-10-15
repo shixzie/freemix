@@ -13,8 +13,10 @@
 //!
 //! [`TitleAnimationBinding`] packages all of that for a Studio window: it
 //! owns the document, recognises its own saves, flags conflicts, paces
-//! auto-saves and exact previews, and takes the template's [`TitleDesign`]
-//! (canvas and element outlines) when the host can read it.
+//! auto-saves and exact previews (also of a preset the operator is only
+//! hovering), and takes the template's [`TitleDesign`] (canvas and element
+//! outlines), built from the replicated `title_layout_state` (Protocol 2.30)
+//! with [`TitleDesign::from_layout`].
 
 use std::sync::Arc;
 
@@ -30,8 +32,9 @@ use crate::animation_editor::{AnimDocument, ExactPreviewRequest, PreviewRequestI
 mod binding;
 
 pub use binding::{
-    AnimationRefusal, AnimationSaveStatus, DEFAULT_CANVAS, PREVIEW_MIN_INTERVAL, PREVIEW_TIMEOUT,
-    TitleAnimationBinding, TitleDesign, preview_size,
+    AnimationRefusal, AnimationSaveStatus, DEFAULT_CANVAS, PRESET_HOVER_SETTLE,
+    PREVIEW_MIN_INTERVAL, PREVIEW_TIMEOUT, PresetHover, TitleAnimationBinding, TitleDesign,
+    preview_size,
 };
 
 /// The document type an editor of one title template uses.

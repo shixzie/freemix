@@ -1070,8 +1070,8 @@ impl Runtime<'_> {
 
     /// Completes a queued snapshot with one `title_state` per title input,
     /// in input order, then the `playlist_state` and the `grade_state`
-    /// records it announced, then one `title_animation_state` per title
-    /// input, before
+    /// records it announced, then one `title_animation_state` and then one
+    /// `title_layout_state` per title input, before
     /// anything else reaches the peer. The playlist state's frame is the
     /// clock's wall-clock frame: the simulated engine renders only while it
     /// executes commands, so its cursor lags wall time mid-entry. The native
@@ -1106,6 +1106,12 @@ impl Runtime<'_> {
                     .title_animation_states()
                     .into_iter()
                     .map(WireMessage::TitleAnimationState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .title_layout_states()
+                    .into_iter()
+                    .map(WireMessage::TitleLayoutState),
             );
         }
     }

@@ -3409,7 +3409,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AnimOnionHover,
         t(
-            "Mientras arrastra o recorre la línea de tiempo, mostrar contornos tenues unos fotogramas antes (azul) y después (ámbar) del cabezal",
+            "Mostrar contornos tenues de los elementos unos fotogramas antes (azul) y después (ámbar) del cabezal, para leer el movimiento de un vistazo",
         ),
     ),
     (
@@ -3460,7 +3460,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AnimDesignUnavailable,
         t(
-            "El servidor aún no comparte la disposición de los elementos de este título: solo se listan los elementos que ya se mueven, sus preajustes se aplican en el servidor y no se dibujan contornos.",
+            "Este título no tiene disposición de elementos (su plantilla no se cargó): solo se listan los elementos que ya se mueven, sus preajustes se aplican en el servidor y no se dibujan contornos.",
         ),
     ),
     (
@@ -3473,4 +3473,38 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AnimPreviewUnavailable,
         t("Las vistas previas exactas no están disponibles: {reason}."),
     ),
+    (Msg::AnimDock, t("Acoplar")),
+    (
+        Msg::AnimDockHover,
+        t(
+            "Acoplar la ventana Animación en la parte inferior de la consola; arrastre su borde superior para cambiar su altura",
+        ),
+    ),
+    (Msg::AnimFloat, t("Flotar")),
+    (
+        Msg::AnimFloatHover,
+        t(
+            "Hacer flotar la ventana Animación sobre la consola; arrastre sus bordes o su esquina para cambiar su tamaño",
+        ),
+    ),
+    (Msg::AnimBadgePreset, t("VISTA DE PREAJUSTE")),
+    (
+        Msg::AnimBadgePresetHover,
+        t(
+            "{preset} en {name}, solo como vista previa: los contornos muestran su movimiento al instante y el fotograma exacto llega cuando se detiene. Haga clic en el preajuste para aplicarlo (un paso de deshacer); aléjese para cancelar",
+        ),
+    ),
+    (
+        Msg::AnimPresetItemHover,
+        t(
+            "{help}\nDeténgase aquí para verlo en el lienzo; haga clic para aplicarlo (un paso de deshacer)",
+        ),
+    ),
+    (Msg::AnimTargetKindHover, t("Tipo: {kind}")),
+    (Msg::AnimKindText, t("Texto")),
+    (Msg::AnimKindShape, t("Forma")),
+    (Msg::AnimKindImage, t("Imagen")),
+    (Msg::AnimKindVideo, t("Vídeo")),
+    (Msg::AnimKindGroup, t("Grupo")),
+    (Msg::AnimKindOther, t("Otro elemento")),
 ];

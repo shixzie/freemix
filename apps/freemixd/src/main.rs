@@ -9550,6 +9550,13 @@ fn handle_client(
                     &WireMessage::TitleAnimationState(state),
                 )?;
             }
+            for state in control.borrow().title_layout_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::TitleLayoutState(state),
+                )?;
+            }
         }
         SyncPayload::Resume(events) => {
             for event in events {

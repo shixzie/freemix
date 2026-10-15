@@ -2,6 +2,7 @@ mod animation;
 mod decode;
 mod encode;
 mod grade;
+mod layout;
 mod playlist;
 mod title;
 mod value;

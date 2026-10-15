@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.29 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.30 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -535,6 +535,40 @@ Protocol 2.29 edits, replicates, and previews title animations (`GX-011`):
   append discards its staged copy. Simulated and native daemons both
   render the edited animation on air and restore it on restart.
 - 2.28 is refused.
+
+Protocol 2.30 replicates each title template's element layout (`GX-011`), so
+a remote animation editor can list, outline, and apply presets to every
+element, animated or not:
+
+- After the `title_animation_state` records, a snapshot sends one
+  `kind=title_layout_state` record per announced title, in the order of the
+  snapshot's `titles` list (no new count), each carrying `revision` (the
+  snapshot revision), `input`, the template canvas `width` and `height`,
+  and `elements`. A title without a loaded template reports the empty
+  layout: `width=0`, `height=0`, and no elements; otherwise both sides are
+  in `1..=8192` (`MAX_TITLE_CANVAS_SIDE`). A record at another revision,
+  for an unannounced input, twice, or before the animation states forces a
+  fresh snapshot; clients stay synchronizing until every title's layout has
+  arrived. No command edits a template's layout, so it changes only with a
+  new snapshot; there is no layout event.
+- `elements` is one unpadded base64url field of a compact binary encoding
+  (the clip codec's minimal LEB128 varints, signed values zigzag-mapped),
+  at most **36 KiB** raw (`MAX_TITLE_LAYOUT_BYTES`): `elements = count
+  element*`; `element = id(nonzero) kind(byte: 0 text, 1 rectangle, 2
+  image, 3 clock, 4 production_clock, 5 ticker) flags(byte: bit 0 visible,
+  other bits zero) name_len name(UTF-8) x(zigzag) y(zigzag) width height
+  opacity(byte) r g b a(bytes)`. Elements keep template order (so each
+  layout has exactly one encoding), at most **192**
+  (`MAX_TITLE_LAYOUT_ELEMENTS`) with unique ids; names are at most **96**
+  UTF-8 bytes (`MAX_TITLE_ELEMENT_NAME_BYTES`) without control characters
+  and may be empty. Bounds, opacity, and fill are the element's static
+  design values (`style.fill`, `style.opacity`) in template canvas pixels;
+  templates carry no static rotation. The worst-case layout fits one line.
+- The server derives each layout from the `fm_titles` template
+  (`fm_control::title_layout_to_wire`): element names have control
+  characters replaced by spaces and are cut at a character boundary, and a
+  template with more elements lists its first 192 in template order.
+- 2.29 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

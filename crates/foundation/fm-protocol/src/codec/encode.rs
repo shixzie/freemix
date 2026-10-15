@@ -15,8 +15,8 @@ use crate::{
     PlaylistStateMessage, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
     RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
     StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
-    StructuredError, TitleAnimationStateMessage, TitleFieldUpdate, TitlePreviewFrameMessage,
-    TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireMessage,
+    StructuredError, TitleAnimationStateMessage, TitleFieldUpdate, TitleLayoutStateMessage,
+    TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireMessage,
 };
 
 use super::animation::{
@@ -26,6 +26,7 @@ use super::animation::{
 use super::grade::{
     encode_cube_kind, encode_grade, encode_lut_data, validate_grade_name, validate_lut_size,
 };
+use super::layout::encode_layout_elements;
 use super::playlist::{
     encode_frame_rate, encode_optional_entry, encode_playlist_entries, encode_playlist_start,
     encode_playlist_state, playlist_loop,
@@ -88,6 +89,9 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         WireMessage::GradeState(message) => encode_grade_state(&mut record, message)?,
         WireMessage::TitleAnimationState(message) => {
             encode_title_animation_state(&mut record, message)?;
+        }
+        WireMessage::TitleLayoutState(message) => {
+            encode_title_layout_state(&mut record, message)?;
         }
         WireMessage::TitlePreviewRequest(message) => {
             encode_title_preview_request(&mut record, message)?;
@@ -457,6 +461,19 @@ fn encode_title_animation_state(
     record.field("input", message.input)?;
     record.field("animation_revision", message.animation_revision)?;
     record.field_string("clip", clip)
+}
+
+fn encode_title_layout_state(
+    record: &mut Record,
+    message: &TitleLayoutStateMessage,
+) -> Result<(), CodecError> {
+    let elements = encode_layout_elements(&message.layout)?;
+    record.kind("title_layout_state");
+    record.field("revision", message.revision)?;
+    record.field("input", message.input)?;
+    record.field("width", message.layout.width)?;
+    record.field("height", message.layout.height)?;
+    record.field_string("elements", elements)
 }
 
 fn encode_title_preview_request(

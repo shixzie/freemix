@@ -458,3 +458,166 @@ fn elements_without_a_design_take_presets_from_the_server() {
     assert!(binding.has_design());
     assert_eq!(binding.document().targets().len(), 2);
 }
+
+fn pointer(at: egui::Pos2, pressed: Option<bool>) -> Vec<egui::Event> {
+    let mut events = vec![egui::Event::PointerMoved(at)];
+    if let Some(pressed) = pressed {
+        events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events
+}
+
+fn previews(intents: &[StudioIntent]) -> Vec<fm_protocol::TitlePreviewRequest> {
+    intents
+        .iter()
+        .filter_map(|intent| match intent {
+            StudioIntent::TitlePreview(request) => Some(request.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one gesture: open, rest, preview, apply
+fn resting_on_a_preset_previews_it_on_the_canvas_before_it_is_applied() {
+    let context = egui::Context::default();
+    let mut shell = StudioShell::default();
+    let mut state = ready(true, false, 4);
+    state.title_previews = true;
+    shell.open_animation_window(input(TITLE));
+    shell.set_title_design(input(TITLE), design());
+    let mut time = 0.0;
+    let mut frame = |shell: &mut StudioShell, state: &StudioUiState, events| {
+        time += 0.05;
+        draw_at(&context, shell, state, time, events)
+    };
+    frame(&mut shell, &state, Vec::new());
+    frame(&mut shell, &state, Vec::new());
+    // The unanimated "Name" (row 2) is listed and gets a preset picker.
+    let label = shell.animation.tracks.unwrap().label_rect(1);
+    let picker = pos2(label.right() - 50.0, label.center().y);
+    frame(&mut shell, &state, pointer(picker, Some(true)));
+    frame(&mut shell, &state, pointer(picker, Some(false)));
+    frame(&mut shell, &state, Vec::new());
+    let mut rest = None;
+    for step in 1..120_u16 {
+        let at = pos2(picker.x, picker.y + 4.0 * f32::from(step));
+        frame(&mut shell, &state, pointer(at, None));
+        frame(&mut shell, &state, Vec::new());
+        if shell
+            .animation_binding(input(TITLE))
+            .unwrap()
+            .preset_hover()
+            .is_some()
+        {
+            rest = Some(at);
+            break;
+        }
+    }
+    let at = rest.expect("the pointer rests on a preset");
+    let binding = shell.animation_binding(input(TITLE)).unwrap();
+    let hover = binding.preset_hover().unwrap();
+    assert_eq!(hover.target, element(2));
+    // Previewed, not applied: the draft and its history are untouched.
+    assert_eq!(binding.document().undo_depth(), 0);
+    assert!(!binding.document().is_dirty());
+    let hovered = binding.preset_hover_document().unwrap().clip().clone();
+    assert!(
+        hovered
+            .tracks()
+            .iter()
+            .any(|track| track.key.target == element(2))
+    );
+
+    // While the pointer rests, the exact preview of the hovered draft is
+    // asked for (once the earlier draft preview is answered or given up);
+    // nothing is saved.
+    let mut request = None;
+    for _ in 0..120 {
+        let intents = frame(&mut shell, &state, Vec::new());
+        assert_eq!(saves(&intents).len(), 0);
+        if let Some(sent) = previews(&intents)
+            .into_iter()
+            .find(|sent| sent.clip.as_deref() == Some(&hovered))
+        {
+            request = Some(sent);
+            break;
+        }
+    }
+    let request = request.expect("the hovered preset is previewed exactly");
+    assert_eq!(
+        request.sample,
+        fm_protocol::TitlePreviewSample::In {
+            frame: hovered.in_frames() / 2
+        }
+    );
+    state.title_preview = Some(TitlePreviewImage {
+        request_id: request.request_id.clone(),
+        input: wire(TITLE),
+        animation_revision: 4,
+        draft: true,
+        width: request.width,
+        height: request.height,
+        rgba: vec![90; usize::from(request.width) * usize::from(request.height) * 4].into(),
+    });
+    frame(&mut shell, &state, Vec::new());
+    let binding = shell.animation_binding(input(TITLE)).unwrap();
+    assert!(binding.hover_preview_current());
+    assert!(shell.animation_preview_shown(input(TITLE)));
+
+    // A click applies exactly the previewed preset as one undo step and
+    // saves it.
+    frame(&mut shell, &state, pointer(at, Some(true)));
+    let intents = frame(&mut shell, &state, pointer(at, Some(false)));
+    let binding = shell.animation_binding(input(TITLE)).unwrap();
+    assert_eq!(binding.preset_hover(), None);
+    assert_eq!(binding.document().undo_depth(), 1);
+    assert_eq!(binding.document().clip(), &hovered);
+    let mut saved = saves(&intents).len();
+    if saved == 0 {
+        saved = saves(&frame(&mut shell, &state, Vec::new())).len();
+    }
+    assert_eq!(saved, 1, "auto-save sends the applied preset");
+}
+
+#[test]
+fn the_window_docks_and_remembers_its_sizes_in_the_layout() {
+    let context = egui::Context::default();
+    let mut shell = StudioShell::default();
+    let state = ready(true, false, 4);
+    shell.open_animation_window(input(TITLE));
+    shell.set_title_design(input(TITLE), design());
+    draw(&context, &mut shell, &state);
+    assert!(!shell.animation_docked());
+    // Docked, it draws as a panel along the bottom of the console.
+    let mut layout = shell.layout();
+    layout.animation_docked = true;
+    layout.animation_dock_height = Some(360);
+    shell.set_layout(layout);
+    draw(&context, &mut shell, &state);
+    draw(&context, &mut shell, &state);
+    assert!(shell.animation_docked());
+    let panel = egui::PanelState::load(&context, egui::Id::new(DOCK_ID)).unwrap();
+    assert!((panel.size().y - 360.0).abs() < 1.0, "{:?}", panel.size());
+    assert!(
+        (panel.outer_rect.bottom() - 1000.0).abs() < 30.0,
+        "{:?}",
+        panel.outer_rect
+    );
+    // Both choices persist as preferences.
+    let entries = shell.layout().preference_entries();
+    assert!(entries.contains(&("layout.animation", "docked".to_owned())));
+    assert!(entries.contains(&("layout.animation_dock_height", "360".to_owned())));
+    let mut read = crate::ConsoleLayout::default();
+    assert!(read.apply_preference("layout.animation_size", "900x700"));
+    assert_eq!(read.animation_size, Some((900, 700)));
+    assert!(!read.apply_preference("layout.animation_size", "100x700"));
+    assert!(!read.apply_preference("layout.animation_size", "900"));
+    assert!(!read.apply_preference("layout.animation", "sideways"));
+    assert!(!read.apply_preference("layout.animation_dock_height", "100"));
+}

@@ -42,10 +42,12 @@ pub use dto::{
     MAX_GRADE_STATES, WireGradeSource,
 };
 pub use dto::{
-    MAX_TITLE_ANIMATION_BYTES, MAX_TITLE_PREVIEW_HEIGHT, MAX_TITLE_PREVIEW_PART_BYTES,
-    MAX_TITLE_PREVIEW_PARTS, MAX_TITLE_PREVIEW_WIDTH, TitleAnimationStateMessage,
-    TitlePreviewFrameMessage, TitlePreviewImage, TitlePreviewRequest, TitlePreviewSample,
-    WireTitleClip, WireTitleElementId,
+    MAX_TITLE_ANIMATION_BYTES, MAX_TITLE_CANVAS_SIDE, MAX_TITLE_ELEMENT_NAME_BYTES,
+    MAX_TITLE_LAYOUT_BYTES, MAX_TITLE_LAYOUT_ELEMENTS, MAX_TITLE_PREVIEW_HEIGHT,
+    MAX_TITLE_PREVIEW_PART_BYTES, MAX_TITLE_PREVIEW_PARTS, MAX_TITLE_PREVIEW_WIDTH,
+    TitleAnimationStateMessage, TitleLayoutStateMessage, TitlePreviewFrameMessage,
+    TitlePreviewImage, TitlePreviewRequest, TitlePreviewSample, WireTitleClip, WireTitleElementId,
+    WireTitleElementKind, WireTitleElementOutline, WireTitleLayout,
 };
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, TitlePreviewAssembler, decode_qoi_rgb,

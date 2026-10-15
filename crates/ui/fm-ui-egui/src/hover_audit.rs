@@ -671,9 +671,10 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes
 }
 
-/// The Studio Animation window on the lower third: Simple mode without a
-/// design, Advanced mode with a design, a selection, and an active row, a
-/// conflict, a padlock, and a viewer.
+/// The Studio Animation window on the lower third: Simple mode without and
+/// with a design (kind icons, presets for an unanimated element), docked,
+/// Advanced mode with a design, a selection, and an active row, a conflict,
+/// a padlock, and a viewer.
 fn animation_scenes(locale: Locale) -> Vec<Scene> {
     let title = input(TITLE_INPUT);
     let bar = TrackKey::new(title_element(1), Phase::In, Property::Opacity);
@@ -711,23 +712,28 @@ fn animation_scenes(locale: Locale) -> Vec<Scene> {
             ..Variant::default()
         },
     );
-    let scenes: [(&str, Configure, StudioUiState); 5] = [
-        ("operator/animation", &|_| {}, operator()),
+    let simple_design = |shell: &mut StudioShell| shell.set_title_design(title, title_design());
+    let docked = |shell: &mut StudioShell| {
+        simple_design(shell);
+        shell.layout.animation_docked = true;
+    };
+    let unchanged = |_: &mut StudioShell| {};
+    let conflict = |shell: &mut StudioShell| {
+        advanced(shell);
+        let binding = shell.animation_binding_mut(title).unwrap();
+        binding.document_mut().extend_phase(Phase::In, 30).unwrap();
+        binding.refused(fm_ui_model::title_animation::AnimationRefusal::Conflict);
+    };
+    let scenes: Vec<(&str, Configure, StudioUiState)> = vec![
+        ("operator/animation", &unchanged, operator()),
+        ("operator/animation-design", &simple_design, operator()),
+        ("operator/animation-docked", &docked, operator()),
         ("operator/animation-advanced", &advanced, operator()),
-        (
-            "operator/animation-conflict",
-            &|shell| {
-                advanced(shell);
-                let binding = shell.animation_binding_mut(title).unwrap();
-                binding.document_mut().extend_phase(Phase::In, 30).unwrap();
-                binding.refused(fm_ui_model::title_animation::AnimationRefusal::Conflict);
-            },
-            operator(),
-        ),
+        ("operator/animation-conflict", &conflict, operator()),
         ("operator/animation-locked", &advanced, locked),
         (
             "viewer/animation",
-            &|_| {},
+            &unchanged,
             ready(false, Variant::default()),
         ),
     ];

@@ -1381,6 +1381,16 @@ impl StudioShell {
         self.catalogue.locale = self.locale;
     }
 
+    /// Uploads the monitor images and keeps their stale lamps ageing.
+    fn sync_monitor_images(&mut self, context: &egui::Context, state: &StudioUiState) {
+        self.monitor_textures.sync(context, &state.monitor_images);
+        self.canvas = monitors::canvas_shape(&state.monitor_images, self.canvas);
+        if state.monitor_images.iter().any(Option::is_some) {
+            // Frames age into STALE without any new state arriving.
+            context.request_repaint_after(monitors::MONITOR_REPAINT_INTERVAL);
+        }
+    }
+
     /// Draws one complete shell frame and returns operator intents in UI order.
     ///
     /// The UI must belong to an active `egui` pass, as is customary for
@@ -1390,13 +1400,7 @@ impl StudioShell {
         theme::apply_console_visuals(ui.ctx(), self.appearance.high_contrast);
         self.apply_ui_scale(ui.ctx());
         self.apply_locale(ui.ctx());
-        self.monitor_textures.sync(ui.ctx(), &state.monitor_images);
-        self.canvas = monitors::canvas_shape(&state.monitor_images, self.canvas);
-        if state.monitor_images.iter().any(Option::is_some) {
-            // Frames age into STALE without any new state arriving.
-            ui.ctx()
-                .request_repaint_after(monitors::MONITOR_REPAINT_INTERVAL);
-        }
+        self.sync_monitor_images(ui.ctx(), state);
         self.set_transition_duration_frames(self.transition_duration_frames);
         self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
 
@@ -1449,6 +1453,9 @@ impl StudioShell {
                 .frame(bar_frame)
                 .show(ui, |ui| chrome::draw_status_bar(ui, state, &health));
         }
+        // Docked, the Animation window spans the whole console width below
+        // the monitors; it also follows the authority here every frame.
+        self.draw_animation_dock(ui, state);
         if self.layout.show_side_panel {
             self.draw_side_panel_region(ui, state, &mut intents);
         }

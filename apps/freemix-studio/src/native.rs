@@ -440,6 +440,7 @@ impl eframe::App for StudioApp {
             self.shell
                 .receive_title_updates(std::mem::take(&mut state.title_updates));
             self.state = state;
+            crate::animation::publish_title_designs(&mut self.shell, &self.state);
         }
         #[cfg(feature = "capture-meter-signal")]
         crate::capture_signal::inject(&mut self.state);
@@ -5441,6 +5442,49 @@ mod tests {
             }
         }
 
+        /// The title's layout at the snapshot (Protocol 2.30): element 1,
+        /// the animated bar, and element 2, the name, which does not move.
+        fn title_layout_state() -> fm_protocol::TitleLayoutStateMessage {
+            let element = |id: u128, name: &str, kind, (x, y), (width, height)| {
+                fm_protocol::WireTitleElementOutline {
+                    id: fm_protocol::WireTitleElementId::new(NonZeroU128::new(id).unwrap()),
+                    name: name.into(),
+                    kind,
+                    x,
+                    y,
+                    width,
+                    height,
+                    opacity: 255,
+                    fill: fm_animation::Rgba::new(20, 90, 200, 255),
+                    visible: true,
+                }
+            };
+            fm_protocol::TitleLayoutStateMessage {
+                revision: title_snapshot().revision,
+                input: title_input(),
+                layout: Box::new(fm_protocol::WireTitleLayout {
+                    width: 1_920,
+                    height: 1_080,
+                    elements: vec![
+                        element(
+                            1,
+                            "Bar",
+                            fm_protocol::WireTitleElementKind::Rectangle,
+                            (120, 840),
+                            (900, 140),
+                        ),
+                        element(
+                            2,
+                            "Name",
+                            fm_protocol::WireTitleElementKind::Text,
+                            (160, 860),
+                            (700, 60),
+                        ),
+                    ],
+                }),
+            }
+        }
+
         fn command(request: u64, body: TitleCommandBody) -> TitleCommand {
             TitleCommand {
                 request,
@@ -5610,6 +5654,7 @@ mod tests {
             peer.send(&WireMessage::Snapshot(title_snapshot()));
             peer.send(&WireMessage::TitleState(title_state()));
             peer.send(&WireMessage::TitleAnimationState(title_animation_state()));
+            peer.send(&WireMessage::TitleLayoutState(title_layout_state()));
             let mut answered = false;
             loop {
                 let Some(line) = peer.next_line() else {
@@ -5762,6 +5807,7 @@ mod tests {
             peer.send(&WireMessage::Snapshot(title_snapshot()));
             peer.send(&WireMessage::TitleState(title_state()));
             peer.send(&WireMessage::TitleAnimationState(title_animation_state()));
+            peer.send(&WireMessage::TitleLayoutState(title_layout_state()));
             let mut answered = 0;
             loop {
                 let Some(line) = peer.next_line() else {
@@ -5842,8 +5888,10 @@ mod tests {
         }
 
         #[test]
+        #[allow(clippy::too_many_lines)] // one session: layout, save, conflict, preview
         fn worker_saves_animation_edits_reports_conflicts_and_shows_exact_previews() {
-            use fm_animation::Phase;
+            use fm_animation::{AnimationPreset, Phase};
+            use fm_ui_model::animation_editor::TargetKind;
             use fm_ui_model::title_animation::{
                 AnimationRefusal, AnimationSaveStatus, AuthoritySync, TitleAnimationBinding,
             };
@@ -5867,11 +5915,46 @@ mod tests {
                     && animation(state).is_some()
             });
             assert!(ready.title_previews, "TCP sessions request exact previews");
-            let mut binding = TitleAnimationBinding::new(input, &animation(&ready).unwrap());
 
-            // An edit is saved as `title_animation_set` on its base revision,
-            // without a project revision precondition.
-            binding.document_mut().extend_phase(Phase::In, 20).unwrap();
+            // The replicated layout reaches the Animation window as its
+            // design: every element by name and kind, the unanimated one too.
+            let mut shell = StudioShell::default();
+            crate::animation::publish_title_designs(&mut shell, &ready);
+            let design = shell
+                .title_design(input)
+                .expect("the layout arrived")
+                .clone();
+            assert_eq!(design.canvas, (1_920, 1_080));
+            let outlines: Vec<(&str, TargetKind)> = design
+                .elements
+                .iter()
+                .map(|outline| (outline.name.as_str(), outline.kind))
+                .collect();
+            assert_eq!(
+                outlines,
+                [("Bar", TargetKind::Shape), ("Name", TargetKind::Text)]
+            );
+            let mut binding = TitleAnimationBinding::new(input, &animation(&ready).unwrap());
+            binding.set_design(&design);
+            assert!(binding.has_design());
+
+            // A preset on the element that does not move yet applies locally
+            // as one undo step and is saved as `title_animation_set` on its
+            // base revision, without a project revision precondition.
+            let name = fm_protocol::WireTitleElementId::new(NonZeroU128::new(2).unwrap());
+            assert!(
+                binding
+                    .document()
+                    .clip()
+                    .tracks()
+                    .iter()
+                    .all(|track| track.key.target != name)
+            );
+            binding
+                .document_mut()
+                .apply_preset(name, Phase::In, AnimationPreset::SlideFromLeft, 20)
+                .unwrap();
+            assert_eq!(binding.document().undo_depth(), 1);
             let payload = binding.poll_save(true).unwrap();
             request_sender
                 .send(WorkerRequest::Intent(StudioIntent::TitleAnimation(payload)))
@@ -5888,6 +5971,12 @@ mod tests {
             };
             assert_eq!((wire, base_revision), (title_input(), 2));
             assert_eq!(clip.in_frames(), 20);
+            assert!(
+                clip.tracks()
+                    .iter()
+                    .any(|track| track.key.target == name && track.key.phase == Phase::In),
+                "the unanimated element now moves"
+            );
             let saved = receive_state_where(&updates, |state| {
                 state.pending_commands == 0
                     && animation(state).is_some_and(|status| status.revision == 3)

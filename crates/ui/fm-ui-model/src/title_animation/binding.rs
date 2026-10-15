@@ -25,9 +25,10 @@
 use core::time::Duration;
 use std::sync::Arc;
 
+use fm_animation::{AnimationPreset, Phase};
 use fm_protocol::{
     CommandPayload, MAX_TITLE_PREVIEW_HEIGHT, MAX_TITLE_PREVIEW_WIDTH, TitlePreviewRequest,
-    WireTitleClip, WireTitleElementId,
+    WireTitleClip, WireTitleElementId, WireTitleElementKind, WireTitleLayout,
 };
 use fm_types::InputId;
 
@@ -36,7 +37,8 @@ use super::{
     save_payload, sync_document,
 };
 use crate::animation_editor::{
-    AnimDocument, PreviewCompletion, PreviewKey, PreviewScheduler, TargetOutline,
+    AnimDocument, PreviewCompletion, PreviewKey, PreviewScheduler, TargetBounds, TargetKind,
+    TargetOutline,
 };
 
 /// Shortest gap between two exact preview requests: the server refuses
@@ -45,6 +47,12 @@ pub const PREVIEW_MIN_INTERVAL: Duration = Duration::from_millis(120);
 /// How long an exact preview may stay unanswered before it is given up
 /// (previews are lossy; a lost answer must not block the next one).
 pub const PREVIEW_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long the operator must rest on one preset in the picker before its
+/// exact preview is asked for (the fast proxy preview is immediate).
+pub const PRESET_HOVER_SETTLE: Duration = Duration::from_millis(250);
+/// Preview generations at and above this mark preset-hover previews, so
+/// they never match a draft generation (which counts up from zero).
+const HOVER_GENERATION_BASE: u64 = u64::MAX / 2;
 /// The canvas assumed until the template's design is known.
 pub const DEFAULT_CANVAS: (u32, u32) = (1_920, 1_080);
 
@@ -55,6 +63,47 @@ pub const DEFAULT_CANVAS: (u32, u32) = (1_920, 1_080);
 pub struct TitleDesign {
     pub canvas: (u32, u32),
     pub elements: Vec<TargetOutline<WireTitleElementId>>,
+}
+
+impl TitleDesign {
+    /// The design a replicated `title_layout_state` describes, or `None` for
+    /// a title without a loaded template (a zero canvas). Element kinds map
+    /// to outline kinds (clocks and tickers draw text); a hidden element
+    /// keeps its outline at zero opacity. Names are kept as sent (possibly
+    /// empty; the editor numbers unnamed elements).
+    #[must_use]
+    pub fn from_layout(layout: &WireTitleLayout) -> Option<Self> {
+        if layout.width == 0 || layout.height == 0 {
+            return None;
+        }
+        let elements = layout
+            .elements
+            .iter()
+            .map(|element| {
+                let kind = match element.kind {
+                    WireTitleElementKind::Text
+                    | WireTitleElementKind::Clock
+                    | WireTitleElementKind::ProductionClock
+                    | WireTitleElementKind::Ticker => TargetKind::Text,
+                    WireTitleElementKind::Rectangle => TargetKind::Shape,
+                    WireTitleElementKind::Image => TargetKind::Image,
+                };
+                let mut outline = TargetOutline::new(
+                    element.id,
+                    element.name.clone(),
+                    kind,
+                    TargetBounds::new(element.x, element.y, element.width, element.height),
+                );
+                outline.opacity = if element.visible { element.opacity } else { 0 };
+                outline.color = element.fill;
+                outline
+            })
+            .collect();
+        Some(Self {
+            canvas: (layout.width, layout.height),
+            elements,
+        })
+    }
 }
 
 /// The exact preview size for `canvas`: the largest size of the same shape
@@ -68,6 +117,28 @@ pub fn preview_size(canvas: (u32, u32)) -> (u16, u16) {
     let scale = (max_width / width).min(max_height / height);
     let fit = |side: f64, max: f64| (side * scale).round().clamp(1.0, max) as u16;
     (fit(width, max_width), fit(height, max_height))
+}
+
+/// A preset the operator rests on in the Simple-mode picker: previewed,
+/// not applied.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PresetHover {
+    pub target: WireTitleElementId,
+    pub phase: Phase,
+    pub preset: AnimationPreset,
+    /// The preset's length in frames.
+    pub frames: u32,
+}
+
+/// The draft with a hovered preset applied, for previews only.
+#[derive(Clone, Debug)]
+struct HoverPreview {
+    hover: PresetHover,
+    document: TitleAnimDocument,
+    key: PreviewKey,
+    since: Duration,
+    /// The draft generation the preview was built from.
+    source: u64,
 }
 
 /// How the draft relates to the template's saved animation.
@@ -123,6 +194,8 @@ pub struct TitleAnimationBinding {
     preview_sent_at: Option<Duration>,
     last_preview_issue: Option<Duration>,
     shown: Option<PreviewKey>,
+    hover: Option<HoverPreview>,
+    hover_serial: u64,
 }
 
 impl TitleAnimationBinding {
@@ -151,6 +224,8 @@ impl TitleAnimationBinding {
             preview_sent_at: None,
             last_preview_issue: None,
             shown: None,
+            hover: None,
+            hover_serial: 0,
         }
     }
 
@@ -357,8 +432,103 @@ impl TitleAnimationBinding {
 
     /// Wants an exact preview of the draft at the playhead (call each frame
     /// the canvas shows; repeated wishes for the same frame are free).
+    /// While a preset is hovered, the wish is for the hovered draft, once
+    /// the hover has rested for [`PRESET_HOVER_SETTLE`].
     pub fn want_preview(&mut self, now: Duration) {
-        self.previews.request(self.document.preview_key(), now);
+        match &self.hover {
+            Some(hover) if now.saturating_sub(hover.since) >= PRESET_HOVER_SETTLE => {
+                self.previews.request(hover.key, now);
+            }
+            Some(_) => {}
+            None => self.previews.request(self.document.preview_key(), now),
+        }
+    }
+
+    // ----- preset hover previews ---------------------------------------------
+
+    /// Previews `hover` (or stops previewing with `None`) at time `now`:
+    /// the draft with the preset applied becomes
+    /// [`Self::preset_hover_document`] for a fast proxy, and
+    /// [`Self::want_preview`] asks for its exact preview at the middle of
+    /// the phase once the hover rests. Nothing is applied or saved. A
+    /// preset that cannot apply (no outline for the element, a limit, a
+    /// drag) previews nothing. Repeating the current hover over an
+    /// unchanged draft is free.
+    pub fn set_preset_hover(&mut self, hover: Option<PresetHover>, now: Duration) {
+        let generation = self.document.generation();
+        if self
+            .hover
+            .as_ref()
+            .map(|preview| (preview.hover, preview.source))
+            == hover.map(|hover| (hover, generation))
+        {
+            return;
+        }
+        self.hover = None;
+        let Some(hover) = hover else {
+            return;
+        };
+        let source = &self.document;
+        let (width, height) = source.canvas();
+        let mut document =
+            AnimDocument::new(source.clip().clone(), source.base_revision(), width, height);
+        document.set_targets(source.targets().iter().cloned());
+        if document
+            .apply_preset(hover.target, hover.phase, hover.preset, hover.frames)
+            .is_err()
+        {
+            return;
+        }
+        document.clear_selection();
+        let frame = document.phase_frames() / 2;
+        document.set_playhead(frame);
+        self.hover_serial = self.hover_serial.wrapping_add(1);
+        let key = PreviewKey {
+            generation: HOVER_GENERATION_BASE
+                .saturating_add(self.hover_serial % HOVER_GENERATION_BASE),
+            phase: hover.phase,
+            frame,
+        };
+        self.hover = Some(HoverPreview {
+            hover,
+            document,
+            key,
+            since: now,
+            source: generation,
+        });
+    }
+
+    /// The preset being previewed, if any.
+    #[must_use]
+    pub fn preset_hover(&self) -> Option<PresetHover> {
+        self.hover.as_ref().map(|preview| preview.hover)
+    }
+
+    /// The draft with the hovered preset applied (for the fast proxy).
+    #[must_use]
+    pub fn preset_hover_document(&self) -> Option<&TitleAnimDocument> {
+        self.hover.as_ref().map(|preview| &preview.document)
+    }
+
+    /// The hovered draft, to move its playhead for the fast proxy.
+    pub fn preset_hover_document_mut(&mut self) -> Option<&mut TitleAnimDocument> {
+        self.hover.as_mut().map(|preview| &mut preview.document)
+    }
+
+    /// Whether the last received exact preview shows the hovered preset.
+    #[must_use]
+    pub fn hover_preview_current(&self) -> bool {
+        self.hover
+            .as_ref()
+            .is_some_and(|preview| self.shown == Some(preview.key))
+    }
+
+    /// Whether the last received exact preview showed a hovered preset
+    /// rather than the draft.
+    #[must_use]
+    pub fn shown_preview_is_hover(&self) -> bool {
+        self.shown
+            .is_some_and(|key| key.generation >= HOVER_GENERATION_BASE)
     }
 
     /// The `title_preview_request` to send now, if the debounce elapsed,
@@ -388,10 +558,16 @@ impl TitleAnimationBinding {
         self.preview_sent_at = Some(now);
         let (width, height) = preview_size(self.document.canvas());
         let mut wire = preview_request(&self.document, self.input, request, width, height);
-        // A drag in progress changes the draft before it is marked dirty:
-        // any draft that differs from the saved animation travels along.
-        wire.clip = (self.document.clip() != &*self.authority.clip)
-            .then(|| Box::new(self.document.clip().clone()));
+        let hovered = self
+            .hover
+            .as_ref()
+            .filter(|preview| preview.key == request.key)
+            .map(|preview| preview.document.clip());
+        // A hovered preset, or a draft that differs from the saved
+        // animation (a drag changes it before it is marked dirty), travels
+        // along.
+        let draft = hovered.unwrap_or_else(|| self.document.clip());
+        wire.clip = (draft != &*self.authority.clip).then(|| Box::new(draft.clone()));
         Some(wire)
     }
 
@@ -469,11 +645,12 @@ impl TitleAnimationBinding {
 
     /// Forgets every preview request and answer (for example after a
     /// reconnect or a lost image).
-    pub const fn reset_previews(&mut self) {
+    pub fn reset_previews(&mut self) {
         self.previews.reset();
         self.preview_sent_at = None;
         self.last_preview_issue = None;
         self.shown = None;
+        self.hover = None;
     }
 }
 

@@ -19,7 +19,9 @@ mod automation;
 mod grade;
 mod playlist;
 mod title_animation;
+mod title_layout;
 pub use title_animation::{title_clip_from_wire, title_clip_to_wire};
+pub use title_layout::title_layout_to_wire;
 
 pub use automation::{
     ArmTimeAuthority, AuthorityResolver, AutomationBinding, AutomationError, AutomationIdentity,
@@ -816,6 +818,14 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn title_animation_states(&self) -> Vec<TitleAnimationStateMessage> {
         title_animation::title_animation_states(&self.engine)
+    }
+
+    /// Returns the `title_layout_state` records a session writes after
+    /// [`Self::title_animation_states`]: one per title [`Self::snapshot`]
+    /// announces, in the same order (Protocol 2.30).
+    #[must_use]
+    pub fn title_layout_states(&self) -> Vec<fm_protocol::TitleLayoutStateMessage> {
+        title_layout::title_layout_states(&self.engine)
     }
 
     /// Returns the `playlist_state` a session writes after [`Self::snapshot`]

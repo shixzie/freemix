@@ -15,10 +15,10 @@ use crate::{
     RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
     SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
     StingerReadiness, StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample,
-    StructuredError, TitleAnimationStateMessage, TitleFieldStatus, TitlePreviewFrameMessage,
-    TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireInputId, WireMessage,
-    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
-    WireTitleElementId,
+    StructuredError, TitleAnimationStateMessage, TitleFieldStatus, TitleLayoutStateMessage,
+    TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireInputId,
+    WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
+    WireStreamTargetId, WireTitleElementId,
 };
 
 use super::animation::{
@@ -29,6 +29,7 @@ use super::grade::{
     decode_cube_kind, decode_grade, decode_lut_data, parse_grade_id, validate_grade_name,
     validate_lut_size,
 };
+use super::layout::decode_layout;
 use super::playlist::{
     decode_frame_rate, decode_optional_entry, decode_playlist_entries, decode_playlist_start,
     decode_playlist_state, parse_playlist_loop,
@@ -111,6 +112,9 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "grade_state" => WireMessage::GradeState(decode_grade_state(&mut fields)?),
         "title_animation_state" => {
             WireMessage::TitleAnimationState(decode_title_animation_state(&mut fields)?)
+        }
+        "title_layout_state" => {
+            WireMessage::TitleLayoutState(decode_title_layout_state(&mut fields)?)
         }
         "title_preview_request" => {
             WireMessage::TitlePreviewRequest(decode_title_preview_request(&mut fields)?)
@@ -592,6 +596,26 @@ fn decode_title_animation_state(
         input: fields.canonical_input("input")?,
         animation_revision: fields.canonical_required("animation_revision")?,
         clip: Box::new(decode_clip(&fields.required("clip")?)?),
+    })
+}
+
+fn decode_title_layout_state(fields: &mut Fields) -> Result<TitleLayoutStateMessage, CodecError> {
+    let revision = fields.canonical_required("revision")?;
+    let input = fields.canonical_input("input")?;
+    let side = |fields: &mut Fields, name: &'static str| {
+        let value = fields.canonical_required(name)?;
+        u32::try_from(value).map_err(|_| CodecError::InvalidField {
+            field: name,
+            value: value.to_string(),
+        })
+    };
+    let width = side(fields, "width")?;
+    let height = side(fields, "height")?;
+    let layout = decode_layout(width, height, &fields.required("elements")?)?;
+    Ok(TitleLayoutStateMessage {
+        revision,
+        input,
+        layout: Box::new(layout),
     })
 }
 

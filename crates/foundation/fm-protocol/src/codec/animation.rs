@@ -74,7 +74,7 @@ fn invalid_clip(value: impl Into<String>) -> CodecError {
     }
 }
 
-fn push_varint(out: &mut Vec<u8>, mut value: u128) {
+pub(super) fn push_varint(out: &mut Vec<u8>, mut value: u128) {
     loop {
         #[allow(clippy::cast_possible_truncation)]
         let byte = (value & 0x7f) as u8;
@@ -87,7 +87,7 @@ fn push_varint(out: &mut Vec<u8>, mut value: u128) {
     }
 }
 
-const fn zigzag(value: i64) -> u64 {
+pub(super) const fn zigzag(value: i64) -> u64 {
     #[allow(clippy::cast_sign_loss)]
     let mapped = ((value << 1) ^ (value >> 63)) as u64;
     mapped
@@ -177,20 +177,20 @@ pub fn title_clip_wire_bytes(clip: &WireTitleClip) -> usize {
     clip_bytes(clip).len()
 }
 
-struct Reader<'a> {
-    bytes: &'a [u8],
-    position: usize,
+pub(super) struct Reader<'a> {
+    pub(super) bytes: &'a [u8],
+    pub(super) position: usize,
 }
 
 impl Reader<'_> {
-    fn byte(&mut self) -> Option<u8> {
+    pub(super) fn byte(&mut self) -> Option<u8> {
         let byte = *self.bytes.get(self.position)?;
         self.position += 1;
         Some(byte)
     }
 
     /// A minimal LEB128 varint of at most `bits` significant bits.
-    fn varint(&mut self, bits: u32) -> Option<u128> {
+    pub(super) fn varint(&mut self, bits: u32) -> Option<u128> {
         let mut value = 0_u128;
         let mut shift = 0_u32;
         loop {
@@ -211,7 +211,7 @@ impl Reader<'_> {
         }
     }
 
-    fn u32(&mut self) -> Option<u32> {
+    pub(super) fn u32(&mut self) -> Option<u32> {
         u32::try_from(self.varint(32)?).ok()
     }
 
@@ -219,7 +219,7 @@ impl Reader<'_> {
         Some(unzigzag(u64::try_from(self.varint(64)?).ok()?))
     }
 
-    fn i32(&mut self) -> Option<i32> {
+    pub(super) fn i32(&mut self) -> Option<i32> {
         i32::try_from(self.i64()?).ok()
     }
 

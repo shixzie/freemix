@@ -4955,11 +4955,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.29.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 29));
+    // The previous protocol is refused; the current one is 2.30.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 30));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 28),
+        protocol: ProtocolVersion::new(2, 29),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -4975,7 +4975,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 29)
+        ProtocolVersion::new(2, 30)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -5475,8 +5475,10 @@ fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery()
 }
 
 /// Reads the snapshot, its `title_state` records, and the
-/// `title_animation_state` of every announced title (Protocol 2.29); the
-/// title project announces no playlist and no grades.
+/// `title_animation_state` of every announced title (Protocol 2.29), and
+/// then every title's `title_layout_state` (Protocol 2.30), which must be
+/// the stored template's layout; the title project announces no playlist
+/// and no grades.
 fn title_animation_sync(
     client: &mut Client,
 ) -> (
@@ -5494,6 +5496,25 @@ fn title_animation_sync(
             other => panic!("expected title_animation_state after the title states, got {other:?}"),
         })
         .collect();
+    // Protocol 2.30: then each title's layout, derived from its template.
+    for title in &snapshot.titles {
+        match client.receive() {
+            WireMessage::TitleLayoutState(state) => {
+                assert_eq!(
+                    (state.revision, state.input),
+                    (snapshot.revision, title.input)
+                );
+                assert_eq!(
+                    *state.layout,
+                    fm_control::title_layout_to_wire(&process_title_template())
+                );
+                assert_ne!(state.layout.elements, []);
+            }
+            other => {
+                panic!("expected title_layout_state after the animation states, got {other:?}")
+            }
+        }
+    }
     (snapshot, states)
 }
 

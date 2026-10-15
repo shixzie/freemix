@@ -472,3 +472,76 @@ fn elements_without_an_outline_are_numbered_and_keep_their_active_row() {
         painted_text(&full)
     );
 }
+
+#[test]
+fn resting_on_a_preset_previews_it_and_a_click_applies_it_as_one_step() {
+    use fm_animation::AnimationPreset;
+
+    let mut harness = Harness::new(EditorMode::Simple);
+    // An unanimated logo next to the animated lower third.
+    harness.document.set_targets([
+        TargetOutline::new(
+            TARGET,
+            "Lower third",
+            TargetKind::Shape,
+            TargetBounds::new(100, 800, 900, 160),
+        ),
+        TargetOutline::new(
+            2,
+            "Logo",
+            TargetKind::Image,
+            TargetBounds::new(1_700, 60, 160, 160),
+        ),
+    ]);
+    let output = harness.idle();
+    assert_eq!(harness.state.preset_hover, None);
+    // Open the logo's preset picker.
+    let label = output.tracks.label_rect(1);
+    let picker = Pos2::new(label.right() - 50.0, label.center().y);
+    harness.click(picker);
+    harness.idle();
+    // Move down the open list until the pointer rests on a preset.
+    let mut hovered = None;
+    for step in 1..120_u16 {
+        let at = Pos2::new(picker.x, picker.y + 4.0 * f32::from(step));
+        harness.move_to(at);
+        harness.idle();
+        if let Some(hover) = harness.state.preset_hover {
+            hovered = Some((at, hover));
+            break;
+        }
+    }
+    let (at, hover) = hovered.expect("a preset item is hovered");
+    assert_eq!(hover.target, 2);
+    assert_eq!(hover.phase, Phase::In);
+    assert_eq!(hover.frames, 50, "the phase length");
+    // Hovering changes nothing.
+    assert_eq!(harness.document.undo_depth(), 0);
+    assert!(!harness.document.is_dirty());
+    // A click applies the hovered preset as one undo step, and ends the
+    // hover.
+    harness.click(at);
+    harness.idle();
+    assert_eq!(harness.document.undo_depth(), 1);
+    assert!(
+        harness
+            .document
+            .clip()
+            .tracks()
+            .iter()
+            .any(|track| track.key.target == 2),
+        "{:?} applied to the logo",
+        hover.preset
+    );
+    assert!(AnimationPreset::ALL.contains(&hover.preset));
+    assert_eq!(harness.state.preset_hover, None);
+    harness.document.undo().unwrap();
+    assert!(
+        harness
+            .document
+            .clip()
+            .tracks()
+            .iter()
+            .all(|track| track.key.target != 2)
+    );
+}

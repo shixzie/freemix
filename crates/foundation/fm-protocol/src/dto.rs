@@ -701,6 +701,101 @@ pub struct TitleAnimationStateMessage {
     pub clip: Box<WireTitleClip>,
 }
 
+/// Most elements one [`WireTitleLayout`] lists (Protocol 2.30). A template
+/// with more lists its first elements in template order; the rest cannot
+/// be targeted by an editor.
+pub const MAX_TITLE_LAYOUT_ELEMENTS: usize = 192;
+/// Longest element display name in a [`WireTitleLayout`], in UTF-8 bytes.
+/// Longer template names are cut at a character boundary.
+pub const MAX_TITLE_ELEMENT_NAME_BYTES: usize = 96;
+/// Largest title template canvas side carried in a [`WireTitleLayout`], in
+/// pixels (the `fm_titles` output limit).
+pub const MAX_TITLE_CANVAS_SIDE: u32 = 8_192;
+/// Largest binary encoding of one [`WireTitleLayout`]'s element list, in
+/// bytes; with the bounds above every layout fits (worst case about 28
+/// KiB), and the base64url field stays within
+/// [`crate::MAX_FIELD_VALUE_BYTES`].
+pub const MAX_TITLE_LAYOUT_BYTES: usize = 36 * 1024;
+
+/// What one title template element draws (Protocol 2.30), for editor
+/// outlines and icons.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum WireTitleElementKind {
+    /// Text from a field.
+    Text,
+    /// A filled rectangle.
+    Rectangle,
+    /// An image from a field.
+    Image,
+    /// A scene clock.
+    Clock,
+    /// A shared production clock.
+    ProductionClock,
+    /// A ticker crawl.
+    Ticker,
+}
+
+impl WireTitleElementKind {
+    /// Every kind in wire tag order.
+    pub const ALL: [Self; 6] = [
+        Self::Text,
+        Self::Rectangle,
+        Self::Image,
+        Self::Clock,
+        Self::ProductionClock,
+        Self::Ticker,
+    ];
+}
+
+/// One title template element's static design (Protocol 2.30): what an
+/// animation editor needs to list, outline, and apply presets to it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WireTitleElementOutline {
+    pub id: WireTitleElementId,
+    /// The element's display name, at most
+    /// [`MAX_TITLE_ELEMENT_NAME_BYTES`] bytes with no control characters
+    /// (may be empty).
+    pub name: String,
+    pub kind: WireTitleElementKind,
+    /// Static placement in template canvas pixels.
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    /// Static opacity, `0..=255`.
+    pub opacity: u8,
+    /// Static straight RGBA fill.
+    pub fill: fm_animation::Rgba,
+    /// Whether the element is drawn at all.
+    pub visible: bool,
+}
+
+/// A title template's static layout (Protocol 2.30): its canvas and its
+/// elements in template order. A title without a loaded template has the
+/// empty layout: a zero canvas and no elements.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WireTitleLayout {
+    /// Canvas width and height in pixels: both zero (no template) or both
+    /// in `1..=`[`MAX_TITLE_CANVAS_SIDE`].
+    pub width: u32,
+    pub height: u32,
+    /// At most [`MAX_TITLE_LAYOUT_ELEMENTS`], ids unique.
+    pub elements: Vec<WireTitleElementOutline>,
+}
+
+/// One title template's layout at a snapshot's `revision` (Protocol 2.30).
+///
+/// A session writes exactly one `title_layout_state` per [`TitleSummary`]
+/// of a snapshot, in summary order, after the snapshot's
+/// `title_animation_state` records and before any event. No command edits
+/// a template's layout, so it changes only with a new snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleLayoutStateMessage {
+    pub revision: u64,
+    pub input: WireInputId,
+    pub layout: Box<WireTitleLayout>,
+}
+
 /// Where an exact title preview samples the animation. Wire encoding:
 /// `phase=static|in|hold|out` with `frame` (zero unless `in` or `out`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1878,6 +1973,7 @@ pub enum WireMessage {
     PlaylistState(PlaylistStateMessage),
     GradeState(GradeStateMessage),
     TitleAnimationState(TitleAnimationStateMessage),
+    TitleLayoutState(TitleLayoutStateMessage),
     TitlePreviewRequest(TitlePreviewRequest),
     TitlePreviewFrame(TitlePreviewFrameMessage),
 }

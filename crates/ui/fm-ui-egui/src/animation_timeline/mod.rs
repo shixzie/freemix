@@ -130,6 +130,9 @@ pub struct AnimationTimelineState<T> {
     /// Preset choices for elements without an outline, oldest first; the
     /// caller takes them.
     pub preset_requests: Vec<PresetRequest<T>>,
+    /// The preset the pointer rests on in an open Simple-mode picker this
+    /// frame (previewed by the caller, not applied); `None` otherwise.
+    pub preset_hover: Option<PresetRequest<T>>,
     pub(crate) notice: Option<Notice>,
     last_time: Option<f64>,
     length_edit: Option<u32>,
@@ -148,6 +151,7 @@ impl<T> Default for AnimationTimelineState<T> {
             lock_reason: None,
             outside_presets: None,
             preset_requests: Vec::new(),
+            preset_hover: None,
             notice: None,
             last_time: None,
             length_edit: None,

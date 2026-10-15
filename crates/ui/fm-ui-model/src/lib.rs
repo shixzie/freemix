@@ -21,7 +21,10 @@ use fm_protocol::{
     StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
     TitleFieldUpdate, TitlePhase, TitleStateMessage, WireRecorderSlot,
 };
-use fm_protocol::{GradeChange, GradeStateMessage, TitleAnimationStateMessage};
+use fm_protocol::{
+    GradeChange, GradeStateMessage, TitleAnimationStateMessage, TitleLayoutStateMessage,
+    WireTitleLayout,
+};
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
 pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
@@ -203,6 +206,10 @@ pub struct TitleStatus {
     /// `title_animation_state` for this title arrives, then kept current by
     /// `title_animation_changed`.
     pub animation: Option<TitleAnimationStatus>,
+    /// The template's canvas and element outlines: `None` until the
+    /// snapshot's `title_layout_state` for this title arrives (Protocol
+    /// 2.30). No command changes a layout between snapshots.
+    pub layout: Option<Arc<WireTitleLayout>>,
 }
 
 impl TitleStatus {
@@ -219,6 +226,7 @@ impl TitleStatus {
             phase_frames: 0,
             complete: false,
             animation: None,
+            layout: None,
         }
     }
 }
@@ -764,6 +772,13 @@ impl ProjectState {
     #[must_use]
     pub fn title_animations_complete(&self) -> bool {
         self.titles.iter().all(|title| title.animation.is_some())
+    }
+
+    /// Returns whether every title the snapshot announced has its
+    /// `title_layout_state`.
+    #[must_use]
+    pub fn title_layouts_complete(&self) -> bool {
+        self.titles.iter().all(|title| title.layout.is_some())
     }
 
     /// Returns whether `input` is on air in the replicated desired state: on
@@ -1863,6 +1878,44 @@ impl ClientModel {
             revision: message.animation_revision,
             clip: Arc::from(message.clip),
         });
+        Ok(())
+    }
+
+    /// Adds the template layout of one title the installed snapshot
+    /// announced, from its `title_layout_state` (Protocol 2.30).
+    ///
+    /// `message` must be at the applied revision and name an announced
+    /// title whose animation has arrived and whose layout has not.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::TitleStateMismatch`] otherwise; the model is then
+    /// unchanged and the caller must resynchronize.
+    pub fn apply_title_layout_state(
+        &mut self,
+        message: TitleLayoutStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.input.to_domain();
+        let mismatch = ModelError::TitleStateMismatch(input);
+        if Revision::new(message.revision) != revision {
+            return Err(mismatch);
+        }
+        let title = state
+            .titles
+            .iter_mut()
+            .find(|title| title.input == input)
+            .ok_or(mismatch.clone())?;
+        if title.animation.is_none() || title.layout.is_some() {
+            return Err(mismatch);
+        }
+        title.layout = Some(Arc::from(message.layout));
         Ok(())
     }
 

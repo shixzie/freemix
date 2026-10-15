@@ -299,3 +299,139 @@ fn preview_sizes_keep_the_canvas_shape_within_the_protocol_cap() {
     assert_eq!(preview_size((320, 180)), (640, 360));
     assert_eq!(preview_size((10_000, 1)), (640, 1));
 }
+
+#[test]
+fn replicated_layouts_become_designs() {
+    use fm_protocol::{WireTitleElementKind, WireTitleElementOutline, WireTitleLayout};
+
+    let outline = |id: u128, name: &str, kind, visible| WireTitleElementOutline {
+        id: element(id),
+        name: name.into(),
+        kind,
+        x: -10,
+        y: 20,
+        width: 300,
+        height: 40,
+        opacity: 180,
+        fill: fm_animation::Rgba::new(1, 2, 3, 4),
+        visible,
+    };
+    let layout = WireTitleLayout {
+        width: 1_280,
+        height: 720,
+        elements: vec![
+            outline(4, "Bar", WireTitleElementKind::Rectangle, true),
+            outline(2, "Name", WireTitleElementKind::Text, true),
+            outline(9, "Logo", WireTitleElementKind::Image, false),
+            outline(5, "Clock", WireTitleElementKind::ProductionClock, true),
+            outline(6, "", WireTitleElementKind::Ticker, true),
+        ],
+    };
+    let design = TitleDesign::from_layout(&layout).unwrap();
+    assert_eq!(design.canvas, (1_280, 720));
+    let summary: Vec<_> = design
+        .elements
+        .iter()
+        .map(|outline| {
+            (
+                outline.target,
+                outline.name.as_str(),
+                outline.kind,
+                outline.opacity,
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (element(4), "Bar", TargetKind::Shape, 180),
+            (element(2), "Name", TargetKind::Text, 180),
+            // Hidden elements keep their outline at zero opacity.
+            (element(9), "Logo", TargetKind::Image, 0),
+            (element(5), "Clock", TargetKind::Text, 180),
+            (element(6), "", TargetKind::Text, 180),
+        ]
+    );
+    let bar = &design.elements[0];
+    assert_eq!(bar.bounds, TargetBounds::new(-10, 20, 300, 40));
+    assert_eq!(bar.color, fm_animation::Rgba::new(1, 2, 3, 4));
+    assert_eq!(bar.rotation_mdeg, 0);
+    // A title without a template has no design.
+    assert_eq!(TitleDesign::from_layout(&WireTitleLayout::default()), None);
+}
+
+#[test]
+fn hovered_presets_preview_without_applying_and_apply_as_one_step() {
+    let mut binding = TitleAnimationBinding::new(input(), &status(4, clip(20)));
+    binding.set_design(&design());
+    let hover = PresetHover {
+        target: element(2),
+        phase: Phase::In,
+        preset: AnimationPreset::SlideFromLeft,
+        frames: 20,
+    };
+    binding.set_preset_hover(Some(hover), MS(1_000));
+    assert_eq!(binding.preset_hover(), Some(hover));
+    // The draft is untouched; the hovered draft moves the unanimated name.
+    assert!(!binding.document().is_dirty());
+    assert_eq!(binding.document().clip(), &clip(20));
+    let hovered = binding.preset_hover_document().unwrap();
+    assert!(
+        hovered
+            .clip()
+            .tracks()
+            .iter()
+            .any(|track| track.key.target == element(2))
+    );
+    assert_eq!(
+        hovered.playhead(),
+        10,
+        "the exact preview samples mid-phase"
+    );
+    let hovered_clip = hovered.clip().clone();
+
+    // The exact preview waits for the hover to rest, then carries the
+    // hovered draft at the middle of the phase.
+    binding.want_preview(MS(1_100));
+    assert_eq!(binding.poll_preview(MS(1_400), true), None);
+    binding.want_preview(MS(1_300));
+    let request = binding
+        .poll_preview(MS(1_500), true)
+        .expect("the rested hover is previewed");
+    assert_eq!(request.sample, TitlePreviewSample::In { frame: 10 });
+    assert_eq!(request.clip.as_deref(), Some(&hovered_clip));
+    assert!(!binding.hover_preview_current());
+    assert!(binding.receive_preview(&request.request_id).is_some());
+    assert!(binding.hover_preview_current());
+    assert!(binding.shown_preview_is_hover());
+    assert!(!binding.exact_preview_current(), "not the draft's frame");
+    // Repeating the hover keeps it; nothing is saved meanwhile.
+    binding.set_preset_hover(Some(hover), MS(1_600));
+    assert!(binding.hover_preview_current());
+    assert_eq!(binding.poll_save(true), None);
+
+    // Leaving the picker ends the preview; the draft's own preview follows.
+    binding.set_preset_hover(None, MS(1_700));
+    assert!(binding.preset_hover_document().is_none());
+    binding.want_preview(MS(1_700));
+    let request = binding.poll_preview(MS(2_000), true).unwrap();
+    assert_eq!(request.clip, None, "the clean draft previews the saved one");
+
+    // Applying the preset is one undo step that saves exactly the clip
+    // the hover previewed.
+    binding
+        .document_mut()
+        .apply_preset(element(2), Phase::In, AnimationPreset::SlideFromLeft, 20)
+        .unwrap();
+    assert_eq!(binding.document().undo_depth(), 1);
+    assert_eq!(binding.document().clip(), &hovered_clip);
+    let (base, saved) = saved_clip(&binding.poll_save(true).unwrap());
+    assert_eq!((base, saved), (4, hovered_clip));
+    binding.document_mut().undo().unwrap();
+    assert_eq!(binding.document().clip(), &clip(20));
+
+    // Elements without an outline preview nothing.
+    let mut unoutlined = TitleAnimationBinding::new(input(), &status(4, clip(20)));
+    unoutlined.set_preset_hover(Some(hover), MS(0));
+    assert_eq!(unoutlined.preset_hover(), None);
+}

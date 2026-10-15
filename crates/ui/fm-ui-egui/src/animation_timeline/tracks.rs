@@ -15,7 +15,8 @@ use egui::{
 };
 use fm_animation::{AnimationPreset, Easing, KeyRef, KeySelection, SnapKind, TrackKey};
 use fm_ui_model::animation_editor::{
-    AnimDocument, DragKind, DragStart, EditorMode, Modifiers, Pointer, RetimeHandle, TimelineView,
+    AnimDocument, DragKind, DragStart, EditorMode, Modifiers, Pointer, RetimeHandle, TargetKind,
+    TimelineView,
 };
 
 use fm_ui_model::i18n::{Arg, Locale, Msg};
@@ -102,7 +103,7 @@ impl TrackGeometry {
         )
     }
 
-    fn label_rect(&self, row: usize) -> Rect {
+    pub(crate) fn label_rect(&self, row: usize) -> Rect {
         let top = self.row_center(row) - self.row_height / 2.0;
         Rect::from_min_max(
             pos2(self.rect.left(), top),
@@ -173,9 +174,17 @@ pub fn target_keys<T: Copy + Ord>(document: &AnimDocument<T>, target: T) -> KeyS
         .collect()
 }
 
-/// An element's name: its outline's, or "Element N" numbering the animated
-/// elements without an outline in id order.
+/// An element's name: its outline's (an unnamed outline is "Element N" by
+/// its outline position), or "Element N" numbering the animated elements
+/// without an outline in id order.
 fn target_name<T: Copy + Ord>(l: Locale, document: &AnimDocument<T>, target: T) -> String {
+    if let Some(index) = document
+        .targets()
+        .iter()
+        .position(|outline| outline.target == target && outline.name.trim().is_empty())
+    {
+        return l.format(Msg::AnimElementNumbered, &[("n", Arg::from(index + 1))]);
+    }
     document.target(target).map_or_else(
         || {
             let mut unknown: Vec<T> = document
@@ -197,6 +206,98 @@ fn target_name<T: Copy + Ord>(l: Locale, document: &AnimDocument<T>, target: T) 
         },
         |outline| outline.name.clone(),
     )
+}
+
+/// The localized word for an outline kind.
+pub(crate) fn kind_name(l: Locale, kind: TargetKind) -> &'static str {
+    l.text(match kind {
+        TargetKind::Text => Msg::AnimKindText,
+        TargetKind::Shape => Msg::AnimKindShape,
+        TargetKind::Image => Msg::AnimKindImage,
+        TargetKind::Video => Msg::AnimKindVideo,
+        TargetKind::Group => Msg::AnimKindGroup,
+        TargetKind::Other => Msg::AnimKindOther,
+    })
+}
+
+/// Width a kind icon takes before an element name.
+const KIND_ICON_WIDTH: f32 = 16.0;
+
+/// A small painted icon for an element kind, centred on `center`: a "T"
+/// for text, a square for shapes, a framed mountain for images, a play
+/// triangle for video, stacked squares for groups, and a dot otherwise.
+pub(crate) fn paint_kind_icon(painter: &Painter, center: Pos2, kind: TargetKind, color: Color32) {
+    let stroke = Stroke::new(1.2, color);
+    let half = 5.0;
+    let frame = Rect::from_center_size(center, vec2(half * 2.0, half * 2.0));
+    match kind {
+        TargetKind::Text => {
+            painter.line_segment([frame.left_top(), frame.right_top()], stroke);
+            painter.line_segment([frame.center_top(), frame.center_bottom()], stroke);
+        }
+        TargetKind::Shape => {
+            painter.rect_filled(frame.shrink(1.0), CornerRadius::same(1), faded(color, 0.5));
+            painter.rect_stroke(
+                frame.shrink(1.0),
+                CornerRadius::same(1),
+                stroke,
+                StrokeKind::Inside,
+            );
+        }
+        TargetKind::Image => {
+            painter.rect_stroke(frame, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            painter.add(Shape::line(
+                vec![
+                    pos2(frame.left() + 1.5, frame.bottom() - 2.0),
+                    pos2(frame.left() + 4.0, frame.center().y),
+                    pos2(frame.left() + 6.0, frame.bottom() - 3.5),
+                    pos2(frame.right() - 1.5, frame.top() + 3.0),
+                ],
+                stroke,
+            ));
+        }
+        TargetKind::Video => {
+            painter.add(Shape::convex_polygon(
+                vec![
+                    pos2(frame.left() + 1.0, frame.top()),
+                    pos2(frame.right(), center.y),
+                    pos2(frame.left() + 1.0, frame.bottom()),
+                ],
+                faded(color, 0.5),
+                stroke,
+            ));
+        }
+        TargetKind::Group => {
+            let back = Rect::from_min_size(frame.min, vec2(7.0, 7.0));
+            let front = Rect::from_min_size(frame.min + vec2(3.0, 3.0), vec2(7.0, 7.0));
+            painter.rect_stroke(back, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+            painter.rect_filled(front, CornerRadius::ZERO, raised_color());
+            painter.rect_stroke(front, CornerRadius::ZERO, stroke, StrokeKind::Inside);
+        }
+        TargetKind::Other => {
+            painter.circle_stroke(center, 3.5, stroke);
+        }
+    }
+}
+
+/// `name`'s hover text with the element's kind on a second line, when the
+/// document has an outline for it.
+fn with_kind<T: Copy + Ord>(
+    l: Locale,
+    document: &AnimDocument<T>,
+    target: T,
+    text: String,
+) -> String {
+    match document.target(target) {
+        Some(outline) => format!(
+            "{text}\n{}",
+            l.format(
+                Msg::AnimTargetKindHover,
+                &[("kind", Arg::Str(kind_name(l, outline.kind)))],
+            )
+        ),
+        None => text,
+    }
 }
 
 fn modifiers(ui: &Ui) -> Modifiers {
@@ -762,6 +863,7 @@ fn labels<T: Copy + Ord>(
     let font = FontId::new(legible(11.0), FontFamily::Proportional);
     let mut previous_target = None;
     let mut preset_choice = None;
+    let mut preset_hover = None;
     for (index, row) in rows.iter().enumerate() {
         let rect = geometry.label_rect(index);
         match *row {
@@ -828,11 +930,29 @@ fn labels<T: Copy + Ord>(
                     ui.id().with(("anim-target-label", index)),
                     Sense::hover(),
                 )
-                .on_hover_text(l.format(Msg::AnimTargetLabelHover, &[("name", Arg::Str(&name))]));
-                ui.painter_at(text_rect).text(
-                    pos2(text_rect.left() + 6.0, text_rect.center().y),
+                .on_hover_text(with_kind(
+                    l,
+                    document,
+                    target,
+                    l.format(Msg::AnimTargetLabelHover, &[("name", Arg::Str(&name))]),
+                ));
+                let painter = ui.painter_at(text_rect);
+                let text_left = match document.target(target) {
+                    Some(outline) => {
+                        paint_kind_icon(
+                            &painter,
+                            pos2(text_rect.left() + 6.0 + 5.0, text_rect.center().y),
+                            outline.kind,
+                            text_dim_color(),
+                        );
+                        text_rect.left() + 6.0 + KIND_ICON_WIDTH
+                    }
+                    None => text_rect.left() + 6.0,
+                };
+                painter.text(
+                    pos2(text_left, text_rect.center().y),
                     Align2::LEFT_CENTER,
-                    crate::theme::ellipsize(&name, 18),
+                    crate::theme::ellipsize(&name, 16),
                     font.clone(),
                     text_color(),
                 );
@@ -859,11 +979,23 @@ fn labels<T: Copy + Ord>(
                             .width(picker_rect.width() - 8.0)
                             .show_ui(ui, |ui| {
                                 for preset in AnimationPreset::ALL {
-                                    if ui
+                                    let item = ui
                                         .selectable_label(false, text::preset_name(l, preset))
-                                        .on_hover_text(text::preset_hover(l, preset))
-                                        .clicked()
-                                    {
+                                        .on_hover_text(if document.target(target).is_some() {
+                                            l.format(
+                                                Msg::AnimPresetItemHover,
+                                                &[(
+                                                    "help",
+                                                    Arg::Str(text::preset_hover(l, preset)),
+                                                )],
+                                            )
+                                        } else {
+                                            text::preset_hover(l, preset).to_owned()
+                                        });
+                                    if item.hovered() {
+                                        preset_hover = Some((target, preset));
+                                    }
+                                    if item.clicked() {
                                         preset_choice = Some((target, preset));
                                     }
                                 }
@@ -878,12 +1010,22 @@ fn labels<T: Copy + Ord>(
             }
         }
     }
+    let duration = if document.phase_frames() > 0 {
+        document.phase_frames()
+    } else {
+        (nominal_fps(document) / 2).max(1)
+    };
+    // Only presets that would apply here are previewed.
+    state.preset_hover =
+        preset_hover
+            .filter(|_| preset_choice.is_none())
+            .map(|(target, preset)| PresetRequest {
+                target,
+                phase: document.phase(),
+                preset,
+                frames: duration,
+            });
     if let Some((target, preset)) = preset_choice {
-        let duration = if document.phase_frames() > 0 {
-            document.phase_frames()
-        } else {
-            (nominal_fps(document) / 2).max(1)
-        };
         if document.target(target).is_none() {
             state.preset_requests.push(PresetRequest {
                 target,

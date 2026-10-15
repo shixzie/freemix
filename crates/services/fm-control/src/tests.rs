@@ -4063,3 +4063,231 @@ fn title_animation_edits_are_checked_project_edits_with_state_records_and_undo()
     assert_eq!(states[0].animation_revision, 3);
     assert_eq!(states[0].clip, edited_clip);
 }
+
+/// GX-011, Protocol 2.30: every snapshot's `title_layout_state` records
+/// carry each title template's canvas and element outlines exactly as the
+/// template holds them (names cleaned and bounded for the wire, kinds
+/// mapped, hidden elements kept), one per title in snapshot order; a title
+/// without a template reports the empty layout.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn title_layout_states_match_each_template() {
+    use fm_engine::EngineTitle;
+    use fm_protocol::{
+        MAX_TITLE_ELEMENT_NAME_BYTES, TitleLayoutStateMessage, WireMessage, WireTitleElementId,
+        WireTitleElementKind, WireTitleElementOutline, WireTitleLayout, encode_line,
+    };
+    use fm_titles::fm_animation::Rgba;
+    use fm_titles::{
+        Bounds, Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue,
+        ImageFilter, ImageFit, ImageSource, Style, TemplateId, TitleAnimation, TitleFieldSet,
+        TitleTemplate,
+    };
+
+    struct Expected<'a> {
+        id: u128,
+        name: &'a str,
+        kind: WireTitleElementKind,
+        bounds: (i32, i32, u32, u32),
+        opacity: u8,
+        fill: Rgba,
+        visible: bool,
+    }
+
+    let field = |value: u128| FieldId::new(NonZeroU128::new(value).unwrap());
+    let element = |id: u128, name: &str, kind, bounds, style, visible| Element {
+        id: ElementId::new(NonZeroU128::new(id).unwrap()),
+        name: name.to_owned(),
+        bounds,
+        z_index: 0,
+        visible,
+        style,
+        color_field: None,
+        kind,
+    };
+    let long_name = format!("Sponsor\tlogo {}", "ñ".repeat(60));
+    let template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(9).unwrap()),
+        name: "Lower third".into(),
+        width: 1_920,
+        height: 1_080,
+        background: Color::TRANSPARENT,
+        fields: vec![
+            FieldDefinition {
+                id: field(1),
+                name: "Name".into(),
+                default: FieldValue::Text("Ana".into()),
+            },
+            FieldDefinition {
+                id: field(2),
+                name: "Logo".into(),
+                default: FieldValue::Image(ImageSource::new("asset://logo.png")),
+            },
+        ],
+        elements: vec![
+            element(
+                30,
+                "Bar",
+                ElementKind::Rectangle,
+                Bounds {
+                    x: -40,
+                    y: 840,
+                    width: 1_000,
+                    height: 140,
+                },
+                Style {
+                    fill: Color::new(10, 20, 200, 230),
+                    opacity: 120,
+                    ..Style::default()
+                },
+                false,
+            ),
+            element(
+                7,
+                "Name",
+                ElementKind::Text { field: field(1) },
+                Bounds {
+                    x: 160,
+                    y: 860,
+                    width: 700,
+                    height: 60,
+                },
+                Style::default(),
+                true,
+            ),
+            element(
+                12,
+                &long_name,
+                ElementKind::Image {
+                    field: field(2),
+                    fit: ImageFit::Contain,
+                    filter: ImageFilter::Bilinear,
+                },
+                Bounds {
+                    x: 1_700,
+                    y: 60,
+                    width: 160,
+                    height: 160,
+                },
+                Style::default(),
+                true,
+            ),
+        ],
+        animation: TitleAnimation::default(),
+    };
+    let mut show = ShowState::new(
+        "show",
+        named_inputs([input(1), input(2), input(3), input(4)]),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    let fields = TitleFieldSet::from_template(&template).unwrap();
+    show.set_title(
+        input(3),
+        EngineTitle::new("Lower third", fields.clone())
+            .with_template("titles/lower.fmtitle", template),
+    )
+    .unwrap();
+    show.set_title(input(4), EngineTitle::new("Bare", fields))
+        .unwrap();
+    let control = ControlService::new(
+        Engine::new(
+            show,
+            FrameRate::new(25, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        ),
+        Policy::production(),
+        "engine-a",
+        "log-a",
+        ControlLimits {
+            retained_events: 8,
+            max_subscribers: 4,
+            subscriber_queue: 8,
+        },
+    );
+
+    // The name's tab becomes a space and it is cut at a character boundary.
+    let mut wire_name = "Sponsor logo ".to_owned();
+    while wire_name.len() + 'ñ'.len_utf8() <= MAX_TITLE_ELEMENT_NAME_BYTES {
+        wire_name.push('ñ');
+    }
+    let white = Rgba::new(255, 255, 255, 255);
+    let expected = [
+        Expected {
+            id: 30,
+            name: "Bar",
+            kind: WireTitleElementKind::Rectangle,
+            bounds: (-40, 840, 1_000, 140),
+            opacity: 120,
+            fill: Rgba::new(10, 20, 200, 230),
+            visible: false,
+        },
+        Expected {
+            id: 7,
+            name: "Name",
+            kind: WireTitleElementKind::Text,
+            bounds: (160, 860, 700, 60),
+            opacity: 255,
+            fill: white,
+            visible: true,
+        },
+        Expected {
+            id: 12,
+            name: &wire_name,
+            kind: WireTitleElementKind::Image,
+            bounds: (1_700, 60, 160, 160),
+            opacity: 255,
+            fill: white,
+            visible: true,
+        },
+    ]
+    .into_iter()
+    .map(|expected| WireTitleElementOutline {
+        id: WireTitleElementId::new(NonZeroU128::new(expected.id).unwrap()),
+        name: expected.name.to_owned(),
+        kind: expected.kind,
+        x: expected.bounds.0,
+        y: expected.bounds.1,
+        width: expected.bounds.2,
+        height: expected.bounds.3,
+        opacity: expected.opacity,
+        fill: expected.fill,
+        visible: expected.visible,
+    })
+    .collect();
+    let revision = control.snapshot().snapshot.revision;
+    let states = control.title_layout_states();
+    assert_eq!(
+        states,
+        vec![
+            TitleLayoutStateMessage {
+                revision,
+                input: WireInputId::from_domain(input(3)),
+                layout: Box::new(WireTitleLayout {
+                    width: 1_920,
+                    height: 1_080,
+                    elements: expected,
+                }),
+            },
+            TitleLayoutStateMessage {
+                revision,
+                input: WireInputId::from_domain(input(4)),
+                layout: Box::new(WireTitleLayout::default()),
+            },
+        ]
+    );
+    // One per title, in the snapshot's title order.
+    let announced: Vec<_> = control
+        .snapshot()
+        .snapshot
+        .titles
+        .iter()
+        .map(|title| title.input)
+        .collect();
+    let laid_out: Vec<_> = states.iter().map(|state| state.input).collect();
+    assert_eq!(announced, laid_out);
+    for state in states {
+        encode_line(&WireMessage::TitleLayoutState(state)).unwrap();
+    }
+}

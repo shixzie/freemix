@@ -1744,6 +1744,54 @@ mod titles {
     }
 
     #[test]
+    fn layout_states_follow_the_animation_states_once_per_title() {
+        use fm_protocol::{TitleLayoutStateMessage, WireTitleLayout};
+
+        let layout_state = |revision: u64| TitleLayoutStateMessage {
+            revision,
+            input: WireInputId::from_domain(input(TITLE)),
+            layout: Box::new(WireTitleLayout {
+                width: 1_920,
+                height: 1_080,
+                elements: Vec::new(),
+            }),
+        };
+        let mut model = completed();
+        assert!(!model.state().unwrap().title_layouts_complete());
+        // Before the title's animation state it is refused.
+        assert_eq!(
+            model.apply_title_layout_state(layout_state(10)),
+            Err(ModelError::TitleStateMismatch(input(TITLE)))
+        );
+        model
+            .apply_title_animation_state(animation_state(10, 4))
+            .unwrap();
+        // Wrong revision, unknown title: refused without change.
+        let mut unknown = layout_state(10);
+        unknown.input = WireInputId::from_domain(input(1));
+        for message in [layout_state(9), unknown] {
+            let input = message.input.to_domain();
+            assert_eq!(
+                model.apply_title_layout_state(message),
+                Err(ModelError::TitleStateMismatch(input))
+            );
+        }
+        assert!(!model.state().unwrap().title_layouts_complete());
+        model.apply_title_layout_state(layout_state(10)).unwrap();
+        assert_eq!(
+            model.apply_title_layout_state(layout_state(10)),
+            Err(ModelError::TitleStateMismatch(input(TITLE))),
+            "a layout arrives once"
+        );
+        let state = model.state().unwrap();
+        assert!(state.title_layouts_complete());
+        assert_eq!(
+            state.title(input(TITLE)).unwrap().layout.as_deref(),
+            Some(&*layout_state(10).layout)
+        );
+    }
+
+    #[test]
     fn the_document_adapter_follows_the_authority_and_builds_requests() {
         use crate::animation_editor::{
             AnimDocument, ExactPreviewRequest, PreviewKey, PreviewRequestId,

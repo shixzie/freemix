@@ -58,6 +58,16 @@ pub struct ConsoleLayout {
     /// and Cancel keys, and status card while no manual transition is
     /// active. Hidden by default; they always show during a transition.
     pub show_manual_details: bool,
+    /// Whether the Animation window is docked along the bottom of the
+    /// console instead of floating over it.
+    pub animation_docked: bool,
+    /// The floating Animation window's size the operator resized it to, in
+    /// points; `None` uses the default size. Clamped to the window when
+    /// drawn.
+    pub animation_size: Option<(u16, u16)>,
+    /// The docked Animation panel's height the operator dragged to, in
+    /// points; `None` uses the default height.
+    pub animation_dock_height: Option<u16>,
 }
 
 impl Default for ConsoleLayout {
@@ -70,6 +80,9 @@ impl Default for ConsoleLayout {
             side_panel_width: None,
             show_mixer_details: false,
             show_manual_details: false,
+            animation_docked: false,
+            animation_size: None,
+            animation_dock_height: None,
         }
     }
 }
@@ -80,8 +93,17 @@ impl ConsoleLayout {
     /// Widest side panel width kept in preferences, in points.
     pub const MAX_SIDE_PANEL_WIDTH: u16 = 1_200;
 
+    /// Smallest floating Animation window side kept, in points.
+    pub const MIN_ANIMATION_SIDE: u16 = 360;
+    /// Largest floating Animation window side kept, in points.
+    pub const MAX_ANIMATION_SIDE: u16 = 4_000;
+    /// Lowest docked Animation panel kept, in points.
+    pub const MIN_ANIMATION_DOCK_HEIGHT: u16 = 240;
+    /// Tallest docked Animation panel kept, in points.
+    pub const MAX_ANIMATION_DOCK_HEIGHT: u16 = 2_000;
+
     /// Preference keys, in the order [`Self::preference_entries`] writes them.
-    pub const PREFERENCE_KEYS: [&'static str; 7] = [
+    pub const PREFERENCE_KEYS: [&'static str; 10] = [
         "layout.input_bank",
         "layout.mixer",
         "layout.side_panel",
@@ -89,13 +111,20 @@ impl ConsoleLayout {
         "layout.side_panel_width",
         "layout.mixer_details",
         "layout.manual_details",
+        "layout.animation",
+        "layout.animation_size",
+        "layout.animation_dock_height",
     ];
 
     /// `key = value` pairs that reproduce this layout in a preferences file.
-    /// An automatic side panel width is written as `auto`.
+    /// An automatic width, size, or height is written as `auto`; the
+    /// Animation window as `docked` or `floating`, its size as
+    /// `<width>x<height>`.
     #[must_use]
-    pub fn preference_entries(&self) -> [(&'static str, String); 7] {
+    pub fn preference_entries(&self) -> [(&'static str, String); 10] {
         let shown = |shown: bool| if shown { "shown" } else { "hidden" }.to_owned();
+        let points =
+            |value: Option<u16>| value.map_or_else(|| "auto".to_owned(), |value| value.to_string());
         let [
             bank,
             mixer,
@@ -104,20 +133,60 @@ impl ConsoleLayout {
             width,
             mixer_details,
             manual_details,
+            animation,
+            animation_size,
+            animation_dock_height,
         ] = Self::PREFERENCE_KEYS;
         [
             (bank, shown(self.show_input_bank)),
             (mixer, shown(self.show_mixer)),
             (side, shown(self.show_side_panel)),
             (status, shown(self.show_status_bar)),
-            (
-                width,
-                self.side_panel_width
-                    .map_or_else(|| "auto".to_owned(), |width| width.to_string()),
-            ),
+            (width, points(self.side_panel_width)),
             (mixer_details, shown(self.show_mixer_details)),
             (manual_details, shown(self.show_manual_details)),
+            (
+                animation,
+                if self.animation_docked {
+                    "docked"
+                } else {
+                    "floating"
+                }
+                .to_owned(),
+            ),
+            (
+                animation_size,
+                self.animation_size.map_or_else(
+                    || "auto".to_owned(),
+                    |(width, height)| format!("{width}x{height}"),
+                ),
+            ),
+            (animation_dock_height, points(self.animation_dock_height)),
         ]
+    }
+
+    /// `value` as points within `range`.
+    fn parse_points(value: &str, range: &core::ops::RangeInclusive<u16>) -> Option<u16> {
+        value
+            .parse::<u16>()
+            .ok()
+            .filter(|points| range.contains(points))
+    }
+
+    /// Stores `value`, `auto` (`None`) or points within `range`, in `slot`.
+    /// Returns `false`, leaving `slot` unchanged, for any other value.
+    fn apply_points(
+        slot: &mut Option<u16>,
+        value: &str,
+        range: &core::ops::RangeInclusive<u16>,
+    ) -> bool {
+        if value == "auto" {
+            *slot = None;
+            return true;
+        }
+        Self::parse_points(value, range)
+            .map(|points| *slot = Some(points))
+            .is_some()
     }
 
     /// Applies one preference entry. Returns `false`, leaving the layout
@@ -136,6 +205,9 @@ impl ConsoleLayout {
             width,
             mixer_details,
             manual_details,
+            animation,
+            animation_size,
+            animation_dock_height,
         ] = Self::PREFERENCE_KEYS;
         let flag = match key {
             key if key == bank => &mut self.show_input_bank,
@@ -145,20 +217,42 @@ impl ConsoleLayout {
             key if key == mixer_details => &mut self.show_mixer_details,
             key if key == manual_details => &mut self.show_manual_details,
             key if key == width => {
+                return Self::apply_points(
+                    &mut self.side_panel_width,
+                    value,
+                    &(Self::MIN_SIDE_PANEL_WIDTH..=Self::MAX_SIDE_PANEL_WIDTH),
+                );
+            }
+            key if key == animation => {
+                self.animation_docked = match value {
+                    "docked" => true,
+                    "floating" => false,
+                    _ => return false,
+                };
+                return true;
+            }
+            key if key == animation_size => {
                 if value == "auto" {
-                    self.side_panel_width = None;
+                    self.animation_size = None;
                     return true;
                 }
-                return match value.parse::<u16>() {
-                    Ok(points)
-                        if (Self::MIN_SIDE_PANEL_WIDTH..=Self::MAX_SIDE_PANEL_WIDTH)
-                            .contains(&points) =>
-                    {
-                        self.side_panel_width = Some(points);
-                        true
-                    }
-                    _ => false,
-                };
+                let range = Self::MIN_ANIMATION_SIDE..=Self::MAX_ANIMATION_SIDE;
+                let parsed = value.split_once('x').and_then(|(width, height)| {
+                    Some((
+                        Self::parse_points(width, &range)?,
+                        Self::parse_points(height, &range)?,
+                    ))
+                });
+                return parsed
+                    .map(|sides| self.animation_size = Some(sides))
+                    .is_some();
+            }
+            key if key == animation_dock_height => {
+                return Self::apply_points(
+                    &mut self.animation_dock_height,
+                    value,
+                    &(Self::MIN_ANIMATION_DOCK_HEIGHT..=Self::MAX_ANIMATION_DOCK_HEIGHT),
+                );
             }
             _ => return false,
         };
@@ -169,6 +263,30 @@ impl ConsoleLayout {
             }
             None => false,
         }
+    }
+
+    /// Records a floating Animation window size the operator resized to,
+    /// clamped to the kept range.
+    pub fn record_animation_size(&mut self, size: egui::Vec2) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped first
+        let clamped = |value: f32| {
+            value.round().clamp(
+                f32::from(Self::MIN_ANIMATION_SIDE),
+                f32::from(Self::MAX_ANIMATION_SIDE),
+            ) as u16
+        };
+        self.animation_size = Some((clamped(size.x), clamped(size.y)));
+    }
+
+    /// Records a docked Animation panel height the operator dragged to,
+    /// clamped to the kept range.
+    pub fn record_animation_dock_height(&mut self, height: f32) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped first
+        let points = height.round().clamp(
+            f32::from(Self::MIN_ANIMATION_DOCK_HEIGHT),
+            f32::from(Self::MAX_ANIMATION_DOCK_HEIGHT),
+        ) as u16;
+        self.animation_dock_height = Some(points);
     }
 
     /// The side panel width to draw in a window allowing at most

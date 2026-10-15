@@ -2133,12 +2133,23 @@ auto-save on release as `title_animation_set` on their base revision, a
 change under unsaved edits offers Reload theirs or Overwrite, padlocks and
 missing `EditProject` disable editing with reasons, and the canvas shows the
 debounced, latest-wins exact preview of the draft at the playhead (badged
-exact or fast). Remaining gaps: the protocol does not replicate a template's
-element layout (names, kinds, bounds), so Studio lists only elements that
-already move, applies their presets on the server, and draws no wireframe
-proxy or onion skins; scene layers are not animated; and production clocks
-and images are not drawn by the CLI frame render, so `GX-011` remains
-planned.
+exact or fast). Protocol 2.30 replicates each template's element layout
+(`title_layout_state` after the animation states: canvas size and, per
+element, id, name, kind, bounds, opacity, fill, and visibility, in a strict
+36 KiB binary field of at most 192 elements with 96-byte names, derived by
+`fm-control` from the `fm-titles` template). Studio hands each layout to the
+Animation window as its design: every element is listed by its real name
+with a kind icon, unanimated elements take local presets, and proxy quads
+and onion skins are drawn over the exact preview. In Simple mode, resting on
+a preset previews it before it is applied (its outlines play the motion at
+once and a debounced exact preview of the hovered draft follows); a click
+applies it as one undo step. The window floats resizable or docks along the
+bottom of the console, and its size, dock height, and placement persist in
+`studio.conf` (`layout.animation`, `layout.animation_size`,
+`layout.animation_dock_height`). Remaining gaps: titles without a loaded
+template still list only elements that already move and apply their presets
+on the server; scene layers are not animated; and production clocks and
+images are not drawn by the CLI frame render, so `GX-011` remains planned.
 
 Current implementation boundary for the color grading suite (`SW-019`):
 `fm-grade` is the pure, all-integer grade model (white balance, exposure,
