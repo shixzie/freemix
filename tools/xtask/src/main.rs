@@ -1709,7 +1709,15 @@ mod tests {
     #[test]
     fn rejects_verified_feature_with_planned_test() {
         assert_invalid(
-            |ledger| ledger.features[0].status = "verified".to_owned(),
+            |ledger| {
+                ledger.features[0].status = "verified".to_owned();
+                ledger
+                    .tests
+                    .iter_mut()
+                    .find(|test| test.id == "accept-in-001")
+                    .unwrap()
+                    .state = "planned".to_owned();
+            },
             "IN-001 is verified but acceptance test accept-in-001 has state planned; expected verified evidence",
         );
     }
