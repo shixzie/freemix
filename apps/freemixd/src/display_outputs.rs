@@ -131,12 +131,34 @@ pub(crate) fn wire_state(state: &DisplayOutputState) -> WireDisplayOutputState {
     }
 }
 
+/// Bytes of a `display_inventory` line kept free for the runtime-event
+/// envelope (server identity, revision, generation, sequence).
+const INVENTORY_ENVELOPE_RESERVE: usize = 2 * 1024;
+/// The longest request id a `display_inventory` reply may echo.
+const LONGEST_REQUEST_ID: usize = 128;
+
+/// Whether `inventory` fits one wire line as a `display_inventory` reply
+/// with the longest request id, with room left for the runtime-event
+/// envelope.
+fn inventory_fits(inventory: &DisplayInventory) -> bool {
+    fm_protocol::encode_line(&fm_protocol::WireMessage::DisplayInventory(
+        fm_protocol::DisplayInventoryMessage {
+            request_id: "r".repeat(LONGEST_REQUEST_ID),
+            inventory: inventory.clone(),
+        },
+    ))
+    .is_ok_and(|line| line.len() + INVENTORY_ENVELOPE_RESERVE <= fm_protocol::MAX_LINE_BYTES)
+}
+
 /// The presenter's inventory on the wire, bounded to what the protocol
-/// carries: at most [`MAX_INVENTORY_DISPLAYS`] displays with valid modes, at
-/// most [`MAX_INVENTORY_DISPLAY_MODES`] modes each (largest first).
+/// carries: at most [`MAX_INVENTORY_DISPLAYS`] displays with valid modes in
+/// desktop order (the order `index:<n>` selects in), at most
+/// [`MAX_INVENTORY_DISPLAY_MODES`] modes each (largest first), and fewer
+/// modes when the whole inventory would not fit one wire line.
 pub(crate) fn wire_inventory(report: &DisplayReport) -> DisplayInventory {
-    let displays = report
-        .displays
+    let mut sorted = report.displays.clone();
+    fm_io_api::display::sort_displays(&mut sorted);
+    let displays = sorted
         .iter()
         .filter(|display| display.current_mode.is_valid())
         .take(MAX_INVENTORY_DISPLAYS)
@@ -166,11 +188,25 @@ pub(crate) fn wire_inventory(report: &DisplayReport) -> DisplayInventory {
         .as_deref()
         .map(|error| record_text(bounded(error, MAX_DISPLAY_INVENTORY_ERROR_BYTES)))
         .filter(|error| !error.is_empty());
-    DisplayInventory {
+    let mut inventory = DisplayInventory {
         presenter: true,
         error,
         displays,
+    };
+    // Halve every display's mode list (keeping the largest modes) until the
+    // inventory fits, then drop trailing displays.
+    let mut modes = MAX_INVENTORY_DISPLAY_MODES;
+    while !inventory_fits(&inventory) {
+        if modes > 0 {
+            modes /= 2;
+            for display in &mut inventory.displays {
+                display.modes.truncate(modes);
+            }
+        } else if inventory.displays.pop().is_none() {
+            inventory.error = None;
+        }
     }
+    inventory
 }
 
 /// Keeps a presenter showing the project's display-output slots and the
@@ -178,9 +214,26 @@ pub(crate) fn wire_inventory(report: &DisplayReport) -> DisplayInventory {
 #[derive(Debug, Default)]
 pub(crate) struct DisplayOutputSync {
     applied: BTreeMap<DisplayOutputSlot, DisplayOutputConfig>,
+    /// The presenter displays and error the last wire inventory was built
+    /// from.
+    inventory_source: Option<(Vec<DisplayInfo>, Option<String>)>,
 }
 
 impl DisplayOutputSync {
+    /// The wire inventory for `report`, or `None` when its displays and
+    /// error are the ones the last inventory was built from.
+    pub(crate) fn inventory(&mut self, report: &DisplayReport) -> Option<DisplayInventory> {
+        if self
+            .inventory_source
+            .as_ref()
+            .is_some_and(|(displays, error)| displays == &report.displays && error == &report.error)
+        {
+            return None;
+        }
+        self.inventory_source = Some((report.displays.clone(), report.error.clone()));
+        Some(wire_inventory(report))
+    }
+
     /// The slot edits that bring the presenter from what it was last told to
     /// `desired` (the snapshot's configured slots), recording them as
     /// applied.
@@ -760,6 +813,8 @@ mod tests {
             DisplayMode::new(32, 32, 0),
         );
         unnamed.hdr = HdrCapability::Hdr;
+        // Right of the others in desktop order.
+        unnamed.x = 64;
         let report = DisplayReport {
             states: BTreeMap::new(),
             displays: std::iter::repeat_n(display, 20)
@@ -793,6 +848,91 @@ mod tests {
             "x:1",
             "an unnamed display shows its id"
         );
+    }
+
+    /// Clients resolve `index:<n>` against the inventory's positions, so it
+    /// lists displays in the presenter's desktop order whatever order the
+    /// platform (or the inventory file) enumerated them in.
+    #[test]
+    fn the_wire_inventory_lists_displays_in_desktop_order() {
+        let display = |id: &str, x: i32| {
+            let mut info = DisplayInfo::new(
+                DisplayId::new(id).unwrap(),
+                id,
+                DisplayMode::new(1920, 1080, 60_000),
+            );
+            info.x = x;
+            info
+        };
+        let report = DisplayReport {
+            states: BTreeMap::new(),
+            displays: vec![display("right", 1920), display("left", 0)],
+            error: None,
+        };
+        let inventory = wire_inventory(&report);
+        let ids = inventory
+            .displays
+            .iter()
+            .map(|display| display.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["left", "right"]);
+        // `index:0` is the display the presenter binds for it.
+        let mut tracker = DisplayOutputTracker::new(set(&["display=0"]), false);
+        tracker.reconcile(&report.displays);
+        assert_eq!(
+            tracker
+                .state(0)
+                .and_then(DisplayOutputState::active)
+                .map(|active| active.id.as_str()),
+            Some(ids[0])
+        );
+    }
+
+    /// The largest inventory the protocol allows (every display with long
+    /// text and every mode) still fits one wire line, so publishing it never
+    /// fails.
+    #[test]
+    fn the_largest_wire_inventory_fits_one_line() {
+        let report = DisplayReport {
+            states: BTreeMap::new(),
+            displays: (0..MAX_INVENTORY_DISPLAYS + 2)
+                .map(|index| {
+                    let mut info = DisplayInfo::new(
+                        DisplayId::new(format!("{index:03}{}", " ".repeat(250))).unwrap(),
+                        "~".repeat(300),
+                        DisplayMode::new(7680, 4320, 240_000),
+                    );
+                    info.modes = (0..300)
+                        .map(|step| DisplayMode::new(16_384 - step, 16_384, 999_999))
+                        .collect();
+                    info
+                })
+                .collect(),
+            error: Some("%".repeat(400)),
+        };
+        let inventory = wire_inventory(&report);
+        assert_eq!(inventory.displays.len(), MAX_INVENTORY_DISPLAYS);
+        for message in [
+            fm_protocol::WireMessage::DisplayInventory(fm_protocol::DisplayInventoryMessage {
+                request_id: "r".repeat(64),
+                inventory: inventory.clone(),
+            }),
+            fm_protocol::WireMessage::RuntimeEvent(fm_protocol::RuntimeEventMessage {
+                server: fm_protocol::ServerIdentity {
+                    engine_id: "e".repeat(64),
+                    project_id: "p".repeat(64),
+                    state_epoch: u64::MAX,
+                    log_id: "l".repeat(64),
+                },
+                revision: u64::MAX,
+                generation: u64::MAX,
+                sequence: u64::MAX,
+                event: fm_protocol::RuntimeLifecycleEvent::DisplayInventory(inventory.clone()),
+            }),
+        ] {
+            let line = fm_protocol::encode_line(&message);
+            assert!(line.is_ok(), "{line:?}");
+        }
     }
 
     #[test]

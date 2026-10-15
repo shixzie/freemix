@@ -4670,9 +4670,11 @@ impl NativeDaemon {
                 .set_display_output_status(server, slot, state)
                 .map_err(|error| AppFailure(format!("display output {slot} status: {error}")))?;
         }
-        control
-            .set_display_inventory(server, display_outputs::wire_inventory(&report))
-            .map_err(|error| AppFailure(format!("display inventory: {error}")))?;
+        if let Some(inventory) = self.display_sync.inventory(&report) {
+            control
+                .set_display_inventory(server, inventory)
+                .map_err(|error| AppFailure(format!("display inventory: {error}")))?;
+        }
         Ok(())
     }
 
@@ -8843,7 +8845,7 @@ fn serve_program_worker(
 
 /// Replaces the project's display-output slots with the `--display-output`
 /// overrides, slot 1 first, when any are given (OR-011). The engine then
-/// starts with them and the next save keeps them.
+/// starts with them; [`persist_display_output_overrides`] saves them.
 ///
 /// # Errors
 ///
@@ -8868,6 +8870,26 @@ fn apply_display_output_overrides(
     Ok(stored
         .with_project(project)
         .map_err(|error| AppFailure(format!("--display-output: {error}")))?)
+}
+
+/// Applies the `--display-output` overrides (see
+/// [`apply_display_output_overrides`]) and checkpoints the manifest when
+/// they changed it, before any command is journaled: commands accepted
+/// against the overridden slots must replay against them after a crash.
+///
+/// # Errors
+///
+/// Returns the override refusal or a checkpoint failure.
+fn persist_display_output_overrides(
+    store: &dyn DurableStore,
+    stored: &StoredProject,
+    overrides: &[DisplayOutputConfig],
+) -> AppResult<StoredProject> {
+    let overridden = apply_display_output_overrides(stored.clone(), overrides)?;
+    if overridden.project().display_outputs() != stored.project().display_outputs() {
+        store.checkpoint(&overridden)?;
+    }
+    Ok(overridden)
 }
 
 /// Validates that every configured recorder slot's output selection names an
@@ -9049,12 +9071,12 @@ fn serve_inner(
 
     let store = ProjectStore::new(path)?;
     let project = load_and_recover(&store, recover_to_checkpoint)?;
-    let project = apply_display_output_overrides(project, mode.display_overrides())?;
     let bundle_assets = load_bundle_assets(&store, project.project())?;
     // Opened once and held for the run: this process is the journal's only
     // writer, and reopening it per command is what made an accepted command
     // cost what the whole show had cost so far.
     let journal = DurableJournal::new(store.open_journal_writer()?);
+    let project = persist_display_output_overrides(&journal, &project, mode.display_overrides())?;
     let project_id = project.project().id();
     let engine = restore_engine_with_titles(&project, &bundle_assets)?;
     let identity = format!("project-{project_id}");
@@ -17184,6 +17206,69 @@ mod tests {
         assert!(
             error.to_string().contains("output 4242 does not exist"),
             "{error}"
+        );
+    }
+
+    /// `--display-output` overrides reach the manifest before any command
+    /// is journaled, so an edit accepted against the overridden slots
+    /// replays after a crash instead of conflicting with the old slots.
+    #[test]
+    fn display_output_overrides_are_durable_before_journaled_edits() {
+        let slot = |number| DisplayOutputSlot::new(number).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+        let stored = test_project();
+        let mut project = stored.project().clone();
+        project
+            .set_display_output(slot(1), "display=name:Wall".parse().unwrap())
+            .unwrap();
+        let stored = stored.with_project(project).unwrap();
+        store.save(&stored).unwrap();
+
+        let recovered = load_and_recover(&store, false).unwrap();
+        let journal = DurableJournal::new(store.open_journal_writer().unwrap());
+        let overrides = ["display=index:0".parse::<DisplayOutputConfig>().unwrap()];
+        let mut durable =
+            persist_display_output_overrides(&journal, &recovered, &overrides).unwrap();
+        let mut control = test_control(&durable);
+        let server = test_server(&control);
+        // Slot 2 takes the display slot 1 named before the override.
+        let execution = execute_durable_command(
+            &mut control,
+            &journal,
+            &mut durable,
+            &operator(),
+            &server,
+            &test_command(
+                "wall",
+                "wall-key",
+                CommandPayload::SetDisplayOutput {
+                    slot: slot(2),
+                    config: Box::new("display=name:Wall".parse().unwrap()),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                execution.submission.output.result,
+                CommandResult::Accepted { .. }
+            ),
+            "{:?}",
+            execution.submission.output.result
+        );
+        drop(journal);
+
+        // A crash here recovers from the manifest and the journal.
+        let recovered = load_and_recover(&store, false).unwrap();
+        assert_eq!(
+            recovered.project().display_outputs(),
+            durable.project().display_outputs()
+        );
+        assert_eq!(
+            recovered.project().display_output(slot(1)),
+            Some(&overrides[0])
         );
     }
 
