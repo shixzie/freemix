@@ -219,7 +219,15 @@ pub struct SceneLayerEdit {
     pub operation: SceneLayerOperation,
     /// Whether the edit continues one gesture (a drag or a field scrub):
     /// the server folds it into the latest undo step when that step edits
-    /// the same property of the same layer, so a whole gesture undoes at
-    /// once. The first edit of a gesture sends `false`.
+    /// the same property of the same layer and was opened by the same
+    /// [`Self::gesture`], so a whole gesture undoes at once. The first edit
+    /// of a gesture sends `false`.
     pub continues: bool,
+    /// The gesture the edit belongs to (Protocol 2.41): a token the client
+    /// picks once per gesture, unique across sessions (Studio picks a
+    /// random one), or `0` outside any gesture. A continuing edit folds only
+    /// into a step its own gesture opened, so a gesture whose first edit
+    /// was refused or lost opens a new step instead of folding into an
+    /// earlier gesture's.
+    pub gesture: u64,
 }

@@ -1,4 +1,5 @@
-//! Protocol 2.39 live scene layer edits (SW-006): the `scene_layer_*`
+//! Protocol 2.39 live scene layer edits (SW-006; the gesture token since
+//! 2.41): the `scene_layer_*`
 //! commands, the `scene_layout_changed` durable event carrying the edit and
 //! the scene's whole new layout, and the layout record's crop, mask,
 //! z-order, tilt, and anchor — exactly, and strictly.
@@ -13,7 +14,7 @@ use fm_protocol::{
     WireSceneLayerSource, WireSceneLayerSpec, WireSceneLayout, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.40\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.41\tid=a\tidempotency_key=k";
 
 fn scene(value: u128) -> WireSceneId {
     WireSceneId::new(NonZeroU128::new(value).unwrap())
@@ -46,6 +47,7 @@ fn edit(operation: SceneLayerOperation) -> SceneLayerEdit {
         layer: layer(2),
         operation,
         continues: false,
+        gesture: 0,
     }
 }
 
@@ -142,7 +144,7 @@ fn operations() -> Vec<SceneLayerOperation> {
 
 #[test]
 fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 40));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 41));
 }
 
 #[test]
@@ -154,14 +156,16 @@ fn every_scene_layer_command_round_trips_under_its_payload_name() {
     assert_eq!(names, SceneLayerOperation::PAYLOADS);
     for operation in operations() {
         let payload = operation.payload();
-        for continues in [false, true] {
+        for (continues, gesture) in [(false, 0), (true, 7), (true, u64::MAX)] {
             let line = round_trip(&command(SceneLayerEdit {
                 continues,
+                gesture,
                 ..edit(operation.clone())
             }));
             assert!(
                 line.starts_with(&format!(
-                    "{PREFIX}\tpayload={payload}\tscene=3\tlayer=2\tcontinues={continues}"
+                    "{PREFIX}\tpayload={payload}\tscene=3\tlayer=2\tcontinues={continues}\t\
+                     gesture={gesture}"
                 )),
                 "{line}"
             );
@@ -174,7 +178,7 @@ fn scene_layer_commands_have_an_exact_wire_form() {
     let cases = [
         (
             SceneLayerOperation::SetGeometry(geometry()),
-            "payload=scene_layer_geometry_set\tscene=3\tlayer=2\tcontinues=false\tx=-40\ty=30\t\
+            "payload=scene_layer_geometry_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tx=-40\ty=30\t\
              width=640\theight=360\tquarter_turns=3\ttilt_millidegrees=-12345\tanchor_x=0\t\
              anchor_y=10000\n",
         ),
@@ -183,7 +187,7 @@ fn scene_layer_commands_have_an_exact_wire_form() {
                 enabled: true,
                 opacity: 255,
             },
-            "payload=scene_layer_appearance_set\tscene=3\tlayer=2\tcontinues=false\t\
+            "payload=scene_layer_appearance_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\t\
              enabled=true\topacity=255\n",
         ),
         (
@@ -194,24 +198,24 @@ fn scene_layer_commands_have_an_exact_wire_form() {
                 height: 8,
                 invert: true,
             })),
-            "payload=scene_layer_mask_set\tscene=3\tlayer=2\tcontinues=false\tx=5\ty=6\t\
+            "payload=scene_layer_mask_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tx=5\ty=6\t\
              width=7\theight=8\tinvert=true\n",
         ),
         (
             SceneLayerOperation::SetCrop(None),
-            "payload=scene_layer_crop_clear\tscene=3\tlayer=2\tcontinues=false\n",
+            "payload=scene_layer_crop_clear\tscene=3\tlayer=2\tcontinues=false\tgesture=0\n",
         ),
         (
             SceneLayerOperation::SetZOrder { z_order: -5 },
-            "payload=scene_layer_z_order_set\tscene=3\tlayer=2\tcontinues=false\tz_order=-5\n",
+            "payload=scene_layer_z_order_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tz_order=-5\n",
         ),
         (
             SceneLayerOperation::Move { index: 0 },
-            "payload=scene_layer_move\tscene=3\tlayer=2\tcontinues=false\tindex=0\n",
+            "payload=scene_layer_move\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tindex=0\n",
         ),
         (
             SceneLayerOperation::Remove,
-            "payload=scene_layer_remove\tscene=3\tlayer=2\tcontinues=false\n",
+            "payload=scene_layer_remove\tscene=3\tlayer=2\tcontinues=false\tgesture=0\n",
         ),
     ];
     for (operation, tail) in cases {
@@ -232,9 +236,13 @@ fn scene_layer_commands_are_strict() {
         geometry_line.replace("\tscene=3", "\tscene=03"),
         geometry_line.replace("\tlayer=2", "\tlayer=0"),
         geometry_line.replace("\tlayer=2", ""),
-        // The gesture flag is required and spelled exactly.
+        // The gesture flag and token are required and spelled exactly.
         geometry_line.replace("\tcontinues=false", ""),
         geometry_line.replace("continues=false", "continues=0"),
+        geometry_line.replace("\tgesture=0", ""),
+        geometry_line.replace("gesture=0", "gesture=00"),
+        geometry_line.replace("gesture=0", "gesture=-1"),
+        geometry_line.replace("gesture=0", "gesture=18446744073709551616"),
         // Signed values are canonical.
         geometry_line.replace("x=-40", "x=-040"),
         z_line.replace("z_order=-5", "z_order=-0"),
@@ -305,12 +313,13 @@ fn layout_changes_carry_the_edit_and_the_whole_new_layout() {
         let payload = operation.payload();
         let line = round_trip(&event(SceneLayerEdit {
             continues: true,
+            gesture: 42,
             ..edit(operation)
         }));
         assert!(
             line.contains(&format!(
                 "\tevent=scene_layout_changed\toperation={payload}\tscene=3\tlayer=2\t\
-                 continues=true"
+                 continues=true\tgesture=42"
             )),
             "{line}"
         );

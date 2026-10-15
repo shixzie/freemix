@@ -138,9 +138,19 @@ fn edit(scene: u128, layer: u32, change: SceneLayerChange) -> EngineCommand {
     ))
 }
 
-fn continuing(scene: u128, layer: u32, change: SceneLayerChange) -> EngineCommand {
+/// The first send of gesture `gesture`: it opens the gesture's step.
+fn starting(scene: u128, layer: u32, change: SceneLayerChange, gesture: u64) -> EngineCommand {
+    EngineCommand::SceneLayer(EngineSceneLayerEdit {
+        gesture,
+        ..EngineSceneLayerEdit::new(scene_id(scene), layer_id(layer), change)
+    })
+}
+
+/// A later send of gesture `gesture`: it folds into the gesture's step.
+fn continuing(scene: u128, layer: u32, change: SceneLayerChange, gesture: u64) -> EngineCommand {
     EngineCommand::SceneLayer(EngineSceneLayerEdit {
         continues: true,
+        gesture,
         ..EngineSceneLayerEdit::new(scene_id(scene), layer_id(layer), change)
     })
 }
@@ -286,18 +296,18 @@ fn a_gesture_folds_into_one_undo_step_per_layer_property() {
         |x: i32| SceneLayerChange::Geometry(LayerGeometry::new(x, 0, 1_920, 1_080, Rotation::Deg0));
     // A two-layer drag: each layer's first send opens its step, the later
     // ones fold into it.
-    accept(&mut engine, "a0", edit(1, 2, at(1_300)));
-    accept(&mut engine, "b0", edit(1, 1, both(-60)));
+    accept(&mut engine, "a0", starting(1, 2, at(1_300), 7));
+    accept(&mut engine, "b0", starting(1, 1, both(-60), 7));
     for (step, x) in [1_250, 1_200, 1_150].into_iter().enumerate() {
         accept(
             &mut engine,
             &format!("a{}", step + 1),
-            continuing(1, 2, at(x)),
+            continuing(1, 2, at(x), 7),
         );
         accept(
             &mut engine,
             &format!("b{}", step + 1),
-            continuing(1, 1, both(x - 1_360)),
+            continuing(1, 1, both(x - 1_360), 7),
         );
     }
     assert_eq!(engine.undo_entries().len(), 2);
@@ -315,6 +325,7 @@ fn a_gesture_folds_into_one_undo_step_per_layer_property() {
                 enabled: true,
                 opacity: 9,
             },
+            7,
         ),
     );
     assert_eq!(engine.undo_entries().len(), 3);
@@ -322,7 +333,7 @@ fn a_gesture_folds_into_one_undo_step_per_layer_property() {
     assert_eq!(shown(&engine, 1), moved);
     // A continuing edit never folds across an undo: redo is cleared and a
     // new step opens.
-    accept(&mut engine, "after-undo", continuing(1, 2, at(1_100)));
+    accept(&mut engine, "after-undo", continuing(1, 2, at(1_100), 7));
     assert_eq!(engine.undo_entries().len(), 3);
     undo(&mut engine, "undo-after");
     assert_eq!(shown(&engine, 1), moved);
@@ -333,6 +344,208 @@ fn a_gesture_folds_into_one_undo_step_per_layer_property() {
     redo(&mut engine, "redo-a");
     redo(&mut engine, "redo-b");
     assert_eq!(shown(&engine, 1), moved);
+}
+
+/// A gesture's later sends fold only into the step its own accepted first
+/// send opened: when that send was refused (or never arrived), they open a
+/// new step instead of folding into an earlier gesture of the same layer
+/// property.
+#[test]
+fn a_continuation_without_its_accepted_start_opens_a_new_step() {
+    let mut engine = engine();
+    let original = shown(&engine, 1);
+    let at =
+        |x: i32| SceneLayerChange::Geometry(LayerGeometry::new(x, 740, 480, 270, Rotation::Deg0));
+    // Gesture 1 drags layer 2 to 1150.
+    accept(&mut engine, "g1-0", starting(1, 2, at(1_300), 1));
+    accept(&mut engine, "g1-1", continuing(1, 2, at(1_150), 1));
+    assert_eq!(engine.undo_entries().len(), 1);
+    let first = shown(&engine, 1);
+    // Gesture 2's first send is refused; its later sends open their own
+    // step rather than folding into gesture 1's.
+    let refused = execute(
+        &mut engine,
+        "g2-0",
+        starting(
+            1,
+            2,
+            SceneLayerChange::Geometry(
+                LayerGeometry::new(0, 0, 10, 10, Rotation::Deg0).with_tilt(45_000),
+            ),
+            2,
+        ),
+    );
+    assert_eq!(rejection(&refused).fields[0].code, "invalid_geometry");
+    accept(&mut engine, "g2-1", continuing(1, 2, at(1_000), 2));
+    accept(&mut engine, "g2-2", continuing(1, 2, at(900), 2));
+    assert_eq!(engine.undo_entries().len(), 2);
+    // Gesture 3's first send never arrived: the same.
+    accept(&mut engine, "g3-1", continuing(1, 2, at(800), 3));
+    assert_eq!(engine.undo_entries().len(), 3);
+    // A continuation outside any gesture never folds.
+    accept(&mut engine, "loose", continuing(1, 2, at(700), 0));
+    assert_eq!(engine.undo_entries().len(), 4);
+    let second = {
+        let mut second = first.clone();
+        second.layers[1].geometry.translation_x = 900;
+        second
+    };
+    undo(&mut engine, "undo-loose");
+    undo(&mut engine, "undo-g3");
+    assert_eq!(shown(&engine, 1), second);
+    undo(&mut engine, "undo-g2");
+    assert_eq!(shown(&engine, 1), first);
+    undo(&mut engine, "undo-g1");
+    assert_eq!(shown(&engine, 1), original);
+}
+
+/// A gesture that ends where it started (a designer closed mid-drag sends
+/// the layer back) leaves no undo step that changes nothing.
+#[test]
+fn a_gesture_that_returns_to_its_start_leaves_no_undo_step() {
+    let mut engine = engine();
+    let original = shown(&engine, 1);
+    let at =
+        |x: i32| SceneLayerChange::Geometry(LayerGeometry::new(x, 740, 480, 270, Rotation::Deg0));
+    accept(&mut engine, "kept", edit(1, 1, SceneLayerChange::ZOrder(4)));
+    let kept = shown(&engine, 1);
+    accept(&mut engine, "g-0", starting(1, 2, at(1_300), 5));
+    accept(&mut engine, "g-1", continuing(1, 2, at(1_200), 5));
+    assert_eq!(engine.undo_entries().len(), 2);
+    accept(&mut engine, "g-revert", continuing(1, 2, at(1_360), 5));
+    assert_eq!(shown(&engine, 1), kept);
+    assert_eq!(engine.undo_entries().len(), 1);
+    // A later send of the same gesture opens a new step again.
+    accept(&mut engine, "g-2", continuing(1, 2, at(1_100), 5));
+    assert_eq!(engine.undo_entries().len(), 2);
+    undo(&mut engine, "undo-g");
+    assert_eq!(shown(&engine, 1), kept);
+    undo(&mut engine, "undo-kept");
+    assert_eq!(shown(&engine, 1), original);
+}
+
+/// The compositor draws at most 64 enabled layers of a scene: a live add
+/// or enable past it is refused with a typed reason, so monitors and
+/// previews keep rendering.
+#[test]
+fn live_edits_refuse_more_enabled_layers_than_the_compositor_draws() {
+    let mut engine = engine();
+    let add = |id: u32, enabled: bool| {
+        let mut added = layer(id, SPARE, LayerGeometry::new(0, 0, 10, 10, Rotation::Deg0));
+        added.enabled = enabled;
+        edit(
+            1,
+            id,
+            SceneLayerChange::Add {
+                index: 0,
+                layer: Box::new(added),
+            },
+        )
+    };
+    for id in 3..=64 {
+        accept(&mut engine, &format!("add-{id}"), add(id, true));
+    }
+    assert_eq!(shown(&engine, 1).enabled_layer_count(), 64);
+    let full = shown(&engine, 1);
+    let outcome = execute(&mut engine, "add-65", add(65, true));
+    let refused = rejection(&outcome);
+    assert_eq!(refused.code, RejectionCode::Conflict);
+    assert_eq!(refused.fields[0].code, "too_many_enabled_layers");
+    assert!(refused.message.contains("64 enabled layers"), "{refused:?}");
+    assert_eq!(shown(&engine, 1), full);
+    // A disabled layer may be added, but not enabled.
+    accept(&mut engine, "add-hidden", add(65, false));
+    let enable = SceneLayerChange::Appearance {
+        enabled: true,
+        opacity: u8::MAX,
+    };
+    let outcome = execute(&mut engine, "enable-65", edit(1, 65, enable.clone()));
+    assert_eq!(
+        rejection(&outcome).fields[0].code,
+        "too_many_enabled_layers"
+    );
+    accept(
+        &mut engine,
+        "disable-1",
+        edit(
+            1,
+            1,
+            SceneLayerChange::Appearance {
+                enabled: false,
+                opacity: u8::MAX,
+            },
+        ),
+    );
+    accept(&mut engine, "enable-65-again", edit(1, 65, enable));
+    assert_eq!(shown(&engine, 1).enabled_layer_count(), 64);
+}
+
+/// An alias input renders its target, so a layer drawing an alias of a
+/// Scene input showing the scene (directly, through an alias chain, or
+/// through a nested scene) is a cycle, refused like any other.
+#[test]
+fn layer_sources_follow_alias_inputs_into_cycles() {
+    let mut show = ShowState::new(
+        "aliases",
+        (PROGRAM..=7)
+            .map(|value| (input(value), format!("Input {value}")))
+            .collect(),
+        input(PROGRAM),
+        input(PREVIEW),
+    )
+    .unwrap();
+    for value in [SHARED_A, SHARED_B] {
+        show.set_scene_input(input(value), scene(1), 1_920, 1_080)
+            .unwrap();
+    }
+    show.set_scene(scene(2), 1_920, 1_080);
+    // 5 renders Scene input 4 (scene 1); 6 renders 5; 7 renders input 1.
+    show.set_input_alias(input(SPARE), input(SHARED_B)).unwrap();
+    show.set_input_alias(input(6), input(SPARE)).unwrap();
+    show.set_input_alias(input(7), input(PROGRAM)).unwrap();
+    assert!(show.set_input_alias(input(6), input(99)).is_err());
+    let mut engine = Engine::new(
+        show,
+        FrameRate::new(25, 1).unwrap(),
+        ClockDomainId::new(nonzero(100)),
+    );
+    let add = |scene: u128, id: u32, source: SourceRef| {
+        let mut added = layer(
+            id,
+            PROGRAM,
+            LayerGeometry::new(0, 0, 10, 10, Rotation::Deg0),
+        );
+        added.source = source;
+        edit(
+            scene,
+            id,
+            SceneLayerChange::Add {
+                index: 0,
+                layer: Box::new(added),
+            },
+        )
+    };
+    let before = shown(&engine, 1);
+    for (key, source) in [
+        ("direct", SourceRef::Input(input(SPARE))),
+        ("chain", SourceRef::Input(input(6))),
+    ] {
+        let outcome = execute(&mut engine, key, add(1, 8, source));
+        let refused = rejection(&outcome);
+        assert_eq!(refused.code, RejectionCode::InvalidCommand, "{key}");
+        assert_eq!(refused.fields[0].code, "source_cycle", "{key}");
+        assert_eq!(shown(&engine, 1), before, "{key}");
+    }
+    // An alias of a leaf is no cycle; scene 2 may draw scene 1 through an
+    // alias, after which scene 1 may not draw scene 2.
+    accept(&mut engine, "leaf", add(1, 8, SourceRef::Input(input(7))));
+    accept(&mut engine, "nest", add(2, 9, SourceRef::Input(input(6))));
+    let outcome = execute(
+        &mut engine,
+        "nested",
+        add(1, 9, SourceRef::Scene(scene_id(2))),
+    );
+    assert_eq!(rejection(&outcome).fields[0].code, "source_cycle");
 }
 
 #[test]

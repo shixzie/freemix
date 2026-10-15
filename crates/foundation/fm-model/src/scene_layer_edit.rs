@@ -12,6 +12,11 @@
 //! Removing a layer is refused while the scene's animation has a track for
 //! it ([`SceneLayerEditError::LayerAnimated`]), so its inverse (adding the
 //! same layer back at the same position) restores the scene exactly.
+//!
+//! A scene draws at most [`Scene::MAX_RENDERED_LAYERS`] enabled layers (the
+//! compositor's limit): adding an enabled layer to, or enabling a layer of,
+//! a scene at the limit is refused
+//! ([`SceneLayerEditError::TooManyEnabledLayers`]).
 
 use core::fmt;
 
@@ -70,6 +75,10 @@ pub enum SceneLayerEditError {
     },
     /// The scene's animation has a track for the layer being removed.
     LayerAnimated(LayerId),
+    /// The change adds an enabled layer to, or enables a layer of, a scene
+    /// already drawing [`Scene::MAX_RENDERED_LAYERS`] enabled layers (the
+    /// most the compositor draws).
+    TooManyEnabledLayers,
 }
 
 impl SceneLayerEditError {
@@ -87,6 +96,7 @@ impl SceneLayerEditError {
             Self::InvalidMask => "invalid_mask",
             Self::TooManyEffects | Self::InvalidEffect { .. } => "invalid_effect",
             Self::LayerAnimated(_) => "layer_animated",
+            Self::TooManyEnabledLayers => "too_many_enabled_layers",
         }
     }
 }
@@ -126,6 +136,11 @@ impl fmt::Display for SceneLayerEditError {
             Self::LayerAnimated(layer) => write!(
                 formatter,
                 "scene layer {layer} is animated; delete its animation tracks first"
+            ),
+            Self::TooManyEnabledLayers => write!(
+                formatter,
+                "a scene draws at most {} enabled layers; disable one first",
+                Scene::MAX_RENDERED_LAYERS
             ),
         }
     }
@@ -230,12 +245,21 @@ impl Scene {
                 });
             }
             check_scene_layer(layer, canvas)?;
+            if layer.enabled && !self.can_enable_another_layer() {
+                return Err(SceneLayerEditError::TooManyEnabledLayers);
+            }
             self.layers.insert(*index, (**layer).clone());
             return Ok(());
         }
         let position = self
             .layer_index(id)
             .ok_or(SceneLayerEditError::UnknownLayer(id))?;
+        if let SceneLayerChange::Appearance { enabled: true, .. } = change
+            && !self.layers[position].enabled
+            && !self.can_enable_another_layer()
+        {
+            return Err(SceneLayerEditError::TooManyEnabledLayers);
+        }
         let length = self.layers.len();
         let layer = &mut self.layers[position];
         match change {

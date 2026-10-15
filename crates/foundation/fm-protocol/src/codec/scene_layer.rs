@@ -1,8 +1,10 @@
-//! Live scene layer edit codec (Protocol 2.39, SW-006).
+//! Live scene layer edit codec (Protocol 2.39, SW-006; `gesture` since
+//! 2.41).
 //!
 //! Every `scene_layer_*` payload carries `scene` (canonical scene id),
-//! `layer` (canonical nonzero layer id), and `continues` (whether it folds
-//! into the gesture's undo step), then its operation's fields (see
+//! `layer` (canonical nonzero layer id), `continues` (whether it folds into
+//! the gesture's undo step), and `gesture` (the canonical `u64` gesture
+//! token, `0` for none), then its operation's fields (see
 //! [`crate::SceneLayerOperation`]): canonical decimals (signed values with a
 //! leading `-` only when negative), booleans `true`/`false`, and the
 //! `scene_layer_add` `spec` in the binary layer encoding of the scene
@@ -107,6 +109,7 @@ pub(super) fn encode_scene_layer_edit(
     push("scene", edit.scene.to_string())?;
     push("layer", edit.layer.to_string())?;
     push("continues", edit.continues.to_string())?;
+    push("gesture", edit.gesture.to_string())?;
     match &edit.operation {
         SceneLayerOperation::SetGeometry(geometry) => {
             if !geometry.is_valid() {
@@ -161,6 +164,7 @@ pub(super) fn decode_scene_layer_edit(
     let layer =
         WireSceneLayerId::new(NonZeroU32::new(layer_value).ok_or_else(|| invalid("layer", "0"))?);
     let continues = bool_field(fields, "continues")?;
+    let gesture = unsigned(fields, "gesture", u64::MAX)?;
     let index = |fields: &mut dyn FieldSource| bounded(fields, "index", u16::MAX);
     let operation = match payload {
         "scene_layer_geometry_set" => {
@@ -229,5 +233,6 @@ pub(super) fn decode_scene_layer_edit(
         layer,
         operation,
         continues,
+        gesture,
     }))
 }

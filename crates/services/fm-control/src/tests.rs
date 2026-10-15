@@ -5502,6 +5502,8 @@ fn scene_layer_edits_replicate_the_whole_layout_and_undo_exactly() {
             layer: host,
             operation,
             continues,
+            // Every edit of this drag belongs to one gesture.
+            gesture: 11,
         })
     };
     let first = edit(SceneLayerOperation::SetGeometry(geometry(300)), false);
@@ -5532,6 +5534,7 @@ fn scene_layer_edits_replicate_the_whole_layout_and_undo_exactly() {
                 layer: host,
                 operation: SceneLayerOperation::SetGeometry(geometry(300)),
                 continues: false,
+                gesture: 11,
             },
             layout: layout.clone(),
         }
@@ -5624,6 +5627,7 @@ fn scene_layer_edits_replicate_the_whole_layout_and_undo_exactly() {
                 anchor_y: 5_000,
             }),
             continues: false,
+            gesture: 0,
         })
     );
     let undone = prepared.commit().unwrap();
@@ -5645,6 +5649,7 @@ fn scene_layer_edits_replicate_the_whole_layout_and_undo_exactly() {
                     layer: host,
                     operation: SceneLayerOperation::Remove,
                     continues: false,
+                    gesture: 0,
                 }),
             ),
             0,

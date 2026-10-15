@@ -409,6 +409,9 @@ pub enum AddSceneLayerError {
     MissingInput(InputId),
     MissingScene(SceneId),
     SourceCycle,
+    /// The added layer is enabled and the scene already draws
+    /// [`Scene::MAX_RENDERED_LAYERS`] enabled layers.
+    TooManyEnabledLayers,
 }
 
 /// Why [`Project::set_scene_animation`] refused an animation.
@@ -502,6 +505,11 @@ pub enum SceneLayerError {
     MissingInput(InputId),
     MissingScene(SceneId),
     SourceCycle,
+    /// The edit would leave `scene` with more than
+    /// [`Scene::MAX_RENDERED_LAYERS`] enabled layers.
+    TooManyEnabledLayers {
+        scene: SceneId,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -588,6 +596,11 @@ impl std::fmt::Display for SceneLayerError {
             Self::MissingInput(input) => write!(formatter, "missing source input {input}"),
             Self::MissingScene(scene) => write!(formatter, "missing source scene {scene}"),
             Self::SourceCycle => formatter.write_str("scene layer source would create a cycle"),
+            Self::TooManyEnabledLayers { scene } => write!(
+                formatter,
+                "scene {scene} already draws {} enabled layers, the most the compositor draws",
+                Scene::MAX_RENDERED_LAYERS
+            ),
         }
     }
 }
@@ -602,6 +615,11 @@ impl std::fmt::Display for AddSceneLayerError {
             Self::MissingInput(input) => write!(formatter, "missing source input {input}"),
             Self::MissingScene(scene) => write!(formatter, "missing source scene {scene}"),
             Self::SourceCycle => formatter.write_str("scene layer source would create a cycle"),
+            Self::TooManyEnabledLayers => write!(
+                formatter,
+                "the scene already draws {} enabled layers, the most the compositor draws",
+                Scene::MAX_RENDERED_LAYERS
+            ),
         }
     }
 }
@@ -2189,6 +2207,9 @@ impl Project {
             }
             SourceRef::Input(_) | SourceRef::Scene(_) => {}
         }
+        if layer.enabled && !self.scenes[scene_index].can_enable_another_layer() {
+            return Err(AddSceneLayerError::TooManyEnabledLayers);
+        }
         let mut layer = layer;
         // A layer keeps its id unless the scene already uses it (a duplicate
         // or a copy); then it takes the scene's next free id.
@@ -2351,6 +2372,9 @@ impl Project {
                 AddSceneLayerError::MissingInput(input) => SceneLayerError::MissingInput(input),
                 AddSceneLayerError::MissingScene(scene) => SceneLayerError::MissingScene(scene),
                 AddSceneLayerError::SourceCycle => SceneLayerError::SourceCycle,
+                AddSceneLayerError::TooManyEnabledLayers => {
+                    SceneLayerError::TooManyEnabledLayers { scene }
+                }
             })
     }
 
@@ -2409,6 +2433,9 @@ impl Project {
                 AddSceneLayerError::MissingInput(input) => SceneLayerError::MissingInput(input),
                 AddSceneLayerError::MissingScene(scene) => SceneLayerError::MissingScene(scene),
                 AddSceneLayerError::SourceCycle => SceneLayerError::SourceCycle,
+                AddSceneLayerError::TooManyEnabledLayers => SceneLayerError::TooManyEnabledLayers {
+                    scene: target_scene,
+                },
             })
     }
 
@@ -2566,6 +2593,10 @@ impl Project {
                 index,
                 length,
             });
+        }
+        let target = &self.scenes[scene_index];
+        if enabled && !target.layers[index].enabled && !target.can_enable_another_layer() {
+            return Err(SceneLayerError::TooManyEnabledLayers { scene });
         }
         let layer = &mut self.scenes[scene_index].layers[index];
         layer.enabled = enabled;
@@ -3905,8 +3936,24 @@ impl Scene {
     ///
     /// Persisted scenes are intentionally not bounded by this value: schema v3
     /// allowed larger scene lists, so storage must preserve them.
-    /// Rendering code must enforce this limit when realizing a scene.
+    /// Rendering code must enforce this limit when realizing a scene, and
+    /// every layer edit ([`Scene::apply_layer_change`], the offline
+    /// `Project` layer operations) refuses to enable a layer (or add an
+    /// enabled one) past it, so an edited scene always renders.
     pub const MAX_RENDERED_LAYERS: usize = 64;
+
+    /// How many of the scene's layers are enabled (drawn).
+    #[must_use]
+    pub fn enabled_layer_count(&self) -> usize {
+        self.layers.iter().filter(|layer| layer.enabled).count()
+    }
+
+    /// Whether one more layer may be enabled: the scene draws fewer than
+    /// [`Self::MAX_RENDERED_LAYERS`] enabled layers.
+    #[must_use]
+    pub fn can_enable_another_layer(&self) -> bool {
+        self.enabled_layer_count() < Self::MAX_RENDERED_LAYERS
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

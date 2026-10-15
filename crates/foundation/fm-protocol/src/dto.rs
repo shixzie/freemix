@@ -1078,6 +1078,9 @@ pub struct SceneAnimationStateMessage {
 /// lists its first layers in scene order; the rest cannot be targeted by an
 /// editor, and a live layer add never grows a scene beyond it.
 pub const MAX_SCENE_LAYOUT_LAYERS: usize = 192;
+/// Most enabled (drawn) layers one scene holds: the compositor's limit. A
+/// live layer add or enable past it is refused (`too_many_enabled_layers`).
+pub const MAX_SCENE_ENABLED_LAYERS: usize = 64;
 /// Longest layer display name in a [`WireSceneLayout`], in UTF-8 bytes
 /// (Protocol 2.35; room for each layer's source). Longer names are cut at
 /// a character boundary.

@@ -340,6 +340,9 @@ pub struct EditHistoryEntry {
     command_id: CommandId,
     forward: EngineCommand,
     inverse: EngineCommand,
+    /// The scene layer gesture that opened the entry (`0` for none): only
+    /// that gesture's continuing edits fold into it.
+    gesture: u64,
 }
 
 impl EditHistoryEntry {
@@ -504,28 +507,33 @@ impl EditHistory {
         })
     }
 
-    /// The undo entry a continuing scene layer `edit` folds into: the latest
-    /// entry editing the same property of the same layer, found among the
-    /// newest entries while they are all live edits of the same scene that
-    /// touch other layers (a multi-layer gesture records one entry per
-    /// layer, and edits of different layers commute). Any other entry ends
-    /// the search.
-    fn gesture_entry(
-        &mut self,
-        edit: &crate::EngineSceneLayerEdit,
-    ) -> Option<&mut EditHistoryEntry> {
-        if !edit.continues {
+    /// The position of the undo entry a continuing scene layer `edit` folds
+    /// into: the latest entry its own gesture opened editing the same
+    /// property of the same layer, found among the newest entries while
+    /// they are all live edits of the same scene that touch other layers (a
+    /// multi-layer gesture records one entry per layer, and edits of
+    /// different layers commute). Any other entry ends the search, so a
+    /// continuation whose gesture opened no entry (its first send was
+    /// refused or never arrived) opens its own.
+    fn gesture_entry(&self, edit: &crate::EngineSceneLayerEdit) -> Option<usize> {
+        if !edit.continues || edit.gesture == 0 {
             return None;
         }
-        for entry in self.undo.iter_mut().rev().take(MAX_GESTURE_FOLD_DEPTH) {
+        for (position, entry) in self
+            .undo
+            .iter()
+            .enumerate()
+            .rev()
+            .take(MAX_GESTURE_FOLD_DEPTH)
+        {
             let EngineCommand::SceneLayer(previous) = &entry.forward else {
                 return None;
             };
             if previous.scene != edit.scene {
                 return None;
             }
-            if edit.folds_into(previous) {
-                return Some(entry);
+            if edit.folds_into(previous, entry.gesture) {
+                return Some(position);
             }
             if previous.layer == edit.layer {
                 return None;
@@ -548,6 +556,7 @@ impl EditHistory {
                 // A gesture never folds across an undo.
                 let foldable = self.redo.is_empty();
                 self.redo.clear();
+                let mut gesture = 0;
                 // A recorded animation edit replays without a base revision;
                 // the drift check stands in for it.
                 let forward = match command {
@@ -560,12 +569,19 @@ impl EditHistory {
                     // A gesture's continuing scene layer edit folds into the
                     // gesture's entry for the same layer property: the entry
                     // keeps its inverse (the state before the gesture) and
-                    // takes the new forward edit.
+                    // takes the new forward edit. A gesture back where it
+                    // started changes nothing, so its entry goes.
                     EngineCommand::SceneLayer(edit) => {
-                        if foldable && let Some(entry) = self.gesture_entry(&edit) {
-                            entry.forward = EngineCommand::SceneLayer(edit.recorded());
+                        if foldable && let Some(position) = self.gesture_entry(&edit) {
+                            let forward = EngineCommand::SceneLayer(edit.recorded());
+                            if net_zero(&forward, &self.undo[position].inverse) {
+                                self.undo.remove(position);
+                            } else {
+                                self.undo[position].forward = forward;
+                            }
                             return;
                         }
+                        gesture = edit.gesture;
                         EngineCommand::SceneLayer(edit.recorded())
                     }
                     command => command,
@@ -575,6 +591,7 @@ impl EditHistory {
                     command_id,
                     forward,
                     inverse,
+                    gesture,
                 });
                 while self.undo.len() > MAX_EDIT_HISTORY {
                     self.undo.pop_front();
@@ -606,6 +623,18 @@ impl EditHistory {
             }
         }
     }
+}
+
+/// Whether a folded scene layer gesture's `forward` edit sets exactly what
+/// its entry's `inverse` restores: the gesture ended where it started.
+fn net_zero(forward: &EngineCommand, inverse: &EngineCommand) -> bool {
+    matches!(
+        (forward, inverse),
+        (EngineCommand::SceneLayer(forward), EngineCommand::SceneLayer(inverse))
+            if forward.scene == inverse.scene
+                && forward.layer == inverse.layer
+                && forward.change == inverse.change
+    )
 }
 
 /// Returns whether applying `apply` to `state` exactly reverses the state

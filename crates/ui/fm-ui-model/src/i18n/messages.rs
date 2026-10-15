@@ -1583,6 +1583,7 @@ messages! {
     DesignMaskInvertHover => t("Keep what lies outside the mask rectangle instead"),
     DesignMaskFieldHover => t("{field} of the mask rectangle, in pixels of the cropped source"),
     DesignReasonNoMask => t("turn the mask on first"),
+    DesignReasonTooManyVisible => t("the scene already draws 64 visible layers, the most it can; hide one first"),
     DesignStackPosition => t("{position} of {count}"),
     DesignStackHover => t("Where the layer sits in the list (1 is the bottom). Layers draw by z-order, then by this position; restack with the buttons or by dragging rows in the list"),
     DesignZOrder => t("Z-order"),

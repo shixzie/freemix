@@ -2607,9 +2607,16 @@ fully sent draft. `Copy as commands` remains a secondary export of the
 draft as next-open `freemix-cli scene-layer-*` commands
 (`scene-layer-geometry` takes degrees and `--anchor`). Remaining gaps: a
 drag of several selected layers is one undo step per layer, not one per
-gesture; the native daemon recompiles an edited scene with the sources it
-was started with, so a layer added live with a new source is drawn after
-the next start; masks stay rectangular and hard-edged; and `SW-006`
+gesture; a scene draws at most 64 enabled layers (the engine, the model's
+layer edits, and `freemix-cli` refuse an add or enable past it, and the
+designer disables Visible with the reason); a live layer's source cycle is
+followed through alias inputs; gesture edits carry a per-gesture token
+(Protocol 2.41), so a gesture whose first send was refused or lost opens
+its own undo step and a gesture back where it started leaves none; the
+native daemon binds a leaf source a live edit starts drawing on the next
+frame and rechecks its 64 active-layer bound on every refresh, but a layer
+that starts drawing an unplanned nested scene is drawn after the next
+start; masks stay rectangular and hard-edged; and `SW-006`
 remains planned until its cross-platform capability profiles are
 certified.
 

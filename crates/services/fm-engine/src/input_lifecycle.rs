@@ -490,6 +490,9 @@ pub(crate) fn apply(
             if let Some(scene) = state.scene_of_input(*source) {
                 staged.insert_scene_input(input, scene);
             }
+            if let Some(target) = state.input_aliases().get(source) {
+                staged.insert_input_alias(input, *target);
+            }
             *state = staged;
             added = inputs;
         }

@@ -59,11 +59,11 @@ pub use dto::{
     MAX_GRADE_NAME_BYTES, MAX_GRADE_STATES, WireGradeSource,
 };
 pub use dto::{
-    MAX_SCENE_ANIMATION_BYTES, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_LAYER_NAME_BYTES,
-    MAX_SCENE_LAYOUT_BYTES, MAX_SCENE_LAYOUT_LAYERS, MAX_SCENE_NAME_BYTES,
-    SceneAnimationStateMessage, SceneLayoutStateMessage, ScenePreviewFrameMessage,
-    ScenePreviewImage, ScenePreviewRequest, WireSceneClip, WireSceneId, WireSceneLayerId,
-    WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout,
+    MAX_SCENE_ANIMATION_BYTES, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_ENABLED_LAYERS,
+    MAX_SCENE_LAYER_NAME_BYTES, MAX_SCENE_LAYOUT_BYTES, MAX_SCENE_LAYOUT_LAYERS,
+    MAX_SCENE_NAME_BYTES, SceneAnimationStateMessage, SceneLayoutStateMessage,
+    ScenePreviewFrameMessage, ScenePreviewImage, ScenePreviewRequest, WireSceneClip, WireSceneId,
+    WireSceneLayerId, WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout,
 };
 pub use dto::{
     MAX_TITLE_ANIMATION_BYTES, MAX_TITLE_CANVAS_SIDE, MAX_TITLE_ELEMENT_NAME_BYTES,

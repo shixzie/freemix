@@ -189,6 +189,10 @@ pub fn wire_layer_spec(layer: &Layer) -> WireSceneLayerSpec {
     }
 }
 
+// The wire's enabled-layer limit is the compositor's.
+const _: () =
+    assert!(fm_protocol::MAX_SCENE_ENABLED_LAYERS == fm_model::Scene::MAX_RENDERED_LAYERS);
+
 /// The engine edit a wire edit names.
 #[must_use]
 pub fn engine_scene_layer_edit(edit: &SceneLayerEdit) -> EngineSceneLayerEdit {
@@ -218,6 +222,7 @@ pub fn engine_scene_layer_edit(edit: &SceneLayerEdit) -> EngineSceneLayerEdit {
             SceneLayerOperation::Remove => SceneLayerChange::Remove,
         },
         continues: edit.continues,
+        gesture: edit.gesture,
     }
 }
 
@@ -258,6 +263,7 @@ pub fn wire_scene_layer_edit(edit: &EngineSceneLayerEdit) -> SceneLayerEdit {
             SceneLayerChange::Remove => SceneLayerOperation::Remove,
         },
         continues: edit.continues,
+        gesture: edit.gesture,
     }
 }
 

@@ -1822,12 +1822,20 @@ fn inspector(
                 lock,
             );
             let mut visible = document.field_value(id, Field::Enabled).unwrap_or(1.0) >= 0.5;
+            // The compositor draws at most 64 layers of a scene: a hidden
+            // layer of a full scene cannot be shown.
+            let visible_reason = lock.or_else(|| {
+                (!document.can_show(id)).then_some(Msg::DesignReasonTooManyVisible.en())
+            });
             if ui
                 .add_enabled(
-                    lock.is_none(),
+                    visible_reason.is_none(),
                     egui::Checkbox::new(&mut visible, l.text(Msg::DesignVisible)),
                 )
-                .hint(l.text(Msg::DesignVisibleHover), lock.unwrap_or(""))
+                .hint(
+                    l.text(Msg::DesignVisibleHover),
+                    visible_reason.unwrap_or(""),
+                )
                 .changed()
             {
                 document.set_field(Field::Enabled, f64::from(u8::from(visible)));

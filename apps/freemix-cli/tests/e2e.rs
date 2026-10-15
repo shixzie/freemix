@@ -6537,6 +6537,47 @@ fn local_scene_input_add_persists_empty_scene_without_routing() {
     fs::remove_dir_all(context.root).unwrap();
 }
 
+/// SW-006: a scene draws at most 64 enabled layers (the compositor's
+/// limit), so the offline layer commands refuse to add or enable one past
+/// it and the project stays renderable.
+#[test]
+fn local_scene_layer_commands_refuse_more_enabled_layers_than_the_compositor_draws() {
+    let context = ContractContext::new();
+    let path = context.project_path();
+    let run = |args: &[&str]| assert_success(&invoke(args));
+    run(&["new", path]);
+    run(&["scene-input-add", path, "10", "10", "Source"]);
+    for index in 0..64 {
+        run(&[
+            "scene-layer-add",
+            path,
+            "10",
+            "1",
+            "0",
+            &format!("L{index}"),
+        ]);
+    }
+    let manifest = fs::read(context.project.join("project.json")).unwrap();
+    let refused = invoke(&["scene-layer-add", path, "10", "1", "0", "One more"]);
+    assert_failure_contains(&refused, "64 enabled layers");
+    assert_failure_contains(
+        &invoke(&["scene-layer-duplicate", path, "10", "0", "Copy"]),
+        "64 enabled layers",
+    );
+    assert_eq!(
+        fs::read(context.project.join("project.json")).unwrap(),
+        manifest
+    );
+    // Disabling one makes room for another.
+    run(&["scene-layer-appearance", path, "10", "0", "off", "255"]);
+    run(&["scene-layer-add", path, "10", "1", "0", "One more"]);
+    assert_failure_contains(
+        &invoke(&["scene-layer-appearance", path, "10", "0", "on", "255"]),
+        "64 enabled layers",
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 #[test]
 fn local_scene_input_duplicate_persists_scene_pair_and_default_strip() {
     let context = ContractContext::new();

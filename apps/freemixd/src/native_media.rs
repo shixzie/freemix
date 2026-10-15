@@ -460,6 +460,12 @@ pub struct NativeProjectPlan {
     peak_rgba16f_targets: usize,
     transient_rgba16f_bytes: u64,
     grades: NativeProjectGrades,
+    /// The bounds the plan was compiled under; live scene edits are
+    /// rechecked against them ([`Self::refresh_scene_models`]).
+    limits: NativeProjectLimits,
+    /// The next unused source token, for leaf sources a live scene edit
+    /// starts drawing.
+    next_source: u64,
 }
 
 /// The per-input and program grades (SW-019) of one engine revision, baked
@@ -802,6 +808,8 @@ impl NativeProjectPlan {
             peak_rgba16f_targets,
             transient_rgba16f_bytes,
             grades: NativeProjectGrades::default(),
+            limits,
+            next_source,
         })
     }
 
@@ -938,11 +946,22 @@ impl NativeProjectPlan {
 
     /// Follows live scene layer and animation edits (SW-006): every scene
     /// whose `current` model differs from the followed one is recompiled
-    /// with it, its layers bound to the scene's planned source tokens.
-    /// A layer drawing a source the scene was not planned with (a layer
-    /// added or enabled with a new source) stays undrawn until the next
-    /// start; the rest of the scene follows. Returns whether any scene
-    /// changed.
+    /// with it, its layers bound to the scene's source tokens.
+    ///
+    /// A layer that starts drawing a leaf input the scene was not planned
+    /// with (a layer added or enabled with a new source) is bound to a new
+    /// token: every leaf input of the show plays for the whole run (any of
+    /// them may be cut to Program), so the binding needs no I/O and is
+    /// drawn on the next frame. A layer that starts drawing a nested scene
+    /// the scene was not planned with (directly or through a Scene input)
+    /// stays undrawn until the next start: the plan fixes the scene render
+    /// order and the GPU target budget when it is compiled. A refreshed
+    /// scene that would take the plan past its active-layer bound
+    /// ([`NativeProjectLimits::max_total_active_layers`], every planned
+    /// scene's drawn layers together) is not followed: it keeps its last
+    /// followed composition until an edit brings it back within the bound.
+    /// Returns whether any scene changed.
+    #[allow(clippy::too_many_lines)]
     pub fn refresh_scene_models(
         &mut self,
         current: impl Fn(SceneId) -> Option<Arc<fm_model::Scene>>,
@@ -958,34 +977,45 @@ impl NativeProjectPlan {
             if Arc::ptr_eq(&model, &plan.followed) || *model == *plan.followed {
                 continue;
             }
-            let token_of = |source: NativeSceneSource| {
-                plan.sources
+            let mut next_source = self.next_source;
+            let mut bound = Vec::new();
+            let mut tokens = Vec::with_capacity(model.layers.len());
+            for layer in &model.layers {
+                if !layer.enabled {
+                    tokens.push(Some(SourceId::new(0)));
+                    continue;
+                }
+                let source = match layer.source {
+                    SourceRef::Input(input) => match self.video_routes.get(&input) {
+                        Some(NativeVideoRoute::Scene(scene)) => NativeSceneSource::Scene(*scene),
+                        Some(NativeVideoRoute::Leaf(_)) => NativeSceneSource::Leaf(input),
+                        None => {
+                            tokens.push(None);
+                            continue;
+                        }
+                    },
+                    SourceRef::Scene(scene) => NativeSceneSource::Scene(scene),
+                };
+                let known = plan
+                    .sources
                     .iter()
+                    .chain(&bound)
                     .find(|(_, candidate)| *candidate == source)
-                    .map(|(token, _)| *token)
-            };
-            let tokens = model
-                .layers
-                .iter()
-                .map(|layer| {
-                    if !layer.enabled {
-                        return Some(SourceId::new(0));
-                    }
-                    let source = match layer.source {
-                        SourceRef::Input(input) => match self.video_routes.get(&input) {
-                            Some(NativeVideoRoute::Scene(scene)) => {
-                                NativeSceneSource::Scene(*scene)
-                            }
-                            Some(NativeVideoRoute::Leaf(_)) => NativeSceneSource::Leaf(input),
-                            None => return None,
-                        },
-                        SourceRef::Scene(scene) => NativeSceneSource::Scene(scene),
-                    };
-                    token_of(source)
-                })
-                .collect::<Vec<_>>();
-            // A layer without a planned source is drawn disabled, never
-            // with another source's token.
+                    .map(|(token, _)| *token);
+                let token = match (known, source) {
+                    (Some(token), _) => Some(token),
+                    (None, NativeSceneSource::Leaf(_)) => next_source.checked_add(1).map(|after| {
+                        let token = SourceId::new(next_source);
+                        next_source = after;
+                        bound.push((token, source));
+                        token
+                    }),
+                    (None, NativeSceneSource::Scene(_)) => None,
+                };
+                tokens.push(token);
+            }
+            // A layer without a source token is drawn disabled, never with
+            // another source's token.
             let drawn = if tokens.iter().all(Option::is_some) {
                 Arc::clone(&model)
             } else {
@@ -997,6 +1027,19 @@ impl NativeProjectPlan {
                 }
                 Arc::new(drawn)
             };
+            let enabled =
+                |model: &fm_model::Scene| model.layers.iter().filter(|layer| layer.enabled).count();
+            let active = self
+                .scenes
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .map(|(_, scene)| enabled(&scene.model))
+                .sum::<usize>()
+                .saturating_add(enabled(&drawn));
+            if active > self.limits.max_total_active_layers {
+                continue;
+            }
             let tokens: Vec<SourceId> = tokens
                 .into_iter()
                 .map(|token| token.unwrap_or(SourceId::new(0)))
@@ -1015,10 +1058,22 @@ impl NativeProjectPlan {
                 continue;
             };
             let plan = &mut self.scenes[index];
+            // Leaf sources no layer draws any more are released; nested
+            // scenes stay, so the planned render order and budget hold.
+            plan.sources.retain(|(token, source)| {
+                matches!(source, NativeSceneSource::Scene(_))
+                    || drawn
+                        .layers
+                        .iter()
+                        .zip(&tokens)
+                        .any(|(layer, drawn_token)| layer.enabled && drawn_token == token)
+            });
+            plan.sources.extend(bound);
             plan.model = drawn;
             plan.followed = model;
             plan.layer_tokens = tokens;
             plan.composition = composition;
+            self.next_source = next_source;
             changed = true;
         }
         changed
@@ -9251,11 +9306,14 @@ mod tests {
         assert!(matches!(composition, std::borrow::Cow::Borrowed(_)));
     }
 
-    /// SW-006: a live edit adding a layer whose source the plan never
-    /// planned leaves that layer undrawn until the next start, but every
+    /// SW-006: a live edit adding a layer that draws a leaf input the scene
+    /// was not planned with binds that input on the next refresh (every
+    /// leaf plays for the whole run), while a layer drawing a nested scene
+    /// the plan never ordered stays undrawn until the next start; every
     /// other layer of the scene still follows the live edits.
     #[test]
-    fn refreshed_scene_models_hide_unplanned_sources_and_keep_following_edits() {
+    #[allow(clippy::too_many_lines)] // one live edit sequence
+    fn refreshed_scene_models_bind_new_leaf_sources_and_keep_following_edits() {
         let mut project = native_plan_project(4, 2);
         add_leaf(&mut project, input(1));
         add_leaf(&mut project, input(5));
@@ -9265,14 +9323,30 @@ mod tests {
             scene(10),
             vec![layer(SourceRef::Input(input(1)), 0)],
         );
+        // Scene 30 is shown by no Scene input, so the plan never orders it.
+        add_scene(&mut project, scene(30), Vec::new());
         let mut plan =
             NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let planned_tokens = |plan: &NativeProjectPlan| {
+            plan.scenes
+                .iter()
+                .flat_map(|scene| {
+                    scene
+                        .sources
+                        .iter()
+                        .map(|(token, _)| *token)
+                        .chain([scene.output])
+                })
+                .collect::<Vec<_>>()
+        };
+        let before = planned_tokens(&plan);
         let mut model = project.scene(scene(10)).unwrap().clone();
-        // An added layer drawing input 5, which the plan does not draw, and
-        // the planned layer moved.
+        // An added layer drawing input 5, which the plan did not draw, one
+        // drawing the unplanned scene 30, and the planned layer moved.
         let mut added = layer(SourceRef::Input(input(5)), 1);
         added.geometry = LayerGeometry::new(1, 1, 2, 1, Rotation::Deg0);
         model.layers.push(added);
+        model.layers.push(layer(SourceRef::Scene(scene(30)), 2));
         model.layers[0].geometry = LayerGeometry::new(1, 0, 3, 2, Rotation::Deg0);
         let current = Arc::new(model);
         assert!(plan.refresh_scene_models(|_| Some(Arc::clone(&current))));
@@ -9282,13 +9356,33 @@ mod tests {
             .find(|candidate| candidate.id == scene(10))
             .unwrap();
         let layers = planned.composition.layers();
-        assert_eq!(layers.len(), 1, "the unplanned source is not drawn");
+        assert_eq!(layers.len(), 2, "the new leaf is drawn, the new scene not");
         assert_eq!(
             layers[0].transform(),
             Transform::new(1, 0, 3, 2, CompositorRotation::Deg0)
         );
+        assert_eq!(
+            layers[1].transform(),
+            Transform::new(1, 1, 2, 1, CompositorRotation::Deg0)
+        );
+        // Input 5 is bound to a token no other source or scene output uses.
+        let bound = planned
+            .sources
+            .iter()
+            .find(|(_, source)| *source == NativeSceneSource::Leaf(input(5)))
+            .map(|(token, _)| *token)
+            .unwrap();
+        assert!(!before.contains(&bound));
+        assert_eq!(planned.layer_tokens[1], bound);
+        assert!(!planned.model.layers[2].enabled);
+        assert!(
+            !planned
+                .sources
+                .iter()
+                .any(|(_, source)| *source == NativeSceneSource::Scene(scene(30)))
+        );
         // A posed or graded frame recompiles from the drawn model, never
-        // drawing the unplanned layer with another source's token.
+        // drawing the unplanned scene with another source's token.
         let frame = frame_result(0, input(2), None);
         let composition = planned.frame_composition(
             &frame,
@@ -9311,12 +9405,14 @@ mod tests {
                 scene_inputs: &BTreeMap::new(),
             },
         );
-        assert_eq!(composition.layers().len(), 1);
+        assert_eq!(composition.layers().len(), 2);
         // The same engine model again changes nothing.
         assert!(!plan.refresh_scene_models(|_| Some(Arc::clone(&current))));
-        // A later edit of the planned layer is followed.
+        // A later edit of the planned layer is followed, and removing the
+        // added layer releases its source.
         let mut moved = (*current).clone();
         moved.layers[0].geometry = LayerGeometry::new(0, 1, 2, 1, Rotation::Deg0);
+        moved.layers.remove(1);
         let moved = Arc::new(moved);
         assert!(plan.refresh_scene_models(|_| Some(Arc::clone(&moved))));
         let planned = plan
@@ -9328,6 +9424,52 @@ mod tests {
             planned.composition.layers()[0].transform(),
             Transform::new(0, 1, 2, 1, CompositorRotation::Deg0)
         );
+        assert_eq!(planned.composition.layers().len(), 1);
+        assert!(
+            !planned
+                .sources
+                .iter()
+                .any(|(_, source)| *source == NativeSceneSource::Leaf(input(5)))
+        );
+    }
+
+    /// SW-006: a live edit is rechecked against the plan's active-layer
+    /// bound; a scene that would exceed it keeps its last composition
+    /// until an edit brings it back within the bound.
+    #[test]
+    fn refreshed_scene_models_recheck_the_active_layer_bound() {
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, input(1));
+        add_scene_input(&mut project, input(2), scene(10), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![layer(SourceRef::Input(input(1)), 0)],
+        );
+        let mut plan = NativeProjectPlan::compile(
+            &project,
+            NativeProjectLimits {
+                max_total_active_layers: 2,
+                ..NativeProjectLimits::default()
+            },
+        )
+        .unwrap();
+        let base = project.scene(scene(10)).unwrap().clone();
+        let with = |extra: usize| {
+            let mut model = base.clone();
+            for z in 0..extra {
+                model
+                    .layers
+                    .push(layer(SourceRef::Input(input(1)), i32::try_from(z).unwrap()));
+            }
+            Arc::new(model)
+        };
+        let over = with(2);
+        assert!(!plan.refresh_scene_models(|_| Some(Arc::clone(&over))));
+        assert_eq!(plan.active_layer_count(), 1);
+        let within = with(1);
+        assert!(plan.refresh_scene_models(|_| Some(Arc::clone(&within))));
+        assert_eq!(plan.active_layer_count(), 2);
     }
 
     #[test]

@@ -160,6 +160,8 @@ pub struct ShowState {
     titles: BTreeMap<InputId, EngineTitle>,
     /// Every Scene input and the scene it shows (GX-011 stage 5).
     scene_inputs: BTreeMap<InputId, SceneId>,
+    /// Every alias input and the input it renders (SW-006 cycle checks).
+    input_aliases: BTreeMap<InputId, InputId>,
     /// Every registered project scene (each scene a Scene input shows, and
     /// with [`Self::set_scene`] any other), with its animation.
     scenes: BTreeMap<SceneId, EngineScene>,
@@ -244,6 +246,7 @@ impl ShowState {
             locked_inputs: BTreeSet::new(),
             titles: BTreeMap::new(),
             scene_inputs: BTreeMap::new(),
+            input_aliases: BTreeMap::new(),
             scenes: BTreeMap::new(),
             playlist: Playlist::new(Vec::new(), PlaylistConfig::default())
                 .expect("an empty playlist is valid"),
@@ -494,6 +497,7 @@ impl ShowState {
         self.locked_inputs.remove(&input);
         self.titles.remove(&input);
         self.scene_inputs.remove(&input);
+        self.input_aliases.remove(&input);
         self.grading.inputs.remove(&input);
         self.media.remove(&input);
         self.input_lifecycle.remove(&input);
@@ -838,6 +842,45 @@ impl ShowState {
         &self.scene_inputs
     }
 
+    /// Records that alias input `input` renders exactly what `target`
+    /// renders, so a scene layer drawing the alias draws its target (the
+    /// live layer edits' cycle check follows it).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] when either input is outside
+    /// this show.
+    pub fn set_input_alias(&mut self, input: InputId, target: InputId) -> Result<(), ShowError> {
+        for id in [input, target] {
+            if !self.inputs.contains(&id) {
+                return Err(ShowError::UnknownInput(id));
+            }
+        }
+        self.input_aliases.insert(input, target);
+        Ok(())
+    }
+
+    /// Every alias input and the input it renders, in identifier order.
+    #[must_use]
+    pub const fn input_aliases(&self) -> &BTreeMap<InputId, InputId> {
+        &self.input_aliases
+    }
+
+    /// The input `input` renders: itself, or for an alias input the end of
+    /// its alias chain (a chain that loops back ends where it repeats).
+    #[must_use]
+    pub fn input_rendered(&self, input: InputId) -> InputId {
+        let mut current = input;
+        let mut seen = BTreeSet::new();
+        while let Some(target) = self.input_aliases.get(&current) {
+            if !seen.insert(current) {
+                break;
+            }
+            current = *target;
+        }
+        current
+    }
+
     /// Every registered scene, in identifier order.
     #[must_use]
     pub const fn scenes(&self) -> &BTreeMap<SceneId, EngineScene> {
@@ -1132,6 +1175,10 @@ impl ShowState {
 
     pub(crate) fn insert_scene_input(&mut self, input: InputId, scene: SceneId) {
         self.scene_inputs.insert(input, scene);
+    }
+
+    pub(crate) fn insert_input_alias(&mut self, input: InputId, target: InputId) {
+        self.input_aliases.insert(input, target);
     }
 
     pub(crate) fn scene_of_input(&self, input: InputId) -> Option<SceneId> {

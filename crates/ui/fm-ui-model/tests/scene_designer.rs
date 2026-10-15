@@ -20,8 +20,8 @@ use fm_ui_model::scene_designer::snapping::{
     ACTION_SAFE, GuideKind, SnapSettings, TITLE_SAFE, safe_area,
 };
 use fm_ui_model::scene_designer::{
-    EditLabel, Field, LIVE_LAYER_EDITS, SceneLayerEdit, SceneLayoutDocument, layout_stamp,
-    wire_geometry,
+    EditLabel, Field, LIVE_LAYER_EDITS, MAX_VISIBLE_LAYERS, SceneLayerEdit, SceneLayoutDocument,
+    layout_stamp, wire_geometry,
 };
 
 const METRICS: CanvasMetrics = CanvasMetrics {
@@ -327,6 +327,10 @@ fn a_drag_sends_live_edits_that_continue_one_server_undo_step() {
     assert_eq!(first[0].scene, scene());
     assert_eq!(first[0].layer, layer_id(2));
     assert!(!first[0].continues);
+    // The gesture carries a token of its own, so the server folds only its
+    // own later sends into the step.
+    let gesture = first[0].gesture;
+    assert_ne!(gesture, 0);
     let SceneLayerOperation::SetGeometry(geometry) = first[0].operation else {
         panic!("a move sends geometry: {:?}", first[0].operation);
     };
@@ -339,6 +343,7 @@ fn a_drag_sends_live_edits_that_continue_one_server_undo_step() {
     let last = document.take_live_edits();
     assert_eq!(last.len(), 1);
     assert!(last[0].continues);
+    assert_eq!(last[0].gesture, gesture);
     assert_eq!(
         last[0].operation,
         SceneLayerOperation::SetGeometry(wire_geometry(LayerPlacement::new(
@@ -362,6 +367,8 @@ fn a_drag_sends_live_edits_that_continue_one_server_undo_step() {
     let appearance = document.take_live_edits();
     assert_eq!(appearance.len(), 1);
     assert!(!appearance[0].continues);
+    assert_ne!(appearance[0].gesture, 0);
+    assert_ne!(appearance[0].gesture, gesture);
     assert_eq!(
         appearance[0].operation,
         SceneLayerOperation::SetAppearance {
@@ -600,4 +607,34 @@ fn a_restack_sends_moves_by_layer_id() {
     assert_eq!(sent[0].layer, layer_id(1));
     assert_eq!(sent[0].operation, SceneLayerOperation::Move { index: 2 });
     assert!(!sent[0].continues);
+}
+
+/// A scene draws at most 64 visible layers (the compositor's limit): the
+/// designer does not show a hidden layer of a full scene, so it never sends
+/// an edit the server would refuse.
+#[test]
+fn a_full_scene_keeps_its_hidden_layers_hidden() {
+    assert_eq!(MAX_VISIBLE_LAYERS, 64);
+    let mut layout = layout();
+    layout.layers = (1..=65)
+        .map(|id| {
+            let mut layer = outline(id, 0, 0, 10, 10);
+            layer.enabled = id <= 64;
+            layer
+        })
+        .collect();
+    let mut document = SceneLayoutDocument::new(scene(), &layout);
+    assert_eq!(document.visible_layer_count(), 64);
+    assert!(document.can_show(layer_id(1)));
+    assert!(!document.can_show(layer_id(65)));
+    document.select(layer_id(65), false);
+    assert!(!document.set_field(Field::Enabled, 1.0));
+    assert_eq!(document.take_live_edits().len(), 0);
+    // Hiding another layer makes room.
+    document.select(layer_id(1), false);
+    assert!(document.set_field(Field::Enabled, 0.0));
+    assert!(document.can_show(layer_id(65)));
+    document.select(layer_id(65), false);
+    assert!(document.set_field(Field::Enabled, 1.0));
+    assert_eq!(document.visible_layer_count(), 64);
 }

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.40 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.41 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1008,9 +1008,12 @@ layer id whether or not a Scene input shows the scene.
   index, a blank name, or an invalid geometry, crop, mask, or effect is
   refused with the field; an added layer's source must be an input of the
   show or a registered scene and must not make the scene draw itself; a
-  scene holds at most 192 layers; removing a layer is refused while the
-  scene's animation has a track for it or the layer is graded, so its undo
-  restores the scene exactly.
+  scene holds at most 192 layers, and at most 64 enabled layers (the
+  compositor's limit; adding an enabled layer to, or enabling a layer of, a
+  full scene is `conflict` with `too_many_enabled_layers`); removing a layer
+  is refused while the scene's animation has a track for it or the layer is
+  graded, so its undo restores the scene exactly. A source cycle is
+  followed through alias inputs too (`source_cycle`).
 - `continues=true` marks an edit that continues a gesture (a drag): when
   the redo stack is empty and the newest history entries (at most 32,
   skipping only edits of other layers of the same scene) hold an edit of the
@@ -1022,8 +1025,11 @@ layer id whether or not a Scene input shows the scene.
   `layout`: `width`, `height`, `layers`) announces each accepted edit and
   its undo or redo; every Scene input showing the scene shows the change on
   the next frame, in the simulated and native renderers alike (the native
-  daemon recompiles the scene with its planned sources; a layer added with
-  a source the scene was not planned with is drawn after the next start).
+  daemon recompiles the scene, binding a leaf input the scene was not
+  planned with on the next frame; a layer that starts drawing a nested
+  scene the scene was not planned with is drawn after the next start, and
+  an edit that would take the native plan past its 64 active layers keeps
+  the scene's last composition until it is back within the bound).
 - Each layout layer (in `scene_layout_state`, `scene_layout_changed`, and a
   scene input's layout) now carries the whole design: flags gain bit 1
   crop, bit 2 mask, bit 3 mask inverted, and after the opacity come the
@@ -1079,6 +1085,22 @@ and VCA groups) and lets Fade to Black fade only chosen outputs (`SW-004`).
 - Durability: pan, labels, groups, group levels, and the excluded outputs
   are project state (schema 39).
 - 2.39 is refused.
+
+Protocol 2.41 tracks live layer gestures (`SW-006`).
+
+- Every `scene_layer_*` command and `scene_layout_changed` event carries
+  `gesture` after `continues` (a canonical `u64`, required): a token the
+  client picks once per gesture, unique across sessions (Studio picks a
+  random one), or `0` outside any gesture.
+- `continues=true` folds only into a history entry its own `gesture`
+  opened (and never with `gesture=0`), so a gesture whose first edit was
+  refused or never arrived opens a new undo step instead of folding into an
+  earlier gesture of the same layer property. A gesture that ends exactly
+  where it started (a designer closed mid-drag sends the layer back) leaves
+  no undo step.
+- Undo and redo journal the exact inverse or forward edit with
+  `continues=false` and `gesture=0`.
+- 2.40 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

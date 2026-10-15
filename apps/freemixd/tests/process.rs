@@ -4168,6 +4168,7 @@ fn scene_layer_edits_change_the_monitor_and_survive_restart() {
                 layer,
                 operation: SceneLayerOperation::SetGeometry(geometry),
                 continues: false,
+                gesture: 0,
             }),
         ));
         // Monitor parts keep feeding their assemblers, so no group is torn.
@@ -4249,6 +4250,106 @@ fn scene_layer_edits_change_the_monitor_and_survive_restart() {
         corner(image) == [0, 0, 0, 255] && image.rgba == edited
     });
     drop(monitor);
+    daemon.stop();
+}
+
+/// SW-006: an alias input renders its target, so a live layer edit adding
+/// an alias of the Scene input showing the edited scene is refused at once
+/// with the cycle reason (not accepted and then failing to persist), and
+/// the daemon keeps serving edits.
+#[test]
+fn a_live_layer_drawing_an_alias_of_its_own_scene_is_a_refused_cycle() {
+    use fm_protocol::{
+        SceneLayerEdit, SceneLayerOperation, WireSceneId, WireSceneLayerId, WireSceneLayerOutline,
+        WireSceneLayerSource, WireSceneLayerSpec,
+    };
+
+    let directory = TestDirectory::new("layer-alias-cycle");
+    let project_path = directory.project_path();
+    create_scene_program_project(&project_path);
+    {
+        // Input 5 renders Scene input 4, which shows scene 1.
+        let store = ProjectStore::new(&project_path).unwrap();
+        let stored = store.load().unwrap();
+        let mut project = stored.project().clone();
+        project.add_input(Input {
+            id: domain_input(5),
+            name: "Scene again".into(),
+            kind: InputKind::Alias {
+                target: domain_input(4),
+                crop: None,
+            },
+            required_capabilities: Vec::new(),
+        });
+        let routing = RuntimeRouting {
+            desired_program_id: Some(domain_input(4)),
+            realized_program_id: Some(domain_input(4)),
+            desired_preview_id: Some(domain_input(2)),
+            realized_preview_id: Some(domain_input(2)),
+        };
+        let updated =
+            StoredProject::from_project(project, routing, stored.position(), Vec::new()).unwrap();
+        store.save(&updated).unwrap();
+    }
+    let scene = WireSceneId::from_domain(scene_id(1));
+    let add = |id: u32, source: u128| {
+        let layer = WireSceneLayerId::new(NonZeroU32::new(id).unwrap());
+        CommandPayload::SceneLayer(SceneLayerEdit {
+            scene,
+            layer,
+            operation: SceneLayerOperation::Add {
+                index: 0,
+                spec: Box::new(WireSceneLayerSpec {
+                    layer: WireSceneLayerOutline {
+                        id: layer,
+                        name: format!("Layer {id}"),
+                        source: WireSceneLayerSource::Input(WireInputId::from_domain(
+                            domain_input(source),
+                        )),
+                        x: 0,
+                        y: 0,
+                        width: 640,
+                        height: 360,
+                        quarter_turns: 0,
+                        opacity: 255,
+                        enabled: true,
+                        tilt_millidegrees: 0,
+                        anchor_x: 5_000,
+                        anchor_y: 5_000,
+                        z_order: 0,
+                        crop: None,
+                        mask: None,
+                    },
+                    effects: Vec::new(),
+                }),
+            },
+            continues: false,
+            gesture: 0,
+        })
+    };
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Graphics, None);
+    client.send(&command("cycle", "cycle-key", add(7, 5)));
+    let result = client.next_result();
+    assert!(
+        matches!(
+            &result,
+            CommandResult::Rejected { code, fields, .. }
+                if code == "invalid_command"
+                    && fields.iter().any(|field| field.code == "source_cycle")
+        ),
+        "{result:?}"
+    );
+    // The daemon still takes (and persists) a valid edit.
+    client.send(&command("leaf", "leaf-key", add(7, 1)));
+    assert!(matches!(client.next_result(), CommandResult::Accepted { ref id, .. } if id == "leaf"));
+    assert!(matches!(
+        next_event_payload(&mut client),
+        fm_protocol::EventPayload::SceneLayoutChanged { layout, .. } if layout.layers.len() == 2
+    ));
+    drop(client);
     daemon.stop();
 }
 
@@ -5536,11 +5637,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.40.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 40));
+    // The previous protocol is refused; the current one is 2.41.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 41));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 39),
+        protocol: ProtocolVersion::new(2, 40),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5556,7 +5657,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 40)
+        ProtocolVersion::new(2, 41)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

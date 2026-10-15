@@ -9,8 +9,10 @@
 //! last call into the live `scene_layer_*` commands, by layer id. The edits
 //! of one gesture or field scrub (everything from [`SceneLayoutDocument::begin`]
 //! to the next) send `continues: false` for a layer property the first
-//! time and `true` after, so the server folds the whole gesture into one
-//! undo step per layer. While an edit is open the draft leads; once every
+//! time and `true` after, all under one random gesture token
+//! (`gesture`, Protocol 2.41), so the server folds the whole gesture into
+//! one undo step per layer, and never into another gesture's step when
+//! this gesture's first send was refused or lost. While an edit is open the draft leads; once every
 //! change is sent and the edit is closed, the next replicated layout
 //! becomes the draft again ([`SceneLayoutDocument::rebase`]).
 
@@ -140,6 +142,8 @@ pub struct SceneLayoutDocument {
     /// The layer properties the open gesture has sent, so later sends
     /// continue its undo step.
     live_keys: BTreeSet<(WireSceneLayerId, LiveProperty)>,
+    /// The open gesture's token, sent with each of its live edits.
+    live_gesture: u64,
     /// Whether live edits were sent whose echo has not arrived yet (the
     /// server's layout has not matched [`Self::sent`] since).
     in_flight: bool,
@@ -352,6 +356,20 @@ fn live_operations(
     operations
 }
 
+/// A random, nonzero gesture token: distinct per gesture and, with high
+/// probability, from every other session's.
+fn fresh_gesture() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    loop {
+        let token = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
+        if token != 0 {
+            return token;
+        }
+    }
+}
+
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped first.
 fn to_u32(value: f64, max: u32) -> u32 {
     value.round().clamp(0.0, f64::from(max)) as u32
@@ -382,6 +400,7 @@ impl SceneLayoutDocument {
             gesture: None,
             base_changed: false,
             live_keys: BTreeSet::new(),
+            live_gesture: 0,
             in_flight: false,
         }
     }
@@ -472,6 +491,11 @@ impl SceneLayoutDocument {
                     layer,
                     operation,
                     continues,
+                    gesture: if property.is_some() {
+                        self.live_gesture
+                    } else {
+                        0
+                    },
                 }
             })
             .collect()
@@ -584,6 +608,7 @@ impl SceneLayoutDocument {
     pub fn begin(&mut self, label: EditLabel) {
         if self.transaction.is_none() {
             self.live_keys.clear();
+            self.live_gesture = fresh_gesture();
             self.transaction = Some(Transaction {
                 label,
                 before: self.layers.clone(),
@@ -706,9 +731,26 @@ impl SceneLayoutDocument {
         })
     }
 
+    /// How many of the draft's layers are visible (enabled).
+    #[must_use]
+    pub fn visible_layer_count(&self) -> usize {
+        self.layers.iter().filter(|layer| layer.enabled).count()
+    }
+
+    /// Whether layer `id` may be made visible: it already is, or the scene
+    /// draws fewer than [`super::MAX_VISIBLE_LAYERS`] visible layers (the
+    /// server refuses to enable one past it).
+    #[must_use]
+    pub fn can_show(&self, id: WireSceneLayerId) -> bool {
+        self.layer(id).is_some_and(|layer| layer.enabled)
+            || self.visible_layer_count() < super::MAX_VISIBLE_LAYERS
+    }
+
     /// Sets `field` to `value` on every selected layer (clamped to what the
     /// layer can store). Joins the open step, or makes one step of its own
-    /// when none is open. Returns whether anything changed.
+    /// when none is open. Showing layers stops at
+    /// [`super::MAX_VISIBLE_LAYERS`] visible layers. Returns whether
+    /// anything changed.
     pub fn set_field(&mut self, field: Field, value: f64) -> bool {
         let own_step = self.transaction.is_none();
         if own_step {
@@ -718,6 +760,9 @@ impl SceneLayoutDocument {
         let selection = self.selection.clone();
         let mut changed = false;
         for id in selection {
+            if field == Field::Enabled && value >= 0.5 && !self.can_show(id) {
+                continue;
+            }
             let Some(layer) = self.layers.iter_mut().find(|layer| layer.id == id) else {
                 continue;
             };

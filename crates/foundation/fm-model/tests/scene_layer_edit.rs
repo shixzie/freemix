@@ -341,3 +341,87 @@ fn a_refused_change_leaves_the_scene_untouched() {
         Err(SceneLayerEditError::EmptyName)
     );
 }
+
+/// The compositor draws at most `Scene::MAX_RENDERED_LAYERS` enabled layers
+/// of one scene: an add or an enable past it is refused, while disabled
+/// layers, disabling, and every other edit stay available.
+#[test]
+fn enabled_layers_are_capped_at_the_compositor_limit() {
+    let full = || {
+        let mut full = scene();
+        full.layers = (1..=u32::try_from(Scene::MAX_RENDERED_LAYERS).unwrap())
+            .map(|id| layer(id, LayerGeometry::new(0, 0, 10, 10, Rotation::Deg0)))
+            .collect();
+        full
+    };
+    let extra = |id: u32, enabled: bool| {
+        let mut extra = layer(id, LayerGeometry::new(0, 0, 10, 10, Rotation::Deg0));
+        extra.enabled = enabled;
+        extra
+    };
+    let next = u32::try_from(Scene::MAX_RENDERED_LAYERS).unwrap() + 1;
+    let mut edited = full();
+    assert_eq!(edited.enabled_layer_count(), Scene::MAX_RENDERED_LAYERS);
+    let refused = edited.apply_layer_change(
+        layer_id(next),
+        &SceneLayerChange::Add {
+            index: 0,
+            layer: Box::new(extra(next, true)),
+        },
+        CANVAS.0,
+        CANVAS.1,
+    );
+    assert_eq!(refused, Err(SceneLayerEditError::TooManyEnabledLayers));
+    assert_eq!(refused.unwrap_err().code(), "too_many_enabled_layers");
+    assert_eq!(edited, full());
+    // A disabled layer may be added, but not enabled.
+    edited
+        .apply_layer_change(
+            layer_id(next),
+            &SceneLayerChange::Add {
+                index: 0,
+                layer: Box::new(extra(next, false)),
+            },
+            CANVAS.0,
+            CANVAS.1,
+        )
+        .unwrap();
+    let enable = SceneLayerChange::Appearance {
+        enabled: true,
+        opacity: 255,
+    };
+    let before = edited.clone();
+    assert_eq!(
+        edited.apply_layer_change(layer_id(next), &enable, CANVAS.0, CANVAS.1),
+        Err(SceneLayerEditError::TooManyEnabledLayers)
+    );
+    assert_eq!(edited, before);
+    // An enabled layer's opacity still changes, and disabling another
+    // makes room.
+    edited
+        .apply_layer_change(
+            layer_id(1),
+            &SceneLayerChange::Appearance {
+                enabled: true,
+                opacity: 9,
+            },
+            CANVAS.0,
+            CANVAS.1,
+        )
+        .unwrap();
+    edited
+        .apply_layer_change(
+            layer_id(2),
+            &SceneLayerChange::Appearance {
+                enabled: false,
+                opacity: 255,
+            },
+            CANVAS.0,
+            CANVAS.1,
+        )
+        .unwrap();
+    edited
+        .apply_layer_change(layer_id(next), &enable, CANVAS.0, CANVAS.1)
+        .unwrap();
+    assert_eq!(edited.enabled_layer_count(), Scene::MAX_RENDERED_LAYERS);
+}

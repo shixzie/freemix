@@ -9775,11 +9775,18 @@ fn restore_engine_with_titles(
 /// be edited and every snapshot lays it out (SW-019, Protocol 2.35). Every
 /// snapshot carries each shown scene's animation in a
 /// `scene_animation_state` record, so a scene whose clip has no wire
-/// encoding fails closed rather than locking out every session.
+/// encoding fails closed rather than locking out every session. Every
+/// alias input's target is seeded too, so a live layer edit's cycle check
+/// follows aliases (SW-006).
 fn restore_scenes(show: &mut ShowState, project: &fm_model::Project) -> AppResult<()> {
     let dimensions = project.settings().video.dimensions;
     for scene in project.scenes() {
         show.set_scene(scene.clone(), dimensions.width(), dimensions.height());
+    }
+    for input in project.inputs() {
+        if let fm_model::InputKind::Alias { target, .. } = input.kind {
+            show.set_input_alias(input.id, target)?;
+        }
     }
     for input in project.inputs() {
         let fm_model::InputKind::Scene { scene_id, .. } = &input.kind else {

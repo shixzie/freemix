@@ -13,17 +13,24 @@
 //!   adding a removed layer back at its position with its whole design.
 //!   An edit that continues a gesture ([`EngineSceneLayerEdit::continues`])
 //!   folds into the latest undo entry when that entry edits the same
-//!   property of the same layer, so one drag or scrub undoes at once.
+//!   property of the same layer and was opened by the same gesture
+//!   ([`EngineSceneLayerEdit::gesture`]), so one drag or scrub undoes at
+//!   once; a continuation whose gesture opened no step (its first send was
+//!   refused or never arrived) opens one. A gesture that ends where it
+//!   started (a designer closed mid-drag sends the layer back) leaves no
+//!   step.
 //! * **Checked** as a whole before the scene changes: the layer rules of
 //!   [`fm_model::Scene::apply_layer_change`] on the project canvas, and for an
 //!   added layer its source (an input of the show or a registered scene) and
 //!   cycles (a scene may not draw itself, directly, through a nested scene,
-//!   or through a Scene input). A scene holds at most [`MAX_SCENE_LAYERS`]
-//!   layers after an add. A removal is refused while the layer is animated
-//!   (the scene's clip has a track for it) or graded, so its undo restores
-//!   the scene exactly; a layer whose name or effects could not be carried
-//!   back by its undo (more than [`MAX_SCENE_LAYER_NAME_BYTES`] bytes) is not
-//!   removed live either.
+//!   through a Scene input, or through an alias input of any of those). A
+//!   scene holds at most [`MAX_SCENE_LAYERS`] layers after an add, and at
+//!   most [`fm_model::Scene::MAX_RENDERED_LAYERS`] enabled layers (the
+//!   compositor's limit) after an add or enable. A removal is refused
+//!   while the layer is animated (the scene's clip has a track for it) or
+//!   graded, so its undo restores the scene exactly; a layer whose name or
+//!   effects could not be carried back by its undo (more than
+//!   [`MAX_SCENE_LAYER_NAME_BYTES`] bytes) is not removed live either.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -48,9 +55,16 @@ pub struct EngineSceneLayerEdit {
     pub change: SceneLayerChange,
     /// Whether the edit continues one gesture: it folds into the latest undo
     /// entry when that entry edits the same property ([`Self::folds_into`])
-    /// of the same layer, keeping the entry's inverse, so the gesture undoes
-    /// at once. Recorded entries never continue.
+    /// of the same layer and was opened by the same [`Self::gesture`],
+    /// keeping the entry's inverse, so the gesture undoes at once. Recorded
+    /// entries never continue.
     pub continues: bool,
+    /// The gesture the edit belongs to: a token its sender picks once per
+    /// gesture (unique across sessions), or `0` outside any gesture. A
+    /// continuing edit folds only into a step its own gesture opened, so a
+    /// gesture whose first send was refused or lost never folds into an
+    /// earlier gesture's step.
+    pub gesture: u64,
 }
 
 impl EngineSceneLayerEdit {
@@ -62,26 +76,32 @@ impl EngineSceneLayerEdit {
             layer,
             change,
             continues: false,
+            gesture: 0,
         }
     }
 
-    /// The edit as recorded in the history: never continuing.
+    /// The edit as recorded in the history: never continuing, in no
+    /// gesture.
     #[must_use]
     pub fn recorded(self) -> Self {
         Self {
             continues: false,
+            gesture: 0,
             ..self
         }
     }
 
     /// Whether this continuing edit folds into the recorded `previous`
-    /// edit: same scene, same layer, and the same property (geometry,
+    /// edit, whose step gesture `previous_gesture` opened: the same nonzero
+    /// gesture, same scene, same layer, and the same property (geometry,
     /// appearance, crop, mask, or z-order; positions, adds, and removals
     /// never fold).
     #[must_use]
-    pub fn folds_into(&self, previous: &Self) -> bool {
+    pub fn folds_into(&self, previous: &Self, previous_gesture: u64) -> bool {
         use core::mem::discriminant;
         self.continues
+            && self.gesture != 0
+            && self.gesture == previous_gesture
             && self.scene == previous.scene
             && self.layer == previous.layer
             && matches!(
@@ -111,9 +131,9 @@ fn edit_rejection(error: SceneLayerEditError) -> Rejection {
     let message = error.to_string();
     let (code, field) = match error {
         SceneLayerEditError::UnknownLayer(_) => (RejectionCode::NotFound, "layer"),
-        SceneLayerEditError::DuplicateLayer(_) | SceneLayerEditError::LayerAnimated(_) => {
-            (RejectionCode::Conflict, "layer")
-        }
+        SceneLayerEditError::DuplicateLayer(_)
+        | SceneLayerEditError::LayerAnimated(_)
+        | SceneLayerEditError::TooManyEnabledLayers => (RejectionCode::Conflict, "layer"),
         SceneLayerEditError::IndexOutOfRange { .. } => (RejectionCode::InvalidCommand, "index"),
         SceneLayerEditError::EmptyName => (RejectionCode::InvalidCommand, "spec"),
         SceneLayerEditError::InvalidGeometry => (RejectionCode::InvalidCommand, "geometry"),
@@ -128,14 +148,16 @@ fn edit_rejection(error: SceneLayerEditError) -> Rejection {
     rejection(code, field, error.code(), message)
 }
 
-/// The scenes `source` draws, directly or nested, in `state`.
+/// The scenes `source` draws, directly, nested, or through alias inputs,
+/// in `state`.
 fn reachable_scenes(state: &ShowState, source: SourceRef) -> BTreeSet<SceneId> {
     let mut seen = BTreeSet::new();
     let mut pending = vec![source];
     while let Some(source) = pending.pop() {
         let scene = match source {
             SourceRef::Scene(scene) => scene,
-            SourceRef::Input(input) => match state.scene_inputs().get(&input) {
+            SourceRef::Input(input) => match state.scene_inputs().get(&state.input_rendered(input))
+            {
                 Some(scene) => *scene,
                 None => continue,
             },

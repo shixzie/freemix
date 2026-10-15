@@ -2650,6 +2650,63 @@ fn persisted_scenes_can_exceed_the_renderer_execution_limit() {
     assert_eq!(project.validate(), Ok(()));
 }
 
+/// The offline layer edits (and so their `freemix-cli scene-layer-*`
+/// commands) refuse to take a scene past the compositor's enabled-layer
+/// limit, while a stored scene beyond it still loads.
+#[test]
+fn offline_layer_edits_refuse_more_enabled_layers_than_the_compositor_draws() {
+    let mut project = Project::new(project_id(12), "Full scene", settings());
+    project.add_input(Input {
+        id: input_id(1),
+        name: "Source".into(),
+        kind: InputKind::Color,
+        required_capabilities: Vec::new(),
+    });
+    let source = SourceRef::Input(input_id(1));
+    project.add_scene(Scene {
+        id: scene_id(1),
+        name: "Full".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: (0..Scene::MAX_RENDERED_LAYERS)
+            .map(|index| layer(&format!("Layer {index}"), source))
+            .collect(),
+        animation: fm_model::SceneAnimation::default(),
+    });
+    let before = project.clone();
+    assert_eq!(
+        project.add_layer_to_scene(scene_id(1), layer("One more", source)),
+        Err(AddSceneLayerError::TooManyEnabledLayers)
+    );
+    assert_eq!(
+        project.duplicate_scene_layer(scene_id(1), 0, "Copy".into()),
+        Err(SceneLayerError::TooManyEnabledLayers { scene: scene_id(1) })
+    );
+    assert_eq!(project, before);
+    // A disabled layer may be added; enabling it is refused.
+    let mut hidden = layer("Hidden", source);
+    hidden.enabled = false;
+    project.add_layer_to_scene(scene_id(1), hidden).unwrap();
+    let hidden_index = Scene::MAX_RENDERED_LAYERS;
+    let refused = project.set_scene_layer_appearance(scene_id(1), hidden_index, true, 255);
+    assert_eq!(
+        refused,
+        Err(SceneLayerError::TooManyEnabledLayers { scene: scene_id(1) })
+    );
+    assert!(
+        refused
+            .unwrap_err()
+            .to_string()
+            .contains("64 enabled layers")
+    );
+    // Disabling another layer makes room.
+    project
+        .set_scene_layer_appearance(scene_id(1), 0, false, 255)
+        .unwrap();
+    project
+        .set_scene_layer_appearance(scene_id(1), hidden_index, true, 255)
+        .unwrap();
+}
+
 #[test]
 fn scene_input_video_and_audio_cycles_are_rejected() {
     let mut project = Project::new(project_id(20), "Cycles", settings());

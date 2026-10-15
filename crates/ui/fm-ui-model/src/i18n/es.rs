@@ -4043,6 +4043,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("{field} del rectángulo de la máscara, en píxeles de la fuente recortada"),
     ),
     (Msg::DesignReasonNoMask, t("active primero la máscara")),
+    (
+        Msg::DesignReasonTooManyVisible,
+        t("la escena ya dibuja 64 capas visibles, el máximo posible; oculte una primero"),
+    ),
     (Msg::DesignStackPosition, t("{position} de {count}")),
     (
         Msg::DesignStackHover,

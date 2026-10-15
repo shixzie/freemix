@@ -2547,6 +2547,7 @@ mod scene_animation {
             layer: layer(1),
             operation: fm_protocol::SceneLayerOperation::SetGeometry(geometry),
             continues: true,
+            gesture: 3,
         };
         let change = |revision: u64, edit: fm_protocol::SceneLayerEdit| EventMessage {
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,

@@ -4998,6 +4998,7 @@ mod tests {
                 anchor_y: 10_000,
             }),
             continues: true,
+            gesture: 3,
         };
         let intent = StudioIntent::SceneLayer(edit.clone());
         assert!(carries_base_revision(&intent));

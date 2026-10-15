@@ -47,6 +47,10 @@ pub use edits::SceneLayerEdit;
 /// ([`SceneLayoutDocument::take_live_edits`]).
 pub const LIVE_LAYER_EDITS: bool = true;
 
+/// Most visible layers a scene draws (the compositor's limit): the server
+/// refuses to show a layer past it, so the designer does not offer to.
+pub const MAX_VISIBLE_LAYERS: usize = fm_protocol::MAX_SCENE_ENABLED_LAYERS;
+
 /// A stamp that changes whenever `layout` does, for preview pacing.
 #[must_use]
 pub fn layout_stamp(layout: &WireSceneLayout) -> u64 {
