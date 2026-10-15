@@ -15,9 +15,10 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload, EditHistoryStatus,
     EngineIdentity, EventCursor, EventMessage, EventPayload, MAX_LINE_BYTES,
     MAX_SCENE_ANIMATION_BYTES, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_LAYER_NAME_BYTES,
-    MAX_SCENE_LAYOUT_LAYERS, ProtocolVersion, SceneAnimationStateMessage, SceneLayoutStateMessage,
-    WireInputId, WireMessage, WireSceneClip, WireSceneLayerId, WireSceneLayerOutline,
-    WireSceneLayout, decode_line, encode_line, scene_clip_wire_bytes,
+    MAX_SCENE_LAYOUT_LAYERS, MAX_SCENE_NAME_BYTES, ProtocolVersion, SceneAnimationStateMessage,
+    SceneLayoutStateMessage, WireInputId, WireMessage, WireSceneClip, WireSceneId,
+    WireSceneLayerId, WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout, decode_line,
+    encode_line, scene_clip_wire_bytes,
 };
 use fm_types::FrameRate;
 
@@ -44,7 +45,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.34\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.35\tid=a\tidempotency_key=k";
 
 fn round_trip(message: &WireMessage) -> String {
     let line = encode_line(message).unwrap();
@@ -105,8 +106,8 @@ fn clip_bytes() -> Vec<u8> {
 }
 
 #[test]
-fn protocol_is_2_32() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 34));
+fn protocol_is_2_35() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 35));
 }
 
 #[test]
@@ -226,6 +227,7 @@ fn state_records_and_change_events_round_trip() {
         SceneAnimationStateMessage {
             revision: 12,
             input: input(7),
+            scene: scene(3),
             animation_revision: 5,
             clip: Box::new(clip()),
         },
@@ -233,9 +235,18 @@ fn state_records_and_change_events_round_trip() {
     assert_eq!(
         line,
         format!(
-            "scene_animation_state\trevision=12\tinput=7\tanimation_revision=5\tclip={encoded}\n"
+            "scene_animation_state\trevision=12\tinput=7\tscene=3\tanimation_revision=5\t\
+             clip={encoded}\n"
         )
     );
+    // Protocol 2.35: the shown scene is required and canonical.
+    for bad in [
+        line.replace("\tscene=3", ""),
+        line.replace("scene=3", "scene=0"),
+        line.replace("scene=3", "scene=03"),
+    ] {
+        assert!(decode_line(&bad).is_err(), "{bad}");
+    }
     let event = |inputs: Vec<WireInputId>| {
         WireMessage::Event(EventMessage {
             cursor: EventCursor {
@@ -275,11 +286,17 @@ fn state_records_and_change_events_round_trip() {
     assert!(decode_line(&line.replace("inputs=7%2C9", "inputs=9%2C7")).is_err());
 }
 
-/// An enabled layer "Cam" at (-2, 5) sized 300x40, turned once.
+fn scene(value: u128) -> WireSceneId {
+    WireSceneId::new(core::num::NonZeroU128::new(value).unwrap())
+}
+
+/// An enabled layer "Cam" drawing input 4 at (-2, 5) sized 300x40, turned
+/// once.
 fn cam() -> WireSceneLayerOutline {
     WireSceneLayerOutline {
         id: layer(1),
         name: "Cam".into(),
+        source: WireSceneLayerSource::Input(input(4)),
         x: -2,
         y: 5,
         width: 300,
@@ -290,13 +307,14 @@ fn cam() -> WireSceneLayerOutline {
     }
 }
 
-const CAM_BYTES: [u8; 13] = [
+const CAM_BYTES: [u8; 15] = [
     1, // id
     1, // flags: enabled
     1, // quarter turns
     3, b'C', b'a', b'm', // name
-    3,    // x = -2, zigzag
-    10,   // y = 5, zigzag
+    0, 4,  // source: input 4
+    3,  // x = -2, zigzag
+    10, // y = 5, zigzag
     0xAC, 0x02, // width 300
     40,   // height
     200,  // opacity
@@ -305,7 +323,8 @@ const CAM_BYTES: [u8; 13] = [
 fn layout_state(layers: Vec<WireSceneLayerOutline>) -> WireMessage {
     WireMessage::SceneLayoutState(SceneLayoutStateMessage {
         revision: 12,
-        input: input(7),
+        scene: scene(3),
+        name: "Studio".into(),
         layout: Box::new(WireSceneLayout {
             width: 1_920,
             height: 1_080,
@@ -322,14 +341,33 @@ fn layout_records_are_exact_and_strict() {
     assert_eq!(
         line,
         format!(
-            "scene_layout_state\trevision=12\tinput=7\twidth=1920\theight=1080\tlayers={}\n",
+            "scene_layout_state\trevision=12\tscene=3\tname=Studio\twidth=1920\theight=1080\t\
+             layers={}\n",
             base64url(&bytes)
         )
     );
     assert_eq!(
         round_trip(&layout_state(Vec::new())),
-        "scene_layout_state\trevision=12\tinput=7\twidth=1920\theight=1080\tlayers=AA\n"
+        "scene_layout_state\trevision=12\tscene=3\tname=Studio\twidth=1920\theight=1080\t\
+         layers=AA\n"
     );
+    // A layer drawing a scene directly (Protocol 2.35).
+    let direct = WireSceneLayerOutline {
+        source: WireSceneLayerSource::Scene(scene(u128::MAX)),
+        ..cam()
+    };
+    round_trip(&layout_state(vec![direct]));
+    // Scene names are bounded and free of control characters.
+    for name in ["a\nb".to_owned(), "x".repeat(MAX_SCENE_NAME_BYTES + 1)] {
+        let WireMessage::SceneLayoutState(mut named) = layout_state(Vec::new()) else {
+            unreachable!()
+        };
+        named.name = name;
+        assert!(matches!(
+            encode_line(&WireMessage::SceneLayoutState(named)),
+            Err(CodecError::InvalidField { field: "name", .. })
+        ));
+    }
 
     // Encoder refusals.
     let duplicate = vec![cam(), cam()];
@@ -374,7 +412,12 @@ fn layout_records_are_exact_and_strict() {
             bytes.pop();
         }),
         tamper(&|bytes| bytes[1] = 0),
+        // An unknown source kind, and a zero source id.
+        tamper(&|bytes| bytes[8] = 2),
+        tamper(&|bytes| bytes[9] = 0),
         line.replace("height=1080", "height=0"),
+        line.replace("scene=3", "input=3"),
+        line.replace("\tname=Studio", ""),
     ] {
         assert!(decode_line(&bad).is_err(), "{bad}");
     }
@@ -386,6 +429,7 @@ fn the_worst_case_layout_fits_one_line() {
         .map(|id| WireSceneLayerOutline {
             id: layer(u32::MAX - id),
             name: "\u{00e9}".repeat(MAX_SCENE_LAYER_NAME_BYTES / 2),
+            source: WireSceneLayerSource::Scene(scene(u128::MAX)),
             x: i32::MIN,
             y: i32::MIN,
             width: u32::MAX,
@@ -430,7 +474,7 @@ fn scene_preview_requests_round_trip_and_are_bounded() {
     let line = round_trip(&preview_request(TitlePreviewSample::In { frame: 4 }, None));
     assert_eq!(
         line,
-        "scene_preview_request\tprotocol=2.34\trequest_id=anim-preview-3\tinput=12\tphase=in\t\
+        "scene_preview_request\tprotocol=2.35\trequest_id=anim-preview-3\tinput=12\tphase=in\t\
          frame=4\twidth=640\theight=360\n"
     );
     let with_clip = round_trip(&preview_request(TitlePreviewSample::Hold, Some(clip())));
@@ -450,7 +494,7 @@ fn scene_preview_requests_round_trip_and_are_bounded() {
         ("phase=in\tframe=0\twidth=641\theight=360", "width"),
         ("phase=in\tframe=0\twidth=64\theight=0", "height"),
     ] {
-        let line = format!("scene_preview_request\tprotocol=2.34\trequest_id=p\tinput=7\t{bad}\n");
+        let line = format!("scene_preview_request\tprotocol=2.35\trequest_id=p\tinput=7\t{bad}\n");
         match decode_line(&line) {
             Err(CodecError::InvalidField { field: actual, .. }) => {
                 assert_eq!(actual, field, "{bad}");

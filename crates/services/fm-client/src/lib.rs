@@ -1026,19 +1026,20 @@ impl Client {
         Ok(())
     }
 
-    /// Completes one Scene input's layout the snapshot announced with its
-    /// `scene_layout_state` (Protocol 2.31).
+    /// Completes one scene's layout the snapshot announced with its
+    /// `scene_layout_state` (Protocol 2.31; keyed by scene since 2.35), and
+    /// the layout of every Scene input showing it.
     ///
     /// Scene layout states arrive only while synchronizing from a
-    /// snapshot, one per announced Scene input after every
+    /// snapshot, one per scene of its `layout_scenes` list after every
     /// `scene_animation_state` and before any event.
     ///
     /// # Errors
     ///
     /// A scene layout state in any other state, at another revision, for a
-    /// Scene input the snapshot did not announce or already completed, or
-    /// before the earlier follow-on records forces a fresh-snapshot
-    /// reconnect ([`ClientError::ResyncRequired`]).
+    /// scene the snapshot did not announce or already completed, or before
+    /// the earlier follow-on records forces a fresh-snapshot reconnect
+    /// ([`ClientError::ResyncRequired`]).
     pub fn apply_scene_layout_state(
         &mut self,
         state: SceneLayoutStateMessage,

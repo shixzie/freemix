@@ -3264,10 +3264,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ColorTargetLayerHover,
         t(
-            "Corregir solo esta capa de escena: después de la corrección y los efectos de su entrada, antes de su posición y tamaño. Todas las entradas de escena que muestran la escena la muestran",
+            "Corregir solo esta capa de escena: después de la corrección y los efectos de su entrada, antes de su posición y tamaño. Se ve dondequiera que se dibuje la escena (una entrada de escena, una salida u otra escena que la anide)",
         ),
     ),
     (Msg::ColorTargetLayerFallback, t("Capa")),
+    (Msg::ColorTargetSceneFallback, t("Escena")),
+    (Msg::ColorTargetSceneUnshown, t("sin entrada de escena")),
     (Msg::ColorGraded, t("corregida")),
     (
         Msg::ColorStatusOnAirHover,
@@ -3433,6 +3435,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ColorSourceStill,
         t(
             "Imagen: imagen de prueba. No ha llegado ningún fotograma sin corregir de esta fuente; póngala en Previo para verla en vivo",
+        ),
+    ),
+    (
+        Msg::ColorSourceLayerStill,
+        t(
+            "Imagen: imagen de prueba. No ha llegado ningún fotograma de la fuente de esta capa; ponga su entrada en Previo para ver la capa en vivo",
         ),
     ),
     (

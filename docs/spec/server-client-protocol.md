@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.34 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.35 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -604,20 +604,23 @@ phases, presets, and animation revision as a title template:
   the scene, ascending), `animation_revision`, and the resulting `clip`.
 - After the `title_layout_state` records, a snapshot sends one
   `kind=scene_animation_state` record per announced scene input (in the
-  order of `scenes`; `revision`, `input`, `animation_revision`, `clip`),
-  then one `kind=scene_layout_state` per announced scene input (`revision`,
-  `input`, the project canvas `width` and `height`, and `layers`). A record
-  at another revision, for an unannounced input, twice, or out of order
+  order of `scenes`; `revision`, `input`, `animation_revision`, `clip`, and
+  since 2.35 the `scene` the input shows), then one
+  `kind=scene_layout_state` per project scene (since 2.35: in the order of
+  the snapshot's `layout_scenes`; `revision`, `scene`, `name`, the project
+  canvas `width` and `height`, and `layers`). A record at another
+  revision, for an unannounced input or scene, twice, or out of order
   forces a fresh snapshot; clients stay synchronizing until every scene's
   animation and layout has arrived. Scene layers are edited offline only,
   so a layout changes only with a new snapshot; there is no layout event.
 - `layers` is one unpadded base64url field (the clip codec's varints), at
   most **36 KiB** raw (`MAX_SCENE_LAYOUT_BYTES`): `layers = count layer*`;
   `layer = id(nonzero u32) flags(byte: bit 0 enabled, other bits zero)
-  quarter_turns(byte 0..=3) name_len name(UTF-8) x(zigzag) y(zigzag) width
-  height opacity(byte)`. Layers keep scene order, at most **256**
-  (`MAX_SCENE_LAYOUT_LAYERS`) with unique ids; names are at most **96**
-  UTF-8 bytes without control characters (the server replaces control
+  quarter_turns(byte 0..=3) name_len name(UTF-8) source x(zigzag)
+  y(zigzag) width height opacity(byte)`, `source = kind(byte: 0 input, 1
+  scene) id(nonzero u128 varint)` (since 2.35). Layers keep scene order, at
+  most **256** (`MAX_SCENE_LAYOUT_LAYERS`) with unique ids; names are at
+  most **80** UTF-8 bytes (since 2.35) without control characters (the server replaces control
   characters by spaces and cuts at a character boundary). `x`/`y` are the
   top-left of the layer's on-screen footprint and `width`/`height` its box
   before the quarter turns, in project canvas pixels.
@@ -682,7 +685,9 @@ Protocol 2.32 adds exact scene previews (`GX-011`):
   Protocol 2.33 both daemons grade the preview as their monitors do: each
   leaf layer's input grade then its scene layer grade, and a layer drawing
   a nested scene only its layer grade over the nested scene's graded
-  layers. The answer is one
+  layers; since 2.35 a nested scene drawn through a Scene input also
+  carries that input's grade, and the whole preview carries the grade of
+  the requested Scene input (see Protocol 2.35). The answer is one
   four-channel QOI stream of straight RGBA8 split into
   `kind=scene_preview_frame` records with exactly a
   `title_preview_frame`'s fields and limits (`animation_revision` being
@@ -701,7 +706,8 @@ Protocol 2.32 adds exact scene previews (`GX-011`):
   `unsupported`.
 - 2.31 is refused.
 
-Protocol 2.33 grades scene layers (`SW-019`):
+Protocol 2.33 grades scene layers (`SW-019`; Protocol 2.35 replaced the
+`input` and `inputs` fields below by `scene`):
 
 - `grade_layer_set` (`input`, `layer`, plus exactly one of `library` or
   `grade`) and `grade_layer_clear` (`input`, `layer`) set or clear the grade
@@ -769,6 +775,43 @@ Protocol 2.34 adds the project animation preset library (`GX-011`):
 - Durability: the library is project state (schema 34,
   `animation_presets`).
 - 2.33 is refused.
+
+Protocol 2.35 addresses scene layers by scene and grades Scene inputs over
+their composed scene (`SW-019`):
+
+- `grade_layer_set` (`scene`, `layer`, plus exactly one of `library` or
+  `grade`) and `grade_layer_clear` (`scene`, `layer`) name the project
+  scene (a canonical nonzero decimal) directly, whether or not a Scene
+  input shows it. An unknown scene is `not_found` (`unknown_scene`), an
+  unknown layer `not_found` (`unknown_layer`). They are refused while the
+  project or any Scene input showing the scene is padlocked; a scene no
+  Scene input shows answers to the project padlock only. Undo and redo
+  restore the previous layer grade by scene.
+- `event=grade_changed` `change=layer` and `grade_state` `entry=layer`
+  carry `scene` in place of `inputs`. Layer records follow the input
+  records ordered by scene then layer id, for every project scene; a
+  record repeating or going back in that order, or arriving after the
+  program record, forces a fresh snapshot.
+- The snapshot gains `layout_scenes` (after `scenes`): every project
+  scene, strictly ascending, at most 256 (possibly empty). One
+  `scene_layout_state` per listed scene follows the last
+  `scene_animation_state`, keyed by `scene` with the scene's `name` (at
+  most **128** UTF-8 bytes, no control characters; the server replaces
+  control characters by spaces and cuts at a character boundary), and each
+  layer outline gains its `source` (the input or the nested scene it
+  draws). `scene_animation_state` gains `scene`, the scene its input
+  shows, so a client joins Scene inputs to their scene's layout. Layer
+  names are now at most 80 bytes so a 256-layer layout stays within 36 KiB.
+- A Scene input's own input grade (`grade_set` on a Scene input) colours
+  the scene picture that input shows: after every layer's grade and the
+  composition, and before the picture is used as Program, Preview, an
+  overlay, a multiview tile, or a layer of another scene (a layer drawing
+  the Scene input carries its grade, then its own layer grade). A layer
+  drawing the scene directly (`source` scene) carries no Scene input
+  grade. The simulated monitors, exact scene previews (the requested
+  Scene input's grade over the whole preview), the native GPU composition,
+  and `freemix-cli render` apply it the same way.
+- 2.34 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

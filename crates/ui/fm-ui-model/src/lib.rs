@@ -26,7 +26,7 @@ use fm_protocol::{
     StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
     TitleFieldUpdate, TitlePhase, TitleStateMessage, WireRecorderSlot,
 };
-use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
+use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId, SceneId};
 
 pub use animation_presets::AnimationPresetsStatus;
 pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
@@ -237,14 +237,17 @@ impl TitleStatus {
 /// One replicated Scene input's animation and layout (Protocol 2.31,
 /// GX-011 stage 5).
 ///
-/// A snapshot announces each Scene input in its `scenes` list: `animation`
-/// and `layout` are `None` until the session's `scene_animation_state` and
-/// `scene_layout_state` for it are applied. Scene inputs showing the same
-/// scene report the same animation, and `scene_animation_changed` keeps
-/// all of them current.
+/// A snapshot announces each Scene input in its `scenes` list: `scene` and
+/// `animation` are `None` until the session's `scene_animation_state` for
+/// it is applied, and `layout` until the `scene_layout_state` of its scene
+/// is (Protocol 2.35: layouts are keyed by scene). Scene inputs showing the
+/// same scene report the same animation and layout, and
+/// `scene_animation_changed` keeps all of them current.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SceneStatus {
     pub input: InputId,
+    /// The scene the input shows (Protocol 2.35).
+    pub scene: Option<SceneId>,
     pub animation: Option<SceneAnimationStatus>,
     /// The scene's canvas and layer outlines. No command changes a layout
     /// between snapshots.
@@ -257,7 +260,33 @@ impl SceneStatus {
     pub const fn announced(input: InputId) -> Self {
         Self {
             input,
+            scene: None,
             animation: None,
+            layout: None,
+        }
+    }
+}
+
+/// One replicated project scene's name and layout (Protocol 2.35), whether
+/// or not a Scene input shows it.
+///
+/// A snapshot announces every scene in its `layout_scenes` list: `name` is
+/// empty and `layout` `None` until the session's `scene_layout_state` for
+/// it is applied. No command changes either between snapshots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SceneLayoutStatus {
+    pub scene: SceneId,
+    pub name: String,
+    pub layout: Option<Arc<WireSceneLayout>>,
+}
+
+impl SceneLayoutStatus {
+    /// A scene a snapshot announced, awaiting its `scene_layout_state`.
+    #[must_use]
+    pub const fn announced(scene: SceneId) -> Self {
+        Self {
+            scene,
+            name: String::new(),
             layout: None,
         }
     }
@@ -382,6 +411,9 @@ pub struct ProjectSnapshot {
     pub titles: Vec<TitleStatus>,
     /// Every Scene input, ascending by input, each incomplete.
     pub scenes: Vec<SceneStatus>,
+    /// Every project scene, ascending by scene, each incomplete (Protocol
+    /// 2.35).
+    pub scene_layouts: Vec<SceneLayoutStatus>,
     /// The engine's video frame rate; playlist frames count these frames.
     pub frame_rate: FrameRate,
     /// Whether a `playlist_state` completes this snapshot. Otherwise the
@@ -462,6 +494,11 @@ impl ProjectSnapshot {
                 .scenes
                 .into_iter()
                 .map(|input| SceneStatus::announced(input.to_domain()))
+                .collect(),
+            scene_layouts: message
+                .layout_scenes
+                .into_iter()
+                .map(|scene| SceneLayoutStatus::announced(scene.to_domain()))
                 .collect(),
             frame_rate: message.frame_rate,
             playlist_follows: message.playlist_follows,
@@ -778,6 +815,7 @@ pub struct ProjectState {
     edit_history: EditHistoryStatus,
     titles: Vec<TitleStatus>,
     scenes: Vec<SceneStatus>,
+    scene_layouts: Vec<SceneLayoutStatus>,
     frame_rate: FrameRate,
     /// `None` while the snapshot's announced `playlist_state` is awaited.
     playlist: Option<PlaylistStatus>,
@@ -888,11 +926,28 @@ impl ProjectState {
         self.scenes.iter().all(|scene| scene.animation.is_some())
     }
 
-    /// Returns whether every Scene input the snapshot announced has its
-    /// `scene_layout_state`.
+    /// Returns whether every scene the snapshot announced has its
+    /// `scene_layout_state`, and so every Scene input its layout.
     #[must_use]
     pub fn scene_layouts_complete(&self) -> bool {
-        self.scenes.iter().all(|scene| scene.layout.is_some())
+        self.scene_layouts
+            .iter()
+            .all(|scene| scene.layout.is_some())
+            && self.scenes.iter().all(|scene| scene.layout.is_some())
+    }
+
+    /// Every replicated project scene, ascending by scene (Protocol 2.35).
+    #[must_use]
+    pub fn scene_layouts(&self) -> &[SceneLayoutStatus] {
+        &self.scene_layouts
+    }
+
+    /// One replicated project scene.
+    #[must_use]
+    pub fn scene_layout(&self, scene: SceneId) -> Option<&SceneLayoutStatus> {
+        self.scene_layouts
+            .iter()
+            .find(|candidate| candidate.scene == scene)
     }
 
     /// Returns whether `input` is on air in the replicated desired state: on
@@ -1266,9 +1321,13 @@ pub enum ModelError {
     /// revision went backwards.
     InvalidTitleChange(InputId),
     /// Scene inputs are not unique show inputs in ascending order, or a
-    /// `scene_animation_state` or `scene_layout_state` does not complete
-    /// the snapshot's announced Scene input at the applied revision.
+    /// `scene_animation_state` does not complete the snapshot's announced
+    /// Scene input at the applied revision.
     SceneStateMismatch(InputId),
+    /// A `scene_layout_state` does not complete the snapshot's announced
+    /// scene at the applied revision, or arrived before every
+    /// `scene_animation_state` (Protocol 2.35).
+    SceneLayoutMismatch(SceneId),
     /// A scene animation change names no, unordered, unknown, incomplete,
     /// or stale Scene inputs.
     InvalidSceneChange(InputId),
@@ -1384,6 +1443,10 @@ impl fmt::Display for ModelError {
             Self::SceneStateMismatch(input) => write!(
                 formatter,
                 "scene state for input {input} does not match the snapshot it follows"
+            ),
+            Self::SceneLayoutMismatch(scene) => write!(
+                formatter,
+                "scene layout for scene {scene} does not match the snapshot it follows"
             ),
             Self::InvalidSceneChange(input) => {
                 write!(formatter, "scene {input} animation change does not apply")
@@ -1761,6 +1824,7 @@ impl ClientModel {
             edit_history: snapshot.edit_history,
             titles: snapshot.titles,
             scenes: snapshot.scenes,
+            scene_layouts: snapshot.scene_layouts,
             frame_rate: snapshot.frame_rate,
             playlist: (!snapshot.playlist_follows).then(PlaylistStatus::empty),
             grading: GradingStatus::default(),
@@ -2127,6 +2191,7 @@ impl ClientModel {
         if scene.animation.is_some() {
             return Err(mismatch);
         }
+        scene.scene = Some(message.scene.to_domain());
         scene.animation = Some(SceneAnimationStatus {
             revision: message.animation_revision,
             clip: Arc::from(message.clip),
@@ -2134,16 +2199,18 @@ impl ClientModel {
         Ok(())
     }
 
-    /// Adds the layout of one Scene input the installed snapshot announced,
-    /// from its `scene_layout_state` (Protocol 2.31).
+    /// Adds the name and layout of one scene the installed snapshot
+    /// announced, from its `scene_layout_state` (Protocol 2.31; keyed by
+    /// scene since 2.35), and the layout of every Scene input showing it.
     ///
-    /// `message` must be at the applied revision and name an announced
-    /// Scene input whose animation has arrived and whose layout has not.
+    /// `message` must be at the applied revision, follow every announced
+    /// `scene_animation_state`, and name an announced scene whose layout
+    /// has not arrived.
     ///
     /// # Errors
     ///
     /// Returns [`ModelError::StateUnavailable`] before a snapshot and
-    /// [`ModelError::SceneStateMismatch`] otherwise; the model is then
+    /// [`ModelError::SceneLayoutMismatch`] otherwise; the model is then
     /// unchanged and the caller must resynchronize.
     pub fn apply_scene_layout_state(
         &mut self,
@@ -2155,20 +2222,29 @@ impl ClientModel {
             .ok_or(ModelError::StateUnavailable)?
             .revision;
         let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
-        let input = message.input.to_domain();
-        let mismatch = ModelError::SceneStateMismatch(input);
-        if Revision::new(message.revision) != revision {
+        let id = message.scene.to_domain();
+        let mismatch = ModelError::SceneLayoutMismatch(id);
+        if Revision::new(message.revision) != revision
+            || !state.scenes.iter().all(|scene| scene.animation.is_some())
+        {
             return Err(mismatch);
         }
-        let scene = state
-            .scenes
+        let entry = state
+            .scene_layouts
             .iter_mut()
-            .find(|scene| scene.input == input)
+            .find(|entry| entry.scene == id)
             .ok_or(mismatch.clone())?;
-        if scene.animation.is_none() || scene.layout.is_some() {
+        if entry.layout.is_some() {
             return Err(mismatch);
         }
-        scene.layout = Some(Arc::from(message.layout));
+        let layout: Arc<WireSceneLayout> = Arc::from(message.layout);
+        entry.name = message.name;
+        entry.layout = Some(Arc::clone(&layout));
+        for scene in &mut state.scenes {
+            if scene.scene == Some(id) {
+                scene.layout = Some(Arc::clone(&layout));
+            }
+        }
         Ok(())
     }
 

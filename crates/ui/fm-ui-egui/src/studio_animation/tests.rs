@@ -133,6 +133,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
             field_revision: 0,
         }],
         scenes: Vec::new(),
+        layout_scenes: Vec::new(),
         frame_rate: FrameRate::new(25, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,
@@ -640,6 +641,11 @@ mod scenes {
 
     const SCENE: u128 = 7;
 
+    /// The scene the Scene input shows (Protocol 2.35).
+    fn wire_scene() -> fm_protocol::WireSceneId {
+        fm_protocol::WireSceneId::new(NonZeroU128::new(70).unwrap())
+    }
+
     fn layer(value: u32) -> WireSceneLayerId {
         WireSceneLayerId::new(NonZeroU32::new(value).unwrap())
     }
@@ -717,6 +723,7 @@ mod scenes {
                 Vec::new()
             },
             scenes: vec![wire(SCENE)],
+            layout_scenes: vec![wire_scene()],
             frame_rate: FrameRate::new(25, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,
@@ -740,6 +747,7 @@ mod scenes {
             .apply_scene_animation_state(SceneAnimationStateMessage {
                 revision: 10,
                 input: wire(SCENE),
+                scene: wire_scene(),
                 animation_revision: 3,
                 clip: Box::new(
                     WireSceneClip::new(Timebase::new(FrameRate::new(30, 1).unwrap()), 0, 0)
@@ -757,11 +765,13 @@ mod scenes {
             quarter_turns: 0,
             opacity: 255,
             enabled: true,
+            source: fm_protocol::WireSceneLayerSource::Input(wire(1)),
         };
         model
             .apply_scene_layout_state(SceneLayoutStateMessage {
                 revision: 10,
-                input: wire(SCENE),
+                scene: wire_scene(),
+                name: "Two up".into(),
                 layout: Box::new(WireSceneLayout {
                     width: 1_920,
                     height: 1_080,

@@ -2307,30 +2307,58 @@ the new scene, and appending a project carries them to the fresh scene ids.
 `fm-compositor` applies `SourceLayer::with_layer_grade` after the source's
 input grade and before the layer transform (CPU: one exact table pass per
 grade; native: one LUT pass per grade), so a layer grade colours only that
-layer. `EngineGradeEdit::SetLayer` addresses a layer through any Scene
-input showing its scene (like a scene animation edit): it is undoable, and
-the padlock of every Scene input showing the scene covers it (and a
-`grade_library_update` of a library grade such a layer uses). Protocol 2.33
-carries `grade_layer_set`/`grade_layer_clear`, `change=layer` and
-`entry=layer` records naming every Scene input showing the scene (layer
-records follow the input records; at most 256), replicated by
-`fm-client`/`fm-ui-model`; Studio's Colour window lists each layer of each
-Scene input as a target, and `freemix-cli grade-set|grade-clear <show>
+layer. `EngineGradeEdit::SetLayer` addresses a layer by its scene id
+(Protocol 2.35), whether or not a Scene input shows the scene (the engine
+holds every project scene): it is undoable, and the padlock of every Scene
+input showing the scene covers it (and a `grade_library_update` of a
+library grade such a layer uses); an unshown scene's layers answer to the
+project padlock only. Protocol 2.35 carries
+`grade_layer_set`/`grade_layer_clear` (`scene`, `layer`), and
+`change=layer` and `entry=layer` records keyed by `scene` for every
+project scene (layer records follow the input records, ordered by scene
+then layer; at most 256), replicated by `fm-client`/`fm-ui-model`. The
+snapshot's `layout_scenes` lists every project scene and one
+`scene_layout_state` per scene (keyed by `scene`, with the scene's name and
+each layer outline's source input or nested scene) follows the scene
+animation states, so clients know every scene's layers whether or not a
+Scene input shows it. Studio's Colour window lists every layer of every
+project scene as a target, labelled `Scene › Layer` (with "no Scene input"
+for a scene no input shows), and `freemix-cli grade-set|grade-clear <show>
 layer <scene> <layer>` edits it offline and `render` shows it. The
 simulated monitor path grades scene layers (input grade, then layer grade),
 title pictures and keyed title overlays (their input grade), and the
 program, consistently with the native path; simulated media inputs have no
 picture to grade. The native path also grades Stinger media by its media
-input's grade. Exact scene previews (`scene_preview_request`) on both
-simulated and native daemons grade the same way, with the compiled grades
-of the engine revision the request is resolved at: each leaf layer's input
-grade then its layer grade, a layer drawing a nested scene (directly or
-through a Scene input) its own layer grade over the nested scene's graded
-layers. Remaining gaps: a Scene input's own input grade is not
-applied by either renderer (grade its layers instead); layer grades of a
-scene no Scene input shows are saved and restored but cannot be edited or
-replicated over the protocol; and the Colour window previews a layer target on a test still,
-not its live picture, so `SW-019` remains planned. Grades travel between
+input's grade. A Scene input's own input grade colours the scene picture
+it shows, after the layer grades and the composition and before the
+picture is used as Program, Preview, an overlay, or a layer of another
+scene (a layer drawing the Scene input carries that grade under its own
+layer grade; a layer drawing the scene directly does not): the simulated
+monitors (`scene_render` `Composer`), the native GPU composition (one LUT
+pass over the composed scene texture per graded Scene input), exact scene
+previews (the requested Scene input's grade over the whole preview), and
+`freemix-cli render` apply it the same way. Exact scene previews
+(`scene_preview_request`) on both simulated and native daemons grade with
+the compiled grades of the engine revision the request is resolved at:
+each leaf layer's input grade then its layer grade, a layer drawing a
+nested scene its own layer grade over the nested scene's graded layers
+(and the Scene input's grade when drawn through one). The Colour window
+previews a layer target on its live picture: the layer's clean picture is
+its source as a monitor shows it (the source input with its input grade,
+or for a layer drawing a nested scene any ungraded Scene input showing that
+scene), so when a fresh Preview monitor frame, or a Program frame while the
+program grade is identity, shows that source, the window grades it
+locally with the draft layer grade; otherwise it shows the last clean
+frame it held for the target, and before any a test still with a caption
+saying so. Remaining gaps: the Colour window does not request an exact
+scene preview of a layer's source, so a layer whose source is on neither
+monitor previews on its last held frame or a still, and the preview is the
+source picture rather than the layer posed in its scene; the window's
+before/after split and scopes are computed locally from the monitor
+proxy frame, not from the full-resolution graded output; and native
+graded scene previews match the GPU only within the 8-bit CPU and 16-bit
+float GPU pipeline difference, so `SW-019` remains planned. Grades travel
+between
 projects as `.fmgrade` files (schema 34): strict JSON (`kind: "grade"`)
 holding the grade's name and values without its project LUT reference, and
 its LUT by name and strength with the `.cube` text embedded when it is at

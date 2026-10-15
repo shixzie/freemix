@@ -145,15 +145,18 @@ struct NativeScenePlan {
 /// order). The plan compiles every scene in its static pose and ungraded; a
 /// frame that shows a scene mid In or Out phase recompiles it posed (GX-011
 /// stage 5), and a frame of a scene with graded layers recompiles it with
-/// each layer's grade (SW-019, from `layer_grades`), which the compositor
-/// applies after the source's input grade and before the layer transform.
+/// each layer's grade (SW-019, from `grades`), which the compositor applies
+/// after the source's input grade and before the layer transform. A layer
+/// drawing a nested scene through a Scene input first carries that input's
+/// grade over the nested scene's picture (a leaf's input grade is applied to
+/// its frame before composition instead).
 fn native_scene_composition(
     scene_id: SceneId,
     model: &fm_model::Scene,
     layer_tokens: &[SourceId],
     width: u32,
     height: u32,
-    layer_grades: &BTreeMap<SceneLayerRef, Arc<CompiledGrade>>,
+    grades: NativeSceneGrades<'_>,
 ) -> Result<CompositionPlan, NativeProjectPlanError> {
     let mut scene = CompositorScene::new(
         width,
@@ -211,7 +214,10 @@ fn native_scene_composition(
                 effect.parameters.clone(),
             ));
         }
-        if let Some(grade) = layer_grades.get(&SceneLayerRef::new(scene_id, layer.id)) {
+        if let Some(grade) = grades.scene_input(layer.source) {
+            native_layer = native_layer.with_grade(Arc::clone(grade));
+        }
+        if let Some(grade) = grades.layers.get(&SceneLayerRef::new(scene_id, layer.id)) {
             native_layer = native_layer.with_layer_grade(Arc::clone(grade));
         }
         scene.push_layer(native_layer);
@@ -225,6 +231,35 @@ fn native_scene_composition(
     Ok(composition)
 }
 
+/// The compiled grades a native scene composition attaches to its layers
+/// (SW-019): each layer's own grade, and the grade of a Scene input a layer
+/// draws.
+#[derive(Clone, Copy, Debug)]
+struct NativeSceneGrades<'a> {
+    layers: &'a BTreeMap<SceneLayerRef, Arc<CompiledGrade>>,
+    /// Non-identity grades of Scene inputs only.
+    scene_inputs: &'a BTreeMap<InputId, Arc<CompiledGrade>>,
+}
+
+impl<'a> NativeSceneGrades<'a> {
+    /// The grade of the Scene input `source` names, if it is one and graded.
+    fn scene_input(self, source: SourceRef) -> Option<&'a Arc<CompiledGrade>> {
+        match source {
+            SourceRef::Input(input) => self.scene_inputs.get(&input),
+            SourceRef::Scene(_) => None,
+        }
+    }
+
+    /// Whether any layer of `model` (scene `id`) carries a grade.
+    fn grades_scene(self, id: SceneId, model: &fm_model::Scene) -> bool {
+        self.layers.keys().any(|target| target.scene == id)
+            || model
+                .layers
+                .iter()
+                .any(|layer| self.scene_input(layer.source).is_some())
+    }
+}
+
 impl NativeScenePlan {
     /// The composition this frame draws: the static plan, or the scene
     /// recompiled in the pose the engine reports for the Scene input
@@ -235,9 +270,9 @@ impl NativeScenePlan {
         frame: &FrameResult,
         width: u32,
         height: u32,
-        layer_grades: &BTreeMap<SceneLayerRef, Arc<CompiledGrade>>,
+        grades: NativeSceneGrades<'_>,
     ) -> std::borrow::Cow<'_, CompositionPlan> {
-        let graded = layer_grades.keys().any(|target| target.scene == self.id);
+        let has_grades = grades.grades_scene(self.id, &self.model);
         let candidates = frame
             .scenes
             .iter()
@@ -251,22 +286,14 @@ impl NativeScenePlan {
             Some(pose) => {
                 std::borrow::Cow::Owned(self.model.posed(pose.frame.sample, width, height))
             }
-            None if graded => std::borrow::Cow::Borrowed(self.model.as_ref()),
+            None if has_grades => std::borrow::Cow::Borrowed(self.model.as_ref()),
             None => return std::borrow::Cow::Borrowed(&self.composition),
         };
         // Posing keeps every layer's source and only shrinks crops and
         // masks, and a grade changes no geometry, so the scene compiles
         // whenever the static one did; should it not, the frame shows the
         // static plan.
-        native_scene_composition(
-            self.id,
-            &posed,
-            &self.layer_tokens,
-            width,
-            height,
-            layer_grades,
-        )
-        .map_or(
+        native_scene_composition(self.id, &posed, &self.layer_tokens, width, height, grades).map_or(
             std::borrow::Cow::Borrowed(&self.composition),
             std::borrow::Cow::Owned,
         )
@@ -434,6 +461,10 @@ pub struct NativeProjectPlan {
 pub struct NativeProjectGrades {
     revision: Option<u64>,
     inputs: BTreeMap<InputId, Arc<NativeGradeLut>>,
+    /// Compiled grades of graded inputs, which a scene layer drawing a
+    /// Scene input carries; [`NativeProjectPlan::set_grades`] keeps only
+    /// Scene inputs'.
+    scene_inputs: BTreeMap<InputId, Arc<CompiledGrade>>,
     layers: BTreeMap<SceneLayerRef, Arc<CompiledGrade>>,
     program: Option<Arc<NativeGradeLut>>,
 }
@@ -480,6 +511,12 @@ impl PartialEq for NativeProjectGrades {
                 .all(|((left_id, left), (right_id, right))| {
                     left_id == right_id && Arc::ptr_eq(left, right)
                 })
+            && self.scene_inputs.len() == other.scene_inputs.len()
+            && self.scene_inputs.iter().zip(&other.scene_inputs).all(
+                |((left_id, left), (right_id, right))| {
+                    left_id == right_id && Arc::ptr_eq(left, right)
+                },
+            )
             && self.layers.len() == other.layers.len()
             && self
                 .layers
@@ -630,7 +667,10 @@ impl NativeProjectPlan {
                 &layer_tokens,
                 dimensions.width(),
                 dimensions.height(),
-                &BTreeMap::new(),
+                NativeSceneGrades {
+                    layers: &BTreeMap::new(),
+                    scene_inputs: &BTreeMap::new(),
+                },
             )?;
             let output = SourceId::new(next_source);
             next_source = next_source
@@ -747,7 +787,13 @@ impl NativeProjectPlan {
     }
 
     /// Replaces the prepared grades every project render applies.
-    pub fn set_grades(&mut self, grades: NativeProjectGrades) {
+    pub fn set_grades(&mut self, mut grades: NativeProjectGrades) {
+        grades.scene_inputs.retain(|input, _| {
+            matches!(
+                self.video_routes.get(input),
+                Some(NativeVideoRoute::Scene(_))
+            )
+        });
         self.grades = grades;
     }
 
@@ -5759,9 +5805,10 @@ fn project_texture<'a>(
 ) -> Result<&'a NativeTexture, NativeSourceRenderError> {
     match project.video_route(input) {
         Some(NativeVideoRoute::Leaf(leaf)) => leaf_texture(registry, graded, leaf, deadline),
-        Some(NativeVideoRoute::Scene(scene)) => scene_outputs
-            .get(&scene)
-            .map(|(_, texture)| texture)
+        // A graded Scene input shows its scene with its grade.
+        Some(NativeVideoRoute::Scene(scene)) => graded
+            .get(&input)
+            .or_else(|| scene_outputs.get(&scene).map(|(_, texture)| texture))
             .ok_or(NativeSourceRenderError::MissingSource { input }),
         None => Err(NativeSourceRenderError::MissingSource { input }),
     }
@@ -5912,6 +5959,7 @@ impl NativeMediaRuntime {
                 prepared.inputs.insert(input, Arc::new(lut));
             }
         }
+        prepared.scene_inputs.clone_from(grades.inputs());
         prepared.layers.clone_from(grades.layers());
         if let Some(grade) = grades.program() {
             prepared.program = self
@@ -5984,6 +6032,38 @@ impl NativeMediaRuntime {
             graded.insert(leaf, texture);
         }
         Ok(graded)
+    }
+
+    /// Grades the composed scene of each Scene input among `inputs` that
+    /// carries a prepared grade (SW-019), keyed by the Scene input, so
+    /// Program, Preview, and overlays show the scene with its input's grade.
+    async fn grade_scene_inputs(
+        &self,
+        project: &NativeProjectPlan,
+        inputs: &[InputId],
+        scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
+        graded: &mut BTreeMap<InputId, NativeTexture>,
+    ) -> Result<(), NativeSourceRenderError> {
+        for &input in inputs {
+            if graded.contains_key(&input) {
+                continue;
+            }
+            let Some(NativeVideoRoute::Scene(scene)) = project.video_route(input) else {
+                continue;
+            };
+            let (Some(lut), Some((_, composed))) =
+                (project.grades.inputs.get(&input), scene_outputs.get(&scene))
+            else {
+                continue;
+            };
+            let texture = self
+                .grade_renderer
+                .apply(&self.context, lut, composed)
+                .await
+                .map_err(NativeSourceRenderError::Grade)?;
+            graded.insert(input, texture);
+        }
+        Ok(())
     }
 
     /// Returns bounded project-frame completion and slot accounting.
@@ -7065,7 +7145,10 @@ impl NativeMediaRuntime {
                 frame,
                 project.dimensions.width(),
                 project.dimensions.height(),
-                &project.grades.layers,
+                NativeSceneGrades {
+                    layers: &project.grades.layers,
+                    scene_inputs: &project.grades.scene_inputs,
+                },
             );
             let output = self
                 .composition_renderer
@@ -7216,13 +7299,14 @@ impl NativeMediaRuntime {
                 .collect::<Vec<_>>(),
             NativeProjectMixPlan::Transition(_) => inputs.clone(),
         };
-        let graded = self
+        let mut graded = self
             .grade_project_leaves(registry, project, &leaf_inputs, &execution, frame.deadline)
             .await?;
         let (program, scene_outputs) = self
             .render_project_base_with_stingers(
                 registry,
-                &graded,
+                &mut graded,
+                &inputs,
                 stingers,
                 project,
                 frame,
@@ -7263,11 +7347,15 @@ impl NativeMediaRuntime {
         Ok(rendered)
     }
 
+    /// Renders the frame's scenes, grades each Scene input among `inputs`
+    /// that carries a grade over its composed scene (into `graded`, keyed by
+    /// the Scene input), and mixes Program.
     #[allow(clippy::too_many_arguments)]
     async fn render_project_base_with_stingers(
         &self,
         registry: &NativeSourceRegistry,
-        graded: &BTreeMap<InputId, NativeTexture>,
+        graded: &mut BTreeMap<InputId, NativeTexture>,
+        inputs: &[InputId],
         stingers: &NativeSourceRegistry,
         project: &NativeProjectPlan,
         frame: &FrameResult,
@@ -7280,6 +7368,9 @@ impl NativeMediaRuntime {
         let scene_outputs = self
             .render_project_scenes(registry, graded, project, frame, execution)
             .await?;
+        self.grade_scene_inputs(project, inputs, &scene_outputs, graded)
+            .await?;
+        let graded = &*graded;
         let program = match plan {
             NativeProjectMixPlan::Transition(plan) => {
                 let primary = project_texture(
@@ -7611,7 +7702,6 @@ mod tests {
         Engine, EngineCommand, EngineManualTransitionKind, EngineManualTransitionPosition,
         ShowState,
     };
-    #[cfg(target_os = "macos")]
     use fm_frame::{
         AlphaMode, ChromaLocation, ColorMetadata, ColorPrimaries, CpuVideoPlane,
         MatrixCoefficients, SignalRange, TransferFunction, VideoFrameMetadata,
@@ -7635,7 +7725,6 @@ mod tests {
     use fm_types::{
         BusId, ColorMetadata as ModelColorMetadata, OutputId, ProjectId, ScanMode, VideoFormat,
     };
-    #[cfg(target_os = "macos")]
     use half::f16;
 
     use super::*;
@@ -7794,12 +7883,10 @@ mod tests {
         CpuVideoFrame::new(timing, payload)
     }
 
-    #[cfg(target_os = "macos")]
     fn colored_retained_frame(clock_domain: ClockDomainId, rgba: [u8; 4]) -> CpuVideoFrame {
         solid_retained_frame(clock_domain, rgba, 1, 1)
     }
 
-    #[cfg(target_os = "macos")]
     fn solid_retained_frame(
         clock_domain: ClockDomainId,
         rgba: [u8; 4],
@@ -7847,7 +7934,6 @@ mod tests {
             .unwrap()
     }
 
-    #[cfg(target_os = "macos")]
     fn rgba16f_components(bytes: &[u8]) -> [f32; 4] {
         std::array::from_fn(|component| {
             let offset = component * 2;
@@ -8510,22 +8596,119 @@ mod tests {
             .unwrap(),
         );
 
-        let ungraded = scene_plan.frame_composition(&frame, 4, 2, &BTreeMap::new());
+        let no_inputs = BTreeMap::new();
+        let grades = |layers| NativeSceneGrades {
+            layers,
+            scene_inputs: &no_inputs,
+        };
+        let no_layers = BTreeMap::new();
+        let ungraded = scene_plan.frame_composition(&frame, 4, 2, grades(&no_layers));
         assert!(matches!(ungraded, std::borrow::Cow::Borrowed(_)));
         let elsewhere =
             BTreeMap::from([(SceneLayerRef::new(scene(11), right_id), Arc::clone(&grade))]);
-        let ungraded = scene_plan.frame_composition(&frame, 4, 2, &elsewhere);
+        let ungraded = scene_plan.frame_composition(&frame, 4, 2, grades(&elsewhere));
         assert!(matches!(ungraded, std::borrow::Cow::Borrowed(_)));
 
         let layer_grades =
             BTreeMap::from([(SceneLayerRef::new(scene(10), right_id), Arc::clone(&grade))]);
-        let graded = scene_plan.frame_composition(&frame, 4, 2, &layer_grades);
-        assert!(matches!(graded, std::borrow::Cow::Owned(_)));
-        let layers = graded.layers();
+        let recompiled = scene_plan.frame_composition(&frame, 4, 2, grades(&layer_grades));
+        assert!(matches!(recompiled, std::borrow::Cow::Owned(_)));
+        let layers = recompiled.layers();
         assert_eq!(layers.len(), 2);
         assert!(layers[0].layer_grade().is_none());
         assert!(Arc::ptr_eq(layers[1].layer_grade().unwrap(), &grade));
         assert!(layers[1].grade().is_none());
+    }
+
+    /// SW-019: a layer drawing a nested scene through a graded Scene input
+    /// carries that input's grade (then its own layer grade); a layer
+    /// naming the scene directly does not, and the plan keeps only Scene
+    /// inputs' compiled grades for its layers.
+    #[test]
+    fn scene_layers_drawing_a_scene_input_carry_its_grade() {
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, input(1));
+        add_scene_input(&mut project, input(2), scene(10), None);
+        add_scene_input(&mut project, input(3), scene(11), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![layer(SourceRef::Input(input(1)), 0)],
+        );
+        let (through_input, direct) = (
+            layer(SourceRef::Input(input(2)), 0),
+            layer(SourceRef::Scene(scene(10)), 1),
+        );
+        let through_id = through_input.id;
+        add_scene(&mut project, scene(11), vec![through_input, direct]);
+        let mut plan =
+            NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let compiled = |millistops| {
+            Arc::new(
+                fm_grade::CompiledGrade::new(
+                    &fm_grade::Grade {
+                        exposure_millistops: millistops,
+                        ..fm_grade::Grade::IDENTITY
+                    },
+                    None,
+                )
+                .unwrap(),
+            )
+        };
+        let (scene_grade, leaf_grade, layer_grade) = (compiled(-500), compiled(700), compiled(300));
+        plan.set_grades(NativeProjectGrades {
+            revision: Some(1),
+            scene_inputs: BTreeMap::from([
+                (input(1), Arc::clone(&leaf_grade)),
+                (input(2), Arc::clone(&scene_grade)),
+            ]),
+            layers: BTreeMap::from([(
+                SceneLayerRef::new(scene(11), through_id),
+                Arc::clone(&layer_grade),
+            )]),
+            ..NativeProjectGrades::default()
+        });
+        // The leaf's grade is applied to its frame, never as a layer grade.
+        assert_eq!(
+            plan.grades.scene_inputs.keys().copied().collect::<Vec<_>>(),
+            [input(2)]
+        );
+        let outer = plan
+            .scenes
+            .iter()
+            .find(|candidate| candidate.id == scene(11))
+            .unwrap();
+        let frame = frame_result(0, input(3), None);
+        let composition = outer.frame_composition(
+            &frame,
+            4,
+            2,
+            NativeSceneGrades {
+                layers: &plan.grades.layers,
+                scene_inputs: &plan.grades.scene_inputs,
+            },
+        );
+        assert!(matches!(composition, std::borrow::Cow::Owned(_)));
+        let layers = composition.layers();
+        assert!(Arc::ptr_eq(layers[0].grade().unwrap(), &scene_grade));
+        assert!(Arc::ptr_eq(layers[0].layer_grade().unwrap(), &layer_grade));
+        assert!(layers[1].grade().is_none() && layers[1].layer_grade().is_none());
+        // The nested scene itself (a leaf layer) stays on its static plan.
+        let inner = plan
+            .scenes
+            .iter()
+            .find(|candidate| candidate.id == scene(10))
+            .unwrap();
+        let composition = inner.frame_composition(
+            &frame,
+            4,
+            2,
+            NativeSceneGrades {
+                layers: &plan.grades.layers,
+                scene_inputs: &plan.grades.scene_inputs,
+            },
+        );
+        assert!(matches!(composition, std::borrow::Cow::Borrowed(_)));
     }
 
     #[test]
@@ -12433,6 +12616,93 @@ mod tests {
         let program_graded = render(&plan);
         assert!(program_graded[1] < input_graded[1] * 0.75, "darker program");
         assert!((program_graded[3] - 1.0).abs() < 1.0e-3, "alpha kept");
+    }
+
+    /// SW-019: a Scene input's grade colours the composed scene it shows on
+    /// Program. Skips where no native adapter exists unless
+    /// `FM_REQUIRE_NATIVE_MEDIA=1`.
+    #[test]
+    fn native_project_grades_a_scene_input_over_its_composed_scene() {
+        #[cfg(target_os = "macos")]
+        const BACKEND: NativeBackend = NativeBackend::Metal;
+        #[cfg(target_os = "windows")]
+        const BACKEND: NativeBackend = NativeBackend::Dx12;
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        const BACKEND: NativeBackend = NativeBackend::Vulkan;
+        let runtime = match NativeMediaRuntime::new_blocking([BACKEND]) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                assert!(
+                    std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                    "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+                );
+                eprintln!("skipping: no native adapter ({error})");
+                return;
+            }
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(80).unwrap());
+        let leaf = input(1);
+        let shown = input(2);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::RetainedFrame {
+                    input: leaf,
+                    frame: colored_retained_frame(clock_domain, [255, 0, 0, 255]),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, leaf);
+        add_scene_input(&mut project, shown, scene(10), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![layer(SourceRef::Input(leaf), 0)],
+        );
+        let mut plan =
+            NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let frame = frame_result(0, shown, None);
+        let render = |plan: &NativeProjectPlan| {
+            let output = runtime
+                .render_project_frame_result_blocking(playback.registry(), plan, &frame)
+                .unwrap();
+            rgba16f_components(
+                &block_on(runtime.diagnostic_readback(&output))
+                    .unwrap()
+                    .bytes,
+            )
+        };
+        let ungraded = render(&plan);
+        assert!(
+            ungraded[0] > 0.5 && ungraded[0] > ungraded[1] * 4.0,
+            "ungraded red {ungraded:?}"
+        );
+        let mut grading = fm_model::ProjectGrading::default();
+        grading
+            .set_input(
+                shown,
+                Some(fm_model::GradeSource::Inline(Box::new(fm_grade::Grade {
+                    saturation_permille: 0,
+                    ..fm_grade::Grade::IDENTITY
+                }))),
+            )
+            .unwrap();
+        let compiled =
+            fm_engine::CompiledProjectGrades::compile_grading(&grading, &BTreeMap::new()).unwrap();
+        plan.set_grades(
+            runtime
+                .prepare_project_grades_blocking(1, &compiled)
+                .unwrap(),
+        );
+        let graded = render(&plan);
+        assert!(
+            (graded[0] - graded[1]).abs() < 0.02 && (graded[1] - graded[2]).abs() < 0.02,
+            "grey scene {graded:?}"
+        );
     }
 
     #[cfg(target_os = "macos")]

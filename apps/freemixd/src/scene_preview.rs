@@ -34,8 +34,11 @@
 //! do (SW-019): each leaf layer's input grade, then each layer's own scene
 //! layer grade, applied by the compositor after the layer's effects and
 //! before its transform, from the grades of the engine revision the
-//! request was resolved at. A layer drawing a nested scene carries only its
-//! layer grade; the nested scene's layers carry their own.
+//! request was resolved at. A layer drawing a nested scene through a Scene
+//! input carries that input's grade and then its layer grade (one naming
+//! the scene directly only its layer grade); the nested scene's layers
+//! carry their own. The requested Scene input's own grade then colours the
+//! composed preview, as it colours that input on the monitors.
 //!
 //! The answer is one four-channel QOI stream of straight RGBA8 pixels (at
 //! most 640x360) split into `scene_preview_frame` parts, rendered off the
@@ -257,6 +260,7 @@ impl ScenePreviewJob {
             self.frame,
             self.pose,
             Some(&self.grades),
+            Some(self.input),
         )
         .ok_or_else(unrenderable)?;
         let rgba = straight_rgba(image.pixels(), image.stride(), self.width, self.height)
@@ -468,6 +472,7 @@ mod tests {
             4,
             ClipState::Hold,
             None,
+            None,
         )
     }
 
@@ -513,7 +518,7 @@ mod tests {
         // The simulated monitor tap composes nested scenes the same way.
         let tap = scene_render::render_scene(
             &project,
-            scene_id(2),
+            input_id(11),
             &pipeline,
             4,
             ClipState::Hold,
@@ -539,8 +544,10 @@ mod tests {
 
     /// SW-019: an exact preview grades like the monitor: a leaf layer shows
     /// its input grade then its layer grade; a layer drawing a nested scene
-    /// carries only its own layer grade (not the Scene input's grade) over
-    /// the nested scene's graded layers.
+    /// through a Scene input carries that input's grade then its own layer
+    /// grade over the nested scene's graded layers, a layer naming the
+    /// scene directly only its layer grade; and the Scene input a preview
+    /// shows grades the composed picture with its own grade.
     #[test]
     fn previews_grade_leaf_and_nested_scene_layers() {
         use fm_model::{GradeSource, SceneLayerRef};
@@ -573,7 +580,6 @@ mod tests {
         project
             .set_layer_grade(layer_ref(2, 2), inline(&exposure(-500)))
             .unwrap();
-        // A Scene input's own grade is not applied (SW-019 boundary).
         project
             .set_input_grade(input_id(10), inline(&exposure(2_000)))
             .unwrap();
@@ -582,7 +588,39 @@ mod tests {
                 .unwrap();
         let pipeline = scene_render::simulated_pipeline(&project, WIDTH, HEIGHT).unwrap();
         let model = project.scene(scene_id(2)).unwrap();
-        let composed = scene_render::render_scene_model(
+        let compose = |shown_by: Option<InputId>| {
+            scene_render::render_scene_model(
+                &project,
+                model,
+                &pipeline,
+                (WIDTH, HEIGHT),
+                4,
+                ClipState::Hold,
+                Some(&grades),
+                shown_by,
+            )
+            .unwrap()
+        };
+        let composed = compose(None);
+        let nested = graded(&exposure(-1_000), graded(&warm, SOLID));
+        let through_input = graded(&exposure(-500), graded(&exposure(2_000), nested));
+        assert_ne!(nested, SOLID);
+        assert_ne!(through_input, nested);
+        for y in [0, HEIGHT / 2, HEIGHT - 1] {
+            for x in 0..WIDTH {
+                let expected = if x < WIDTH / 2 { through_input } else { nested };
+                assert_eq!(pixel(&composed, x, y), expected, "({x}, {y})");
+            }
+        }
+        // Shown by Scene input 11, the composed picture carries its grade.
+        project
+            .set_input_grade(input_id(11), inline(&exposure(-2_000)))
+            .unwrap();
+        let grades =
+            fm_engine::CompiledProjectGrades::compile(&project, &std::collections::BTreeMap::new())
+                .unwrap();
+        let model = project.scene(scene_id(2)).unwrap();
+        let shown = scene_render::render_scene_model(
             &project,
             model,
             &pipeline,
@@ -590,29 +628,26 @@ mod tests {
             4,
             ClipState::Hold,
             Some(&grades),
+            Some(input_id(11)),
         )
         .unwrap();
-        let nested = graded(&exposure(-1_000), graded(&warm, SOLID));
-        let outer = graded(&exposure(-500), nested);
-        assert_ne!(nested, SOLID);
-        assert_ne!(outer, nested);
-        for y in [0, HEIGHT / 2, HEIGHT - 1] {
-            for x in 0..WIDTH {
-                let expected = if x < WIDTH / 2 { outer } else { nested };
-                assert_eq!(pixel(&composed, x, y), expected, "({x}, {y})");
-            }
+        for x in [0, WIDTH / 2] {
+            assert_eq!(
+                pixel(&shown, x, 0),
+                graded(&exposure(-2_000), pixel(&composed, x, 0))
+            );
         }
         // The simulated monitor tap composes the same graded picture.
         let tap = scene_render::render_scene(
             &project,
-            scene_id(2),
+            input_id(11),
             &pipeline,
             4,
             ClipState::Hold,
             &grades,
         )
         .unwrap();
-        assert_eq!(tap.pixels(), composed.pixels());
+        assert_eq!(tap.pixels(), shown.pixels());
         // Ungraded, the leaf shows its source as is.
         let ungraded = render(&project, 2, &pipeline).unwrap();
         assert_eq!(pixel(&ungraded, 0, 0), SOLID);
@@ -957,6 +992,7 @@ mod native_tests {
             4,
             fm_model::fm_animation::ClipState::Hold,
             Some(&grades),
+            None,
         )
         .unwrap();
         let clip = graded(&exposure(-1_000), [0, 200, 0, 255]);

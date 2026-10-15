@@ -4293,7 +4293,8 @@ fn title_layout_states_match_each_template() {
 }
 
 /// A scene with a named, turned layer and a plain one, shown by Scene
-/// inputs 4 and 5 (GX-011 stage 5).
+/// inputs 4 and 5 (GX-011 stage 5), and scene 41 that no Scene input shows,
+/// one layer drawing scene 40.
 fn scene_control() -> (ControlService, fm_model::Scene) {
     use fm_model::{
         Layer, LayerGeometry, LayerId, Rgba8, Rotation, Scene, SceneAnimation, SourceRef,
@@ -4333,6 +4334,20 @@ fn scene_control() -> (ControlService, fm_model::Scene) {
         .unwrap();
     show.set_scene_input(input(5), scene.clone(), 1_920, 1_080)
         .unwrap();
+    show.set_scene(
+        Scene {
+            id: SceneId::new(NonZeroU128::new(41).unwrap()),
+            name: "Spare\nwall".into(),
+            background: Rgba8::OPAQUE_BLACK,
+            layers: vec![Layer {
+                source: SourceRef::Scene(scene.id),
+                ..layer(2, "Nested", Rotation::Deg0)
+            }],
+            animation: SceneAnimation::default(),
+        },
+        1_920,
+        1_080,
+    );
     let control = ControlService::new(
         Engine::new(
             show,
@@ -4351,9 +4366,9 @@ fn scene_control() -> (ControlService, fm_model::Scene) {
     (control, scene)
 }
 
-/// GX-011 stage 5, Protocol 2.31: a snapshot lists its Scene inputs and is
-/// followed by one `scene_animation_state` and one `scene_layout_state` per
-/// Scene input; scene animation edits are revision-checked `EditProject`
+/// GX-011 stage 5, Protocol 2.31 (2.35): a snapshot lists its Scene inputs
+/// and every scene and is followed by one `scene_animation_state` per Scene
+/// input and one `scene_layout_state` per scene; scene animation edits are revision-checked `EditProject`
 /// commands shared by every Scene input showing the scene, and undo
 /// journals the restored clip as a revision-checked set.
 #[test]
@@ -4361,7 +4376,8 @@ fn scene_control() -> (ControlService, fm_model::Scene) {
 fn scene_animation_edits_are_checked_project_edits_with_state_records_and_undo() {
     use fm_model::fm_animation::{AnimationPreset, Phase};
     use fm_protocol::{
-        SceneAnimationStateMessage, WireSceneLayerId, WireSceneLayerOutline, encode_line,
+        SceneAnimationStateMessage, WireSceneId, WireSceneLayerId, WireSceneLayerOutline,
+        WireSceneLayerSource, encode_line,
     };
 
     let (mut control, scene) = scene_control();
@@ -4370,6 +4386,8 @@ fn scene_animation_edits_are_checked_project_edits_with_state_records_and_undo()
         WireInputId::from_domain(input(5)),
     ];
     assert_eq!(control.snapshot().snapshot.scenes, scenes);
+    let scene_ids = [40, 41].map(|id| WireSceneId::new(NonZeroU128::new(id).unwrap()));
+    assert_eq!(control.snapshot().snapshot.layout_scenes, scene_ids);
     let revision = control.snapshot().snapshot.revision;
     let initial = control.scene_animation_states();
     assert_eq!(
@@ -4379,13 +4397,20 @@ fn scene_animation_edits_are_checked_project_edits_with_state_records_and_undo()
             .map(|input| SceneAnimationStateMessage {
                 revision,
                 input: *input,
+                scene: scene_ids[0],
                 animation_revision: 0,
                 clip: Box::new(scene_clip_to_wire(&scene.animation.clip)),
             })
             .collect::<Vec<_>>()
     );
     let layouts = control.scene_layout_states();
-    assert_eq!(layouts.len(), 2);
+    assert_eq!(
+        layouts
+            .iter()
+            .map(|layout| (layout.scene, layout.name.as_str()))
+            .collect::<Vec<_>>(),
+        [(scene_ids[0], "Two up"), (scene_ids[1], "Spare wall")]
+    );
     let layout = &layouts[0].layout;
     assert_eq!((layout.width, layout.height), (1_920, 1_080));
     assert_eq!(
@@ -4393,6 +4418,7 @@ fn scene_animation_edits_are_checked_project_edits_with_state_records_and_undo()
         WireSceneLayerOutline {
             id: WireSceneLayerId::new(core::num::NonZeroU32::new(3).unwrap()),
             name: "Guest cam".into(),
+            source: WireSceneLayerSource::Input(WireInputId::from_domain(input(1))),
             x: 100,
             y: 50,
             width: 640,
@@ -4402,7 +4428,10 @@ fn scene_animation_edits_are_checked_project_edits_with_state_records_and_undo()
             enabled: true,
         }
     );
-    assert_eq!(layouts[1].layout, layouts[0].layout);
+    assert_eq!(
+        layouts[1].layout.layers[0].source,
+        WireSceneLayerSource::Scene(scene_ids[0])
+    );
     for message in layouts.into_iter().map(WireMessage::SceneLayoutState) {
         encode_line(&message).unwrap();
     }
@@ -4607,22 +4636,22 @@ fn scene_settle_ticks_cover_exactly_the_phases_a_switch_starts() {
     assert_eq!(prepared.scene_settle_ticks(1), 1);
 }
 
-/// SW-019, Protocol 2.33: a scene layer grade is an `EditProject` command
-/// through one Scene input; its `grade_changed` event and `grade_state`
-/// record name every Scene input showing the scene, and undo clears it.
+/// SW-019, Protocol 2.35: a scene layer grade is an `EditProject` command
+/// addressed by scene; its `grade_changed` event and `grade_state` record
+/// name the scene, a scene no Scene input shows is graded the same way, and
+/// undo clears it.
 #[test]
-fn scene_layer_grades_replicate_to_every_scene_input_sharing_the_scene() {
-    use fm_protocol::{GradeChange, GradeEntry, WireGradeSource, WireSceneLayerId};
+#[allow(clippy::too_many_lines)] // one golden: set, replicate, refuse, unshown, undo
+fn scene_layer_grades_are_addressed_and_replicated_by_scene() {
+    use fm_protocol::{GradeChange, GradeEntry, WireGradeSource, WireSceneId, WireSceneLayerId};
 
     let (mut control, _) = scene_control();
-    let shared = vec![
-        WireInputId::from_domain(input(4)),
-        WireInputId::from_domain(input(5)),
-    ];
+    let shared = WireSceneId::new(NonZeroU128::new(40).unwrap());
+    let spare = WireSceneId::new(NonZeroU128::new(41).unwrap());
     let layer = WireSceneLayerId::new(core::num::NonZeroU32::new(9).unwrap());
     let warm = Box::new(fm_grade::builtin_preset("warm").unwrap().grade.clone());
     let set = CommandPayload::SetLayerGrade {
-        input: WireInputId::from_domain(input(5)),
+        scene: shared,
         layer,
         source: Some(WireGradeSource::Inline(warm.clone())),
     };
@@ -4641,7 +4670,7 @@ fn scene_layer_grades_replicate_to_every_scene_input_sharing_the_scene() {
     assert_eq!(
         accepted.output.events[0].payload,
         EventPayload::GradeChanged(GradeChange::Layer {
-            inputs: shared.clone(),
+            scene: shared,
             layer,
             source: Some(WireGradeSource::Inline(warm.clone())),
         })
@@ -4654,9 +4683,9 @@ fn scene_layer_grades_replicate_to_every_scene_input_sharing_the_scene() {
             .map(|state| state.entry)
             .collect::<Vec<_>>(),
         [GradeEntry::Layer {
-            inputs: shared.clone(),
+            scene: shared,
             layer,
-            source: WireGradeSource::Inline(warm),
+            source: WireGradeSource::Inline(warm.clone()),
         }]
     );
     let compiled = control.compiled_grades().unwrap();
@@ -4677,7 +4706,7 @@ fn scene_layer_grades_replicate_to_every_scene_input_sharing_the_scene() {
                 "x",
                 "x",
                 CommandPayload::SetLayerGrade {
-                    input: WireInputId::from_domain(input(4)),
+                    scene: shared,
                     layer: WireSceneLayerId::new(core::num::NonZeroU32::new(2).unwrap()),
                     source: None,
                 },
@@ -4686,6 +4715,56 @@ fn scene_layer_grades_replicate_to_every_scene_input_sharing_the_scene() {
         )
         .unwrap();
     assert!(!unknown.is_accepted());
+
+    // Scene 41 has no Scene input; its layer is graded and replicated too.
+    let nested = WireSceneLayerId::new(core::num::NonZeroU32::new(2).unwrap());
+    let spare_set = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "n",
+                "n",
+                CommandPayload::SetLayerGrade {
+                    scene: spare,
+                    layer: nested,
+                    source: Some(WireGradeSource::Inline(warm.clone())),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(spare_set.is_accepted(), "{:?}", spare_set.output.result);
+    assert_eq!(
+        spare_set.output.events[0].payload,
+        EventPayload::GradeChanged(GradeChange::Layer {
+            scene: spare,
+            layer: nested,
+            source: Some(WireGradeSource::Inline(warm.clone())),
+        })
+    );
+    assert_eq!(control.snapshot().snapshot.grade_states, 2);
+    assert_eq!(
+        control.grade_states()[1].entry,
+        GradeEntry::Layer {
+            scene: spare,
+            layer: nested,
+            source: WireGradeSource::Inline(warm),
+        }
+    );
+    let undone = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "un",
+                "un",
+                CommandPayload::Undo {
+                    expected_edit: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
 
     let undone = control
         .submit(
@@ -4704,7 +4783,7 @@ fn scene_layer_grades_replicate_to_every_scene_input_sharing_the_scene() {
     assert_eq!(
         undone.output.events[0].payload,
         EventPayload::GradeChanged(GradeChange::Layer {
-            inputs: shared,
+            scene: shared,
             layer,
             source: None,
         })

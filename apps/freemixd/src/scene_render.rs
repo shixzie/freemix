@@ -28,10 +28,14 @@
 //! A composition grades like the native path (SW-019) when given the
 //! project's compiled grades: each leaf layer's source carries its input
 //! grade and then the layer's own scene layer grade, both applied by the
-//! compositor after the layer's effects and before its transform. A layer
-//! drawing a nested scene carries only its layer grade (a Scene input's own
-//! input grade is not applied), and the nested scene's layers carry their
-//! own layer grades.
+//! compositor after the layer's effects and before its transform. A Scene
+//! input's own input grade colours the composed scene picture it shows: a
+//! layer drawing a nested scene through a Scene input carries that input's
+//! grade and then its own layer grade over the nested scene's graded
+//! layers (a layer naming the scene directly carries only its layer
+//! grade), and a scene composed for a Scene input ([`render_scene`],
+//! [`render_scene_model`] with `shown_by`) is graded with that input's
+//! grade after its layers are composed.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -100,11 +104,13 @@ pub(crate) fn scene_of_input(project: &Project, input: InputId) -> Option<SceneI
         })
 }
 
-/// Composes `scene` at the `pipeline` dimensions (the fitted monitor size),
-/// mapping the scene's project-pixel geometry onto that grid, with every
-/// layer in the animation `pose` (see [`fm_model::Scene::posed`]) and graded
-/// with `grades` (each leaf layer's input grade, then its own layer grade).
-/// Returns `None` when the scene cannot be rendered honestly.
+/// Composes the scene Scene input `input` shows at the `pipeline`
+/// dimensions (the fitted monitor size), mapping the scene's project-pixel
+/// geometry onto that grid, with every layer in the animation `pose` (see
+/// [`fm_model::Scene::posed`]) and graded with `grades` (each leaf layer's
+/// input grade, then its own layer grade, then `input`'s grade over the
+/// composed picture). Returns `None` when the scene cannot be rendered
+/// honestly.
 ///
 /// Edges map with the same rule nearest-neighbor downscaling samples by
 /// (output pixel `x` shows project pixel `floor(x * project / output)`), so a
@@ -113,12 +119,13 @@ pub(crate) fn scene_of_input(project: &Project, input: InputId) -> Option<SceneI
 /// is skipped, as downscaling would have dropped it.
 pub(crate) fn render_scene(
     project: &Project,
-    scene: SceneId,
+    input: InputId,
     pipeline: &SimulatedPipeline,
     frame_number: u64,
     pose: ClipState,
     grades: &CompiledProjectGrades,
 ) -> Option<ImageFrame> {
+    let scene = scene_of_input(project, input)?;
     let model = project
         .scenes()
         .iter()
@@ -131,6 +138,7 @@ pub(crate) fn render_scene(
         frame_number,
         pose,
         Some(grades),
+        Some(input),
     )
 }
 
@@ -138,7 +146,9 @@ pub(crate) fn render_scene(
 /// exact scene preview renders the engine's scene, possibly with a draft
 /// animation) at the `size` grid, its leaves drawn by `sources`; its
 /// layers' inputs and nested scenes still come from `project`. `grades`,
-/// when given, grades the layers as [`render_scene`] describes.
+/// when given, grades the layers as [`render_scene`] describes and, with
+/// `shown_by`, the composed picture with that Scene input's grade.
+#[allow(clippy::too_many_arguments)] // one composition: scene, grid, time, grades
 pub(crate) fn render_scene_model(
     project: &Project,
     scene: &fm_model::Scene,
@@ -147,6 +157,7 @@ pub(crate) fn render_scene_model(
     frame_number: u64,
     pose: ClipState,
     grades: Option<&CompiledProjectGrades>,
+    shown_by: Option<InputId>,
 ) -> Option<ImageFrame> {
     let dimensions = project.settings().video.dimensions;
     let grid = MonitorGrid {
@@ -156,9 +167,52 @@ pub(crate) fn render_scene_model(
         height,
     };
     let place = |layer: &fm_model::Layer| grid.layer(layer);
-    Composer::new(project, sources, (width, height), frame_number, &place)
+    let composed = Composer::new(project, sources, (width, height), frame_number, &place)
         .with_grades(grades)
-        .compose(scene, pose, 0)
+        .compose(scene, pose, 0)?;
+    match grades
+        .zip(shown_by)
+        .and_then(|(grades, input)| grades.input(input))
+    {
+        Some(grade) => grade_premultiplied(&composed, grade),
+        None => Some(composed),
+    }
+}
+
+/// Grades a composed (premultiplied RGBA8) picture on its straight colour,
+/// as the compositor grades a premultiplied layer: straightened (rounded),
+/// graded, and premultiplied again, alpha unchanged. Opaque pixels are
+/// graded exactly as they are.
+pub(crate) fn grade_premultiplied(
+    image: &ImageFrame,
+    grade: &fm_compositor::CompiledGrade,
+) -> Option<ImageFrame> {
+    let width = usize::try_from(image.width()).ok()?;
+    let row_bytes = width.checked_mul(4)?;
+    let height = usize::try_from(image.height()).ok()?;
+    let mut straight = Vec::with_capacity(row_bytes.checked_mul(height)?);
+    for row in image.pixels().chunks(image.stride()).take(height) {
+        for pixel in row.get(..row_bytes)?.as_chunks::<4>().0 {
+            let alpha = pixel[3];
+            let unpremultiply = |channel: u8| match alpha {
+                0 => 0,
+                u8::MAX => channel,
+                _ => u8::try_from(
+                    (u16::from(channel) * 255 + u16::from(alpha) / 2) / u16::from(alpha),
+                )
+                .unwrap_or(u8::MAX),
+            };
+            straight.extend_from_slice(&[
+                unpremultiply(pixel[0]),
+                unpremultiply(pixel[1]),
+                unpremultiply(pixel[2]),
+                alpha,
+            ]);
+        }
+    }
+    let straight = ImageFrame::new(image.width(), image.height(), row_bytes, straight).ok()?;
+    let graded = fm_compositor::apply_grade(&straight, grade).ok()?;
+    fm_video::premultiply_alpha(&graded).ok()
 }
 
 /// Composes at the project size and downscales: the reference the monitor
@@ -278,20 +332,20 @@ impl<'a> Composer<'a> {
         self
     }
 
-    /// `layer` of `scene` graded: a leaf's input grade, then the layer's own
-    /// grade. A nested scene's picture carries only the layer grade; its
-    /// layers were graded when it was composed.
+    /// `layer` of `scene` graded: the input grade of the input it names (a
+    /// leaf's, or a Scene input's over the nested scene's picture, whose
+    /// layers were graded when it was composed), then the layer's own
+    /// grade. A layer naming a scene directly carries only its layer grade.
     fn graded(
         &self,
         mut layer: SourceLayer,
         scene: SceneId,
         source: &fm_model::Layer,
-        feed: Feed,
     ) -> SourceLayer {
         let Some(grades) = self.grades else {
             return layer;
         };
-        if let Feed::Leaf(input) = feed
+        if let SourceRef::Input(input) = source.source
             && let Some(grade) = grades.input(input)
         {
             layer = layer.with_grade(grade.clone());
@@ -414,12 +468,7 @@ impl<'a> Composer<'a> {
             };
             let next = SourceId::new(u64::try_from(sources.len()).ok()?);
             let token = *sources.entry(feed).or_insert(next);
-            composition.push_layer(self.graded(
-                compositor_layer(token, &placed),
-                model.id,
-                layer,
-                feed,
-            ));
+            composition.push_layer(self.graded(compositor_layer(token, &placed), model.id, layer));
         }
 
         let (plan, _) = compile_scene(&composition, OutputTarget::Program).ok()?;

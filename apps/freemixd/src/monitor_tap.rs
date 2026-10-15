@@ -43,10 +43,11 @@
 //! title input carry their input grade (a title overlay is graded on its
 //! straight colour, its alpha unchanged), each scene layer carries its
 //! source's input grade and then its own layer grade, and the program grade
-//! colours the composed Program picture after its overlays. Media inputs
-//! have no simulated picture, so there is nothing of theirs to grade; a
-//! Scene input's own input grade is not applied (as natively: grade its
-//! layers or the program instead).
+//! colours the composed Program picture after its overlays. A Scene input's
+//! own input grade colours the composed scene it shows (after its layers'
+//! grades), wherever that input shows: Program, Preview, an overlay, or a
+//! layer of another scene. Media inputs have no simulated picture, so
+//! there is nothing of theirs to grade.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -592,12 +593,14 @@ impl SimulatedMonitorTap {
         {
             self.compositions += 1;
         }
-        let image = scene_render::scene_of_input(project, input)
-            .and_then(|scene| {
+        let image = self
+            .pipeline
+            .as_ref()
+            .and_then(|pipeline| {
                 scene_render::render_scene(
                     project,
-                    scene,
-                    self.pipeline.as_ref()?,
+                    input,
+                    pipeline,
                     state.frame,
                     state.scene_pose(input),
                     &self.grades,
@@ -2348,7 +2351,7 @@ mod tests {
                 let scene = scene_render::scene_of_input(&project, input_id(input)).unwrap();
                 let fast = scene_render::render_scene(
                     &project,
-                    scene,
+                    input_id(input),
                     &monitor,
                     4,
                     AnimSample::Hold,
@@ -2414,7 +2417,7 @@ mod tests {
         let started = Instant::now();
         scene_render::render_scene(
             &project,
-            scene,
+            input_id(scenes[1]),
             &monitor,
             4,
             AnimSample::Hold,
@@ -2492,6 +2495,55 @@ mod tests {
         // Preview shows input 1 with only its input grade.
         let preview = decode(&frames[0].1);
         assert_eq!(pixel(&preview, 5, 5), graded(&warm, [7, 11, 13]));
+    }
+
+    /// SW-019: a Scene input's own grade colours the composed scene it
+    /// shows (background included) after its layers' grades, on Program and
+    /// as an overlay over Program.
+    #[test]
+    fn scene_input_grade_colours_the_composed_scene() {
+        let mut project = project(1_920, 1_080);
+        let quarter = layer(SourceRef::Input(input_id(1)), 0, 0, 960, 540);
+        let target =
+            fm_model::SceneLayerRef::new(SceneId::new(NonZeroU128::new(1).unwrap()), quarter.id);
+        add_scene(&mut project, 1, 10, vec![quarter]);
+        project
+            .set_layer_grade(
+                target,
+                Some(fm_model::GradeSource::Inline(Box::new(exposure(-1_000)))),
+            )
+            .unwrap();
+        project
+            .set_input_grade(
+                input_id(10),
+                Some(fm_model::GradeSource::Inline(Box::new(exposure(500)))),
+            )
+            .unwrap();
+        let mut tap = SimulatedMonitorTap::default();
+        compile_grades(&mut tap, &project);
+        let frames = tap.poll_state(state(1, 10, 1), &project, &server(), Instant::now(), true);
+        let [red, green, blue, _] = graded(&exposure(-1_000), [7, 11, 13]);
+        let layer = graded(&exposure(500), [red, green, blue]);
+        let background = graded(&exposure(500), [20, 30, 40]);
+        assert_ne!(background, [20, 30, 40, 255]);
+        assert_rectangle(&decode(&frames[1].1), (0, 0, 320, 180), layer, background);
+
+        // As a full-frame overlay the Scene input shows graded the same way.
+        let mut realized = state(2, 1, 1);
+        realized.overlays = vec![overlay(
+            10,
+            255,
+            OverlayPositionPreset::FullFrame,
+            OverlayBorderPreset::None,
+        )];
+        let frames = tap.poll_state(
+            realized,
+            &project,
+            &server(),
+            Instant::now() + Duration::from_millis(250),
+            true,
+        );
+        assert_rectangle(&decode(&frames[1].1), (0, 0, 320, 180), layer, background);
     }
 
     /// SW-019: a title input's picture carries its input grade, flat on

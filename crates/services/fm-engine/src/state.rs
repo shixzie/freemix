@@ -136,7 +136,8 @@ pub struct ShowState {
     titles: BTreeMap<InputId, EngineTitle>,
     /// Every Scene input and the scene it shows (GX-011 stage 5).
     scene_inputs: BTreeMap<InputId, SceneId>,
-    /// Every scene a Scene input shows, with its animation.
+    /// Every registered project scene (each scene a Scene input shows, and
+    /// with [`Self::set_scene`] any other), with its animation.
     scenes: BTreeMap<SceneId, EngineScene>,
     playlist: Playlist,
     grading: ProjectGrading,
@@ -631,6 +632,16 @@ impl ShowState {
         Ok(())
     }
 
+    /// Registers (or replaces) `scene`, its animation, and the
+    /// `canvas_width` x `canvas_height` project canvas, whether or not a
+    /// Scene input shows it, so its layers' grades can be edited (SW-019).
+    pub fn set_scene(&mut self, scene: fm_model::Scene, canvas_width: u32, canvas_height: u32) {
+        self.scenes.insert(
+            scene.id,
+            EngineScene::new(scene, canvas_width, canvas_height),
+        );
+    }
+
     /// The scene Scene input `input` shows.
     #[must_use]
     pub fn scene_input(&self, input: InputId) -> Option<&EngineScene> {
@@ -643,7 +654,7 @@ impl ShowState {
         &self.scene_inputs
     }
 
-    /// Every scene a Scene input shows, in identifier order.
+    /// Every registered scene, in identifier order.
     #[must_use]
     pub const fn scenes(&self) -> &BTreeMap<SceneId, EngineScene> {
         &self.scenes

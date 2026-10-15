@@ -98,6 +98,18 @@ fn wire(value: u128) -> WireInputId {
     WireInputId::from_domain(input(value))
 }
 
+/// The scene the Scene input shows (Protocol 2.35 addresses layouts and
+/// layer grades by scene).
+const SCENE: u128 = 30;
+
+fn scene_id() -> fm_types::SceneId {
+    fm_types::SceneId::new(NonZeroU128::new(SCENE).unwrap())
+}
+
+fn wire_scene() -> fm_protocol::WireSceneId {
+    fm_protocol::WireSceneId::from_domain(scene_id())
+}
+
 fn output(value: u128) -> WireOutputId {
     WireOutputId::new(NonZeroU128::new(value).unwrap())
 }
@@ -258,6 +270,7 @@ fn model(variant: Variant) -> ClientModel {
         // The slides input is announced as a Scene input for the scene
         // editor of the Animation window (GX-011 stage 5).
         scenes: vec![wire(SCENE_INPUT)],
+        layout_scenes: vec![wire_scene()],
         frame_rate: FrameRate::new(25, 1).unwrap(),
         playlist_follows: true,
         grade_states: 4,
@@ -322,6 +335,7 @@ fn model(variant: Variant) -> ClientModel {
         .apply_scene_animation_state(fm_protocol::SceneAnimationStateMessage {
             revision: 10,
             input: wire(SCENE_INPUT),
+            scene: wire_scene(),
             animation_revision: 2,
             clip: Box::new(scene_clip()),
         })
@@ -329,7 +343,8 @@ fn model(variant: Variant) -> ClientModel {
     model
         .apply_scene_layout_state(fm_protocol::SceneLayoutStateMessage {
             revision: 10,
-            input: wire(SCENE_INPUT),
+            scene: wire_scene(),
+            name: "Slides".into(),
             layout: Box::new(scene_layout()),
         })
         .unwrap();
@@ -356,9 +371,9 @@ fn model(variant: Variant) -> ClientModel {
             input: wire(2),
             source: fm_protocol::WireGradeSource::Inline(Box::new(warm)),
         },
-        // The scene's host layer carries the library look (Protocol 2.33).
+        // The scene's host layer carries the library look (Protocol 2.35).
         fm_protocol::GradeEntry::Layer {
-            inputs: vec![wire(SCENE_INPUT)],
+            scene: wire_scene(),
             layer: scene_layer(1),
             source: fm_protocol::WireGradeSource::Library(grade_id(1)),
         },
@@ -518,6 +533,7 @@ fn scene_layout() -> fm_protocol::WireSceneLayout {
         quarter_turns: 0,
         opacity: 255,
         enabled: true,
+        source: fm_protocol::WireSceneLayerSource::Input(wire(u128::from(id))),
     };
     fm_protocol::WireSceneLayout {
         width: 1_920,
@@ -726,7 +742,7 @@ fn scenes(language: Language) -> Vec<Scene> {
             "operator/colour-layer",
             &|shell| {
                 shell.open_color(Some(GradeTarget::Layer {
-                    input: input(SCENE_INPUT),
+                    scene: scene_id(),
                     layer: scene_layer(1),
                 }));
             },

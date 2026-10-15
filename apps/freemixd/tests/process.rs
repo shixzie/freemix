@@ -404,6 +404,29 @@ impl Client {
         self.handshake_as(Role::Operator, cursor)
     }
 
+    /// Receives a snapshot and, when it announces nothing sent before the
+    /// scene layouts (no titles, playlist, grades, or Scene inputs), the
+    /// `scene_layout_state` of every project scene (Protocol 2.35: sent
+    /// whether or not a Scene input shows the scene).
+    fn receive_snapshot(&mut self) -> fm_protocol::SnapshotMessage {
+        let WireMessage::Snapshot(snapshot) = self.receive() else {
+            panic!("expected snapshot");
+        };
+        if snapshot.titles.is_empty()
+            && !snapshot.playlist_follows
+            && snapshot.grade_states == 0
+            && snapshot.scenes.is_empty()
+        {
+            for scene in &snapshot.layout_scenes {
+                let WireMessage::SceneLayoutState(layout) = self.receive() else {
+                    panic!("expected scene_layout_state after the snapshot");
+                };
+                assert_eq!(layout.scene, *scene);
+            }
+        }
+        snapshot
+    }
+
     fn handshake_as(&mut self, role: Role, cursor: Option<EventCursor>) -> TestHandshake {
         self.handshake_version_as(CURRENT_PROTOCOL_VERSION, role, cursor)
     }
@@ -481,7 +504,10 @@ fn connect_current_client(daemon: &Daemon, client: &mut ProtocolClient) -> Clien
         client.intake(transport.receive()).unwrap(),
         Intake::SnapshotApplied
     );
-    assert_eq!(client.state(), &ConnectionState::Ready);
+    // Every project scene's layout follows (Protocol 2.35).
+    while client.state() != &ConnectionState::Ready {
+        client.intake(transport.receive()).unwrap();
+    }
     transport
 }
 
@@ -572,7 +598,7 @@ fn daemon_acknowledges_only_valid_heartbeats() {
     let mut client = daemon.connect();
     let handshake = client.handshake(None);
     assert_eq!(handshake.protocol, CURRENT_PROTOCOL_VERSION);
-    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    client.receive_snapshot();
     let server = ServerIdentity {
         engine_id: handshake.engine.engine_id,
         project_id: PROJECT_ID.to_string(),
@@ -988,7 +1014,7 @@ fn once_daemon_replaces_disconnected_peer_but_admits_one_live_peer() {
     }));
 
     first.handshake(None);
-    assert!(matches!(first.receive(), WireMessage::Snapshot(_)));
+    first.receive_snapshot();
     drop(first);
 
     daemon.wait_success();
@@ -1043,7 +1069,7 @@ fn malformed_post_handshake_record_does_not_stop_daemon() {
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();
     next_client.handshake(None);
-    assert!(matches!(next_client.receive(), WireMessage::Snapshot(_)));
+    next_client.receive_snapshot();
 
     drop(next_client);
     drop(malformed_client);
@@ -1067,7 +1093,7 @@ fn a_command_that_cannot_be_persisted_is_rejected_and_the_daemon_keeps_serving()
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     client.handshake(None);
-    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    client.receive_snapshot();
 
     client.send(&command("blank-key", "   ", CommandPayload::Cut));
     assert!(matches!(
@@ -1246,7 +1272,10 @@ fn current_client_handshake_heartbeat_and_resume_use_ordered_wire_records() {
         protocol_client.intake(snapshot).unwrap(),
         Intake::SnapshotApplied
     );
-    assert_eq!(protocol_client.state(), &ConnectionState::Ready);
+    // Every project scene's layout follows (Protocol 2.35).
+    while protocol_client.state() != &ConnectionState::Ready {
+        protocol_client.intake(transport.receive()).unwrap();
+    }
 
     let heartbeat = protocol_client.queue_heartbeat(1_234).unwrap();
     assert!(heartbeat.last_applied.is_some());
@@ -1345,7 +1374,7 @@ fn remote_input_rename_is_authorized_replicated_replay_safe_and_survives_restart
     let daemon = Daemon::start_without_once(&project_path);
     let mut unauthorized = daemon.connect();
     unauthorized.handshake_as(Role::Operator, None);
-    assert!(matches!(unauthorized.receive(), WireMessage::Snapshot(_)));
+    unauthorized.receive_snapshot();
     unauthorized.send(&command(
         "reorder-denied",
         "reorder-denied-key",
@@ -1365,7 +1394,7 @@ fn remote_input_rename_is_authorized_replicated_replay_safe_and_survives_restart
 
     let mut graphics = daemon.connect();
     graphics.handshake_as(Role::Graphics, None);
-    assert!(matches!(graphics.receive(), WireMessage::Snapshot(_)));
+    graphics.receive_snapshot();
     graphics.send(&command(
         "rename-accepted",
         "rename-accepted-key",
@@ -1471,9 +1500,7 @@ fn remote_input_rename_is_authorized_replicated_replay_safe_and_survives_restart
     let mut snapshot_client = daemon.connect();
     let handshake = snapshot_client.handshake_as(Role::Graphics, None);
     assert_eq!(handshake.current_revision, 2);
-    let WireMessage::Snapshot(snapshot) = snapshot_client.receive() else {
-        panic!("expected snapshot after input rename");
-    };
+    let snapshot = snapshot_client.receive_snapshot();
     assert_eq!(
         snapshot
             .inputs
@@ -1491,9 +1518,7 @@ fn remote_input_rename_is_authorized_replicated_replay_safe_and_survives_restart
     let mut restarted = daemon.connect();
     let handshake = restarted.handshake_as(Role::Graphics, None);
     assert_eq!(handshake.current_revision, 2);
-    let WireMessage::Snapshot(snapshot) = restarted.receive() else {
-        panic!("expected snapshot after restart");
-    };
+    let snapshot = restarted.receive_snapshot();
     assert_eq!(
         snapshot
             .inputs
@@ -1560,9 +1585,7 @@ fn stream_start_is_replicated_rejects_unknown_targets_and_survives_restart() {
     let daemon = Daemon::start_without_once(&project_path);
     let mut client = daemon.connect();
     client.handshake(None);
-    let WireMessage::Snapshot(snapshot) = client.receive() else {
-        panic!("expected initial snapshot");
-    };
+    let snapshot = client.receive_snapshot();
     assert_eq!(snapshot.streams.len(), 2);
     assert!(
         snapshot
@@ -1643,9 +1666,7 @@ fn stream_start_is_replicated_rejects_unknown_targets_and_survives_restart() {
     let mut restarted = daemon.connect();
     let handshake = restarted.handshake(None);
     assert_eq!(handshake.current_revision, 1);
-    let WireMessage::Snapshot(snapshot) = restarted.receive() else {
-        panic!("expected snapshot after restart");
-    };
+    let snapshot = restarted.receive_snapshot();
     assert!(
         snapshot
             .streams
@@ -1684,7 +1705,7 @@ fn commands_survive_restart_resume_and_duplicate_replay() {
     let initial = client.handshake(None);
     assert!(!initial.resume);
     assert_eq!(initial.current_revision, 0);
-    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    client.receive_snapshot();
 
     client.send(&command(
         "preview-command",
@@ -1794,7 +1815,7 @@ fn acknowledged_commands_survive_sigkill_before_any_checkpoint() {
     let daemon = Daemon::start(&project_path);
     let mut client = daemon.connect();
     assert_eq!(client.handshake(None).current_revision, 0);
-    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    client.receive_snapshot();
 
     client.send(&command(
         "killed-preview",
@@ -1829,7 +1850,7 @@ fn acknowledged_commands_survive_sigkill_before_any_checkpoint() {
     let daemon = Daemon::start(&project_path);
     let mut restarted = daemon.connect();
     assert_eq!(restarted.handshake(None).current_revision, 2);
-    assert!(matches!(restarted.receive(), WireMessage::Snapshot(_)));
+    restarted.receive_snapshot();
     // The receipts came back too, so a client that retries after the crash is
     // answered from the original acceptance instead of cutting the show again.
     restarted.send(&command(
@@ -1879,7 +1900,7 @@ fn checkpoints_compact_the_journal_and_recovery_reproduces_the_exact_state() {
     fn cut_repeatedly(daemon: &Daemon, count: u32) {
         let mut client = daemon.connect();
         client.handshake(None);
-        assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+        client.receive_snapshot();
         for revision in 1..=count {
             client.send(&command(
                 &format!("cut-{revision}"),
@@ -1964,7 +1985,7 @@ fn live_stinger_slot_mutations_fire_immediately_and_survive_restart() {
             .protocol,
         CURRENT_PROTOCOL_VERSION
     );
-    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    client.receive_snapshot();
 
     configure_and_fire_stinger(&mut client);
     replace_live_stinger(&mut client);
@@ -2010,9 +2031,7 @@ fn live_stinger_slot_mutations_fire_immediately_and_survive_restart() {
             .current_revision,
         3
     );
-    let WireMessage::Snapshot(snapshot) = client.receive() else {
-        panic!("expected restarted snapshot");
-    };
+    let snapshot = client.receive_snapshot();
     let restarted = &snapshot.stingers[0];
     assert_eq!(restarted.slot.number(), 8);
     assert_eq!(restarted.media_input, input(2));
@@ -2045,9 +2064,7 @@ fn live_stinger_slot_mutations_fire_immediately_and_survive_restart() {
             .current_revision,
         4
     );
-    let WireMessage::Snapshot(snapshot) = client.receive() else {
-        panic!("expected second restarted snapshot");
-    };
+    let snapshot = client.receive_snapshot();
     assert_eq!(snapshot.stingers, []);
     drop(client);
     daemon.wait_success();
@@ -2142,7 +2159,7 @@ fn slide_command_settles_and_survives_daemon_restart() {
     let mut client = daemon.connect();
     let initial = client.handshake_version(CURRENT_PROTOCOL_VERSION, None);
     assert_eq!(initial.protocol, CURRENT_PROTOCOL_VERSION);
-    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    client.receive_snapshot();
 
     client.send(&command_version(
         CURRENT_PROTOCOL_VERSION,
@@ -2198,7 +2215,7 @@ fn zoom_command_settles_and_survives_daemon_restart() {
     let mut client = daemon.connect();
     let initial = client.handshake_version(CURRENT_PROTOCOL_VERSION, None);
     assert_eq!(initial.protocol, CURRENT_PROTOCOL_VERSION);
-    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    client.receive_snapshot();
 
     client.send(&command_version(
         CURRENT_PROTOCOL_VERSION,
@@ -2267,7 +2284,7 @@ fn manual_alpha_fade_state_and_receipts_survive_restart_through_commit_and_cance
         let mut client = daemon.connect();
         let hello = client.handshake_version(CURRENT_PROTOCOL_VERSION, None);
         assert_eq!(hello.protocol, CURRENT_PROTOCOL_VERSION);
-        assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+        client.receive_snapshot();
 
         client.send(&command_version(
             CURRENT_PROTOCOL_VERSION,
@@ -2316,9 +2333,7 @@ fn manual_alpha_fade_state_and_receipts_survive_restart_through_commit_and_cance
         let mut client = daemon.connect();
         let hello = client.handshake_version(CURRENT_PROTOCOL_VERSION, None);
         assert_eq!(hello.current_revision, 2);
-        let WireMessage::Snapshot(snapshot) = client.receive() else {
-            panic!("restart must return a snapshot");
-        };
+        let snapshot = client.receive_snapshot();
         assert!(matches!(
             snapshot.desired_manual_transition,
             ManualTransitionStatus::Active(state)
@@ -2404,7 +2419,7 @@ fn manual_slide_state_survives_restart_through_commit_and_cancel() {
         let daemon = Daemon::start(&project_path);
         let mut client = daemon.connect();
         client.handshake_version(CURRENT_PROTOCOL_VERSION, None);
-        assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+        client.receive_snapshot();
         for (id, key, payload, revision) in [
             (
                 "manual-slide-start",
@@ -2453,9 +2468,7 @@ fn manual_slide_state_survives_restart_through_commit_and_cancel() {
         let mut client = daemon.connect();
         let hello = client.handshake_version(CURRENT_PROTOCOL_VERSION, None);
         assert_eq!(hello.current_revision, 2);
-        let WireMessage::Snapshot(snapshot) = client.receive() else {
-            panic!("restart must return a snapshot");
-        };
+        let snapshot = client.receive_snapshot();
         assert!(matches!(
             (
                 snapshot.desired_manual_transition,
@@ -2533,7 +2546,7 @@ fn viewer_diagnostics_query_is_read_only_and_correlated() {
     let daemon = Daemon::start_without_once(&project_path);
     let mut client = daemon.connect();
     let handshake = client.handshake_as(Role::Viewer, None);
-    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    client.receive_snapshot();
     client.send(&WireMessage::DiagnosticsRequest(DiagnosticsRequest {
         protocol: CURRENT_PROTOCOL_VERSION,
         request_id: "diagnostics-1".into(),
@@ -2716,7 +2729,16 @@ fn websocket_control_is_authenticated_ordered_and_raw_compatible() {
             if response.protocol == CURRENT_PROTOCOL_VERSION
                 && response.granted_role == Role::Operator
     ));
-    assert!(matches!(receive(&mut websocket), WireMessage::Snapshot(_)));
+    let WireMessage::Snapshot(snapshot) = receive(&mut websocket) else {
+        panic!("expected snapshot");
+    };
+    // Every project scene's layout follows (Protocol 2.35).
+    for _ in &snapshot.layout_scenes {
+        assert!(matches!(
+            receive(&mut websocket),
+            WireMessage::SceneLayoutState(_)
+        ));
+    }
 
     let mut raw_session = TcpSession::new(
         ProtocolClient::new(ClientConfig::new(
@@ -3212,7 +3234,7 @@ fn pipelined_commands_before_a_write_half_close_are_all_answered() {
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     assert_eq!(client.handshake(None).current_revision, 0);
-    assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
+    client.receive_snapshot();
 
     let mut pipelined = encode_line(&command(
         "pipelined-preview",
@@ -3296,7 +3318,7 @@ fn simulated_studio_peer_receives_monitor_frames_and_integration_peer_none() {
 
     let mut integration = daemon.connect();
     integration.handshake(None);
-    assert!(matches!(integration.receive(), WireMessage::Snapshot(_)));
+    integration.receive_snapshot();
 
     let mut studio = daemon.connect();
     studio
@@ -3319,7 +3341,7 @@ fn simulated_studio_peer_receives_monitor_frames_and_integration_peer_none() {
         HandshakeOutcome::Snapshot { .. }
     ));
     let server = response.server.clone();
-    assert!(matches!(studio.receive(), WireMessage::Snapshot(_)));
+    studio.receive_snapshot();
 
     let mut assemblers = [MonitorFrameAssembler::new(), MonitorFrameAssembler::new()];
     let mut assemble = |message: WireMessage| -> Option<MonitorImage> {
@@ -3443,9 +3465,7 @@ impl GradedMonitor {
             client.receive(),
             WireMessage::HandshakeResponse(_)
         ));
-        let WireMessage::Snapshot(snapshot) = client.receive() else {
-            panic!("expected snapshot");
-        };
+        let snapshot = client.receive_snapshot();
         (
             Self {
                 client,
@@ -3666,14 +3686,18 @@ fn grade_commands_change_monitor_output_and_survive_restart() {
     daemon.stop();
 }
 
-/// SW-019, Protocol 2.33 end to end on the simulated path: a scene layer
-/// grade set through the Scene input showing the scene colours that layer
-/// on the Program monitor (after its input's grade), is replicated as a
-/// `grade_changed` layer change, and after a restart the snapshot announces
-/// it as a `grade_state` layer record and renders the same picture.
+/// SW-019, Protocol 2.35 end to end on the simulated path: a scene layer
+/// grade addressed by its scene colours that layer on the Program monitor
+/// (after its input's grade), is replicated as a `grade_changed` layer
+/// change, and after a restart the snapshot announces it as a `grade_state`
+/// layer record and renders the same picture. A layer of a scene no Scene
+/// input shows is graded, replicated, and restored the same way.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn scene_layer_grades_colour_the_scene_and_survive_restart() {
-    use fm_protocol::{GradeChange, GradeEntry, MonitorTap, WireGradeSource, WireSceneLayerId};
+    use fm_protocol::{
+        GradeChange, GradeEntry, MonitorTap, WireGradeSource, WireSceneId, WireSceneLayerId,
+    };
 
     fn corner(image: &fm_protocol::MonitorImage) -> [u8; 4] {
         // Monitor (5, 5) is project (15, 15): inside layer 2 and outside
@@ -3685,9 +3709,38 @@ fn scene_layer_grades_colour_the_scene_and_survive_restart() {
     let directory = TestDirectory::new("layer-grades");
     let project_path = directory.project_path();
     create_scene_program_project(&project_path);
+    // Scene 2 nests scene 1 but no Scene input shows it.
+    let store = ProjectStore::new(&project_path).unwrap();
+    let stored = store.load().unwrap();
+    let mut project = stored.project().clone();
+    let mut spare = project.scene(scene_id(1)).unwrap().clone();
+    spare.id = scene_id(2);
+    spare.name = "Spare scene".into();
+    spare.layers[0].source = SourceRef::Scene(scene_id(1));
+    project.add_scene(spare);
+    let routing = RuntimeRouting {
+        desired_program_id: Some(domain_input(4)),
+        realized_program_id: Some(domain_input(4)),
+        desired_preview_id: Some(domain_input(2)),
+        realized_preview_id: Some(domain_input(2)),
+    };
+    store
+        .save(
+            &StoredProject::from_project(project, routing, stored.position(), Vec::new()).unwrap(),
+        )
+        .unwrap();
+    let scene = WireSceneId::from_domain(scene_id(1));
+    let spare = WireSceneId::from_domain(scene_id(2));
     let layer = WireSceneLayerId::new(NonZeroU32::new(2).unwrap());
     let monochrome = fm_grade::Grade {
         saturation_permille: 0,
+        ..fm_grade::Grade::IDENTITY
+    };
+    let warm = fm_grade::Grade {
+        white_balance: fm_grade::WhiteBalance {
+            temperature: 300,
+            ..fm_grade::Grade::IDENTITY.white_balance
+        },
         ..fm_grade::Grade::IDENTITY
     };
 
@@ -3695,6 +3748,7 @@ fn scene_layer_grades_colour_the_scene_and_survive_restart() {
         let daemon = Daemon::start_without_once(&project_path);
         let (mut monitor, snapshot) = GradedMonitor::connect(&daemon, Role::Graphics);
         assert_eq!(snapshot.grade_states, 0);
+        assert_eq!(snapshot.layout_scenes, [scene, spare]);
         let program = monitor.image(MonitorTap::Program, "ungraded scene", |image| {
             corner(image) == [12, 34, 56, 255]
         });
@@ -3704,7 +3758,7 @@ fn scene_layer_grades_colour_the_scene_and_survive_restart() {
             "layer",
             "layer-key",
             CommandPayload::SetLayerGrade {
-                input: input(4),
+                scene,
                 layer,
                 source: Some(WireGradeSource::Inline(Box::new(monochrome.clone()))),
             },
@@ -3730,7 +3784,7 @@ fn scene_layer_grades_colour_the_scene_and_survive_restart() {
         assert_eq!(
             changed,
             GradeChange::Layer {
-                inputs: vec![input(4)],
+                scene,
                 layer,
                 source: Some(WireGradeSource::Inline(Box::new(monochrome.clone()))),
             }
@@ -3739,6 +3793,42 @@ fn scene_layer_grades_colour_the_scene_and_survive_restart() {
             let pixel = corner(image);
             grey(pixel) && pixel != [12, 34, 56, 255]
         });
+
+        // The unshown scene's layer is addressed by its scene alone.
+        monitor.client.send(&command(
+            "spare",
+            "spare-key",
+            CommandPayload::SetLayerGrade {
+                scene: spare,
+                layer,
+                source: Some(WireGradeSource::Inline(Box::new(warm.clone()))),
+            },
+        ));
+        let assemblers = &mut monitor.assemblers;
+        let changed = receive_within(
+            &mut monitor.client,
+            Duration::from_secs(10),
+            "unshown scene layer grade change",
+            |message| match message {
+                WireMessage::Event(event) => match event.payload {
+                    fm_protocol::EventPayload::GradeChanged(change) => Some(change),
+                    _ => None,
+                },
+                WireMessage::MonitorFrame(part) => {
+                    assemblers[part.tap.index()].push(&part).unwrap();
+                    None
+                }
+                _ => None,
+            },
+        );
+        assert_eq!(
+            changed,
+            GradeChange::Layer {
+                scene: spare,
+                layer,
+                source: Some(WireGradeSource::Inline(Box::new(warm.clone()))),
+            }
+        );
         drop(monitor);
         daemon.stop();
         corner(&program)
@@ -3746,20 +3836,28 @@ fn scene_layer_grades_colour_the_scene_and_survive_restart() {
 
     let daemon = Daemon::start_without_once(&project_path);
     let (mut monitor, snapshot) = GradedMonitor::connect(&daemon, Role::Graphics);
-    assert_eq!(snapshot.grade_states, 1);
-    let entry = loop {
+    assert_eq!(snapshot.grade_states, 2);
+    let mut entries = Vec::new();
+    while entries.len() < 2 {
         if let WireMessage::GradeState(state) = monitor.client.receive() {
             assert_eq!(state.revision, snapshot.revision);
-            break state.entry;
+            entries.push(state.entry);
         }
-    };
+    }
     assert_eq!(
-        entry,
-        GradeEntry::Layer {
-            inputs: vec![input(4)],
-            layer,
-            source: WireGradeSource::Inline(Box::new(monochrome)),
-        }
+        entries,
+        [
+            GradeEntry::Layer {
+                scene,
+                layer,
+                source: WireGradeSource::Inline(Box::new(monochrome)),
+            },
+            GradeEntry::Layer {
+                scene: spare,
+                layer,
+                source: WireGradeSource::Inline(Box::new(warm)),
+            },
+        ]
     );
     monitor.image(MonitorTap::Program, "restored layer grade", |image| {
         corner(image) == graded
@@ -3915,7 +4013,7 @@ fn simulated_monitor_shows_title_inputs_and_title_overlays() {
         studio.receive(),
         WireMessage::HandshakeResponse(_)
     ));
-    assert!(matches!(studio.receive(), WireMessage::Snapshot(_)));
+    studio.receive_snapshot();
 
     let mut assemblers = [MonitorFrameAssembler::new(), MonitorFrameAssembler::new()];
     let mut assemble = |message: WireMessage| -> Option<MonitorImage> {
@@ -4163,10 +4261,7 @@ fn accepted_revision(client: &mut Client, expected_id: &str) -> u64 {
 fn snapshot_of(daemon: &Daemon, role: Role) -> fm_protocol::SnapshotMessage {
     let mut client = daemon.connect();
     client.handshake_as(role, None);
-    let WireMessage::Snapshot(snapshot) = client.receive() else {
-        panic!("expected snapshot");
-    };
-    snapshot
+    client.receive_snapshot()
 }
 
 fn input_name(snapshot: &fm_protocol::SnapshotMessage, id: u128) -> String {
@@ -4200,7 +4295,7 @@ fn undo_redo_and_padlock_round_trip_through_the_daemon() {
 
     let mut admin = daemon.connect();
     admin.handshake_as(Role::Admin, None);
-    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    admin.receive_snapshot();
 
     // An empty history refuses undo with the stable engine code.
     admin.send(&command(
@@ -4400,7 +4495,7 @@ fn live_input_add_and_remove_round_trip_through_kill_and_recovery() {
 
     let mut admin = daemon.connect();
     admin.handshake_as(Role::Admin, None);
-    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    admin.receive_snapshot();
 
     admin.send(&command(
         "add-guest",
@@ -4463,7 +4558,7 @@ fn live_input_add_and_remove_round_trip_through_kill_and_recovery() {
         studio.receive(),
         WireMessage::HandshakeResponse(_)
     ));
-    assert!(matches!(studio.receive(), WireMessage::Snapshot(_)));
+    studio.receive_snapshot();
 
     // The new input renders in the Preview tap once it is selected.
     admin.send(&command(
@@ -4667,7 +4762,7 @@ fn edit_locks_survive_kill_recovery_and_checkpoint_restore() {
     let daemon = Daemon::start_without_once(&project_path);
     let mut admin = daemon.connect();
     admin.handshake_as(Role::Admin, None);
-    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    admin.receive_snapshot();
     for (id, scope) in [
         ("lock-project", EditLockScope::Project),
         ("lock-input", EditLockScope::Input(input(1))),
@@ -4697,9 +4792,7 @@ fn edit_locks_survive_kill_recovery_and_checkpoint_restore() {
     let daemon = Daemon::start(&project_path);
     let mut admin = daemon.connect();
     assert_eq!(admin.handshake_as(Role::Admin, None).current_revision, 2);
-    let WireMessage::Snapshot(replayed) = admin.receive() else {
-        panic!("expected snapshot");
-    };
+    let replayed = admin.receive_snapshot();
     assert_eq!(replayed.edit_locks, both_locked);
     assert_lock_refusal(
         &mut admin,
@@ -4737,7 +4830,7 @@ fn edit_locks_survive_kill_recovery_and_checkpoint_restore() {
     assert_eq!(restored.edit_locks, replayed.edit_locks);
     let mut admin = daemon.connect();
     admin.handshake_as(Role::Admin, None);
-    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    admin.receive_snapshot();
     assert_lock_refusal(
         &mut admin,
         "rename-restored",
@@ -4785,9 +4878,7 @@ fn edit_locks_survive_kill_recovery_and_checkpoint_restore() {
     let daemon = Daemon::start(&project_path);
     let mut viewer = daemon.connect();
     assert_eq!(viewer.handshake_as(Role::Viewer, None).current_revision, 5);
-    let WireMessage::Snapshot(released) = viewer.receive() else {
-        panic!("expected snapshot");
-    };
+    let released = viewer.receive_snapshot();
     assert_eq!(
         released.edit_locks,
         EditLockStatus {
@@ -4860,7 +4951,7 @@ fn a_non_reading_studio_peer_never_stalls_another_peer() {
         HandshakeOutcome::Snapshot { .. }
     ));
     let server = response.server.clone();
-    assert!(matches!(studio.receive(), WireMessage::Snapshot(_)));
+    studio.receive_snapshot();
     // From here on the Studio peer neither reads nor writes.
 
     let mut admin = daemon.connect();
@@ -4870,7 +4961,7 @@ fn a_non_reading_studio_peer_never_stalls_another_peer() {
         .set_read_timeout(Some(ROUND_TRIP_LIMIT))
         .unwrap();
     let handshake = admin.handshake_as(Role::Admin, None);
-    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    admin.receive_snapshot();
     assert_eq!(handshake.engine.engine_id, server.engine_id);
 
     let mut sequence = 0_u64;
@@ -4955,9 +5046,7 @@ fn title_sync(
     fm_protocol::SnapshotMessage,
     Vec<fm_protocol::TitleStateMessage>,
 ) {
-    let WireMessage::Snapshot(snapshot) = client.receive() else {
-        panic!("expected snapshot");
-    };
+    let snapshot = client.receive_snapshot();
     let states = snapshot
         .titles
         .iter()
@@ -5061,11 +5150,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.34.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 34));
+    // The previous protocol is refused; the current one is 2.35.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 35));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 33),
+        protocol: ProtocolVersion::new(2, 34),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5081,7 +5170,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 34)
+        ProtocolVersion::new(2, 35)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -5323,7 +5412,7 @@ fn undo_and_redo_need_the_targeted_edit_permission_through_the_daemon() {
 
     let mut admin = daemon.connect();
     admin.handshake_as(Role::Admin, None);
-    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    admin.receive_snapshot();
     admin.send(&command(
         "rename",
         "rename-key",
@@ -5410,7 +5499,7 @@ fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery()
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     admin.handshake_as(Role::Admin, None);
-    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    admin.receive_snapshot();
 
     let entries = vec![
         PlaylistEntrySpec {
@@ -5609,7 +5698,7 @@ fn simulated_playlist_pause_holds_the_wall_clock_position_across_recovery() {
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     admin.handshake_as(Role::Admin, None);
-    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+    admin.receive_snapshot();
 
     // One 20 s entry at 25 fps, entered with a 24-frame slide.
     admin.send(&command(
@@ -6076,9 +6165,7 @@ fn scene_animation_sync(
     fm_protocol::SnapshotMessage,
     fm_protocol::SceneAnimationStateMessage,
 ) {
-    let WireMessage::Snapshot(snapshot) = client.receive() else {
-        panic!("expected snapshot");
-    };
+    let snapshot = client.receive_snapshot();
     assert_eq!(snapshot.titles, []);
     assert!(!snapshot.playlist_follows);
     assert_eq!(snapshot.grade_states, 0);
@@ -6086,12 +6173,21 @@ fn scene_animation_sync(
     let WireMessage::SceneAnimationState(state) = client.receive() else {
         panic!("expected scene_animation_state after the snapshot");
     };
-    assert_eq!((state.revision, state.input), (snapshot.revision, input(4)));
+    let scene = fm_protocol::WireSceneId::from_domain(scene_id(1));
+    assert_eq!(
+        (state.revision, state.input, state.scene),
+        (snapshot.revision, input(4), scene)
+    );
+    assert_eq!(snapshot.layout_scenes, [scene]);
     match client.receive() {
         WireMessage::SceneLayoutState(layout) => {
             assert_eq!(
-                (layout.revision, layout.input),
-                (snapshot.revision, input(4))
+                (layout.revision, layout.scene, layout.name.as_str()),
+                (snapshot.revision, scene, "Program scene")
+            );
+            assert_eq!(
+                layout.layout.layers[0].source,
+                fm_protocol::WireSceneLayerSource::Input(input(1))
             );
             assert_eq!((layout.layout.width, layout.layout.height), (1_920, 1_080));
             assert_eq!(layout.layout.layers.len(), 1);
@@ -6410,10 +6506,9 @@ fn scene_previews_compose_nested_scenes() {
         .set_read_timeout(Some(Duration::from_secs(30)))
         .unwrap();
     graphics.handshake_as(Role::Graphics, None);
-    let WireMessage::Snapshot(snapshot) = graphics.receive() else {
-        panic!("expected snapshot");
-    };
+    let snapshot = graphics.receive_snapshot();
     assert_eq!(snapshot.scenes, [input(4), input(5)]);
+    assert_eq!(snapshot.layout_scenes.len(), 2);
     // Two scene_animation_state and two scene_layout_state records follow.
     for _ in 0..4 {
         match graphics.receive() {

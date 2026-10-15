@@ -1,11 +1,13 @@
 //! Wire mapping of the scene animation commands, the
 //! `scene_animation_changed` event, and the `scene_animation_state` and
 //! `scene_layout_state` records that follow a snapshot (Protocol 2.31,
-//! GX-011 stage 5).
+//! GX-011 stage 5; layouts keyed by scene since 2.35).
 //!
 //! Scene clips use the title clip encoding with layer ids as targets; a
-//! scene's layout lists its layers (names, static boxes) so a remote
-//! animation editor can target and outline them.
+//! scene's layout lists its layers (names, sources, static boxes) so a
+//! remote animation editor can target and outline them and a colour editor
+//! can list and preview them. Every scene the engine holds has a layout,
+//! whether or not a Scene input shows it.
 
 use fm_engine::{
     Engine, EngineCommand, EngineScene, EngineSceneAnimationEdit, SceneAnimationChange,
@@ -15,9 +17,10 @@ use fm_model::fm_animation::{Clip, ClipError, Track, TrackKey};
 use fm_model::{LayerId, Rotation, Scene, SceneClip};
 use fm_protocol::{
     CommandPayload, EventPayload, MAX_SCENE_ANIMATION_BYTES, MAX_SCENE_CANVAS_SIDE,
-    MAX_SCENE_LAYER_NAME_BYTES, MAX_SCENE_LAYOUT_LAYERS, SceneAnimationStateMessage,
-    SceneLayoutStateMessage, WireInputId, WireSceneClip, WireSceneLayerId, WireSceneLayerOutline,
-    WireSceneLayout, scene_clip_wire_bytes,
+    MAX_SCENE_LAYER_NAME_BYTES, MAX_SCENE_LAYOUT_LAYERS, MAX_SCENE_NAME_BYTES,
+    SceneAnimationStateMessage, SceneLayoutStateMessage, WireInputId, WireSceneClip, WireSceneId,
+    WireSceneLayerId, WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout,
+    scene_clip_wire_bytes,
 };
 use fm_types::InputId;
 
@@ -236,6 +239,19 @@ pub fn snapshot_scenes(engine: &Engine) -> Vec<WireInputId> {
         .collect()
 }
 
+/// Every scene the engine holds (each project scene), in ascending order:
+/// a snapshot's `layout_scenes` list (Protocol 2.35).
+pub fn snapshot_layout_scenes(engine: &Engine) -> Vec<WireSceneId> {
+    engine
+        .show()
+        .scenes()
+        .keys()
+        .take(fm_protocol::MAX_LIST_ITEMS)
+        .copied()
+        .map(WireSceneId::from_domain)
+        .collect()
+}
+
 fn announced(engine: &Engine) -> impl Iterator<Item = (InputId, &EngineScene)> {
     engine
         .show()
@@ -253,19 +269,26 @@ pub fn scene_animation_states(engine: &Engine) -> Vec<SceneAnimationStateMessage
         .map(|(input, scene)| SceneAnimationStateMessage {
             revision,
             input: WireInputId::from_domain(input),
+            scene: WireSceneId::from_domain(scene.id()),
             animation_revision: scene.animation().revision,
             clip: Box::new(scene_clip_to_wire(&scene.animation().clip)),
         })
         .collect()
 }
 
-/// One `scene_layout_state` per announced Scene input, in snapshot order.
+/// One `scene_layout_state` per scene of the snapshot's `layout_scenes`
+/// list, in the same order.
 pub fn scene_layout_states(engine: &Engine) -> Vec<SceneLayoutStateMessage> {
     let revision = engine.revision().get();
-    announced(engine)
-        .map(|(input, scene)| SceneLayoutStateMessage {
+    engine
+        .show()
+        .scenes()
+        .values()
+        .take(fm_protocol::MAX_LIST_ITEMS)
+        .map(|scene| SceneLayoutStateMessage {
             revision,
-            input: WireInputId::from_domain(input),
+            scene: WireSceneId::from_domain(scene.id()),
+            name: display_name(&scene.scene.name, MAX_SCENE_NAME_BYTES),
             layout: Box::new(scene_layout_to_wire(
                 &scene.scene,
                 scene.canvas_width,
@@ -276,9 +299,8 @@ pub fn scene_layout_states(engine: &Engine) -> Vec<SceneLayoutStateMessage> {
 }
 
 /// `name` as a wire display name: control characters become spaces and the
-/// result is cut at a character boundary within
-/// [`MAX_SCENE_LAYER_NAME_BYTES`].
-fn display_name(name: &str) -> String {
+/// result is cut at a character boundary within `limit` bytes.
+fn display_name(name: &str, limit: usize) -> String {
     let mut out = String::new();
     for character in name.chars() {
         let character = if character.is_control() {
@@ -286,7 +308,7 @@ fn display_name(name: &str) -> String {
         } else {
             character
         };
-        if out.len() + character.len_utf8() > MAX_SCENE_LAYER_NAME_BYTES {
+        if out.len() + character.len_utf8() > limit {
             break;
         }
         out.push(character);
@@ -296,8 +318,8 @@ fn display_name(name: &str) -> String {
 
 /// `scene`'s wire layout on a `canvas_width` x `canvas_height` canvas: its
 /// first [`MAX_SCENE_LAYOUT_LAYERS`] layers in scene order, each with its id,
-/// display name, static footprint origin and pre-rotation size, quarter
-/// turns, opacity, and enablement. Canvas sides are clamped to
+/// display name, source, static footprint origin and pre-rotation size,
+/// quarter turns, opacity, and enablement. Canvas sides are clamped to
 /// `1..=`[`MAX_SCENE_CANVAS_SIDE`].
 #[must_use]
 pub fn scene_layout_to_wire(
@@ -315,7 +337,15 @@ pub fn scene_layout_to_wire(
             .take(MAX_SCENE_LAYOUT_LAYERS)
             .map(|layer| WireSceneLayerOutline {
                 id: WireSceneLayerId::new(layer.id.non_zero()),
-                name: display_name(&layer.name),
+                name: display_name(&layer.name, MAX_SCENE_LAYER_NAME_BYTES),
+                source: match layer.source {
+                    fm_model::SourceRef::Input(input) => {
+                        WireSceneLayerSource::Input(WireInputId::from_domain(input))
+                    }
+                    fm_model::SourceRef::Scene(scene) => {
+                        WireSceneLayerSource::Scene(WireSceneId::from_domain(scene))
+                    }
+                },
                 x: layer.geometry.translation_x,
                 y: layer.geometry.translation_y,
                 width: layer.geometry.width,

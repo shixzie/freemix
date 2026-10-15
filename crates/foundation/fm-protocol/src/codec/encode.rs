@@ -35,7 +35,9 @@ use super::playlist::{
     encode_frame_rate, encode_optional_entry, encode_playlist_entries, encode_playlist_start,
     encode_playlist_state, playlist_loop,
 };
-use super::scene_layout::{encode_scene_clip, encode_scene_layers, encode_scene_list};
+use super::scene_layout::{
+    encode_layout_scenes, encode_scene_clip, encode_scene_layers, encode_scene_list,
+};
 use super::title::{
     encode_title_field_names, encode_title_fields, encode_title_phase, encode_title_summaries,
     title_air_requirement, validate_title_name, validate_title_phase,
@@ -671,6 +673,7 @@ fn encode_scene_animation_state(
     record.kind("scene_animation_state");
     record.field("revision", message.revision)?;
     record.field("input", message.input)?;
+    record.field("scene", message.scene)?;
     record.field("animation_revision", message.animation_revision)?;
     record.field_string("clip", clip)
 }
@@ -680,9 +683,18 @@ fn encode_scene_layout_state(
     message: &SceneLayoutStateMessage,
 ) -> Result<(), CodecError> {
     let layers = encode_scene_layers(&message.layout)?;
+    if message.name.len() > crate::MAX_SCENE_NAME_BYTES
+        || message.name.chars().any(char::is_control)
+    {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: format!("{} bytes", message.name.len()),
+        });
+    }
     record.kind("scene_layout_state");
     record.field("revision", message.revision)?;
-    record.field("input", message.input)?;
+    record.field("scene", message.scene)?;
+    record.field_string("name", message.name.clone())?;
     record.field("width", message.layout.width)?;
     record.field("height", message.layout.height)?;
     record.field_string("layers", layers)
@@ -1221,6 +1233,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         .collect::<Vec<_>>();
     record.field_string("titles", encode_title_summaries(&message.titles, &inputs)?)?;
     record.field_string("scenes", encode_scene_list(&message.scenes, &inputs)?)?;
+    record.field_string(
+        "layout_scenes",
+        encode_layout_scenes(&message.layout_scenes)?,
+    )?;
     record.field_string("frame_rate", encode_frame_rate(message.frame_rate))?;
     record.field("playlist", u8::from(message.playlist_follows))?;
     if message.grade_states > MAX_GRADE_STATES {
@@ -1293,7 +1309,7 @@ fn encode_grade_command(record: &mut Record, payload: &CommandPayload) -> Result
                 .map_or(Ok(()), |source| encode_grade_source(record, source))
         }
         CommandPayload::SetLayerGrade {
-            input,
+            scene,
             layer,
             source,
         } => {
@@ -1305,7 +1321,7 @@ fn encode_grade_command(record: &mut Record, payload: &CommandPayload) -> Result
                     "grade_layer_clear"
                 },
             )?;
-            record.field("input", input)?;
+            record.field("scene", scene)?;
             record.field("layer", layer)?;
             source
                 .as_ref()
@@ -1388,13 +1404,12 @@ fn encode_grade_state(record: &mut Record, message: &GradeStateMessage) -> Resul
             encode_grade_source(record, source)
         }
         GradeEntry::Layer {
-            inputs,
+            scene,
             layer,
             source,
         } => {
-            validate_animation_inputs(inputs)?;
             record.field("entry", "layer")?;
-            record.field_string("inputs", input_ids(inputs)?)?;
+            record.field("scene", scene)?;
             record.field("layer", layer)?;
             encode_grade_source(record, source)
         }
@@ -1449,13 +1464,12 @@ fn encode_grade_change(record: &mut Record, change: &GradeChange) -> Result<(), 
                 .map_or(Ok(()), |source| encode_grade_source(record, source))
         }
         GradeChange::Layer {
-            inputs,
+            scene,
             layer,
             source,
         } => {
-            validate_animation_inputs(inputs)?;
             record.field("change", "layer")?;
-            record.field_string("inputs", input_ids(inputs)?)?;
+            record.field("scene", scene)?;
             record.field("layer", layer)?;
             source
                 .as_ref()

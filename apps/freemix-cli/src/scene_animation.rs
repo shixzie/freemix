@@ -155,7 +155,7 @@ pub fn render_frame(
         ScenePhase::Out => (ClipState::Out(ClipPosition::frame(frame)), "out"),
     };
     let rendered = crate::scene_render::render_scene(
-        project, id, state, &pipeline, &grades, 0, width, height,
+        project, id, state, &pipeline, &grades, None, 0, width, height,
     )?;
     write_title_ppm(output, &rendered)?;
     println!(

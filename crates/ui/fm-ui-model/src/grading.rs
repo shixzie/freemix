@@ -1,14 +1,14 @@
 //! The replicated project grading (Protocol 2.28): imported LUTs, the grade
-//! library, and the per-input, per-scene-layer (Protocol 2.33), and program
-//! grades, as carried by a snapshot's `grade_state` records and kept current
-//! by `grade_changed`.
+//! library, and the per-input, per-scene-layer (Protocol 2.33; by scene
+//! since 2.35), and program grades, as carried by a snapshot's
+//! `grade_state` records and kept current by `grade_changed`.
 
 use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 
 use fm_grade::{CubeKind, Grade};
 use fm_protocol::{GradeChange, GradeEntry, WireGradeSource, WireSceneLayerId};
-use fm_types::InputId;
+use fm_types::{InputId, SceneId};
 
 /// One imported LUT.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,10 +37,9 @@ pub struct GradingStatus {
     pub library: Vec<LibraryGradeStatus>,
     /// The grade of every graded input.
     pub inputs: BTreeMap<InputId, WireGradeSource>,
-    /// The grade of every graded scene layer, under each Scene input
-    /// showing its scene (a scene shown by two Scene inputs is listed under
-    /// both, with the same grade).
-    pub layers: BTreeMap<(InputId, WireSceneLayerId), WireGradeSource>,
+    /// The grade of every graded scene layer, by scene then layer, whether
+    /// or not a Scene input shows the scene.
+    pub layers: BTreeMap<(SceneId, WireSceneLayerId), WireGradeSource>,
     /// The program output grade, if any.
     pub program: Option<WireGradeSource>,
 }
@@ -63,17 +62,16 @@ impl GradingStatus {
         }
     }
 
-    /// The grade layer `layer` of Scene input `input`'s scene carries, if
-    /// any.
+    /// The grade layer `layer` of scene `scene` carries, if any.
     #[must_use]
-    pub fn layer(&self, input: InputId, layer: WireSceneLayerId) -> Option<&WireGradeSource> {
-        self.layers.get(&(input, layer))
+    pub fn layer(&self, scene: SceneId, layer: WireSceneLayerId) -> Option<&WireGradeSource> {
+        self.layers.get(&(scene, layer))
     }
 
-    /// Forgets every grade replicated under a removed input.
+    /// Forgets the grade of a removed input (its scene's layer grades stay:
+    /// the scene outlives its Scene inputs).
     pub(crate) fn remove_input(&mut self, input: InputId) {
         self.inputs.remove(&input);
-        self.layers.retain(|(shown, _), _| *shown != input);
     }
 
     fn source_known(&self, source: &WireGradeSource) -> bool {
@@ -137,27 +135,22 @@ impl GradingStatus {
                 self.inputs.insert(input, source);
             }
             GradeEntry::Layer {
-                inputs: shown,
+                scene,
                 layer,
                 source,
             } => {
-                let shown = shown
-                    .iter()
-                    .map(|input| input.to_domain())
-                    .collect::<Vec<_>>();
+                let key = (scene.to_domain(), layer);
                 if self.program.is_some()
-                    || shown.is_empty()
-                    || !shown.iter().all(|input| inputs.contains(input))
-                    || shown
-                        .iter()
-                        .any(|input| self.layers.contains_key(&(*input, layer)))
+                    || self
+                        .layers
+                        .keys()
+                        .next_back()
+                        .is_some_and(|last| *last >= key)
                     || !self.source_known(&source)
                 {
                     return false;
                 }
-                for input in shown {
-                    self.layers.insert((input, layer), source.clone());
-                }
+                self.layers.insert(key, source);
             }
             GradeEntry::Program { source } => {
                 if self.program.is_some() || !self.source_known(&source) {
@@ -188,19 +181,9 @@ impl GradingStatus {
                         .as_ref()
                         .is_none_or(|source| self.source_known(source))
             }
-            GradeChange::Layer {
-                inputs: shown,
-                source,
-                ..
-            } => {
-                !shown.is_empty()
-                    && shown
-                        .iter()
-                        .all(|input| inputs.contains(&input.to_domain()))
-                    && source
-                        .as_ref()
-                        .is_none_or(|source| self.source_known(source))
-            }
+            GradeChange::Layer { source, .. } => source
+                .as_ref()
+                .is_none_or(|source| self.source_known(source)),
             GradeChange::Program { source } => source
                 .as_ref()
                 .is_none_or(|source| self.source_known(source)),
@@ -250,19 +233,17 @@ impl GradingStatus {
                 }
             },
             GradeChange::Layer {
-                inputs: shown,
+                scene,
                 layer,
                 source,
             } => {
-                for input in shown {
-                    let key = (input.to_domain(), layer);
-                    match &source {
-                        Some(source) => {
-                            self.layers.insert(key, source.clone());
-                        }
-                        None => {
-                            self.layers.remove(&key);
-                        }
+                let key = (scene.to_domain(), layer);
+                match source {
+                    Some(source) => {
+                        self.layers.insert(key, source);
+                    }
+                    None => {
+                        self.layers.remove(&key);
                     }
                 }
             }

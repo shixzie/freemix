@@ -3478,6 +3478,7 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
             fm_model::fm_animation::ClipState::Static,
             &scene_pipeline,
             &grades,
+            Some(program.primary),
             engine.frame_cursor().get(),
             width,
             height,

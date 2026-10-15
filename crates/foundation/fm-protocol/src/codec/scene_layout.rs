@@ -1,4 +1,4 @@
-//! Scene layouts (Protocol 2.31).
+//! Scene layouts (Protocol 2.31; layer sources 2.35).
 //!
 //! A layout's canvas travels as the plain `width` and `height` fields; its
 //! layer list travels as one unpadded base64url `layers` field holding a
@@ -9,8 +9,9 @@
 //! layers = count layer*
 //! layer  = id(varint, nonzero u32) flags(byte: bit 0 enabled, other bits
 //!          zero) quarter_turns(byte, 0..=3) name_len(varint)
-//!          name(UTF-8 bytes) x(zigzag) y(zigzag) width(varint)
+//!          name(UTF-8 bytes) source x(zigzag) y(zigzag) width(varint)
 //!          height(varint) opacity(byte)
+//! source = kind(byte: 0 input, 1 scene) id(varint, nonzero u128)
 //! ```
 //!
 //! Layers keep scene order, so every layout has exactly one encoding. Both
@@ -25,12 +26,14 @@ use std::collections::BTreeSet;
 use super::animation::{Reader, push_varint, zigzag};
 use crate::{
     CodecError, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_LAYER_NAME_BYTES, MAX_SCENE_LAYOUT_BYTES,
-    MAX_SCENE_LAYOUT_LAYERS, WireInputId, WireSceneClip, WireSceneLayerId, WireSceneLayerOutline,
-    WireSceneLayout,
+    MAX_SCENE_LAYOUT_LAYERS, WireInputId, WireSceneClip, WireSceneId, WireSceneLayerId,
+    WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout,
 };
 
 const LAYERS: &str = "layers";
 const ENABLED: u8 = 1;
+const SOURCE_INPUT: u8 = 0;
+const SOURCE_SCENE: u8 = 1;
 
 fn invalid(field: &'static str, value: impl Into<String>) -> CodecError {
     CodecError::InvalidField {
@@ -84,6 +87,12 @@ fn layers_bytes(layout: &WireSceneLayout) -> Vec<u8> {
         out.push(layer.quarter_turns);
         push_varint(&mut out, layer.name.len() as u128);
         out.extend_from_slice(layer.name.as_bytes());
+        let (kind, id) = match layer.source {
+            WireSceneLayerSource::Input(input) => (SOURCE_INPUT, input.get()),
+            WireSceneLayerSource::Scene(scene) => (SOURCE_SCENE, scene.get()),
+        };
+        out.push(kind);
+        push_varint(&mut out, id.get());
         push_varint(&mut out, u128::from(zigzag(i64::from(layer.x))));
         push_varint(&mut out, u128::from(zigzag(i64::from(layer.y))));
         push_varint(&mut out, u128::from(layer.width));
@@ -127,9 +136,17 @@ impl Reader<'_> {
             .ok()?
             .to_owned();
         self.position = end;
+        let kind = self.byte()?;
+        let source = core::num::NonZeroU128::new(self.varint(128)?)?;
+        let source = match kind {
+            SOURCE_INPUT => WireSceneLayerSource::Input(WireInputId::new(source)),
+            SOURCE_SCENE => WireSceneLayerSource::Scene(WireSceneId::new(source)),
+            _ => return None,
+        };
         Some(WireSceneLayerOutline {
             id,
             name,
+            source,
             x: self.i32()?,
             y: self.i32()?,
             width: self.u32()?,
@@ -238,6 +255,48 @@ pub(super) fn decode_scene_list(
         .collect::<Result<Vec<_>, _>>()?;
     validate_scene_list(&scenes, inputs)?;
     Ok(scenes)
+}
+
+const LAYOUT_SCENES: &str = "layout_scenes";
+
+/// Encodes a snapshot's `layout_scenes` list (possibly empty): strictly
+/// ascending scenes, at most [`super::MAX_LIST_ITEMS`].
+pub(super) fn encode_layout_scenes(scenes: &[WireSceneId]) -> Result<String, CodecError> {
+    if scenes.len() > super::MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems(LAYOUT_SCENES));
+    }
+    let joined = scenes
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    if !scenes.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(invalid(LAYOUT_SCENES, joined));
+    }
+    Ok(joined)
+}
+
+/// Strictly decodes a snapshot's `layout_scenes` list.
+pub(super) fn decode_layout_scenes(value: &str) -> Result<Vec<WireSceneId>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split(',').nth(super::MAX_LIST_ITEMS).is_some() {
+        return Err(CodecError::TooManyItems(LAYOUT_SCENES));
+    }
+    let scenes = value
+        .split(',')
+        .map(|entry| parse_canonical_scene(entry).ok_or_else(|| invalid(LAYOUT_SCENES, entry)))
+        .collect::<Result<Vec<_>, _>>()?;
+    if !scenes.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(invalid(LAYOUT_SCENES, value));
+    }
+    Ok(scenes)
+}
+
+/// Parses a canonical nonzero scene identifier as written by its `Display`.
+pub(super) fn parse_canonical_scene(value: &str) -> Option<WireSceneId> {
+    super::value::parse_canonical_input(value).map(|input| WireSceneId::new(input.get()))
 }
 
 /// Refuses a scene clip animating colour, which scene layers do not have.

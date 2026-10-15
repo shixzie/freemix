@@ -11,6 +11,14 @@
 //! the target shows there without a grade on air, keeps the last such frame
 //! per target, and otherwise previews a test still.
 //!
+//! A scene layer's grade applies after its source's input grade, so its
+//! clean picture is its source as a monitor shows it: the layer's input on
+//! Preview (or on Program while Program is ungraded), with that input's
+//! grade; for a layer drawing a scene directly, a Scene input showing that
+//! scene without a grade of its own. The window previews that live picture
+//! while it is on a monitor and the last one it saw otherwise (a test still
+//! until one arrives); it never requests an exact scene preview for it.
+//!
 //! The window also saves the draft to the project's grade library, applies
 //! library grades (linked by reference), and imports `.cube` LUTs. Studio
 //! reads LUT files in the host (this crate does no I/O): the window queues a
@@ -24,7 +32,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use egui::{ComboBox, Frame, Key, Margin, Modifiers, RichText, ScrollArea, Stroke, TextEdit, Ui};
-use fm_protocol::{MonitorImage, MonitorTap, WireInputId};
+use fm_protocol::{MonitorImage, MonitorTap, WireInputId, WireSceneLayerSource};
 use fm_ui_model::GradingStatus;
 use fm_ui_model::grade_editor::{
     GradeBinding, GradeCommand, GradeNameProblem, GradeSyncStatus, GradeTarget, RgbaImage,
@@ -169,6 +177,51 @@ impl PartialEq for ColorWindow {
 
 impl Eq for ColorWindow {}
 
+/// The input a layer's clean picture shows on a monitor: its own input, or
+/// any Scene input showing the scene it draws directly without a grade of
+/// its own (`None` while its scene's layout has not arrived).
+fn layer_source_inputs(
+    state: &StudioUiState,
+    grading: &GradingStatus,
+    scene: fm_types::SceneId,
+    layer: fm_protocol::WireSceneLayerId,
+) -> Vec<fm_types::InputId> {
+    let Some(project) = state.project_state.as_ref() else {
+        return Vec::new();
+    };
+    let source = project
+        .scene_layout(scene)
+        .and_then(|entry| entry.layout.as_ref())
+        .and_then(|layout| layout.layers.iter().find(|outline| outline.id == layer))
+        .map(|outline| outline.source);
+    match source {
+        Some(WireSceneLayerSource::Input(input)) => vec![input.to_domain()],
+        Some(WireSceneLayerSource::Scene(nested)) => project
+            .scenes()
+            .iter()
+            .filter(|shown| shown.scene == Some(nested.to_domain()))
+            .map(|shown| shown.input)
+            .filter(|input| target_grade(grading, GradeTarget::Input(*input)).is_identity())
+            .collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Every Scene input showing `scene`.
+fn scene_inputs_showing(state: &StudioUiState, scene: fm_types::SceneId) -> Vec<fm_types::InputId> {
+    state
+        .project_state
+        .as_ref()
+        .map_or_else(Vec::new, |project| {
+            project
+                .scenes()
+                .iter()
+                .filter(|shown| shown.scene == Some(scene))
+                .map(|shown| shown.input)
+                .collect()
+        })
+}
+
 /// The project grading once every announced record arrived.
 fn grading(state: &StudioUiState) -> Option<&GradingStatus> {
     state
@@ -180,9 +233,8 @@ fn grading(state: &StudioUiState) -> Option<&GradingStatus> {
 
 /// Why `target`'s grade cannot be edited now (catalog English), if it
 /// cannot: the session gates first, then padlocks (an input padlock also
-/// covers that input's grade, and a Scene input's padlock its scene's layer
-/// grades; the server also refuses a layer grade while another Scene input
-/// showing the scene is locked).
+/// covers that input's grade, and every Scene input's padlock its scene's
+/// layer grades; a scene no Scene input shows only the project padlock).
 pub(crate) fn grade_lock_reason(
     state: &StudioUiState,
     target: GradeTarget,
@@ -199,11 +251,13 @@ pub(crate) fn grade_lock_reason(
     let locks = &state.view.as_ref()?.edit_locks;
     if locks.project {
         Some(PROJECT_LOCKED_REASON)
-    } else if matches!(
-        target,
-        GradeTarget::Input(input) | GradeTarget::Layer { input, .. }
-            if locks.is_input_locked(input)
-    ) {
+    } else if match target {
+        GradeTarget::Input(input) => locks.is_input_locked(input),
+        GradeTarget::Layer { scene, .. } => scene_inputs_showing(state, scene)
+            .into_iter()
+            .any(|input| locks.is_input_locked(input)),
+        GradeTarget::Program => false,
+    } {
         Some(INPUT_LOCKED_REASON)
     } else {
         None
@@ -236,8 +290,24 @@ pub(crate) fn ungraded_frame<'a>(
         GradeTarget::Program => fresh(MonitorTap::Program)
             .filter(|_| program_clean)
             .map(|image| (MonitorTap::Program, image)),
-        // A layer's ungraded picture is never on a monitor by itself.
-        GradeTarget::Layer { .. } => None,
+        // A layer's clean picture is its source as a monitor shows it
+        // (with the source's input grade, before the layer's own grade).
+        GradeTarget::Layer { scene, layer } => {
+            let sources = layer_source_inputs(state, grading, scene, layer);
+            [MonitorTap::Preview, MonitorTap::Program]
+                .into_iter()
+                .find_map(|tap| {
+                    let realized = match tap {
+                        MonitorTap::Preview => view.switcher.realized.preview,
+                        MonitorTap::Program => view.switcher.realized.program,
+                    };
+                    let image = fresh(tap)?;
+                    (sources.contains(&realized)
+                        && image.input == WireInputId::from_domain(realized)
+                        && (tap == MonitorTap::Preview || program_clean))
+                        .then_some((tap, image))
+                })
+        }
         GradeTarget::Input(input) => {
             if !target_grade(grading, target).is_identity() {
                 return None;
@@ -295,12 +365,13 @@ fn target_label(l: Locale, state: &StudioUiState, target: GradeTarget) -> String
     match target {
         GradeTarget::Program => l.text(Msg::ColorTargetProgram).to_owned(),
         GradeTarget::Input(input) => input_label(state, input),
-        GradeTarget::Layer { input, layer } => {
-            let name = state
+        GradeTarget::Layer { scene, layer } => {
+            let entry = state
                 .project_state
                 .as_ref()
-                .and_then(|project| project.scene(input))
-                .and_then(|scene| scene.layout.as_ref())
+                .and_then(|project| project.scene_layout(scene));
+            let name = entry
+                .and_then(|entry| entry.layout.as_ref())
                 .and_then(|layout| {
                     layout
                         .layers
@@ -310,7 +381,18 @@ fn target_label(l: Locale, state: &StudioUiState, target: GradeTarget) -> String
                 })
                 .filter(|name| !name.trim().is_empty())
                 .unwrap_or_else(|| format!("{} {layer}", l.text(Msg::ColorTargetLayerFallback)));
-            format!("{} › {name}", input_label(state, input))
+            let scene_name = entry
+                .map(|entry| entry.name.clone())
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| format!("{} {scene}", l.text(Msg::ColorTargetSceneFallback)));
+            if scene_inputs_showing(state, scene).is_empty() {
+                format!(
+                    "{scene_name} ({}) › {name}",
+                    l.text(Msg::ColorTargetSceneUnshown)
+                )
+            } else {
+                format!("{scene_name} › {name}")
+            }
         }
     }
 }
@@ -330,7 +412,8 @@ fn input_label(state: &StudioUiState, input: fm_types::InputId) -> String {
         .unwrap_or_else(|| format!("Input {input}"))
 }
 
-/// Every scene layer target: each replicated Scene input's layers, in input
+/// Every scene layer target: each replicated project scene's layers
+/// (Protocol 2.35: whether or not a Scene input shows the scene), in scene
 /// then scene (stacking list) order.
 fn layer_targets(state: &StudioUiState) -> Vec<GradeTarget> {
     state
@@ -338,12 +421,12 @@ fn layer_targets(state: &StudioUiState) -> Vec<GradeTarget> {
         .as_ref()
         .map_or_else(Vec::new, |project| {
             project
-                .scenes()
+                .scene_layouts()
                 .iter()
-                .filter_map(|scene| Some((scene.input, scene.layout.as_ref()?)))
-                .flat_map(|(input, layout)| {
+                .filter_map(|entry| Some((entry.scene, entry.layout.as_ref()?)))
+                .flat_map(|(scene, layout)| {
                     layout.layers.iter().map(move |outline| GradeTarget::Layer {
-                        input,
+                        scene,
                         layer: outline.id,
                     })
                 })
@@ -381,12 +464,19 @@ const fn status_look(status: GradeSyncStatus) -> (Msg, Msg, Tone) {
 impl ColorWindow {
     /// Binds the draft to the authority and handles a published refusal.
     fn sync(&mut self, state: &StudioUiState) {
-        if let GradeTarget::Input(input) | GradeTarget::Layer { input, .. } = self.target
-            && state
+        let gone = match self.target {
+            GradeTarget::Input(input) => state
                 .view
                 .as_ref()
-                .is_some_and(|view| !view.inputs.contains(&input))
-        {
+                .is_some_and(|view| !view.inputs.contains(&input)),
+            GradeTarget::Layer { scene, .. } => {
+                state.project_state.as_ref().is_some_and(|project| {
+                    project.scene_layouts_complete() && project.scene_layout(scene).is_none()
+                })
+            }
+            GradeTarget::Program => false,
+        };
+        if gone {
             self.target = GradeTarget::Program;
         }
         let Some(grading) = grading(state) else {
@@ -672,8 +762,8 @@ impl StudioShell {
                     grading
                         .layers
                         .keys()
-                        .map(|(input, layer)| GradeTarget::Layer {
-                            input: *input,
+                        .map(|(scene, layer)| GradeTarget::Layer {
+                            scene: *scene,
                             layer: *layer,
                         }),
                 )
@@ -762,6 +852,9 @@ impl StudioShell {
                 )],
             ),
             Some(SourceKind::Held) => l.text(Msg::ColorSourceHeld).to_owned(),
+            Some(SourceKind::Still) | None if matches!(target, GradeTarget::Layer { .. }) => {
+                l.text(Msg::ColorSourceLayerStill).to_owned()
+            }
             Some(SourceKind::Still) | None => l.text(Msg::ColorSourceStill).to_owned(),
         };
         ui.label(caption(caption_text).color(muted_color()))
@@ -1084,6 +1177,18 @@ mod tests {
         fm_protocol::WireSceneLayerId::new(NonZeroU32::new(value).unwrap())
     }
 
+    fn scene(value: u128) -> fm_types::SceneId {
+        fm_types::SceneId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    fn wire_scene(value: u128) -> fm_protocol::WireSceneId {
+        fm_protocol::WireSceneId::from_domain(scene(value))
+    }
+
+    /// The scene Scene input 3 shows, and a scene no input shows.
+    const SHOWN: u128 = 30;
+    const SPARE: u128 = 31;
+
     fn fm_model_timebase() -> fm_animation::Timebase {
         fm_animation::Timebase::new(fm_types::FrameRate::new(30, 1).unwrap())
     }
@@ -1100,9 +1205,11 @@ mod tests {
         ready_with(graded, locked, edit, None)
     }
 
-    /// [`ready`] with input 3 a Scene input whose scene has layers 1 ("Host")
-    /// and 2 (unnamed): `scene` is whether layer 1 carries the warm grade and
-    /// whether input 3's padlock is engaged.
+    /// [`ready`] with input 3 a Scene input showing scene 30 ("Two up")
+    /// with layers 1 ("Host", drawing input 2) and 2 (unnamed, drawing input
+    /// 1), plus scene 31 ("Spare") no input shows, with layer 5 ("Wall")
+    /// drawing scene 30: `scene` is whether layer 1 carries the warm grade
+    /// and whether input 3's padlock is engaged.
     #[allow(clippy::too_many_lines)]
     fn ready_with(
         graded: &[u128],
@@ -1174,6 +1281,11 @@ mod tests {
             } else {
                 Vec::new()
             },
+            layout_scenes: if scene.is_some() {
+                vec![wire_scene(SHOWN), wire_scene(SPARE)]
+            } else {
+                Vec::new()
+            },
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
             grade_states: u16::try_from(graded.len()).unwrap()
@@ -1201,7 +1313,7 @@ mod tests {
                     .apply_grade_state(GradeStateMessage {
                         revision: 10,
                         entry: GradeEntry::Layer {
-                            inputs: vec![wire(3)],
+                            scene: wire_scene(SHOWN),
                             layer: layer(1),
                             source: WireGradeSource::Inline(Box::new(warm())),
                         },
@@ -1212,13 +1324,14 @@ mod tests {
                 .apply_scene_animation_state(fm_protocol::SceneAnimationStateMessage {
                     revision: 10,
                     input: wire(3),
+                    scene: wire_scene(SHOWN),
                     animation_revision: 0,
                     clip: Box::new(
                         fm_protocol::WireSceneClip::new(fm_model_timebase(), 0, 0).unwrap(),
                     ),
                 })
                 .unwrap();
-            let outline = |id: u32, name: &str| fm_protocol::WireSceneLayerOutline {
+            let outline = |id: u32, name: &str, source| fm_protocol::WireSceneLayerOutline {
                 id: layer(id),
                 name: name.into(),
                 x: 0,
@@ -1228,18 +1341,41 @@ mod tests {
                 quarter_turns: 0,
                 opacity: 255,
                 enabled: true,
+                source,
             };
-            model
-                .apply_scene_layout_state(fm_protocol::SceneLayoutStateMessage {
-                    revision: 10,
-                    input: wire(3),
-                    layout: Box::new(fm_protocol::WireSceneLayout {
-                        width: 16,
-                        height: 9,
-                        layers: vec![outline(1, "Host"), outline(2, "")],
-                    }),
-                })
-                .unwrap();
+            let input_source = |value| fm_protocol::WireSceneLayerSource::Input(wire(value));
+            for (id, name, layers) in [
+                (
+                    SHOWN,
+                    "Two up",
+                    vec![
+                        outline(1, "Host", input_source(2)),
+                        outline(2, "", input_source(1)),
+                    ],
+                ),
+                (
+                    SPARE,
+                    "Spare",
+                    vec![outline(
+                        5,
+                        "Wall",
+                        fm_protocol::WireSceneLayerSource::Scene(wire_scene(SHOWN)),
+                    )],
+                ),
+            ] {
+                model
+                    .apply_scene_layout_state(fm_protocol::SceneLayoutStateMessage {
+                        revision: 10,
+                        scene: wire_scene(id),
+                        name: name.into(),
+                        layout: Box::new(fm_protocol::WireSceneLayout {
+                            width: 16,
+                            height: 9,
+                            layers,
+                        }),
+                    })
+                    .unwrap();
+            }
         }
         let mut state = StudioUiState::new(StudioConnectionStatus::Ready)
             .with_view(model.view().unwrap())
@@ -1381,27 +1517,57 @@ mod tests {
     }
 
     #[test]
-    fn scene_layers_are_grade_targets_shared_by_their_scene_input() {
+    fn scene_layers_are_grade_targets_addressed_by_their_scene() {
         let context = egui::Context::default();
-        let state = ready_with(&[], false, true, Some((true, false)));
+        let mut state = ready_with(&[], false, true, Some((true, false)));
         let host = GradeTarget::Layer {
-            input: input(3),
+            scene: scene(SHOWN),
             layer: layer(1),
         };
         let unnamed = GradeTarget::Layer {
-            input: input(3),
+            scene: scene(SHOWN),
             layer: layer(2),
         };
-        // The picker lists every replicated scene layer, named after its
-        // Scene input and layer (or a numbered fallback).
-        assert_eq!(layer_targets(&state), vec![host, unnamed]);
+        let wall = GradeTarget::Layer {
+            scene: scene(SPARE),
+            layer: layer(5),
+        };
+        // The picker lists every project scene's layers, shown or not,
+        // named after their scene and layer (or numbered fallbacks).
+        assert_eq!(layer_targets(&state), vec![host, unnamed, wall]);
         let l = Locale::new(fm_ui_model::i18n::Language::English);
-        assert_eq!(target_label(l, &state, host), "03 · Cam 3 › Host");
-        assert_eq!(target_label(l, &state, unnamed), "03 · Cam 3 › Layer 2");
-        // A layer's ungraded picture is never on a monitor by itself.
-        let grading = grading(&state).unwrap().clone();
+        assert_eq!(target_label(l, &state, host), "Two up › Host");
+        assert_eq!(target_label(l, &state, unnamed), "Two up › Layer 2");
         assert_eq!(
-            ungraded_frame(&state, &grading, host, Instant::now()).map(|(tap, _)| tap),
+            target_label(l, &state, wall),
+            "Spare (no Scene input) › Wall"
+        );
+        let es = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            target_label(es, &state, wall),
+            "Spare (sin entrada de escena) › Wall"
+        );
+
+        // A layer previews on its source's live picture: Preview shows
+        // input 2 (Host's source) and the clean Program input 1 (the
+        // unnamed layer's). Wall draws scene 30, which no monitor shows.
+        state.monitor_images = [
+            Some(frame(MonitorTap::Preview, 2, 1)),
+            Some(frame(MonitorTap::Program, 1, 1)),
+        ];
+        let grading = grading(&state).unwrap().clone();
+        let now = Instant::now();
+        let tap = |target| ungraded_frame(&state, &grading, target, now).map(|(tap, _)| tap);
+        assert_eq!(tap(host), Some(MonitorTap::Preview));
+        assert_eq!(tap(unnamed), Some(MonitorTap::Program));
+        assert_eq!(tap(wall), None);
+        // A Program grade taints the Program tap for layers too.
+        let program_graded = GradingStatus {
+            program: Some(WireGradeSource::Inline(Box::new(warm()))),
+            ..grading.clone()
+        };
+        assert_eq!(
+            ungraded_frame(&state, &program_graded, unnamed, now).map(|(tap, _)| tap),
             None
         );
 
@@ -1432,19 +1598,39 @@ mod tests {
         assert_eq!(
             command.payload(),
             fm_protocol::CommandPayload::SetLayerGrade {
-                input: wire(3),
+                scene: wire_scene(SHOWN),
                 layer: layer(1),
                 source: Some(WireGradeSource::Inline(Box::new(expected))),
             }
         );
+        // A layer of an unshown scene is graded by its scene id.
+        assert_eq!(
+            GradeCommand::Set {
+                target: wall,
+                source: None,
+            }
+            .payload(),
+            fm_protocol::CommandPayload::SetLayerGrade {
+                scene: wire_scene(SPARE),
+                layer: layer(5),
+                source: None,
+            }
+        );
 
-        // The Scene input's padlock covers its layers' grades.
+        // The Scene input's padlock covers its scene's layers' grades; an
+        // unshown scene's layers only answer to the project padlock.
         let padlocked = ready_with(&[], false, true, Some((true, true)));
         assert_eq!(
             grade_lock_reason(&padlocked, host),
             Some(INPUT_LOCKED_REASON)
         );
+        assert_eq!(grade_lock_reason(&padlocked, wall), None);
         assert_eq!(grade_lock_reason(&padlocked, GradeTarget::Program), None);
+        let project_locked = ready_with(&[], true, true, Some((true, false)));
+        assert_eq!(
+            grade_lock_reason(&project_locked, wall),
+            Some(PROJECT_LOCKED_REASON)
+        );
     }
 
     #[test]

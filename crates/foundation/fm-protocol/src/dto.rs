@@ -6,7 +6,7 @@ use core::{
 use fm_animation::{AnimationPreset, Clip, Phase, PhaseMotion};
 use fm_command::{CommandEnvelope, Deadline, Revision, StateEpoch};
 use fm_grade::{CubeKind, Grade};
-use fm_types::{FrameRate, InputId, OutputId};
+use fm_types::{FrameRate, InputId, OutputId, SceneId};
 
 use crate::ProtocolVersion;
 
@@ -796,6 +796,39 @@ pub struct TitleLayoutStateMessage {
     pub layout: Box<WireTitleLayout>,
 }
 
+/// Stable identity of one project scene carried on the wire (Protocol
+/// 2.35): what a scene layout and a scene layer grade name.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WireSceneId(NonZeroU128);
+
+impl WireSceneId {
+    #[must_use]
+    pub const fn new(value: NonZeroU128) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> NonZeroU128 {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn from_domain(value: SceneId) -> Self {
+        Self(value.get())
+    }
+
+    #[must_use]
+    pub const fn to_domain(self) -> SceneId {
+        SceneId::new(self.0)
+    }
+}
+
+impl fmt::Display for WireSceneId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// Stable identity of one scene layer carried on the wire (Protocol 2.31):
 /// the target of every scene animation track. Unique within its scene.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -838,6 +871,8 @@ pub const MAX_SCENE_ANIMATION_BYTES: usize = 36 * 1024;
 pub struct SceneAnimationStateMessage {
     pub revision: u64,
     pub input: WireInputId,
+    /// The scene the Scene input shows (Protocol 2.35).
+    pub scene: WireSceneId,
     /// The scene's animation revision: the `base_revision` the next
     /// animation edit must name.
     pub animation_revision: u64,
@@ -848,25 +883,40 @@ pub struct SceneAnimationStateMessage {
 /// more lists its first layers in scene order; the rest cannot be targeted
 /// by an editor.
 pub const MAX_SCENE_LAYOUT_LAYERS: usize = 256;
-/// Longest layer display name in a [`WireSceneLayout`], in UTF-8 bytes.
-/// Longer names are cut at a character boundary.
-pub const MAX_SCENE_LAYER_NAME_BYTES: usize = 96;
+/// Longest layer display name in a [`WireSceneLayout`], in UTF-8 bytes
+/// (Protocol 2.35; room for each layer's source). Longer names are cut at
+/// a character boundary.
+pub const MAX_SCENE_LAYER_NAME_BYTES: usize = 80;
+/// Longest scene display name in a [`SceneLayoutStateMessage`], in UTF-8
+/// bytes (Protocol 2.35). Longer names are cut at a character boundary.
+pub const MAX_SCENE_NAME_BYTES: usize = 128;
 /// Largest scene canvas side carried in a [`WireSceneLayout`], in pixels
 /// (the project video limit).
 pub const MAX_SCENE_CANVAS_SIDE: u32 = 8_192;
 /// Largest binary encoding of one [`WireSceneLayout`]'s layer list, in
-/// bytes; with the bounds above every layout fits (worst case about 32
+/// bytes; with the bounds above every layout fits (worst case about 33
 /// KiB).
 pub const MAX_SCENE_LAYOUT_BYTES: usize = 36 * 1024;
 
+/// What one scene layer draws (Protocol 2.35): an input (a Scene input
+/// draws its scene) or a scene directly.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WireSceneLayerSource {
+    Input(WireInputId),
+    Scene(WireSceneId),
+}
+
 /// One scene layer's static design (Protocol 2.31): what an animation
-/// editor needs to list, outline, and apply presets to it.
+/// editor needs to list, outline, and apply presets to it, and (Protocol
+/// 2.35) what a colour editor needs to preview it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WireSceneLayerOutline {
     pub id: WireSceneLayerId,
     /// The layer's display name, at most [`MAX_SCENE_LAYER_NAME_BYTES`]
     /// bytes with no control characters (may be empty).
     pub name: String,
+    /// What the layer draws.
+    pub source: WireSceneLayerSource,
     /// Static box in project canvas pixels: the top-left of its on-screen
     /// footprint and its size before `quarter_turns`.
     pub x: i32,
@@ -893,16 +943,21 @@ pub struct WireSceneLayout {
     pub layers: Vec<WireSceneLayerOutline>,
 }
 
-/// One scene's layout at a snapshot's `revision` (Protocol 2.31).
+/// One project scene's layout at a snapshot's `revision` (Protocol 2.31;
+/// keyed by scene since 2.35).
 ///
-/// A session writes exactly one `scene_layout_state` per Scene input of a
-/// snapshot's `scenes` list, in list order, after the snapshot's
+/// A session writes exactly one `scene_layout_state` per scene of a
+/// snapshot's `layout_scenes` list (every project scene, whether or not a
+/// Scene input shows it), in list order, after the snapshot's
 /// `scene_animation_state` records and before any event. Scene layers are
 /// edited offline only, so a layout changes only with a new snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SceneLayoutStateMessage {
     pub revision: u64,
-    pub input: WireInputId,
+    pub scene: WireSceneId,
+    /// The scene's display name, at most [`MAX_SCENE_NAME_BYTES`] bytes
+    /// with no control characters (may be empty).
+    pub name: String,
     pub layout: Box<WireSceneLayout>,
 }
 
@@ -1290,12 +1345,13 @@ pub enum CommandPayload {
         input: WireInputId,
         source: Option<WireGradeSource>,
     },
-    /// Sets (`Some`) or clears (`None`) the grade of one layer of the scene
-    /// Scene input `input` shows (Protocol 2.33). Wire payloads
-    /// `grade_layer_set` and `grade_layer_clear`. Every Scene input showing
-    /// the scene shows the change.
+    /// Sets (`Some`) or clears (`None`) the grade of layer `layer` of scene
+    /// `scene` (Protocol 2.33; addressed by scene since 2.35), whether or
+    /// not a Scene input shows it. Wire payloads `grade_layer_set` and
+    /// `grade_layer_clear`. Every Scene input showing the scene shows the
+    /// change, and each one's padlock covers it.
     SetLayerGrade {
-        input: WireInputId,
+        scene: WireSceneId,
         layer: WireSceneLayerId,
         source: Option<WireGradeSource>,
     },
@@ -1517,10 +1573,10 @@ pub enum GradeEntry {
         input: WireInputId,
         source: WireGradeSource,
     },
-    /// The grade one scene layer carries (Protocol 2.33), with every Scene
-    /// input (ascending, at least one) showing its scene.
+    /// The grade one scene layer carries (Protocol 2.33; by scene since
+    /// 2.35).
     Layer {
-        inputs: Vec<WireInputId>,
+        scene: WireSceneId,
         layer: WireSceneLayerId,
         source: WireGradeSource,
     },
@@ -1534,7 +1590,7 @@ pub enum GradeEntry {
 /// the snapshot's title states and playlist state and before any event:
 /// every LUT in import order, then every library grade in library order,
 /// then every graded input in ascending input order, then (Protocol 2.33)
-/// every graded layer of a scene some Scene input shows, in scene then
+/// every graded scene layer (2.35: of any project scene), in scene then
 /// layer order, then the program grade when there is one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GradeStateMessage {
@@ -1571,10 +1627,10 @@ pub enum GradeChange {
         input: WireInputId,
         source: Option<WireGradeSource>,
     },
-    /// A scene layer's grade afterwards (Protocol 2.33), with every Scene
-    /// input (ascending) showing its scene; `None` when it is ungraded.
+    /// A scene layer's grade afterwards (Protocol 2.33; by scene since
+    /// 2.35); `None` when it is ungraded.
     Layer {
-        inputs: Vec<WireInputId>,
+        scene: WireSceneId,
         layer: WireSceneLayerId,
         source: Option<WireGradeSource>,
     },
@@ -1792,8 +1848,12 @@ pub struct SnapshotMessage {
     /// Every title input in ascending input order with its field revision.
     pub titles: Vec<TitleSummary>,
     /// Every Scene input in ascending input order (Protocol 2.31): one
-    /// `scene_animation_state` and one `scene_layout_state` follow for each.
+    /// `scene_animation_state` follows for each.
     pub scenes: Vec<WireInputId>,
+    /// Every project scene in ascending scene order, at most
+    /// [`crate::MAX_LIST_ITEMS`] (Protocol 2.35): one `scene_layout_state`
+    /// follows for each, after the `scene_animation_state` records.
+    pub layout_scenes: Vec<WireSceneId>,
     /// The engine's video frame rate: every playlist duration and frame
     /// counts these frames.
     pub frame_rate: FrameRate,

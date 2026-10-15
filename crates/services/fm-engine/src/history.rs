@@ -679,11 +679,11 @@ fn grade_inverse(state: &ShowState, edit: &EngineGradeEdit) -> Option<EngineGrad
                     source: grading.inputs.get(input).cloned(),
                 })
         }
-        EngineGradeEdit::SetLayer { input, layer, .. } => {
-            crate::grade_edit::layer_target(state, *input, *layer)
+        EngineGradeEdit::SetLayer { scene, layer, .. } => {
+            crate::grade_edit::layer_target(state, *scene, *layer)
                 .ok()
                 .map(|target| EngineGradeEdit::SetLayer {
-                    input: *input,
+                    scene: *scene,
                     layer: *layer,
                     source: grading.layers.get(&target).cloned(),
                 })
@@ -753,10 +753,12 @@ pub(crate) fn check_edit_locks(
             Ok(())
         }
         // Every Scene input showing the graded layer's scene shows the edit.
-        EngineCommand::Grade(EngineGradeEdit::SetLayer { input, .. }) => {
-            match crate::scene_animation::scene_inputs_sharing(state, *input)
-                .into_iter()
-                .chain(std::iter::once(*input))
+        EngineCommand::Grade(EngineGradeEdit::SetLayer { scene, .. }) => {
+            match state
+                .scene_inputs()
+                .iter()
+                .filter(|(_, shown)| *shown == scene)
+                .map(|(input, _)| *input)
                 .find(|input| state.is_input_locked(*input))
             {
                 Some(locked) => Err(EditRejection::InputLocked(locked)),

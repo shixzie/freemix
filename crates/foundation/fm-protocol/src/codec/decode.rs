@@ -37,7 +37,10 @@ use super::playlist::{
     decode_frame_rate, decode_optional_entry, decode_playlist_entries, decode_playlist_start,
     decode_playlist_state, parse_playlist_loop,
 };
-use super::scene_layout::{decode_scene_clip, decode_scene_layout, decode_scene_list};
+use super::scene_layout::{
+    decode_layout_scenes, decode_scene_clip, decode_scene_layout, decode_scene_list,
+    parse_canonical_scene,
+};
 use super::title::{
     decode_title_field_names, decode_title_fields, decode_title_phase, decode_title_summaries,
     parse_title_air_requirement, validate_title_name, validate_title_phase,
@@ -294,6 +297,11 @@ impl Fields {
     fn canonical_input(&mut self, name: &'static str) -> Result<WireInputId, CodecError> {
         let value = self.required(name)?;
         parse_canonical_input(&value).ok_or(CodecError::InvalidField { field: name, value })
+    }
+
+    fn canonical_scene(&mut self, name: &'static str) -> Result<crate::WireSceneId, CodecError> {
+        let value = self.required(name)?;
+        parse_canonical_scene(&value).ok_or(CodecError::InvalidField { field: name, value })
     }
 
     fn finish(self) -> Result<(), CodecError> {
@@ -779,6 +787,7 @@ fn decode_scene_animation_state(
     Ok(SceneAnimationStateMessage {
         revision: fields.canonical_required("revision")?,
         input: fields.canonical_input("input")?,
+        scene: fields.canonical_scene("scene")?,
         animation_revision: fields.canonical_required("animation_revision")?,
         clip: Box::new(decode_scene_clip(&fields.required("clip")?)?),
     })
@@ -786,7 +795,14 @@ fn decode_scene_animation_state(
 
 fn decode_scene_layout_state(fields: &mut Fields) -> Result<SceneLayoutStateMessage, CodecError> {
     let revision = fields.canonical_required("revision")?;
-    let input = fields.canonical_input("input")?;
+    let scene = fields.canonical_scene("scene")?;
+    let name = fields.required("name")?;
+    if name.len() > crate::MAX_SCENE_NAME_BYTES || name.chars().any(char::is_control) {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: format!("{} bytes", name.len()),
+        });
+    }
     let side = |fields: &mut Fields, name: &'static str| {
         let value = fields.canonical_required(name)?;
         u32::try_from(value).map_err(|_| CodecError::InvalidField {
@@ -799,7 +815,8 @@ fn decode_scene_layout_state(fields: &mut Fields) -> Result<SceneLayoutStateMess
     let layout = decode_scene_layout(width, height, &fields.required("layers")?)?;
     Ok(SceneLayoutStateMessage {
         revision,
-        input,
+        scene,
+        name,
         layout: Box::new(layout),
     })
 }
@@ -1339,6 +1356,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         &fields.required("scenes")?,
         &inputs.iter().map(|input| input.input).collect::<Vec<_>>(),
     )?;
+    let layout_scenes = decode_layout_scenes(&fields.required("layout_scenes")?)?;
     let frame_rate = decode_frame_rate(fields.required("frame_rate")?)?;
     let playlist_follows = fields.boolean("playlist")?;
     let grade_states = {
@@ -1388,6 +1406,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         edit_history,
         titles,
         scenes,
+        layout_scenes,
         frame_rate,
         playlist_follows,
         grade_states,
@@ -1461,14 +1480,6 @@ fn decode_grade_layer(fields: &mut Fields) -> Result<WireSceneLayerId, CodecErro
     parse_grade_id("layer", &fields.required("layer")?).map(WireSceneLayerId::new)
 }
 
-/// Decodes the Scene inputs showing a graded layer's scene: nonempty,
-/// ascending, and unique.
-fn decode_grade_layer_inputs(fields: &mut Fields) -> Result<Vec<WireInputId>, CodecError> {
-    let inputs = parse_input_ids(&fields.required("inputs")?)?;
-    validate_animation_inputs(&inputs)?;
-    Ok(inputs)
-}
-
 /// Decodes the grade commands (Protocol 2.28; layer grades 2.33).
 fn decode_grade_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
     Ok(match name {
@@ -1481,12 +1492,12 @@ fn decode_grade_command(fields: &mut Fields, name: &str) -> Result<CommandPayloa
             source: None,
         },
         "grade_layer_set" => CommandPayload::SetLayerGrade {
-            input: fields.canonical_input("input")?,
+            scene: fields.canonical_scene("scene")?,
             layer: decode_grade_layer(fields)?,
             source: Some(decode_required_grade_source(fields)?),
         },
         "grade_layer_clear" => CommandPayload::SetLayerGrade {
-            input: fields.canonical_input("input")?,
+            scene: fields.canonical_scene("scene")?,
             layer: decode_grade_layer(fields)?,
             source: None,
         },
@@ -1551,7 +1562,7 @@ fn decode_grade_state(fields: &mut Fields) -> Result<GradeStateMessage, CodecErr
             source: decode_required_grade_source(fields)?,
         },
         "layer" => GradeEntry::Layer {
-            inputs: decode_grade_layer_inputs(fields)?,
+            scene: fields.canonical_scene("scene")?,
             layer: decode_grade_layer(fields)?,
             source: decode_required_grade_source(fields)?,
         },
@@ -1597,7 +1608,7 @@ fn decode_grade_change(fields: &mut Fields) -> Result<GradeChange, CodecError> {
             source: decode_grade_source(fields, true)?,
         },
         "layer" => GradeChange::Layer {
-            inputs: decode_grade_layer_inputs(fields)?,
+            scene: fields.canonical_scene("scene")?,
             layer: decode_grade_layer(fields)?,
             source: decode_grade_source(fields, true)?,
         },

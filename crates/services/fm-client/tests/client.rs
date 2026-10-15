@@ -182,6 +182,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         edit_history: fm_protocol::EditHistoryStatus::EMPTY,
         titles: Vec::new(),
         scenes: Vec::new(),
+        layout_scenes: Vec::new(),
         frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,
@@ -2246,16 +2247,21 @@ mod grading {
         );
     }
 
-    /// Protocol 2.33: a scene layer grade replicates under every Scene input
-    /// showing its scene, after the input grades; `grade_changed` keeps it
-    /// current, and a layer record before an input record is out of order.
+    fn scene(value: u128) -> fm_protocol::WireSceneId {
+        fm_protocol::WireSceneId::new(core::num::NonZeroU128::new(value).unwrap())
+    }
+
+    /// Protocol 2.35: a scene layer grade replicates by scene and layer,
+    /// after the input grades; `grade_changed` keeps it current, and a
+    /// layer record before an input record, or out of scene then layer
+    /// order, is out of contract.
     #[test]
-    fn scene_layer_grades_replicate_under_every_sharing_scene_input() {
+    fn scene_layer_grades_replicate_by_scene() {
         let layer = fm_protocol::WireSceneLayerId::new(id(7));
         let layer_state = |revision: u64| GradeStateMessage {
             revision,
             entry: GradeEntry::Layer {
-                inputs: vec![input(1), input(2)],
+                scene: scene(5),
                 layer,
                 source: WireGradeSource::Library(id(1)),
             },
@@ -2271,12 +2277,11 @@ mod grading {
         }
         assert_eq!(client.state(), &ConnectionState::Ready);
         let grading = client.model().state().unwrap().grading().clone();
-        for shown in [1, 2] {
-            assert_eq!(
-                grading.layer(input(shown).to_domain(), layer),
-                Some(&WireGradeSource::Library(id(1)))
-            );
-        }
+        assert_eq!(
+            grading.layer(scene(5).to_domain(), layer),
+            Some(&WireGradeSource::Library(id(1)))
+        );
+        assert_eq!(grading.layer(scene(6).to_domain(), layer), None);
         client
             .intake(WireMessage::Event(EventMessage {
                 edit_history: fm_protocol::EditHistoryStatus::EMPTY,
@@ -2285,7 +2290,7 @@ mod grading {
                     revision: 5,
                 },
                 payload: EventPayload::GradeChanged(GradeChange::Layer {
-                    inputs: vec![input(1), input(2)],
+                    scene: scene(5),
                     layer,
                     source: None,
                 }),
@@ -2293,8 +2298,8 @@ mod grading {
             .unwrap();
         assert!(client.model().state().unwrap().grading().layers.is_empty());
 
-        // A layer before the input grades, or naming an unknown input, is out
-        // of contract.
+        // A layer before the input grades, or after a later scene's layer, is
+        // out of contract.
         let mut client = synchronizing(4, 5);
         for state in states(4).into_iter().take(2) {
             client.intake(WireMessage::GradeState(state)).unwrap();
@@ -2303,27 +2308,35 @@ mod grading {
             .intake(WireMessage::GradeState(layer_state(4)))
             .unwrap();
         resyncs(&mut client, states(4).remove(2));
-        let mut client = synchronizing(4, 1);
-        resyncs(
-            &mut client,
-            GradeStateMessage {
-                revision: 4,
-                entry: GradeEntry::Layer {
-                    inputs: vec![input(9)],
-                    layer,
-                    source: WireGradeSource::Inline(warm()),
-                },
+        let mut client = synchronizing(4, 2);
+        let next_scene = GradeStateMessage {
+            revision: 4,
+            entry: GradeEntry::Layer {
+                scene: scene(6),
+                layer: fm_protocol::WireSceneLayerId::new(id(1)),
+                source: WireGradeSource::Inline(warm()),
             },
-        );
+        };
+        client.intake(WireMessage::GradeState(next_scene)).unwrap();
+        resyncs(&mut client, layer_state(4));
     }
 }
 
 /// Protocol 2.31 (GX-011 stage 5): a snapshot's Scene inputs complete with
-/// their `scene_animation_state` and then `scene_layout_state`, and
+/// their `scene_animation_state`, then every project scene (Protocol 2.35:
+/// shown or not) with its `scene_layout_state`, and
 /// `scene_animation_changed` keeps every Scene input showing the scene
 /// current.
 mod scene_animation {
     use super::*;
+
+    /// Inputs 1 and 2 both show scene 10; scene 11 is shown by none.
+    const SHOWN: u128 = 10;
+    const SPARE: u128 = 11;
+
+    fn scene(value: u128) -> fm_protocol::WireSceneId {
+        fm_protocol::WireSceneId::new(core::num::NonZeroU128::new(value).unwrap())
+    }
 
     fn layer(value: u32) -> fm_protocol::WireSceneLayerId {
         fm_protocol::WireSceneLayerId::new(core::num::NonZeroU32::new(value).unwrap())
@@ -2341,23 +2354,26 @@ mod scene_animation {
     fn scene_snapshot(revision: u64) -> SnapshotMessage {
         SnapshotMessage {
             scenes: vec![input(1), input(2)],
+            layout_scenes: vec![scene(SHOWN), scene(SPARE)],
             ..snapshot(revision)
         }
     }
 
-    fn animation(revision: u64, scene: u128) -> fm_protocol::SceneAnimationStateMessage {
+    fn animation(revision: u64, shown_by: u128) -> fm_protocol::SceneAnimationStateMessage {
         fm_protocol::SceneAnimationStateMessage {
             revision,
-            input: input(scene),
+            input: input(shown_by),
+            scene: scene(SHOWN),
             animation_revision: 0,
             clip: Box::new(clip(0)),
         }
     }
 
-    fn layout(revision: u64, scene: u128) -> fm_protocol::SceneLayoutStateMessage {
+    fn layout(revision: u64, id: u128) -> fm_protocol::SceneLayoutStateMessage {
         fm_protocol::SceneLayoutStateMessage {
             revision,
-            input: input(scene),
+            scene: scene(id),
+            name: format!("Scene {id}"),
             layout: Box::new(fm_protocol::WireSceneLayout {
                 width: 1_920,
                 height: 1_080,
@@ -2371,6 +2387,7 @@ mod scene_animation {
                     quarter_turns: 0,
                     opacity: 255,
                     enabled: true,
+                    source: fm_protocol::WireSceneLayerSource::Input(input(3)),
                 }],
             }),
         }
@@ -2401,7 +2418,7 @@ mod scene_animation {
         assert!(client.model().state().unwrap().scene_animations_complete());
         assert_eq!(
             client
-                .intake(WireMessage::SceneLayoutState(layout(4, 1)))
+                .intake(WireMessage::SceneLayoutState(layout(4, SHOWN)))
                 .unwrap(),
             Intake::SceneLayoutStateApplied
         );
@@ -2413,22 +2430,25 @@ mod scene_animation {
             }
         ));
         client
-            .intake(WireMessage::SceneLayoutState(layout(4, 2)))
+            .intake(WireMessage::SceneLayoutState(layout(4, SPARE)))
             .unwrap();
         assert_eq!(client.state(), &ConnectionState::Ready);
         let state = client.model().state().unwrap();
         assert!(state.scene_layouts_complete());
+        // Both Scene inputs share their scene's layout.
+        for shown_by in [1, 2] {
+            let shown = state.scene(input(shown_by).to_domain()).unwrap();
+            assert_eq!(shown.scene, Some(scene(SHOWN).to_domain()));
+            assert_eq!(shown.layout.as_ref().unwrap().layers[0].name, "Cam");
+        }
+        // The unshown scene is replicated by its id and name.
+        let spare = state.scene_layout(scene(SPARE).to_domain()).unwrap();
+        assert_eq!(spare.name, "Scene 11");
         assert_eq!(
-            state
-                .scene(input(1).to_domain())
-                .unwrap()
-                .layout
-                .as_ref()
-                .unwrap()
-                .layers[0]
-                .name,
-            "Cam"
+            spare.layout.as_ref().unwrap().layers[0].source,
+            fm_protocol::WireSceneLayerSource::Input(input(3))
         );
+        assert_eq!(state.scene_layouts().len(), 2);
 
         client
             .apply_event(EventMessage {
@@ -2476,12 +2496,39 @@ mod scene_animation {
 
     #[test]
     fn out_of_order_scene_states_force_a_fresh_snapshot() {
-        // A layout before its animation.
+        // A layout before every animation.
         let mut client = synchronizing_client();
         let error = client
-            .intake(WireMessage::SceneLayoutState(layout(4, 1)))
+            .intake(WireMessage::SceneLayoutState(layout(4, SHOWN)))
             .unwrap_err();
         assert!(matches!(error, ClientError::ResyncRequired { .. }));
+        let mut client = synchronizing_client();
+        client
+            .intake(WireMessage::SceneAnimationState(animation(4, 1)))
+            .unwrap();
+        let error = client
+            .intake(WireMessage::SceneLayoutState(layout(4, SPARE)))
+            .unwrap_err();
+        assert!(matches!(error, ClientError::ResyncRequired { .. }));
+
+        // A layout for a scene the snapshot did not announce, or twice.
+        for unannounced in [12, SHOWN] {
+            let mut client = synchronizing_client();
+            for shown_by in [1, 2] {
+                client
+                    .intake(WireMessage::SceneAnimationState(animation(4, shown_by)))
+                    .unwrap();
+            }
+            if unannounced == SHOWN {
+                client
+                    .intake(WireMessage::SceneLayoutState(layout(4, SHOWN)))
+                    .unwrap();
+            }
+            let error = client
+                .intake(WireMessage::SceneLayoutState(layout(4, unannounced)))
+                .unwrap_err();
+            assert!(matches!(error, ClientError::ResyncRequired { .. }));
+        }
 
         // A scene the snapshot did not announce.
         let mut client = synchronizing_client();

@@ -882,8 +882,9 @@ impl<A: AuthorizationHook> ControlService<A> {
     }
 
     /// Returns the `scene_layout_state` records a session writes after
-    /// [`Self::scene_animation_states`]: one per announced Scene input, in
-    /// the same order (Protocol 2.31).
+    /// [`Self::scene_animation_states`]: one per scene [`Self::snapshot`]
+    /// announces in its `layout_scenes` list, in the same order (Protocol
+    /// 2.31; every project scene since 2.35).
     #[must_use]
     pub fn scene_layout_states(&self) -> Vec<fm_protocol::SceneLayoutStateMessage> {
         scene_animation::scene_layout_states(&self.engine)
@@ -2542,6 +2543,7 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
             })
             .collect(),
         scenes: scene_animation::snapshot_scenes(engine),
+        layout_scenes: scene_animation::snapshot_layout_scenes(engine),
         frame_rate: engine.frame_rate(),
         playlist_follows: playlist::playlist_follows(engine),
         grade_states: grade::grade_state_count(engine),

@@ -360,6 +360,14 @@ fn viewer_session(address: SocketAddr) -> (Browser, ServerIdentity, Vec<String>,
         let WireMessage::Snapshot(snapshot) = receive(&mut socket) else {
             panic!("expected a snapshot");
         };
+        // Every project scene's layout follows (Protocol 2.35); the page
+        // ignores these records.
+        for _ in &snapshot.layout_scenes {
+            assert!(matches!(
+                receive(&mut socket),
+                WireMessage::SceneLayoutState(_)
+            ));
+        }
         return (socket, response.server, response.permissions, snapshot);
     }
 }
@@ -390,7 +398,16 @@ impl RawOperator {
             operator.receive(),
             WireMessage::HandshakeResponse(response) if response.granted_role == role
         ));
-        assert!(matches!(operator.receive(), WireMessage::Snapshot(_)));
+        let WireMessage::Snapshot(snapshot) = operator.receive() else {
+            panic!("expected a snapshot");
+        };
+        // Every project scene's layout follows (Protocol 2.35).
+        for _ in &snapshot.layout_scenes {
+            assert!(matches!(
+                operator.receive(),
+                WireMessage::SceneLayoutState(_)
+            ));
+        }
         operator
     }
 

@@ -81,7 +81,7 @@ impl fmt::Display for SceneRenderError {
             Self::Plan(error) => error.fmt(formatter),
             Self::Source(error) => error.fmt(formatter),
             Self::Cpu(error) => error.fmt(formatter),
-            Self::Grade(error) => write!(formatter, "program grade failed: {error}"),
+            Self::Grade(error) => write!(formatter, "grade failed: {error}"),
             Self::Scale(error) => error.fmt(formatter),
         }
     }
@@ -102,8 +102,10 @@ impl std::error::Error for SceneRenderError {}
 ///
 /// Each layer carries its input's grade and then its own scene layer grade
 /// (both applied by the compositor after the layer's effects and before its
-/// transform), and the program grade colours the composed picture before
-/// it is scaled.
+/// transform). `shown_by`, the Scene input showing the scene (`None` for a
+/// scene rendered by id), grades the composed scene with its input grade,
+/// and the program grade then colours the composed picture before it is
+/// scaled.
 ///
 /// `pose` is the point of the scene's animation drawn
 /// ([`fm_model::Scene::posed`] with the pipeline size as the canvas).
@@ -114,6 +116,7 @@ pub(crate) fn render_scene(
     pose: fm_model::fm_animation::ClipState,
     pipeline: &fm_sim::SimulatedPipeline,
     grades: &CompiledProjectGrades,
+    shown_by: Option<InputId>,
     frame_number: u64,
     width: u32,
     height: u32,
@@ -190,6 +193,9 @@ pub(crate) fn render_scene(
         .map(|(source, frame)| CpuSourceFrame::new(*source, frame))
         .collect::<Vec<_>>();
     let mut composed = execute_cpu(&plan, &bindings).map_err(SceneRenderError::Cpu)?;
+    if let Some(grade) = shown_by.and_then(|input| grades.input(input)) {
+        composed = apply_grade(&composed, grade).map_err(SceneRenderError::Grade)?;
+    }
     if let Some(grade) = grades.program() {
         composed = apply_grade(&composed, grade).map_err(SceneRenderError::Grade)?;
     }

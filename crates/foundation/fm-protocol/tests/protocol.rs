@@ -178,6 +178,7 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
         edit_history: EditHistoryStatus::EMPTY,
         titles: Vec::new(),
         scenes: Vec::new(),
+        layout_scenes: Vec::new(),
         frame_rate: fm_types::FrameRate::new(30_000, 1_001).unwrap(),
         playlist_follows: false,
         grade_states: 0,
@@ -2496,7 +2497,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.34\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.35\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2505,7 +2506,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.34\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.35\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -2715,7 +2716,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     );
     let encoded = encode_line(&message).unwrap();
     assert!(encoded.ends_with(
-        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\n"
+        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\n"
     ));
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -2723,7 +2724,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     let encoded_unlocked = encode_line(&unlocked).unwrap();
     assert!(
         encoded_unlocked
-            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\n")
+            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\n")
     );
     assert_eq!(decode_line(&encoded_unlocked).unwrap(), unlocked);
 
@@ -2830,7 +2831,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.34\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.35\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2840,7 +2841,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.34\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.35\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3018,7 +3019,7 @@ mod titles {
         WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.34\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.35\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3066,7 +3067,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 34));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 35));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3120,7 +3121,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.34\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.35\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3476,7 +3477,7 @@ mod titles {
         let message = scened(&[1, 3]);
         let encoded = encode_line(&message).unwrap();
         assert!(
-            encoded.contains("\ttitles=\tscenes=1%2C3\tframe_rate="),
+            encoded.contains("\ttitles=\tscenes=1%2C3\tlayout_scenes=\tframe_rate="),
             "{encoded}"
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3516,6 +3517,56 @@ mod titles {
         );
     }
 
+    /// Protocol 2.35: the snapshot's `layout_scenes` list names every
+    /// project scene strictly ascending, whether or not a Scene input shows
+    /// it.
+    #[test]
+    fn snapshot_layout_scene_lists_round_trip_and_are_strict() {
+        let scene = |value: u128| {
+            fm_protocol::WireSceneId::new(core::num::NonZeroU128::new(value).unwrap())
+        };
+        let listed = |scenes: &[u128]| {
+            let WireMessage::Snapshot(mut snapshot) = titled_snapshot(Vec::new()) else {
+                unreachable!("the helper builds a snapshot");
+            };
+            snapshot.layout_scenes = scenes.iter().map(|value| scene(*value)).collect();
+            WireMessage::Snapshot(snapshot)
+        };
+        let message = listed(&[2, 40]);
+        let encoded = encode_line(&message).unwrap();
+        assert!(
+            encoded.contains("\tscenes=\tlayout_scenes=2%2C40\tframe_rate="),
+            "{encoded}"
+        );
+        assert_eq!(decode_line(&encoded).unwrap(), message);
+        for scenes in [&[3, 1][..], &[2, 2]] {
+            assert!(matches!(
+                encode_line(&listed(scenes)),
+                Err(CodecError::InvalidField {
+                    field: "layout_scenes",
+                    ..
+                })
+            ));
+        }
+        let too_many = (1..=257).collect::<Vec<_>>();
+        assert!(encode_line(&listed(&too_many)).is_err());
+        for tampered in [
+            "layout_scenes=40%2C2",
+            "layout_scenes=2%2C2",
+            "layout_scenes=02",
+            "layout_scenes=0",
+            "layout_scenes=2%2C",
+        ] {
+            let line = encoded.replace("layout_scenes=2%2C40", tampered);
+            assert!(decode_line(&line).is_err(), "{tampered}");
+        }
+        let missing = encoded.replace("\tlayout_scenes=2%2C40", "");
+        assert_eq!(
+            decode_line(&missing),
+            Err(CodecError::MissingField("layout_scenes"))
+        );
+    }
+
     #[test]
     fn snapshot_title_summaries_round_trip_and_are_strict() {
         let message = titled_snapshot(vec![
@@ -3531,7 +3582,7 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\ttitles=2%3A0%2C3%3A17\tscenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\n"
+                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\n"
             ),
             "{encoded}"
         );
@@ -3853,7 +3904,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.34\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.35\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -3893,7 +3944,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 34));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 35));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -3965,7 +4016,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.34\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.35\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4264,7 +4315,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 34));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 35));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {

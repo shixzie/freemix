@@ -520,6 +520,9 @@ fn scene_bindings_design_from_layouts_and_save_scene_clips() {
         quarter_turns,
         opacity: 200,
         enabled,
+        source: fm_protocol::WireSceneLayerSource::Input(fm_protocol::WireInputId::new(
+            core::num::NonZeroU128::new(1).unwrap(),
+        )),
     };
     let design = SceneDesign::from_layout(&WireSceneLayout {
         width: 1_920,

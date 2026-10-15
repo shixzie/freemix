@@ -17,9 +17,9 @@ use core::time::Duration;
 use fm_grade::{Grade, LUT_URI_PREFIX};
 use fm_protocol::{
     CommandPayload, MAX_GRADE_LUT_IMPORT_BYTES, MAX_GRADE_NAME_BYTES, WireGradeSource, WireInputId,
-    WireSceneLayerId,
+    WireSceneId, WireSceneLayerId,
 };
-use fm_types::InputId;
+use fm_types::{InputId, SceneId};
 
 use super::document::{GradeDocument, GradeEditorError};
 use crate::GradingStatus;
@@ -31,11 +31,11 @@ pub const DRAG_SEND_INTERVAL: Duration = Duration::from_millis(120);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum GradeTarget {
     Input(InputId),
-    /// One layer of the scene Scene input `input` shows (Protocol 2.33).
-    /// The grade belongs to the scene: every Scene input showing it shares
-    /// it.
+    /// One layer of scene `scene` (Protocol 2.35), whether or not a Scene
+    /// input shows it. The grade belongs to the scene: every Scene input
+    /// showing it shares it.
     Layer {
-        input: InputId,
+        scene: SceneId,
         layer: WireSceneLayerId,
     },
     /// The composed Program picture.
@@ -47,7 +47,7 @@ pub enum GradeTarget {
 pub fn target_source(grading: &GradingStatus, target: GradeTarget) -> Option<&WireGradeSource> {
     match target {
         GradeTarget::Input(input) => grading.inputs.get(&input),
-        GradeTarget::Layer { input, layer } => grading.layer(input, layer),
+        GradeTarget::Layer { scene, layer } => grading.layer(scene, layer),
         GradeTarget::Program => grading.program.as_ref(),
     }
 }
@@ -221,10 +221,10 @@ impl GradeCommand {
                 source,
             },
             Self::Set {
-                target: GradeTarget::Layer { input, layer },
+                target: GradeTarget::Layer { scene, layer },
                 source,
             } => CommandPayload::SetLayerGrade {
-                input: WireInputId::from_domain(input),
+                scene: WireSceneId::from_domain(scene),
                 layer,
                 source,
             },
@@ -253,12 +253,12 @@ impl GradeCommand {
                 source,
             },
             CommandPayload::SetLayerGrade {
-                input,
+                scene,
                 layer,
                 source,
             } => Self::Set {
                 target: GradeTarget::Layer {
-                    input: input.to_domain(),
+                    scene: scene.to_domain(),
                     layer,
                 },
                 source,
@@ -580,9 +580,9 @@ mod tests {
                     grading.inputs.insert(input, source);
                 }
             }
-            GradeTarget::Layer { input, layer } => {
+            GradeTarget::Layer { scene, layer } => {
                 if let Some(source) = source {
-                    grading.layers.insert((input, layer), source);
+                    grading.layers.insert((scene, layer), source);
                 }
             }
             GradeTarget::Program => grading.program = source,

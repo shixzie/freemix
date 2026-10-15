@@ -496,3 +496,34 @@ fn scene_layer_grades_run_after_the_input_grade_and_follow_their_layer() {
     let listed = succeed(&["grade-list", path]);
     assert!(!listed.contains("scene 11 layer"), "{listed}");
 }
+
+/// SW-019: a Scene input's own grade colours the composed scene it shows on
+/// Program, after its layers' input and layer grades and before the program
+/// grade.
+#[test]
+fn scene_input_grades_colour_the_composed_scene_after_its_layers() {
+    let root = Root::new("scene-input");
+    let project = new_project(&root);
+    let path = project.to_str().unwrap();
+    succeed(&["scene-input-add", path, "3", "11", "Program"]);
+    succeed(&["scene-layer-add", path, "11", "2", "0", "Layer"]);
+    succeed(&["preview", path, "3"]);
+    succeed(&["cut", path]);
+    succeed(&["grade-set", path, "layer", "11", "1", "--exposure", "-1000"]);
+    succeed(&["grade-set", path, "3", "--preset", "warm"]);
+    let darker = Grade {
+        exposure_millistops: -1000,
+        ..Grade::IDENTITY
+    };
+    let warm = &builtin_preset("warm").unwrap().grade;
+    let scene = compiled(warm).apply_rgb8(compiled(&darker).apply_rgb8(INPUT_2));
+    assert_ne!(scene, compiled(&darker).apply_rgb8(INPUT_2));
+    assert_eq!(solid(&render(&project, &root.path("scene.ppm"))), scene);
+    // The program grade runs last.
+    succeed(&["grade-set", path, "program", "--preset", "cool"]);
+    let cool = &builtin_preset("cool").unwrap().grade;
+    assert_eq!(
+        solid(&render(&project, &root.path("program.ppm"))),
+        compiled(cool).apply_rgb8(scene)
+    );
+}

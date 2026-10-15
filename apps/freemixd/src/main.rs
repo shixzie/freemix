@@ -9395,11 +9395,16 @@ fn restore_engine_with_titles(
 
 /// Seeds every Scene input's scene (layers and animation) into the restored
 /// show, so scene animation edits and on-air phases are engine state
-/// (GX-011 stage 5). Every snapshot carries each scene's animation in a
+/// (GX-011 stage 5), and every other project scene, so its layer grades can
+/// be edited and every snapshot lays it out (SW-019, Protocol 2.35). Every
+/// snapshot carries each shown scene's animation in a
 /// `scene_animation_state` record, so a scene whose clip has no wire
 /// encoding fails closed rather than locking out every session.
 fn restore_scenes(show: &mut ShowState, project: &fm_model::Project) -> AppResult<()> {
     let dimensions = project.settings().video.dimensions;
+    for scene in project.scenes() {
+        show.set_scene(scene.clone(), dimensions.width(), dimensions.height());
+    }
     for input in project.inputs() {
         let fm_model::InputKind::Scene { scene_id, .. } = &input.kind else {
             continue;

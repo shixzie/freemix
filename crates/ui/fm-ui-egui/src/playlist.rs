@@ -2146,6 +2146,7 @@ mod tests {
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             titles: Vec::new(),
             scenes: Vec::new(),
+            layout_scenes: Vec::new(),
             frame_rate: rate(),
             playlist_follows: playlist.is_some(),
             grade_states: 0,
