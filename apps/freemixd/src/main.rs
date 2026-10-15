@@ -5596,12 +5596,18 @@ impl NativeDaemon {
     /// Releases the decoder of every closed media-file input and reopens
     /// it, with its engine transport, once the input reopens (IN-026). A
     /// paused input holds its frame: the engine stops moving its transport.
+    ///
+    /// Only reopening reopens the transport: a source a fault closed stays
+    /// closed (and its input offline) until the input is closed and
+    /// reopened, so later commands do not bring back a transport whose
+    /// worker no longer decodes.
     fn sync_input_lifecycle(&mut self, control: &mut ControlService<Policy>) -> AppResult<()> {
         for (input, source) in self.files.sources().to_vec() {
             let input = &input;
             let closed = control.input_lifecycle(*input).closed;
+            let reopened = self.files.is_closed(*input) && !closed;
             self.files.set_closed(*input, closed);
-            if !closed && !control.media_source_open(*input) {
+            if reopened && !control.media_source_open(*input) {
                 control
                     .set_media_source(*input, Some(source.clone()))
                     .map_err(|error| {

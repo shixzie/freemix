@@ -79,12 +79,19 @@ fn ffmpeg_available() -> bool {
 /// 256) as eight 40-pixel-wide black/white bit blocks, low bit left; audio
 /// track 1 (English, mono) and track 2 (Spanish, stereo) are 48 kHz PCM.
 fn generate_clip(path: &Path) {
-    let video = "color=c=black:s=320x180:r=25:d=4,format=gray,\
-                 geq=lum='if(mod(floor(N/pow(2\\,floor(X/40)))\\,2)\\,235\\,16)',\
-                 setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv";
+    generate_clip_sized(path, "320x180");
+}
+
+/// [`generate_clip`] at `size` (`<width>x<height>`).
+fn generate_clip_sized(path: &Path, size: &str) {
+    let video = format!(
+        "color=c=black:s={size}:r=25:d=4,format=gray,\
+         geq=lum='if(mod(floor(N/pow(2\\,floor(X/40)))\\,2)\\,235\\,16)',\
+         setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+    );
     let status = Command::new("ffmpeg")
         .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
-        .args(["-f", "lavfi", "-i", video])
+        .args(["-f", "lavfi", "-i", &video])
         .args([
             "-f",
             "lavfi",
@@ -611,6 +618,139 @@ fn native_daemon_plays_a_media_file_through_its_engine_transport() {
     assert!(seeked.transport.available, "{:?}", seeked.transport);
     assert_eq!(seeked.transport.fault, None);
     assert_eq!(seeked.transport.frames, 100);
+    drop(client);
+    drop(daemon);
+}
+
+/// Handshakes as an Admin Studio client and returns the snapshot.
+fn handshake(client: &mut Client) -> fm_protocol::SnapshotMessage {
+    client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "native-media-files-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Admin,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        client.receive(),
+        WireMessage::HandshakeResponse(_)
+    ));
+    let WireMessage::Snapshot(snapshot) = client.receive() else {
+        panic!("expected the snapshot");
+    };
+    snapshot
+}
+
+/// The clip's next `input_availability` runtime event.
+fn next_availability(client: &mut Client, what: &str) -> Option<fm_protocol::InputOfflineReason> {
+    client.wait_for(what, |_, message| {
+        let WireMessage::RuntimeEvent(event) = message else {
+            return None;
+        };
+        let RuntimeLifecycleEvent::InputAvailability { input, offline } = event.event else {
+            return None;
+        };
+        (input == clip()).then_some(offline)
+    })
+}
+
+/// IN-026: a closed media file reopens onto whatever the file now is. A file
+/// that no longer opens, or no longer matches the project's picture size,
+/// takes the input offline (the daemon keeps running), and it stays offline
+/// across later commands until it is closed and reopened onto a good file.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_reopened_media_file_that_no_longer_plays_stays_offline() {
+    if !ffmpeg_available() {
+        eprintln!("native media file integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-media-reopen.freemix");
+    save_project(&project_path);
+    let clip_path = ProjectStore::new(&project_path)
+        .unwrap()
+        .assets_root()
+        .join(CLIP);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native media file integration skipped: {error}");
+            return;
+        }
+    };
+    let mut client = Client::connect(daemon.address);
+    handshake(&mut client);
+    let close = |client: &mut Client, closed| {
+        client.accept(CommandPayload::InputLifecycle(
+            fm_protocol::InputLifecycleOperation::SetClosed {
+                input: clip(),
+                closed,
+            },
+        ));
+    };
+    client.accept(CommandPayload::Cut);
+    close(&mut client, true);
+    let mut closed = client.next_transport("the closed transport");
+    while closed.available {
+        closed = client.next_transport("the closed transport");
+    }
+
+    // The file disappears while the input is closed: reopening takes the
+    // input offline.
+    let parked = clip_path.with_extension("parked");
+    fs::rename(&clip_path, &parked).unwrap();
+    close(&mut client, false);
+    assert!(
+        next_availability(&mut client, "the missing file's fault").is_some(),
+        "a missing file takes the input offline"
+    );
+
+    // Unrelated commands do not bring it back.
+    for color in [Some(fm_protocol::InputColorLabel::Red), None] {
+        client.accept(CommandPayload::InputLifecycle(
+            fm_protocol::InputLifecycleOperation::SetColor {
+                input: clip(),
+                color,
+            },
+        ));
+    }
+    let quiet = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < quiet {
+        if let WireMessage::RuntimeEvent(event) = client.receive()
+            && let RuntimeLifecycleEvent::InputAvailability { input, offline } = event.event
+        {
+            assert!(
+                input != clip() || offline.is_some(),
+                "the missing file came back online"
+            );
+        }
+    }
+
+    // A file of another picture size takes the input offline instead of
+    // failing the daemon.
+    close(&mut client, true);
+    generate_clip_sized(&clip_path, "160x90");
+    close(&mut client, false);
+    // The reopened transport ticks (online) before its first picture
+    // arrives.
+    while next_availability(&mut client, "the mismatched file's fault").is_none() {}
+
+    // The original file back: reopening plays it again.
+    close(&mut client, true);
+    fs::rename(&parked, &clip_path).unwrap();
+    close(&mut client, false);
+    let seeked = client.media(MediaOperation::Seek(MediaSeekTarget::Frame(10)));
+    assert!(seeked.transport.available, "{:?}", seeked.transport);
+    assert_eq!(seeked.transport.fault, None);
+    assert_eq!(
+        next_availability(&mut client, "the input back online"),
+        None
+    );
     drop(client);
     drop(daemon);
 }

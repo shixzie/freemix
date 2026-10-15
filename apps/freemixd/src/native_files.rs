@@ -298,6 +298,7 @@ impl NativeMediaFiles {
                         growing,
                         rate,
                         clock_domain,
+                        dimensions,
                     );
                 })
                 .map_err(|error| format!("native media input {input} worker: {error}"))?;
@@ -438,6 +439,11 @@ impl NativeMediaFiles {
         true
     }
 
+    /// Whether media-file input `input`'s worker is closed (IN-026).
+    pub(crate) fn is_closed(&self, input: InputId) -> bool {
+        self.workers.get(&input).is_some_and(|worker| worker.closed)
+    }
+
     /// Takes every worker's reports for the engine, in input order.
     pub(crate) fn take_reports(&self) -> Vec<(InputId, FileReport)> {
         let mut reports = Vec::new();
@@ -500,6 +506,9 @@ fn follow_growing_source(
     }
 }
 
+/// Runs one input's worker. A picture that is not `dimensions` (a file
+/// reopened after it changed on disk) faults the input as unsupported
+/// instead of reaching the source registry, which would fail the session.
 #[allow(clippy::too_many_lines)] // one worker loop: close, reopen, present
 fn run_worker(
     shared: &Shared,
@@ -508,6 +517,7 @@ fn run_worker(
     growing: bool,
     rate: FrameRate,
     clock_domain: ClockDomainId,
+    dimensions: (u32, u32),
 ) {
     let second = Duration::from_secs(1);
     let mut next_refresh = Instant::now() + second;
@@ -607,6 +617,16 @@ fn run_worker(
                 (None, None)
             } else {
                 match player.present(request.tick.clone()) {
+                    Ok(output)
+                        if output.video.as_ref().is_some_and(|picture| {
+                            let size = picture.payload().dimensions();
+                            (size.width(), size.height()) != dimensions
+                        }) =>
+                    {
+                        faulted = true;
+                        reports.push(FileReport::Fault(EngineMediaFault::Unsupported));
+                        (None, None)
+                    }
                     Ok(output) => {
                         let fresh = output.video.filter(|picture| {
                             last_picture
