@@ -396,6 +396,73 @@ fn an_echo_mid_gesture_never_snaps_the_draft_back() {
 }
 
 #[test]
+fn an_echo_of_an_earlier_send_after_release_never_snaps_the_draft_back() {
+    let layout = layout();
+    let mut document = SceneLayoutDocument::new(scene(), &layout);
+    document.select(layer_id(3), false);
+    document.begin(EditLabel::Field(Field::X));
+    document.set_field(Field::X, 150.0);
+    assert_eq!(document.take_live_edits().len(), 1);
+    document.set_field(Field::X, 180.0);
+    assert!(document.commit());
+    // The release sends the final value...
+    assert_eq!(document.take_live_edits().len(), 1);
+    // ...before the echo of the first send arrives: the draft keeps the
+    // value still in flight instead of jumping back to 150.
+    let mut first = layout.clone();
+    first.layers[2].x = 150;
+    document.rebase(&first);
+    assert_eq!(document.layer(layer_id(3)).unwrap().placement.x, 180);
+    // A nudge now starts from what was sent, not from the stale echo.
+    assert!(document.nudge(1, 0));
+    let nudged = document.take_live_edits();
+    assert_eq!(nudged.len(), 1);
+    let SceneLayerOperation::SetGeometry(geometry) = nudged[0].operation else {
+        panic!("a nudge sends geometry: {:?}", nudged[0].operation);
+    };
+    assert_eq!(geometry.x, 181);
+    // The echoes of the later sends settle the draft on the server's layout.
+    let mut last = layout.clone();
+    last.layers[2].x = 180;
+    document.rebase(&last);
+    assert_eq!(document.layer(layer_id(3)).unwrap().placement.x, 181);
+    last.layers[2].x = 181;
+    document.rebase(&last);
+    assert!(!document.is_dirty());
+    assert_eq!(document.layer(layer_id(3)).unwrap().placement.x, 181);
+    // With nothing in flight another editor's change is taken at once.
+    let mut other = last.clone();
+    other.layers[0].opacity = 7;
+    document.rebase(&other);
+    assert_eq!(document.layer(layer_id(1)).unwrap().opacity, 7);
+    assert!(!document.is_dirty());
+}
+
+#[test]
+fn echoes_of_live_edits_never_flag_the_server_layout_as_changed_under_the_draft() {
+    let layout = layout();
+    let mut document = SceneLayoutDocument::new(scene(), &layout);
+    document.select(layer_id(3), false);
+    document.begin(EditLabel::Field(Field::X));
+    document.set_field(Field::X, 150.0);
+    assert_eq!(document.take_live_edits().len(), 1);
+    // Between paced sends the scrub has moved on when its own echo lands.
+    document.set_field(Field::X, 180.0);
+    let mut first = layout.clone();
+    first.layers[2].x = 150;
+    document.rebase(&first);
+    assert!(!document.base_changed());
+    assert!(document.commit());
+    assert_eq!(document.take_live_edits().len(), 1);
+    // The last send is refused: no echo, so the draft settles on the
+    // server's layout and nothing stays flagged.
+    document.settle();
+    assert_eq!(document.layer(layer_id(3)).unwrap().placement.x, 150);
+    assert!(!document.base_changed());
+    assert!(!document.is_dirty());
+}
+
+#[test]
 fn free_rotation_turns_about_the_anchor_and_moving_the_anchor_keeps_the_layer_put() {
     let mut document = SceneLayoutDocument::new(scene(), &layout());
     document.select(layer_id(2), false);

@@ -131,8 +131,12 @@ struct NativeScenePlan {
     id: SceneId,
     output: SourceId,
     composition: CompositionPlan,
-    /// The scene as authored, posed per frame while it animates.
+    /// The scene as drawn, posed per frame while it animates: the
+    /// followed model with every layer whose source the plan does not draw
+    /// disabled.
     model: Arc<fm_model::Scene>,
+    /// The scene as authored (the engine's model the plan last followed).
+    followed: Arc<fm_model::Scene>,
     /// Each layer's source token, in scene order.
     layer_tokens: Vec<SourceId>,
     /// Every Scene input showing this scene, ascending.
@@ -687,6 +691,7 @@ impl NativeProjectPlan {
                 output,
                 composition,
                 model: Arc::new((*model).clone()),
+                followed: Arc::new((*model).clone()),
                 layer_tokens,
                 inputs: video_routes
                     .iter()
@@ -865,11 +870,12 @@ impl NativeProjectPlan {
     }
 
     /// Follows live scene layer and animation edits (SW-006): every scene
-    /// whose `current` model differs from the planned one is recompiled
+    /// whose `current` model differs from the followed one is recompiled
     /// with it, its layers bound to the scene's planned source tokens.
-    /// A scene that now draws a source it was not planned with (a layer
-    /// added with a new source) keeps its plan until the next start.
-    /// Returns whether any scene changed.
+    /// A layer drawing a source the scene was not planned with (a layer
+    /// added or enabled with a new source) stays undrawn until the next
+    /// start; the rest of the scene follows. Returns whether any scene
+    /// changed.
     pub fn refresh_scene_models(
         &mut self,
         current: impl Fn(SceneId) -> Option<Arc<fm_model::Scene>>,
@@ -882,7 +888,7 @@ impl NativeProjectPlan {
             let Some(model) = current(plan.id) else {
                 continue;
             };
-            if Arc::ptr_eq(&model, &plan.model) || *model == *plan.model {
+            if Arc::ptr_eq(&model, &plan.followed) || *model == *plan.followed {
                 continue;
             }
             let token_of = |source: NativeSceneSource| {
@@ -910,13 +916,27 @@ impl NativeProjectPlan {
                     };
                     token_of(source)
                 })
-                .collect::<Option<Vec<_>>>();
-            let Some(tokens) = tokens else {
-                continue;
+                .collect::<Vec<_>>();
+            // A layer without a planned source is drawn disabled, never
+            // with another source's token.
+            let drawn = if tokens.iter().all(Option::is_some) {
+                Arc::clone(&model)
+            } else {
+                let mut drawn = (*model).clone();
+                for (layer, token) in drawn.layers.iter_mut().zip(&tokens) {
+                    if token.is_none() {
+                        layer.enabled = false;
+                    }
+                }
+                Arc::new(drawn)
             };
+            let tokens: Vec<SourceId> = tokens
+                .into_iter()
+                .map(|token| token.unwrap_or(SourceId::new(0)))
+                .collect();
             let Ok(composition) = native_scene_composition(
                 plan.id,
-                &resolved_scene(&model),
+                &resolved_scene(&drawn),
                 &tokens,
                 width,
                 height,
@@ -928,7 +948,8 @@ impl NativeProjectPlan {
                 continue;
             };
             let plan = &mut self.scenes[index];
-            plan.model = model;
+            plan.model = drawn;
+            plan.followed = model;
             plan.layer_tokens = tokens;
             plan.composition = composition;
             changed = true;
@@ -9026,6 +9047,85 @@ mod tests {
             },
         );
         assert!(matches!(composition, std::borrow::Cow::Borrowed(_)));
+    }
+
+    /// SW-006: a live edit adding a layer whose source the plan never
+    /// planned leaves that layer undrawn until the next start, but every
+    /// other layer of the scene still follows the live edits.
+    #[test]
+    fn refreshed_scene_models_hide_unplanned_sources_and_keep_following_edits() {
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, input(1));
+        add_leaf(&mut project, input(5));
+        add_scene_input(&mut project, input(2), scene(10), None);
+        add_scene(
+            &mut project,
+            scene(10),
+            vec![layer(SourceRef::Input(input(1)), 0)],
+        );
+        let mut plan =
+            NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let mut model = project.scene(scene(10)).unwrap().clone();
+        // An added layer drawing input 5, which the plan does not draw, and
+        // the planned layer moved.
+        let mut added = layer(SourceRef::Input(input(5)), 1);
+        added.geometry = LayerGeometry::new(1, 1, 2, 1, Rotation::Deg0);
+        model.layers.push(added);
+        model.layers[0].geometry = LayerGeometry::new(1, 0, 3, 2, Rotation::Deg0);
+        let current = Arc::new(model);
+        assert!(plan.refresh_scene_models(|_| Some(Arc::clone(&current))));
+        let planned = plan
+            .scenes
+            .iter()
+            .find(|candidate| candidate.id == scene(10))
+            .unwrap();
+        let layers = planned.composition.layers();
+        assert_eq!(layers.len(), 1, "the unplanned source is not drawn");
+        assert_eq!(
+            layers[0].transform(),
+            Transform::new(1, 0, 3, 2, CompositorRotation::Deg0)
+        );
+        // A posed or graded frame recompiles from the drawn model, never
+        // drawing the unplanned layer with another source's token.
+        let frame = frame_result(0, input(2), None);
+        let composition = planned.frame_composition(
+            &frame,
+            4,
+            2,
+            NativeSceneGrades {
+                layers: &BTreeMap::from([(
+                    SceneLayerRef::new(scene(10), current.layers[0].id),
+                    Arc::new(
+                        fm_grade::CompiledGrade::new(
+                            &fm_grade::Grade {
+                                exposure_millistops: 100,
+                                ..fm_grade::Grade::IDENTITY
+                            },
+                            None,
+                        )
+                        .unwrap(),
+                    ),
+                )]),
+                scene_inputs: &BTreeMap::new(),
+            },
+        );
+        assert_eq!(composition.layers().len(), 1);
+        // The same engine model again changes nothing.
+        assert!(!plan.refresh_scene_models(|_| Some(Arc::clone(&current))));
+        // A later edit of the planned layer is followed.
+        let mut moved = (*current).clone();
+        moved.layers[0].geometry = LayerGeometry::new(0, 1, 2, 1, Rotation::Deg0);
+        let moved = Arc::new(moved);
+        assert!(plan.refresh_scene_models(|_| Some(Arc::clone(&moved))));
+        let planned = plan
+            .scenes
+            .iter()
+            .find(|candidate| candidate.id == scene(10))
+            .unwrap();
+        assert_eq!(
+            planned.composition.layers()[0].transform(),
+            Transform::new(0, 1, 2, 1, CompositorRotation::Deg0)
+        );
     }
 
     #[test]

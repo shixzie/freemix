@@ -140,6 +140,9 @@ pub struct SceneLayoutDocument {
     /// The layer properties the open gesture has sent, so later sends
     /// continue its undo step.
     live_keys: BTreeSet<(WireSceneLayerId, LiveProperty)>,
+    /// Whether live edits were sent whose echo has not arrived yet (the
+    /// server's layout has not matched [`Self::sent`] since).
+    in_flight: bool,
 }
 
 /// A layer property one live edit sets.
@@ -379,13 +382,17 @@ impl SceneLayoutDocument {
             gesture: None,
             base_changed: false,
             live_keys: BTreeSet::new(),
+            in_flight: false,
         }
     }
 
     /// Follows a newly replicated layout. A draft holding nothing unsent
     /// (every change sent live, or none made) with no edit open takes it
-    /// as is; an open edit keeps leading; unsent offline edits are kept
-    /// and flag [`Self::base_changed`].
+    /// as is, unless live edits are still in flight and the layout is not
+    /// yet what they set (an echo of an earlier send: the draft keeps
+    /// leading until the echo of the last arrives, or [`Self::settle`]);
+    /// an open edit keeps leading; unsent offline edits are kept and flag
+    /// [`Self::base_changed`].
     pub fn rebase(&mut self, layout: &WireSceneLayout) {
         let base = layers_of(layout);
         let canvas = (layout.width.max(1), layout.height.max(1));
@@ -396,13 +403,18 @@ impl SceneLayoutDocument {
         let idle = self.gesture.is_none() && self.transaction.is_none();
         self.base = base;
         self.canvas = canvas;
-        if settled && idle {
+        if self.base == self.sent {
+            self.in_flight = false;
+        }
+        if settled && idle && !self.in_flight {
             self.layers = self.base.clone();
             self.sent = self.base.clone();
             self.undo.clear();
             self.redo.clear();
             self.base_changed = false;
-        } else if !settled {
+        } else if !settled && !self.in_flight && self.base != self.sent {
+            // Not the echo of this draft's sends (those in flight, or all
+            // of them landed): another editor changed the layout.
             self.base_changed = true;
         }
         self.retain_selection();
@@ -414,6 +426,8 @@ impl SceneLayoutDocument {
         if self.gesture.is_none() && self.transaction.is_none() && self.layers == self.sent {
             self.layers = self.base.clone();
             self.sent = self.base.clone();
+            self.in_flight = false;
+            self.base_changed = false;
             self.retain_selection();
         }
     }
@@ -428,6 +442,7 @@ impl SceneLayoutDocument {
         self.gesture = None;
         self.base_changed = false;
         self.live_keys.clear();
+        self.in_flight = false;
         self.retain_selection();
     }
 
@@ -446,6 +461,7 @@ impl SceneLayoutDocument {
         }
         let operations = live_operations(self.canvas, &self.sent, &self.layers);
         self.sent = self.layers.clone();
+        self.in_flight |= !operations.is_empty();
         operations
             .into_iter()
             .map(|(layer, property, operation)| {
