@@ -4,7 +4,7 @@ use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
 use fm_control::RequiredClasses;
 use fm_protocol::{
     CommandMessage, DiagnosticsRequest, EngineIdentity, EventCursor, ProtocolVersion,
-    TitlePreviewRequest,
+    ScenePreviewRequest, TitlePreviewRequest,
 };
 
 use crate::{RateLimit, SessionLimits};
@@ -265,13 +265,40 @@ impl Session {
         encoded_bytes: usize,
         now_ms: u64,
     ) -> Result<(), SessionError> {
+        self.admit_preview(request.protocol, encoded_bytes, now_ms)
+    }
+
+    /// Authorizes and accounts for one exact scene preview request
+    /// (Protocol 2.32), exactly like [`Self::admit_title_preview`]: it needs
+    /// [`CommandClass::EditProject`] and shares the
+    /// [`SessionLimits::title_previews`] rate with title previews.
+    ///
+    /// # Errors
+    ///
+    /// Returns a session, authorization, protocol, size, or rate error when
+    /// the preview cannot be admitted.
+    pub fn admit_scene_preview(
+        &mut self,
+        request: &ScenePreviewRequest,
+        encoded_bytes: usize,
+        now_ms: u64,
+    ) -> Result<(), SessionError> {
+        self.admit_preview(request.protocol, encoded_bytes, now_ms)
+    }
+
+    fn admit_preview(
+        &mut self,
+        protocol: ProtocolVersion,
+        encoded_bytes: usize,
+        now_ms: u64,
+    ) -> Result<(), SessionError> {
         self.ensure_connected()?;
         self.policy
             .authorize(&self.principal, CommandClass::EditProject)?;
-        if request.protocol != self.protocol {
+        if protocol != self.protocol {
             return Err(SessionError::ProtocolMismatch {
                 expected: self.protocol,
-                received: request.protocol,
+                received: protocol,
             });
         }
         if encoded_bytes > self.limits.max_command_bytes {

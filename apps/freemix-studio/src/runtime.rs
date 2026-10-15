@@ -3,7 +3,9 @@ use std::{env, error::Error, fmt, net::SocketAddr, time::Duration};
 use fm_client::{
     Client, ConnectionState, ReconnectBackoff, SessionEvent, TcpSession, TcpSessionError,
 };
-use fm_protocol::{CommandMessage, CommandPayload, HeartbeatMessage, TitlePreviewRequest};
+use fm_protocol::{
+    CommandMessage, CommandPayload, HeartbeatMessage, ScenePreviewRequest, TitlePreviewRequest,
+};
 use fm_ui_egui::{TitleAnimationRefusal, TitleUpdate};
 
 use crate::titles::TitleRelay;
@@ -186,6 +188,18 @@ impl StudioRuntime {
         let sent = self.transport == ControlTransport::Tcp
             && self.session.is_connected()
             && self.session.send_title_preview(request).is_ok();
+        if !sent {
+            self.preview_failed = Some(request_id);
+        }
+    }
+
+    /// Sends one exact scene preview request (Protocol 2.32), failing it
+    /// for the UI like [`Self::send_title_preview`] when it cannot go out.
+    pub(crate) fn send_scene_preview(&mut self, request: ScenePreviewRequest) {
+        let request_id = request.request_id.clone();
+        let sent = self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self.session.send_scene_preview(request).is_ok();
         if !sent {
             self.preview_failed = Some(request_id);
         }

@@ -16,17 +16,21 @@
 //! * `ScaleX`/`ScaleY` (basis points) scale the layer's box
 //!   (`geometry.width`/`height`, before its quarter-turn rotation) about the
 //!   centre of its on-screen footprint.
-//! * `Rotation` (millidegrees, clockwise) is added to the static quarter
-//!   turn and realized at the nearest quarter turn (half up): the compositor
-//!   transform supports quarter turns only, so a rotation key between quarter
-//!   turns snaps rather than drawing a tilted layer. The footprint turns
-//!   about its centre.
+//! * `Rotation` (millidegrees, clockwise) turns the layer about the centre of
+//!   its scaled footprint by any angle. It is split into the nearest quarter
+//!   turn (half up), added to the static quarter turn, and a remaining tilt
+//!   in `-45_000..45_000` millidegrees ([`LayerGeometry::tilt_millidegrees`])
+//!   that the compositor draws bilinearly about the footprint centre. A
+//!   multiple of 90 degrees has no tilt, so it stays pixel-exact.
 //! * `PositionX`/`PositionY` add pixels to the footprint's top-left corner.
 //! * `CropLeft`/`Top`/`Right`/`Bottom` hide that many pixels of the scaled
 //!   box from each of its edges (in the layer's own frame, before rotation);
 //!   the source region shrinks in proportion (rounded down at each edge), so
 //!   the remaining picture does not stretch. A mask follows the cropped
-//!   source and is clipped to it.
+//!   source and is clipped to it. A tilted, cropped box still turns about
+//!   the uncropped footprint's centre: its translation moves by the turned
+//!   offset between the two centres (Q30 sine and cosine from
+//!   [`fm_animation::sin_cos_q30`], rounded once, half up).
 //! * `Opacity` (`0..=255`) multiplies into the static opacity.
 //!
 //! A layer scaled to nothing, cropped away, or whose mask no longer covers
@@ -438,6 +442,47 @@ fn to_i32(value: i128) -> i32 {
     i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
 }
 
+/// How far a box whose centre sits `(dx2, dy2)` half pixels from the pivot
+/// moves when turned `tilt` millidegrees clockwise about the pivot:
+/// `R(d) - d`, halved and rounded once, half up.
+fn tilt_shift(tilt: i128, dx2: i128, dy2: i128) -> (i128, i128) {
+    if tilt == 0 || (dx2 == 0 && dy2 == 0) {
+        return (0, 0);
+    }
+    let (sin, cos) = fm_animation::sin_cos_q30(i64::try_from(tilt).unwrap_or_default());
+    let (sin, cos) = (i128::from(sin), i128::from(cos));
+    let one = i128::from(fm_animation::TRIG_ONE);
+    let turned_x = cos * dx2 - sin * dy2;
+    let turned_y = sin * dx2 + cos * dy2;
+    (
+        round_half_up(turned_x - dx2 * one, 2 * one),
+        round_half_up(turned_y - dy2 * one, 2 * one),
+    )
+}
+
+/// The static quarter turn plus the animated turn `rotation`
+/// (millidegrees): the nearest quarter turn (half up) joins the static one,
+/// and the tilt left over, in `-45_000..45_000`, is returned beside it.
+fn split_rotation(base: Rotation, rotation: i64) -> (Rotation, i128) {
+    let turns = round_half_up(i128::from(rotation), 90_000);
+    let tilt = i128::from(rotation) - turns * 90_000;
+    let turned = rotation_from_index(
+        rotation_index(base) + i64::try_from(turns.rem_euclid(4)).unwrap_or_default(),
+    );
+    (turned, tilt)
+}
+
+/// Where a box cropped by `[left, top, right, bottom]` (in its own frame)
+/// starts inside its uncropped footprint under `rotation`.
+const fn crop_offset(rotation: Rotation, [left, top, right, bottom]: [i128; 4]) -> (i128, i128) {
+    match rotation {
+        Rotation::Deg0 => (left, top),
+        Rotation::Deg90 => (bottom, left),
+        Rotation::Deg180 => (right, bottom),
+        Rotation::Deg270 => (top, right),
+    }
+}
+
 /// `layer` (enabled) as drawn at `state` of `clip`, with its source
 /// `source_width` x `source_height` (see the module documentation). A layer
 /// the pose hides comes back disabled.
@@ -490,12 +535,7 @@ pub fn apply_pose(layer: &Layer, pose: LayerPose, source_width: u32, source_heig
     if box_width <= 0 || box_height <= 0 {
         return hidden(posed);
     }
-    // The quarter turn realized: static plus the animated offset at the
-    // nearest quarter turn, half up.
-    let turns = round_half_up(i128::from(pose.rotation), 90_000);
-    let rotation = rotation_from_index(
-        rotation_index(geometry.rotation) + i64::try_from(turns.rem_euclid(4)).unwrap_or_default(),
-    );
+    let (rotation, tilt) = split_rotation(geometry.rotation, pose.rotation);
     // Centre of the static footprint, doubled to stay integral.
     let (static_width, static_height) =
         footprint(geometry.width, geometry.height, geometry.rotation);
@@ -504,20 +544,23 @@ pub fn apply_pose(layer: &Layer, pose: LayerPose, source_width: u32, source_heig
     let (scaled_fw, scaled_fh) = footprint(width, height, rotation);
     let origin_x = (center_x2 - i128::from(scaled_fw)).div_euclid(2) + i128::from(pose.dx);
     let origin_y = (center_y2 - i128::from(scaled_fh)).div_euclid(2) + i128::from(pose.dy);
-    // Where the cropped box's footprint starts inside the scaled footprint.
-    let (offset_x, offset_y) = match rotation {
-        Rotation::Deg0 => (left, top),
-        Rotation::Deg90 => (bottom, left),
-        Rotation::Deg180 => (right, bottom),
-        Rotation::Deg270 => (top, right),
-    };
+    let (offset_x, offset_y) = crop_offset(rotation, [left, top, right, bottom]);
+    // A cropped box turns about the uncropped footprint's centre: move it by
+    // the turned offset between the centres (doubled to stay integral).
+    let (box_fw, box_fh) = footprint(to_u32(box_width), to_u32(box_height), rotation);
+    let (shift_x, shift_y) = tilt_shift(
+        tilt,
+        2 * offset_x + i128::from(box_fw) - i128::from(scaled_fw),
+        2 * offset_y + i128::from(box_fh) - i128::from(scaled_fh),
+    );
     posed.geometry = LayerGeometry::new(
-        to_i32(origin_x + offset_x),
-        to_i32(origin_y + offset_y),
+        to_i32(origin_x + offset_x + shift_x),
+        to_i32(origin_y + offset_y + shift_y),
         to_u32(box_width),
         to_u32(box_height),
         rotation,
-    );
+    )
+    .with_tilt(to_i32(tilt));
     let opacity =
         Property::Opacity.layer_scalar(i64::from(layer.opacity), Value::Scalar(pose.opacity));
     posed.opacity = u8::try_from(opacity.clamp(0, 255)).unwrap_or(u8::MAX);

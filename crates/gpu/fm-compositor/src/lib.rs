@@ -12,6 +12,7 @@ mod native;
 #[cfg(feature = "native-wgpu")]
 mod native_grade;
 mod plan;
+mod rotate;
 mod safe_area;
 mod scene;
 mod stinger;

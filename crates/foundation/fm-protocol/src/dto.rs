@@ -968,6 +968,32 @@ pub struct TitlePreviewFrameMessage {
     pub data: Vec<u8>,
 }
 
+/// A read-only request to render one Scene input exactly as the authority
+/// composes it (Protocol 2.32): its layers posed at `sample` of the scene's
+/// animation, composed at `width` x `height`. `clip`, when present, is an
+/// unsaved draft rendered instead of the scene's animation. Like a title
+/// preview it is not a command, needs `EditProject`, shares the session's
+/// preview rate, and is served to raw TCP sessions only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScenePreviewRequest {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub input: WireInputId,
+    pub sample: TitlePreviewSample,
+    pub width: u16,
+    pub height: u16,
+    pub clip: Option<Box<WireSceneClip>>,
+}
+
+/// One part of the answer to a [`ScenePreviewRequest`] (Protocol 2.32):
+/// exactly a [`TitlePreviewFrameMessage`]'s fields under the record kind
+/// `scene_preview_frame`, `animation_revision` being the scene's.
+pub type ScenePreviewFrameMessage = TitlePreviewFrameMessage;
+
+/// One fully assembled and decoded scene preview: a [`TitlePreviewImage`]
+/// whose `input` is the Scene input.
+pub type ScenePreviewImage = TitlePreviewImage;
+
 /// One fully assembled and decoded title preview.
 ///
 /// `rgba` holds exactly `width * height` straight RGBA8 pixels, row-major
@@ -2126,4 +2152,6 @@ pub enum WireMessage {
     SceneLayoutState(SceneLayoutStateMessage),
     TitlePreviewRequest(TitlePreviewRequest),
     TitlePreviewFrame(TitlePreviewFrameMessage),
+    ScenePreviewRequest(ScenePreviewRequest),
+    ScenePreviewFrame(ScenePreviewFrameMessage),
 }

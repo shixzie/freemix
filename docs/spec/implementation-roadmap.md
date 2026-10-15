@@ -2152,8 +2152,16 @@ same model and editor: project schema 32 gives every scene layer a stable
 scale, rotation, crop, and opacity; colour is refused), validated against
 the scene's layers and stored in `project.json`. `Scene::posed` samples it
 with integer arithmetic (scale about the footprint centre, crop with the
-source cropped in proportion, opacity multiplied, rotation realized at the
-nearest quarter turn because the compositor has no arbitrary rotation).
+source cropped in proportion, opacity multiplied, rotation at any angle:
+the nearest quarter turn is the layer transform and the residual tilt within
+±45° is drawn about the layer centre, a cropped box turning about its
+uncropped footprint's centre; the stored layer rotation stays whole quarter
+turns). `fm-compositor` draws a tilted layer (`SourceLayer::
+with_rotation_millidegrees`, positive clockwise) exactly on the CPU with Q30
+fixed-point trigonometry shared with `fm-titles` (`fm_animation::
+sin_cos_q30`) and bilinear premultiplied sampling, and in the native GPU
+composition pass by the same inverse mapping and Q8 bilinear weights
+(GPU-vs-CPU parity within 2/255 per channel on lavapipe/llvmpipe).
 The engine plays a scene's In phase when its Scene input reaches Program or
 Preview, holds, and plays Out while a timed or manual transition takes it
 off Program (a cut plays no Out; nested, multiview, and overlay scenes
@@ -2165,17 +2173,28 @@ Protocol 2.31 adds the snapshot `scenes` list, revision-checked
 `scene_animation_stretch` (undoable `EditProject` edits, 36 KiB clip bound),
 `scene_animation_changed`, and the follow-on `scene_animation_state` and
 `scene_layout_state` records (canvas and per layer id, name, footprint,
-quarter turns, opacity, enabled). Scene previews are proxy-only: the
-Animation window's target picker lists titles and scenes, lists each
-scene's layers by name, applies presets, and draws posed layer outlines
-over the canvas without an exact server render. `freemix-cli
-scene-animation-preset`, `scene-animation-stretch`, and
+quarter turns, opacity, enabled). The Animation window's target picker
+lists titles and scenes, lists each scene's layers by name, applies
+presets, and draws posed layer outlines. Protocol 2.32 adds the exact scene
+preview: `scene_preview_request` (a title preview's fields with an optional
+draft scene clip; `EditProject`, the shared per-session preview rate, raw
+TCP only) is composed off the session loop by the title preview worker with
+the CPU reference compositor at the requested size from the project's
+simulated sources and answered as QOI `scene_preview_frame` parts through
+the same latest-wins lossy slot; a scene the reference compositor cannot
+compose exactly (nested scenes, non-simulated sources) is refused with
+`render_failed`. `fm-client` assembles scene previews and Studio's
+Animation window shows them under the layer outlines like a title's.
+`freemix-cli scene-animation-preset`, `scene-animation-stretch`, and
 `scene-render-frame --phase in|hold|out` author and render scene
-animations locally. Remaining gaps: titles without a loaded template still
+animations locally, and local scene and title animation edits refuse a clip
+without a wire encoding (beyond the 36 KiB bound `fm-control` enforces)
+instead of saving it. Remaining gaps: titles without a loaded template still
 list only elements that already move and apply their presets on the
-server; scene layer rotation snaps to quarter turns and scenes have no
-exact remote preview; and production clocks and images are not drawn by
-the CLI frame render, so `GX-011` remains planned.
+server; exact scene previews on a native daemon with real (non-simulated)
+sources are refused rather than composed from live media; and production
+clocks and images are not drawn by the CLI frame render, so `GX-011`
+remains planned.
 
 Current implementation boundary for the color grading suite (`SW-019`):
 `fm-grade` is the pure, all-integer grade model (white balance, exposure,

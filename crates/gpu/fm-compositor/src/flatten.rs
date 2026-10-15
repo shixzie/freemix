@@ -610,6 +610,7 @@ fn hoisted_layer(
         && outer.effects().is_empty()
         && outer.grade().is_none()
         && outer.inset_border_width() == 0
+        && !outer.is_tilted()
         && transform.rotation == Rotation::Deg0
         && transform.scale_width == nested.width()
         && transform.scale_height == nested.height();
@@ -623,6 +624,11 @@ fn hoisted_layer(
     let [inner] = nested.layers() else {
         return None;
     };
+    // A tilted inner layer can reach past the nested scene's edges, which
+    // the nested render clips; hoisting would not.
+    if inner.is_tilted() {
+        return None;
+    }
     let inner_transform = inner.transform();
     let (width, height) = match inner_transform.rotation {
         Rotation::Deg0 | Rotation::Deg180 => {

@@ -652,6 +652,7 @@ fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
                 || layer.geometry.height == 0
                 || layer.geometry.width > ProjectSettings::MAX_VIDEO_WIDTH
                 || layer.geometry.height > ProjectSettings::MAX_VIDEO_HEIGHT
+                || layer.geometry.tilt_millidegrees != 0
             {
                 errors.push(ValidationError {
                     entity,

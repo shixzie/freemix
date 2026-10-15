@@ -11,6 +11,7 @@ use fm_grade::CompiledGrade;
 use fm_video::{CropRect, Rotation, Transform};
 
 use crate::native_grade::{NativeGradeCache, NativeGradeError, NativeGradeRenderer};
+use crate::rotate::Tilt;
 use crate::{
     CompositionPlan, FadeToBlackPlan, RectMask, SourceId, StingerBase, StingerFramePlan,
     StingerFrameRole, TransitionKind, TransitionPlan,
@@ -48,30 +49,24 @@ struct LayerUniform {
     mask_enabled: u32,
     mask_invert: u32,
     border_width: u32,
+    tilted: u32,
+    tilt_sin: f32,
+    tilt_cos: f32,
     padding_0: u32,
-    padding_1: u32,
-    padding_2: u32,
-    padding_3: u32,
 };
 
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
 @group(0) @binding(1) var unused_source_texture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> layer: LayerUniform;
 
-@fragment
-fn composition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    if layer.visible == 0u {
+// One premultiplied texel of the untilted footprint (the scaled,
+// quarter-turned box with its border) at footprint pixel `rotated`, before
+// opacity; transparent outside the footprint.
+fn footprint_texel(rotated_signed: vec2<i32>) -> vec4<f32> {
+    if rotated_signed.x < 0 || rotated_signed.y < 0 {
         return vec4<f32>(0.0);
     }
-
-    let translated = vec2<i32>(position.xy) - vec2<i32>(
-        bitcast<i32>(layer.translation_x),
-        bitcast<i32>(layer.translation_y),
-    );
-    if translated.x < 0 || translated.y < 0 {
-        return vec4<f32>(0.0);
-    }
-    let rotated = vec2<u32>(translated);
+    let rotated = vec2<u32>(rotated_signed);
     if rotated.x >= layer.rotated_width || rotated.y >= layer.rotated_height {
         return vec4<f32>(0.0);
     }
@@ -81,8 +76,7 @@ fn composition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) 
         layer.rotated_width - rotated.x <= layer.border_width ||
         layer.rotated_height - rotated.y <= layer.border_width
     ) {
-        let opacity = f32(layer.opacity) / 255.0;
-        return vec4<f32>(opacity);
+        return vec4<f32>(1.0);
     }
 
     var scaled: vec2<u32>;
@@ -119,8 +113,48 @@ fn composition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) 
 
     let source_coordinates =
         vec2<u32>(layer.crop_x, layer.crop_y) + cropped_coordinates;
-    let source = textureLoad(source_texture, vec2<i32>(source_coordinates), 0);
-    return source * (f32(layer.opacity) / 255.0);
+    return textureLoad(source_texture, vec2<i32>(source_coordinates), 0);
+}
+
+@fragment
+fn composition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    if layer.visible == 0u {
+        return vec4<f32>(0.0);
+    }
+    let opacity = f32(layer.opacity) / 255.0;
+    let translation = vec2<i32>(
+        bitcast<i32>(layer.translation_x),
+        bitcast<i32>(layer.translation_y),
+    );
+    let pixel = vec2<i32>(position.xy);
+    if layer.tilted == 0u {
+        return footprint_texel(pixel - translation) * opacity;
+    }
+
+    // Tilted: the pixel centre inverse-maps about the footprint centre into
+    // the footprint, floored once to 1/256 pixel, then four footprint texels
+    // mix with 8-bit weights (the CPU reference's bilinear sample).
+    let size = vec2<i32>(vec2<u32>(layer.rotated_width, layer.rotated_height));
+    let delta = vec2<f32>(2 * (pixel - translation) + vec2<i32>(1) - size);
+    let u = layer.tilt_cos * delta.x + layer.tilt_sin * delta.y + f32(size.x - 1);
+    let v = -layer.tilt_sin * delta.x + layer.tilt_cos * delta.y + f32(size.y - 1);
+    let q8 = vec2<i32>(floor(vec2<f32>(u, v) * 128.0));
+    let cell = q8 >> vec2<u32>(8u);
+    let weight = vec2<f32>(q8 & vec2<i32>(255)) / 256.0;
+    if cell.x < -1 || cell.y < -1 || cell.x >= size.x || cell.y >= size.y {
+        return vec4<f32>(0.0);
+    }
+    let top = mix(
+        footprint_texel(cell),
+        footprint_texel(cell + vec2<i32>(1, 0)),
+        weight.x,
+    );
+    let bottom = mix(
+        footprint_texel(cell + vec2<i32>(0, 1)),
+        footprint_texel(cell + vec2<i32>(1, 1)),
+        weight.x,
+    );
+    return mix(top, bottom, weight.y) * opacity;
 }
 ";
 
@@ -581,7 +615,11 @@ fn validate_composition<'a>(
             .unwrap_or(CropRect::new(0, 0, texture.width(), texture.height()));
         validate_native_crop(layer_index, crop, texture.width(), texture.height())?;
         validate_native_transform(layer_index, layer.transform())?;
-        let visible = transform_is_visible(plan.width(), plan.height(), layer.transform());
+        let tilt = Tilt::new(layer.transform(), layer.rotation_millidegrees());
+        let visible = tilt.map_or_else(
+            || transform_is_visible(plan.width(), plan.height(), layer.transform()),
+            |tilt| tilt.touches(plan.width(), plan.height()),
+        );
         prepared.push(PreparedLayer {
             source: layer.source(),
             texture,
@@ -593,6 +631,7 @@ fn validate_composition<'a>(
                 layer.opacity(),
                 visible,
                 layer.inset_border_width(),
+                tilt,
             ),
         });
     }
@@ -704,6 +743,7 @@ fn encode_composition_uniform(
     opacity: u8,
     visible: bool,
     border_width: u32,
+    tilt: Option<Tilt>,
 ) -> [u8; COMPOSITION_UNIFORM_SIZE] {
     let (rotated_width, rotated_height) = rotated_dimensions(transform);
     let rotation = match transform.rotation {
@@ -750,9 +790,9 @@ fn encode_composition_uniform(
         mask_enabled,
         mask_invert,
         border_width,
-        0,
-        0,
-        0,
+        u32::from(tilt.is_some()),
+        tilt.map_or(0, |tilt| q30_to_f32(tilt.sin).to_bits()),
+        tilt.map_or(0, |tilt| q30_to_f32(tilt.cos).to_bits()),
         0,
     ];
     let mut bytes = [0; COMPOSITION_UNIFORM_SIZE];
@@ -760,6 +800,12 @@ fn encode_composition_uniform(
         chunk.copy_from_slice(&word.to_le_bytes());
     }
     bytes
+}
+
+/// A Q30 sine or cosine as the nearest `f32`.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)] // |value| <= 2^30
+fn q30_to_f32(value: i64) -> f32 {
+    (value as f64 / fm_animation::TRIG_ONE as f64) as f32
 }
 
 const fn rotated_dimensions(transform: Transform) -> (u32, u32) {
@@ -1287,6 +1333,7 @@ mod tests {
             128,
             true,
             3,
+            None,
         );
         assert_eq!(uniform.len(), 96);
         assert_eq!(
@@ -1318,6 +1365,30 @@ mod tests {
                 0,
             ]
         );
+    }
+
+    #[test]
+    fn a_tilt_fills_the_three_rotation_words_and_widens_visibility() {
+        // A 4x2 footprint whose untilted box lies just off the right edge.
+        let transform = transform(8, 0, 4, 2, Rotation::Deg0);
+        assert!(!transform_is_visible(8, 6, transform));
+        let tilt = Tilt::new(transform, 30_000).expect("30 degrees tilts");
+        assert!(tilt.touches(8, 6));
+        let words = uniform_words(encode_composition_uniform(
+            transform,
+            CropRect::new(0, 0, 1, 1),
+            None,
+            255,
+            true,
+            0,
+            Some(tilt),
+        ));
+        assert_eq!(words[20], 1);
+        assert_eq!(f32::from_bits(words[21]), 0.5);
+        assert!((f32::from_bits(words[22]) - 0.866_025_4).abs() < 1e-6);
+        assert_eq!(words[23], 0);
+        assert_eq!(Tilt::new(transform, 360_000), None);
+        assert_eq!(Tilt::new(transform, 0), None);
     }
 
     #[test]
@@ -1371,6 +1442,7 @@ mod tests {
                 255,
                 false,
                 0,
+                None,
             ));
             assert_eq!(words[0], translation.cast_unsigned());
             assert_eq!(words[1], translation.cast_unsigned());

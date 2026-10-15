@@ -3395,12 +3395,6 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (
-        Msg::AnimReasonSceneProxy,
-        t(
-            "las escenas solo muestran los contornos de las capas; Programa reproduce el movimiento exacto (la rotación se ajusta a cuartos de vuelta)",
-        ),
-    ),
-    (
         Msg::AnimReasonScenePending,
         t("la animación de la escena aún se está sincronizando"),
     ),

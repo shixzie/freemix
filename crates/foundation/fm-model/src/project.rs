@@ -2124,7 +2124,8 @@ impl Project {
     /// exist, [`SceneLayerError::LayerIndexOutOfRange`] when the index is
     /// beyond the scene's layer count, and
     /// [`SceneLayerError::InvalidGeometry`] when a dimension is zero or
-    /// exceeds the project limits.
+    /// exceeds the project limits, or the geometry is tilted (tilts are
+    /// posed, never stored).
     pub fn set_scene_layer_geometry(
         &mut self,
         scene: SceneId,
@@ -2148,6 +2149,7 @@ impl Project {
             || geometry.height == 0
             || geometry.width > ProjectSettings::MAX_VIDEO_WIDTH
             || geometry.height > ProjectSettings::MAX_VIDEO_HEIGHT
+            || geometry.tilt_millidegrees != 0
         {
             return Err(SceneLayerError::InvalidGeometry { scene, index });
         }
@@ -3524,6 +3526,8 @@ impl std::fmt::Display for LayerEffectError {
 
 impl std::error::Error for LayerEffectError {}
 
+/// Where a scene layer draws: a `width` x `height` box turned clockwise by
+/// `rotation` quarter turns, its footprint's top-left at the translation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LayerGeometry {
     pub translation_x: i32,
@@ -3531,6 +3535,11 @@ pub struct LayerGeometry {
     pub width: u32,
     pub height: u32,
     pub rotation: Rotation,
+    /// A further clockwise turn of the footprint about its centre, in
+    /// millidegrees. Only a posed scene ([`crate::Scene::posed`]) carries a
+    /// tilt, within `-45_000..45_000`; a stored project's layers are always
+    /// untilted (validation refuses anything else), so it is not persisted.
+    pub tilt_millidegrees: i32,
 }
 
 impl LayerGeometry {
@@ -3548,7 +3557,16 @@ impl LayerGeometry {
             width,
             height,
             rotation,
+            tilt_millidegrees: 0,
         }
+    }
+
+    /// The geometry turned a further `millidegrees` clockwise about its
+    /// footprint centre.
+    #[must_use]
+    pub const fn with_tilt(mut self, millidegrees: i32) -> Self {
+        self.tilt_millidegrees = millidegrees;
+        self
     }
 }
 

@@ -510,4 +510,25 @@ fn scene_bindings_design_from_layouts_and_save_scene_clips() {
         clip: Arc::from(clip),
     });
     assert_eq!(binding.status(), AnimationSaveStatus::Saved);
+
+    // Scenes preview exactly (Protocol 2.32): the saved scene, then a
+    // dirty draft travelling with its request.
+    binding.document_mut().set_playhead(4);
+    binding.want_preview(MS(0));
+    let saved = binding.poll_preview(MS(120), true).unwrap();
+    assert_eq!(saved.input, WireInputId::from_domain(input()));
+    assert_eq!(saved.sample, TitlePreviewSample::In { frame: 4 });
+    assert_eq!(
+        (saved.width, saved.height),
+        preview_size(binding.document().canvas())
+    );
+    assert_eq!(saved.clip, None);
+    assert_eq!(
+        binding.receive_preview(&saved.request_id),
+        Some(PreviewCompletion::Current)
+    );
+    binding.document_mut().extend_phase(Phase::In, 30).unwrap();
+    binding.want_preview(MS(200));
+    let draft = binding.poll_preview(MS(400), true).unwrap();
+    assert_eq!(draft.clip.as_deref(), Some(binding.document().clip()));
 }

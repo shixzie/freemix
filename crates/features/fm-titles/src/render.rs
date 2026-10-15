@@ -102,6 +102,7 @@ use crate::{
 };
 use ab_glyph::{Font, Glyph, GlyphId, OutlinedGlyph, ScaleFont, point};
 use core::fmt;
+use fm_animation::{FULL_TURN_MILLIDEGREES, TRIG_ONE, sin_cos_q30};
 use fm_video::{FrameError, ImageFrame, Rgba8};
 use std::borrow::Cow;
 
@@ -712,9 +713,6 @@ fn draw_element(
     canvas.clips.truncate(clips);
     painted
 }
-
-/// A full turn in millidegrees.
-const FULL_TURN_MILLIDEGREES: i64 = 360_000;
 
 /// `round_half_up(extent * scale_bp / 10_000)`, saturating at `u32`.
 fn scale_extent(extent: u32, scale_bp: i64) -> u32 {
@@ -1556,49 +1554,6 @@ impl Canvas<'_> {
         for (channel, value) in destination.iter_mut().zip(source) {
             *channel = value.saturating_add(multiply_u8(*channel, inverse));
         }
-    }
-}
-
-/// Q30 fixed-point `1.0`.
-const TRIG_ONE: i64 = 1 << 30;
-/// `round(pi * 2^60)`.
-const PI_Q60: i128 = 3_622_009_729_038_561_421;
-
-/// `(sin, cos)` of `millidegrees` in Q30, deterministic on every host.
-///
-/// The angle is reduced to a quadrant and a remainder `r < 90` degrees;
-/// multiples of 90 degrees are exact (`0` and `±2^30`). Otherwise both are
-/// Taylor series of `x = r * pi / 180` evaluated in Q60 `i128` to the
-/// `x^25`/`x^24` term (truncation below `2^-80` for `x <= pi/2`) and rounded
-/// once, half up, to Q30, so each is within `2^-31 + 2^-55` of the real
-/// value.
-fn sin_cos_q30(millidegrees: i64) -> (i64, i64) {
-    let angle = millidegrees.rem_euclid(FULL_TURN_MILLIDEGREES);
-    let quadrant = angle / 90_000;
-    let remainder = angle % 90_000;
-    let (sin, cos) = if remainder == 0 {
-        (0, TRIG_ONE)
-    } else {
-        let one = 1_i128 << 60;
-        let x = i128::from(remainder) * PI_Q60 / 180_000;
-        let square = (x * x) >> 60;
-        let (mut sin, mut sin_term) = (x, x);
-        let (mut cos, mut cos_term) = (one, one);
-        for k in 1..=12_i128 {
-            sin_term = -((sin_term * square) >> 60) / ((2 * k) * (2 * k + 1));
-            cos_term = -((cos_term * square) >> 60) / ((2 * k - 1) * (2 * k));
-            sin += sin_term;
-            cos += cos_term;
-        }
-        let round =
-            |value: i128| -> i64 { i64::try_from((value + (1 << 29)) >> 30).unwrap_or(TRIG_ONE) };
-        (round(sin), round(cos))
-    };
-    match quadrant {
-        0 => (sin, cos),
-        1 => (cos, -sin),
-        2 => (-sin, -cos),
-        _ => (-cos, sin),
     }
 }
 

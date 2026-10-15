@@ -52,6 +52,23 @@ pub(crate) fn render_scene(
     frame_number: u64,
     pose: ClipState,
 ) -> Option<ImageFrame> {
+    let model = project
+        .scenes()
+        .iter()
+        .find(|candidate| candidate.id == scene)?;
+    render_scene_model(project, model, pipeline, frame_number, pose)
+}
+
+/// [`render_scene`] of a scene model rather than one of `project`'s (an
+/// exact scene preview renders the engine's scene, possibly with a draft
+/// animation); its layers' sources still come from `project`.
+pub(crate) fn render_scene_model(
+    project: &Project,
+    scene: &fm_model::Scene,
+    pipeline: &SimulatedPipeline,
+    frame_number: u64,
+    pose: ClipState,
+) -> Option<ImageFrame> {
     let dimensions = project.settings().video.dimensions;
     let grid = MonitorGrid {
         project_width: dimensions.width(),
@@ -76,6 +93,10 @@ pub(crate) fn render_scene_at_project_size(
     height: u32,
     pose: ClipState,
 ) -> Option<ImageFrame> {
+    let scene = project
+        .scenes()
+        .iter()
+        .find(|candidate| candidate.id == scene)?;
     let composed = compose(
         project,
         scene,
@@ -90,6 +111,35 @@ pub(crate) fn render_scene_at_project_size(
     fm_video::scale_nearest(&composed, width, height).ok()
 }
 
+/// A pipeline at exactly `width`x`height` holding every simulated input of
+/// `project` (as the monitor tap builds its own), or `None` when the size
+/// cannot form a picture.
+pub(crate) fn simulated_pipeline(
+    project: &Project,
+    width: u32,
+    height: u32,
+) -> Option<SimulatedPipeline> {
+    let mut pipeline = SimulatedPipeline::new(width, height).ok()?;
+    for input in project.inputs() {
+        let InputKind::Simulated(simulated) = &input.kind else {
+            continue;
+        };
+        let pattern = match simulated.video {
+            SimulatedVideo::Bars => fm_sim::SourcePattern::Bars,
+            SimulatedVideo::Solid(color) => fm_sim::SourcePattern::Solid(Rgba8::new(
+                color.red,
+                color.green,
+                color.blue,
+                color.alpha,
+            )),
+        };
+        pipeline
+            .register(fm_sim::SimulatedSource::new(input.id, pattern))
+            .ok()?;
+    }
+    Some(pipeline)
+}
+
 /// Where one project-pixel layer lands on the composition grid.
 enum Placement {
     Draw(fm_model::Layer),
@@ -101,7 +151,7 @@ enum Placement {
 /// layer onto the pipeline grid; `None` refuses the scene.
 fn compose(
     project: &Project,
-    scene: SceneId,
+    scene: &fm_model::Scene,
     pipeline: &SimulatedPipeline,
     frame_number: u64,
     pose: ClipState,
@@ -109,11 +159,7 @@ fn compose(
 ) -> Option<ImageFrame> {
     let dimensions = project.settings().video.dimensions;
     // The scene as the engine poses it at this frame (GX-011 stage 5).
-    let model = project
-        .scenes()
-        .iter()
-        .find(|candidate| candidate.id == scene)?
-        .posed(pose, dimensions.width(), dimensions.height());
+    let model = scene.posed(pose, dimensions.width(), dimensions.height());
     let model = &model;
     let background = model.background;
     let mut composition = Scene::new(
@@ -235,7 +281,8 @@ impl MonitorGrid {
             width,
             height,
             geometry.rotation,
-        );
+        )
+        .with_tilt(geometry.tilt_millidegrees);
         // Sources render at the monitor size, so crops and masks (authored
         // against the project-size source) map onto the same grid. Each
         // keeps at least one pixel so a thin crop or mask stays a crop or
@@ -385,6 +432,7 @@ fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
             rotation,
         ),
     )
+    .with_rotation_millidegrees(geometry.tilt_millidegrees)
     .with_opacity(layer.opacity);
     if let Some(crop) = layer.crop {
         result = result.with_crop(CropRect::new(crop.x, crop.y, crop.width, crop.height));

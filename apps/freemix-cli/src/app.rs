@@ -4057,7 +4057,8 @@ Usage:
       of a scene over n frames (30/1 timebase), growing the phase to n
       frames when shorter. Off-canvas distances come from the layer's
       footprint and the project canvas. Layers animate position, scale,
-      rotation (realized at the nearest quarter turn), crop, and opacity.
+      rotation (any angle, clockwise about the layer centre), crop, and
+      opacity.
       The scene plays In when it reaches Program or Preview, holds, and
       plays Out while a transition takes it off Program (a cut plays no
       Out); nested and multiview scenes hold.

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.31 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.32 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -623,11 +623,17 @@ phases, presets, and animation revision as a title template:
   before the quarter turns, in project canvas pixels.
 - Posing (`fm_model::Scene::posed`, integer arithmetic rounded once, half
   up, identical in every renderer): position moves the footprint; scale
-  scales the box about the footprint's centre; rotation is added to the
-  static quarter turn and realized at the **nearest quarter turn** (the
-  compositor transform has no arbitrary rotation); crop hides pixels of
-  the scaled box with the source cropped in proportion; opacity multiplies
-  the static opacity. A layer scaled or cropped to nothing is not drawn.
+  scales the box about the footprint's centre; rotation (millidegrees,
+  positive clockwise) is added to the static quarter turn and realized at
+  **any angle**: the nearest quarter turn (half up) is the compositor
+  transform and the remainder, within ±45°, is a residual tilt the
+  compositor draws about the layer's centre with exact Q30 trigonometry and
+  bilinear, premultiplied sampling (CPU reference and native GPU agree
+  within 2/255 per channel); crop hides pixels of the scaled box with the
+  source cropped in proportion, and a tilted cropped box turns about its
+  uncropped footprint's centre; opacity multiplies the static opacity. A
+  layer scaled or cropped to nothing is not drawn. The tilt exists only on
+  posed scenes: a stored layer's rotation stays whole quarter turns.
 - On air the engine plays a scene's In phase when its Scene input reaches
   Program (a cut or the first frame of a transition) or Preview, holds the
   In end afterwards, and plays the Out phase while a timed or manual
@@ -638,12 +644,42 @@ phases, presets, and animation revision as a title template:
   replicates no phase. The simulated daemon realizes a command's scene
   phases within that command's ticks; the native daemon recompiles the
   scene composition every frame while a scene is mid-phase.
-- Scene previews are **proxy-only**: there is no exact scene preview
-  request. Editors draw the replicated layout as outlines posed by the
-  draft clip (Studio's Animation window); `title_preview_request` stays
-  title-only. `freemix-cli scene-render-frame` renders any point of a
-  scene's animation locally.
+- Editors draw the replicated layout as outlines posed by the draft clip
+  (Studio's Animation window) and, from Protocol 2.32, under them the
+  server's exact scene preview. `freemix-cli scene-render-frame` renders
+  any point of a scene's animation locally.
 - 2.30 is refused.
+
+Protocol 2.32 adds exact scene previews (`GX-011`):
+
+- `kind=scene_preview_request` carries exactly a `title_preview_request`'s
+  fields (`protocol`, `request_id`, `input`, `phase`, `frame`, `width`
+  1..=640, `height` 1..=360) with an optional unsaved draft `clip` in the
+  scene clip encoding (`layer` targets, no `color`), composed in place of
+  the scene's animation. `input` must be a Scene input. It is not a
+  command: it needs `EditProject`, shares the session's preview rate
+  (`title_previews`, default 10 per second, title and scene previews
+  together) and is refused over it with `resource_exhausted`.
+- The server poses the scene the engine holds (with the draft, if any) at
+  the sample and composes it with the CPU reference compositor and the same
+  project-to-grid mapping its simulated monitor uses, directly at
+  `width` x `height`, from the project's simulated sources at the engine
+  frame cursor, any rotation angle included. The answer is one
+  four-channel QOI stream of straight RGBA8 split into
+  `kind=scene_preview_frame` records with exactly a
+  `title_preview_frame`'s fields and limits (`animation_revision` being
+  the scene's), written back to back through the same latest-wins lossy
+  slot as title previews: a newer title or scene preview replaces one not
+  yet started.
+- Refusals are `kind=error` records carrying the `request_id`:
+  `permission_denied`, `not_found` (not a Scene input), `invalid_request`
+  (a frame past the phase or a draft the scene refuses), and
+  `render_failed` for a scene the reference compositor cannot compose
+  exactly (a layer showing a nested scene or a non-simulated source, as on
+  a native daemon with real inputs) rather than an approximation. Only raw
+  TCP sessions receive previews; WebSocket sessions are refused with
+  `unsupported`.
+- 2.31 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

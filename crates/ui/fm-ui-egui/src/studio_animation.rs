@@ -34,9 +34,10 @@
 //! titles and then scenes, and a scene is edited through a
 //! [`SceneAnimationBinding`] keyed by layer, its layers listed by name with
 //! their outlines from the snapshot's `scene_layout_state` (Protocol
-//! 2.31), saved as `scene_animation_set` ([`StudioIntent::SceneAnimation`]).
-//! Scenes have no exact preview: the canvas shows the layer outlines, and
-//! Program plays the exact motion (rotation snapped to quarter turns).
+//! 2.31), saved as `scene_animation_set` ([`StudioIntent::SceneAnimation`]),
+//! and previewed exactly like a title ([`StudioIntent::ScenePreview`],
+//! Protocol 2.32): the server composes the scene, any rotation angle
+//! included, under the layer outlines.
 //!
 //! The window floats over the console, resizable by its edges, or docks
 //! along the bottom of the console with a draggable height; the choice and
@@ -461,9 +462,7 @@ impl AnimationWindow {
             && self.seen_failure.as_ref() != Some(failed)
         {
             self.seen_failure = Some(failed.clone());
-            for binding in self.bindings.values_mut() {
-                binding.preview_failed(failed);
-            }
+            self.preview_failed(failed);
         }
         if let Some(image) = &state.title_preview
             && self.seen_image.as_ref() != Some(&image.request_id)
@@ -523,13 +522,28 @@ impl AnimationWindow {
         }
     }
 
-    /// Shows `image` if a draft was waiting for it.
+    /// Records that the exact preview `request_id` was refused or lost.
+    fn preview_failed(&mut self, request_id: &str) {
+        for binding in self.bindings.values_mut() {
+            binding.preview_failed(request_id);
+        }
+        for binding in self.scene_bindings.values_mut() {
+            binding.preview_failed(request_id);
+        }
+    }
+
+    /// Shows `image` (a title's or a scene's exact preview) if a draft was
+    /// waiting for it.
     fn receive_image(&mut self, context: &egui::Context, image: &TitlePreviewImage) {
         let input = image.input.to_domain();
-        let Some(binding) = self.bindings.get_mut(&input) else {
-            return;
+        let completed = if let Some(binding) = self.bindings.get_mut(&input) {
+            binding.receive_preview(&image.request_id)
+        } else if let Some(binding) = self.scene_bindings.get_mut(&input) {
+            binding.receive_preview(&image.request_id)
+        } else {
+            None
         };
-        if binding.receive_preview(&image.request_id).is_none() {
+        if completed.is_none() {
             return;
         }
         let size = [usize::from(image.width), usize::from(image.height)];
@@ -672,9 +686,7 @@ impl StudioShell {
     /// Records that the exact preview `request_id` never reached the
     /// worker.
     pub fn title_preview_unsent(&mut self, request_id: &str) {
-        for binding in self.animation.bindings.values_mut() {
-            binding.preview_failed(request_id);
-        }
+        self.animation.preview_failed(request_id);
     }
 
     /// `Ctrl+Shift+A` opens or closes the Animation window (on the title
@@ -914,6 +926,24 @@ impl StudioShell {
                 );
             }
         }
+        if self.animation.open
+            && self.animation.editing_scene
+            && let Some(input) = self.animation.scene
+            && let Some(binding) = self.animation.scene_bindings.get_mut(&input)
+        {
+            if !binding.document().transport().is_playing() {
+                binding.want_preview(now);
+            }
+            let allowed = preview_block_reason(state).is_none();
+            if let Some(request) = binding.poll_preview(now, allowed) {
+                intents.push(StudioIntent::ScenePreview(request));
+            }
+            if allowed && let Some(deadline) = binding.next_preview_deadline() {
+                context.request_repaint_after(
+                    deadline.saturating_sub(now).max(Duration::from_millis(10)),
+                );
+            }
+        }
     }
 
     /// Records the floating window's size once a drag of its edges ends,
@@ -1017,16 +1047,20 @@ impl StudioShell {
                 return;
             };
             conflict_banner(ui, l, binding, lock);
-            // Scenes have no exact preview: the proxy is the picture.
+            let texture = window
+                .texture
+                .as_ref()
+                .filter(|shown| shown.input == input)
+                .map(|shown| shown.texture.id());
             window.tracks = Some(draft_body(
                 ui,
                 l,
                 binding,
                 &mut window.scene_timeline,
                 CanvasLook {
-                    texture: None,
+                    texture,
                     onion: window.onion,
-                    preview_reason: Some(Msg::AnimReasonSceneProxy.en()),
+                    preview_reason: preview_block_reason(state),
                     max_height: 0.0,
                     hover: Msg::AnimSceneCanvasHover,
                 },

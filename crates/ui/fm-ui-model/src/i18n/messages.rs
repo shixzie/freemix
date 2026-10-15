@@ -1375,7 +1375,6 @@ messages! {
     AnimWinSceneOptionHover => t("Animate the layers of scene {name}"),
     AnimSceneSectionHover => t("The In and Out animation of a scene's layers. It is saved in the project, so every input showing the scene plays it: In when the scene reaches Program or Preview, Out while a transition takes it off Program (a cut has no Out)"),
     AnimSceneCanvasHover => t("The scene's layers at the playhead. Scrub on the timeline ruler; drag keys or bars to retime"),
-    AnimReasonSceneProxy => t("scenes show layer outlines only; Program plays the exact motion (rotation snaps to quarter turns)"),
     AnimReasonScenePending => t("the scene's animation is still synchronizing"),
     AnimStatusSaved => t("SAVED"),
     AnimStatusSavedHover => t("The server has this animation; the next take plays it"),

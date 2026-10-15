@@ -799,3 +799,64 @@ fn title_previews_need_edit_project_and_have_their_own_rate() {
         Err(ConfigError::ZeroLimit("title_previews"))
     );
 }
+
+/// Protocol 2.32: scene previews are admitted like title previews and share
+/// their rate.
+#[test]
+fn scene_previews_need_edit_project_and_share_the_preview_rate() {
+    use fm_protocol::{ScenePreviewRequest, TitlePreviewRequest, TitlePreviewSample};
+
+    let limits = SessionLimits {
+        title_previews: RateLimit::new(2, 100),
+        ..SessionLimits::default()
+    };
+    let server = ready_server(config().with_session_limits(limits));
+    let session_for = |role: Role, auth_role: AuthRole| {
+        server
+            .handshake(&hello(role, None), &principal(auth_role), 0)
+            .unwrap()
+            .session
+    };
+    let scene = ScenePreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "preview-1".into(),
+        input: input(5),
+        sample: TitlePreviewSample::In { frame: 3 },
+        width: 64,
+        height: 36,
+        clip: None,
+    };
+    let title = TitlePreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "preview-2".into(),
+        input: input(3),
+        sample: TitlePreviewSample::Hold,
+        width: 64,
+        height: 36,
+        clip: None,
+    };
+
+    let mut operator = session_for(Role::Operator, AuthRole::Operator);
+    assert!(matches!(
+        operator.admit_scene_preview(&scene, 10, 0),
+        Err(SessionError::Authorization(_))
+    ));
+
+    let mut graphics = session_for(Role::Graphics, AuthRole::Graphics);
+    graphics.admit_scene_preview(&scene, 10, 0).unwrap();
+    graphics.admit_title_preview(&title, 10, 0).unwrap();
+    assert_eq!(
+        graphics.admit_scene_preview(&scene, 10, 50),
+        Err(SessionError::TitlePreviewRateLimited)
+    );
+    assert_eq!(graphics.accounting().inbound_commands_inflight, 0);
+    graphics.admit_scene_preview(&scene, 10, 100).unwrap();
+    let stale = ScenePreviewRequest {
+        protocol: ProtocolVersion::new(2, 31),
+        ..scene
+    };
+    assert!(matches!(
+        graphics.admit_scene_preview(&stale, 10, 100),
+        Err(SessionError::ProtocolMismatch { .. })
+    ));
+}

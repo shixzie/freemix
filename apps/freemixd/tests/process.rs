@@ -4959,11 +4959,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.31.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 31));
+    // The previous protocol is refused; the current one is 2.32.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 32));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 30),
+        protocol: ProtocolVersion::new(2, 31),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -4979,7 +4979,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 31)
+        ProtocolVersion::new(2, 32)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -6113,4 +6113,147 @@ fn scene_animation_edits_replicate_and_persist_through_restart() {
             "{restart}"
         );
     }
+}
+
+/// Sends `request` and assembles the `scene_preview_frame` parts that
+/// answer it, or returns the error that refused it.
+fn scene_preview(
+    client: &mut Client,
+    request: fm_protocol::ScenePreviewRequest,
+) -> Result<fm_protocol::ScenePreviewImage, fm_protocol::ErrorMessage> {
+    let request_id = request.request_id.clone();
+    client.send(&WireMessage::ScenePreviewRequest(request));
+    let mut assembler = fm_protocol::TitlePreviewAssembler::new();
+    loop {
+        match client.receive() {
+            WireMessage::ScenePreviewFrame(part) => {
+                assert_eq!(part.request_id, request_id);
+                if let Some(image) = assembler.push(&part).unwrap() {
+                    return Ok(image);
+                }
+            }
+            WireMessage::Error(error) if error.request_id.as_deref() == Some(&request_id) => {
+                return Err(error);
+            }
+            _ => assert!(!assembler.is_in_progress(), "a preview group is atomic"),
+        }
+    }
+}
+
+/// GX-011, Protocol 2.32: an exact scene preview needs `EditProject`,
+/// composes the engine's scene (or an unsaved draft clip) at the requested
+/// size, and refuses inputs that are not scenes and frames past the phase.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn scene_previews_compose_the_scene_or_a_draft_exactly() {
+    use fm_model::fm_animation::{AnimationPreset, Phase};
+    use fm_protocol::{ScenePreviewRequest, TitlePreviewSample};
+
+    let directory = TestDirectory::new("scene-preview");
+    let project_path = directory.project_path();
+    create_scene_program_project(&project_path);
+    let mut faded = ProjectStore::new(&project_path)
+        .unwrap()
+        .load()
+        .unwrap()
+        .project()
+        .scene(scene_id(1))
+        .unwrap()
+        .clone();
+    faded
+        .apply_animation_preset(
+            fm_model::LayerId::new(2).unwrap(),
+            Phase::In,
+            AnimationPreset::Fade,
+            10,
+            1_920,
+            1_080,
+        )
+        .unwrap();
+    let request = |id: &str, input_id: u128, sample, clip| ScenePreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: id.into(),
+        input: input(input_id),
+        sample,
+        width: 64,
+        height: 36,
+        clip,
+    };
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut viewer = daemon.connect();
+    viewer.handshake_as(Role::Viewer, None);
+    scene_animation_sync(&mut viewer);
+    let denied = scene_preview(
+        &mut viewer,
+        request("viewer", 4, TitlePreviewSample::Hold, None),
+    )
+    .unwrap_err();
+    assert_eq!(denied.error.code, "permission_denied");
+
+    let mut graphics = daemon.connect();
+    graphics
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    graphics.handshake_as(Role::Graphics, None);
+    scene_animation_sync(&mut graphics);
+    let saved = scene_preview(
+        &mut graphics,
+        request("saved", 4, TitlePreviewSample::Hold, None),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            saved.input,
+            saved.animation_revision,
+            saved.draft,
+            saved.width,
+            saved.height
+        ),
+        (input(4), 0, false, 64, 36)
+    );
+    assert_eq!(saved.rgba.len(), 64 * 36 * 4);
+    assert!(
+        saved
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0)
+    );
+
+    // The draft fades the only layer in: its first In frame shows nothing
+    // of it, unlike the saved scene, and nothing was saved.
+    let draft = scene_preview(
+        &mut graphics,
+        request(
+            "draft",
+            4,
+            TitlePreviewSample::In { frame: 0 },
+            Some(Box::new(fm_control::scene_clip_to_wire(
+                &faded.animation.clip,
+            ))),
+        ),
+    )
+    .unwrap();
+    assert_eq!((draft.animation_revision, draft.draft), (0, true));
+    assert_ne!(draft.rgba, saved.rgba);
+
+    let not_scene = scene_preview(
+        &mut graphics,
+        request("not-scene", 2, TitlePreviewSample::Hold, None),
+    )
+    .unwrap_err();
+    assert_eq!(not_scene.error.code, "not_found");
+    let past = scene_preview(
+        &mut graphics,
+        request("past", 4, TitlePreviewSample::In { frame: 1_000 }, None),
+    )
+    .unwrap_err();
+    assert_eq!(past.error.code, "invalid_request");
+    drop(graphics);
+    drop(viewer);
+    daemon.stop();
 }

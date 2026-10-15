@@ -268,6 +268,7 @@ pub struct SourceLayer {
     grade: Option<Arc<CompiledGrade>>,
     overlay_inclusion: Option<OutputInclusion>,
     inset_border_width: u32,
+    rotation_millidegrees: i32,
 }
 
 impl SourceLayer {
@@ -289,6 +290,7 @@ impl SourceLayer {
             grade: None,
             overlay_inclusion: None,
             inset_border_width: 0,
+            rotation_millidegrees: 0,
         }
     }
 
@@ -372,9 +374,26 @@ impl SourceLayer {
         self
     }
 
+    /// Turns the transformed layer clockwise by `millidegrees` about the
+    /// centre of its transform footprint (the quarter-turned, scaled box at
+    /// its translation), after its border is drawn. Zero (and any whole
+    /// turn) draws exactly as without it; any other angle resamples the
+    /// footprint bilinearly (see [`crate::execute_cpu`]).
+    #[must_use]
+    pub const fn with_rotation_millidegrees(mut self, millidegrees: i32) -> Self {
+        self.rotation_millidegrees = millidegrees;
+        self
+    }
+
     #[must_use]
     pub const fn source(&self) -> SourceId {
         self.source
+    }
+
+    /// The clockwise rotation about the footprint centre, in millidegrees.
+    #[must_use]
+    pub const fn rotation_millidegrees(&self) -> i32 {
+        self.rotation_millidegrees
     }
 
     #[must_use]

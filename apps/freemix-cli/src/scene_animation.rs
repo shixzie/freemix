@@ -3,9 +3,13 @@
 //!
 //! Edits rewrite the scene's animation in `project.json` (refusing a bundle
 //! a running daemon holds, like every other local mutation) and advance its
-//! animation revision. Rendering is read-only: it poses the scene with
-//! `fm_model::Scene::posed` and composes it like `render` does, at the
-//! project canvas size, from the simulated sources.
+//! animation revision. An edit whose clip would exceed the protocol's
+//! `MAX_SCENE_ANIMATION_BYTES` wire bound (the bound `fm-control` holds
+//! every daemon edit to) is refused and nothing is saved.
+//!
+//! Rendering is read-only: it poses the scene with `fm_model::Scene::posed`
+//! and composes it like `render` does, at the project canvas size, from the
+//! simulated sources.
 
 use std::{num::NonZeroU128, path::Path};
 
@@ -54,6 +58,16 @@ fn edit(
     let mut target = find_scene(&project, id)?.clone();
     edit(&mut target, dimensions.width(), dimensions.height())
         .map_err(|error| AppFailure(format!("scene {id}: {error}")))?;
+    // The same bound the daemon holds every edit to: a clip without a wire
+    // encoding could never be carried by an event or snapshot.
+    if !fm_control::scene_clip_fits_wire(&target.animation.clip) {
+        return Err(AppFailure(format!(
+            "scene {id}: the edited animation exceeds the {} byte protocol limit \
+             (MAX_SCENE_ANIMATION_BYTES) and was not saved; use fewer keys or tracks",
+            fm_protocol::MAX_SCENE_ANIMATION_BYTES
+        ))
+        .into());
+    }
     project
         .set_scene_animation(id, target.animation.clone())
         .map_err(|error| AppFailure(error.to_string()))?;

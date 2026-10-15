@@ -15,7 +15,9 @@
 //! preview ([`prepare_preview`]); it renders on a worker thread
 //! ([`TitlePreviewWorker`]), latest wins per peer, so a slow template never
 //! delays native frames, command results, or heartbeats. The per-session
-//! `title_previews` rate (fm-server) bounds the work.
+//! `title_previews` rate (fm-server) bounds the work. Exact scene previews
+//! (Protocol 2.32, [`crate::scene_preview`]) share the worker, the lossy
+//! slot, and the rate.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -28,13 +30,13 @@ use fm_protocol::{
     ServerIdentity, StructuredError, TitlePreviewFrameMessage, TitlePreviewRequest,
     TitlePreviewSample, WireInputId, encode_qoi_rgba, title_preview_parts,
 };
-use fm_titles::fm_animation::{ClipPosition, ClipState, Phase};
-use fm_titles::{TitleClip, TitleTemplate};
+use fm_titles::TitleTemplate;
+use fm_titles::fm_animation::{Clip, ClipPosition, ClipState, Phase};
 use fm_types::InputId;
 
 use crate::title_render::{self, TitleAssets};
 
-fn refusal(code: &str, message: impl Into<String>) -> StructuredError {
+pub(crate) fn refusal(code: &str, message: impl Into<String>) -> StructuredError {
     StructuredError {
         code: code.into(),
         message: message.into(),
@@ -43,8 +45,12 @@ fn refusal(code: &str, message: impl Into<String>) -> StructuredError {
     }
 }
 
-/// The pose `sample` names on `clip`, refused past the end of its phase.
-fn pose(sample: TitlePreviewSample, clip: &TitleClip) -> Result<ClipState, StructuredError> {
+/// The pose `sample` names on `clip` (a title's or a scene's), refused past
+/// the end of its phase.
+pub(crate) fn sample_pose<T: Copy + Ord>(
+    sample: TitlePreviewSample,
+    clip: &Clip<T>,
+) -> Result<ClipState, StructuredError> {
     let within = |phase: Phase, frame: u32| {
         if frame > clip.phase_frames(phase) {
             Err(refusal(
@@ -156,7 +162,7 @@ pub(crate) fn prepare_preview(
             Arc::new(template)
         }
     };
-    let pose = pose(request.sample, &template.animation.clip)?;
+    let pose = sample_pose(request.sample, &template.animation.clip)?;
     let time = title_render::TitleTime::now(
         control.frame_cursor(),
         project.settings().frame_rate,
@@ -276,17 +282,34 @@ impl<J, R> Drop for LatestWorker<J, R> {
     }
 }
 
-/// The preview worker of a session loop: answers carry the request id and
-/// the parts, or the refusal, of the newest preview of each peer.
-pub(crate) type TitlePreviewWorker = LatestWorker<
-    PreviewJob,
-    (
-        String,
-        Result<Vec<TitlePreviewFrameMessage>, StructuredError>,
-    ),
->;
+/// One exact preview to render: a title's or (Protocol 2.32) a scene's.
+pub(crate) enum PreviewWork {
+    Title(Box<PreviewJob>),
+    Scene(Box<crate::scene_preview::ScenePreviewJob>),
+}
 
-/// Starts the preview worker rendering with `assets`.
+/// Which preview record kind an answer's parts are sent as.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PreviewKind {
+    /// `title_preview_frame`.
+    Title,
+    /// `scene_preview_frame`.
+    Scene,
+}
+
+/// The answer to the newest preview of one peer: its request id, kind, and
+/// parts, or the refusal its render met.
+pub(crate) struct PreviewAnswer {
+    pub(crate) request_id: String,
+    pub(crate) kind: PreviewKind,
+    pub(crate) parts: Result<Vec<TitlePreviewFrameMessage>, StructuredError>,
+}
+
+/// The preview worker of a session loop. Title and scene previews share
+/// it, latest wins per peer across both.
+pub(crate) type TitlePreviewWorker = LatestWorker<PreviewWork, PreviewAnswer>;
+
+/// Starts the preview worker rendering titles with `assets`.
 ///
 /// # Errors
 ///
@@ -294,10 +317,21 @@ pub(crate) type TitlePreviewWorker = LatestWorker<
 pub(crate) fn spawn_preview_worker(
     assets: Arc<TitleAssets>,
 ) -> std::io::Result<TitlePreviewWorker> {
-    LatestWorker::spawn("freemixd-title-preview", move |job: PreviewJob| {
-        let answer = job.render(&assets);
-        (job.request_id, answer)
-    })
+    LatestWorker::spawn(
+        "freemixd-title-preview",
+        move |work: PreviewWork| match work {
+            PreviewWork::Title(job) => PreviewAnswer {
+                parts: job.render(&assets),
+                request_id: job.request_id,
+                kind: PreviewKind::Title,
+            },
+            PreviewWork::Scene(job) => PreviewAnswer {
+                parts: job.render(),
+                request_id: job.request_id,
+                kind: PreviewKind::Scene,
+            },
+        },
+    )
 }
 
 #[cfg(test)]

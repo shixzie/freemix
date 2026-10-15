@@ -109,6 +109,7 @@ mod preflight;
 mod program_surface;
 #[cfg(feature = "native-media")]
 mod recording_session;
+mod scene_preview;
 mod scene_render;
 mod status_listener;
 #[cfg(feature = "native-media")]

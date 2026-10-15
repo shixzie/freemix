@@ -24,9 +24,10 @@
 //!
 //! The binding is generic over the clip target: [`TitleAnimationBinding`]
 //! edits a title template, [`SceneAnimationBinding`] a scene's layers
-//! (GX-011 stage 5). Only titles have exact previews
-//! ([`AnimationBinding::poll_preview`]); a scene editor never asks for one
-//! and shows the proxy.
+//! (GX-011 stage 5). Both have exact previews
+//! ([`AnimationBinding::poll_preview`]): a title's as a
+//! `title_preview_request`, a scene's as a `scene_preview_request`
+//! (Protocol 2.32).
 
 use core::time::Duration;
 use std::sync::Arc;
@@ -34,14 +35,14 @@ use std::sync::Arc;
 use fm_animation::Clip;
 use fm_animation::{AnimationPreset, Phase};
 use fm_protocol::{
-    CommandPayload, MAX_TITLE_PREVIEW_HEIGHT, MAX_TITLE_PREVIEW_WIDTH, TitlePreviewRequest,
-    WireSceneLayerId, WireSceneLayout, WireTitleElementId, WireTitleElementKind, WireTitleLayout,
+    CommandPayload, MAX_TITLE_PREVIEW_HEIGHT, MAX_TITLE_PREVIEW_WIDTH, WireSceneLayerId,
+    WireSceneLayout, WireTitleElementId, WireTitleElementKind, WireTitleLayout,
 };
 use fm_types::InputId;
 
 use super::{
-    AnimationStatus, AnimationTarget, AuthoritySync, preview_request, preview_request_id,
-    save_payload, sync_document,
+    AnimationStatus, AnimationTarget, AuthoritySync, preview_request_id, preview_sample,
+    preview_wire_id, save_payload, sync_document,
 };
 use crate::animation_editor::{
     AnimDocument, PreviewCompletion, PreviewKey, PreviewScheduler, TargetBounds, TargetKind,
@@ -247,7 +248,7 @@ pub struct AnimationBinding<T> {
 /// One title template's draft animation bound to its replicated authority.
 pub type TitleAnimationBinding = AnimationBinding<WireTitleElementId>;
 /// One scene's draft layer animation bound to its replicated authority
-/// (GX-011 stage 5); proxy previews only.
+/// (GX-011 stage 5), previewed exactly through `scene_preview_request`.
 pub type SceneAnimationBinding = AnimationBinding<WireSceneLayerId>;
 
 impl<T: AnimationTarget> AnimationBinding<T> {
@@ -663,19 +664,13 @@ impl<T: AnimationTarget> AnimationBinding<T> {
         self.shown = None;
         self.hover = None;
     }
-}
 
-impl AnimationBinding<WireTitleElementId> {
-    /// The `title_preview_request` to send now, if the debounce elapsed,
-    /// nothing is in flight, the last request is [`PREVIEW_MIN_INTERVAL`]
-    /// old, and `can_request` holds. An answer missing for
-    /// [`PREVIEW_TIMEOUT`] is given up first. Titles only: scenes have no
-    /// exact preview.
-    pub fn poll_preview(
-        &mut self,
-        now: Duration,
-        can_request: bool,
-    ) -> Option<TitlePreviewRequest> {
+    /// The exact preview request to send now (`title_preview_request` or
+    /// `scene_preview_request`), if the debounce elapsed, nothing is in
+    /// flight, the last request is [`PREVIEW_MIN_INTERVAL`] old, and
+    /// `can_request` holds. An answer missing for [`PREVIEW_TIMEOUT`] is
+    /// given up first.
+    pub fn poll_preview(&mut self, now: Duration, can_request: bool) -> Option<T::PreviewRequest> {
         if let (Some(request), Some(sent)) = (self.previews.in_flight(), self.preview_sent_at)
             && now.saturating_sub(sent) >= PREVIEW_TIMEOUT
         {
@@ -693,7 +688,6 @@ impl AnimationBinding<WireTitleElementId> {
         self.last_preview_issue = Some(now);
         self.preview_sent_at = Some(now);
         let (width, height) = preview_size(self.document.canvas());
-        let mut wire = preview_request(&self.document, self.input, request, width, height);
         let hovered = self
             .hover
             .as_ref()
@@ -703,8 +697,13 @@ impl AnimationBinding<WireTitleElementId> {
         // animation (a drag changes it before it is marked dirty), travels
         // along.
         let draft = hovered.unwrap_or_else(|| self.document.clip());
-        wire.clip = (draft != &*self.authority.clip).then(|| Box::new(draft.clone()));
-        Some(wire)
+        Some(T::preview(
+            self.input,
+            preview_wire_id(request.id),
+            preview_sample(request),
+            (width, height),
+            (draft != &*self.authority.clip).then(|| draft.clone()),
+        ))
     }
 }
 

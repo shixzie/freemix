@@ -281,6 +281,7 @@ fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
             rotation,
         ),
     )
+    .with_rotation_millidegrees(geometry.tilt_millidegrees)
     .with_opacity(layer.opacity);
     if let Some(crop) = layer.crop {
         result = result.with_crop(CropRect::new(crop.x, crop.y, crop.width, crop.height));

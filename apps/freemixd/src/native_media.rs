@@ -184,6 +184,7 @@ fn native_scene_composition(
                 rotation,
             ),
         )
+        .with_rotation_millidegrees(geometry.tilt_millidegrees)
         .with_enabled(layer.enabled)
         .with_opacity(layer.opacity);
         if let Some(crop) = layer.crop {

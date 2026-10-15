@@ -1275,6 +1275,7 @@ version = "0.1.0"
 name = "fm-compositor"
 version = "0.1.0"
 dependencies = [
+ "fm-animation",
  "fm-color",
  "fm-frame",
  "fm-gpu",
@@ -1713,6 +1714,7 @@ dependencies = [
  "fm-clock",
  "fm-command",
  "fm-compositor",
+ "fm-control",
  "fm-engine",
  "fm-grade",
  "fm-model",

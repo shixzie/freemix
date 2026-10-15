@@ -140,9 +140,12 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             current_update.delay_samples = update.delay_samples.or(current_update.delay_samples);
             true
         }
-        // Exact previews are latest-wins: a newer request replaces a queued
-        // one.
-        (StudioIntent::TitlePreview(current), StudioIntent::TitlePreview(incoming)) => {
+        // Exact previews (title or scene) are latest-wins: a newer request
+        // replaces a queued one.
+        (
+            current @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)),
+            incoming @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)),
+        ) => {
             *current = incoming;
             true
         }
@@ -312,6 +315,7 @@ impl StudioApp {
         let title_request = intent.title_request();
         let preview = match &intent {
             StudioIntent::TitlePreview(request) => Some(request.request_id.clone()),
+            StudioIntent::ScenePreview(request) => Some(request.request_id.clone()),
             _ => None,
         };
         let result = self
@@ -1010,7 +1014,9 @@ fn run_worker(
         }
         match requests.try_recv() {
             Ok(WorkerRequest::Shutdown) | Err(TryRecvError::Disconnected) => break,
-            Ok(WorkerRequest::Intent(StudioIntent::TitlePreview(request))) => {
+            Ok(WorkerRequest::Intent(
+                request @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)),
+            )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
                     break;
                 }
@@ -1039,7 +1045,8 @@ fn run_worker(
                 // Lossy monitor parts publish only once a frame completes.
                 Ok(Some(
                     SessionEvent::MonitorFrame { complete, .. }
-                    | SessionEvent::TitlePreview { complete, .. },
+                    | SessionEvent::TitlePreview { complete, .. }
+                    | SessionEvent::ScenePreview { complete, .. },
                 )) => complete,
                 Ok(Some(SessionEvent::ServerError(error)))
                     if animation::preview_error_id(&error).is_some() =>
@@ -1085,7 +1092,9 @@ fn run_worker(
         );
         match requests.recv_timeout(timeout) {
             Ok(WorkerRequest::Shutdown) | Err(RecvTimeoutError::Disconnected) => break,
-            Ok(WorkerRequest::Intent(StudioIntent::TitlePreview(request))) => {
+            Ok(WorkerRequest::Intent(
+                request @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)),
+            )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
                     break;
                 }
@@ -1124,20 +1133,28 @@ fn run_worker(
     }
 }
 
-/// Sends an exact title preview request at once: previews are lossy and
-/// latest-wins, so they never queue behind commands. One that cannot be
-/// sent now is reported failed so the window asks again later.
+/// Sends an exact title or scene preview request at once: previews are
+/// lossy and latest-wins, so they never queue behind commands. One that
+/// cannot be sent now is reported failed so the window asks again later.
 fn handle_preview_request(
     runtime: &mut StudioRuntime,
-    request: fm_protocol::TitlePreviewRequest,
+    request: StudioIntent,
     publisher: &StatePublisher,
     recovery: &WorkerRecovery,
 ) -> bool {
-    let request_id = request.request_id.clone();
+    let request_id = match &request {
+        StudioIntent::TitlePreview(request) => request.request_id.clone(),
+        StudioIntent::ScenePreview(request) => request.request_id.clone(),
+        _ => return true,
+    };
     if recovery.active() {
         runtime.note_preview_failure(&request_id);
     } else {
-        runtime.send_title_preview(request);
+        match request {
+            StudioIntent::TitlePreview(request) => runtime.send_title_preview(request),
+            StudioIntent::ScenePreview(request) => runtime.send_scene_preview(request),
+            _ => {}
+        }
     }
     if runtime.preview_failure() == Some(request_id.as_str()) {
         return publish_recovery_runtime(runtime, publisher, recovery);
@@ -1155,7 +1172,7 @@ fn handle_worker_intent(
 ) -> bool {
     // A preview deferred behind a command goes out as soon as it is next.
     let intent = match intent {
-        StudioIntent::TitlePreview(request) => {
+        request @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
         intent => intent,
@@ -1454,7 +1471,8 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::Event { .. }
                         | SessionEvent::StreamStatus { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
-                        | SessionEvent::TitlePreview { complete, .. } => Some(*complete),
+                        | SessionEvent::TitlePreview { complete, .. }
+                        | SessionEvent::ScenePreview { complete, .. } => Some(*complete),
                         SessionEvent::ServerError(error)
                             if animation::preview_error_id(error).is_some() =>
                         {
@@ -1912,7 +1930,8 @@ fn receive_command_event(
         // Lossy monitor parts are status, never command records: they are not
         // counted and publish only once a frame completes.
         if let SessionEvent::MonitorFrame { complete, .. }
-        | SessionEvent::TitlePreview { complete, .. } = event
+        | SessionEvent::TitlePreview { complete, .. }
+        | SessionEvent::ScenePreview { complete, .. } = event
         {
             if complete {
                 publication.update(runtime, *deferred_rejections)?;
@@ -2273,8 +2292,8 @@ fn intent_payload(
         StudioIntent::Playlist(intent) => playlist_payload(intent),
         StudioIntent::Grade(command) => command.payload(),
         StudioIntent::TitleAnimation(payload) | StudioIntent::SceneAnimation(payload) => payload,
-        StudioIntent::TitlePreview(_) => {
-            return Err("An exact title preview request is not a command".to_owned());
+        StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_) => {
+            return Err("An exact preview request is not a command".to_owned());
         }
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
@@ -2456,10 +2475,18 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
     state.title_updates = runtime.take_title_updates(ready);
     state.title_previews = runtime.transport() == ControlTransport::Tcp;
     if ready {
-        state.title_preview = runtime
-            .session()
-            .latest_title_preview()
-            .map(|(image, _)| image.clone());
+        // Title and scene previews share the canvas: the newer one shows.
+        let session = runtime.session();
+        state.title_preview = match (
+            session.latest_title_preview(),
+            session.latest_scene_preview(),
+        ) {
+            (Some((title, title_at)), Some((scene, scene_at))) => {
+                Some(if scene_at > title_at { scene } else { title }.clone())
+            }
+            (Some((image, _)), None) | (None, Some((image, _))) => Some(image.clone()),
+            (None, None) => None,
+        };
     }
     state.title_preview_failed = runtime.preview_failure().map(str::to_owned);
     state.title_animation_refusal = runtime.animation_refusal().cloned();
@@ -6177,6 +6204,23 @@ mod tests {
                 vec![StudioIntent::TitlePreview(request("anim-preview-2"))]
             );
             assert!(intent_payload(StudioIntent::TitlePreview(request("x")), None).is_err());
+            // A scene preview replaces a queued title preview: one canvas,
+            // latest wins.
+            let scene = fm_protocol::ScenePreviewRequest {
+                protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                request_id: "anim-preview-3".to_owned(),
+                input: title_input(),
+                sample: fm_protocol::TitlePreviewSample::Hold,
+                width: 64,
+                height: 36,
+                clip: None,
+            };
+            pending
+                .push(StudioIntent::ScenePreview(scene.clone()))
+                .unwrap();
+            let queued: Vec<_> = pending.intents.iter().cloned().collect();
+            assert_eq!(queued, vec![StudioIntent::ScenePreview(scene.clone())]);
+            assert!(intent_payload(StudioIntent::ScenePreview(scene), None).is_err());
         }
     }
 }

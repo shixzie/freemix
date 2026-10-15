@@ -21,9 +21,9 @@ use egui::{
 };
 use fm_protocol::{
     AudioMetersMessage, CommandPayload, LiveInputSource, ManualTransitionKind,
-    ManualTransitionPosition, MonitorFrameOrigin, MonitorImage, MonitorTap, StreamStatusMessage,
-    TitlePreviewImage, TitlePreviewRequest, WireOverlayChannelId, WireRecorderSlot,
-    WireStingerSlotId, WireStreamTargetId,
+    ManualTransitionPosition, MonitorFrameOrigin, MonitorImage, MonitorTap, ScenePreviewRequest,
+    StreamStatusMessage, TitlePreviewImage, TitlePreviewRequest, WireOverlayChannelId,
+    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
 use fm_types::{InputId, OutputId};
 use fm_ui_model::grade_editor::GradeCommand;
@@ -256,6 +256,11 @@ pub enum StudioIntent {
     /// [`StudioUiState::title_preview`] or
     /// [`StudioUiState::title_preview_failed`].
     TitlePreview(TitlePreviewRequest),
+    /// Asks for an exact scene preview (Protocol 2.32), answered like
+    /// [`Self::TitlePreview`]: the image arrives in
+    /// [`StudioUiState::title_preview`], a refusal in
+    /// [`StudioUiState::title_preview_failed`].
+    ScenePreview(ScenePreviewRequest),
 }
 
 impl StudioIntent {
@@ -393,9 +398,10 @@ pub struct StudioUiState {
     /// The latest refused title animation save (kept until another one is
     /// refused; the Animation window acts on each command id once).
     pub title_animation_refusal: Option<TitleAnimationRefusal>,
-    /// Whether this connection carries exact title previews (raw TCP only).
+    /// Whether this connection carries exact title and scene previews (raw
+    /// TCP only).
     pub title_previews: bool,
-    /// The latest assembled exact title preview of this session.
+    /// The latest assembled exact title or scene preview of this session.
     pub title_preview: Option<TitlePreviewImage>,
     /// The `request_id` of the latest refused or lost exact title preview.
     pub title_preview_failed: Option<String>,

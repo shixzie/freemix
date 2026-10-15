@@ -9150,3 +9150,305 @@ fn scene_animation_presets_retime_and_render_exact_frames() {
 
     fs::remove_dir_all(root).unwrap();
 }
+
+/// A clip of `tracks` targets with 128 dense cubic-bezier keys each, a shape
+/// whose wire encoding is near the 36 KiB animation bound.
+fn dense_clip<T: Copy + Ord + core::fmt::Debug>(
+    tracks: u32,
+    target: impl Fn(u32) -> T,
+) -> fm_model::fm_animation::Clip<T> {
+    use fm_model::fm_animation::{
+        Clip, CubicBezier, Easing, Keyframe, Phase, Property, Timebase, Track, TrackKey, Value,
+    };
+    const KEYS: u32 = 128;
+    let bezier = Easing::CubicBezier(CubicBezier::new(65_536, -65_536, 65_536, 131_072).unwrap());
+    Clip::from_tracks(
+        Timebase::new(fm_types::FrameRate::new(60, 1).unwrap()),
+        KEYS - 1,
+        0,
+        (1..=tracks)
+            .map(|index| {
+                Track::new(
+                    TrackKey::new(target(index), Phase::In, Property::PositionX),
+                    (0..KEYS)
+                        .map(|frame| {
+                            Keyframe::new(frame, Value::Scalar(i64::from(i32::MIN)), bezier)
+                        })
+                        .collect(),
+                )
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+/// Local scene and title animation edits are held to the same wire bound as
+/// daemon edits: a stretch that grows a fitting clip past
+/// `MAX_*_ANIMATION_BYTES` is refused with a clear error and nothing is
+/// saved.
+#[test]
+#[allow(clippy::too_many_lines)] // one refusal per authoring surface
+fn local_animation_edits_refuse_clips_without_a_wire_encoding() {
+    use fm_model::{LayerId, SceneAnimation, fm_animation::MAX_PHASE_FRAMES};
+    use fm_protocol::{
+        MAX_SCENE_ANIMATION_BYTES, MAX_TITLE_ANIMATION_BYTES, scene_clip_wire_bytes,
+        title_clip_wire_bytes,
+    };
+    use fm_titles::{ElementId, TitleAnimation};
+
+    let root = unique_test_root();
+    let project = root.join("bound.freemix");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+    let run = |arguments: &[&str]| {
+        let output = invoke_bounded(arguments);
+        assert_success(&output);
+        stdout(&output)
+    };
+
+    // Scene: the most layers whose dense clip still fits.
+    let layer = |index: u32| LayerId::new(index).unwrap();
+    let tracks = (1..=32)
+        .take_while(|tracks| {
+            scene_clip_wire_bytes(&fm_control::scene_clip_to_wire(&dense_clip(*tracks, layer)))
+                <= MAX_SCENE_ANIMATION_BYTES
+        })
+        .last()
+        .unwrap();
+    run(&["new", path]);
+    run(&["scene-input-add", path, "3", "10", "Cam"]);
+    for index in 0..tracks {
+        run(&[
+            "scene-layer-add",
+            path,
+            "10",
+            "1",
+            "0",
+            &format!("L{index}"),
+        ]);
+    }
+    let store = ProjectStore::new(&project).unwrap();
+    let stored = store.load().unwrap();
+    let mut edited = stored.project().clone();
+    let scene = SceneId::new(NonZeroU128::new(10).unwrap());
+    edited
+        .set_scene_animation(scene, SceneAnimation::new(dense_clip(tracks, layer), 0))
+        .unwrap();
+    store
+        .save(
+            &StoredProject::from_project_with_complete_runtime_state(
+                edited,
+                stored.runtime_routing(),
+                stored.runtime_manual_transitions(),
+                stored.runtime_fade_to_black(),
+                stored.runtime_overlays().clone(),
+                stored.position(),
+                stored.idempotency_receipts().to_vec(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let manifest = fs::read(project.join("project.json")).unwrap();
+    let frames = MAX_PHASE_FRAMES.to_string();
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "scene-animation-stretch",
+            path,
+            "10",
+            "--phase",
+            "in",
+            "--frames",
+            &frames,
+        ]),
+        &format!(
+            "scene 10: the edited animation exceeds the {MAX_SCENE_ANIMATION_BYTES} byte \
+             protocol limit (MAX_SCENE_ANIMATION_BYTES) and was not saved"
+        ),
+    );
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), manifest);
+    // A stretch that keeps the clip on the wire still applies.
+    assert!(
+        run(&[
+            "scene-animation-stretch",
+            path,
+            "10",
+            "--phase",
+            "in",
+            "--frames",
+            "127"
+        ])
+        .starts_with("scene-animation-stretch: scene 10 revision=1 ")
+    );
+
+    // Title: the same shape over template elements.
+    let element = |index: u32| ElementId::new(NonZeroU128::new(u128::from(index)).unwrap());
+    let tracks = (1..=32)
+        .take_while(|tracks| {
+            title_clip_wire_bytes(&fm_control::title_clip_to_wire(&dense_clip(
+                *tracks, element,
+            ))) <= MAX_TITLE_ANIMATION_BYTES
+        })
+        .last()
+        .unwrap();
+    let elements = (1..=tracks)
+        .map(|id| {
+            format!(
+                r##"{{"id": {id}, "name": "Box {id}", "bounds": {{"x": 1, "y": 1, "width": 2, "height": 2}}, "z_index": 0, "visible": true, "style": {{"fill": "#ff0000ff", "background": null, "opacity": 255, "font": null, "alignment": {{"horizontal": "start", "vertical": "start"}}}}, "color_field": null, "kind": {{"type": "rectangle"}}}}"##
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n      ");
+    let source = root.join("dense.fmtitle");
+    fs::write(
+        &source,
+        SLIDE_TITLE_SOURCE.replace(
+            r##"{"id": 1, "name": "Bar", "bounds": {"x": 4, "y": 2, "width": 8, "height": 4}, "z_index": 0, "visible": true, "style": {"fill": "#ff0000ff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": null, "kind": {"type": "rectangle"}}"##,
+            &elements,
+        ),
+    )
+    .unwrap();
+    run(&[
+        "title-input-add",
+        path,
+        "--id",
+        "9",
+        "--name",
+        "Dense",
+        "--template",
+        source.to_str().unwrap(),
+    ]);
+    let uri = "asset://titles/dense.fmtitle";
+    let mut template = store.load_title_template(uri).unwrap();
+    template.template.animation = TitleAnimation::new(dense_clip(tracks, element), 0);
+    store.replace_title_template(uri, &template).unwrap();
+    let stored_template = fs::read(project.join("assets/titles/dense.fmtitle")).unwrap();
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "title-animation-stretch",
+            path,
+            uri,
+            "--phase",
+            "in",
+            "--frames",
+            &frames,
+        ]),
+        &format!(
+            "title template {uri}: the edited animation exceeds the \
+             {MAX_TITLE_ANIMATION_BYTES} byte protocol limit (MAX_TITLE_ANIMATION_BYTES) and \
+             was not saved"
+        ),
+    );
+    assert_eq!(
+        fs::read(project.join("assets/titles/dense.fmtitle")).unwrap(),
+        stored_template
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// GX-011: a scene layer's rotation key turns it by any angle about its
+/// centre (no quarter-turn snapping) in the locally rendered frame.
+#[test]
+fn scene_rotation_renders_at_any_angle() {
+    use fm_model::{
+        LayerId, SceneAnimation,
+        fm_animation::{Clip, Easing, Keyframe, Phase, Property, Timebase, Track, TrackKey, Value},
+    };
+
+    let root = unique_test_root();
+    let project = root.join("tilt.freemix");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+    let run = |arguments: &[&str]| {
+        let output = invoke_bounded(arguments);
+        assert_success(&output);
+        stdout(&output)
+    };
+    run(&["new", path]);
+    run(&["input-replace-solid", path, "1", "200", "100", "50", "255"]);
+    run(&["scene-input-add", path, "3", "10", "Cam"]);
+    run(&["scene-background", path, "10", "10", "20", "30", "255"]);
+    run(&["scene-layer-add", path, "10", "1", "0", "L1"]);
+    // 960x540 at (480, 270): centred on the 1920x1080 canvas.
+    run(&[
+        "scene-layer-geometry",
+        path,
+        "10",
+        "0",
+        "480",
+        "270",
+        "960",
+        "540",
+        "0",
+    ]);
+    // A constant 30 degree clockwise turn through the In phase.
+    let clip = Clip::from_tracks(
+        Timebase::new(fm_types::FrameRate::new(30, 1).unwrap()),
+        10,
+        0,
+        vec![Track::new(
+            TrackKey::new(LayerId::new(1).unwrap(), Phase::In, Property::Rotation),
+            vec![
+                Keyframe::new(0, Value::Scalar(30_000), Easing::Linear),
+                Keyframe::new(10, Value::Scalar(30_000), Easing::Linear),
+            ],
+        )],
+    )
+    .unwrap();
+    let store = ProjectStore::new(&project).unwrap();
+    let stored = store.load().unwrap();
+    let mut edited = stored.project().clone();
+    edited
+        .set_scene_animation(
+            SceneId::new(NonZeroU128::new(10).unwrap()),
+            SceneAnimation::new(clip, 1),
+        )
+        .unwrap();
+    store
+        .save(
+            &StoredProject::from_project_with_complete_runtime_state(
+                edited,
+                stored.runtime_routing(),
+                stored.runtime_manual_transitions(),
+                stored.runtime_fade_to_black(),
+                stored.runtime_overlays().clone(),
+                stored.position(),
+                stored.idempotency_receipts().to_vec(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let render = |phase: &str, frame: &str| {
+        let output = root.join(format!("{phase}.ppm"));
+        run(&[
+            "scene-render-frame",
+            path,
+            "10",
+            "--phase",
+            phase,
+            "--frame",
+            frame,
+            output.to_str().unwrap(),
+        ]);
+        output
+    };
+    let layer = [200, 100, 50];
+    let background = [10, 20, 30];
+    // The Out phase has no tracks, so it draws the static design: the box
+    // spans output (160..480, 90..270).
+    let held = render("out", "0");
+    assert_eq!(ppm_pixel(&held, 640, 360, 162, 92), layer);
+    assert_eq!(ppm_pixel(&held, 640, 360, 320, 275), background);
+    // Turned 30 degrees about the canvas centre (320, 180): the untilted
+    // top-left corner is uncovered, and the box reaches below its untilted
+    // bottom edge on the centre column (half height 270 / cos 30 = 311.8
+    // project px, 103.9 output px) and right of centre below it.
+    let tilted = render("in", "5");
+    assert_eq!(ppm_pixel(&tilted, 640, 360, 162, 92), background);
+    assert_eq!(ppm_pixel(&tilted, 640, 360, 320, 180), layer);
+    assert_eq!(ppm_pixel(&tilted, 640, 360, 320, 275), layer);
+    assert_eq!(ppm_pixel(&tilted, 640, 360, 320, 290), background);
+    // Clockwise: the right end swings down, the left end up.
+    assert_eq!(ppm_pixel(&tilted, 640, 360, 440, 260), layer);
+    assert_eq!(ppm_pixel(&tilted, 640, 360, 200, 260), background);
+    fs::remove_dir_all(root).unwrap();
+}

@@ -268,6 +268,16 @@ fn scene_layer_geometry_checked_validation_is_atomic() {
         );
         assert_eq!(project, before);
     }
+    // Tilts are posed only, never stored.
+    assert_eq!(
+        project.set_scene_layer_geometry(
+            scene,
+            0,
+            LayerGeometry::new(1, 2, 100, 100, Rotation::Deg0).with_tilt(1)
+        ),
+        Err(SceneLayerError::InvalidGeometry { scene, index: 0 })
+    );
+    assert_eq!(project, before);
 
     let geometry = LayerGeometry::new(-12, 34, 640, 480, Rotation::Deg270);
     project
@@ -2585,6 +2595,26 @@ fn scene_composition_value_bounds_and_premultiplication_are_validated() {
     for field in ["background", "layers.geometry", "layers.crop"] {
         assert!(errors.iter().any(|error| error.field == field));
     }
+
+    // A stored layer is never tilted.
+    let mut tilted = layer("Source", SourceRef::Input(input_id(1)));
+    tilted.geometry = tilted.geometry.with_tilt(5_000);
+    let mut project = Project::new(project_id(12), "Tilted", settings());
+    project.add_input(Input {
+        id: input_id(1),
+        name: "Source".into(),
+        kind: InputKind::Color,
+        required_capabilities: Vec::new(),
+    });
+    project.add_scene(Scene {
+        id: scene_id(1),
+        name: "Tilted".into(),
+        background: Rgba8::new(0, 0, 0, 255),
+        layers: vec![tilted],
+        animation: fm_model::SceneAnimation::default(),
+    });
+    let errors = project.validate().unwrap_err();
+    assert!(errors.iter().any(|error| error.field == "layers.geometry"));
 }
 
 #[test]

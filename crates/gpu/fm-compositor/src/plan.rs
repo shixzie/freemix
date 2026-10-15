@@ -27,6 +27,7 @@ pub struct PlanLayer {
     grade: Option<Arc<CompiledGrade>>,
     overlay_inclusion: Option<OutputInclusion>,
     inset_border_width: u32,
+    rotation_millidegrees: i32,
     scene_index: usize,
 }
 
@@ -105,6 +106,20 @@ impl PlanLayer {
     #[must_use]
     pub const fn inset_border_width(&self) -> u32 {
         self.inset_border_width
+    }
+
+    /// The clockwise rotation about the footprint centre, in millidegrees
+    /// (see [`crate::SourceLayer::with_rotation_millidegrees`]).
+    #[must_use]
+    pub const fn rotation_millidegrees(&self) -> i32 {
+        self.rotation_millidegrees
+    }
+
+    /// Whether the layer is drawn tilted: a rotation that is not a whole
+    /// turn.
+    #[must_use]
+    pub fn is_tilted(&self) -> bool {
+        i64::from(self.rotation_millidegrees).rem_euclid(fm_animation::FULL_TURN_MILLIDEGREES) != 0
     }
 
     #[must_use]
@@ -436,6 +451,7 @@ pub fn compile_scene(
                 grade: layer.grade().cloned(),
                 overlay_inclusion: layer.overlay_inclusion(),
                 inset_border_width: layer.inset_border_width(),
+                rotation_millidegrees: layer.rotation_millidegrees(),
                 scene_index,
             }
         })

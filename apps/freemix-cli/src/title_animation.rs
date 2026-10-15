@@ -3,11 +3,15 @@
 //!
 //! Edits rewrite the stored `.fmtitle` template in place (every title input
 //! naming it sees the change) and refuse a bundle a running daemon holds,
-//! like every other local mutation. Rendering is read-only: it draws the
-//! input's own field values at the template's canvas size with the bundle's
-//! fonts. Image fields draw the reference renderer's placeholder (the CLI
-//! decodes no images) and production clocks have no clock source here, so
-//! both are reported rather than drawn.
+//! like every other local mutation. An edit whose clip would exceed the
+//! protocol's `MAX_TITLE_ANIMATION_BYTES` wire bound (the bound `fm-control`
+//! holds every daemon edit to) is refused and nothing is saved.
+//!
+//! Rendering is read-only: it draws the input's own field values at the
+//! template's canvas size with the bundle's fonts. Image fields draw the
+//! reference renderer's placeholder (the CLI decodes no images) and
+//! production clocks have no clock source here, so both are reported rather
+//! than drawn.
 
 use std::{fs, path::Path};
 
@@ -54,6 +58,16 @@ fn save(
     uri: &str,
     stored: &StoredTitleTemplate,
 ) -> AppResult<()> {
+    // The same bound the daemon holds every edit to: a clip without a wire
+    // encoding could never be carried by an event or snapshot.
+    if !fm_control::title_clip_fits_wire(&stored.template.animation.clip) {
+        return Err(AppFailure(format!(
+            "title template {uri}: the edited animation exceeds the {} byte protocol limit \
+             (MAX_TITLE_ANIMATION_BYTES) and was not saved; use fewer keys or tracks",
+            fm_protocol::MAX_TITLE_ANIMATION_BYTES
+        ))
+        .into());
+    }
     store
         .replace_title_template(uri, stored)
         .map_err(|error| AppFailure(format!("title template {uri}: {error}")))?;

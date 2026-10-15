@@ -13,10 +13,10 @@ use crate::{
     ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin,
     MonitorTap, OverlayStatus, PlaylistOperation, PlaylistStateMessage, ResumeCursor,
     RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent,
-    SceneAnimationStateMessage, SceneLayoutStateMessage, ServerIdentity, SnapshotMessage,
-    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
-    StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample, StructuredError,
-    TitleAnimationStateMessage, TitleFieldStatus, TitleLayoutStateMessage,
+    SceneAnimationStateMessage, SceneLayoutStateMessage, ScenePreviewRequest, ServerIdentity,
+    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
+    StingerReadiness, StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample,
+    StructuredError, TitleAnimationStateMessage, TitleFieldStatus, TitleLayoutStateMessage,
     TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireInputId,
     WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireSceneLayerId,
     WireStingerSlotId, WireStreamTargetId, WireTitleElementId,
@@ -129,6 +129,12 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         }
         "title_preview_frame" => {
             WireMessage::TitlePreviewFrame(decode_title_preview_frame(&mut fields)?)
+        }
+        "scene_preview_request" => {
+            WireMessage::ScenePreviewRequest(decode_scene_preview_request(&mut fields)?)
+        }
+        "scene_preview_frame" => {
+            WireMessage::ScenePreviewFrame(decode_title_preview_frame(&mut fields)?)
         }
         _ => return Err(CodecError::UnknownMessage(kind.to_owned())),
     };
@@ -712,7 +718,17 @@ fn decode_title_layout_state(fields: &mut Fields) -> Result<TitleLayoutStateMess
     })
 }
 
-fn decode_title_preview_request(fields: &mut Fields) -> Result<TitlePreviewRequest, CodecError> {
+/// The fields every exact preview request carries, before its clip.
+struct PreviewHead {
+    protocol: crate::ProtocolVersion,
+    request_id: String,
+    input: WireInputId,
+    sample: crate::TitlePreviewSample,
+    width: u16,
+    height: u16,
+}
+
+fn decode_preview_head(fields: &mut Fields) -> Result<PreviewHead, CodecError> {
     let protocol = fields.required("protocol")?;
     let request_id = fields.required("request_id")?;
     validate_request_id(&request_id)?;
@@ -723,11 +739,7 @@ fn decode_title_preview_request(fields: &mut Fields) -> Result<TitlePreviewReque
     let width = decode_preview_dimension(fields, "width")?;
     let height = decode_preview_dimension(fields, "height")?;
     validate_preview_size(width, height)?;
-    let clip = fields
-        .optional("clip")
-        .map(|clip| decode_clip(&clip).map(Box::new))
-        .transpose()?;
-    Ok(TitlePreviewRequest {
+    Ok(PreviewHead {
         protocol: parse_version(&protocol).ok_or(CodecError::InvalidField {
             field: "protocol",
             value: protocol,
@@ -737,6 +749,39 @@ fn decode_title_preview_request(fields: &mut Fields) -> Result<TitlePreviewReque
         sample,
         width,
         height,
+    })
+}
+
+fn decode_title_preview_request(fields: &mut Fields) -> Result<TitlePreviewRequest, CodecError> {
+    let head = decode_preview_head(fields)?;
+    let clip = fields
+        .optional("clip")
+        .map(|clip| decode_clip(&clip).map(Box::new))
+        .transpose()?;
+    Ok(TitlePreviewRequest {
+        protocol: head.protocol,
+        request_id: head.request_id,
+        input: head.input,
+        sample: head.sample,
+        width: head.width,
+        height: head.height,
+        clip,
+    })
+}
+
+fn decode_scene_preview_request(fields: &mut Fields) -> Result<ScenePreviewRequest, CodecError> {
+    let head = decode_preview_head(fields)?;
+    let clip = fields
+        .optional("clip")
+        .map(|clip| decode_scene_clip(&clip).map(Box::new))
+        .transpose()?;
+    Ok(ScenePreviewRequest {
+        protocol: head.protocol,
+        request_id: head.request_id,
+        input: head.input,
+        sample: head.sample,
+        width: head.width,
+        height: head.height,
         clip,
     })
 }

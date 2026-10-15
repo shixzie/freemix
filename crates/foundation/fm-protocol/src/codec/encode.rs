@@ -13,10 +13,10 @@ use crate::{
     LiveInputSource, MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind,
     ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, PlaylistOperation,
     PlaylistStateMessage, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
-    RuntimeLifecycleEvent, SceneAnimationStateMessage, SceneLayoutStateMessage, ServerIdentity,
-    SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
-    StingerReadiness, StingerStatus, StreamStatusMessage, StructuredError,
-    TitleAnimationStateMessage, TitleFieldUpdate, TitleLayoutStateMessage,
+    RuntimeLifecycleEvent, SceneAnimationStateMessage, SceneLayoutStateMessage,
+    ScenePreviewRequest, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
+    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
+    StructuredError, TitleAnimationStateMessage, TitleFieldUpdate, TitleLayoutStateMessage,
     TitlePreviewFrameMessage, TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireMessage,
 };
 
@@ -105,7 +105,13 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             encode_title_preview_request(&mut record, message)?;
         }
         WireMessage::TitlePreviewFrame(message) => {
-            encode_title_preview_frame(&mut record, message)?;
+            encode_preview_frame(&mut record, "title_preview_frame", message)?;
+        }
+        WireMessage::ScenePreviewRequest(message) => {
+            encode_scene_preview_request(&mut record, message)?;
+        }
+        WireMessage::ScenePreviewFrame(message) => {
+            encode_preview_frame(&mut record, "scene_preview_frame", message)?;
         }
     }
     record.finish()
@@ -585,31 +591,76 @@ fn encode_title_layout_state(
     record.field_string("elements", elements)
 }
 
+/// Writes the fields every exact preview request carries, after its kind
+/// and before its clip.
+fn encode_preview_head(
+    record: &mut Record,
+    kind: &'static str,
+    protocol: crate::ProtocolVersion,
+    request_id: &str,
+    input: crate::WireInputId,
+    sample: crate::TitlePreviewSample,
+    (width, height): (u16, u16),
+) -> Result<(), CodecError> {
+    validate_request_id(request_id)?;
+    validate_preview_sample(sample)?;
+    validate_preview_size(width, height)?;
+    let (phase, frame) = encode_preview_sample(sample);
+    record.kind(kind);
+    record.field("protocol", protocol)?;
+    record.field_str("request_id", request_id)?;
+    record.field("input", input)?;
+    record.field("phase", phase)?;
+    record.field("frame", frame)?;
+    record.field("width", width)?;
+    record.field("height", height)
+}
+
 fn encode_title_preview_request(
     record: &mut Record,
     message: &TitlePreviewRequest,
 ) -> Result<(), CodecError> {
-    validate_request_id(&message.request_id)?;
-    validate_preview_sample(message.sample)?;
-    validate_preview_size(message.width, message.height)?;
     let clip = message.clip.as_deref().map(encode_clip).transpose()?;
-    let (phase, frame) = encode_preview_sample(message.sample);
-    record.kind("title_preview_request");
-    record.field("protocol", message.protocol)?;
-    record.field_str("request_id", &message.request_id)?;
-    record.field("input", message.input)?;
-    record.field("phase", phase)?;
-    record.field("frame", frame)?;
-    record.field("width", message.width)?;
-    record.field("height", message.height)?;
+    encode_preview_head(
+        record,
+        "title_preview_request",
+        message.protocol,
+        &message.request_id,
+        message.input,
+        message.sample,
+        (message.width, message.height),
+    )?;
     if let Some(clip) = clip {
         record.field_string("clip", clip)?;
     }
     Ok(())
 }
 
-fn encode_title_preview_frame(
+fn encode_scene_preview_request(
     record: &mut Record,
+    message: &ScenePreviewRequest,
+) -> Result<(), CodecError> {
+    let clip = message.clip.as_deref().map(encode_scene_clip).transpose()?;
+    encode_preview_head(
+        record,
+        "scene_preview_request",
+        message.protocol,
+        &message.request_id,
+        message.input,
+        message.sample,
+        (message.width, message.height),
+    )?;
+    if let Some(clip) = clip {
+        record.field_string("clip", clip)?;
+    }
+    Ok(())
+}
+
+/// One `title_preview_frame` or `scene_preview_frame` part: the same fields
+/// under `kind`.
+fn encode_preview_frame(
+    record: &mut Record,
+    kind: &'static str,
     message: &TitlePreviewFrameMessage,
 ) -> Result<(), CodecError> {
     validate_request_id(&message.request_id)?;
@@ -620,7 +671,7 @@ fn encode_title_preview_frame(
         message.parts,
         message.data.len(),
     )?;
-    record.kind("title_preview_frame");
+    record.kind(kind);
     encode_server_identity(record, &message.server)?;
     record.field_str("request_id", &message.request_id)?;
     record.field("input", message.input)?;

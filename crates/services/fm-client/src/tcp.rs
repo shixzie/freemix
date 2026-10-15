@@ -8,9 +8,9 @@ use fm_protocol::{
     AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CodecError, CommandPayload, CommandResult,
     DiagnosticsRequest, DiagnosticsResponse, DurableGap, ErrorMessage, EventMessage,
     HandshakeOutcome, HeartbeatAcknowledgementMessage, LineDecoder, MonitorFrameAssembler,
-    MonitorFrameMessage, MonitorImage, MonitorTap, RuntimeEventMessage, StreamStatusMessage,
-    TitlePreviewAssembler, TitlePreviewFrameMessage, TitlePreviewImage, TitlePreviewRequest,
-    WireMessage, encode_line,
+    MonitorFrameMessage, MonitorImage, MonitorTap, RuntimeEventMessage, ScenePreviewImage,
+    ScenePreviewRequest, StreamStatusMessage, TitlePreviewAssembler, TitlePreviewFrameMessage,
+    TitlePreviewImage, TitlePreviewRequest, WireMessage, encode_line,
 };
 
 #[cfg(feature = "std-websocket")]
@@ -385,6 +385,14 @@ pub enum SessionEvent {
         request_id: String,
         complete: bool,
     },
+    /// One valid `scene_preview_frame` part arrived for `request_id`
+    /// (Protocol 2.32). When `complete` is `true` it finished its group and
+    /// the decoded image is available from
+    /// [`TcpSession::latest_scene_preview`].
+    ScenePreview {
+        request_id: String,
+        complete: bool,
+    },
     DurableGap {
         gap: DurableGap,
     },
@@ -480,6 +488,8 @@ pub struct TcpSession {
     latest_monitor: [Option<(MonitorImage, Instant)>; 2],
     title_preview_assembler: TitlePreviewAssembler,
     latest_title_preview: Option<(TitlePreviewImage, Instant)>,
+    scene_preview_assembler: TitlePreviewAssembler,
+    latest_scene_preview: Option<(ScenePreviewImage, Instant)>,
 }
 
 #[derive(Debug)]
@@ -595,6 +605,8 @@ impl TcpSession {
             latest_monitor: [None, None],
             title_preview_assembler: TitlePreviewAssembler::new(),
             latest_title_preview: None,
+            scene_preview_assembler: TitlePreviewAssembler::new(),
+            latest_scene_preview: None,
         }
     }
 
@@ -652,6 +664,36 @@ impl TcpSession {
         self.latest_title_preview
             .as_ref()
             .map(|(image, received_at)| (image, *received_at))
+    }
+
+    /// The latest fully assembled and decoded exact scene preview
+    /// (Protocol 2.32) and when it completed. Cleared on disconnect.
+    #[must_use]
+    pub fn latest_scene_preview(&self) -> Option<(&ScenePreviewImage, Instant)> {
+        self.latest_scene_preview
+            .as_ref()
+            .map(|(image, received_at)| (image, *received_at))
+    }
+
+    /// Sends one exact scene preview request (Protocol 2.32). The answer
+    /// arrives later as [`SessionEvent::ScenePreview`] parts, or as a
+    /// [`SessionEvent::ServerError`] naming the same `request_id`. Previews
+    /// are lossy: the server may answer only the latest of several (title
+    /// and scene previews alike).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_scene_preview(
+        &mut self,
+        request: ScenePreviewRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::ScenePreviewRequest(request), None)?;
+        self.flush_wire_wait(None)
     }
 
     /// Sends one exact title preview request (see
@@ -1120,6 +1162,9 @@ impl TcpSession {
                     WireMessage::TitlePreviewFrame(frame) => {
                         self.validate_title_preview(&frame)?;
                     }
+                    WireMessage::ScenePreviewFrame(frame) => {
+                        self.validate_scene_preview(&frame)?;
+                    }
                     _ => {
                         self.transition_disconnect();
                         return Err(TcpSessionError::UnexpectedMessage);
@@ -1183,13 +1228,8 @@ impl TcpSession {
                     complete,
                 })
             }
-            WireMessage::TitlePreviewFrame(frame) => {
-                let complete = self.validate_title_preview(&frame)?;
-                Ok(SessionEvent::TitlePreview {
-                    request_id: frame.request_id,
-                    complete,
-                })
-            }
+            WireMessage::TitlePreviewFrame(frame) => self.preview_part(frame, false),
+            WireMessage::ScenePreviewFrame(frame) => self.preview_part(frame, true),
             WireMessage::DurableGap(gap) => {
                 let result = self.client.intake(WireMessage::DurableGap(gap.clone()));
                 if let Err(error) = result {
@@ -1228,6 +1268,7 @@ impl TcpSession {
             }
             WireMessage::Command(_)
             | WireMessage::TitlePreviewRequest(_)
+            | WireMessage::ScenePreviewRequest(_)
             | WireMessage::Snapshot(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::HandshakeResponse(_)
@@ -1462,6 +1503,8 @@ impl TcpSession {
         self.latest_monitor = [None, None];
         self.title_preview_assembler.reset();
         self.latest_title_preview = None;
+        self.scene_preview_assembler.reset();
+        self.latest_scene_preview = None;
         self.connection.take();
         self.client.transport_disconnected()
     }
@@ -1508,9 +1551,9 @@ impl TcpSession {
 }
 
 impl TcpSession {
-    /// A started `monitor_frame` or `title_preview_frame` group is atomic on
-    /// the wire: any other record before its last part is a protocol
-    /// violation.
+    /// A started `monitor_frame`, `title_preview_frame`, or
+    /// `scene_preview_frame` group is atomic on the wire: any other record
+    /// before its last part is a protocol violation.
     fn reject_interleaved_monitor_group(
         &mut self,
         message: &WireMessage,
@@ -1520,8 +1563,10 @@ impl TcpSession {
             .iter()
             .any(MonitorFrameAssembler::is_in_progress);
         let preview_open = self.title_preview_assembler.is_in_progress();
+        let scene_preview_open = self.scene_preview_assembler.is_in_progress();
         if (monitor_open && !matches!(message, WireMessage::MonitorFrame(_)))
             || (preview_open && !matches!(message, WireMessage::TitlePreviewFrame(_)))
+            || (scene_preview_open && !matches!(message, WireMessage::ScenePreviewFrame(_)))
         {
             self.transition_disconnect();
             return Err(TcpSessionError::UnexpectedMessage);
@@ -1584,6 +1629,56 @@ impl TcpSession {
             Ok(None) => Ok(false),
             Ok(Some(image)) => {
                 self.latest_title_preview = Some((image, Instant::now()));
+                Ok(true)
+            }
+            Err(_) => {
+                self.transition_disconnect();
+                Err(TcpSessionError::UnexpectedMessage)
+            }
+        }
+    }
+}
+
+impl TcpSession {
+    /// The event for one received `title_preview_frame` part, or with
+    /// `scene` a `scene_preview_frame` part.
+    fn preview_part(
+        &mut self,
+        frame: TitlePreviewFrameMessage,
+        scene: bool,
+    ) -> Result<SessionEvent, TcpSessionError> {
+        Ok(if scene {
+            SessionEvent::ScenePreview {
+                complete: self.validate_scene_preview(&frame)?,
+                request_id: frame.request_id,
+            }
+        } else {
+            SessionEvent::TitlePreview {
+                complete: self.validate_title_preview(&frame)?,
+                request_id: frame.request_id,
+            }
+        })
+    }
+
+    /// Validates and assembles one `scene_preview_frame` part, returning
+    /// whether it completed its group. Any violation disconnects the
+    /// session.
+    fn validate_scene_preview(
+        &mut self,
+        frame: &TitlePreviewFrameMessage,
+    ) -> Result<bool, TcpSessionError> {
+        let valid_identity = self
+            .client
+            .session()
+            .is_some_and(|session| session.server == frame.server);
+        if !valid_identity {
+            self.transition_disconnect();
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        match self.scene_preview_assembler.push(frame) {
+            Ok(None) => Ok(false),
+            Ok(Some(image)) => {
+                self.latest_scene_preview = Some((image, Instant::now()));
                 Ok(true)
             }
             Err(_) => {

@@ -16,6 +16,7 @@
 //! * [`AnimationEdit`]: atomic stretch, retime, move, easing, and copy/paste.
 //! * [`SnapTargets`]: nearest landmark within a threshold.
 //! * [`AnimationPreset`]: Fade, Slide, Pop, Wipe, and Drop.
+//! * [`sin_cos_q30`]: the fixed-point rotation every renderer shares.
 
 mod clip;
 pub mod easing;
@@ -25,6 +26,7 @@ mod property;
 mod snap;
 mod time;
 mod track;
+mod trig;
 mod value;
 
 pub use clip::{
@@ -43,4 +45,5 @@ pub use property::{Layering, MAX_SCALE_BP, OPACITY_IDENTITY, Property, SCALE_IDE
 pub use snap::{Snap, SnapKind, SnapTargets};
 pub use time::{ClipPosition, Timebase};
 pub use track::{Keyframe, Phase, Track, TrackKey, sample, sample_frame};
+pub use trig::{FULL_TURN_MILLIDEGREES, TRIG_ONE, sin_cos_q30};
 pub use value::{Animatable, Rgba, Value};

@@ -34,9 +34,10 @@ pub struct SessionLimits {
     pub max_outbound_bytes: usize,
     pub outbound_messages: RateLimit,
     pub heartbeat_timeout_ms: u64,
-    /// Exact title previews (`title_preview_request`) one session may ask
-    /// for per window, on top of [`Self::inbound_commands`]: each renders a
-    /// frame, so they are bounded more tightly than commands.
+    /// Exact title and scene previews (`title_preview_request` and, since
+    /// Protocol 2.32, `scene_preview_request`, counted together) one session
+    /// may ask for per window, on top of [`Self::inbound_commands`]: each
+    /// renders a frame, so they are bounded more tightly than commands.
     pub title_previews: RateLimit,
 }
 

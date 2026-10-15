@@ -836,10 +836,11 @@ mod scenes {
             }]
         );
         assert!(
-            intents
-                .iter()
-                .all(|intent| !matches!(intent, StudioIntent::TitlePreview(_))),
-            "scenes ask for no exact preview"
+            intents.iter().all(|intent| !matches!(
+                intent,
+                StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)
+            )),
+            "without a raw TCP session no exact preview is asked for"
         );
 
         let mut shell = StudioShell::default();
@@ -859,6 +860,70 @@ mod scenes {
         assert_eq!(
             animation_lock_reason(&locked, input(SCENE)),
             Some(PROJECT_LOCKED_REASON)
+        );
+    }
+
+    #[test]
+    fn scenes_are_previewed_exactly_on_the_canvas() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let mut state = scene_ready(false, false);
+        state.title_previews = true;
+        shell.open_scene_animation_window(input(SCENE));
+        let mut request = None;
+        for time in [0.0, 0.5, 1.0] {
+            for intent in draw_at(&context, &mut shell, &state, time, Vec::new()) {
+                assert!(!matches!(intent, StudioIntent::TitlePreview(_)));
+                if let StudioIntent::ScenePreview(sent) = intent {
+                    request = Some(sent);
+                }
+            }
+        }
+        let request = request.expect("a scene preview is requested");
+        assert_eq!(request.input, wire(SCENE));
+        assert_eq!((request.width, request.height), (640, 360));
+        assert!(
+            request.clip.is_none(),
+            "a clean draft previews the saved animation"
+        );
+        assert!(!shell.animation_preview_shown(input(SCENE)));
+
+        // A refusal frees the scheduler for the next request.
+        let mut refused = state.clone();
+        refused.title_preview_failed = Some(request.request_id.clone());
+        draw_at(&context, &mut shell, &refused, 1.1, Vec::new());
+        assert!(
+            !shell
+                .scene_animation_binding(input(SCENE))
+                .unwrap()
+                .awaits_preview(&request.request_id)
+        );
+        let mut request = None;
+        for time in [1.5, 2.0] {
+            for intent in draw_at(&context, &mut shell, &refused, time, Vec::new()) {
+                if let StudioIntent::ScenePreview(sent) = intent {
+                    request = Some(sent);
+                }
+            }
+        }
+        let request = request.expect("the scene preview is asked for again");
+
+        refused.title_preview = Some(TitlePreviewImage {
+            request_id: request.request_id.clone(),
+            input: wire(SCENE),
+            animation_revision: 3,
+            draft: false,
+            width: request.width,
+            height: request.height,
+            rgba: vec![90; usize::from(request.width) * usize::from(request.height) * 4].into(),
+        });
+        draw_at(&context, &mut shell, &refused, 2.1, Vec::new());
+        assert!(shell.animation_preview_shown(input(SCENE)));
+        assert!(
+            shell
+                .scene_animation_binding(input(SCENE))
+                .unwrap()
+                .exact_preview_current()
         );
     }
 

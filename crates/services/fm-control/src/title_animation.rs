@@ -27,7 +27,8 @@ pub fn title_clip_to_wire(clip: &TitleClip) -> WireTitleClip {
 
 /// Whether `clip`'s wire encoding fits [`MAX_TITLE_ANIMATION_BYTES`], the
 /// bound every title animation edit is held to.
-pub(crate) fn title_clip_fits_wire(clip: &TitleClip) -> bool {
+#[must_use]
+pub fn title_clip_fits_wire(clip: &TitleClip) -> bool {
     title_clip_wire_bytes(&title_clip_to_wire(clip)) <= MAX_TITLE_ANIMATION_BYTES
 }
 

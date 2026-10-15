@@ -1,8 +1,9 @@
-//! Protocol 2.31 scene animation: the three scene edit commands, the
-//! `scene_animation_state` and `scene_layout_state` records, and the
-//! `scene_animation_changed` event round-trip exactly in the title clip
-//! encoding (keyed by nonzero `u32` layer ids) and refuse everything outside
-//! the contract, including colour tracks.
+//! Protocol 2.31 scene animation and 2.32 scene previews: the three scene
+//! edit commands, the `scene_animation_state` and `scene_layout_state`
+//! records, the `scene_animation_changed` event, and the
+//! `scene_preview_request` / `scene_preview_frame` pair round-trip exactly in
+//! the title clip encoding (keyed by nonzero `u32` layer ids) and refuse
+//! everything outside the contract, including colour tracks.
 
 use core::num::{NonZeroU32, NonZeroU128};
 
@@ -43,7 +44,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.31\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.32\tid=a\tidempotency_key=k";
 
 fn round_trip(message: &WireMessage) -> String {
     let line = encode_line(message).unwrap();
@@ -104,8 +105,8 @@ fn clip_bytes() -> Vec<u8> {
 }
 
 #[test]
-fn protocol_is_2_31() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 31));
+fn protocol_is_2_32() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 32));
 }
 
 #[test]
@@ -403,4 +404,130 @@ fn the_worst_case_layout_fits_one_line() {
         })
         .collect();
     assert!(encode_line(&layout_state(too_many)).is_err());
+}
+
+fn preview_request(
+    sample: fm_protocol::TitlePreviewSample,
+    clip: Option<WireSceneClip>,
+) -> WireMessage {
+    WireMessage::ScenePreviewRequest(fm_protocol::ScenePreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "anim-preview-3".to_owned(),
+        input: input(12),
+        sample,
+        width: 640,
+        height: 360,
+        clip: clip.map(Box::new),
+    })
+}
+
+/// Protocol 2.32: a scene preview request carries the title preview's
+/// fields and an optional scene draft clip (layer-keyed, colour refused).
+#[test]
+fn scene_preview_requests_round_trip_and_are_bounded() {
+    use fm_protocol::TitlePreviewSample;
+
+    let line = round_trip(&preview_request(TitlePreviewSample::In { frame: 4 }, None));
+    assert_eq!(
+        line,
+        "scene_preview_request\tprotocol=2.32\trequest_id=anim-preview-3\tinput=12\tphase=in\t\
+         frame=4\twidth=640\theight=360\n"
+    );
+    let with_clip = round_trip(&preview_request(TitlePreviewSample::Hold, Some(clip())));
+    assert!(
+        with_clip.ends_with(&format!("\tclip={}\n", base64url(&clip_bytes()))),
+        "{with_clip}"
+    );
+    round_trip(&preview_request(
+        TitlePreviewSample::Out {
+            frame: MAX_PHASE_FRAMES,
+        },
+        None,
+    ));
+    for (bad, field) in [
+        ("phase=static\tframe=1\twidth=640\theight=360", "frame"),
+        ("phase=in\tframe=36001\twidth=640\theight=360", "frame"),
+        ("phase=in\tframe=0\twidth=641\theight=360", "width"),
+        ("phase=in\tframe=0\twidth=64\theight=0", "height"),
+    ] {
+        let line = format!("scene_preview_request\tprotocol=2.32\trequest_id=p\tinput=7\t{bad}\n");
+        match decode_line(&line) {
+            Err(CodecError::InvalidField { field: actual, .. }) => {
+                assert_eq!(actual, field, "{bad}");
+            }
+            other => panic!("{bad}: {other:?}"),
+        }
+    }
+    // A scene draft may not animate colour, on either side of the wire.
+    let colour = Clip::from_tracks(
+        timebase(),
+        2,
+        0,
+        vec![Track::new(
+            TrackKey::new(layer(1), Phase::In, Property::Color),
+            vec![Keyframe::new(
+                0,
+                Value::Color(Rgba::new(1, 2, 3, 4)),
+                Easing::Linear,
+            )],
+        )],
+    )
+    .unwrap();
+    assert!(encode_line(&preview_request(TitlePreviewSample::Hold, Some(colour))).is_err());
+    let WireMessage::ScenePreviewRequest(mut oversized) =
+        preview_request(TitlePreviewSample::Hold, None)
+    else {
+        unreachable!()
+    };
+    oversized.height = 361;
+    assert!(encode_line(&WireMessage::ScenePreviewRequest(oversized)).is_err());
+}
+
+/// Protocol 2.32: scene preview parts are title preview parts under their
+/// own record kind, reassembled by the same assembler.
+#[test]
+fn scene_preview_frames_reuse_the_title_preview_parts() {
+    use fm_protocol::{
+        ServerIdentity, TitlePreviewAssembler, encode_qoi_rgba, title_preview_parts,
+    };
+
+    let server = ServerIdentity {
+        engine_id: "engine-a".into(),
+        project_id: "project-9".into(),
+        state_epoch: 7,
+        log_id: "log-a".into(),
+    };
+    let (width, height) = (32_u16, 18_u16);
+    let rgba: Vec<u8> = (0..usize::from(width) * usize::from(height))
+        .flat_map(|index| [u8::try_from(index % 251).unwrap(), 40, 90, 255])
+        .collect();
+    let qoi = encode_qoi_rgba(width, height, &rgba).unwrap();
+    let parts = title_preview_parts(
+        &server,
+        "anim-preview-3",
+        input(12),
+        9,
+        false,
+        width,
+        height,
+        &qoi,
+    );
+    let mut assembler = TitlePreviewAssembler::new();
+    let mut image = None;
+    for part in parts {
+        let line = round_trip(&WireMessage::ScenePreviewFrame(part));
+        assert!(
+            line.starts_with("scene_preview_frame\tengine_id=engine-a\t"),
+            "{line}"
+        );
+        let WireMessage::ScenePreviewFrame(decoded) = decode_line(&line).unwrap() else {
+            unreachable!()
+        };
+        image = assembler.push(&decoded).unwrap();
+    }
+    let image = image.unwrap();
+    assert_eq!(image.input, input(12));
+    assert_eq!(image.animation_revision, 9);
+    assert!(!image.draft);
+    assert_eq!(&image.rgba[..], &rgba[..]);
 }

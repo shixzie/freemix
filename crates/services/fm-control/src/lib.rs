@@ -24,7 +24,7 @@ mod title_layout;
 pub use scene_animation::{
     scene_clip_fits_wire, scene_clip_from_wire, scene_clip_to_wire, scene_layout_to_wire,
 };
-pub use title_animation::{title_clip_from_wire, title_clip_to_wire};
+pub use title_animation::{title_clip_fits_wire, title_clip_from_wire, title_clip_to_wire};
 pub use title_layout::title_layout_to_wire;
 
 pub use automation::{

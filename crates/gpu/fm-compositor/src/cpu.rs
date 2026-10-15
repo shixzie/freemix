@@ -6,11 +6,12 @@ use fm_frame::{
 };
 use fm_grade::CompiledGrade;
 use fm_video::{
-    CompositeError, CropError, FrameError, ImageFrame, Layer, Rgba8, TransformError,
+    CompositeError, CropError, FrameError, ImageFrame, Layer, Rgba8, Transform, TransformError,
     compose_layers, crop, draw_inset_rect_border, premultiply_alpha, transform_nearest,
 };
 
 use crate::keying::apply_layer_keying;
+use crate::rotate::Tilt;
 use crate::{
     AlphaMode, CompositionPlan, Effect, Key, RectMask, ReferenceEffect, ReferenceEffectError,
     SourceId, apply_reference_effect,
@@ -250,26 +251,7 @@ pub fn execute_cpu(
         if layer.alpha_mode() == AlphaMode::Straight || straighten {
             frame = premultiply_alpha(&frame)?;
         }
-        let transformed =
-            transform_nearest(&frame, plan.width(), plan.height(), layer.transform())?;
-        let transform = layer.transform();
-        let (border_width, border_height) = match transform.rotation {
-            fm_video::Rotation::Deg0 | fm_video::Rotation::Deg180 => {
-                (transform.scale_width, transform.scale_height)
-            }
-            fm_video::Rotation::Deg90 | fm_video::Rotation::Deg270 => {
-                (transform.scale_height, transform.scale_width)
-            }
-        };
-        rendered.push(draw_inset_rect_border(
-            &transformed,
-            transform.translation_x,
-            transform.translation_y,
-            border_width,
-            border_height,
-            layer.inset_border_width(),
-            fm_video::Rgba8::new(255, 255, 255, 255),
-        )?);
+        rendered.push(place_layer(&frame, layer, plan)?);
     }
 
     let layers = rendered
@@ -279,6 +261,47 @@ pub fn execute_cpu(
         .collect::<Vec<_>>();
     let output = compose_layers(plan.width(), plan.height(), plan.background(), &layers)?;
     draw_safe_areas(output, plan)
+}
+
+/// Places one prepared layer `frame` on the output grid: transformed (and
+/// tilted, drawn untilted into a footprint-sized buffer and then turned)
+/// with its inset border.
+fn place_layer(
+    frame: &ImageFrame,
+    layer: &crate::PlanLayer,
+    plan: &CompositionPlan,
+) -> Result<ImageFrame, CpuExecutionError> {
+    let transform = layer.transform();
+    let border = fm_video::Rgba8::new(255, 255, 255, 255);
+    let (border_width, border_height) = crate::rotate::footprint(transform);
+    if let Some(tilt) = Tilt::new(transform, layer.rotation_millidegrees()) {
+        let at_origin = Transform {
+            translation_x: 0,
+            translation_y: 0,
+            ..transform
+        };
+        let footprint = transform_nearest(frame, border_width, border_height, at_origin)?;
+        let footprint = draw_inset_rect_border(
+            &footprint,
+            0,
+            0,
+            border_width,
+            border_height,
+            layer.inset_border_width(),
+            border,
+        )?;
+        return Ok(tilt.draw(&footprint, plan.width(), plan.height())?);
+    }
+    let transformed = transform_nearest(frame, plan.width(), plan.height(), transform)?;
+    Ok(draw_inset_rect_border(
+        &transformed,
+        transform.translation_x,
+        transform.translation_y,
+        border_width,
+        border_height,
+        layer.inset_border_width(),
+        border,
+    )?)
 }
 
 /// Normalizes source colors through `fm-color` before reference composition.

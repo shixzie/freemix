@@ -8,8 +8,9 @@
 //! [`sync_document`], saves its draft with [`save_payload`] (a whole-clip,
 //! revision-checked `title_animation_set`), and turns each
 //! [`ExactPreviewRequest`] of its [`crate::animation_editor::PreviewScheduler`]
-//! into a `title_preview_request` with [`preview_request`], matching the
-//! answer back with [`preview_request_id`].
+//! into a `title_preview_request` (a scene's into a `scene_preview_request`,
+//! Protocol 2.32) with [`preview_request`], matching the answer back with
+//! [`preview_request_id`].
 //!
 //! [`TitleAnimationBinding`] packages all of that for a Studio window: it
 //! owns the document, recognises its own saves, flags conflicts, paces
@@ -23,15 +24,15 @@
 //! ([`AnimationTarget`]), so a scene editor is an
 //! [`AnimationBinding`]`<`[`WireSceneLayerId`]`>` ([`SceneAnimationBinding`])
 //! saving `scene_animation_set` and designed from the replicated
-//! `scene_layout_state` ([`SceneDesign::from_layout`]). Scenes have no exact
-//! preview; their editor shows the wireframe proxy only.
+//! `scene_layout_state` ([`SceneDesign::from_layout`]), and previewed
+//! exactly through `scene_preview_request` (Protocol 2.32) like a title.
 
 use std::sync::Arc;
 
 use fm_animation::{Clip, Phase, Property};
 use fm_protocol::{
-    CURRENT_PROTOCOL_VERSION, CommandPayload, TitlePreviewRequest, TitlePreviewSample, WireInputId,
-    WireSceneLayerId, WireTitleElementId,
+    CURRENT_PROTOCOL_VERSION, CommandPayload, ScenePreviewRequest, TitlePreviewRequest,
+    TitlePreviewSample, WireInputId, WireSceneLayerId, WireTitleElementId,
 };
 use fm_types::InputId;
 
@@ -46,24 +47,58 @@ pub use binding::{
 };
 
 /// What an animation editor can target: a title element or a scene layer.
-/// The target decides the edit command a save sends and which properties
-/// may be animated.
+/// The target decides the edit command a save sends, the exact preview
+/// request it asks for, and which properties may be animated.
 pub trait AnimationTarget: Copy + Ord + core::fmt::Debug {
     /// The properties a target of this kind animates, in display order.
     const PROPERTIES: &'static [Property];
 
+    /// The exact preview request of this target's owner:
+    /// `title_preview_request` or `scene_preview_request` (Protocol 2.32).
+    type PreviewRequest;
+
     /// The revision-checked whole-clip save of `clip` through `input`.
     fn set_payload(input: InputId, base_revision: u64, clip: Clip<Self>) -> CommandPayload;
+
+    /// The exact preview of `input` at `sample` and `(width, height)`, with
+    /// `clip` as an unsaved draft when given.
+    fn preview(
+        input: InputId,
+        request_id: String,
+        sample: TitlePreviewSample,
+        size: (u16, u16),
+        clip: Option<Clip<Self>>,
+    ) -> Self::PreviewRequest;
 }
 
 impl AnimationTarget for WireTitleElementId {
     const PROPERTIES: &'static [Property] = &Property::ALL;
+
+    type PreviewRequest = TitlePreviewRequest;
 
     fn set_payload(input: InputId, base_revision: u64, clip: Clip<Self>) -> CommandPayload {
         CommandPayload::SetTitleAnimation {
             input: WireInputId::from_domain(input),
             base_revision,
             clip: Box::new(clip),
+        }
+    }
+
+    fn preview(
+        input: InputId,
+        request_id: String,
+        sample: TitlePreviewSample,
+        (width, height): (u16, u16),
+        clip: Option<Clip<Self>>,
+    ) -> TitlePreviewRequest {
+        TitlePreviewRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id,
+            input: WireInputId::from_domain(input),
+            sample,
+            width,
+            height,
+            clip: clip.map(Box::new),
         }
     }
 }
@@ -86,11 +121,31 @@ pub const SCENE_LAYER_PROPERTIES: [Property; 10] = [
 impl AnimationTarget for WireSceneLayerId {
     const PROPERTIES: &'static [Property] = &SCENE_LAYER_PROPERTIES;
 
+    type PreviewRequest = ScenePreviewRequest;
+
     fn set_payload(input: InputId, base_revision: u64, clip: Clip<Self>) -> CommandPayload {
         CommandPayload::SetSceneAnimation {
             input: WireInputId::from_domain(input),
             base_revision,
             clip: Box::new(clip),
+        }
+    }
+
+    fn preview(
+        input: InputId,
+        request_id: String,
+        sample: TitlePreviewSample,
+        (width, height): (u16, u16),
+        clip: Option<Clip<Self>>,
+    ) -> ScenePreviewRequest {
+        ScenePreviewRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id,
+            input: WireInputId::from_domain(input),
+            sample,
+            width,
+            height,
+            clip: clip.map(Box::new),
         }
     }
 }
@@ -169,8 +224,8 @@ pub fn preview_wire_id(id: PreviewRequestId) -> String {
     format!("anim-preview-{}", id.0)
 }
 
-/// The exact preview a `title_preview_frame` or error with wire
-/// `request_id` answers, if it is one of [`preview_wire_id`]'s.
+/// The exact preview a `title_preview_frame`, `scene_preview_frame`, or
+/// error with wire `request_id` answers, if it is one of [`preview_wire_id`]'s.
 #[must_use]
 pub fn preview_request_id(request_id: &str) -> Option<PreviewRequestId> {
     let digits = request_id.strip_prefix("anim-preview-")?;
@@ -180,32 +235,34 @@ pub fn preview_request_id(request_id: &str) -> Option<PreviewRequestId> {
     digits.parse().ok().map(PreviewRequestId)
 }
 
-/// The `title_preview_request` for `request` of `document` editing
-/// `input`'s template, at `width` x `height` (at most the protocol's
-/// 640x360). A dirty draft travels with the request so the authority
-/// renders exactly what the editor shows; a clean one renders the saved
-/// animation.
+/// The pose an exact preview of `request` samples: its phase and frame.
 #[must_use]
-pub fn preview_request(
-    document: &TitleAnimDocument,
+pub const fn preview_sample(request: ExactPreviewRequest) -> TitlePreviewSample {
+    let frame = request.key.frame;
+    match request.key.phase {
+        Phase::In => TitlePreviewSample::In { frame },
+        Phase::Out => TitlePreviewSample::Out { frame },
+    }
+}
+
+/// The exact preview request for `request` of `document` editing `input`
+/// (a `title_preview_request` for a template, a `scene_preview_request` for
+/// a scene), at `width` x `height` (at most the protocol's 640x360). A dirty
+/// draft travels with the request so the authority renders exactly what the
+/// editor shows; a clean one renders the saved animation.
+#[must_use]
+pub fn preview_request<T: AnimationTarget>(
+    document: &AnimDocument<T>,
     input: InputId,
     request: ExactPreviewRequest,
     width: u16,
     height: u16,
-) -> TitlePreviewRequest {
-    let frame = request.key.frame;
-    TitlePreviewRequest {
-        protocol: CURRENT_PROTOCOL_VERSION,
-        request_id: preview_wire_id(request.id),
-        input: WireInputId::from_domain(input),
-        sample: match request.key.phase {
-            Phase::In => TitlePreviewSample::In { frame },
-            Phase::Out => TitlePreviewSample::Out { frame },
-        },
-        width,
-        height,
-        clip: document
-            .is_dirty()
-            .then(|| Box::new(document.clip().clone())),
-    }
+) -> T::PreviewRequest {
+    T::preview(
+        input,
+        preview_wire_id(request.id),
+        preview_sample(request),
+        (width, height),
+        document.is_dirty().then(|| document.clip().clone()),
+    )
 }

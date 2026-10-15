@@ -173,7 +173,8 @@ enum LossySlot {
     StreamStatus,
     PreviewFrame,
     ProgramFrame,
-    /// The latest exact title preview (`title_preview_frame` parts).
+    /// The latest exact title or scene preview (`title_preview_frame` or
+    /// `scene_preview_frame` parts).
     TitlePreview,
 }
 
@@ -392,24 +393,26 @@ impl Peer {
         }
     }
 
-    /// Coalesces the latest exact title preview answer (its
-    /// `title_preview_frame` parts, or the error its render met) in its own
-    /// slot: a newer preview replaces one that has not started writing.
-    /// Only raw peers are handed previews to render.
-    fn replace_title_preview(
+    /// Coalesces the latest exact title or scene preview answer (its
+    /// `title_preview_frame` or `scene_preview_frame` parts, or the error its
+    /// render met) in its own slot: a newer preview replaces one that has
+    /// not started writing. Only raw peers are handed previews to render.
+    fn replace_preview(
         &mut self,
-        request_id: String,
-        answer: Result<Vec<fm_protocol::TitlePreviewFrameMessage>, StructuredError>,
+        answer: crate::title_preview::PreviewAnswer,
         current_revision: u64,
     ) -> Result<(), QueueRefusal> {
         let mut bytes = Vec::new();
-        let messages = match answer {
+        let messages = match answer.parts {
             Ok(parts) => parts
                 .into_iter()
-                .map(WireMessage::TitlePreviewFrame)
+                .map(match answer.kind {
+                    crate::title_preview::PreviewKind::Title => WireMessage::TitlePreviewFrame,
+                    crate::title_preview::PreviewKind::Scene => WireMessage::ScenePreviewFrame,
+                })
                 .collect(),
             Err(error) => vec![WireMessage::Error(ErrorMessage {
-                request_id: Some(request_id),
+                request_id: Some(answer.request_id),
                 current_revision: Some(current_revision),
                 error,
             })],
@@ -649,11 +652,11 @@ pub(super) fn run(
         let previews = title_previews.take_finished();
         if !previews.is_empty() {
             let current_revision = control.borrow().diagnostics().current_revision;
-            for (id, (request_id, answer)) in previews {
+            for (id, answer) in previews {
                 if let Some(index) = peers.iter().position(|peer| peer.id == id)
                     && !close[index]
                     && peers[index]
-                        .replace_title_preview(request_id, answer, current_revision)
+                        .replace_preview(answer, current_revision)
                         .is_err()
                 {
                     close[index] = true;
@@ -886,6 +889,29 @@ impl From<QueueRefusal> for DispatchError {
     }
 }
 
+/// One exact preview request a raw peer sent.
+enum PreviewRequest {
+    Title(fm_protocol::TitlePreviewRequest),
+    Scene(fm_protocol::ScenePreviewRequest),
+}
+
+impl PreviewRequest {
+    fn request_id(&self) -> &str {
+        match self {
+            Self::Title(request) => &request.request_id,
+            Self::Scene(request) => &request.request_id,
+        }
+    }
+
+    /// The request as it arrived, to measure against the command size cap.
+    fn wire(&self) -> WireMessage {
+        match self {
+            Self::Title(request) => WireMessage::TitlePreviewRequest(request.clone()),
+            Self::Scene(request) => WireMessage::ScenePreviewRequest(request.clone()),
+        }
+    }
+}
+
 struct Runtime<'a> {
     server: &'a Server<ControlHandle>,
     /// The daemon identity engine ticks run under.
@@ -1025,9 +1051,8 @@ impl Runtime<'_> {
                 peer.reply(response)?;
                 Ok(())
             }
-            WireMessage::TitlePreviewRequest(request) => {
-                self.title_preview(peer, &request, durable)
-            }
+            message @ (WireMessage::TitlePreviewRequest(_)
+            | WireMessage::ScenePreviewRequest(_)) => self.exact_preview(peer, message, durable),
             _ => {
                 peer.reply(error_message(
                     "unexpected_message",
@@ -1045,51 +1070,76 @@ impl Runtime<'_> {
             .sync_templates(&self.control.borrow().title_templates());
     }
 
-    /// Admits and resolves one exact title preview request and hands it to
-    /// the preview worker (see [`crate::title_preview`]), which renders it
-    /// off this loop. A refused preview is answered with an error naming its
-    /// `request_id`; only raw peers have the lossy slot previews use.
-    fn title_preview(
+    /// Admits and resolves one exact title or scene preview request and
+    /// hands it to the preview worker (see [`crate::title_preview`] and
+    /// [`crate::scene_preview`]), which renders it off this loop. A refused
+    /// preview is answered with an error naming its `request_id`; only raw
+    /// peers have the lossy slot previews use.
+    fn exact_preview(
         &self,
         peer: &mut Peer,
-        request: &fm_protocol::TitlePreviewRequest,
+        message: WireMessage,
         durable: &StoredProject,
     ) -> Result<(), DispatchError> {
+        let request = &match message {
+            WireMessage::TitlePreviewRequest(request) => PreviewRequest::Title(request),
+            WireMessage::ScenePreviewRequest(request) => PreviewRequest::Scene(request),
+            _ => return Ok(()),
+        };
+        let request_id = request.request_id().to_owned();
         if peer.transport.is_web() {
             peer.reply(WireMessage::Error(ErrorMessage {
-                request_id: Some(request.request_id.clone()),
+                request_id: Some(request_id),
                 current_revision: None,
                 error: StructuredError {
                     code: "unsupported".into(),
-                    message: "title previews are served to raw protocol sessions only".into(),
+                    message: "exact previews are served to raw protocol sessions only".into(),
                     fields: Vec::new(),
                     retryable: false,
                 },
             }))?;
             return Ok(());
         }
-        let encoded_bytes = encode_line(&WireMessage::TitlePreviewRequest(request.clone()))
-            .map_err(|_| ())?
-            .len();
+        let encoded_bytes = encode_line(&request.wire()).map_err(|_| ())?.len();
         let session = peer.session.as_mut().expect("active peers have sessions");
-        let admitted =
-            session.admit_title_preview(request, encoded_bytes, now_millis().map_err(|_| ())?);
+        let now = now_millis().map_err(|_| ())?;
+        let admitted = match request {
+            PreviewRequest::Title(request) => {
+                session.admit_title_preview(request, encoded_bytes, now)
+            }
+            PreviewRequest::Scene(request) => {
+                session.admit_scene_preview(request, encoded_bytes, now)
+            }
+        };
+        let server = peer
+            .identity
+            .as_ref()
+            .expect("active peers have identities");
         let prepared = admitted
             .map_err(|error| structured_session_error(&error))
             .and_then(|()| {
-                crate::title_preview::prepare_preview(
-                    &self.control.borrow(),
-                    durable.project(),
-                    peer.identity
-                        .as_ref()
-                        .expect("active peers have identities"),
-                    request,
-                )
+                let control = self.control.borrow();
+                match request {
+                    PreviewRequest::Title(request) => crate::title_preview::prepare_preview(
+                        &control,
+                        durable.project(),
+                        server,
+                        request,
+                    )
+                    .map(|job| crate::title_preview::PreviewWork::Title(Box::new(job))),
+                    PreviewRequest::Scene(request) => crate::scene_preview::prepare_scene_preview(
+                        &control,
+                        durable.project(),
+                        server,
+                        request,
+                    )
+                    .map(|job| crate::title_preview::PreviewWork::Scene(Box::new(job))),
+                }
             });
         match prepared {
             Ok(job) => self.title_previews.submit(peer.id, job),
             Err(error) => peer.reply(WireMessage::Error(ErrorMessage {
-                request_id: Some(request.request_id.clone()),
+                request_id: Some(request_id),
                 current_revision: Some(self.control.borrow().diagnostics().current_revision),
                 error,
             }))?,

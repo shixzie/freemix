@@ -158,7 +158,7 @@ fn scale_is_about_the_footprint_centre_and_position_adds() {
 }
 
 #[test]
-fn rotation_snaps_to_the_nearest_quarter_turn_about_the_centre() {
+fn rotation_turns_by_any_angle_about_the_centre() {
     let base = layer(3, LayerGeometry::new(100, 50, 400, 200, Rotation::Deg0));
     let at = |millidegrees| {
         apply_pose(
@@ -172,17 +172,43 @@ fn rotation_snaps_to_the_nearest_quarter_turn_about_the_centre() {
         )
         .geometry
     };
-    assert_eq!(at(44_999), base.geometry);
-    // Half up: 45 degrees turns. The 200x400 footprint keeps the centre.
-    assert_eq!(
-        at(45_000),
-        LayerGeometry::new(200, -50, 400, 200, Rotation::Deg90)
-    );
+    // Up to an eighth turn either way: the static box, tilted.
+    assert_eq!(at(30_000), base.geometry.with_tilt(30_000));
+    assert_eq!(at(44_999), base.geometry.with_tilt(44_999));
+    assert_eq!(at(-45_000), base.geometry.with_tilt(-45_000));
+    // Half up: from 45 degrees the nearest quarter turn carries the rest.
+    // The 200x400 footprint keeps the centre.
+    let turned = LayerGeometry::new(200, -50, 400, 200, Rotation::Deg90);
+    assert_eq!(at(45_000), turned.with_tilt(-45_000));
+    assert_eq!(at(100_000), turned.with_tilt(10_000));
+    // Multiples of 90 degrees are untilted, so they stay pixel-exact.
+    assert_eq!(at(90_000), turned);
     assert_eq!(
         at(-90_000),
         LayerGeometry::new(200, -50, 400, 200, Rotation::Deg270)
     );
     assert_eq!(at(360_000), base.geometry);
+}
+
+#[test]
+fn a_tilted_crop_turns_about_the_uncropped_centre() {
+    let base = layer(3, LayerGeometry::new(100, 50, 400, 200, Rotation::Deg0));
+    let posed = apply_pose(
+        &base,
+        LayerPose {
+            rotation: 30_000,
+            crop: [100, 0, 0, 0],
+            ..LayerPose::IDENTITY
+        },
+        1920,
+        1080,
+    );
+    // The 300x200 box's centre sits 50 px right of the pivot; turned 30
+    // degrees it moves by (50 cos 30 - 50, 50 sin 30) = (-6.70, 25).
+    assert_eq!(
+        posed.geometry,
+        LayerGeometry::new(193, 75, 300, 200, Rotation::Deg0).with_tilt(30_000)
+    );
 }
 
 #[test]

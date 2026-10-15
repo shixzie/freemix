@@ -609,6 +609,8 @@ impl Client {
             | WireMessage::DiagnosticsResponse(_)
             | WireMessage::TitlePreviewRequest(_)
             | WireMessage::TitlePreviewFrame(_)
+            | WireMessage::ScenePreviewRequest(_)
+            | WireMessage::ScenePreviewFrame(_)
             | WireMessage::Error(_) => Err(ClientError::UnexpectedMessage),
         }
     }
