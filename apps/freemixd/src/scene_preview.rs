@@ -28,8 +28,14 @@
 //!   readback produces, through the `fm-color` CPU reference. The CPU
 //!   compositor then composes those 8-bit pictures, so a preview matches the
 //!   native GPU composition (linear light, 16-bit float) within the
-//!   difference between those two pipelines, not bit for bit; per-input
-//!   grades are not applied.
+//!   difference between those two pipelines, not bit for bit.
+//!
+//! Both daemons grade the preview as their monitors and the native Program
+//! do (SW-019): each leaf layer's input grade, then each layer's own scene
+//! layer grade, applied by the compositor after the layer's effects and
+//! before its transform, from the grades of the engine revision the
+//! request was resolved at. A layer drawing a nested scene carries only its
+//! layer grade; the nested scene's layers carry their own.
 //!
 //! The answer is one four-channel QOI stream of straight RGBA8 pixels (at
 //! most 640x360) split into `scene_preview_frame` parts, rendered off the
@@ -41,11 +47,11 @@
 
 #[cfg(feature = "native-media")]
 use std::collections::BTreeMap;
-#[cfg(feature = "native-media")]
 use std::sync::Arc;
 
 use fm_auth::Policy;
 use fm_control::{ControlService, scene_clip_from_wire};
+use fm_engine::CompiledProjectGrades;
 use fm_model::fm_animation::ClipState;
 use fm_model::{Input, Project};
 use fm_protocol::{
@@ -183,6 +189,8 @@ pub(crate) struct ScenePreviewJob {
     scene: fm_model::Scene,
     pose: ClipState,
     frame: u64,
+    /// The engine's compiled grades when the request was resolved.
+    grades: Arc<CompiledProjectGrades>,
     /// The native pipeline's newest source frames; `None` on a simulated
     /// daemon, whose leaves are its simulated sources.
     live: Option<LiveSourceFrames>,
@@ -248,7 +256,7 @@ impl ScenePreviewJob {
             size,
             self.frame,
             self.pose,
-            None,
+            Some(&self.grades),
         )
         .ok_or_else(unrenderable)?;
         let rgba = straight_rgba(image.pixels(), image.stride(), self.width, self.height)
@@ -288,8 +296,9 @@ fn straight_rgba(pixels: &[u8], stride: usize, width: u16, height: u16) -> Optio
 
 /// Resolves the exact scene preview `request` asks for: everything but the
 /// composition, which [`ScenePreviewJob::render`] does off the session
-/// loop. `live` is a native daemon's snapshot of its newest source frames
-/// (`None` on a simulated daemon).
+/// loop, graded with `grades` (the engine's compiled grades now). `live` is
+/// a native daemon's snapshot of its newest source frames (`None` on a
+/// simulated daemon).
 ///
 /// # Errors
 ///
@@ -301,6 +310,7 @@ pub(crate) fn prepare_scene_preview(
     project: &Project,
     server: &ServerIdentity,
     request: &ScenePreviewRequest,
+    grades: Arc<CompiledProjectGrades>,
     live: Option<LiveSourceFrames>,
 ) -> Result<ScenePreviewJob, StructuredError> {
     let input = request.input.to_domain();
@@ -329,6 +339,7 @@ pub(crate) fn prepare_scene_preview(
         scene,
         pose,
         frame: control.frame_cursor(),
+        grades,
         live,
         animation_revision,
         draft: request.clip.is_some(),
@@ -512,6 +523,101 @@ mod tests {
         assert_eq!(tap.pixels(), composed.pixels());
     }
 
+    pub(super) fn exposure(millistops: i16) -> fm_grade::Grade {
+        fm_grade::Grade {
+            exposure_millistops: millistops,
+            ..fm_grade::Grade::IDENTITY
+        }
+    }
+
+    pub(super) fn graded(grade: &fm_grade::Grade, [red, green, blue, alpha]: [u8; 4]) -> [u8; 4] {
+        let [red, green, blue] = fm_grade::CompiledGrade::new(grade, None)
+            .unwrap()
+            .apply_rgb8([red, green, blue]);
+        [red, green, blue, alpha]
+    }
+
+    /// SW-019: an exact preview grades like the monitor: a leaf layer shows
+    /// its input grade then its layer grade; a layer drawing a nested scene
+    /// carries only its own layer grade (not the Scene input's grade) over
+    /// the nested scene's graded layers.
+    #[test]
+    fn previews_grade_leaf_and_nested_scene_layers() {
+        use fm_model::{GradeSource, SceneLayerRef};
+
+        let mut project = project();
+        add_scene(
+            &mut project,
+            1,
+            10,
+            vec![layer(1, SourceRef::Input(input_id(1)), 0, WIDTH)],
+        );
+        add_scene(
+            &mut project,
+            2,
+            11,
+            vec![
+                layer(2, SourceRef::Input(input_id(10)), 0, WIDTH / 2),
+                layer(3, SourceRef::Scene(scene_id(1)), 32, WIDTH / 2),
+            ],
+        );
+        let warm = fm_grade::builtin_preset("warm").unwrap().grade.clone();
+        let inline = |grade: &fm_grade::Grade| Some(GradeSource::Inline(Box::new(grade.clone())));
+        let layer_ref = |scene: u128, layer: u32| {
+            SceneLayerRef::new(scene_id(scene), fm_model::LayerId::new(layer).unwrap())
+        };
+        project.set_input_grade(input_id(1), inline(&warm)).unwrap();
+        project
+            .set_layer_grade(layer_ref(1, 1), inline(&exposure(-1_000)))
+            .unwrap();
+        project
+            .set_layer_grade(layer_ref(2, 2), inline(&exposure(-500)))
+            .unwrap();
+        // A Scene input's own grade is not applied (SW-019 boundary).
+        project
+            .set_input_grade(input_id(10), inline(&exposure(2_000)))
+            .unwrap();
+        let grades =
+            fm_engine::CompiledProjectGrades::compile(&project, &std::collections::BTreeMap::new())
+                .unwrap();
+        let pipeline = scene_render::simulated_pipeline(&project, WIDTH, HEIGHT).unwrap();
+        let model = project.scene(scene_id(2)).unwrap();
+        let composed = scene_render::render_scene_model(
+            &project,
+            model,
+            &pipeline,
+            (WIDTH, HEIGHT),
+            4,
+            ClipState::Hold,
+            Some(&grades),
+        )
+        .unwrap();
+        let nested = graded(&exposure(-1_000), graded(&warm, SOLID));
+        let outer = graded(&exposure(-500), nested);
+        assert_ne!(nested, SOLID);
+        assert_ne!(outer, nested);
+        for y in [0, HEIGHT / 2, HEIGHT - 1] {
+            for x in 0..WIDTH {
+                let expected = if x < WIDTH / 2 { outer } else { nested };
+                assert_eq!(pixel(&composed, x, y), expected, "({x}, {y})");
+            }
+        }
+        // The simulated monitor tap composes the same graded picture.
+        let tap = scene_render::render_scene(
+            &project,
+            scene_id(2),
+            &pipeline,
+            4,
+            ClipState::Hold,
+            &grades,
+        )
+        .unwrap();
+        assert_eq!(tap.pixels(), composed.pixels());
+        // Ungraded, the leaf shows its source as is.
+        let ungraded = render(&project, 2, &pipeline).unwrap();
+        assert_eq!(pixel(&ungraded, 0, 0), SOLID);
+    }
+
     /// Nesting is bounded: a chain of exactly
     /// [`MAX_NESTED_SCENE_DEPTH`] scenes below the composed one draws, one
     /// more is refused; a scene whose leaf the sources cannot draw is
@@ -593,8 +699,8 @@ mod native_tests {
     use fm_model::{Input, InputKind, SourceRef, TitleInput};
 
     use super::tests::{
-        BACKGROUND, HEIGHT, SOLID, WIDTH, add_scene, input_id, layer, pixel, project, render,
-        scene_id,
+        BACKGROUND, HEIGHT, SOLID, WIDTH, add_scene, exposure, graded, input_id, layer, pixel,
+        project, render, scene_id,
     };
     use super::{LiveSourceFrames, LiveSources};
     use crate::scene_render;
@@ -794,6 +900,70 @@ mod native_tests {
         assert_eq!(render(&project, 1, &sources), None);
         assert_eq!(render(&project, 2, &sources), None);
         assert_eq!(render(&project, 2, &simulated), None);
+    }
+
+    /// SW-019: live leaves are graded like simulated ones, inside nested
+    /// scenes too: the clip by its input grade, the solid by its layer
+    /// grade.
+    #[test]
+    fn live_frames_are_graded_like_simulated_sources() {
+        let project = native_project();
+        let simulated = scene_render::simulated_pipeline(&project, WIDTH, HEIGHT).unwrap();
+        let mut frames = BTreeMap::new();
+        frames.insert(
+            input_id(2),
+            Arc::new(frame(
+                domain(7),
+                3,
+                PixelFormat::Rgba8,
+                TransferFunction::Srgb,
+                [0, 200, 0, 255],
+            )),
+        );
+        frames.insert(
+            input_id(3),
+            Arc::new(frame(
+                domain(8),
+                1,
+                PixelFormat::Bgra8,
+                TransferFunction::Bt709,
+                [128, 0, 0, 0],
+            )),
+        );
+        let live = LiveSourceFrames::from_frames(frames);
+        let sources = LiveSources {
+            live: &live,
+            simulated: &simulated,
+        };
+        let mut graded_project = project.clone();
+        let inline = |grade: fm_grade::Grade| Some(fm_model::GradeSource::Inline(Box::new(grade)));
+        graded_project
+            .set_input_grade(input_id(2), inline(exposure(-1_000)))
+            .unwrap();
+        let warm = fm_grade::builtin_preset("warm").unwrap().grade.clone();
+        graded_project
+            .set_layer_grade(
+                fm_model::SceneLayerRef::new(scene_id(2), fm_model::LayerId::new(2).unwrap()),
+                inline(warm.clone()),
+            )
+            .unwrap();
+        let grades =
+            fm_engine::CompiledProjectGrades::compile(&graded_project, &BTreeMap::new()).unwrap();
+        let graded_picture = scene_render::render_scene_model(
+            &graded_project,
+            graded_project.scene(scene_id(2)).unwrap(),
+            &sources,
+            (WIDTH, HEIGHT),
+            4,
+            fm_model::fm_animation::ClipState::Hold,
+            Some(&grades),
+        )
+        .unwrap();
+        let clip = graded(&exposure(-1_000), [0, 200, 0, 255]);
+        assert_ne!(clip, [0, 200, 0, 255]);
+        assert_eq!(pixel(&graded_picture, 5, 5), clip);
+        assert_eq!(pixel(&graded_picture, 40, 5), graded(&warm, SOLID));
+        assert_eq!(pixel(&graded_picture, 20, 5), BACKGROUND);
     }
 
     /// End to end on a native adapter: the frames a playback retains and

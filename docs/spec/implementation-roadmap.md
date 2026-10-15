@@ -2191,9 +2191,9 @@ retained still), snapshotted as shared frames on the session loop without
 GPU work or waiting on the output clock, converted from its labeled
 colorimetry to sRGB Rec.709 full range through the `fm-color` CPU reference.
 Native previews therefore match the GPU composition within the difference
-between the 8-bit CPU and 16-bit float GPU pipelines (not bit for bit), may
-show decoded media up to the source ring (eight frames) ahead of air, and do
-not apply per-input grades. A scene with a layer whose source has no picture
+between the 8-bit CPU and 16-bit float GPU pipelines (not bit for bit) and
+may show decoded media up to the source ring (eight frames) ahead of air.
+Both daemons grade previews like their monitors (`SW-019`). A scene with a layer whose source has no picture
 yet, or nesting past the bounds, is refused with `render_failed`. `fm-client` assembles scene previews and Studio's
 Animation window shows them under the layer outlines like a title's.
 `freemix-cli scene-animation-preset`, `scene-animation-stretch`, and
@@ -2287,11 +2287,15 @@ simulated monitor path grades scene layers (input grade, then layer grade),
 title pictures and keyed title overlays (their input grade), and the
 program, consistently with the native path; simulated media inputs have no
 picture to grade. The native path also grades Stinger media by its media
-input's grade. Remaining gaps: a Scene input's own input grade is not
+input's grade. Exact scene previews (`scene_preview_request`) on both
+simulated and native daemons grade the same way, with the compiled grades
+of the engine revision the request is resolved at: each leaf layer's input
+grade then its layer grade, a layer drawing a nested scene (directly or
+through a Scene input) its own layer grade over the nested scene's graded
+layers. Remaining gaps: a Scene input's own input grade is not
 applied by either renderer (grade its layers instead); layer grades of a
 scene no Scene input shows are saved and restored but cannot be edited or
-replicated over the protocol; exact scene previews (`scene_preview_request`)
-render ungraded; the Colour window previews a layer target on a test still,
+replicated over the protocol; the Colour window previews a layer target on a test still,
 not its live picture; and presets cannot be exported between projects
 except through project append, so `SW-019` remains planned.
 

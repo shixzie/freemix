@@ -510,6 +510,7 @@ pub(super) fn run(
         title_previews: &title_previews,
         process_shutdown,
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
+        grade_cache: std::cell::RefCell::new(crate::grading::GradeCache::default()),
     };
     let mut native = native;
     // Only the native pacer realizes frames between commands, so only it has
@@ -926,6 +927,8 @@ struct Runtime<'a> {
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
+    /// Compiled grades per engine revision for exact scene previews.
+    grade_cache: std::cell::RefCell<crate::grading::GradeCache>,
 }
 
 impl Runtime<'_> {
@@ -1136,6 +1139,7 @@ impl Runtime<'_> {
                         durable.project(),
                         server,
                         request,
+                        self.grade_cache.borrow_mut().at(&control),
                         native.map(NativeDaemon::live_source_frames),
                     )
                     .map(|job| crate::title_preview::PreviewWork::Scene(Box::new(job))),

@@ -678,8 +678,11 @@ Protocol 2.32 adds exact scene previews (`GX-011`):
   preview and converted from its labeled colorimetry to sRGB Rec.709 full
   range, the colorimetry of the native Program readback. The 8-bit CPU
   composition matches the native GPU composition (linear light, 16-bit
-  float) within the difference of the two pipelines, not bit for bit, and
-  per-input grades are not applied. The answer is one
+  float) within the difference of the two pipelines, not bit for bit. Since
+  Protocol 2.33 both daemons grade the preview as their monitors do: each
+  leaf layer's input grade then its scene layer grade, and a layer drawing
+  a nested scene only its layer grade over the nested scene's graded
+  layers. The answer is one
   four-channel QOI stream of straight RGBA8 split into
   `kind=scene_preview_frame` records with exactly a
   `title_preview_frame`'s fields and limits (`animation_revision` being

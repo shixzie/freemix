@@ -2941,7 +2941,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 32,
+  "schema_version": 33,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -3038,7 +3038,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 32,
+  "schema_version": 33,
   "template": {
     "id": 13,
     "name": "Clock render",
