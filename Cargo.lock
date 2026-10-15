@@ -1627,6 +1627,7 @@ dependencies = [
  "egui",
  "fm-animation",
  "fm-grade",
+ "fm-preset-file",
  "fm-protocol",
  "fm-types",
  "fm-ui-model",

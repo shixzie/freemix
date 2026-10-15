@@ -1710,8 +1710,13 @@ pub fn run(command: Command) -> AppResult<()> {
             crate::grading::import_lut(&path, &file, name)?;
         }
         Command::GradeList { path } => crate::grading::list(&path)?,
-        Command::GradeExport { path, grade, file } => {
-            crate::presets::export_grade(&path, grade, &file)?;
+        Command::GradeExport {
+            path,
+            grade,
+            file,
+            replace_lut,
+        } => {
+            crate::presets::export_grade(&path, grade, &file, replace_lut)?;
         }
         Command::GradeImport { path, file, name } => {
             crate::presets::import_grade(&path, &file, name.as_deref())?;
@@ -4528,7 +4533,7 @@ Usage:
       and assigns it by reference, --grade assigns a library grade.
   freemix-cli grade-clear <show.freemix> <input-id|layer <scene-id> <layer-id>|program>
   freemix-cli grade-import-lut <show.freemix> <file.cube> [--name <name>]
-  freemix-cli grade-export <show.freemix> <grade-id> <file.fmgrade>
+  freemix-cli grade-export <show.freemix> <grade-id> <file.fmgrade> [--replace-lut]
   freemix-cli grade-import <show.freemix> <file.fmgrade> [--name <name>]
   freemix-cli preset-export <show.freemix> <preset-id> <file.fmpreset>
   freemix-cli preset-import <show.freemix> <file.fmpreset> [--name <name>]

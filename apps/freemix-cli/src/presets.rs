@@ -16,8 +16,8 @@ use fm_grade::GradeLut;
 use fm_model::fm_animation::{Phase, PhaseMotion};
 use fm_model::{AnimationPresetId, GradeId, ProjectGrade, UserAnimationPreset, lut_id_from_uri};
 use fm_persistence::{
-    AnimationPresetFile, ExportedGradeLut, GradeExportLut, ProjectStore,
-    read_animation_preset_file, read_grade_preset_file, write_animation_preset_file,
+    AnimationPresetFile, ExportedGradeLut, GradeExportLut, PresetFileError, ProjectStore,
+    read_animation_preset_file, read_grade_preset_file, unused_name, write_animation_preset_file,
     write_grade_preset_file,
 };
 
@@ -91,7 +91,11 @@ pub fn add_animation(
         let id = library
             .next_id()
             .ok_or_else(|| AppFailure("no animation preset id is available".into()))?;
-        let name = library.unused_name(name.trim());
+        let name = unused_name(
+            name,
+            fm_model::MAX_ANIMATION_PRESET_NAME_BYTES,
+            |candidate| library.by_name(candidate).is_some(),
+        );
         let frames = motion.frames();
         project
             .animation_presets_mut()
@@ -128,8 +132,9 @@ pub fn import_animation(path: &Path, file: &Path, name: Option<&str>) -> AppResu
     )
 }
 
-/// `grade-export`: writes library grade `grade` to `file`.
-pub fn export_grade(path: &Path, grade: u32, file: &Path) -> AppResult<()> {
+/// `grade-export`: writes library grade `grade` to `file`, replacing an
+/// existing sibling `.cube` only with `replace_lut`.
+pub fn export_grade(path: &Path, grade: u32, file: &Path, replace_lut: bool) -> AppResult<()> {
     let stored = inspect_stored_project(path)?;
     let project = stored.project();
     let id = GradeId::new(nonzero(grade, "grade")?);
@@ -161,8 +166,16 @@ pub fn export_grade(path: &Path, grade: u32, file: &Path) -> AppResult<()> {
             strength_permille: *strength,
             text: Some(text),
         }),
+        replace_lut,
     )
-    .map_err(|error| AppFailure(format!("{}: {error}", file.display())))?;
+    .map_err(|error| match error {
+        PresetFileError::LutFileExists { path } => AppFailure(format!(
+            "{}: LUT file {} already exists; pass --replace-lut to overwrite it",
+            file.display(),
+            path.display()
+        )),
+        error => AppFailure(format!("{}: {error}", file.display())),
+    })?;
     let lut = match exported {
         None => String::new(),
         Some(ExportedGradeLut::Embedded) => " (LUT embedded)".into(),
@@ -195,7 +208,7 @@ pub fn import_grade(path: &Path, file: &Path, name: Option<&str>) -> AppResult<(
             .ok_or_else(|| AppFailure("no grade id is available".into()))?;
         let mut grade = shared.grade.clone();
         if let Some(lut) = &shared.lut {
-            let lut_name = unused(&lut.name, |candidate| {
+            let lut_name = unused_name(&lut.name, fm_model::MAX_LUT_NAME_BYTES, |candidate| {
                 project.luts().iter().any(|entry| entry.name == candidate)
             });
             let imported = ProjectStore::new(path)?
@@ -212,9 +225,11 @@ pub fn import_grade(path: &Path, file: &Path, name: Option<&str>) -> AppResult<(
                 lut.strength_permille,
             ));
         }
-        let name = unused(name.unwrap_or(&shared.name), |candidate| {
-            project.grades().iter().any(|entry| entry.name == candidate)
-        });
+        let name = unused_name(
+            name.unwrap_or(&shared.name),
+            fm_model::MAX_GRADE_NAME_BYTES,
+            |candidate| project.grades().iter().any(|entry| entry.name == candidate),
+        );
         project
             .add_grade(ProjectGrade {
                 id,
@@ -225,27 +240,4 @@ pub fn import_grade(path: &Path, file: &Path, name: Option<&str>) -> AppResult<(
         println!("grade-import: library grade {id} {name:?}");
         Ok(())
     })
-}
-
-/// `name`, or `name (2)`, `name (3)`, ... : the first `taken` refuses not,
-/// with `name` cut (on a character boundary) so the suffixed name stays
-/// within the grade and LUT name bound.
-fn unused(name: &str, taken: impl Fn(&str) -> bool) -> String {
-    const MAX_NAME_BYTES: usize = fm_model::MAX_GRADE_NAME_BYTES;
-    const _: () = assert!(MAX_NAME_BYTES == fm_model::MAX_LUT_NAME_BYTES);
-    let name = name.trim();
-    if !taken(name) {
-        return name.to_owned();
-    }
-    (2..=u32::MAX)
-        .map(|count| {
-            let suffix = format!(" ({count})");
-            let mut cut = MAX_NAME_BYTES.saturating_sub(suffix.len()).min(name.len());
-            while !name.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            format!("{}{suffix}", &name[..cut])
-        })
-        .find(|candidate| !taken(candidate))
-        .expect("a finite project leaves a free suffix")
 }

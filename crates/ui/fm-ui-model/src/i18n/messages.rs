@@ -1645,6 +1645,12 @@ messages! {
     ColorGradeImporting => t("Importing grade {name} from {file}"),
     ColorGradeFileFailed => t("Grade file {file}: {error}"),
     ColorGradeLutTooLarge => t("The LUT of {name} is too large to import over the connection; import the grade with the command line (freemix-cli grade-import)"),
+    ColorGradeLutExists => t("Exporting grade {name} would replace the existing LUT file {lut}; replace it or keep it"),
+    ColorGradeLutExistsHover => t("A grade whose LUT is too large to embed writes it as a .cube file beside the .fmgrade, and a file of that name is already there; it may be another LUT, so nothing was written"),
+    ColorGradeLutReplace => t("Replace LUT file"),
+    ColorGradeLutReplaceHover => t("Export the grade again, overwriting the existing .cube file beside the .fmgrade with this grade's LUT"),
+    ColorGradeLutKeep => t("Keep existing file"),
+    ColorGradeLutKeepHover => t("Cancel this export and leave the existing .cube file untouched; choose another .fmgrade path to export beside it"),
 
     // Media tab (IN-003).
     TabMedia => t("Media"),

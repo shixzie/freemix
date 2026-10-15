@@ -4259,6 +4259,32 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "La LUT de {name} es demasiado grande para importarla por la conexión; importe la corrección con la línea de órdenes (freemix-cli grade-import)",
         ),
     ),
+    (
+        Msg::ColorGradeLutExists,
+        t(
+            "Exportar la corrección {name} reemplazaría el archivo LUT existente {lut}; reemplácelo o consérvelo",
+        ),
+    ),
+    (
+        Msg::ColorGradeLutExistsHover,
+        t(
+            "Una corrección cuya LUT es demasiado grande para incrustarla la escribe como archivo .cube junto al .fmgrade, y ya hay un archivo con ese nombre; puede ser otra LUT, así que no se escribió nada",
+        ),
+    ),
+    (Msg::ColorGradeLutReplace, t("Reemplazar archivo LUT")),
+    (
+        Msg::ColorGradeLutReplaceHover,
+        t(
+            "Exportar de nuevo la corrección, sobrescribiendo el archivo .cube existente junto al .fmgrade con la LUT de esta corrección",
+        ),
+    ),
+    (Msg::ColorGradeLutKeep, t("Conservar el archivo")),
+    (
+        Msg::ColorGradeLutKeepHover,
+        t(
+            "Cancelar esta exportación y dejar intacto el archivo .cube existente; elija otra ruta .fmgrade para exportar junto a él",
+        ),
+    ),
     (Msg::TabMedia, t("Medios")),
     (
         Msg::TabMediaHover,

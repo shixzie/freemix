@@ -9,7 +9,11 @@
 //! [`StudioShell::receive_preset_file`], which toasts the outcome and
 //! returns the commands an import sends: `animation_preset_add` for a
 //! preset, and `grade_lut_import` plus `grade_library_add` for a grade.
-//! Imported names that are taken get a numeric suffix (`Name (2)`).
+//! Imported names that are taken get a numeric suffix (`Name (2)`, and
+//! `Name (3)` for a taken `Name (2)`), as `fm_preset_file::unused_name`
+//! picks it. A grade export that would overwrite an existing sibling
+//! `.cube` is answered with [`PresetFileAnswer::LutFileExists`]; the Colour
+//! window then asks before exporting again with `replace_lut`.
 
 use core::num::NonZeroU32;
 use std::path::PathBuf;
@@ -17,6 +21,7 @@ use std::sync::Arc;
 
 use fm_animation::{Phase, PhaseMotion};
 use fm_grade::{Grade, GradeLut};
+use fm_preset_file::unused_name;
 use fm_protocol::{CommandPayload, MAX_GRADE_LUT_IMPORT_BYTES};
 use fm_ui_model::grade_editor::{
     GradeCommand, library_name_problem, lut_name_problem, lut_uri, next_library_id, next_lut_id,
@@ -49,12 +54,14 @@ pub enum PresetFileRequest {
     /// Reads a `.fmpreset` file into the preset library.
     ImportAnimation { path: PathBuf },
     /// Writes a grade (without its LUT reference) and its LUT to a
-    /// `.fmgrade` file.
+    /// `.fmgrade` file. An existing sibling `.cube` is only overwritten
+    /// with `replace_lut`, which the operator confirms.
     ExportGrade {
         path: PathBuf,
         name: String,
         grade: Box<Grade>,
         lut: Option<ExportLut>,
+        replace_lut: bool,
     },
     /// Reads a `.fmgrade` file into the grade library.
     ImportGrade { path: PathBuf },
@@ -114,29 +121,20 @@ pub enum PresetFileAnswer {
         grade: Box<Grade>,
         lut: Option<ImportedLut>,
     },
+    /// A grade export was refused because its LUT would overwrite the
+    /// existing `.cube` file `path`; nothing was written.
+    LutFileExists { path: PathBuf },
     /// The file could not be written or read, or does not decode.
     Failed(String),
 }
 
-/// `base`, or `base (2)`, `base (3)`, ... (as the project model names
-/// imports): the first name `taken` does not refuse, cut to `max_bytes` on
-/// a character boundary.
-fn unused_name(base: &str, max_bytes: usize, taken: impl Fn(&str) -> bool) -> String {
-    let base = base.trim();
-    if !taken(base) {
-        return base.to_owned();
-    }
-    (2..=u32::MAX)
-        .map(|suffix| {
-            let suffix = format!(" ({suffix})");
-            let mut cut = max_bytes.saturating_sub(suffix.len()).min(base.len());
-            while !base.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            format!("{}{suffix}", &base[..cut])
-        })
-        .find(|name| !taken(name))
-        .expect("a finite library leaves a free suffix")
+/// A grade export waiting for the operator to replace or keep the existing
+/// sibling `.cube` file `lut`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PendingLutReplace {
+    /// The refused export, sent again with `replace_lut` on confirmation.
+    pub(crate) request: PresetFileRequest,
+    pub(crate) lut: PathBuf,
 }
 
 impl StudioShell {
@@ -217,6 +215,23 @@ impl StudioShell {
                     }
                 };
                 self.toasts.push(kind, message);
+            }
+            (
+                PresetFileRequest::ExportGrade { name, .. },
+                PresetFileAnswer::LutFileExists { path },
+            ) => {
+                let lut = path.display().to_string();
+                self.toasts.push(
+                    ToastKind::Notice,
+                    l.format(
+                        Msg::ColorGradeLutExists,
+                        &[("name", Arg::Str(name)), ("lut", Arg::Str(&lut))],
+                    ),
+                );
+                self.color.lut_replace = Some(PendingLutReplace {
+                    request: request.clone(),
+                    lut: path,
+                });
             }
             (
                 PresetFileRequest::ImportAnimation { .. },
@@ -375,11 +390,15 @@ mod tests {
     use super::unused_name;
 
     #[test]
-    fn imported_names_take_the_first_free_suffix_within_the_bound() {
+    fn imported_names_count_on_from_a_taken_suffix_within_the_bound() {
         let taken = ["Swoosh", "Swoosh (2)"];
         assert_eq!(unused_name("Fresh", 128, |n| taken.contains(&n)), "Fresh");
         assert_eq!(
             unused_name("Swoosh", 128, |n| taken.contains(&n)),
+            "Swoosh (3)"
+        );
+        assert_eq!(
+            unused_name(" Swoosh (2) ", 128, |n| taken.contains(&n)),
             "Swoosh (3)"
         );
         let long = "é".repeat(64); // 128 bytes

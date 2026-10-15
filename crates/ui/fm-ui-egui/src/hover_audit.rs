@@ -930,6 +930,17 @@ fn scenes(language: Language) -> Vec<Scene> {
                 shell.color.library_pick = core::num::NonZeroU32::new(1);
                 shell.color.library_name = "Evening".into();
                 shell.color.lut_path = "/luts/warm.cube".into();
+                // A grade export waiting to replace or keep a sibling LUT.
+                shell.color.lut_replace = Some(crate::preset_files::PendingLutReplace {
+                    request: crate::preset_files::PresetFileRequest::ExportGrade {
+                        path: "/grades/evening.fmgrade".into(),
+                        name: "Evening".into(),
+                        grade: Box::new(fm_grade::Grade::IDENTITY),
+                        lut: None,
+                        replace_lut: false,
+                    },
+                    lut: "/grades/evening.cube".into(),
+                });
             },
             ready(true, Variant::default()),
         ),

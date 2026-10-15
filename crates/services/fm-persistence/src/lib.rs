@@ -32,7 +32,8 @@ pub use fm_preset_file::{
     LoadedGradePreset, MAX_EMBEDDED_LUT_BYTES, MAX_PRESET_FILE_BYTES, PresetFileError,
     decode_animation_preset_file, decode_grade_preset_file, encode_animation_preset_file,
     encode_grade_preset_file, is_sibling_lut_name, read_animation_preset_file,
-    read_grade_preset_file, sibling_lut_name, write_animation_preset_file, write_grade_preset_file,
+    read_grade_preset_file, sibling_lut_name, unused_name, write_animation_preset_file,
+    write_grade_preset_file,
 };
 pub use journal::{
     AbandonedJournal, CompactionReport, JournalError, JournalObservation, JournalProgress,

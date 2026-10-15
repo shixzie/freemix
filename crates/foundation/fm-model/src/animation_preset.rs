@@ -181,28 +181,6 @@ impl AnimationPresetLibrary {
             .map(AnimationPresetId::new)
     }
 
-    /// `name`, or `name (2)`, `name (3)`, ... : the first that no preset
-    /// uses (cut to the name bound on a character boundary).
-    #[must_use]
-    pub fn unused_name(&self, name: &str) -> String {
-        let fits = |candidate: &str, suffix: &str| {
-            let mut end = MAX_ANIMATION_PRESET_NAME_BYTES.saturating_sub(suffix.len());
-            while !candidate.is_char_boundary(end.min(candidate.len())) {
-                end -= 1;
-            }
-            format!("{}{suffix}", &candidate[..end.min(candidate.len())])
-        };
-        let first = fits(name, "");
-        if self.by_name(&first).is_none() {
-            return first;
-        }
-        // At most 64 presets use 65 candidates, so one is free.
-        (2..=MAX_PROJECT_ANIMATION_PRESETS + 2)
-            .map(|count| fits(name, &format!(" ({count})")))
-            .find(|candidate| self.by_name(candidate).is_none())
-            .unwrap_or(first)
-    }
-
     /// Inserts a preset at `index` (the end when `None`).
     ///
     /// # Errors

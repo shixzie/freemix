@@ -370,3 +370,67 @@ fn imports_rename_long_taken_names_within_the_bound() {
     assert_eq!(names.len(), 2, "{names:?}");
     assert_eq!(names[1], format!("{} (2)", "é".repeat(62)));
 }
+
+/// Importing an already-suffixed name counts on from its number instead of
+/// stacking suffixes (`Look (2)` becomes `Look (3)`, never `Look (2) (2)`).
+#[test]
+fn imports_count_on_from_an_existing_suffix() {
+    let root = Root::new("suffixes");
+    let project = root.path("show.freemix");
+    let path = project.to_str().unwrap();
+    succeed(&["new", path]);
+    succeed(&["grade-set", path, "1", "--save-as", "Look (2)"]);
+    let shared = root.path("look.fmgrade");
+    let file = shared.to_str().unwrap();
+    succeed(&["grade-export", path, "1", file]);
+    succeed(&["grade-import", path, file]);
+    succeed(&["grade-import", path, file]);
+    let names = load(&project)
+        .project()
+        .grades()
+        .iter()
+        .map(|grade| grade.name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Look (2)", "Look (3)", "Look (4)"]);
+}
+
+/// A large LUT goes beside the `.fmgrade`; an existing `.cube` there is
+/// only replaced with `--replace-lut`.
+#[test]
+fn grade_exports_ask_before_replacing_a_sibling_lut() {
+    let root = Root::new("sibling");
+    let project = root.path("show.freemix");
+    let path = project.to_str().unwrap();
+    succeed(&["new", path]);
+    let mut large = INVERT_CUBE.to_owned();
+    while large.len() <= 32 * 1024 {
+        large.insert_str(0, "# padding to grow the LUT past the embed limit\n");
+    }
+    let cube = root.path("source.cube");
+    fs::write(&cube, &large).unwrap();
+    succeed(&["grade-import-lut", path, cube.to_str().unwrap()]);
+    succeed(&["grade-set", path, "1", "--lut", "1", "--save-as", "Big"]);
+
+    let shared = root.path("big.fmgrade");
+    let file = shared.to_str().unwrap();
+    let sibling = root.path("big.cube");
+    fs::write(&sibling, "unrelated").unwrap();
+    fail(
+        &["grade-export", path, "1", file],
+        &format!(
+            "LUT file {} already exists; pass --replace-lut to overwrite it",
+            sibling.display()
+        ),
+    );
+    assert!(!shared.exists());
+    assert_eq!(fs::read_to_string(&sibling).unwrap(), "unrelated");
+
+    assert_eq!(
+        succeed(&["grade-export", path, "1", file, "--replace-lut"]),
+        format!(
+            "grade-export: grade 1 \"Big\" to {file} (LUT written to {})\n",
+            sibling.display()
+        )
+    );
+    assert_eq!(fs::read_to_string(&sibling).unwrap(), large);
+}

@@ -146,8 +146,6 @@ fn library_edits_are_checked() {
         Err(AnimationPresetError::IndexOutOfRange { index: 3, len: 2 })
     );
     assert_eq!(library.next_id(), Some(preset_id(3)));
-    assert_eq!(library.unused_name("Swoosh"), "Swoosh (2)");
-    assert_eq!(library.unused_name("New"), "New");
 
     library.rename(preset_id(1), "Fade in".into()).unwrap();
     assert_eq!(library.get(preset_id(1)).unwrap().name, "Fade in");

@@ -17,7 +17,7 @@ use fm_preset_file::{
     AnimationPresetFile, ExportedGradeLut, GradeExportLut, GradeFileLut, GradeLutSource,
     GradePresetFile, MAX_EMBEDDED_LUT_BYTES, PresetFileError, decode_animation_preset_file,
     decode_grade_preset_file, encode_animation_preset_file, encode_grade_preset_file,
-    read_animation_preset_file, read_grade_preset_file, sibling_lut_name,
+    read_animation_preset_file, read_grade_preset_file, sibling_lut_name, unused_name,
     write_animation_preset_file, write_grade_preset_file,
 };
 use fm_types::FrameRate;
@@ -178,6 +178,7 @@ fn grade_files_embed_small_luts_and_place_large_ones_beside() {
             strength_permille: 600,
             text: Some(INVERT_CUBE),
         }),
+        false,
     )
     .unwrap();
     assert_eq!(exported, Some(ExportedGradeLut::Embedded));
@@ -220,6 +221,7 @@ fn grade_files_embed_small_luts_and_place_large_ones_beside() {
             strength_permille: 600,
             text: Some(&large),
         }),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -251,6 +253,7 @@ fn grade_files_embed_small_luts_and_place_large_ones_beside() {
             strength_permille: 1_000,
             text: None,
         }),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -319,4 +322,142 @@ fn non_regular_files_are_refused_without_blocking() {
         let _ = fs::OpenOptions::new().write(true).open(&path);
     }
     assert_eq!(refused, Ok(true), "reading a FIFO must not block");
+}
+
+/// A LUT too large to embed, so an export writes it beside the `.fmgrade`.
+fn sibling_sized_cube() -> String {
+    let mut large = INVERT_CUBE.to_owned();
+    while large.len() <= MAX_EMBEDDED_LUT_BYTES {
+        large.insert_str(0, "# padding to grow the file past the embed limit\n");
+    }
+    large
+}
+
+#[test]
+fn grade_exports_refuse_to_replace_an_existing_sibling_lut_unless_asked() {
+    let directory = TestDirectory::new("sibling-collision");
+    let large = sibling_sized_cube();
+    let path = directory.path("look.fmgrade");
+    let sibling = directory.path("look.cube");
+    let unrelated = "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n";
+    fs::write(&sibling, unrelated).unwrap();
+    let export = GradeExportLut {
+        name: "Invert",
+        strength_permille: 1_000,
+        text: Some(&large),
+    };
+    let lut = Some(export);
+
+    // Refused: neither file is written and the unrelated LUT survives.
+    let refused = write_grade_preset_file(&path, "Look", &warm(), lut, false).unwrap_err();
+    match &refused {
+        PresetFileError::LutFileExists { path } => assert_eq!(path, &sibling),
+        other => panic!("expected LutFileExists, got {other:?}"),
+    }
+    assert!(refused.to_string().contains("look.cube"), "{refused}");
+    assert!(!path.exists());
+    assert_eq!(fs::read_to_string(&sibling).unwrap(), unrelated);
+
+    // Confirmed: the sibling is replaced and the grade reads back.
+    assert_eq!(
+        write_grade_preset_file(&path, "Look", &warm(), lut, true).unwrap(),
+        Some(ExportedGradeLut::Sibling {
+            path: sibling.clone(),
+            written: true,
+        })
+    );
+    assert_eq!(fs::read_to_string(&sibling).unwrap(), large);
+    assert_eq!(
+        read_grade_preset_file(&path).unwrap().lut.unwrap().text,
+        large
+    );
+
+    // An embedded LUT, or a sibling the exporter cannot write, never
+    // touches an existing `.cube`, so neither asks.
+    let embedded = Some(GradeExportLut {
+        text: Some(INVERT_CUBE),
+        ..export
+    });
+    assert_eq!(
+        write_grade_preset_file(&path, "Look", &warm(), embedded, false).unwrap(),
+        Some(ExportedGradeLut::Embedded)
+    );
+    let unread = Some(GradeExportLut {
+        text: None,
+        ..export
+    });
+    assert_eq!(
+        write_grade_preset_file(&path, "Look", &warm(), unread, false).unwrap(),
+        Some(ExportedGradeLut::Sibling {
+            path: sibling.clone(),
+            written: false,
+        })
+    );
+    assert_eq!(fs::read_to_string(&sibling).unwrap(), large);
+}
+
+#[test]
+fn atomic_writes_replace_whole_files_and_leave_no_temporaries() {
+    let directory = TestDirectory::new("atomic");
+    let path = directory.path("warm.fmgrade");
+    fs::write(&path, "old contents").unwrap();
+    write_grade_preset_file(&path, "Warm", &warm(), None, false).unwrap();
+    write_grade_preset_file(&path, "Warmer", &warm(), None, false).unwrap();
+    assert_eq!(read_grade_preset_file(&path).unwrap().name, "Warmer");
+    let entries: Vec<_> = fs::read_dir(&directory.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, ["warm.fmgrade"]);
+
+    // A missing directory fails the write cleanly.
+    let nowhere = directory.path("missing").join("warm.fmgrade");
+    assert!(matches!(
+        write_grade_preset_file(&nowhere, "Warm", &warm(), None, false),
+        Err(PresetFileError::Io(_))
+    ));
+}
+
+#[test]
+fn unused_names_count_on_from_an_existing_suffix_and_fill_gaps() {
+    let library = ["Warm", "Warm (2)", "Warm (4)", "Cool (2)"];
+    let taken = |name: &str| library.contains(&name);
+    assert_eq!(unused_name("Fresh", 128, taken), "Fresh");
+    assert_eq!(unused_name("  Fresh  ", 128, taken), "Fresh");
+    // A bare name takes the first free suffix, filling gaps.
+    assert_eq!(unused_name("Warm", 128, taken), "Warm (3)");
+    assert_eq!(unused_name(" Warm ", 128, taken), "Warm (3)");
+    // A suffixed name counts on from its number, never doubling suffixes.
+    assert_eq!(unused_name("Warm (2)", 128, taken), "Warm (3)");
+    assert_eq!(unused_name("Warm (4)", 128, taken), "Warm (5)");
+    assert_eq!(unused_name("Cool (2)", 128, taken), "Cool (3)");
+    // A free suffixed name is kept as it is.
+    assert_eq!(unused_name("Cool (3)", 128, taken), "Cool (3)");
+    // Only a canonical ` (N)` with N >= 2 is a suffix.
+    let odd = ["Take (1)", "Take (02)", "(2)", "Take(2)"];
+    let odd_taken = |name: &str| odd.contains(&name);
+    assert_eq!(unused_name("Take (1)", 128, odd_taken), "Take (1) (2)");
+    assert_eq!(unused_name("Take (02)", 128, odd_taken), "Take (02) (2)");
+    assert_eq!(unused_name("(2)", 128, odd_taken), "(2) (2)");
+    assert_eq!(unused_name("Take(2)", 128, odd_taken), "Take(2) (2)");
+
+    // The library's collision rule applies to every candidate.
+    let caseless = |name: &str| library.iter().any(|known| known.eq_ignore_ascii_case(name));
+    assert_eq!(unused_name("WARM", 128, caseless), "WARM (3)");
+    assert_eq!(unused_name("warm (2)", 128, caseless), "warm (3)");
+
+    // Long names are cut on a character boundary, without trailing space.
+    let long = "é".repeat(64); // 128 bytes
+    let name = unused_name(&long, 128, |n| n == long);
+    assert!(name.len() <= 128 && name.ends_with("é (2)"), "{name}");
+    let spaced = format!("{} b", "a".repeat(123)); // the cut lands on the space
+    let name = unused_name(&spaced, 128, |n| n == spaced);
+    assert_eq!(name, format!("{} (2)", "a".repeat(123)));
+    let full = format!("{} (2)", "x".repeat(124)); // exactly 128 bytes
+    let name = unused_name(&full, 128, |n| n == full);
+    assert_eq!(name, format!("{} (3)", "x".repeat(124)));
+    assert_eq!(
+        unused_name(&"y".repeat(200), 128, |_| false),
+        "y".repeat(128)
+    );
 }

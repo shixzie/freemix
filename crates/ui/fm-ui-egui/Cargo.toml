@@ -9,6 +9,7 @@ rust-version.workspace = true
 egui = "0.35.0"
 fm-animation = { path = "../../foundation/fm-animation" }
 fm-grade = { path = "../../foundation/fm-grade" }
+fm-preset-file = { path = "../../foundation/fm-preset-file" }
 fm-protocol = { path = "../../foundation/fm-protocol" }
 fm-types = { path = "../../foundation/fm-types" }
 fm-ui-model = { path = "../fm-ui-model" }

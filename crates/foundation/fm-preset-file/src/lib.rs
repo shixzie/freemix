@@ -133,6 +133,11 @@ pub enum PresetFileError {
     },
     /// The document parses but a value is out of bounds.
     Invalid(String),
+    /// A grade export would replace the existing sibling `.cube` file
+    /// `path`; export again with `replace_lut_file` to overwrite it.
+    LutFileExists {
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for PresetFileError {
@@ -154,6 +159,11 @@ impl fmt::Display for PresetFileError {
                 write!(formatter, "file is of kind `{found}`, not `{expected}`")
             }
             Self::Invalid(message) => write!(formatter, "invalid preset file: {message}"),
+            Self::LutFileExists { path } => write!(
+                formatter,
+                "LUT file {} already exists; it is not replaced without confirmation",
+                path.display()
+            ),
         }
     }
 }
@@ -555,8 +565,16 @@ pub fn sibling_lut_name(path: &Path) -> String {
 /// `.cube` ([`sibling_lut_name`]). A sibling is written before the
 /// `.fmgrade`, so a file that names one always finds it.
 ///
+/// The `.fmgrade` itself replaces any file at `path` (the caller chose that
+/// path), but an existing sibling `.cube` is only replaced when
+/// `replace_lut_file` is set: it may be an unrelated LUT that merely shares
+/// the stem, so the operator confirms first. Nothing is written when the
+/// sibling is refused.
+///
 /// # Errors
 ///
+/// [`PresetFileError::LutFileExists`] when the sibling `.cube` would be
+/// written over an existing file without `replace_lut_file`, and
 /// [`PresetFileError`] when the grade does not encode or a file cannot be
 /// written.
 pub fn write_grade_preset_file(
@@ -564,6 +582,7 @@ pub fn write_grade_preset_file(
     name: &str,
     grade: &Grade,
     lut: Option<GradeExportLut<'_>>,
+    replace_lut_file: bool,
 ) -> Result<Option<ExportedGradeLut>, PresetFileError> {
     let mut grade = grade.clone();
     grade.lut = None;
@@ -580,6 +599,9 @@ pub fn write_grade_preset_file(
                     let file = sibling_lut_name(path);
                     let sibling = path.parent().unwrap_or(Path::new(".")).join(&file);
                     if let Some(text) = text {
+                        if !replace_lut_file && fs::symlink_metadata(&sibling).is_ok() {
+                            return Err(PresetFileError::LutFileExists { path: sibling });
+                        }
                         write_atomically(&sibling, text.as_bytes())?;
                     }
                     exported = Some(ExportedGradeLut::Sibling {
@@ -607,8 +629,41 @@ pub fn write_grade_preset_file(
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Writes `bytes` to a fresh hidden sibling of `path`, syncs it, and renames
-/// it over `path`, so readers see the old file or the whole new one.
+/// The directory holding `path` (`.` for a bare file name).
+fn containing_directory(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+}
+
+/// Flushes `directory`'s entries (a rename into it) to stable storage. A
+/// no-op where directories cannot be opened and synced (non-Unix), and
+/// where the file system refuses to sync a directory.
+fn sync_directory(directory: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        match File::open(directory)?.sync_all() {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::InvalidInput | io::ErrorKind::Unsupported
+                ) =>
+            {
+                Ok(())
+            }
+            result => result,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = directory;
+        Ok(())
+    }
+}
+
+/// Writes `bytes` to a fresh hidden sibling of `path`, syncs it, renames
+/// it over `path`, and syncs the directory, so readers see the old file or
+/// the whole new one and the new one survives a crash once this returns.
 fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let name = path.file_name().map_or_else(
         || "preset".into(),
@@ -632,5 +687,98 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if written.is_err() {
         let _ = fs::remove_file(&temp);
     }
-    written
+    written?;
+    sync_directory(containing_directory(path))
+}
+
+/// The longest numeric suffix [`unused_name`] tries before giving up on
+/// counting and keeping the name as given.
+const MAX_NAME_SUFFIX: u32 = 1_000_000;
+
+/// Splits `name` into its stem and a ` (N)` suffix (`N` ≥ 2, no leading
+/// zero), as [`unused_name`] writes them.
+fn split_name_suffix(name: &str) -> Option<(&str, u32)> {
+    let inner = name.strip_suffix(')')?;
+    let open = inner.rfind(" (")?;
+    let digits = &inner[open + 2..];
+    if digits.is_empty() || digits.starts_with('0') || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let count = digits.parse::<u32>().ok().filter(|count| *count >= 2)?;
+    let stem = inner[..open].trim_end();
+    (!stem.is_empty()).then_some((stem, count))
+}
+
+/// `name` cut to at most `max_bytes` on a character boundary, then
+/// trimmed at the end.
+fn cut_name(name: &str, max_bytes: usize) -> &str {
+    let mut end = max_bytes.min(name.len());
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name[..end].trim_end()
+}
+
+/// The name an imported preset, grade, or LUT gets: `name` trimmed (and
+/// cut to `max_bytes` on a character boundary) when `taken` accepts it,
+/// otherwise `Stem (N)` with the first `N` `taken` accepts. A name already
+/// ending in ` (N)` counts on from it (`Name (2)` becomes `Name (3)`, never
+/// `Name (2) (2)`); a bare name tries `Name (2)`, `Name (3)`, ..., so gaps
+/// are filled. The stem is cut so the suffixed name stays within
+/// `max_bytes`. `taken` carries the library's collision rule (exact or
+/// case-insensitive), applied to every candidate.
+#[must_use]
+pub fn unused_name(name: &str, max_bytes: usize, taken: impl Fn(&str) -> bool) -> String {
+    let name = cut_name(name.trim(), max_bytes);
+    if !taken(name) {
+        return name.to_owned();
+    }
+    let (stem, first) =
+        split_name_suffix(name).map_or((name, 2), |(stem, count)| (stem, count.saturating_add(1)));
+    (first..=first.saturating_add(MAX_NAME_SUFFIX))
+        .map(|count| {
+            let suffix = format!(" ({count})");
+            format!(
+                "{}{suffix}",
+                cut_name(stem, max_bytes.saturating_sub(suffix.len()))
+            )
+        })
+        .find(|candidate| !taken(candidate))
+        .unwrap_or_else(|| name.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn atomic_writes_sync_the_directory_that_holds_the_file() {
+        assert_eq!(
+            containing_directory(Path::new("look.fmgrade")),
+            Path::new(".")
+        );
+        assert_eq!(
+            containing_directory(Path::new("shows/look.fmgrade")),
+            Path::new("shows")
+        );
+        assert_eq!(
+            containing_directory(Path::new("/look.fmgrade")),
+            Path::new("/")
+        );
+
+        let directory =
+            std::env::temp_dir().join(format!("fm-preset-file-sync-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        sync_directory(&directory).unwrap();
+        let path = directory.join("look.cube");
+        write_atomically(&path, b"first").unwrap();
+        write_atomically(&path, b"second").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second");
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        // A directory that is gone cannot be synced on Unix; elsewhere
+        // directory sync is a no-op.
+        fs::remove_dir_all(&directory).unwrap();
+        assert_eq!(sync_directory(&directory).is_err(), cfg!(unix));
+    }
 }

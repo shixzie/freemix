@@ -45,7 +45,7 @@ use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::MONITOR_STALE_AFTER;
-use crate::preset_files::{ExportLut, PresetFileRequest};
+use crate::preset_files::{ExportLut, PendingLutReplace, PresetFileRequest};
 use crate::theme::{
     AMBER, Tone, border_strong_color, caption, close_key, muted_color, raised_color, section_label,
     small_button, status_chip,
@@ -115,6 +115,8 @@ pub(crate) struct ColorWindow {
     pub(crate) grade_path: String,
     /// `.fmgrade` files to export or import, for the host.
     pub(crate) grade_file_requests: Vec<PresetFileRequest>,
+    /// A grade export waiting to replace or keep an existing sibling LUT.
+    pub(crate) lut_replace: Option<PendingLutReplace>,
     /// The picture shown and the frame it came from.
     source: Option<(GradeTarget, SourceKind)>,
     source_frame: Option<(MonitorTap, u64)>,
@@ -138,6 +140,7 @@ impl Default for ColorWindow {
             lut_issued: None,
             grade_path: String::new(),
             grade_file_requests: Vec::new(),
+            lut_replace: None,
             source: None,
             source_frame: None,
             source_at: None,
@@ -1114,6 +1117,7 @@ impl StudioShell {
                 } else {
                     typed.to_owned()
                 };
+                self.color.lut_replace = None;
                 self.color
                     .grade_file_requests
                     .push(PresetFileRequest::ExportGrade {
@@ -1121,6 +1125,7 @@ impl StudioShell {
                         name,
                         grade: Box::new(grade),
                         lut,
+                        replace_lut: false,
                     });
             }
             let import_reason = project_lock.or(no_path).or_else(|| {
@@ -1146,6 +1151,73 @@ impl StudioShell {
                 self.color.grade_path.clear();
             }
         });
+        self.lut_replace_row(ui);
+    }
+
+    /// Answers the pending sibling-LUT question: `replace` sends the export
+    /// again with `replace_lut`; otherwise the export is dropped and the
+    /// existing file stays.
+    pub(crate) fn answer_lut_replace(&mut self, replace: bool) {
+        let Some(pending) = self.color.lut_replace.take() else {
+            return;
+        };
+        if replace
+            && let PresetFileRequest::ExportGrade {
+                path,
+                name,
+                grade,
+                lut,
+                ..
+            } = pending.request
+        {
+            self.color
+                .grade_file_requests
+                .push(PresetFileRequest::ExportGrade {
+                    path,
+                    name,
+                    grade,
+                    lut,
+                    replace_lut: true,
+                });
+        }
+    }
+
+    /// Asks whether a grade export may overwrite the existing `.cube` file
+    /// beside its `.fmgrade`.
+    fn lut_replace_row(&mut self, ui: &mut Ui) {
+        let l = self.locale;
+        let Some(pending) = &self.color.lut_replace else {
+            return;
+        };
+        let name = match &pending.request {
+            PresetFileRequest::ExportGrade { name, .. } => name.clone(),
+            _ => String::new(),
+        };
+        let lut = pending.lut.display().to_string();
+        let mut replace = false;
+        let mut keep = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(
+                RichText::new(l.format(
+                    Msg::ColorGradeLutExists,
+                    &[("name", Arg::Str(&name)), ("lut", Arg::Str(&lut))],
+                ))
+                .color(AMBER),
+            )
+            .on_hover_text(l.text(Msg::ColorGradeLutExistsHover));
+            replace = ui
+                .add(small_button(l.text(Msg::ColorGradeLutReplace)))
+                .on_hover_text(l.text(Msg::ColorGradeLutReplaceHover))
+                .clicked();
+            keep = ui
+                .add(small_button(l.text(Msg::ColorGradeLutKeep)))
+                .on_hover_text(l.text(Msg::ColorGradeLutKeepHover))
+                .clicked();
+        });
+        if replace || keep {
+            self.answer_lut_replace(replace);
+        }
     }
 }
 
@@ -1712,5 +1784,71 @@ mod tests {
         assert!(shell.color.panel.preview().has_lut("asset://luts/3.cube"));
         assert_eq!(lut_name(" /a/b/Warm Film.cube "), "Warm Film");
         assert_eq!(lut_name("C:\\luts\\x.CUBE"), "x");
+    }
+
+    #[test]
+    fn grade_exports_ask_before_replacing_an_existing_sibling_lut() {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let state = ready(&[2], false, true);
+        shell.open_color_window(GradeTarget::Input(input(2)));
+        let request = PresetFileRequest::ExportGrade {
+            path: PathBuf::from("/grades/big.fmgrade"),
+            name: "Big".into(),
+            grade: Box::new(warm()),
+            lut: Some(ExportLut {
+                lut: NonZeroU32::new(3).unwrap(),
+                name: "Film".into(),
+                strength_permille: 1_000,
+            }),
+            replace_lut: false,
+        };
+        let refused = crate::PresetFileAnswer::LutFileExists {
+            path: PathBuf::from("/grades/big.cube"),
+        };
+
+        // The refusal toasts the question and keeps the export pending.
+        assert_eq!(
+            shell.receive_preset_file(&state, &request, refused.clone()),
+            Vec::new()
+        );
+        let toast = shell.toasts.iter().last().unwrap();
+        assert_eq!(toast.kind, ToastKind::Notice);
+        assert!(
+            toast.message.contains("/grades/big.cube"),
+            "{}",
+            toast.message
+        );
+        assert_eq!(
+            shell.color.lut_replace.as_ref().map(|pending| &pending.lut),
+            Some(&PathBuf::from("/grades/big.cube"))
+        );
+        // The question stays on screen until it is answered.
+        draw(&context, &mut shell, &state);
+        assert!(shell.color.lut_replace.is_some());
+        assert_eq!(shell.take_preset_file_requests(), Vec::new());
+
+        // Keeping the file drops the export.
+        shell.answer_lut_replace(false);
+        assert_eq!(shell.color.lut_replace, None);
+        assert_eq!(shell.take_preset_file_requests(), Vec::new());
+
+        // Replacing sends the same export with `replace_lut`.
+        shell.receive_preset_file(&state, &request, refused);
+        shell.answer_lut_replace(true);
+        assert_eq!(shell.color.lut_replace, None);
+        let PresetFileRequest::ExportGrade {
+            path,
+            name,
+            replace_lut,
+            ..
+        } = shell.take_preset_file_requests().pop().unwrap()
+        else {
+            panic!("a grade export");
+        };
+        assert_eq!(
+            (path, name.as_str(), replace_lut),
+            (PathBuf::from("/grades/big.fmgrade"), "Big", true)
+        );
     }
 }

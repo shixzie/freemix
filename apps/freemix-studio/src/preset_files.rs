@@ -6,13 +6,17 @@
 //! project bundle (`assets/luts/<id>.cube`), or writes it beside the
 //! `.fmgrade` when it is large. Connected to an independent daemon, Studio
 //! cannot read the bundle: the file then names a sibling `.cube` that the
-//! operator copies by hand, which the toast says.
+//! operator copies by hand, which the toast says. A large LUT never
+//! overwrites an existing `.cube` beside the `.fmgrade` unless the operator
+//! confirmed it (`replace_lut`); otherwise the answer is
+//! [`PresetFileAnswer::LutFileExists`] and the Colour window asks.
 
 use std::path::Path;
 
 use fm_preset_file::{
-    AnimationPresetFile, ExportedGradeLut, GradeExportLut, read_animation_preset_file,
-    read_grade_preset_file, write_animation_preset_file, write_grade_preset_file,
+    AnimationPresetFile, ExportedGradeLut, GradeExportLut, PresetFileError,
+    read_animation_preset_file, read_grade_preset_file, write_animation_preset_file,
+    write_grade_preset_file,
 };
 use fm_ui_egui::{ExportedLut, ImportedLut, PresetFileAnswer, PresetFileRequest};
 
@@ -71,6 +75,7 @@ pub(crate) fn carry_out(request: &PresetFileRequest, bundle: Option<&Path>) -> P
             name,
             grade,
             lut,
+            replace_lut,
         } => {
             let text = lut
                 .as_ref()
@@ -80,7 +85,7 @@ pub(crate) fn carry_out(request: &PresetFileRequest, bundle: Option<&Path>) -> P
                 strength_permille: lut.strength_permille,
                 text: text.as_deref(),
             });
-            match write_grade_preset_file(path, name, grade, export) {
+            match write_grade_preset_file(path, name, grade, export, *replace_lut) {
                 Ok(exported) => PresetFileAnswer::Exported {
                     lut: exported.map(|exported| match exported {
                         ExportedGradeLut::Embedded => ExportedLut::Embedded,
@@ -89,6 +94,9 @@ pub(crate) fn carry_out(request: &PresetFileRequest, bundle: Option<&Path>) -> P
                         }
                     }),
                 },
+                Err(PresetFileError::LutFileExists { path }) => {
+                    PresetFileAnswer::LutFileExists { path }
+                }
                 Err(error) => failed(&error),
             }
         }
@@ -195,6 +203,7 @@ mod tests {
                 name: "Film".to_owned(),
                 strength_permille: 500,
             }),
+            replace_lut: false,
         };
 
         // Supervised: the LUT text is embedded and comes back on import.
@@ -250,6 +259,50 @@ mod tests {
             carry_out(&PresetFileRequest::ImportGrade { path: unbundled }, None),
             PresetFileAnswer::Grade { lut: Some(_), .. }
         ));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn large_grade_luts_ask_before_replacing_an_existing_sibling() {
+        let directory = scratch("grade-replace");
+        let bundle = directory.join("show.freemix");
+        std::fs::create_dir_all(bundle.join("assets/luts")).unwrap();
+        let mut cube = "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n".to_owned();
+        while cube.len() <= fm_preset_file::MAX_EMBEDDED_LUT_BYTES {
+            cube.insert_str(0, "# padding past the embed limit\n");
+        }
+        std::fs::write(bundle.join("assets/luts/3.cube"), &cube).unwrap();
+        let sibling = directory.join("big.cube");
+        std::fs::write(&sibling, "unrelated").unwrap();
+        let request = |replace_lut| PresetFileRequest::ExportGrade {
+            path: directory.join("big.fmgrade"),
+            name: "Big".to_owned(),
+            grade: Box::new(Grade::IDENTITY),
+            lut: Some(fm_ui_egui::ExportLut {
+                lut: core::num::NonZeroU32::new(3).unwrap(),
+                name: "Film".to_owned(),
+                strength_permille: 1_000,
+            }),
+            replace_lut,
+        };
+        assert_eq!(
+            carry_out(&request(false), Some(&bundle)),
+            PresetFileAnswer::LutFileExists {
+                path: sibling.clone()
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&sibling).unwrap(), "unrelated");
+        assert!(!directory.join("big.fmgrade").exists());
+        assert_eq!(
+            carry_out(&request(true), Some(&bundle)),
+            PresetFileAnswer::Exported {
+                lut: Some(ExportedLut::Sibling {
+                    path: sibling.clone(),
+                    written: true,
+                })
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&sibling).unwrap(), cube);
         let _ = std::fs::remove_dir_all(directory);
     }
 }

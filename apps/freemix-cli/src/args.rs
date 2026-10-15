@@ -252,6 +252,8 @@ pub enum Command {
         path: PathBuf,
         grade: u32,
         file: PathBuf,
+        /// Replaces an existing sibling `.cube` (`--replace-lut`).
+        replace_lut: bool,
     },
     /// Adds the grade (and its LUT) in a `.fmgrade` file to the library.
     GradeImport {
@@ -1305,9 +1307,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "grade-clear" => parse_grade_clear(arguments),
         "grade-import-lut" => parse_grade_import_lut(arguments),
         "grade-list" => parse_grade_list(arguments),
-        "grade-export" => parse_shared_export(arguments, "grade", |path, grade, file| {
-            Command::GradeExport { path, grade, file }
-        }),
+        "grade-export" => parse_grade_export(arguments),
         "grade-import" => parse_shared_import(arguments, "grade", |path, file, name| {
             Command::GradeImport { path, file, name }
         }),
@@ -2871,6 +2871,26 @@ fn parse_shared_export(
     let file = required_path(&mut arguments, "file")?;
     reject_extra(&mut arguments)?;
     Ok(command(path, id, file))
+}
+
+/// `<show.freemix> <grade-id> <file.fmgrade> [--replace-lut]`.
+fn parse_grade_export(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let grade = number(&required(&mut arguments, "grade")?, "grade")?;
+    let file = required_path(&mut arguments, "file")?;
+    let mut replace_lut = false;
+    for option in arguments {
+        match option.as_str() {
+            "--replace-lut" if !replace_lut => replace_lut = true,
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::GradeExport {
+        path,
+        grade,
+        file,
+        replace_lut,
+    })
 }
 
 /// `<show.freemix> <template-uri> <element> --phase in|out --name <name>`.
@@ -5544,7 +5564,34 @@ mod tests {
                 path: "s".into(),
                 grade: 2,
                 file: "w.fmgrade".into(),
+                replace_lut: false,
             })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "grade-export",
+                "s",
+                "2",
+                "w.fmgrade",
+                "--replace-lut"
+            ])),
+            Ok(Command::GradeExport {
+                path: "s".into(),
+                grade: 2,
+                file: "w.fmgrade".into(),
+                replace_lut: true,
+            })
+        );
+        assert!(
+            parse(strings(&[
+                "grade-export",
+                "s",
+                "2",
+                "w.fmgrade",
+                "--replace-lut",
+                "--replace-lut"
+            ]))
+            .is_err()
         );
         assert_eq!(
             parse(strings(&["grade-import", "s", "w.fmgrade", "--name", "W"])),
