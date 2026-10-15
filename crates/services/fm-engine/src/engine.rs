@@ -1759,8 +1759,26 @@ struct EngineMutation {
 }
 
 impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
-    #[allow(clippy::too_many_lines)]
+    /// Applies the command, then refuses it if it brought a closed input to
+    /// Preview or air (IN-026, see [`crate::input_lifecycle::ClosedInputGuard`]).
     fn apply(
+        self,
+        state: &mut ShowState,
+        events: &mut Vec<EngineEvent>,
+    ) -> Result<EngineAcceptance, Rejection> {
+        let guard = crate::input_lifecycle::ClosedInputGuard::before(
+            state,
+            matches!(&self.command, EngineCommand::InputLifecycle(_)),
+        );
+        let acceptance = self.apply_command(state, events)?;
+        guard.check(state)?;
+        Ok(acceptance)
+    }
+}
+
+impl EngineMutation {
+    #[allow(clippy::too_many_lines)]
+    fn apply_command(
         self,
         state: &mut ShowState,
         events: &mut Vec<EngineEvent>,

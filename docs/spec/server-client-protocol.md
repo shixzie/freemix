@@ -918,7 +918,13 @@ import, besides the existing add, remove, rename, and reorder):
     `input_color_set` (`input`, `color`
     `red|orange|yellow|green|teal|blue|purple|pink` or `-`),
     `input_pause_set` (`input`, `paused`), and `input_close_set` (`input`,
-    `closed`). Closing an input on Program is refused (`input_in_use`).
+    `closed`). Closing an input on air (Program, a transition, an
+    overlay, or an enabled layer of a scene on air) is refused
+    (`input_in_use`). A closed input never reaches Preview or air: a
+    command that would bring it, or a scene showing it, there (Preview
+    selection, cut, transition, overlay, playlist cue) is refused
+    (`input_closed`). Closing the input on Preview is allowed; it is then
+    not taken until it reopens.
   - `input_categories_set` (`categories`, `<id>~<name>` joined by `,`, at
     most 32, ids nonzero and unique, names nonblank, at most 48 bytes, and
     unique ignoring case) replaces the project's category list; dropping a
@@ -933,6 +939,9 @@ import, besides the existing add, remove, rename, and reorder):
     first copies each absolute host path to a media file into the bundle
     (`assets/`) and executes and journals the command with the resulting
     `asset://` URIs; the same applies to a `media:` replacement source.
+    The command is validated before anything is copied: a refused command
+    or item copies nothing (it is refused for its own reason), and a copy
+    the executed command does not keep is removed.
   - `inputs_remove` (`inputs`) removes several inputs at once; it is how
     a duplicate or an import is undone, and it forgets the edit history
     naming the removed inputs.
@@ -952,8 +961,13 @@ import, besides the existing add, remove, rename, and reorder):
 - Realization: a paused input holds its last frame (its media transport
   stops moving while it keeps its play state); a closed input releases its
   source (the engine drops the media transport and reports one `media`
-  event without a tick; the native daemon stops the file's decoder worker
-  and reopens the file when the input reopens). The native daemon refuses
+  event without a tick; the native daemon stops the file's decoder worker,
+  shows no picture for the input (transparent black) and no sound, and
+  reopens the file when the input reopens). The native daemon does not open
+  a closed input's file at startup, and an open input whose file is missing
+  or does not play starts offline (`source_missing`, `unsupported`, ...)
+  instead of stopping startup; closing and reopening it retries the file. A
+  media-file worker that fails takes its input offline (`decode_failed`). The native daemon refuses
   `input_duplicate`, `input_import_batch`, `inputs_remove`, and
   `input_replace_source` (`unavailable`), as it refuses live add and
   remove.

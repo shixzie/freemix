@@ -3336,9 +3336,9 @@ impl NativeMasterRuntime {
 
     /// Hands pushed source `input` its audio for engine frame `frame`.
     ///
-    /// The block's channels map onto the Master layout (mono feeds every
-    /// channel; otherwise channel `n` feeds channel `n` and missing channels
-    /// are silent); rendering resamples linearly to the frame's Master
+    /// The block's channels map onto the Master layout by
+    /// [`map_pushed_audio`] (standard upmix and downmix matrices, clamped);
+    /// rendering resamples linearly to the frame's Master
     /// sample count when the block's differs. Only the newest
     /// [`MAX_PUSHED_AUDIO_FRAMES`] frames are kept.
     ///
@@ -3352,23 +3352,17 @@ impl NativeMasterRuntime {
         frame: u64,
         block: &AudioBlock,
     ) -> Result<(), NativeMasterError> {
-        let channels = self.format.channels.channels().len();
         let pushed = self
             .sources
             .get_mut(&input)
             .and_then(|source| source.pushed.as_mut())
             .ok_or(NativeMasterError::DecodeContract { input })?;
-        let planes = block.planes();
-        let samples = block.sample_count();
-        let mapped = (0..channels)
-            .map(|channel| match planes.len() {
-                1 => planes[0].clone(),
-                _ => planes
-                    .get(channel)
-                    .cloned()
-                    .unwrap_or_else(|| vec![0.0; samples]),
-            })
-            .collect();
+        let mapped = map_pushed_audio(
+            block.channel_layout(),
+            block.planes(),
+            &self.format.channels,
+            block.sample_count(),
+        );
         pushed.frames.insert(frame, mapped);
         while pushed.frames.len() > MAX_PUSHED_AUDIO_FRAMES {
             pushed.frames.pop_first();
@@ -13498,5 +13492,291 @@ mod latest_frame_tests {
         assert_eq!(*before[&input(2)], seed, "snapshots are unaffected");
         assert_eq!(latest.get(input(1)).as_deref(), Some(&still));
         assert!(latest.get(input(9)).is_none());
+    }
+}
+
+/// Maps one pushed audio block (`planes` in layout `from`, `samples` long)
+/// onto the Master layout `to` (IN-003, AU-003 matrices).
+///
+/// Layouts that are a catalogued layout in any channel order use its
+/// standard matrix: an upmix duplicates (mono feeds every non-LFE channel),
+/// a downmix follows ITU-R BS.775 through 7.1 -> 5.1 -> 2.0 -> 1.0 (5.1 to
+/// stereo `L' = L + g C + g Ls`, `R' = R + g C + g Rs` with `g = 1/sqrt 2`
+/// and the LFE discarded; stereo to mono `(L + R) / 2`). A mixed channel
+/// is clamped to full scale, the headroom the nominal coefficients lack.
+/// Other layouts feed equal labels at unity, or else channel `n` feeds
+/// channel `n`; unfed channels are silent.
+fn map_pushed_audio(
+    from: &fm_types::ChannelLayout,
+    planes: &[Vec<f32>],
+    to: &fm_types::ChannelLayout,
+    samples: usize,
+) -> Vec<Vec<f32>> {
+    let gains = pushed_audio_gains(from, to);
+    gains
+        .iter()
+        .map(|row| {
+            let routes: Vec<(&[f32], f32)> = row
+                .iter()
+                .enumerate()
+                .filter(|(_, gain)| **gain != 0.0)
+                .filter_map(|(input, gain)| Some((planes.get(input)?.as_slice(), *gain)))
+                .collect();
+            match routes.as_slice() {
+                [] => vec![0.0; samples],
+                [(plane, gain)] if gain.to_bits() == 1.0_f32.to_bits() => {
+                    let mut plane = plane.to_vec();
+                    plane.resize(samples, 0.0);
+                    plane
+                }
+                _ => (0..samples)
+                    .map(|sample| {
+                        routes
+                            .iter()
+                            .map(|(plane, gain)| plane.get(sample).copied().unwrap_or(0.0) * gain)
+                            .sum::<f32>()
+                            .clamp(-1.0, 1.0)
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
+}
+
+/// The `[output][input]` gains [`map_pushed_audio`] applies.
+fn pushed_audio_gains(
+    from: &fm_types::ChannelLayout,
+    to: &fm_types::ChannelLayout,
+) -> Vec<Vec<f32>> {
+    let (inputs, outputs) = (from.channels().len(), to.channels().len());
+    if let Some(gains) = standard_audio_gains(from, to) {
+        return gains;
+    }
+    let mut gains = vec![vec![0.0; inputs]; outputs];
+    let mut routed = false;
+    for (output, label) in to.channels().iter().enumerate() {
+        if let Some(input) = from
+            .channels()
+            .iter()
+            .position(|candidate| candidate == label)
+        {
+            gains[output][input] = 1.0;
+            routed = true;
+        }
+    }
+    if !routed {
+        for (output, row) in gains.iter_mut().enumerate() {
+            let input = if inputs == 1 { 0 } else { output };
+            if let Some(gain) = row.get_mut(input) {
+                *gain = 1.0;
+            }
+        }
+    }
+    gains
+}
+
+/// The catalogued layout `layout` holds in some channel order, and where
+/// each of the catalogue's channels sits in `layout`.
+fn standard_audio_layout(
+    layout: &fm_types::ChannelLayout,
+) -> Option<(fm_audio::StandardLayout, Vec<usize>)> {
+    let labels = fm_audio::MultichannelLayout::from_channel_layout(layout).ok()?;
+    fm_audio::StandardLayout::ALL
+        .into_iter()
+        .find_map(|standard| {
+            let catalogued = standard.layout();
+            if catalogued.labels().len() != labels.labels().len() {
+                return None;
+            }
+            let order = catalogued
+                .labels()
+                .iter()
+                .map(|label| labels.index_of(*label))
+                .collect::<Option<Vec<_>>>()?;
+            Some((standard, order))
+        })
+}
+
+/// [`pushed_audio_gains`] between catalogued layouts.
+fn standard_audio_gains(
+    from: &fm_types::ChannelLayout,
+    to: &fm_types::ChannelLayout,
+) -> Option<Vec<Vec<f32>>> {
+    use fm_audio::{DownmixOptions, GainMatrix, StandardLayout};
+    const DOWNMIX_CHAIN: [StandardLayout; 4] = [
+        StandardLayout::SevenPointOne,
+        StandardLayout::FivePointOne,
+        StandardLayout::Stereo,
+        StandardLayout::Mono,
+    ];
+    let (source, source_order) = standard_audio_layout(from)?;
+    let (target, target_order) = standard_audio_layout(to)?;
+    let dense = |matrix: &GainMatrix, from: StandardLayout, to: StandardLayout| {
+        (0..to.channel_count())
+            .map(|output| {
+                (0..from.channel_count())
+                    .map(|input| matrix.gain(input, output))
+                    .collect::<Vec<f32>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    // Gains between the catalogue orders of `source` and `target`.
+    let catalogued = if source == target {
+        dense(&GainMatrix::identity(source.layout()), source, target)
+    } else if let Ok(upmix) = GainMatrix::upmix_duplicate(source, target) {
+        dense(&upmix, source, target)
+    } else {
+        let start = DOWNMIX_CHAIN.iter().position(|layout| *layout == source)?;
+        let end = DOWNMIX_CHAIN.iter().position(|layout| *layout == target)?;
+        if start >= end {
+            return None;
+        }
+        let mut gains = dense(&GainMatrix::identity(source.layout()), source, source);
+        for step in start..end {
+            let (from, to) = (DOWNMIX_CHAIN[step], DOWNMIX_CHAIN[step + 1]);
+            let matrix = dense(
+                &GainMatrix::downmix(from, to, DownmixOptions::default()).ok()?,
+                from,
+                to,
+            );
+            gains = matrix
+                .iter()
+                .map(|row| {
+                    (0..source.channel_count())
+                        .map(|input| {
+                            row.iter()
+                                .zip(&gains)
+                                .map(|(gain, previous)| gain * previous[input])
+                                .sum()
+                        })
+                        .collect()
+                })
+                .collect();
+        }
+        gains
+    };
+    let mut gains = vec![vec![0.0; from.channels().len()]; to.channels().len()];
+    for (catalogued_output, output) in target_order.iter().enumerate() {
+        for (catalogued_input, input) in source_order.iter().enumerate() {
+            gains[*output][*input] = catalogued[catalogued_output][catalogued_input];
+        }
+    }
+    Some(gains)
+}
+
+/// IN-003: pushed media-file audio maps onto the Master layout with the
+/// standard downmix and upmix matrices (AU-003).
+#[cfg(test)]
+mod pushed_audio_mapping_tests {
+    use fm_types::{Channel, ChannelLayout};
+
+    use super::map_pushed_audio;
+
+    const G: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+    fn layout(channels: &[Channel]) -> ChannelLayout {
+        ChannelLayout::new(channels.to_vec()).unwrap()
+    }
+
+    fn five_one() -> ChannelLayout {
+        layout(&[
+            Channel::Left,
+            Channel::Right,
+            Channel::Center,
+            Channel::LowFrequency,
+            Channel::LeftSurround,
+            Channel::RightSurround,
+        ])
+    }
+
+    fn close(actual: &[Vec<f32>], expected: &[&[f32]]) {
+        assert_eq!(actual.len(), expected.len(), "{actual:?}");
+        for (plane, wanted) in actual.iter().zip(expected) {
+            assert_eq!(plane.len(), wanted.len(), "{actual:?}");
+            for (value, wanted) in plane.iter().zip(*wanted) {
+                assert!((value - wanted).abs() < 1e-6, "{actual:?} != {expected:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn five_one_downmixes_to_stereo_with_centre_and_surrounds() {
+        // L R C LFE Ls Rs; the LFE is discarded (ITU-R BS.775).
+        let planes = [0.2, 0.0, 0.4, 0.9, 0.1, 0.3].map(|value| vec![value]);
+        let mapped = map_pushed_audio(&five_one(), &planes, &ChannelLayout::stereo(), 1);
+        close(&mapped, &[&[0.2 + G * 0.4 + G * 0.1], &[G * 0.4 + G * 0.3]]);
+    }
+
+    #[test]
+    fn a_reordered_five_one_downmixes_by_label() {
+        let reordered = layout(&[
+            Channel::Left,
+            Channel::Right,
+            Channel::LeftSurround,
+            Channel::RightSurround,
+            Channel::Center,
+            Channel::LowFrequency,
+        ]);
+        let planes = [0.2, 0.0, 0.1, 0.3, 0.4, 0.9].map(|value| vec![value]);
+        let mapped = map_pushed_audio(&reordered, &planes, &ChannelLayout::stereo(), 1);
+        close(&mapped, &[&[0.2 + G * 0.4 + G * 0.1], &[G * 0.4 + G * 0.3]]);
+    }
+
+    #[test]
+    fn a_downmix_is_clamped_to_full_scale() {
+        let loud = [1.0, -1.0, 1.0, 0.0, 1.0, -1.0].map(|value| vec![value]);
+        let mapped = map_pushed_audio(&five_one(), &loud, &ChannelLayout::stereo(), 1);
+        close(&mapped, &[&[1.0], &[-1.0]]);
+    }
+
+    #[test]
+    fn stereo_downmixes_to_mono_as_the_mean() {
+        let planes = [vec![0.5, 1.0], vec![-0.1, 1.0]];
+        let mapped = map_pushed_audio(
+            &ChannelLayout::stereo(),
+            &planes,
+            &layout(&[Channel::Mono]),
+            2,
+        );
+        close(&mapped, &[&[0.2, 1.0]]);
+    }
+
+    #[test]
+    fn five_one_downmixes_to_mono_through_stereo() {
+        let planes = [0.2, 0.0, 0.4, 0.9, 0.1, 0.3].map(|value| vec![value]);
+        let mapped = map_pushed_audio(&five_one(), &planes, &layout(&[Channel::Mono]), 1);
+        let left = 0.2 + G * 0.4 + G * 0.1;
+        let right = G * 0.4 + G * 0.3;
+        close(&mapped, &[&[0.5 * left + 0.5 * right]]);
+    }
+
+    #[test]
+    fn mono_feeds_both_stereo_channels() {
+        let planes = [vec![0.25, -0.5]];
+        let mapped = map_pushed_audio(
+            &layout(&[Channel::Mono]),
+            &planes,
+            &ChannelLayout::stereo(),
+            2,
+        );
+        close(&mapped, &[&[0.25, -0.5], &[0.25, -0.5]]);
+    }
+
+    #[test]
+    fn a_matching_layout_passes_through_and_unknown_layouts_map_by_index() {
+        let planes = [vec![0.25], vec![-0.5]];
+        let stereo = ChannelLayout::stereo();
+        close(
+            &map_pushed_audio(&stereo, &planes, &stereo, 1),
+            &[&[0.25], &[-0.5]],
+        );
+        let discrete = layout(&[
+            Channel::Discrete(fm_types::DiscreteChannel::new(1).unwrap()),
+            Channel::Discrete(fm_types::DiscreteChannel::new(2).unwrap()),
+        ]);
+        close(
+            &map_pushed_audio(&discrete, &planes, &stereo, 1),
+            &[&[0.25], &[-0.5]],
+        );
     }
 }

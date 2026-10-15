@@ -282,6 +282,24 @@ impl ProjectStore {
         })
     }
 
+    /// Removes the asset an [`Self::import_media_file`] copy created at
+    /// `asset_uri`, when an import is abandoned. A file that is already
+    /// gone is not an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::ErrorKind::InvalidInput`] error for a URI that is
+    /// not an asset URI, or another I/O error.
+    pub fn remove_imported_media(&self, asset_uri: &str) -> Result<(), BundleError> {
+        let key = asset_uri_key(asset_uri).map_err(|error| {
+            io::Error::new(io::ErrorKind::InvalidInput, format!("{asset_uri}: {error}"))
+        })?;
+        match fs::remove_file(self.assets_root().join(key)) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        }
+    }
+
     /// Plans repairs for every media input whose asset does not resolve.
     ///
     /// Candidates are files whose name equals the final segment of the
@@ -667,6 +685,16 @@ pub(crate) fn suffixed_key(key: &str, attempt: u32) -> String {
     } else {
         format!("{directory}/{name}")
     }
+}
+
+/// The `asset://` URI [`ProjectStore::import_media_file`] tries first for
+/// host file `source`: its file name made portable. The import itself may
+/// settle on a numbered variant when that key holds other contents.
+#[must_use]
+pub fn media_import_asset_uri(source: &Path) -> String {
+    asset_uri(&imported_key(
+        source.file_name().unwrap_or_else(|| OsStr::new("media")),
+    ))
 }
 
 /// Derives a portable single-segment key from a host file name.

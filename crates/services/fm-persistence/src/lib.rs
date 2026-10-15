@@ -42,7 +42,7 @@ pub use journal::{
 pub use lut::{ImportedLut, LutError};
 pub use media::{
     AssetDisposition, BundleError, ImportedAsset, RelinkEntry, RelinkOutcome, RelinkPlan,
-    RelinkResolution, RelinkSearch,
+    RelinkResolution, RelinkSearch, media_import_asset_uri,
 };
 pub use model::{
     CURRENT_SCHEMA_VERSION, FadeToBlackState, IdempotencyReceipt,

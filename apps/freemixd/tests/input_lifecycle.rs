@@ -588,3 +588,155 @@ fn input_lifecycle_commands_replicate_journal_and_persist() {
     assert_eq!(status(&snapshot, 11).name, "Interview Take");
     daemon.stop();
 }
+
+/// The files in the bundle's `assets/` directory, sorted.
+fn asset_files(project: &Path) -> Vec<String> {
+    let mut names = fs::read_dir(project.join("assets"))
+        .map(|entries| {
+            entries
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// A refused import or source replacement leaves no copy of its host files
+/// in the bundle: the command is validated before anything is copied, and
+/// only accepted items are brought in.
+#[cfg(unix)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn refused_imports_and_replacements_leave_no_copies() {
+    let directory = TestDirectory::new("refused-imports");
+    let project = directory.project();
+    save_project(&project, MediaPlaybackSettings::default());
+    let host = |name: &str| {
+        let path = directory.0.join(name);
+        fs::write(&path, name.as_bytes()).unwrap();
+        path.to_str().unwrap().to_owned()
+    };
+    let locked_clip = host("Locked.mov");
+    let taken_id = host("Taken Id.mov");
+    let accepted = host("Accepted.mov");
+    let unknown_target = host("Unknown Target.mov");
+    let generator_target = host("Generator Target.mov");
+    let locked_replacement = host("Locked Replacement.mov");
+
+    let daemon = Daemon::start(&project);
+    let (mut client, _, _) = Client::connect(&daemon);
+    let before = asset_files(&project);
+
+    // Under the project padlock the whole import is refused.
+    client.command(&CommandPayload::SetEditLock {
+        scope: fm_protocol::EditLockScope::Project,
+        locked: true,
+    });
+    let refused = client.submit(&CommandPayload::InputLifecycle(
+        InputLifecycleOperation::Import {
+            items: vec![ImportItemSpec {
+                input: wire(20),
+                name: None,
+                uri: locked_clip,
+            }],
+        },
+    ));
+    assert!(
+        matches!(refused, CommandResult::Rejected { .. }),
+        "{refused:?}"
+    );
+    let refused = client.submit(&CommandPayload::InputLifecycle(
+        InputLifecycleOperation::ReplaceSource {
+            input: wire(2),
+            source: WireInputSource::Media {
+                uri: locked_replacement,
+            },
+        },
+    ));
+    assert!(
+        matches!(refused, CommandResult::Rejected { .. }),
+        "{refused:?}"
+    );
+    assert_eq!(asset_files(&project), before, "a refused command copied");
+    client.command(&CommandPayload::SetEditLock {
+        scope: fm_protocol::EditLockScope::Project,
+        locked: false,
+    });
+
+    // An item refused for its input id is not copied; the accepted one is.
+    let (added, refused) = client.lifecycle_rewritten(InputLifecycleOperation::Import {
+        items: vec![
+            ImportItemSpec {
+                input: wire(1),
+                name: None,
+                uri: taken_id,
+            },
+            ImportItemSpec {
+                input: wire(21),
+                name: None,
+                uri: accepted,
+            },
+        ],
+    });
+    assert_eq!(refused, [(0, ImportRefusal::DuplicateInput)]);
+    assert_eq!(added.len(), 1);
+    let mut expected = before.clone();
+    expected.push("Accepted.mov".to_owned());
+    expected.sort();
+    assert_eq!(asset_files(&project), expected);
+
+    // A replacement refused by the engine copies nothing: an unknown input,
+    // and an input without a replaceable source (a title, scene, or colour).
+    let refused = client.submit(&CommandPayload::InputLifecycle(
+        InputLifecycleOperation::ReplaceSource {
+            input: wire(99),
+            source: WireInputSource::Media {
+                uri: unknown_target,
+            },
+        },
+    ));
+    assert!(
+        matches!(refused, CommandResult::Rejected { .. }),
+        "{refused:?}"
+    );
+    assert_eq!(asset_files(&project), expected);
+
+    // The refusal keeps its own reason, not `unavailable`.
+    let CommandResult::Rejected { fields, .. } = refused else {
+        unreachable!();
+    };
+    assert!(
+        fields.iter().all(|field| field.code != "unavailable"),
+        "{fields:?}"
+    );
+
+    // An accepted replacement still brings its file in.
+    client.command(&CommandPayload::InputLifecycle(
+        InputLifecycleOperation::ReplaceSource {
+            input: wire(3),
+            source: WireInputSource::Media {
+                uri: generator_target,
+            },
+        },
+    ));
+    expected.push("Generator Target.mov".to_owned());
+    expected.sort();
+    assert_eq!(asset_files(&project), expected);
+    drop(client);
+    daemon.stop();
+}
+
+impl Client {
+    /// Like [`Self::lifecycle`] for an operation `freemixd` rewrites (host
+    /// paths become `asset://` URIs), so the event's operation differs.
+    fn lifecycle_rewritten(
+        &mut self,
+        operation: InputLifecycleOperation,
+    ) -> (Vec<AddedInput>, Vec<(u16, ImportRefusal)>) {
+        match self.command(&CommandPayload::InputLifecycle(operation)) {
+            EventPayload::InputLifecycleChanged { added, refused, .. } => (added, refused),
+            other => panic!("expected input_lifecycle_changed, got {other:?}"),
+        }
+    }
+}

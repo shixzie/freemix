@@ -513,11 +513,18 @@ snapshot's per-input lifecycle and category list, and
 it. A paused input holds its frame (the media transport stops while keeping
 its play state) and a closed input releases its source: the simulated
 daemon reopens a synthetic source when the input reopens, and the native
-daemon stops the media-file worker's decoder on close and reopens the file
-on reopen. Media faults map to offline reasons, published once and cleared
-when the input plays again. `freemixd` copies host media paths named by an
-import or a media replacement into the bundle before executing and
-journaling the command; the native daemon refuses duplicate, import,
+daemon stops the media-file worker's decoder on close (the input then shows
+transparent black and no sound) and reopens the file on reopen. A closed
+input is never taken to Preview or air (`input_closed`), directly or as a
+scene layer, and an input that an on-air scene shows cannot be closed. The
+native daemon starts without opening closed inputs' files, starts an input
+whose file is missing or unplayable offline, faults an input whose worker
+fails, and downmixes media-file audio onto the Master layout with the
+ITU-R BS.775 matrices. Media faults map to offline reasons, published once and cleared
+when the input plays again. `freemixd` validates an import or a media
+replacement first, then copies the host media paths the command keeps into
+the bundle before executing and journaling it (removing any copy it does
+not keep); the native daemon refuses duplicate, import,
 multi-input removal, and source replacement, as it refuses live add and
 remove. The CLI edits categories, colour, pause, and close locally through
 the engine (`input-categories`, `input-category`, `input-color`,

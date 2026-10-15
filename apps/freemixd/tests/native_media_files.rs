@@ -754,3 +754,270 @@ fn a_reopened_media_file_that_no_longer_plays_stays_offline() {
     drop(client);
     drop(daemon);
 }
+
+impl Client {
+    /// Submits `payload` and returns its result.
+    fn submit(&mut self, payload: CommandPayload) -> CommandResult {
+        self.commands += 1;
+        let id = format!("submit-{}", self.commands);
+        self.send(&WireMessage::Command(CommandMessage {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            id: id.clone(),
+            idempotency_key: id,
+            expected_revision: None,
+            deadline_ms: None,
+            payload,
+        }));
+        self.wait_for("the command result", |_, message| match message {
+            WireMessage::CommandResult(result) => Some(result),
+            _ => None,
+        })
+    }
+}
+
+/// Whether `result` is a refusal naming `issue`.
+fn refused_as(result: &CommandResult, issue: &str) -> bool {
+    matches!(result, CommandResult::Rejected { fields, .. }
+        if fields.iter().any(|field| field.code == issue))
+}
+
+/// Starts the native daemon on `project`, or `None` when the native media
+/// runtime is unavailable (and not required).
+fn start_or_skip(project: &Path) -> Option<NativeDaemon> {
+    match start_native(project) {
+        Ok(daemon) => Some(daemon),
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native media file integration skipped: {error}");
+            None
+        }
+    }
+}
+
+/// IN-026: on the native runtime a closed media input on Preview cannot be
+/// taken to Program until it reopens (its picture, black while closed,
+/// never reaches air).
+#[test]
+fn a_closed_media_input_cannot_be_taken() {
+    if !ffmpeg_available() {
+        eprintln!("native media file integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-media-closed.freemix");
+    save_project(&project_path);
+    let Some(daemon) = start_or_skip(&project_path) else {
+        return;
+    };
+    let mut client = Client::connect(daemon.address);
+    handshake(&mut client);
+
+    // Cut moves the clip to Preview, where it is closed.
+    client.accept(CommandPayload::Cut);
+    client.accept(CommandPayload::InputLifecycle(
+        fm_protocol::InputLifecycleOperation::SetClosed {
+            input: clip(),
+            closed: true,
+        },
+    ));
+
+    // It cannot be taken.
+    for payload in [
+        CommandPayload::Cut,
+        CommandPayload::Fade { duration_frames: 5 },
+    ] {
+        let result = client.submit(payload);
+        assert!(refused_as(&result, "input_closed"), "{result:?}");
+    }
+
+    // Reopened, it is taken as usual.
+    client.accept(CommandPayload::InputLifecycle(
+        fm_protocol::InputLifecycleOperation::SetClosed {
+            input: clip(),
+            closed: false,
+        },
+    ));
+    client.accept(CommandPayload::Cut);
+    drop(client);
+    drop(daemon);
+}
+
+/// Inputs 1 (Program) and 4 (Preview) solid generators; inputs 2 (open) and 3
+/// (closed) media inputs whose files are missing from the bundle.
+fn save_missing_media_project(path: &Path) {
+    let store = ProjectStore::new(path).unwrap();
+    fs::create_dir_all(store.assets_root()).unwrap();
+    let frame_rate = FrameRate::new(25, 1).unwrap();
+    let mut project = Project::new(
+        ProjectId::new(NonZeroU128::new(45).unwrap()),
+        "Native missing media",
+        ProjectSettings {
+            frame_rate,
+            video: VideoFormat {
+                dimensions: VideoDimensions::new(320, 180).unwrap(),
+                frame_rate,
+                pixel_format: PixelFormat::Rgba8,
+                scan: ScanMode::Progressive,
+                color: ColorMetadata::default(),
+            },
+            audio: AudioFormat {
+                sample_rate: SampleRate::new(48_000).unwrap(),
+                sample_format: SampleFormat::F32,
+                channels: ChannelLayout::stereo(),
+            },
+        },
+    );
+    for (id, name) in [(1, "Solid"), (4, "Other")] {
+        project.add_input(Input {
+            id: input(id),
+            name: name.into(),
+            kind: InputKind::Simulated(SimulatedInput::new(
+                SimulatedVideo::Solid(SolidColor::new(12, 34, 56, 255)),
+                SimulatedAudio::Silence,
+            )),
+            required_capabilities: Vec::new(),
+        });
+    }
+    for (id, name, file) in [(2, "Open", "open.mkv"), (3, "Closed", "closed.mkv")] {
+        project.add_input(Input {
+            id: input(id),
+            name: name.into(),
+            kind: InputKind::Media {
+                asset_uri: format!("asset://{file}"),
+                playback: MediaPlaybackSettings::default(),
+            },
+            required_capabilities: Vec::new(),
+        });
+    }
+    project
+        .set_input_lifecycle(
+            input(3),
+            fm_model::InputLifecycle {
+                closed: true,
+                ..fm_model::InputLifecycle::default()
+            },
+        )
+        .unwrap();
+    project.set_main_mix(MainMix::new(input(1), input(4)));
+    let stored = StoredProject::from_project(
+        project,
+        RuntimeRouting {
+            desired_program_id: Some(input(1)),
+            realized_program_id: Some(input(1)),
+            desired_preview_id: Some(input(4)),
+            realized_preview_id: Some(input(4)),
+        },
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&stored).unwrap();
+}
+
+/// The transport of media input `id` as its next `media` runtime event
+/// reports it.
+fn next_transport_of(
+    client: &mut Client,
+    id: u128,
+    what: &str,
+) -> fm_protocol::MediaTransportStatus {
+    let wire = WireInputId::from_domain(input(id));
+    client.wait_for(what, |_, message| {
+        let WireMessage::RuntimeEvent(event) = message else {
+            return None;
+        };
+        let RuntimeLifecycleEvent::Media { status, .. } = event.event else {
+            return None;
+        };
+        (status.input == wire).then_some(status.transport)
+    })
+}
+
+/// IN-026: a native daemon starts although media files are missing. A
+/// closed input's file is not opened at all; an open input whose file is
+/// missing starts offline (`source_missing`). Either plays once its file is
+/// back and the input is (closed and) reopened.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn missing_media_files_start_offline_and_closed_inputs_are_not_opened() {
+    if !ffmpeg_available() {
+        eprintln!("native media file integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-media-missing.freemix");
+    save_missing_media_project(&project_path);
+    let assets = ProjectStore::new(&project_path).unwrap().assets_root();
+    let Some(daemon) = start_or_skip(&project_path) else {
+        return;
+    };
+    let mut client = Client::connect(daemon.address);
+    let snapshot = handshake(&mut client);
+    let lifecycle = |id: u128| {
+        snapshot
+            .inputs
+            .iter()
+            .find(|status| status.input == WireInputId::from_domain(input(id)))
+            .unwrap()
+            .lifecycle
+    };
+    assert!(lifecycle(3).closed);
+    if lifecycle(2).offline.is_none() {
+        let open = WireInputId::from_domain(input(2));
+        let offline = client.wait_for("the missing file's fault", |_, message| {
+            let WireMessage::RuntimeEvent(event) = message else {
+                return None;
+            };
+            match event.event {
+                RuntimeLifecycleEvent::InputAvailability { input, offline } if input == open => {
+                    Some(offline)
+                }
+                _ => None,
+            }
+        });
+        assert_eq!(
+            offline,
+            Some(fm_protocol::InputOfflineReason::SourceMissing)
+        );
+    } else {
+        assert_eq!(
+            lifecycle(2).offline,
+            Some(fm_protocol::InputOfflineReason::SourceMissing)
+        );
+    }
+
+    // The closed input's file arrives; reopening plays it.
+    generate_clip(&assets.join("closed.mkv"));
+    client.accept(CommandPayload::InputLifecycle(
+        fm_protocol::InputLifecycleOperation::SetClosed {
+            input: WireInputId::from_domain(input(3)),
+            closed: false,
+        },
+    ));
+    let mut reopened = next_transport_of(&mut client, 3, "the reopened input");
+    while !reopened.available {
+        reopened = next_transport_of(&mut client, 3, "the reopened input");
+    }
+    assert_eq!(reopened.frames, 100);
+
+    // The open input's file arrives; closing and reopening plays it.
+    generate_clip(&assets.join("open.mkv"));
+    for closed in [true, false] {
+        client.accept(CommandPayload::InputLifecycle(
+            fm_protocol::InputLifecycleOperation::SetClosed {
+                input: WireInputId::from_domain(input(2)),
+                closed,
+            },
+        ));
+    }
+    let mut recovered = next_transport_of(&mut client, 2, "the recovered input");
+    while !recovered.available {
+        recovered = next_transport_of(&mut client, 2, "the recovered input");
+    }
+    assert_eq!(recovered.fault, None);
+    drop(client);
+    drop(daemon);
+}

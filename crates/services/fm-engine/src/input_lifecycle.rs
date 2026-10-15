@@ -21,7 +21,16 @@
 //! releases its source (the engine closes its media transport; the media
 //! plane releases its decoder or capture) and renders black and silent; it
 //! keeps its definition, labels, strip, and references, and reopening
-//! restores it. Closing is refused while the input is on air.
+//! restores it. Closing is refused while the input is on air, directly or
+//! as an enabled layer of a scene on air.
+//!
+//! A closed input never reaches Preview or air: any command that would bring
+//! it there (selecting it or a scene showing it to Preview, cutting or
+//! transitioning to it, keying it, a playlist cue) is refused as
+//! `input_closed` ([`ClosedInputGuard`]). Closing the input on Preview is
+//! allowed; it then cannot be taken until it reopens. So whatever its kind,
+//! a closed input is never seen on Program or an output; where it is still
+//! shown (Preview, multiview), a closed media input shows no picture.
 
 use fm_command::{FieldIssue, Rejection, RejectionCode};
 use fm_model::{
@@ -29,8 +38,125 @@ use fm_model::{
     InputLifecycle, InputSourceError, InputSourceSpec, MEDIA_ASSET_URI_PREFIX,
 };
 use fm_types::InputId;
+use std::collections::BTreeSet;
 
 use crate::{EngineCommand, EngineEvent, MAX_SHOW_INPUTS, ShowState};
+
+/// The inputs a show presents: on air (Program, a transition or manual
+/// transition endpoint, a keyed or fading overlay, a playing Stinger's
+/// media) and on Preview, each with every input a scene among them shows
+/// as an enabled layer, through nested scenes.
+struct ShownInputs {
+    air: BTreeSet<InputId>,
+    preview: BTreeSet<InputId>,
+}
+
+impl ShownInputs {
+    fn of(state: &ShowState) -> Self {
+        let switcher = state.desired_switcher();
+        let air = state
+            .inputs()
+            .iter()
+            .copied()
+            .filter(|input| switcher.on_air_usage(*input).is_some());
+        Self {
+            air: with_scene_layers(state, air),
+            preview: with_scene_layers(state, [switcher.preview()]),
+        }
+    }
+}
+
+/// `roots` and every input the scenes among them show as enabled layers,
+/// through nested scenes.
+fn with_scene_layers(
+    state: &ShowState,
+    roots: impl IntoIterator<Item = InputId>,
+) -> BTreeSet<InputId> {
+    let mut shown = BTreeSet::new();
+    let mut scenes = BTreeSet::new();
+    let mut pending: Vec<InputId> = roots.into_iter().collect();
+    let mut pending_scenes = Vec::new();
+    loop {
+        if let Some(input) = pending.pop() {
+            if shown.insert(input)
+                && let Some(scene) = state.scene_input(input)
+            {
+                pending_scenes.push(scene.id());
+            }
+            continue;
+        }
+        let Some(scene) = pending_scenes.pop() else {
+            break;
+        };
+        if !scenes.insert(scene) {
+            continue;
+        }
+        let Some(scene) = state.scene(scene) else {
+            continue;
+        };
+        for layer in scene.scene.layers.iter().filter(|layer| layer.enabled) {
+            match layer.source {
+                fm_model::SourceRef::Input(input) => pending.push(input),
+                fm_model::SourceRef::Scene(nested) => pending_scenes.push(nested),
+            }
+        }
+    }
+    shown
+}
+
+/// Refuses a command that brings a closed input to Preview or air (IN-026):
+/// captured before the command, checked after it. A closed input already on
+/// Preview (closed there) may stay, but it is not taken to air.
+pub(crate) struct ClosedInputGuard(Option<ShownInputs>);
+
+impl ClosedInputGuard {
+    /// Captures what `state` presents, when a command could bring a closed
+    /// input to it: some input is closed, or the command is a lifecycle
+    /// edit (the only kind that closes one).
+    pub(crate) fn before(state: &ShowState, lifecycle_edit: bool) -> Self {
+        let any_closed = state
+            .input_lifecycles()
+            .values()
+            .any(|lifecycle| lifecycle.closed);
+        Self((any_closed || lifecycle_edit).then(|| ShownInputs::of(state)))
+    }
+
+    /// Refuses `state` (after the command) when a closed input is newly on
+    /// air or newly on Preview.
+    pub(crate) fn check(self, state: &ShowState) -> Result<(), Rejection> {
+        let Some(before) = self.0 else {
+            return Ok(());
+        };
+        let closed: Vec<InputId> = state
+            .input_lifecycles()
+            .iter()
+            .filter(|(_, lifecycle)| lifecycle.closed)
+            .map(|(input, _)| *input)
+            .collect();
+        if closed.is_empty() {
+            return Ok(());
+        }
+        let after = ShownInputs::of(state);
+        let reached = closed.into_iter().find_map(|input| {
+            if after.air.contains(&input) && !before.air.contains(&input) {
+                Some((input, "air"))
+            } else if after.preview.contains(&input) && !before.preview.contains(&input) {
+                Some((input, "Preview"))
+            } else {
+                None
+            }
+        });
+        match reached {
+            Some((input, place)) => Err(rejection(
+                RejectionCode::Conflict,
+                "input",
+                "input_closed",
+                format!("input {input} is closed; reopen it before taking it to {place}"),
+            )),
+            None => Ok(()),
+        }
+    }
+}
 
 /// One input lifecycle edit (IN-026).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -416,6 +542,14 @@ pub(crate) fn apply(
                     "input",
                     "input_on_air",
                     format!("input {input} cannot be closed while it is {usage}"),
+                ));
+            }
+            if *closed && ShownInputs::of(state).air.contains(input) {
+                return Err(rejection(
+                    RejectionCode::Conflict,
+                    "input",
+                    "input_in_use",
+                    format!("input {input} cannot be closed while a scene on air shows it"),
                 ));
             }
             set_lifecycle(state, *input, |lifecycle| lifecycle.closed = *closed)?;

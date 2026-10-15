@@ -690,9 +690,12 @@ pub(super) fn run(
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
-        if let Some(native) = native.as_deref_mut()
-            && let Err(error) = native.tick_if_due(&mut control.borrow_mut(), authority)
-        {
+        // The control borrow ends before a failure shuts the peers down,
+        // which borrows it again.
+        let ticked = native
+            .as_deref_mut()
+            .map(|native| native.tick_if_due(&mut control.borrow_mut(), authority));
+        if let Some(Err(error)) = ticked {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }

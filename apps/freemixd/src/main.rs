@@ -5572,6 +5572,16 @@ impl NativeDaemon {
                     );
                     control.set_media_fault(input, fault)
                 }
+                // A file that reopened opens the transport of an input that
+                // had no source at startup (closed or offline then); one
+                // with a startup source reopened it already.
+                native_files::FileReport::Opened(source) => {
+                    if control.input_lifecycle(input).closed || control.media_source_open(input) {
+                        Ok(())
+                    } else {
+                        control.set_media_source(input, Some(source))
+                    }
+                }
             };
             applied.map_err(|error| {
                 AppFailure(format!(
@@ -5601,15 +5611,22 @@ impl NativeDaemon {
     /// closed (and its input offline) until the input is closed and
     /// reopened, so later commands do not bring back a transport whose
     /// worker no longer decodes.
+    ///
+    /// An input without a startup source (closed or offline at startup)
+    /// reopens its transport once its worker reports the file open, and an
+    /// input whose worker failed stays offline.
     fn sync_input_lifecycle(&mut self, control: &mut ControlService<Policy>) -> AppResult<()> {
-        for (input, source) in self.files.sources().to_vec() {
-            let input = &input;
-            let closed = control.input_lifecycle(*input).closed;
-            let reopened = self.files.is_closed(*input) && !closed;
-            self.files.set_closed(*input, closed);
-            if reopened && !control.media_source_open(*input) {
+        for input in self.files.inputs() {
+            let closed = control.input_lifecycle(input).closed;
+            let reopened = self.files.is_closed(input) && !closed;
+            self.files.set_closed(input, closed);
+            if reopened
+                && !self.files.is_failed(input)
+                && !control.media_source_open(input)
+                && let Some(source) = self.files.source(input).cloned()
+            {
                 control
-                    .set_media_source(*input, Some(source.clone()))
+                    .set_media_source(input, Some(source))
                     .map_err(|error| {
                         AppFailure(format!("media input {input} cannot reopen: {error}"))
                     })?;
@@ -5949,10 +5966,10 @@ impl NativeDaemon {
         }
         self.emit_camera_source_telemetry();
         self.observe_native_telemetry();
-        if !self.files.sources().is_empty() {
+        if !self.files.inputs().is_empty() {
             eprintln!(
                 "FREEMIXD_MEDIA_FILES\tv=1\tinputs={}\tlate_frames={}",
-                self.files.sources().len(),
+                self.files.inputs().len(),
                 self.files.late_frames()
             );
         }
@@ -6117,6 +6134,7 @@ fn resolve_native_file_sources(
                     input: *input,
                     path: path.clone(),
                     settings,
+                    closed: project.input_lifecycle(*input).closed,
                 })
             }
             _ => None,
@@ -6133,7 +6151,10 @@ fn resolve_native_file_sources(
             (dimensions.width(), dimensions.height()),
         )
         .map_err(AppFailure)?,
-        None if inputs.is_empty() => native_files::NativeMediaFiles::start_empty(),
+        None if inputs.is_empty() => native_files::NativeMediaFiles::start_empty(
+            project.settings().frame_rate,
+            native_clock_domain(),
+        ),
         None => {
             return Err(AppFailure("native media files require ffmpeg".into()).into());
         }
@@ -6927,11 +6948,33 @@ fn resolve_native_media_source(
     clock_domain: MediaClockDomainId,
     output_dimensions: fm_types::VideoDimensions,
 ) -> AppResult<NativeResolvedSource> {
-    let path = store.resolve_asset_uri(asset_uri).map_err(|error| {
-        AppFailure(format!(
-            "native media asset resolution failed for input {input}: {error}"
-        ))
-    })?;
+    // A media file missing from the bundle starts its input offline
+    // (`source_missing`) as a media-file input, instead of stopping the
+    // daemon: the file worker reports the fault and retries the file when
+    // the input reopens (IN-026). A broken bundle still stops startup.
+    let missing = || {
+        let key = asset_uri.strip_prefix(fm_model::MEDIA_ASSET_URI_PREFIX)?;
+        fm_model::validate_media_asset_uri(asset_uri).ok()?;
+        Some(NativeResolvedSource::LocalVideo {
+            input,
+            path: store.assets_root().join(key),
+        })
+    };
+    let path = match store.resolve_asset_uri(asset_uri) {
+        Ok(path) => path,
+        Err(fm_persistence::AssetResolveError::AssetUnavailable(error))
+            if error.kind() == std::io::ErrorKind::NotFound
+                && let Some(source) = missing() =>
+        {
+            return Ok(source);
+        }
+        Err(error) => {
+            return Err(AppFailure(format!(
+                "native media asset resolution failed for input {input}: {error}"
+            ))
+            .into());
+        }
+    };
     let mut file = File::open(&path).map_err(|error| {
         AppFailure(format!(
             "native media read failed for input {input}: {:?}",
@@ -10385,8 +10428,8 @@ fn execute_authority_command(
             process_shutdown,
         );
     }
-    let imported = import_host_media(store, command);
-    let command = imported.as_ref().unwrap_or(command);
+    let imported = import_host_media(&mut control, store, principal, command, now);
+    let command = imported.command.as_ref().unwrap_or(command);
     let execution = execute_durable_command(
         &mut control,
         store,
@@ -10396,6 +10439,7 @@ fn execute_authority_command(
         command,
         now,
     )?;
+    imported.discard_unused(store, durable.project());
     // Imported, duplicated, replaced and reopened media inputs play from a
     // synthetic source as soon as they exist (IN-026).
     attach_synthetic_media(&mut control, durable.project())?;
@@ -10531,47 +10575,169 @@ fn native_stinger_preflight_rejection(
     }
 }
 
+/// The host media files one batch import or source replacement brought
+/// into the bundle (IN-026): the command to execute with their `asset://`
+/// URIs, and the assets newly written for it.
+#[derive(Default)]
+struct HostMediaImport {
+    /// The rewritten command, or `None` to execute the command as sent.
+    command: Option<CommandMessage>,
+    /// Assets this import wrote (not ones it found already in the bundle).
+    copied: Vec<String>,
+}
+
+impl HostMediaImport {
+    /// Removes every asset this import wrote that `project` (the project
+    /// after the command) does not name: the command was refused, or an
+    /// item it was copied for was. A copy that cannot be removed is only
+    /// reported; it is an unreferenced file, never a broken project.
+    fn discard_unused(&self, store: &dyn DurableStore, project: &fm_model::Project) {
+        for uri in &self.copied {
+            let used = project.inputs().iter().any(|input| {
+                matches!(&input.kind, fm_model::InputKind::Media { asset_uri, .. } if asset_uri == uri)
+            });
+            if !used && let Err(error) = store.discard_imported_media(uri) {
+                eprintln!("FREEMIXD_IMPORT\tv=1\tasset={uri}\terror={error}");
+            }
+        }
+    }
+}
+
+/// The host path `uri` names when a batch import or a source replacement
+/// should bring it into the bundle: an absolute path to a regular media file.
+fn importable_host_path(uri: &str) -> Option<&Path> {
+    let path = Path::new(uri);
+    (!uri.starts_with(fm_model::MEDIA_ASSET_URI_PREFIX)
+        && path.is_absolute()
+        && fm_model::is_media_file_name(uri)
+        && path.is_file())
+    .then_some(path)
+}
+
+/// The media URIs of a batch import (every item) or a media source
+/// replacement (one), mutably.
+fn host_media_uris(payload: &mut CommandPayload) -> Vec<&mut String> {
+    match payload {
+        CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::Import { items }) => {
+            items.iter_mut().map(|item| &mut item.uri).collect()
+        }
+        CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::ReplaceSource {
+            source: fm_protocol::WireInputSource::Media { uri },
+            ..
+        }) => vec![uri],
+        _ => Vec::new(),
+    }
+}
+
 /// Brings the host media files a batch import or a source replacement names
 /// into the bundle (IN-026): each absolute host path to a regular media file
 /// becomes the `asset://` URI of its imported copy, and the command is
 /// executed (and journaled) with those URIs. A path that cannot be imported
 /// is left as it is, and the engine refuses that item as unavailable.
-/// Returns `None` when nothing changed.
-fn import_host_media(store: &dyn DurableStore, command: &CommandMessage) -> Option<CommandMessage> {
-    let import = |uri: &mut String| -> bool {
-        let path = Path::new(uri.as_str());
-        if uri.starts_with(fm_model::MEDIA_ASSET_URI_PREFIX)
-            || !path.is_absolute()
-            || !fm_model::is_media_file_name(uri)
-            || !path.is_file()
-        {
-            return false;
+///
+/// Nothing is copied for a command the engine would refuse, nor for an
+/// import item it would refuse: the command is first prepared (and
+/// abandoned) with each host path standing in as the URI its import tries
+/// first. A refused command then executes with those stand-ins, so it is
+/// refused exactly as prepared, with its own reason. A stand-in can only
+/// differ from the final URI by a numeric suffix, so the prepared refusals
+/// are the executed ones (a stand-in shared by two items is refused as a
+/// duplicate source, so such an item is copied and the engine decides). The
+/// caller discards whatever the executed command does not keep
+/// ([`HostMediaImport::discard_unused`]).
+///
+/// Copying runs on the command loop, like every other durable write before
+/// the journal append: the command is journaled with its final URIs, so it
+/// cannot be acknowledged before its files are in the bundle. Only files the
+/// command keeps are copied.
+fn import_host_media(
+    control: &mut ControlService<Policy>,
+    store: &dyn DurableStore,
+    principal: &Principal,
+    command: &CommandMessage,
+    now_millis: u64,
+) -> HostMediaImport {
+    let mut provisional = command.clone();
+    let mut hosts = Vec::new();
+    for (index, uri) in host_media_uris(&mut provisional.payload)
+        .into_iter()
+        .enumerate()
+    {
+        if let Some(path) = importable_host_path(uri) {
+            hosts.push((index, path.to_path_buf()));
+            *uri = fm_persistence::media_import_asset_uri(path);
         }
-        match store.import_media_path(path) {
-            Ok(Some(asset)) => {
+    }
+    if hosts.is_empty() {
+        return HostMediaImport::default();
+    }
+    // Which of the importable items the engine would keep; `None` when it
+    // cannot tell (copy them all, as the executed command decides).
+    let kept: Option<Vec<usize>> =
+        match control.prepare_submit(principal, provisional.clone(), now_millis) {
+            Ok(PrepareSubmitOutcome::Replayed(_)) => {
+                // A replay answers from its receipt whatever the payload.
+                return HostMediaImport::default();
+            }
+            Ok(PrepareSubmitOutcome::Prepared(prepared))
+                if !prepared.submission().is_accepted() =>
+            {
+                drop(prepared);
+                return HostMediaImport {
+                    command: Some(provisional),
+                    copied: Vec::new(),
+                };
+            }
+            Ok(PrepareSubmitOutcome::Prepared(prepared)) => {
+                let refused: Vec<usize> = prepared
+                    .output()
+                    .events
+                    .iter()
+                    .filter_map(|event| match &event.payload {
+                        fm_protocol::EventPayload::InputLifecycleChanged { refused, .. } => {
+                            Some(refused)
+                        }
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter(|(_, refusal)| *refusal != fm_protocol::ImportRefusal::DuplicateSource)
+                    .map(|(index, _)| usize::from(*index))
+                    .collect();
+                Some(
+                    hosts
+                        .iter()
+                        .map(|(index, _)| *index)
+                        .filter(|index| !refused.contains(index))
+                        .collect(),
+                )
+            }
+            Err(_) => None,
+        };
+    let mut rewritten = provisional;
+    let mut copied = Vec::new();
+    let mut uris = host_media_uris(&mut rewritten.payload);
+    for (index, path) in hosts {
+        if kept.as_ref().is_some_and(|kept| !kept.contains(&index)) {
+            // Refused as prepared; the stand-in keeps its reason.
+            continue;
+        }
+        let uri = &mut *uris[index];
+        match store.import_media_path(&path) {
+            Ok(Some((asset, wrote))) => {
+                if wrote {
+                    copied.push(asset.clone());
+                }
                 *uri = asset;
-                true
             }
-            Ok(None) | Err(_) => false,
+            // Not imported: the host path makes the engine refuse the item
+            // as unavailable.
+            Ok(None) | Err(_) => path.to_str().unwrap_or_default().clone_into(uri),
         }
-    };
-    let mut rewritten = command.clone();
-    let changed = match &mut rewritten.payload {
-        CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::Import { items }) => {
-            // Every item is imported; no short-circuit.
-            let mut changed = false;
-            for item in items.iter_mut() {
-                changed |= import(&mut item.uri);
-            }
-            changed
-        }
-        CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::ReplaceSource {
-            source: fm_protocol::WireInputSource::Media { uri },
-            ..
-        }) => import(uri),
-        _ => false,
-    };
-    changed.then_some(rewritten)
+    }
+    HostMediaImport {
+        command: Some(rewritten),
+        copied,
+    }
 }
 
 /// Whether a native daemon refuses `payload` because it changes the input

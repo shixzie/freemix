@@ -36,11 +36,23 @@
 //! sees the typed fault, and the last picture stays on air.
 //!
 //! A media file must have the project's video dimensions, like every native
-//! source.
+//! source; one that does not faults its input as unsupported.
+//!
+//! A closed input (IN-026) is not opened at startup and releases its decoder
+//! when it closes; while closed it shows no picture (transparent black, so
+//! black on its own and absent as a layer) and no sound, as the simulated
+//! daemon shows nothing of a media input whose source is released. An input
+//! whose file does not open at startup (missing, unsupported, or another
+//! picture size) starts offline with the typed fault instead of stopping the
+//! daemon, as a file that stops playing later does; it is retried when the
+//! input is closed and reopened. A worker that panics faults its input
+//! (`decode_failed`) and is no longer waited for.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -52,11 +64,13 @@ use fm_codec_ffmpeg::{
 use fm_engine::fm_playback::{FrameIndex, MediaState, MediaTick};
 use fm_engine::{EngineMediaFault, EngineMediaSource, FrameResult};
 use fm_frame::{
-    AudioBlock, ClockDomainId, CpuVideoFrame, MediaTimestamp, MediaTiming, NormalizedDuration,
-    NormalizedTimestamp, OriginalTimestamp, SequenceNumber, TimeBase,
+    AlphaMode, AudioBlock, ChromaLocation, ClockDomainId, ColorMetadata, ColorPrimaries,
+    CpuVideoFrame, CpuVideoPayload, MatrixCoefficients, MediaTimestamp, MediaTiming,
+    NormalizedDuration, NormalizedTimestamp, OriginalTimestamp, SequenceNumber, SignalRange,
+    TimeBase, TransferFunction, VideoFrameMetadata,
 };
 use fm_model::MediaPlaybackSettings;
-use fm_types::{FrameRate, InputId};
+use fm_types::{FrameRate, InputId, PixelFormat, VideoDimensions};
 
 /// Longest a projected frame waits for a media input's tick to be presented
 /// before it is realized with the input's previous picture.
@@ -67,15 +81,21 @@ pub(crate) struct MediaFileInput {
     pub(crate) input: InputId,
     pub(crate) path: PathBuf,
     pub(crate) settings: MediaPlaybackSettings,
+    /// The input is closed (IN-026): its file is not opened until it
+    /// reopens.
+    pub(crate) closed: bool,
 }
 
 /// What a worker reports to the engine.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum FileReport {
     /// The source now has `frames` frames, complete or still growing.
     Source { frames: u64, complete: bool },
     /// The source failed; its transport stops.
     Fault(EngineMediaFault),
+    /// The file reopened as `source` (an input that reopened): the engine
+    /// opens the transport on it unless it already is.
+    Opened(EngineMediaSource),
 }
 
 /// One presented tick, collected by the loop.
@@ -112,6 +132,8 @@ struct WorkerState {
 struct Shared {
     state: Mutex<WorkerState>,
     wake: Condvar,
+    /// The worker panicked: it presents nothing more and is not waited for.
+    panicked: AtomicBool,
 }
 
 impl Shared {
@@ -129,13 +151,31 @@ struct Worker {
     collected: Option<Request>,
     /// The input is closed: its worker presents nothing (IN-026).
     closed: bool,
+    /// The input closed and its blank picture is still to be presented.
+    blank_pending: bool,
+    /// The latest engine frame a picture was presented for, so a blank
+    /// picture is always dated after it.
+    last_frame: Option<u64>,
+}
+
+impl Worker {
+    fn panicked(&self) -> bool {
+        self.shared.panicked.load(Ordering::Acquire)
+    }
 }
 
 /// The media-file inputs of one native daemon and their workers.
 pub(crate) struct NativeMediaFiles {
     workers: BTreeMap<InputId, Worker>,
-    /// Each input's source as opened, for the engine.
+    /// Each input's source as opened at startup, for the engine; an input
+    /// closed or offline at startup has none.
     sources: Vec<(InputId, EngineMediaSource)>,
+    /// Blank pictures of inputs that closed, collected with the presented
+    /// ticks.
+    blanks: Vec<Presented>,
+    rate: FrameRate,
+    clock_domain: ClockDomainId,
+    dimensions: (u32, u32),
     late_frame: Option<u64>,
     late_frames: u64,
 }
@@ -199,6 +239,72 @@ fn timing_at(sequence: u64, rate: FrameRate, clock_domain: ClockDomainId) -> Opt
     .ok()
 }
 
+/// The picture of an input that shows none (closed, or offline at
+/// startup): transparent black at `dimensions`, dated `timing`.
+fn blank_picture(dimensions: (u32, u32), timing: MediaTiming) -> Option<CpuVideoFrame> {
+    let size = VideoDimensions::new(dimensions.0, dimensions.1)?;
+    let payload = CpuVideoPayload::allocate(PixelFormat::Rgba8, size).ok()?;
+    CpuVideoFrame::new(timing, payload)
+        .with_metadata(VideoFrameMetadata::new(
+            ColorMetadata {
+                primaries: ColorPrimaries::Bt709,
+                transfer: TransferFunction::Srgb,
+                matrix: MatrixCoefficients::Identity,
+                range: SignalRange::Full,
+                chroma_location: ChromaLocation::Center,
+            },
+            Some(AlphaMode::Straight),
+        ))
+        .ok()
+}
+
+/// What the engine knows of `player`'s source.
+fn engine_source(player: &FilePlayer, growing: bool) -> EngineMediaSource {
+    EngineMediaSource::external(
+        player.frame_rate(),
+        player.frame_count(),
+        !growing,
+        player.audio_tracks().to_vec(),
+    )
+}
+
+/// Opens one input's file at startup and decodes its startup picture (the
+/// frame its transport cues), which must have the project's `dimensions`.
+fn open_at_startup(
+    adapter: &Adapter,
+    path: &std::path::Path,
+    config: FilePlaybackConfig,
+    settings: &MediaPlaybackSettings,
+    dimensions: (u32, u32),
+) -> Result<(FilePlayer, Arc<CpuVideoFrame>), EngineMediaFault> {
+    let mut player = adapter
+        .open_playback(path, config)
+        .map_err(|error| engine_fault(&error))?;
+    let cue = settings.start_frame.max(settings.trim_in);
+    let last = player.controller().playable_end().get().saturating_sub(1);
+    let seed = player
+        .decode_frame(FrameIndex::new(cue.min(last)))
+        .map_err(|error| engine_fault(&error))?;
+    let size = seed.payload().dimensions();
+    if (size.width(), size.height()) != dimensions {
+        return Err(EngineMediaFault::Unsupported);
+    }
+    Ok((player, seed))
+}
+
+/// Runs `body` (a worker), faulting its input (`decode_failed`) if it
+/// panics, so the input goes offline and no frame waits for it.
+fn run_guarded(shared: &Shared, body: impl FnOnce()) {
+    if catch_unwind(AssertUnwindSafe(body)).is_err() {
+        shared.panicked.store(true, Ordering::Release);
+        let mut state = shared.lock();
+        state.completed = None;
+        state
+            .reports
+            .push(FileReport::Fault(EngineMediaFault::DecodeFailed));
+    }
+}
+
 /// `frame` re-dated onto the output timeline.
 fn redated(frame: &CpuVideoFrame, timing: MediaTiming) -> Option<CpuVideoFrame> {
     let moved = CpuVideoFrame::new(timing, frame.payload().clone());
@@ -209,14 +315,17 @@ fn redated(frame: &CpuVideoFrame, timing: MediaTiming) -> Option<CpuVideoFrame> 
 }
 
 impl NativeMediaFiles {
-    /// Opens every input's file, decodes its startup picture (the frame its
-    /// transport cues), and starts its worker. Returns the startup pictures
-    /// to seed the source registry with, dated sequence zero.
+    /// Opens every open input's file, decodes its startup picture (the
+    /// frame its transport cues), and starts its worker. Returns the startup
+    /// pictures to seed the source registry with, dated sequence zero. A
+    /// closed input is not opened, and one whose file does not open starts
+    /// offline with its fault reported; both start with a blank picture.
     ///
     /// # Errors
     ///
-    /// Names the first input whose file does not open, has no picture yet,
-    /// or does not have the project's `dimensions`.
+    /// Names an input whose startup picture cannot be timed or whose worker
+    /// cannot be started.
+    #[allow(clippy::too_many_lines)] // one input after another: open, seed, worker
     pub(crate) fn start(
         adapter: &Adapter,
         inputs: Vec<MediaFileInput>,
@@ -231,6 +340,7 @@ impl NativeMediaFiles {
             input,
             path,
             settings,
+            closed,
         } in inputs
         {
             let mut config = FilePlaybackConfig::new(clock_domain, rate);
@@ -243,63 +353,62 @@ impl NativeMediaFiles {
                 live_edge_offset_frames: u64::from(growing.live_edge_offset_frames),
                 complete_after_idle_refreshes: NonZeroU32::new(growing.idle_completion_refreshes),
             });
-            let mut player = adapter.open_playback(&path, config).map_err(|error| {
-                format!("native media input {input} cannot open its file: {error}")
-            })?;
-            let frames = player.frame_count();
-            let cue = settings.start_frame.max(settings.trim_in);
-            let last = player.controller().playable_end().get().saturating_sub(1);
-            let seed = player
-                .decode_frame(FrameIndex::new(cue.min(last)))
-                .map_err(|error| {
-                    format!("native media input {input} has no startup picture: {error}")
-                })?;
-            let size = seed.payload().dimensions();
-            if (size.width(), size.height()) != dimensions {
-                return Err(format!(
-                    "native media input {input} is {}x{}, but must match project output {}x{}",
-                    size.width(),
-                    size.height(),
-                    dimensions.0,
-                    dimensions.1
-                ));
-            }
+            let growing = settings.growing.is_some();
             let seed_timing = timing_at(0, rate, clock_domain)
                 .ok_or_else(|| format!("native media input {input} cannot be timed"))?;
+            let opened = if closed {
+                None
+            } else {
+                Some(open_at_startup(
+                    adapter, &path, config, &settings, dimensions,
+                ))
+            };
+            let mut reports = Vec::new();
+            let (player, seed) = match opened {
+                Some(Ok((player, seed))) => {
+                    sources.push((input, engine_source(&player, growing)));
+                    (Some(player), redated(&seed, seed_timing))
+                }
+                Some(Err(fault)) => {
+                    eprintln!(
+                        "FREEMIXD_MEDIA\tv=1\tinput={input}\tstartup_fault={}",
+                        fault.token()
+                    );
+                    reports.push(FileReport::Fault(fault));
+                    (None, blank_picture(dimensions, seed_timing))
+                }
+                None => (None, blank_picture(dimensions, seed_timing)),
+            };
             seeds.push((
                 input,
-                redated(&seed, seed_timing)
-                    .ok_or_else(|| format!("native media input {input} cannot be timed"))?,
-            ));
-            sources.push((
-                input,
-                EngineMediaSource::external(
-                    player.frame_rate(),
-                    frames,
-                    settings.growing.is_none(),
-                    player.audio_tracks().to_vec(),
-                ),
+                seed.ok_or_else(|| format!("native media input {input} cannot be timed"))?,
             ));
             let shared = Arc::new(Shared {
-                state: Mutex::new(WorkerState::default()),
+                state: Mutex::new(WorkerState {
+                    reports,
+                    closed,
+                    ..WorkerState::default()
+                }),
                 wake: Condvar::new(),
+                panicked: AtomicBool::new(false),
             });
             let worker_shared = Arc::clone(&shared);
-            let growing = settings.growing.is_some();
             let reopen_adapter = adapter.clone();
             let thread = thread::Builder::new()
                 .name(format!("freemix-media-file-{input}"))
                 .spawn(move || {
                     let reopen = || reopen_adapter.open_playback(&path, config);
-                    run_worker(
-                        &worker_shared,
-                        Some(player),
-                        &reopen,
-                        growing,
-                        rate,
-                        clock_domain,
-                        dimensions,
-                    );
+                    run_guarded(&worker_shared, || {
+                        run_worker(
+                            &worker_shared,
+                            player,
+                            &reopen,
+                            growing,
+                            rate,
+                            clock_domain,
+                            dimensions,
+                        );
+                    });
                 })
                 .map_err(|error| format!("native media input {input} worker: {error}"))?;
             workers.insert(
@@ -309,7 +418,9 @@ impl NativeMediaFiles {
                     thread: Some(thread),
                     requested: None,
                     collected: None,
-                    closed: false,
+                    closed,
+                    blank_pending: false,
+                    last_frame: None,
                 },
             );
         }
@@ -317,6 +428,10 @@ impl NativeMediaFiles {
             Self {
                 workers,
                 sources,
+                blanks: Vec::new(),
+                rate,
+                clock_domain,
+                dimensions,
                 late_frame: None,
                 late_frames: 0,
             },
@@ -325,11 +440,18 @@ impl NativeMediaFiles {
     }
 
     /// No media-file inputs (a project without local video).
-    pub(crate) fn start_empty() -> (Self, Vec<(InputId, CpuVideoFrame)>) {
+    pub(crate) fn start_empty(
+        rate: FrameRate,
+        clock_domain: ClockDomainId,
+    ) -> (Self, Vec<(InputId, CpuVideoFrame)>) {
         (
             Self {
                 workers: BTreeMap::new(),
                 sources: Vec::new(),
+                blanks: Vec::new(),
+                rate,
+                clock_domain,
+                dimensions: (0, 0),
                 late_frame: None,
                 late_frames: 0,
             },
@@ -337,21 +459,40 @@ impl NativeMediaFiles {
         )
     }
 
-    /// Every input's source as opened, for
+    /// Every input's source as opened at startup, for
     /// [`fm_control::ControlService::set_media_source`].
     pub(crate) fn sources(&self) -> &[(InputId, EngineMediaSource)] {
         &self.sources
+    }
+
+    /// Input `input`'s source as opened at startup, if it opened then.
+    pub(crate) fn source(&self, input: InputId) -> Option<&EngineMediaSource> {
+        self.sources
+            .iter()
+            .find(|(candidate, _)| *candidate == input)
+            .map(|(_, source)| source)
+    }
+
+    /// Every media-file input, in input order.
+    pub(crate) fn inputs(&self) -> Vec<InputId> {
+        self.workers.keys().copied().collect()
+    }
+
+    /// Whether input `input`'s worker panicked: it decodes nothing more.
+    pub(crate) fn is_failed(&self, input: InputId) -> bool {
+        self.workers.get(&input).is_some_and(Worker::panicked)
     }
 
     /// Hands each worker the tick the engine projects for its input on
     /// `projected` (and a completion the engine requested). Never decodes.
     pub(crate) fn observe_frame(&mut self, projected: &FrameResult) {
         let frame = projected.frame.get();
+        self.present_blanks(frame);
         for media in &projected.media {
             let Some(worker) = self.workers.get_mut(&media.input) else {
                 continue;
             };
-            if worker.closed {
+            if worker.closed || worker.panicked() {
                 continue;
             }
             let request = media.tick.clone().map(|tick| Request { frame, tick });
@@ -370,6 +511,32 @@ impl NativeMediaFiles {
         }
     }
 
+    /// Presents the blank picture of every input that closed since its last
+    /// picture, for engine frame `frame`, once `frame` is after that picture
+    /// (the source registry only takes pictures that move forward).
+    fn present_blanks(&mut self, frame: u64) {
+        for (&input, worker) in &mut self.workers {
+            if !worker.closed
+                || !worker.blank_pending
+                || worker.last_frame.is_some_and(|last| frame <= last)
+            {
+                continue;
+            }
+            worker.blank_pending = false;
+            worker.last_frame = Some(frame);
+            if let Some(video) = output_timing(frame, self.rate, self.clock_domain)
+                .and_then(|timing| blank_picture(self.dimensions, timing))
+            {
+                self.blanks.push(Presented {
+                    input,
+                    frame,
+                    video: Some(video),
+                    audio: None,
+                });
+            }
+        }
+    }
+
     /// Whether `projected`, due at host instant `deadline`, may be realized:
     /// every media input's projected tick has been presented and collected,
     /// or the frame is [`MAX_MEDIA_FRAME_WAIT`] past its deadline.
@@ -378,6 +545,7 @@ impl NativeMediaFiles {
         let pending = projected.media.iter().any(|media| {
             self.workers.get(&media.input).is_some_and(|worker| {
                 !worker.closed
+                    && !worker.panicked()
                     && media.tick.as_ref().is_some_and(|tick| {
                         worker.collected.as_ref().is_none_or(|collected| {
                             collected.frame != frame || collected.tick != *tick
@@ -398,13 +566,26 @@ impl NativeMediaFiles {
         true
     }
 
-    /// Takes every presented tick not yet collected, in input order.
+    /// Takes every presented tick not yet collected, and the blank picture
+    /// of every input that closed, in input order. A tick a closed input's
+    /// worker finished after it closed is dropped, and a picture never
+    /// repeats or precedes the frame of one already taken (the source
+    /// registry refuses a picture that does not move forward).
     pub(crate) fn take_completed(&mut self) -> Vec<Presented> {
         let mut presented = Vec::new();
         for (&input, worker) in &mut self.workers {
-            let Some((request, video, audio)) = worker.shared.lock().completed.take() else {
+            let taken = worker.shared.lock().completed.take();
+            let Some((request, mut video, audio)) = taken else {
                 continue;
             };
+            if worker.closed {
+                continue;
+            }
+            if worker.last_frame.is_some_and(|last| request.frame <= last) {
+                video = None;
+            } else if video.is_some() {
+                worker.last_frame = Some(request.frame);
+            }
             presented.push(Presented {
                 input,
                 frame: request.frame,
@@ -413,6 +594,7 @@ impl NativeMediaFiles {
             });
             worker.collected = Some(request);
         }
+        presented.append(&mut self.blanks);
         presented
     }
 
@@ -426,8 +608,12 @@ impl NativeMediaFiles {
         };
         if worker.closed != closed {
             worker.closed = closed;
+            worker.blank_pending = closed;
             worker.requested = None;
             worker.collected = None;
+            if !closed {
+                self.blanks.retain(|blank| blank.input != input);
+            }
         }
         let mut state = worker.shared.lock();
         if state.closed != closed {
@@ -521,8 +707,10 @@ fn run_worker(
 ) {
     let second = Duration::from_secs(1);
     let mut next_refresh = Instant::now() + second;
-    let mut faulted = false;
-    let mut released = false;
+    // Closed at startup: nothing is open until the input reopens. Open but
+    // without a player: the file did not open, and the input is offline.
+    let mut released = shared.lock().closed;
+    let mut faulted = opened.is_none() && !released;
     let mut last_picture: Option<Arc<CpuVideoFrame>> = None;
     loop {
         let (request, complete) = {
@@ -577,6 +765,10 @@ fn run_worker(
                 drop(state);
                 match reopen() {
                     Ok(player) => {
+                        shared
+                            .lock()
+                            .reports
+                            .push(FileReport::Opened(engine_source(&player, growing)));
                         opened = Some(player);
                         faulted = false;
                     }
@@ -672,5 +864,114 @@ fn run_worker(
                 .reports
                 .push(FileReport::Fault(engine_fault(&error)));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU128;
+
+    use super::*;
+
+    fn input() -> InputId {
+        InputId::new(NonZeroU128::new(7).unwrap())
+    }
+
+    /// One media-file input whose worker never runs, last presented on
+    /// engine frame 5.
+    fn files() -> NativeMediaFiles {
+        let (mut files, _) = NativeMediaFiles::start_empty(
+            FrameRate::new(25, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        );
+        files.dimensions = (32, 18);
+        files.workers.insert(
+            input(),
+            Worker {
+                shared: Arc::new(Shared {
+                    state: Mutex::new(WorkerState::default()),
+                    wake: Condvar::new(),
+                    panicked: AtomicBool::new(false),
+                }),
+                thread: None,
+                requested: None,
+                collected: None,
+                closed: false,
+                blank_pending: false,
+                last_frame: Some(5),
+            },
+        );
+        files
+    }
+
+    #[test]
+    fn a_closed_input_presents_one_blank_picture_after_its_last_one() {
+        let mut files = files();
+        assert!(files.set_closed(input(), true));
+        // Not on the frame its last picture was presented for.
+        files.present_blanks(5);
+        assert!(files.take_completed().is_empty());
+        files.present_blanks(6);
+        let presented = files.take_completed();
+        assert_eq!(presented.len(), 1);
+        let blank = &presented[0];
+        assert_eq!((blank.input, blank.frame), (input(), 6));
+        assert!(blank.audio.is_none());
+        let video = blank.video.as_ref().expect("a blank picture");
+        assert_eq!(video.timing().sequence().get(), 7);
+        let size = video.payload().dimensions();
+        assert_eq!((size.width(), size.height()), (32, 18));
+        assert!(
+            video
+                .payload()
+                .planes()
+                .iter()
+                .all(|plane| plane.bytes().iter().all(|byte| *byte == 0)),
+            "transparent black"
+        );
+        // Once.
+        files.present_blanks(7);
+        assert!(files.take_completed().is_empty());
+    }
+
+    #[test]
+    fn a_tick_finished_after_close_is_dropped() {
+        let mut files = files();
+        files.set_closed(input(), true);
+        let shared = Arc::clone(&files.workers[&input()].shared);
+        shared.lock().completed = Some((
+            Request {
+                frame: 9,
+                tick: MediaTick {
+                    output_tick: 9,
+                    frame: None,
+                    repeated: false,
+                    dropped_frames: 0,
+                    discontinuity: false,
+                    state: MediaState::Playing,
+                    audio: fm_engine::fm_playback::AudioPlan::None,
+                    events: Vec::new(),
+                },
+            },
+            None,
+            None,
+        ));
+        assert!(files.take_completed().is_empty());
+        // Reopened, a pending blank is not presented over the file.
+        files.set_closed(input(), false);
+        files.present_blanks(10);
+        assert!(files.take_completed().is_empty());
+    }
+
+    #[test]
+    fn a_panicking_worker_faults_its_input_and_is_not_waited_for() {
+        let files = files();
+        let shared = Arc::clone(&files.workers[&input()].shared);
+        run_guarded(&shared, || panic!("decoder bug"));
+        assert!(files.is_failed(input()));
+        assert_eq!(
+            files.take_reports(),
+            [(input(), FileReport::Fault(EngineMediaFault::DecodeFailed))]
+        );
     }
 }

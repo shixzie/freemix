@@ -107,10 +107,17 @@ pub(crate) trait DurableStore {
     }
 
     /// Copies the media file at host path `path` into the bundle's assets
-    /// and returns its `asset://` URI (IN-026 batch import and source
-    /// replacement). Stores without a bundle import nothing (`None`).
-    fn import_media_path(&self, _path: &std::path::Path) -> AppResult<Option<String>> {
+    /// and returns its `asset://` URI and whether a new file was written
+    /// (`false` when an identical asset was reused) (IN-026 batch import and
+    /// source replacement). Stores without a bundle import nothing (`None`).
+    fn import_media_path(&self, _path: &std::path::Path) -> AppResult<Option<(String, bool)>> {
         Ok(None)
+    }
+
+    /// Removes the asset a [`Self::import_media_path`] copy wrote at
+    /// `asset_uri`, when the command it was copied for did not keep it.
+    fn discard_imported_media(&self, _asset_uri: &str) -> AppResult<()> {
+        Ok(())
     }
 }
 
@@ -169,13 +176,25 @@ impl<'store> DurableJournal<'store> {
 }
 
 impl DurableStore for DurableJournal<'_> {
-    fn import_media_path(&self, path: &std::path::Path) -> AppResult<Option<String>> {
+    fn import_media_path(&self, path: &std::path::Path) -> AppResult<Option<(String, bool)>> {
         let imported = self
             .writer
             .project_store()
             .import_media_file(path)
             .map_err(|error| AppFailure(format!("media file cannot be imported: {error}")))?;
-        Ok(Some(imported.asset_uri))
+        let copied = matches!(
+            imported.disposition,
+            fm_persistence::AssetDisposition::Copied { .. }
+        );
+        Ok(Some((imported.asset_uri, copied)))
+    }
+
+    fn discard_imported_media(&self, asset_uri: &str) -> AppResult<()> {
+        self.writer
+            .project_store()
+            .remove_imported_media(asset_uri)
+            .map_err(|error| AppFailure(format!("imported media cannot be removed: {error}")))?;
+        Ok(())
     }
 
     fn record(

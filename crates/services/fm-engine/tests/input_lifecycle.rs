@@ -551,3 +551,155 @@ fn pause_holds_a_media_transport_and_close_releases_its_source() {
     assert!(engine.media_source_open(input(CLIP)));
     assert!(engine.media_status(input(CLIP)).unwrap().available);
 }
+
+/// A scene showing `source` as its one enabled layer.
+fn scene_of(id: u128, source: InputId) -> fm_model::Scene {
+    fm_model::Scene {
+        id: fm_types::SceneId::new(NonZeroU128::new(id).unwrap()),
+        name: format!("Scene {id}"),
+        background: fm_model::Rgba8::OPAQUE_BLACK,
+        layers: vec![fm_model::Layer {
+            id: fm_model::LayerId::new(1).unwrap(),
+            name: "Layer".into(),
+            source: fm_model::SourceRef::Input(source),
+            enabled: true,
+            geometry: fm_model::LayerGeometry::new(0, 0, 8, 8, fm_model::Rotation::Deg0),
+            crop: None,
+            mask: None,
+            effects: Vec::new(),
+            opacity: u8::MAX,
+            z_order: 0,
+        }],
+        animation: fm_model::SceneAnimation::default(),
+    }
+}
+
+fn first_issue(outcome: &EngineCommandOutcome) -> Option<&str> {
+    outcome
+        .receipt
+        .rejected()
+        .and_then(|rejected| rejected.rejection.fields.first())
+        .map(|field| field.code.as_str())
+}
+
+/// A closed input never reaches Preview or air, directly or as a layer of
+/// a scene: selecting, cutting, transitioning, and keying it is refused as
+/// `input_closed`. Closing an input that is a layer of a scene on air is
+/// refused like closing Program. A closed input already on Preview stays
+/// there, but cannot be taken.
+#[test]
+#[allow(clippy::too_many_lines)] // one scenario across every path to air
+fn a_closed_input_never_reaches_preview_or_air() {
+    let mut show = ShowState::new(
+        "closed",
+        [
+            (1, "Camera"),
+            (2, "Slides"),
+            (3, "Guest"),
+            (5, "Guest scene"),
+            (6, "Camera scene"),
+        ]
+        .into_iter()
+        .map(|(value, name)| (input(value), name.to_owned()))
+        .collect(),
+        input(6),
+        input(2),
+    )
+    .unwrap();
+    for value in 1..=3 {
+        show.set_input_source(
+            input(value),
+            InputSourceSpec::Generator {
+                video: GeneratorVideo::Bars,
+                tone_hz: None,
+            },
+        )
+        .unwrap();
+    }
+    show.set_scene_input(input(5), scene_of(1, input(3)), 32, 18)
+        .unwrap();
+    // Scene input 6, on Program, shows input 1 as a layer.
+    show.set_scene_input(input(6), scene_of(2, input(1)), 32, 18)
+        .unwrap();
+    let mut engine = Engine::new(
+        show,
+        rate(),
+        ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+    );
+
+    // A layer of the scene on Program cannot be closed.
+    let layer_on_air = edit(
+        &mut engine,
+        "close-layer",
+        EngineInputLifecycleEdit::SetClosed {
+            input: input(1),
+            closed: true,
+        },
+    );
+    assert_eq!(first_issue(&layer_on_air), Some("input_in_use"));
+    assert!(!engine.show().input_lifecycle(input(1)).closed);
+
+    accept(
+        &mut engine,
+        "close-guest",
+        EngineInputLifecycleEdit::SetClosed {
+            input: input(3),
+            closed: true,
+        },
+    );
+    // Neither the input nor a scene showing it reaches Preview.
+    for (key, target) in [("preview-guest", 3), ("preview-scene", 5)] {
+        let refused = run(
+            &mut engine,
+            key,
+            EngineCommand::SelectPreview(input(target)),
+        );
+        assert_eq!(first_issue(&refused), Some("input_closed"), "{key}");
+    }
+    assert_eq!(engine.show().desired_switcher().preview(), input(2));
+    // Nor an overlay.
+    let keyed = run(
+        &mut engine,
+        "overlay",
+        EngineCommand::TakeOverlay {
+            channel: fm_switcher::OverlayChannelId::new(1).unwrap(),
+            source: input(3),
+        },
+    );
+    assert_eq!(first_issue(&keyed), Some("input_closed"));
+
+    // Closing the input on Preview is allowed, but it cannot be taken.
+    accept(
+        &mut engine,
+        "close-preview",
+        EngineInputLifecycleEdit::SetClosed {
+            input: input(2),
+            closed: true,
+        },
+    );
+    for (key, command) in [
+        ("cut", EngineCommand::Cut),
+        ("fade", EngineCommand::Fade { duration_frames: 5 }),
+    ] {
+        let refused = run(&mut engine, key, command);
+        assert_eq!(first_issue(&refused), Some("input_closed"), "{key}");
+    }
+    assert_eq!(engine.show().desired_switcher().program(), input(6));
+
+    // Reopened, it is taken as usual.
+    accept(
+        &mut engine,
+        "reopen-preview",
+        EngineInputLifecycleEdit::SetClosed {
+            input: input(2),
+            closed: false,
+        },
+    );
+    assert!(
+        run(&mut engine, "cut-again", EngineCommand::Cut)
+            .receipt
+            .accepted()
+            .is_some()
+    );
+    assert_eq!(engine.show().desired_switcher().program(), input(2));
+}
