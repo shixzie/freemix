@@ -3614,8 +3614,10 @@ mod titles {
             decode_line(&encoded.replace("\tphase_frames=20", "")),
             Err(CodecError::MissingField("phase_frames"))
         );
+    }
 
-        // The encoder refuses names the decoder refuses.
+    #[test]
+    fn title_state_encoder_refuses_what_the_decoder_refuses() {
         let long_name = WireMessage::TitleState(TitleStateMessage {
             name: "n".repeat(MAX_TITLE_NAME_BYTES + 1),
             ..match state(Vec::new()) {
