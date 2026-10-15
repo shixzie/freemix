@@ -92,7 +92,7 @@ pub fn crossfade(
     Ok(output)
 }
 
-fn validate_inputs(
+pub(crate) fn validate_inputs(
     left: &ImageFrame,
     right: &ImageFrame,
     numerator: u32,
@@ -128,7 +128,7 @@ fn validate_inputs(
     Ok(())
 }
 
-fn blend_channel(left: u8, right: u8, numerator: u32, denominator: u32) -> u8 {
+pub(crate) fn blend_channel(left: u8, right: u8, numerator: u32, denominator: u32) -> u8 {
     let numerator = u64::from(numerator);
     let denominator = u64::from(denominator);
     let inverse = denominator - numerator;

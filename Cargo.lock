@@ -1646,6 +1646,7 @@ dependencies = [
 name = "fm-video"
 version = "0.1.0"
 dependencies = [
+ "fm-animation",
  "fm-audio",
  "fm-clock",
  "fm-frame",

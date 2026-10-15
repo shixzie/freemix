@@ -292,7 +292,7 @@ fn with_opacity(pixel: Rgba8, opacity: u8) -> Rgba8 {
     )
 }
 
-fn source_over(source: Rgba8, destination: Rgba8) -> Rgba8 {
+pub(crate) fn source_over(source: Rgba8, destination: Rgba8) -> Rgba8 {
     let inverse_alpha = u8::MAX - source.a;
     Rgba8::new(
         source

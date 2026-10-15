@@ -8,14 +8,15 @@ use fm_gpu::{
     ShaderStage, TextureFormat,
 };
 use fm_grade::CompiledGrade;
-use fm_video::{CropRect, Rotation, Transform};
+use fm_video::{
+    CropRect, Rotation, Transform, TransitionGeometry, TransitionShape, transition_extent,
+};
 
 use crate::native_grade::{NativeGradeCache, NativeGradeError, NativeGradeRenderer};
 use crate::rotate::Tilt;
 use crate::{
     CompositionPlan, FadeToBlackPlan, RectMask, SourceId, StingerBase, StingerFramePlan,
     StingerFrameRole, TransitionKind, TransitionPlan,
-    transition::{wipe_boundary, zoom_extent},
 };
 
 /// Maximum width or height accepted for a native layer transform.
@@ -25,7 +26,7 @@ use crate::{
 pub const MAX_NATIVE_TRANSFORM_DIMENSION: u32 = 16_384;
 
 const COMPOSITION_UNIFORM_SIZE: usize = 96;
-const TRANSITION_UNIFORM_SIZE: usize = 32;
+const TRANSITION_UNIFORM_SIZE: usize = 64;
 
 const COMPOSITION_FRAGMENT_SHADER: &str = r"
 struct LayerUniform {
@@ -159,20 +160,116 @@ fn composition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) 
 ";
 
 const TRANSITION_FRAGMENT_SHADER: &str = r"
+// Operations: 0 Cut, 1 Fade/AlphaFade, 2 Wipe, 3 Slide, 4 Zoom,
+// 5 VerticalWipe, 6 VerticalSlide, 7 Fly/FlyRotate, 8 Cube/CubeZoom,
+// 9 CrossZoom, 10 Merge. Geometry mirrors fm_video::render_transition.
 struct TransitionUniform {
     operation: u32,
     numerator: u32,
     denominator: u32,
+    // Wipe/Slide/VerticalWipe/VerticalSlide offset, or Merge's left extent.
     boundary: u32,
+    // Zoom width, or Merge's right extent.
     scaled_width: u32,
     scaled_height: u32,
     padding_0: u32,
     padding_1: u32,
+    sin: f32,
+    cos: f32,
+    scale: f32,
+    second_scale: f32,
+    offset_x: f32,
+    depth: f32,
+    camera: f32,
+    padding_2: f32,
 };
 
 @group(0) @binding(0) var from_texture: texture_2d<f32>;
 @group(0) @binding(1) var to_texture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> transition: TransitionUniform;
+
+// One premultiplied texel of `from` (which == 0) or `to`, transparent outside.
+// `seam` 1 repeats the first column for taps left of it, 2 the last column
+// for taps right of it (a cube face's crease).
+fn texel(which: u32, cell_unclamped: vec2<i32>, seam: u32) -> vec4<f32> {
+    let size = vec2<i32>(textureDimensions(from_texture));
+    var cell = cell_unclamped;
+    if seam == 1u {
+        cell.x = max(cell.x, 0);
+    } else if seam == 2u {
+        cell.x = min(cell.x, size.x - 1);
+    }
+    if any(cell < vec2<i32>(0)) || any(cell >= size) {
+        return vec4<f32>(0.0);
+    }
+    if which == 0u {
+        return textureLoad(from_texture, cell, 0);
+    }
+    return textureLoad(to_texture, cell, 0);
+}
+
+// The CPU reference's sampler: the texel-centre coordinate floors once to
+// 1/256 texel, then four texels mix with 8-bit weights.
+fn bilinear(which: u32, coordinates: vec2<f32>, seam: u32) -> vec4<f32> {
+    let limit = vec2<f32>(textureDimensions(from_texture)) * 256.0;
+    let scaled = floor(coordinates * 256.0);
+    if !(all(scaled >= vec2<f32>(-256.0)) && all(scaled < limit)) {
+        return vec4<f32>(0.0);
+    }
+    let q8 = vec2<i32>(scaled);
+    let cell = q8 >> vec2<u32>(8u);
+    let weight = vec2<f32>(q8 & vec2<i32>(255)) / 256.0;
+    let top = mix(
+        texel(which, cell, seam),
+        texel(which, cell + vec2<i32>(1, 0), seam),
+        weight.x,
+    );
+    let bottom = mix(
+        texel(which, cell + vec2<i32>(0, 1), seam),
+        texel(which, cell + vec2<i32>(1, 1), seam),
+        weight.x,
+    );
+    return mix(top, bottom, weight.y);
+}
+
+fn over(source: vec4<f32>, destination: vec4<f32>) -> vec4<f32> {
+    return source + destination * (1.0 - source.a);
+}
+
+struct FaceHit {
+    hit: bool,
+    coordinates: vec2<f32>,
+}
+
+// The ray through `screen` against one cube face's plane (world x/z centre,
+// axis, and outward normal): its face coordinates, or no hit for a back face
+// or a ray that never reaches the plane.
+fn cube_face(
+    screen: vec2<f32>,
+    center: vec2<f32>,
+    axis: vec2<f32>,
+    normal: vec2<f32>,
+) -> FaceHit {
+    var result = FaceHit(false, vec2<f32>(0.0));
+    let camera = transition.camera;
+    let facing = center.x * normal.x + (camera + center.y) * normal.y;
+    if !(facing < 0.0) {
+        return result;
+    }
+    let denominator = screen.x * normal.x + camera * normal.y;
+    if !(denominator < 0.0) {
+        return result;
+    }
+    let t = facing / denominator;
+    let x = t * screen.x;
+    let z = t * camera - camera;
+    result.hit = true;
+    result.coordinates = vec2<f32>(
+        (x - center.x) * axis.x + (z - center.y) * axis.y,
+        t * screen.y,
+    );
+    return result;
+}
 
 @fragment
 fn transition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
@@ -185,45 +282,137 @@ fn transition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) v
     if transition.numerator == 0u {
         return source;
     }
-    if transition.operation == 2u {
-        if u32(position.x) < transition.boundary {
-            return destination;
+    let dimensions = textureDimensions(from_texture);
+    let size = vec2<f32>(dimensions);
+    // The pixel centre relative to the frame centre, and the frame centre in
+    // texel coordinates.
+    let screen = position.xy - size / 2.0;
+    let texel_center = (size - vec2<f32>(1.0)) / 2.0;
+    let pixel = vec2<u32>(position.xy);
+    switch transition.operation {
+        case 2u: {
+            if pixel.x < transition.boundary {
+                return destination;
+            }
+            return source;
         }
-        return source;
-    }
-    if transition.operation == 3u {
-        let width = textureDimensions(from_texture).x;
-        let x = u32(position.x);
-        let remaining = width - transition.boundary;
-        if x < remaining {
+        case 3u: {
+            let remaining = dimensions.x - transition.boundary;
+            if pixel.x < remaining {
+                return textureLoad(
+                    from_texture,
+                    vec2<i32>(i32(pixel.x + transition.boundary), coordinates.y),
+                    0,
+                );
+            }
             return textureLoad(
-                from_texture,
-                vec2<i32>(i32(x + transition.boundary), coordinates.y),
+                to_texture,
+                vec2<i32>(i32(pixel.x - remaining), coordinates.y),
                 0,
             );
         }
-        return textureLoad(
-            to_texture,
-            vec2<i32>(i32(x - remaining), coordinates.y),
-            0,
-        );
-    }
-    if transition.operation == 4u {
-        if transition.scaled_width == 0u || transition.scaled_height == 0u {
+        case 4u: {
+            if transition.scaled_width == 0u || transition.scaled_height == 0u {
+                return source;
+            }
+            let extent = vec2<u32>(transition.scaled_width, transition.scaled_height);
+            let origin = (dimensions - extent) / vec2<u32>(2u);
+            if any(pixel < origin) || any(pixel >= origin + extent) {
+                return source;
+            }
+            let relative = pixel - origin;
+            let destination_coordinates = relative * dimensions / extent;
+            return textureLoad(to_texture, vec2<i32>(destination_coordinates), 0);
+        }
+        case 5u: {
+            if pixel.y < transition.boundary {
+                return destination;
+            }
             return source;
         }
-        let dimensions = textureDimensions(from_texture);
-        let extent = vec2<u32>(transition.scaled_width, transition.scaled_height);
-        let origin = (dimensions - extent) / vec2<u32>(2u);
-        let pixel = vec2<u32>(position.xy);
-        if any(pixel < origin) || any(pixel >= origin + extent) {
+        case 6u: {
+            let remaining = dimensions.y - transition.boundary;
+            if pixel.y < remaining {
+                return textureLoad(
+                    from_texture,
+                    vec2<i32>(coordinates.x, i32(pixel.y + transition.boundary)),
+                    0,
+                );
+            }
+            return textureLoad(
+                to_texture,
+                vec2<i32>(coordinates.x, i32(pixel.y - remaining)),
+                0,
+            );
+        }
+        case 7u: {
+            let dx = screen.x - transition.offset_x;
+            let dy = screen.y;
+            let a = (transition.cos * dx + transition.sin * dy) / transition.scale;
+            let b = (transition.cos * dy - transition.sin * dx) / transition.scale;
+            return over(bilinear(1u, vec2<f32>(a, b) + texel_center, 0u), source);
+        }
+        case 8u: {
+            let sin = transition.sin;
+            let cos = transition.cos;
+            let depth = transition.depth;
+            let half = size.x / 2.0;
+            let front = cube_face(
+                screen,
+                vec2<f32>(-half * sin, depth - half * cos),
+                vec2<f32>(cos, -sin),
+                vec2<f32>(-sin, -cos),
+            );
+            let right = cube_face(
+                screen,
+                vec2<f32>(half * cos, depth - half * sin),
+                vec2<f32>(sin, cos),
+                vec2<f32>(cos, -sin),
+            );
+            // Both faces visible: the face on the ray's side of the crease
+            // draws, extended across it.
+            if front.hit && right.hit {
+                if front.coordinates.x < half {
+                    return bilinear(0u, front.coordinates + texel_center, 2u);
+                }
+                return bilinear(1u, right.coordinates + texel_center, 1u);
+            }
+            if front.hit {
+                return bilinear(0u, front.coordinates + texel_center, 0u);
+            }
+            if right.hit {
+                return bilinear(1u, right.coordinates + texel_center, 0u);
+            }
+            return vec4<f32>(0.0);
+        }
+        case 9u: {
+            let first = bilinear(0u, screen / transition.scale + texel_center, 0u);
+            let second = bilinear(1u, screen / transition.second_scale + texel_center, 0u);
+            return mix(first, second, f32(transition.numerator) / f32(transition.denominator));
+        }
+        case 10u: {
+            let left_half = dimensions.x / 2u;
+            if pixel.x < transition.boundary {
+                return textureLoad(
+                    to_texture,
+                    vec2<i32>(i32(left_half - transition.boundary + pixel.x), coordinates.y),
+                    0,
+                );
+            }
+            let right_start = dimensions.x - transition.scaled_width;
+            if pixel.x >= right_start {
+                return textureLoad(
+                    to_texture,
+                    vec2<i32>(i32(left_half + pixel.x - right_start), coordinates.y),
+                    0,
+                );
+            }
             return source;
         }
-        let relative = pixel - origin;
-        let destination_coordinates = relative * dimensions / extent;
-        return textureLoad(to_texture, vec2<i32>(destination_coordinates), 0);
+        default: {
+            return mix(source, destination, f32(transition.numerator) / f32(transition.denominator));
+        }
     }
-    return mix(source, destination, f32(transition.numerator) / f32(transition.denominator));
 }
 ";
 
@@ -1127,7 +1316,7 @@ fn encode_fade_to_black_uniform(plan: FadeToBlackPlan) -> [u8; FADE_TO_BLACK_UNI
     bytes
 }
 
-/// Errors produced by the native Cut/Fade/AlphaFade/Wipe/Slide/Zoom renderer.
+/// Errors produced by the native transition renderer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NativeTransitionError {
     WidthMismatch { from: u32, to: u32 },
@@ -1170,7 +1359,11 @@ impl From<NativeGpuError> for NativeTransitionError {
     }
 }
 
-/// Native Cut/Fade/AlphaFade/Wipe/Slide/Zoom renderer containing only its compiled GPU pipeline.
+/// Native renderer for every [`TransitionPlan`] kind, containing only its compiled GPU pipeline.
+///
+/// It mirrors [`crate::execute_transition`] in `f32`: integer kinds copy the same texels, and
+/// geometric kinds take the same Q8-floored bilinear taps with the parameters of
+/// [`TransitionGeometry`].
 pub struct NativeTransitionRenderer {
     pipeline: NativeFullscreenPipeline,
 }
@@ -1203,7 +1396,7 @@ impl NativeTransitionRenderer {
         Ok(Self { pipeline })
     }
 
-    /// Submits a GPU-resident Cut, Fade, `AlphaFade`, Wipe, Slide, or Zoom.
+    /// Submits a GPU-resident transition of any [`TransitionPlan`] kind.
     /// This operation does not poll or read pixels back.
     ///
     /// # Errors
@@ -1264,38 +1457,57 @@ fn validate_dimensions(
     Ok(())
 }
 
+#[allow(clippy::cast_possible_truncation)]
 fn encode_uniform(plan: TransitionPlan, width: u32, height: u32) -> [u8; TRANSITION_UNIFORM_SIZE] {
+    let (numerator, denominator) = (plan.numerator(), plan.denominator());
+    let extent = |size| transition_extent(size, numerator, denominator);
     let operation = match plan.kind() {
         TransitionKind::Cut => 0_u32,
-        TransitionKind::Fade | TransitionKind::AlphaFade => 1_u32,
-        TransitionKind::Wipe => 2_u32,
-        TransitionKind::Slide => 3_u32,
-        TransitionKind::Zoom => 4_u32,
+        TransitionKind::Fade | TransitionKind::AlphaFade => 1,
+        TransitionKind::Wipe => 2,
+        TransitionKind::Slide => 3,
+        TransitionKind::Zoom => 4,
+        TransitionKind::VerticalWipe => 5,
+        TransitionKind::VerticalSlide => 6,
+        TransitionKind::Fly | TransitionKind::FlyRotate => 7,
+        TransitionKind::Cube | TransitionKind::CubeZoom => 8,
+        TransitionKind::CrossZoom => 9,
+        TransitionKind::Merge => 10,
         TransitionKind::Stinger => {
             unreachable!("TransitionPlan does not compile Stinger")
         }
     };
-    let boundary = if matches!(plan.kind(), TransitionKind::Wipe | TransitionKind::Slide) {
-        wipe_boundary(width, plan.numerator(), plan.denominator())
-    } else {
-        0
+    let (boundary, scaled_width, scaled_height) = match plan.kind() {
+        TransitionKind::Wipe | TransitionKind::Slide => (extent(width), 0, 0),
+        TransitionKind::VerticalWipe | TransitionKind::VerticalSlide => (extent(height), 0, 0),
+        TransitionKind::Zoom => (0, extent(width), extent(height)),
+        TransitionKind::Merge => (extent(width / 2), extent(width - width / 2), 0),
+        _ => (0, 0, 0),
     };
-    let (scaled_width, scaled_height) = if plan.kind() == TransitionKind::Zoom {
-        (
-            zoom_extent(width, plan.numerator(), plan.denominator()),
-            zoom_extent(height, plan.numerator(), plan.denominator()),
-        )
-    } else {
-        (0, 0)
-    };
+    // Non-geometric kinds take the identity geometry.
+    let geometry = TransitionGeometry::new(
+        plan.kind().shape().unwrap_or(TransitionShape::Wipe),
+        width,
+        numerator,
+        denominator,
+    );
+    let float = |value: f64| (value as f32).to_bits();
     let words = [
         operation,
-        plan.numerator(),
-        plan.denominator(),
+        numerator,
+        denominator,
         boundary,
         scaled_width,
         scaled_height,
         0,
+        0,
+        float(geometry.sin),
+        float(geometry.cos),
+        float(geometry.scale),
+        float(geometry.second_scale),
+        float(geometry.offset_x),
+        float(geometry.depth),
+        float(geometry.camera),
         0,
     ];
     let mut bytes = [0; TRANSITION_UNIFORM_SIZE];
@@ -1533,7 +1745,7 @@ mod tests {
     fn transition_uniform_encodes_operation_progress_and_geometry() {
         let fade = TransitionPlan::compile(TransitionKind::Fade, 3, 7).unwrap();
         let uniform = encode_uniform(fade, 11, 7);
-        assert_eq!(uniform.len(), 32);
+        assert_eq!(uniform.len(), 64);
         assert_eq!(u32::from_le_bytes(uniform[0..4].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(uniform[4..8].try_into().unwrap()), 3);
         assert_eq!(u32::from_le_bytes(uniform[8..12].try_into().unwrap()), 7);
@@ -1569,6 +1781,74 @@ mod tests {
         assert_eq!(u32::from_le_bytes(uniform[20..24].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(uniform[24..28].try_into().unwrap()), 0);
         assert_eq!(u32::from_le_bytes(uniform[28..32].try_into().unwrap()), 0);
+        // Identity geometry for integer kinds.
+        assert_eq!(
+            transition_floats(uniform),
+            [0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        );
+
+        let word = |uniform: [u8; TRANSITION_UNIFORM_SIZE], index: usize| {
+            u32::from_le_bytes(uniform[index * 4..index * 4 + 4].try_into().unwrap())
+        };
+        let encode = |kind, numerator, denominator, width, height| {
+            encode_uniform(
+                TransitionPlan::compile(kind, numerator, denominator).unwrap(),
+                width,
+                height,
+            )
+        };
+
+        let vertical_wipe = encode(TransitionKind::VerticalWipe, 1, 2, 5, 7);
+        assert_eq!([word(vertical_wipe, 0), word(vertical_wipe, 3)], [5, 3]);
+        let vertical_slide = encode(TransitionKind::VerticalSlide, 2, 3, 5, 7);
+        assert_eq!([word(vertical_slide, 0), word(vertical_slide, 3)], [6, 4]);
+        let merge = encode(TransitionKind::Merge, 1, 2, 7, 3);
+        assert_eq!([word(merge, 0), word(merge, 3), word(merge, 4)], [10, 1, 2]);
+
+        let fly = encode(TransitionKind::Fly, 1, 2, 10, 3);
+        assert_eq!(word(fly, 0), 7);
+        assert_eq!(
+            transition_floats(fly),
+            [0.0, 1.0, 0.75, 1.0, 5.0, 0.0, 0.0, 0.0]
+        );
+        // (1 - 1/2) * 180 = 90 degrees: exact.
+        let fly_rotate = encode(TransitionKind::FlyRotate, 1, 2, 10, 3);
+        assert_eq!(word(fly_rotate, 0), 7);
+        assert_eq!(
+            transition_floats(fly_rotate),
+            [1.0, 0.0, 0.75, 1.0, 5.0, 0.0, 0.0, 0.0]
+        );
+        let cube = encode(TransitionKind::Cube, 1, 1, 10, 3);
+        assert_eq!(word(cube, 0), 8);
+        assert_eq!(
+            transition_floats(cube),
+            [1.0, 0.0, 1.0, 1.0, 0.0, 5.0, 20.0, 0.0]
+        );
+        let cube_zoom = encode(TransitionKind::CubeZoom, 1, 4, 10, 3);
+        assert_eq!(word(cube_zoom, 0), 8);
+        let floats = transition_floats(cube_zoom);
+        assert_eq!([floats[5], floats[6]], [10.0, 20.0]);
+        let cross_zoom = encode(TransitionKind::CrossZoom, 1, 4, 10, 3);
+        assert_eq!(
+            [
+                word(cross_zoom, 0),
+                word(cross_zoom, 1),
+                word(cross_zoom, 2)
+            ],
+            [9, 1, 4]
+        );
+        assert_eq!(
+            transition_floats(cross_zoom),
+            [0.0, 1.0, 1.5, 2.5, 0.0, 0.0, 0.0, 0.0]
+        );
+    }
+
+    fn transition_floats(uniform: [u8; TRANSITION_UNIFORM_SIZE]) -> [f32; 8] {
+        let mut floats = [0.0; 8];
+        for (float, bytes) in floats.iter_mut().zip(uniform[32..].as_chunks::<4>().0) {
+            *float = f32::from_le_bytes(*bytes);
+        }
+        floats
     }
 
     #[test]
