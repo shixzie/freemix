@@ -5,7 +5,8 @@ use std::sync::Arc;
 use fm_clock::{Clock, ClockDomainId, ClockTime, ManualClock};
 use fm_command::{
     ApplyOutcome, CommandEnvelope, CommandReceipt, CommandState, EventSequence, FieldIssue,
-    IdempotencyKey, Mutation, Rejection, RejectionCode, Revision, RuntimeGeneration, StateEpoch,
+    IdempotencyKey, Mutation, RefusalReason, Rejection, RejectionCode, Revision, RuntimeGeneration,
+    StateEpoch,
 };
 use fm_scheduler::{FrameNumber, FrameScheduler, PlanGeneration};
 use fm_switcher::{
@@ -1306,7 +1307,8 @@ impl Engine {
                 return Err(Rejection::new(
                     RejectionCode::Conflict,
                     format!("a playlist take is scheduled for frame {}", frame.get()),
-                ));
+                )
+                .with_reason(RefusalReason::PlaylistTakeScheduled { frame: frame.get() }));
             }
             if let Some((input, usage)) = realized_usage {
                 return Err(input_catalogue_rejection(InputCatalogueError::InUse {
@@ -1941,10 +1943,26 @@ impl EngineMutation {
                 .set_display_output(slot, config.as_deref().cloned())
                 .map_err(|error| match error {
                     crate::ShowError::InvalidDisplayOutput(_, code @ "unknown_output") => {
-                        Rejection::new(RejectionCode::NotFound, format!("{error} ({code})"))
+                        let rejection =
+                            Rejection::new(RejectionCode::NotFound, format!("{error} ({code})"));
+                        match config.as_deref().map(|config| config.source) {
+                            Some(fm_types::display::DisplayOutputSource::Output(output)) => {
+                                rejection.with_reason(RefusalReason::UnknownId {
+                                    kind: fm_command::IdKind::Output,
+                                    id: output.get().get(),
+                                })
+                            }
+                            _ => rejection,
+                        }
                     }
                     crate::ShowError::InvalidDisplayOutput(_, code @ "display_in_use") => {
+                        // Two slots: the display is claimed by the other.
+                        let other = fm_types::display::DisplayOutputSlot::ALL
+                            .into_iter()
+                            .find(|candidate| *candidate != slot)
+                            .unwrap_or(slot);
                         Rejection::new(RejectionCode::Conflict, format!("{error} ({code})"))
+                            .with_reason(RefusalReason::DisplayInUse { slot: other.get() })
                     }
                     error => Rejection::new(RejectionCode::InvalidCommand, error.to_string()),
                 })?;
@@ -2082,6 +2100,7 @@ impl EngineMutation {
                         RejectionCode::InvalidCommand,
                         format!("input {input} is not part of this show"),
                     )
+                    .with_reason(crate::error::unknown_input_reason(*input))
                 })?;
             events.push(EngineEvent::DesiredSwitcherChanged(self.command));
             return Ok(EngineAcceptance {
@@ -2369,7 +2388,9 @@ fn input_catalogue_rejection(error: InputCatalogueError) -> Rejection {
         }
     };
     let message = error.to_string();
-    Rejection::new(code, message.clone()).with_field(FieldIssue::new(field, issue, message))
+    Rejection::new(code, message.clone())
+        .with_field(FieldIssue::new(field, issue, message))
+        .with_reason(error.reason())
 }
 
 fn apply_edit_lock_mutation(
@@ -2386,6 +2407,7 @@ fn apply_edit_lock_mutation(
                 RejectionCode::NotFound,
                 format!("show does not contain input {input}"),
             )
+            .with_reason(crate::error::unknown_input_reason(input))
         })?,
     }
     // Exactly one durable event per acceptance keeps revision, event
@@ -3253,7 +3275,14 @@ fn rename_input_rejection(error: RenameInputError) -> Rejection {
         }
         RenameInputError::DuplicateName => RejectionCode::Conflict,
     };
-    Rejection::new(code, error.to_string())
+    let reason = match error {
+        RenameInputError::UnknownInput(input) => crate::error::unknown_input_reason(input),
+        RenameInputError::EmptyName | RenameInputError::NameTooLong => {
+            crate::error::invalid_input_name_reason()
+        }
+        RenameInputError::DuplicateName => RefusalReason::DuplicateName,
+    };
+    Rejection::new(code, error.to_string()).with_reason(reason)
 }
 
 fn reorder_inputs_rejection(error: InputOrderError) -> Rejection {
@@ -3263,7 +3292,13 @@ fn reorder_inputs_rejection(error: InputOrderError) -> Rejection {
         | InputOrderError::WrongLength { .. }
         | InputOrderError::DuplicateInput(_) => RejectionCode::InvalidCommand,
     };
-    Rejection::new(code, error.to_string())
+    let rejection = Rejection::new(code, error.to_string());
+    match error {
+        InputOrderError::UnknownInput(input) => {
+            rejection.with_reason(crate::error::unknown_input_reason(input))
+        }
+        _ => rejection,
+    }
 }
 
 const fn engine_fade_to_black_state(switcher: &SwitcherState) -> EngineFadeToBlackState {
@@ -3381,5 +3416,17 @@ fn switcher_rejection(error: SwitcherError) -> Rejection {
         | SwitcherError::InvalidStreamName
         | SwitcherError::TooManyStreams { .. } => RejectionCode::InvalidCommand,
     };
-    Rejection::new(code, error.to_string())
+    let rejection = Rejection::new(code, error.to_string());
+    match error {
+        SwitcherError::UnknownInput(input) => {
+            rejection.with_reason(crate::error::unknown_input_reason(input))
+        }
+        SwitcherError::InputInUse { input, usage } => {
+            rejection.with_reason(RefusalReason::InputInUse {
+                input: input.get().get(),
+                usage: crate::error::input_use(usage),
+            })
+        }
+        _ => rejection,
+    }
 }

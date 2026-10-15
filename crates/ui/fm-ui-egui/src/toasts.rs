@@ -78,6 +78,8 @@ pub(crate) struct Toast {
 pub(crate) struct ToastQueue {
     toasts: VecDeque<Toast>,
     seen_error: Option<String>,
+    /// The command id of the last refusal announced from its typed reason.
+    seen_refusal: Option<String>,
     seen_notice: Option<String>,
     seen_external_notice: Option<String>,
     seen_uncertainties: Vec<TerminalUncertaintyNotice>,
@@ -117,6 +119,14 @@ impl ToastQueue {
         self.seen_error = error.cloned();
     }
 
+    /// Marks a command refusal as already announced (by the input
+    /// catalogue's own refusal toast).
+    pub(crate) fn acknowledge_refusal(&mut self, refusal: Option<&crate::CommandRefusalNotice>) {
+        if let Some(refusal) = refusal {
+            self.seen_refusal = Some(refusal.command_id.clone());
+        }
+    }
+
     fn push_keyed(&mut self, key: Option<String>, kind: ToastKind, message: String) {
         if self.toasts.len() == TOAST_CAPACITY {
             self.toasts.pop_front();
@@ -142,6 +152,25 @@ impl ToastQueue {
     /// per reconnect attempt would bury the console.
     pub(crate) fn observe(&mut self, state: &StudioUiState) {
         let ready = state.connection_status.controls_enabled();
+        if let Some(refusal) = state
+            .command_refusal
+            .as_ref()
+            .filter(|refusal| self.seen_refusal.as_deref() != Some(refusal.command_id.as_str()))
+        {
+            self.seen_refusal = Some(refusal.command_id.clone());
+            // A typed reason is worded in the console language and replaces
+            // the worker's English error text; without one, that text is the
+            // toast.
+            if refusal.reason.is_some() {
+                self.seen_error.clone_from(&state.error);
+                if ready {
+                    self.push(
+                        ToastKind::Error,
+                        refusal.text(self.locale, state.view.as_ref()),
+                    );
+                }
+            }
+        }
         if let Some(error) = announce(&mut self.seen_error, state.error.as_ref())
             && ready
         {
@@ -267,6 +296,58 @@ mod tests {
         state.error = Some("Command rejected (stale): revision moved".to_owned());
         queue.observe(&state);
         assert_eq!(queue.iter().count(), 2);
+    }
+
+    #[test]
+    fn typed_refusals_toast_in_the_console_language_instead_of_daemon_english() {
+        use fm_protocol::{InputUse, RefusalReason};
+        let mut queue = ToastQueue {
+            locale: Locale::new(fm_ui_model::i18n::Language::Spanish),
+            ..ToastQueue::default()
+        };
+        let mut state = state();
+        state.error = Some(
+            "Command rejected (conflict): input 1 cannot be removed: it is a layer source of \
+             scene 100"
+                .to_owned(),
+        );
+        state.command_refusal = Some(crate::CommandRefusalNotice {
+            command_id: "c-1".to_owned(),
+            code: "conflict".to_owned(),
+            message: "input 1 cannot be removed: it is a layer source of scene 100".to_owned(),
+            reason: Some(RefusalReason::InputInUse {
+                input: 1,
+                usage: InputUse::SceneLayer { scene: 100 },
+            }),
+        });
+        queue.observe(&state);
+        queue.observe(&state);
+        let toasts = queue.iter().collect::<Vec<_>>();
+        assert_eq!(toasts.len(), 1, "{toasts:?}");
+        assert_eq!(toasts[0].kind, ToastKind::Error);
+        assert_eq!(
+            toasts[0].message,
+            "Comando rechazado (input_in_use): «Entrada 1» es una fuente de capa de la escena \
+             100. Quite esa capa de la escena primero."
+        );
+        // The status bar words it the same way.
+        let (status, _) = crate::chrome::status_message(queue.locale, &state);
+        assert!(status.contains("es una fuente de capa"), "{status}");
+        assert!(!status.contains("layer source"), "{status}");
+
+        // A refusal without a typed reason falls back to the daemon's text.
+        state.error = Some("Command rejected (internal): boom".to_owned());
+        state.command_refusal = Some(crate::CommandRefusalNotice {
+            command_id: "c-2".to_owned(),
+            code: "internal".to_owned(),
+            message: "boom".to_owned(),
+            reason: None,
+        });
+        queue.observe(&state);
+        assert_eq!(
+            queue.iter().last().unwrap().message,
+            "Command rejected (internal): boom"
+        );
     }
 
     #[test]

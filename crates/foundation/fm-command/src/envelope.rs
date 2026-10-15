@@ -1,4 +1,4 @@
-use crate::Revision;
+use crate::{RefusalReason, Revision};
 use core::fmt;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -191,6 +191,9 @@ pub struct Rejection {
     pub message: String,
     pub fields: Vec<FieldIssue>,
     pub retryable: bool,
+    /// The typed reason clients word in their own language; `message` is
+    /// its English fallback.
+    pub reason: Option<RefusalReason>,
 }
 
 impl Rejection {
@@ -201,12 +204,20 @@ impl Rejection {
             message: message.into(),
             fields: Vec::new(),
             retryable: false,
+            reason: None,
         }
     }
 
     #[must_use]
     pub fn with_field(mut self, issue: FieldIssue) -> Self {
         self.fields.push(issue);
+        self
+    }
+
+    /// Attaches the typed reason.
+    #[must_use]
+    pub fn with_reason(mut self, reason: RefusalReason) -> Self {
+        self.reason = Some(reason);
         self
     }
 

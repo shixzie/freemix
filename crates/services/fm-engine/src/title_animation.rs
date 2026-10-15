@@ -128,6 +128,10 @@ fn template_of(state: &ShowState, input: InputId) -> Result<&EngineTitleTemplate
             "unknown_title",
             format!("input {input} is not a title"),
         )
+        .with_reason(fm_command::RefusalReason::UnknownId {
+            kind: fm_command::IdKind::Title,
+            id: input.get().get(),
+        })
     })?;
     title.template.as_ref().ok_or_else(|| {
         rejection(

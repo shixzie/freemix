@@ -666,15 +666,19 @@ pub(crate) fn accept(
 ) -> Result<MediaPlaybackSettings, Rejection> {
     let input = command.input;
     let Some(settings) = state.media_settings(input) else {
-        let message = if state.inputs().contains(&input) {
+        let known = state.inputs().contains(&input);
+        let message = if known {
             format!("input {input} is not a media input")
         } else {
             format!("input {input} is not part of this show")
         };
-        return Err(
-            Rejection::new(RejectionCode::InvalidCommand, message.clone())
-                .with_field(FieldIssue::new("input", "invalid", message)),
-        );
+        let rejection = Rejection::new(RejectionCode::InvalidCommand, message.clone())
+            .with_field(FieldIssue::new("input", "invalid", message));
+        return Err(if known {
+            rejection
+        } else {
+            rejection.with_reason(crate::error::unknown_input_reason(input))
+        });
     };
     let mut next = *settings;
     match command.operation {

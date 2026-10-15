@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.44 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.45 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1238,6 +1238,54 @@ VCA groups (`AU-001`).
   the top-level `audio_solo_mode`). `freemixd` meters the monitor bus but
   has no headphone device path yet, so the bus is not audible.
 - 2.43 is refused.
+
+Protocol 2.45 adds typed refusal reasons and encodes mixer labels once.
+
+- A rejected `command_result` may append `reason` after `retryable`: a
+  colon-separated token list, the kind first, then its typed parameters
+  (canonical decimals; slots and channels nonzero). `code` stays the coarse
+  class and `message` the English text, now only a fallback: a client words
+  the refusal from `reason` in its own language and shows `message` when
+  `reason` is absent. A refusal without a typed reason omits the field.
+  - `permission_denied`, `deadline_exceeded`, `duplicate_name`,
+    `project_locked`, `nothing_to_undo`, `nothing_to_redo`,
+    `history_conflict`, `history_drift`, `not_durable` (the daemon could not
+    make the command durable), `rate_limited`, `runtime_unsupported` (the
+    running media runtime cannot do it, such as a native daemon's live input
+    catalogue).
+  - `revision_conflict:<current revision>`.
+  - `unknown_id:<kind>:<id>` and `duplicate_id:<kind>:<id>`, `<kind>` one
+    of `input`, `output`, `scene`, `layer`, `category`, `grade`, `lut`,
+    `preset`, `title`, `playlist_entry`.
+  - `invalid_name:<max bytes>`, `input_locked:<input>`,
+    `display_in_use:<slot>` (the other display-output slot claims the
+    display), `stinger_realizing:<slot>`,
+    `playlist_take_scheduled:<frame>`.
+  - `input_in_use:<input>:<usage>`, `<usage>` one of `program`, `preview`,
+    `transition`, `manual_transition`, `scene_on_air`,
+    `overlay:<channel>`, `overlay_queue:<channel>`, `stinger:<slot>`,
+    `scene_layer:<scene>`, `scene_audio_source:<scene input>`,
+    `alias_target:<alias input>`, `playlist_entry:<entry>`.
+  - `bounds_exceeded:<field>:<max>`, `<field>` a `[a-z0-9_]` token of at
+    most 64 bytes (such as `inputs`, `layers`, `effects`, `entries`).
+  Any other kind or parameter shape is refused by the decoder.
+- The engine, the control service, and `freemixd` attach a reason at every
+  refusal that has one: the padlock and undo history, unknown and duplicate
+  ids, names, input usage on the switcher, in a playlist, or in a persisted
+  scene layer, scene audio source, or alias, display-slot conflicts, list
+  bounds, a scheduled playlist take, a Stinger slot still realizing, a
+  durability failure, session permission and rate limits, and a native
+  daemon's live catalogue. Persisted idempotency receipts keep code and
+  message only, so a receipt replayed after a restart carries no reason.
+- The snapshot's `input_audio_labels` entries are `<input>~<length>:<label>`
+  with `<length>` the label's canonical decimal UTF-8 byte length and the
+  label raw, so the line encoding escapes it exactly once. 256 strips with
+  32-byte labels that escape to three bytes per byte fit one field, and a
+  256-input snapshot labelling every strip fits one line.
+- Studio words typed refusals in English and Spanish (toasts, the status
+  bar, and input add/remove refusals); `freemix-cli` prints
+  `<code>: <message> (reason: <reason>)`.
+- 2.44 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

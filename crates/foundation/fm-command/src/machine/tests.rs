@@ -187,6 +187,10 @@ fn optimistic_revision_conflict_does_not_run_or_advance() {
     let rejection = outcome.receipt.rejected().unwrap();
     assert_eq!(rejection.rejection.code, RejectionCode::RevisionConflict);
     assert!(rejection.rejection.retryable);
+    assert_eq!(
+        rejection.rejection.reason,
+        Some(crate::RefusalReason::RevisionConflict { current: 0 })
+    );
     assert_eq!(rejection.current_revision, Revision::default());
     assert_eq!(commands.state().value, 2);
 }

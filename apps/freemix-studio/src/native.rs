@@ -23,10 +23,10 @@ use fm_protocol::{
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
-    CatalogueRefusal, CatalogueRequest, ExternalStudioAction, GradeLutFile, GradeRefusal,
-    InputAudioStripUpdate, InputMoveDirection, PlaylistIntent, ReconnectStatus, RecordingAction,
-    StreamAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
-    TerminalUncertaintyNotice, TitleUpdate, external_intent,
+    CatalogueRefusal, CatalogueRequest, CommandRefusalNotice, ExternalStudioAction, GradeLutFile,
+    GradeRefusal, InputAudioStripUpdate, InputMoveDirection, PlaylistIntent, ReconnectStatus,
+    RecordingAction, StreamAction, StudioConnectionStatus, StudioIntent, StudioShell,
+    StudioUiState, TerminalUncertaintyNotice, TitleUpdate, external_intent,
 };
 use fm_ui_model::ClientView;
 use fm_ui_model::grade_editor::GradeCommand;
@@ -634,6 +634,9 @@ impl StatePublisher {
             }
             if state.catalogue_refusal.is_none() {
                 state.catalogue_refusal = previous.catalogue_refusal;
+            }
+            if state.command_refusal.is_none() {
+                state.command_refusal = previous.command_refusal;
             }
             if state.grade_refusal.is_none() {
                 state.grade_refusal = previous.grade_refusal;
@@ -1841,7 +1844,7 @@ fn consume_command_sequence(
             publication.rejection(
                 runtime,
                 fm_ui_egui::command_rejection_message(code, message, fields),
-                (refusal, grade),
+                (refusal, grade, CommandRefusalNotice::from_result(&result)),
                 *deferred_rejections,
             );
             return Ok(());
@@ -1949,7 +1952,11 @@ impl CommandPublication<'_> {
         self,
         runtime: &mut StudioRuntime,
         error: String,
-        (catalogue_refusal, grade_refusal): (Option<CatalogueRefusal>, Option<GradeRefusal>),
+        (catalogue_refusal, grade_refusal, command_refusal): (
+            Option<CatalogueRefusal>,
+            Option<GradeRefusal>,
+            Option<CommandRefusalNotice>,
+        ),
         deferred_rejections: usize,
     ) {
         if self.publish_updates {
@@ -1963,6 +1970,7 @@ impl CommandPublication<'_> {
             state.terminal_uncertainties = self.terminal_uncertainties.to_vec();
             state.catalogue_refusal = catalogue_refusal;
             state.grade_refusal = grade_refusal;
+            state.command_refusal = command_refusal;
             self.publisher.publish(state);
         }
     }
@@ -2545,6 +2553,7 @@ fn catalogue_refusal(
         code,
         message,
         fields,
+        reason: typed_reason,
         ..
     } = result
     else {
@@ -2558,6 +2567,7 @@ fn catalogue_refusal(
         code: code.clone(),
         reason: issue.map(|issue| issue.code.clone()),
         message: issue.map_or_else(|| message.clone(), |issue| issue.message.clone()),
+        typed_reason: typed_reason.clone(),
     })
 }
 
@@ -3365,6 +3375,7 @@ mod tests {
             code: "conflict".to_owned(),
             reason: Some("input_in_use".to_owned()),
             message: "input 1 cannot be removed: it is on Program".to_owned(),
+            typed_reason: None,
         };
         let grade = GradeRefusal {
             command_id: "grade-1".to_owned(),
@@ -3373,6 +3384,16 @@ mod tests {
         let mut refused = StudioUiState::new(StudioConnectionStatus::Ready);
         refused.catalogue_refusal = Some(refusal.clone());
         refused.grade_refusal = Some(grade.clone());
+        let notice = CommandRefusalNotice {
+            command_id: "remove-1".to_owned(),
+            code: "conflict".to_owned(),
+            message: "input 1 cannot be removed: it is on Program".to_owned(),
+            reason: Some(fm_protocol::RefusalReason::InputInUse {
+                input: 1,
+                usage: fm_protocol::InputUse::Program,
+            }),
+        };
+        refused.command_refusal = Some(notice.clone());
         refused.error = Some("Command rejected (conflict): input 1 is on Program".to_owned());
         assert!(publisher.publish(refused));
         // A meter update lands before the frame reads the mailbox.
@@ -3380,6 +3401,7 @@ mod tests {
         let seen = updates.try_recv().unwrap();
         assert_eq!(seen.catalogue_refusal, Some(refusal));
         assert_eq!(seen.grade_refusal, Some(grade));
+        assert_eq!(seen.command_refusal, Some(notice));
         assert_eq!(
             seen.error.as_deref(),
             Some("Command rejected (conflict): input 1 is on Program")
@@ -3389,6 +3411,7 @@ mod tests {
         let next = updates.try_recv().unwrap();
         assert_eq!(next.catalogue_refusal, None);
         assert_eq!(next.grade_refusal, None);
+        assert_eq!(next.command_refusal, None);
         assert_eq!(next.error, None);
         // A connection change does not carry an older error into the new
         // connection state.
@@ -4443,6 +4466,7 @@ mod tests {
                         }],
                         current_revision: 5,
                         retryable: false,
+                        reason: None,
                     }));
                 }
                 other => panic!("unexpected peer message: {other:?}"),
@@ -5216,6 +5240,37 @@ mod tests {
         );
     }
 
+    /// A typed reason (Protocol 2.45) rides along with a catalogue refusal,
+    /// and the Spanish console words it instead of the daemon's English text.
+    fn assert_spanish_scene_layer_refusal(client: &Client, remove_id: &str) {
+        let scene_layer = fm_protocol::RefusalReason::InputInUse {
+            input: 2,
+            usage: fm_protocol::InputUse::SceneLayer { scene: 100 },
+        };
+        let typed = CommandResult::Rejected {
+            id: remove_id.to_owned(),
+            code: "conflict".to_owned(),
+            message: "input 2 cannot be removed: it is a layer source of scene 100".to_owned(),
+            fields: Vec::new(),
+            current_revision: 4,
+            retryable: false,
+            reason: Some(scene_layer.clone()),
+        };
+        let refusal = catalogue_refusal(client, remove_id, &typed).unwrap();
+        assert_eq!(refusal.typed_reason, Some(scene_layer.clone()));
+        let spanish = fm_ui_model::i18n::Locale::new(fm_ui_model::i18n::Language::Spanish);
+        assert_eq!(
+            fm_ui_egui::catalogue_refusal_message(spanish, &refusal, "Camera 1 Wide"),
+            "Baja rechazada (input_in_use): «Camera 1 Wide» es una fuente de capa de la \
+             escena 100. Quite esa capa de la escena primero."
+        );
+        let notice = CommandRefusalNotice::from_result(&typed).unwrap();
+        assert_eq!(notice.reason, Some(scene_layer));
+        let toast = notice.text(spanish, None);
+        assert!(toast.starts_with("Comando rechazado (input_in_use): «Entrada 2»"));
+        assert!(!toast.contains("layer source"), "{toast}");
+    }
+
     #[test]
     fn catalogue_commands_publish_pending_requests_and_refusal_reasons() {
         let project = ProjectId::new(NonZeroU128::new(1).unwrap());
@@ -5277,6 +5332,7 @@ mod tests {
             fields,
             current_revision: 4,
             retryable: false,
+            reason: None,
         };
         let in_use = rejected(
             &remove.id,
@@ -5296,8 +5352,10 @@ mod tests {
                 code: "conflict".to_owned(),
                 reason: Some("input_in_use".to_owned()),
                 message: "input 2 cannot be removed: it is on Program".to_owned(),
+                typed_reason: None,
             })
         );
+        assert_spanish_scene_layer_refusal(&client, &remove.id);
         // A daemon refusal without a field issue keeps its message as detail.
         let refusal = catalogue_refusal(&client, &add.id, &rejected(&add.id, Vec::new())).unwrap();
         assert_eq!(refusal.reason, None);
@@ -6824,6 +6882,7 @@ mod tests {
                                 }],
                                 current_revision: revision,
                                 retryable: false,
+                                reason: None,
                             }));
                         }
                     }

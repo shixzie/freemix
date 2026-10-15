@@ -178,23 +178,30 @@ fn slots_are_project_edits_that_undo_and_redo_exactly() {
 fn refusals_name_the_problem_and_change_nothing() {
     let mut engine = engine();
     accept(&mut engine, "set", set(1, "display=id:left"));
-    for (key, command, code, text) in [
+    for (key, command, code, text, reason) in [
         (
             "unknown",
             set(2, "display=index:1,source=output:9"),
             RejectionCode::NotFound,
             "unknown_output",
+            fm_command::RefusalReason::UnknownId {
+                kind: fm_command::IdKind::Output,
+                id: 9,
+            },
         ),
         (
             "in-use",
             set(2, "display=id:left,source=preview"),
             RejectionCode::Conflict,
             "display_in_use",
+            // The display is claimed by the other slot (Protocol 2.45).
+            fm_command::RefusalReason::DisplayInUse { slot: 1 },
         ),
     ] {
         let outcome = execute(&mut engine, key, command);
         assert_eq!(rejection(&outcome).code, code, "{key}");
         assert!(rejection(&outcome).message.contains(text), "{key}");
+        assert_eq!(rejection(&outcome).reason, Some(reason), "{key}");
     }
     assert_eq!(engine.show().display_outputs().len(), 1);
     assert_eq!(engine.undo_entries().len(), 1);

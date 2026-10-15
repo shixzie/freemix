@@ -502,6 +502,7 @@ fn optimistic_rejection_snaps_to_authoritative_state_and_retains_reason() {
         fields: Vec::new(),
         current_revision: 1,
         retryable: false,
+        reason: None,
     };
     assert!(matches!(
         model.reconcile_command(&result).unwrap(),

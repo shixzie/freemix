@@ -13,7 +13,7 @@ use egui::{
     Align2, Button, Color32, CornerRadius, FontFamily, FontId, Rect, RichText, Sense, Stroke,
     StrokeKind, Ui, Vec2, pos2,
 };
-use fm_protocol::LiveInputSource;
+use fm_protocol::{IdKind, LiveInputSource, RefusalReason};
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
 use fm_ui_model::{ClientView, ManualTransitionStatus};
 
@@ -82,6 +82,9 @@ pub struct CatalogueRefusal {
     pub reason: Option<String>,
     /// The field issue's message, else the rejection message.
     pub message: String,
+    /// The typed refusal reason (Protocol 2.45), worded in the console
+    /// language; `None` falls back to `reason` and `message`.
+    pub typed_reason: Option<RefusalReason>,
 }
 
 /// The generator a new input is added with.
@@ -318,19 +321,11 @@ pub fn remove_input_availability(
     }
 }
 
-/// The detail after `cannot be removed: it is` in an `input_in_use` (or
-/// daemon `conflict`) refusal, such as `on Program` or `the media of
-/// Stinger 2`.
-#[must_use]
-pub fn input_in_use_detail(message: &str) -> Option<&str> {
-    let (_, detail) = message.split_once("cannot be removed: it is ")?;
-    let detail = detail.trim().trim_end_matches('.');
-    (!detail.is_empty()).then_some(detail)
-}
-
 /// Words a refused add or remove for its toast in the console language: the
 /// action, the stable reason code, what it means for this input, and what to
-/// do next. A daemon detail the console does not recognise passes through.
+/// do next. A typed reason (Protocol 2.45) is worded from its parameters; a
+/// refusal without one is worded from its stable field-issue code, and a
+/// daemon detail the console does not recognise passes through.
 #[must_use]
 pub fn catalogue_refusal_message(l: Locale, refusal: &CatalogueRefusal, name: &str) -> String {
     let lead = if refusal.request.is_add() {
@@ -338,91 +333,58 @@ pub fn catalogue_refusal_message(l: Locale, refusal: &CatalogueRefusal, name: &s
     } else {
         Msg::RemoveRefused
     };
-    let code = refusal.reason.as_deref().unwrap_or(refusal.code.as_str());
+    let code: &str = match &refusal.typed_reason {
+        Some(reason) => reason.kind(),
+        None => refusal.reason.as_deref().unwrap_or(refusal.code.as_str()),
+    };
     let named = |msg: Msg| l.format(msg, &[("name", Arg::Str(name))]);
-    let advice = match code {
-        "duplicate_input" => l.format(
+    let input = refusal.request.input();
+    // The refused input is named by the operator's name; others by number.
+    let input_names = |id: u128| (id == input.get().get()).then(|| name.to_owned());
+    let advice = match &refusal.typed_reason {
+        Some(RefusalReason::DuplicateId {
+            kind: IdKind::Input,
+            id,
+        }) => l.format(
             Msg::RefuseDuplicateInput,
-            &[("input", Arg::Str(&refusal.request.input().to_string()))],
+            &[("input", Arg::Str(&id.to_string()))],
         ),
-        "too_many_inputs" => l.format(
-            Msg::RefuseTooManyInputs,
-            &[("limit", Arg::Plain(MAX_LIVE_INPUTS as u64))],
-        ),
-        "unknown_input" => named(Msg::RefuseUnknownInput),
-        "invalid_name" => l.text(Msg::RefuseInvalidName).to_owned(),
-        "duplicate_name" => named(Msg::RefuseDuplicateName),
-        "project_locked" => l.text(Msg::RefuseProjectLocked).to_owned(),
-        "input_locked" => named(Msg::RefuseInputLocked),
-        "unavailable" => l.text(Msg::RefuseUnavailable).to_owned(),
-        _ => match input_in_use_detail(&refusal.message) {
-            Some(detail) => {
-                let (sentence, advice) = in_use_sentence(l, name, detail);
-                format!("{sentence} {}", l.text(advice))
-            }
-            None => refusal.message.clone(),
+        Some(RefusalReason::BoundsExceeded { field, max }) if field == "inputs" => {
+            l.format(Msg::RefuseTooManyInputs, &[("limit", Arg::Plain(*max))])
+        }
+        Some(RefusalReason::UnknownId {
+            kind: IdKind::Input,
+            id,
+        }) if *id == input.get().get() => named(Msg::RefuseUnknownInput),
+        Some(RefusalReason::DuplicateName) => named(Msg::RefuseDuplicateName),
+        Some(RefusalReason::ProjectLocked) => l.text(Msg::RefuseProjectLocked).to_owned(),
+        Some(RefusalReason::InputLocked { input: locked }) if *locked == input.get().get() => {
+            named(Msg::RefuseInputLocked)
+        }
+        Some(RefusalReason::RuntimeUnsupported) => l.text(Msg::RefuseUnavailable).to_owned(),
+        Some(reason) => fm_ui_model::i18n::refusal_reason_text(l, reason, &input_names),
+        None => match code {
+            "duplicate_input" => l.format(
+                Msg::RefuseDuplicateInput,
+                &[("input", Arg::Str(&input.to_string()))],
+            ),
+            "too_many_inputs" => l.format(
+                Msg::RefuseTooManyInputs,
+                &[("limit", Arg::Plain(MAX_LIVE_INPUTS as u64))],
+            ),
+            "unknown_input" => named(Msg::RefuseUnknownInput),
+            "invalid_name" => l.text(Msg::RefuseInvalidName).to_owned(),
+            "duplicate_name" => named(Msg::RefuseDuplicateName),
+            "project_locked" => l.text(Msg::RefuseProjectLocked).to_owned(),
+            "input_locked" => named(Msg::RefuseInputLocked),
+            "unavailable" => l.text(Msg::RefuseUnavailable).to_owned(),
+            _ => refusal.message.clone(),
         },
     };
     l.format(
         lead,
         &[("code", Arg::Str(code)), ("advice", Arg::Str(&advice))],
     )
-}
-
-/// One `input_in_use` detail as a sentence naming the input, plus the advice
-/// for it. The engine's usage wording is matched exactly; anything else (a
-/// daemon `conflict` reference such as a scene layer) is quoted as sent.
-fn in_use_sentence(l: Locale, name: &str, detail: &str) -> (String, Msg) {
-    let named = |msg: Msg| l.format(msg, &[("name", Arg::Str(name))]);
-    let numbered = |msg: Msg, arg: &str, number: &str| {
-        l.format(msg, &[("name", Arg::Str(name)), (arg, Arg::Str(number))])
-    };
-    let number_after = |prefix: &str| {
-        detail
-            .strip_prefix(prefix)
-            .filter(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()))
-    };
-    if detail == "on Program" {
-        (named(Msg::InUseOnProgram), Msg::AdviceRouteAway)
-    } else if detail == "on Preview" {
-        (named(Msg::InUseOnPreview), Msg::AdviceRouteAway)
-    } else if detail == "in a transition in flight" {
-        (named(Msg::InUseTransition), Msg::AdviceWaitTransition)
-    } else if detail == "in the active manual transition" {
-        (named(Msg::InUseManualTransition), Msg::AdviceWaitTransition)
-    } else if let Some(channel) = number_after("the source of overlay ") {
-        (
-            numbered(Msg::InUseOverlaySource, "channel", channel),
-            Msg::AdviceOverlay,
-        )
-    } else if let Some(channel) = number_after("queued on overlay ") {
-        (
-            numbered(Msg::InUseOverlayQueue, "channel", channel),
-            Msg::AdviceOverlay,
-        )
-    } else if let Some(slot) = number_after("the media of Stinger ") {
-        (
-            numbered(Msg::InUseStinger, "slot", slot),
-            Msg::AdviceStinger,
-        )
-    } else {
-        let advice = if detail.contains("transition") {
-            Msg::AdviceWaitTransition
-        } else if detail.contains("overlay") {
-            Msg::AdviceOverlay
-        } else if detail.contains("Stinger") {
-            Msg::AdviceStinger
-        } else {
-            Msg::AdviceOffline
-        };
-        (
-            l.format(
-                Msg::InUseOther,
-                &[("name", Arg::Str(name)), ("detail", Arg::Str(detail))],
-            ),
-            advice,
-        )
-    }
 }
 
 /// Builds the Add input intent from the dialog, or says why it is blocked.
@@ -1402,7 +1364,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
 mod tests {
     use core::num::NonZeroU128;
 
-    use fm_protocol::EditHistoryStatus;
+    use fm_protocol::{EditHistoryStatus, InputUse};
     use fm_ui_model::{ClientModel, ProjectSnapshot};
 
     use super::*;
@@ -1843,6 +1805,10 @@ mod tests {
             code: "conflict".to_owned(),
             reason: Some("input_in_use".to_owned()),
             message: "input 3 cannot be removed: it is the source of overlay 2".to_owned(),
+            typed_reason: Some(RefusalReason::InputInUse {
+                input: 3,
+                usage: InputUse::Overlay { channel: 2 },
+            }),
         });
         let outcomes = tracker.observe(&state, 16);
         assert!(outcomes.refusal_announced);
@@ -1928,6 +1894,7 @@ mod tests {
             code: "conflict".to_owned(),
             reason: Some("duplicate_name".to_owned()),
             message: "input name is already in use".to_owned(),
+            typed_reason: None,
         });
         let outcomes = tracker.observe(&state, 16);
         assert!(outcomes.refusal_announced);
@@ -1946,6 +1913,16 @@ mod tests {
             code: code.to_owned(),
             reason: reason.map(str::to_owned),
             message: message.to_owned(),
+            typed_reason: None,
+        };
+        // A typed refusal of removing input 2; its English text is never shown.
+        let typed = |reason: RefusalReason| CatalogueRefusal {
+            command_id: "c".to_owned(),
+            request: CatalogueRequest::Remove { input: input(2) },
+            code: "conflict".to_owned(),
+            reason: None,
+            message: reason.to_string(),
+            typed_reason: Some(reason),
         };
         let remove = || CatalogueRequest::Remove { input: input(2) };
         let cases = [
@@ -1974,22 +1951,37 @@ mod tests {
                 "Remove refused (input_locked): \"X\" has its own padlock; unlock it to remove it.",
             ),
             (
-                refusal(
-                    remove(),
-                    Some("input_in_use"),
-                    "conflict",
-                    "input 2 cannot be removed: it is on Preview",
-                ),
+                typed(RefusalReason::InputInUse {
+                    input: 2,
+                    usage: InputUse::Preview,
+                }),
                 "Remove refused (input_in_use): \"X\" is on Preview. Route another input to that bus first.",
             ),
             (
+                typed(RefusalReason::InputInUse {
+                    input: 2,
+                    usage: InputUse::SceneLayer { scene: 100 },
+                }),
+                "Remove refused (input_in_use): \"X\" is a layer source of scene 100. Remove that layer from the scene first.",
+            ),
+            (
+                typed(RefusalReason::ProjectLocked),
+                "Remove refused (project_locked): The project is locked; unlock the padlock in the top bar to change inputs.",
+            ),
+            (
+                typed(RefusalReason::RuntimeUnsupported),
+                "Remove refused (runtime_unsupported): This daemon cannot change its inputs while running (native media); add or remove inputs offline.",
+            ),
+            (
+                // A refusal without a typed reason or a known code keeps the
+                // daemon's text.
                 refusal(
                     remove(),
                     None,
                     "conflict",
-                    "input 2 cannot be removed: it is a layer source of Scene 100",
+                    "input 2 cannot be removed: it is a layer source of scene 100",
                 ),
-                "Remove refused (conflict): \"X\" is a layer source of Scene 100. Remove that reference offline first.",
+                "Remove refused (conflict): input 2 cannot be removed: it is a layer source of scene 100",
             ),
             (
                 refusal(remove(), None, "unavailable", "native"),
@@ -2006,33 +1998,44 @@ mod tests {
                 expected
             );
         }
-        assert_eq!(
-            input_in_use_detail("input 2 cannot be removed: it is on Program."),
-            Some("on Program")
-        );
-        assert_eq!(input_in_use_detail("busy"), None);
         let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
-        let stinger = refusal(
-            remove(),
-            Some("input_in_use"),
-            "conflict",
-            "input 2 cannot be removed: it is the media of Stinger 3",
-        );
+        let stinger = typed(RefusalReason::InputInUse {
+            input: 2,
+            usage: InputUse::Stinger { slot: 3 },
+        });
         assert_eq!(
             catalogue_refusal_message(spanish, &stinger, "X"),
             "Baja rechazada (input_in_use): «X» es el medio del Stinger 3. \
              Vacíe o reasigne esa ranura de Stinger primero."
         );
-        let scene = refusal(
-            remove(),
-            None,
-            "conflict",
-            "input 2 cannot be removed: it is a layer source of Scene 100",
-        );
+        // The review's screenshot: a Spanish console no longer shows the
+        // daemon's English "a layer source of scene 100".
+        let scene = typed(RefusalReason::InputInUse {
+            input: 2,
+            usage: InputUse::SceneLayer { scene: 100 },
+        });
         assert_eq!(
-            catalogue_refusal_message(spanish, &scene, "X"),
-            "Baja rechazada (conflict): «X» está en uso: a layer source of Scene 100. \
-             Quite esa referencia sin conexión primero."
+            catalogue_refusal_message(spanish, &scene, "Camera 1 Wide"),
+            "Baja rechazada (input_in_use): «Camera 1 Wide» es una fuente de capa de la \
+             escena 100. Quite esa capa de la escena primero."
+        );
+        let playlist = typed(RefusalReason::InputInUse {
+            input: 2,
+            usage: InputUse::PlaylistEntry { entry: 4 },
+        });
+        assert_eq!(
+            catalogue_refusal_message(spanish, &playlist, "X"),
+            "Baja rechazada (input_in_use): «X» se reproduce en la entrada 4 de la lista. \
+             Quítela de la lista primero."
+        );
+        let typed_full = CatalogueRefusal {
+            request: add(5, "Cam"),
+            ..typed(RefusalReason::bounds("inputs", 256))
+        };
+        assert_eq!(
+            catalogue_refusal_message(spanish, &typed_full, "Cam"),
+            "Alta rechazada (bounds_exceeded): El show ya tiene el máximo de 256 entradas; \
+             quite una entrada primero."
         );
         let full = refusal(add(5, "Cam"), None, "too_many_inputs", "m");
         assert!(

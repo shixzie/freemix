@@ -235,10 +235,14 @@ impl DurableStore for DurableJournal<'_> {
                 match error {
                     // Not a durability failure: the same command can never
                     // succeed, so it is refused as a conflict.
-                    fm_persistence::LutError::IdReused(_) => Box::new(crate::CommandRefusal {
+                    fm_persistence::LutError::IdReused(id) => Box::new(crate::CommandRefusal {
                         code: fm_command::RejectionCode::Conflict,
                         retryable: false,
                         message: error.to_string(),
+                        reason: Some(fm_protocol::RefusalReason::DuplicateId {
+                            kind: fm_protocol::IdKind::Lut,
+                            id: u128::from(id.get().get()),
+                        }),
                     }),
                     error => Box::new(AppFailure(format!(
                         "imported LUT could not be written: {error}"

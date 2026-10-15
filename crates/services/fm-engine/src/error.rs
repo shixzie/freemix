@@ -1,7 +1,9 @@
 use core::fmt;
 
 use fm_clock::ClockError;
-use fm_command::{CounterOverflow, FieldIssue, Rejection, RejectionCode};
+use fm_command::{
+    CounterOverflow, FieldIssue, IdKind, InputUse, RefusalReason, Rejection, RejectionCode,
+};
 use fm_scheduler::{ActionError, TickError};
 use fm_switcher::{InputUsage, SwitcherError};
 use fm_titles::{FieldId, FieldType, MAX_TITLE_CONTENT_BYTES, MAX_TITLE_TEXT_CHARS, UpdateError};
@@ -155,6 +157,68 @@ impl fmt::Display for InputCatalogueError {
 }
 
 impl std::error::Error for InputCatalogueError {}
+
+impl InputCatalogueError {
+    /// The typed refusal reason (Protocol 2.45).
+    #[must_use]
+    pub fn reason(self) -> RefusalReason {
+        match self {
+            Self::DuplicateInput(input) => RefusalReason::DuplicateId {
+                kind: IdKind::Input,
+                id: input.get().get(),
+            },
+            Self::EmptyName | Self::NameTooLong => invalid_input_name_reason(),
+            Self::DuplicateName => RefusalReason::DuplicateName,
+            Self::TooManyInputs { maximum } => RefusalReason::bounds("inputs", maximum as u64),
+            Self::UnknownInput(input) => unknown_input_reason(input),
+            Self::InUse { input, usage } => RefusalReason::InputInUse {
+                input: input.get().get(),
+                usage: input_use(usage),
+            },
+            Self::InPlaylist { input, entry } => RefusalReason::InputInUse {
+                input: input.get().get(),
+                usage: InputUse::PlaylistEntry { entry },
+            },
+        }
+    }
+}
+
+/// The typed "input name is blank or too long" refusal reason.
+#[must_use]
+pub fn invalid_input_name_reason() -> RefusalReason {
+    RefusalReason::InvalidName {
+        max_bytes: u32::try_from(MAX_INPUT_NAME_BYTES).unwrap_or(u32::MAX),
+    }
+}
+
+/// The typed "input does not exist" refusal reason.
+#[must_use]
+pub fn unknown_input_reason(input: InputId) -> RefusalReason {
+    RefusalReason::UnknownId {
+        kind: IdKind::Input,
+        id: input.get().get(),
+    }
+}
+
+/// The wire [`InputUse`] of a switcher reference that keeps an input in use.
+#[must_use]
+pub const fn input_use(usage: InputUsage) -> InputUse {
+    match usage {
+        InputUsage::Program => InputUse::Program,
+        InputUsage::Preview => InputUse::Preview,
+        InputUsage::Transition => InputUse::Transition,
+        InputUsage::ManualTransition => InputUse::ManualTransition,
+        InputUsage::Overlay(channel) => InputUse::Overlay {
+            channel: channel.number(),
+        },
+        InputUsage::OverlayQueue(channel) => InputUse::OverlayQueue {
+            channel: channel.number(),
+        },
+        InputUsage::Stinger(slot) => InputUse::Stinger {
+            slot: slot.number(),
+        },
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {
@@ -450,11 +514,26 @@ impl TitleRejection {
             TitleRejectionKind::RevisionExhausted => RejectionCode::ResourceExhausted,
         };
         let message = self.to_string();
-        Rejection::new(code, message.clone()).with_field(FieldIssue::new(
+        let rejection = Rejection::new(code, message.clone()).with_field(FieldIssue::new(
             kind.field(),
             kind.code(),
             message,
-        ))
+        ));
+        match self {
+            Self::UnknownTitle(input) => rejection.with_reason(RefusalReason::UnknownId {
+                kind: IdKind::Title,
+                id: input.get().get(),
+            }),
+            Self::ContentTooLarge { .. } => rejection.with_reason(RefusalReason::bounds(
+                "title_content_bytes",
+                MAX_TITLE_CONTENT_BYTES as u64,
+            )),
+            Self::TextTooLong { .. } => rejection.with_reason(RefusalReason::bounds(
+                "title_text_chars",
+                MAX_TITLE_TEXT_CHARS as u64,
+            )),
+            _ => rejection,
+        }
     }
 }
 

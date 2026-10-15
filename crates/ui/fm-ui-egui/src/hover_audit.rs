@@ -1042,7 +1042,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     // with a library grade chosen and a name and LUT path typed, on a graded
     // scene layer, and locked by a missing permission and by the project
     // padlock.
-    let colour: [(&str, Configure, StudioUiState); 5] = [
+    let colour: Vec<(&str, Configure, StudioUiState)> = vec![
         (
             "operator/colour",
             &|shell| shell.open_color(Some(GradeTarget::Input(input(2)))),

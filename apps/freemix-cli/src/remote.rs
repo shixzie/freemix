@@ -571,9 +571,12 @@ impl Remote {
         }
 
         match result {
-            CommandResult::Rejected { code, message, .. } => {
-                Err(RemoteFailure(format!("{code}: {message}")).into())
-            }
+            CommandResult::Rejected {
+                code,
+                message,
+                reason,
+                ..
+            } => Err(RemoteFailure(refusal_text(&code, &message, reason.as_ref())).into()),
             CommandResult::Accepted { revision, .. } => {
                 let already_applied = self
                     .client
@@ -1170,3 +1173,39 @@ impl core::fmt::Display for RemoteFailure {
 }
 
 impl Error for RemoteFailure {}
+
+/// A refused command as the CLI prints it: the coarse code, the daemon's
+/// English text, and the typed reason in its stable wire form (Protocol
+/// 2.45), such as `conflict: input 2 cannot be removed: it is a layer source
+/// of scene 100 (reason: input_in_use:2:scene_layer:100)`.
+pub(crate) fn refusal_text(
+    code: &str,
+    message: &str,
+    reason: Option<&fm_protocol::RefusalReason>,
+) -> String {
+    match reason.map(fm_protocol::encode_refusal_reason) {
+        Some(Ok(reason)) => format!("{code}: {message} (reason: {reason})"),
+        _ => format!("{code}: {message}"),
+    }
+}
+
+#[cfg(test)]
+mod refusal_text_tests {
+    use fm_protocol::{InputUse, RefusalReason};
+
+    #[test]
+    fn a_typed_reason_is_printed_in_its_wire_form() {
+        let reason = RefusalReason::InputInUse {
+            input: 2,
+            usage: InputUse::SceneLayer { scene: 100 },
+        };
+        assert_eq!(
+            super::refusal_text("conflict", "input 2 is in use", Some(&reason)),
+            "conflict: input 2 is in use (reason: input_in_use:2:scene_layer:100)"
+        );
+        assert_eq!(
+            super::refusal_text("internal", "boom", None),
+            "internal: boom"
+        );
+    }
+}

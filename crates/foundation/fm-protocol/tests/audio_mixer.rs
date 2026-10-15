@@ -13,7 +13,7 @@ use fm_protocol::{
     WireRecorderSlot, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.44\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.45\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -159,8 +159,8 @@ fn mixer() -> AudioMixerStatus {
 }
 
 #[test]
-fn the_current_protocol_is_2_44() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 44));
+fn the_current_protocol_is_2_45() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 45));
 }
 
 #[test]
@@ -390,7 +390,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     assert!(
         line.ends_with(
-            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\tinput_audio_labels=1%7EHost%257Emic%2C2%7EGuest\tfade_to_black_excluded_outputs=8\tdisplay_outputs=\tdisplay_output_states=\n"
+            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\tfade_to_black_excluded_outputs=8\tdisplay_outputs=\tdisplay_output_states=\n"
         ),
         "{line}"
     );
@@ -435,11 +435,11 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
             "fade_to_black_excluded_outputs=0",
         ),
         (
-            "input_audio_labels=1%7EHost%257Emic%2C2%7EGuest",
-            "input_audio_labels=2%7EGuest%2C1%7EHost",
+            "input_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest",
+            "input_audio_labels=2%7E5%3AGuest%2C1%7E4%3AHost",
         ),
         (
-            "input_audio_labels=1%7EHost%257Emic%2C2%7EGuest",
+            "input_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest",
             "input_audio_labels=1%7E",
         ),
         ("%2CGroup%25204%7E0%7E0%7E0%7E-\t", "\t"),
@@ -471,6 +471,97 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     }
     let missing = valid.replace("\tfade_to_black_excluded_outputs=7%2C8", "");
     assert!(decode_line(&missing).is_err());
+}
+
+#[test]
+fn label_lengths_must_match_their_labels() {
+    // A length that disagrees with the label, a zero or non-canonical
+    // length, a length past the label bound, and the pre-2.45 escaped form
+    // are refused.
+    let valid = encode_line(&snapshot(mixer(), Vec::new())).unwrap();
+    let from = "input_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest";
+    assert!(valid.contains(from), "{valid}");
+    for to in [
+        "input_audio_labels=1%7E7%3AHost%7Emic%2C2%7E5%3AGuest",
+        "input_audio_labels=1%7E9%3AHost%7Emic%2C2%7E5%3AGuest",
+        "input_audio_labels=1%7E0%3A%2C2%7E5%3AGuest",
+        "input_audio_labels=1%7E08%3AHost%7Emic%2C2%7E5%3AGuest",
+        "input_audio_labels=1%7E33%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input_audio_labels=1%7EHost%257Emic%2C2%7EGuest",
+    ] {
+        assert!(decode_line(&valid.replace(from, to)).is_err(), "{to}");
+    }
+}
+
+/// 32 label bytes that each escape to three line bytes (Protocol 2.45
+/// writes a label raw, so the line encoding escapes it exactly once).
+fn worst_label(index: usize) -> String {
+    let label = format!("{}ñ", ["~", ","][index % 2]).repeat(10) + "é";
+    assert_eq!(label.len(), fm_protocol::MAX_AUDIO_LABEL_BYTES);
+    label
+}
+
+fn worst_labels(ids: impl Iterator<Item = u128>) -> Vec<InputAudioLabel> {
+    ids.enumerate()
+        .map(|(index, id)| InputAudioLabel {
+            input: input(id),
+            label: worst_label(index),
+        })
+        .collect()
+}
+
+#[test]
+fn a_worst_case_label_list_fits_one_field_with_the_largest_ids() {
+    // 256 labels of 32 escaping bytes on the largest input ids.
+    let labels =
+        worst_labels((0..fm_protocol::MAX_LIST_ITEMS as u128).map(|n| u128::MAX - 255 + n));
+    let mut message = snapshot(AudioMixerStatus::default(), Vec::new());
+    let WireMessage::Snapshot(snapshot) = &mut message else {
+        unreachable!()
+    };
+    snapshot.audio_mixer.labels = labels;
+    // The rest of this snapshot is small; the label list alone is near its
+    // worst case and still inside one field.
+    let line = round_trip(&message);
+    let field = line
+        .split('\t')
+        .find_map(|field| field.strip_prefix("input_audio_labels="))
+        .unwrap();
+    assert!(
+        field.len() <= fm_protocol::MAX_FIELD_VALUE_BYTES,
+        "{}",
+        field.len()
+    );
+    // Each entry is `<39-digit id>%7E32%3A` + 96 escaped label bytes,
+    // joined by `%2C`: escaped once, not twice.
+    assert_eq!(field.len(), 256 * (39 + 3 + 2 + 3 + 96) + 255 * 3);
+}
+
+#[test]
+fn the_largest_snapshot_mixer_fits_one_line() {
+    // A show at its 256-input limit with every strip labelled by a worst-case
+    // label: before Protocol 2.45 the doubly escaped labels pushed this
+    // snapshot past the line limit.
+    let ids = 1..=fm_protocol::MAX_LIST_ITEMS as u128;
+    let mut message = snapshot(AudioMixerStatus::default(), Vec::new());
+    let WireMessage::Snapshot(snapshot) = &mut message else {
+        unreachable!()
+    };
+    snapshot.inputs = ids
+        .clone()
+        .map(|id| InputStatus {
+            input: input(id),
+            name: format!("Input {id}"),
+            lifecycle: fm_protocol::InputLifecycleStatus::default(),
+        })
+        .collect();
+    snapshot.input_audio_strips = ids.clone().map(|id| strip(id, 0, Some(4))).collect();
+    for group in &mut snapshot.audio_mixer.groups {
+        group.name = "ñ".repeat(fm_protocol::MAX_AUDIO_LABEL_BYTES / 2);
+    }
+    snapshot.audio_mixer.labels = worst_labels(ids);
+    let line = round_trip(&message);
+    assert!(line.len() <= fm_protocol::MAX_LINE_BYTES, "{}", line.len());
 }
 
 #[test]

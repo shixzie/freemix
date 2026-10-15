@@ -11282,6 +11282,7 @@ fn native_stinger_preflight_rejection(
         fields: Vec::new(),
         current_revision,
         retryable: false,
+        reason: None,
     }
 }
 
@@ -11486,6 +11487,7 @@ fn native_input_catalogue_rejection(
         fields: Vec::new(),
         current_revision,
         retryable: false,
+        reason: Some(fm_protocol::RefusalReason::RuntimeUnsupported),
     }
 }
 
@@ -11816,6 +11818,7 @@ fn refused_submission(
             code: RejectionCode::Unavailable,
             retryable: true,
             message: format!("command was refused because it could not be made durable: {error}"),
+            reason: Some(fm_protocol::RefusalReason::NotDurable),
         },
     )
 }
@@ -11836,6 +11839,7 @@ fn rejected_submission(
                 fields: Vec::new(),
                 current_revision,
                 retryable: refusal.retryable,
+                reason: refusal.reason.clone(),
             },
             events: Vec::new(),
         },
@@ -11855,6 +11859,8 @@ struct CommandRefusal {
     code: RejectionCode,
     retryable: bool,
     message: String,
+    /// The typed reason clients word in their language (Protocol 2.45).
+    reason: Option<fm_protocol::RefusalReason>,
 }
 
 impl fmt::Display for CommandRefusal {
@@ -11914,6 +11920,7 @@ fn staging_refusal(error: Box<dyn Error>) -> Result<CommandRefusal, Box<dyn Erro
             message: format!(
                 "command was refused because its result cannot be persisted: {validation}"
             ),
+            reason: None,
         });
     }
     let Some(fm_control::ControlError::Engine(engine)) =
@@ -11945,6 +11952,7 @@ fn staging_refusal(error: Box<dyn Error>) -> Result<CommandRefusal, Box<dyn Erro
         code,
         retryable,
         message: format!("command was refused because {reason}: {engine}"),
+        reason: None,
     })
 }
 
@@ -12435,6 +12443,30 @@ fn stored_project_with_receipts(
     .map_err(Into::into)
 }
 
+/// The typed usage of a persisted project reference that keeps an input
+/// from being removed.
+fn input_reference_use(reference: fm_model::InputReference) -> fm_protocol::InputUse {
+    use fm_model::InputReference;
+    use fm_protocol::InputUse;
+    match reference {
+        InputReference::Program => InputUse::Program,
+        InputReference::Preview => InputUse::Preview,
+        InputReference::Stinger(slot) => InputUse::Stinger {
+            slot: slot.number(),
+        },
+        InputReference::SceneLayer(scene) => InputUse::SceneLayer {
+            scene: scene.get().get(),
+        },
+        InputReference::SceneAudioSource(scene_input) => InputUse::SceneAudioSource {
+            scene_input: scene_input.get().get(),
+        },
+        InputReference::AliasTarget(alias) => InputUse::AliasTarget {
+            alias: alias.get().get(),
+        },
+        InputReference::PlaylistEntry(entry) => InputUse::PlaylistEntry { entry },
+    }
+}
+
 /// Folds a live input addition or removal into the stored project.
 ///
 /// The engine's show owns the input catalogue but not the input kinds, so an
@@ -12444,6 +12476,19 @@ fn stored_project_with_receipts(
 /// layers, Scene audio sources and alias targets, and refused with the reason
 /// when one still names the input. Any other divergence means the show and the
 /// project disagree, which is fatal.
+/// The refusal for removing an input the stored project still references.
+fn input_in_use_refusal(input: InputId, reference: fm_model::InputReference) -> CommandRefusal {
+    CommandRefusal {
+        code: RejectionCode::Conflict,
+        retryable: false,
+        message: format!("input {input} cannot be removed: it is {reference}"),
+        reason: Some(fm_protocol::RefusalReason::InputInUse {
+            input: input.get().get(),
+            usage: input_reference_use(reference),
+        }),
+    }
+}
+
 fn sync_project_inputs(
     project: &mut fm_model::Project,
     show: &ShowState,
@@ -12457,12 +12502,7 @@ fn sync_project_inputs(
         .collect::<Vec<_>>();
     for input in removed {
         if let Some(reference) = project.input_reference(input) {
-            return Err(CommandRefusal {
-                code: RejectionCode::Conflict,
-                retryable: false,
-                message: format!("input {input} cannot be removed: it is {reference}"),
-            }
-            .into());
+            return Err(input_in_use_refusal(input, reference).into());
         }
         project
             .remove_input(input)
@@ -12820,6 +12860,7 @@ fn sync_project_stingers(
                     "command was refused because Stinger slot {number} has not finished \
                      realizing; retry once it has"
                 ),
+                reason: Some(fm_protocol::RefusalReason::StingerRealizing { slot: number }),
             }
             .into());
         }
@@ -12982,8 +13023,16 @@ fn runtime_receipt(
         } => CommandReceipt::Rejected {
             command_id,
             rejection: RejectedReceipt {
-                rejection: Rejection::new(runtime_rejection_code(code)?, message)
-                    .retryable(*retryable),
+                rejection: {
+                    let code = runtime_rejection_code(code)?;
+                    // Persisted receipts keep code and message; the reasons
+                    // a code alone implies are restored (Protocol 2.45).
+                    let rejection = Rejection::new(code, message).retryable(*retryable);
+                    match fm_command::RefusalReason::implied_by(code, *current_revision) {
+                        Some(reason) => rejection.with_reason(reason),
+                        None => rejection,
+                    }
+                },
                 current_revision: Revision::new(*current_revision),
             },
         },
@@ -13011,15 +13060,23 @@ fn session_rejection(
     error: &SessionError,
     current_revision: u64,
 ) -> CommandResult {
-    let (code, retryable) = match error {
-        SessionError::Authorization(_) => ("permission_denied", false),
-        SessionError::ProtocolMismatch { .. } => ("protocol_mismatch", false),
+    let (code, retryable, reason) = match error {
+        SessionError::Authorization(_) => (
+            "permission_denied",
+            false,
+            Some(fm_protocol::RefusalReason::PermissionDenied),
+        ),
+        SessionError::ProtocolMismatch { .. } => ("protocol_mismatch", false, None),
         SessionError::CommandTooLarge { .. }
         | SessionError::TooManyInflightCommands
         | SessionError::InboundRateLimited
         | SessionError::TitlePreviewRateLimited
-        | SessionError::OutboundRateLimited => ("resource_exhausted", true),
-        _ => ("session_error", false),
+        | SessionError::OutboundRateLimited => (
+            "resource_exhausted",
+            true,
+            Some(fm_protocol::RefusalReason::RateLimited),
+        ),
+        _ => ("session_error", false, None),
     };
     CommandResult::Rejected {
         id: command.id.clone(),
@@ -13028,6 +13085,7 @@ fn session_rejection(
         fields: Vec::new(),
         current_revision,
         retryable,
+        reason,
     }
 }
 
@@ -19560,6 +19618,20 @@ mod tests {
             } if code == "conflict"
                 && message.contains("cannot be removed: it is the target of alias input")
         ));
+        // The persisted reference travels as a typed reason (Protocol 2.45).
+        let CommandResult::Rejected { reason, .. } = &refused.submission.output.result else {
+            unreachable!()
+        };
+        assert!(
+            matches!(
+                reason,
+                Some(fm_protocol::RefusalReason::InputInUse {
+                    input: 3,
+                    usage: fm_protocol::InputUse::AliasTarget { .. },
+                })
+            ),
+            "{reason:?}"
+        );
         assert_eq!(saver.0.get(), 0, "a refused removal journals nothing");
         assert_eq!(durable, before);
 
@@ -20658,6 +20730,19 @@ mod tests {
         );
     }
 
+    /// A refused playlist advance at `revision`.
+    fn refused_advance(revision: u64) -> CommandResult {
+        CommandResult::Rejected {
+            id: "advance".into(),
+            code: "conflict".into(),
+            message: "refused".into(),
+            fields: Vec::new(),
+            current_revision: revision,
+            retryable: false,
+            reason: None,
+        }
+    }
+
     #[test]
     fn playlist_clock_does_not_retry_a_refused_advance_at_the_same_revision() {
         use fm_protocol::{
@@ -20725,18 +20810,7 @@ mod tests {
             clock.observed_frame(control.frame_cursor(), rate, Instant::now()),
             control.frame_cursor()
         );
-        clock.observe(
-            frame,
-            revision,
-            &CommandResult::Rejected {
-                id: "advance".into(),
-                code: "conflict".into(),
-                message: "refused".into(),
-                fields: Vec::new(),
-                current_revision: revision,
-                retryable: false,
-            },
-        );
+        clock.observe(frame, revision, &refused_advance(revision));
         assert_eq!(clock.due(&control, Pacing::Engine), None);
         // Another accepted command changes the revision, so the clock tries
         // again; Stop, Pause and Set are accepted on native daemons too.

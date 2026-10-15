@@ -13,7 +13,7 @@
 //! never changes an animation and undoing an application never needs the
 //! preset.
 
-use fm_command::{FieldIssue, Rejection, RejectionCode};
+use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode};
 use fm_model::{
     AnimationPresetError, AnimationPresetId, AnimationPresetLibrary, UserAnimationPreset,
     fm_animation::PhaseMotion,
@@ -72,7 +72,28 @@ pub(crate) fn preset_rejection(error: &AnimationPresetError) -> Rejection {
         }
     };
     let message = error.to_string();
-    Rejection::new(code, message.clone()).with_field(FieldIssue::new(field, issue, message))
+    let rejection =
+        Rejection::new(code, message.clone()).with_field(FieldIssue::new(field, issue, message));
+    let preset = |id: AnimationPresetId| u128::from(id.get().get());
+    let reason = match error {
+        AnimationPresetError::UnknownPreset(id) => RefusalReason::UnknownId {
+            kind: IdKind::Preset,
+            id: preset(*id),
+        },
+        AnimationPresetError::DuplicateId(id) => RefusalReason::DuplicateId {
+            kind: IdKind::Preset,
+            id: preset(*id),
+        },
+        AnimationPresetError::DuplicateName(_) => RefusalReason::DuplicateName,
+        AnimationPresetError::NameTooLong { maximum, .. } => RefusalReason::InvalidName {
+            max_bytes: u32::try_from(*maximum).unwrap_or(u32::MAX),
+        },
+        AnimationPresetError::TooManyPresets { maximum } => {
+            RefusalReason::bounds("presets", *maximum as u64)
+        }
+        _ => return rejection,
+    };
+    rejection.with_reason(reason)
 }
 
 /// The motion of library preset `id`, for an animation edit applying it.

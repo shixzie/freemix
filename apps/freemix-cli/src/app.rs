@@ -2011,9 +2011,10 @@ fn execute(
     }
     let outcome = engine.execute(envelope, 0)?;
     let rejection = outcome.receipt.rejected().map(|rejected| {
-        AppFailure(format!(
-            "{}: {}",
-            rejected.rejection.code, rejected.rejection.message
+        AppFailure(crate::remote::refusal_text(
+            rejected.rejection.code.as_str(),
+            &rejected.rejection.message,
+            rejected.rejection.reason.as_ref(),
         ))
     });
     if rejection.is_none() && !outcome.replayed {
@@ -2117,8 +2118,16 @@ fn runtime_receipt(
         } => CommandReceipt::Rejected {
             command_id,
             rejection: RejectedReceipt {
-                rejection: Rejection::new(runtime_rejection_code(code)?, message)
-                    .retryable(*retryable),
+                rejection: {
+                    let code = runtime_rejection_code(code)?;
+                    // Persisted receipts keep code and message; the reasons
+                    // a code alone implies are restored (Protocol 2.45).
+                    let rejection = Rejection::new(code, message).retryable(*retryable);
+                    match fm_command::RefusalReason::implied_by(code, *current_revision) {
+                        Some(reason) => rejection.with_reason(reason),
+                        None => rejection,
+                    }
+                },
                 current_revision: Revision::new(*current_revision),
             },
         },

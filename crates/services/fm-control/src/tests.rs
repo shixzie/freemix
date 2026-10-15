@@ -201,6 +201,14 @@ fn stinger_slot_mutation_is_transition_authorized_and_projects_durable_state() {
         denied.output.result,
         CommandResult::Rejected { ref code, .. } if code == "permission_denied"
     ));
+    // The denial carries its typed reason (Protocol 2.45).
+    assert!(matches!(
+        denied.output.result,
+        CommandResult::Rejected {
+            reason: Some(fm_protocol::RefusalReason::PermissionDenied),
+            ..
+        }
+    ));
 
     let accepted = control
         .submit(
@@ -1231,12 +1239,21 @@ fn engine_controls_accepted_rejected_and_duplicate_behavior() {
     let CommandResult::Rejected {
         code,
         current_revision,
+        reason,
         ..
     } = rejected.output.result
     else {
         panic!("unknown input should be rejected");
     };
     assert_eq!(code, "not_found");
+    // The engine's typed reason reaches the wire result (Protocol 2.45).
+    assert_eq!(
+        reason,
+        Some(fm_protocol::RefusalReason::UnknownId {
+            kind: fm_protocol::IdKind::Input,
+            id: 99,
+        })
+    );
     assert_eq!(current_revision, 1);
     assert_eq!(control.diagnostics().current_revision, 1);
 }

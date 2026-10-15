@@ -262,9 +262,11 @@ fn undo_and_redo_walk_a_chain_of_mixed_edits() {
     assert_eq!(names(&engine), ["Input 1", "Input 2", "Input 3"]);
     assert_eq!(undo_edits(&engine), [] as [u64; 0]);
     assert_eq!(redo_edits(&engine), [4, 3, 2, 1]);
+    let empty = run(&mut engine, "undo-empty", UNDO);
+    assert_eq!(edit_rejection(&empty), EditRejectionKind::NothingToUndo);
     assert_eq!(
-        edit_rejection(&run(&mut engine, "undo-empty", UNDO)),
-        EditRejectionKind::NothingToUndo
+        empty.receipt.rejected().unwrap().rejection.reason,
+        Some(fm_command::RefusalReason::NothingToUndo)
     );
 
     // Redo the rename and the reorder; entries keep their original identity.

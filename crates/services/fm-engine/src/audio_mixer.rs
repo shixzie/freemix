@@ -249,6 +249,7 @@ fn unknown_input(input: InputId) -> Rejection {
         "unknown_input",
         format!("input {input} is not part of this show"),
     )
+    .with_reason(crate::error::unknown_input_reason(input))
 }
 
 /// Applies `edit` to the desired show.

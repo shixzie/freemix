@@ -335,14 +335,15 @@ fn operations_edits_and_input_removal_respect_the_playlist() {
         EngineCommand::RemoveInput { input: input(3) },
     );
     assert_eq!(rejected(&removal), RejectionCode::Conflict);
-    assert_eq!(
-        removal.receipt.rejected().unwrap().rejection.message,
-        InputCatalogueError::InPlaylist {
-            input: input(3),
-            entry: 2
-        }
-        .to_string()
-    );
+    let refusal = &removal.receipt.rejected().unwrap().rejection;
+    let in_playlist = InputCatalogueError::InPlaylist {
+        input: input(3),
+        entry: 2,
+    };
+    assert_eq!(refusal.message, in_playlist.to_string());
+    let usage = fm_command::InputUse::PlaylistEntry { entry: 2 };
+    let in_use = fm_command::RefusalReason::InputInUse { input: 3, usage };
+    assert_eq!(refusal.reason, Some(in_use));
 
     accepted(&submit(
         &mut engine,

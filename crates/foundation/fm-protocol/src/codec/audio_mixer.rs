@@ -5,16 +5,24 @@
 //!   0|1>~<soloed 0|1>~<parent - or 1..=4>` entries, group 1 first; no group
 //!   is its own parent.
 //! * `audio_solo_mode` is `sip`, `pfl`, or `afl`.
-//! * `input_audio_labels` is a comma-separated list of `<input>~<label>`,
-//!   strictly ascending by input, each label non-empty (empty for none).
+//! * `input_audio_labels` is a comma-separated list of
+//!   `<input>~<length>:<label>` (Protocol 2.45), strictly ascending by input,
+//!   each label non-empty (empty for none). `<length>` is the label's
+//!   canonical decimal UTF-8 byte length and the label is written raw, so
+//!   the line encoding escapes it exactly once and a worst-case list of
+//!   [`MAX_LIST_ITEMS`] labels fits one field.
 //! * `fade_to_black_excluded_outputs` is a comma-separated, strictly
 //!   ascending list of output ids (empty for none).
 //!
-//! Text inside a field is percent-escaped before it is joined.
+//! Group names inside `audio_groups` are percent-escaped before they are
+//! joined.
+
+use core::fmt::Write as _;
 
 use crate::{
     AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioSoloMode,
-    CodecError, InputAudioLabel, WireOutputId, audio_group_is_valid, audio_label_is_valid,
+    CodecError, InputAudioLabel, MAX_AUDIO_LABEL_BYTES, WireOutputId, audio_group_is_valid,
+    audio_label_is_valid,
 };
 
 use super::MAX_LIST_ITEMS;
@@ -162,56 +170,79 @@ pub(super) fn decode_groups(
         .map_err(|_| invalid("audio_groups", value))
 }
 
-/// Encodes a snapshot's `input_audio_labels`.
+/// Encodes a snapshot's `input_audio_labels`: each label raw behind its
+/// byte length, so the line encoding escapes it exactly once.
 pub(super) fn encode_labels(labels: &[InputAudioLabel]) -> Result<String, CodecError> {
     if labels.len() > MAX_LIST_ITEMS {
         return Err(CodecError::TooManyItems("input_audio_labels"));
     }
     let mut previous = None;
-    labels
-        .iter()
-        .map(|entry| {
-            if entry.label.is_empty()
-                || !audio_label_is_valid(&entry.label, true)
-                || previous.is_some_and(|previous| previous >= entry.input.get())
-            {
-                return Err(invalid("input_audio_labels", entry.label.clone()));
-            }
-            previous = Some(entry.input.get());
-            Ok(format!("{}~{}", entry.input, escape_bounded(&entry.label)?))
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(|labels| labels.join(","))
+    let mut encoded = String::new();
+    for entry in labels {
+        if entry.label.is_empty()
+            || !audio_label_is_valid(&entry.label, true)
+            || previous.is_some_and(|previous| previous >= entry.input.get())
+        {
+            return Err(invalid("input_audio_labels", entry.label.clone()));
+        }
+        previous = Some(entry.input.get());
+        if !encoded.is_empty() {
+            encoded.push(',');
+        }
+        write!(
+            encoded,
+            "{}~{}:{}",
+            entry.input,
+            entry.label.len(),
+            entry.label
+        )
+        .expect("writing to a string cannot fail");
+    }
+    Ok(encoded)
 }
 
-/// Decodes a snapshot's `input_audio_labels`.
+/// Decodes a snapshot's `input_audio_labels`, the exact inverse of
+/// [`encode_labels`].
 pub(super) fn decode_labels(value: &str) -> Result<Vec<InputAudioLabel>, CodecError> {
-    if value.is_empty() {
-        return Ok(Vec::new());
-    }
-    if value.split(',').take(MAX_LIST_ITEMS + 1).count() > MAX_LIST_ITEMS {
-        return Err(CodecError::TooManyItems("input_audio_labels"));
-    }
+    let mut labels = Vec::new();
+    let mut rest = value;
     let mut previous = None;
-    value
-        .split(',')
-        .map(|entry| {
-            let (input, label) = entry
-                .split_once('~')
-                .ok_or_else(|| invalid("input_audio_labels", entry))?;
-            let input =
-                parse_canonical_input(input).ok_or_else(|| invalid("input_audio_labels", entry))?;
-            let label = unescape(label)?;
-            if label.is_empty()
-                || !audio_label_is_valid(&label, true)
-                || previous.is_some_and(|previous| previous >= input.get())
-            {
-                return Err(invalid("input_audio_labels", entry));
-            }
-            previous = Some(input.get());
-            Ok(InputAudioLabel { input, label })
-        })
-        .collect()
+    while !rest.is_empty() {
+        if !labels.is_empty() {
+            rest = rest
+                .strip_prefix(',')
+                .ok_or_else(|| invalid("input_audio_labels", value))?;
+        }
+        if labels.len() == MAX_LIST_ITEMS {
+            return Err(CodecError::TooManyItems("input_audio_labels"));
+        }
+        let (input, after) = rest
+            .split_once('~')
+            .ok_or_else(|| invalid("input_audio_labels", rest))?;
+        let input =
+            parse_canonical_input(input).ok_or_else(|| invalid("input_audio_labels", rest))?;
+        let (length, after) = after
+            .split_once(':')
+            .ok_or_else(|| invalid("input_audio_labels", rest))?;
+        let label = parse_canonical_u64(length)
+            .and_then(|length| usize::try_from(length).ok())
+            .filter(|length| *length <= MAX_AUDIO_LABEL_BYTES)
+            .and_then(|length| after.get(..length))
+            .ok_or_else(|| invalid("input_audio_labels", rest))?;
+        if label.is_empty()
+            || !audio_label_is_valid(label, true)
+            || previous.is_some_and(|previous| previous >= input.get())
+        {
+            return Err(invalid("input_audio_labels", rest));
+        }
+        previous = Some(input.get());
+        rest = &after[label.len()..];
+        labels.push(InputAudioLabel {
+            input,
+            label: label.to_owned(),
+        });
+    }
+    Ok(labels)
 }
 
 /// Encodes the outputs Fade to Black leaves live.

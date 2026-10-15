@@ -805,6 +805,15 @@ fn refusals_name_the_problem_and_leave_the_scene_alone() {
         assert_eq!(refused.code, code, "{issue}: {refused:?}");
         assert_eq!(refused.fields[0].code, issue, "{refused:?}");
         assert_eq!(shown(&engine, 1), before, "{issue}");
+        // The typed reasons (Protocol 2.45) name the missing id.
+        let unknown = |kind, id| Some(fm_command::RefusalReason::UnknownId { kind, id });
+        let expected = match issue {
+            "unknown_scene" => unknown(fm_command::IdKind::Scene, 9),
+            "unknown_layer" => unknown(fm_command::IdKind::Layer, 9),
+            "unknown_input" => unknown(fm_command::IdKind::Input, 77),
+            _ => refused.reason.clone(),
+        };
+        assert_eq!(refused.reason, expected, "{issue}");
     }
     // A nested scene drawing scene 1 may not be added to scene 1 either,
     // while scene 2 may draw scene 1.

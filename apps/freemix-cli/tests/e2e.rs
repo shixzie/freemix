@@ -10266,6 +10266,8 @@ fn assert_contract_rejections(context: &ContractContext) {
         "0",
     ]);
     assert_failure_contains(&stale, "revision_conflict");
+    // The typed reason (Protocol 2.45) names the current revision.
+    assert_failure_contains(&stale, "(reason: revision_conflict:1)");
     assert_eq!(status(&context.project), before_invalid);
     let stale_manifest = manifest(&context.project);
     assert!(stale_manifest.contains("\"key\": \"stale-cut\""));
@@ -10282,6 +10284,8 @@ fn assert_contract_rejections(context: &ContractContext) {
         "1",
     ]);
     assert_failure_contains(&stale_replay, "revision_conflict");
+    // The replayed receipt restores the reason its code implies.
+    assert_failure_contains(&stale_replay, "(reason: revision_conflict:1)");
     assert_eq!(manifest(&context.project), stale_manifest);
 }
 

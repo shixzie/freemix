@@ -82,16 +82,16 @@ pub use dock::{
     PanelId, PopOut, ToolWindow, WindowGeometry, check_layout_name,
 };
 pub use edit_history::{
-    EditHistoryAvailability, EditLockSummary, HistoryActionAvailability, HistoryVerb,
-    PadlockToggle, REDO_SHORTCUT, UNDO_SHORTCUT, command_rejection_message,
+    CommandRefusalNotice, EditHistoryAvailability, EditLockSummary, HistoryActionAvailability,
+    HistoryVerb, PadlockToggle, REDO_SHORTCUT, UNDO_SHORTCUT, command_rejection_message,
     edit_history_availability, edit_lock_summary, input_edit_lock_reason, padlock_toggle,
     stinger_edit_lock_reason,
 };
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
 pub use input_catalogue::{
     CatalogueAvailability, CatalogueRefusal, CatalogueRequest, MAX_LIVE_INPUTS, NewInputKind,
-    add_input_availability, catalogue_refusal_message, input_in_use_detail, input_name_problem,
-    input_usage_reason, next_free_input_id, remove_input_availability, suggested_input_name,
+    add_input_availability, catalogue_refusal_message, input_name_problem, input_usage_reason,
+    next_free_input_id, remove_input_availability, suggested_input_name,
 };
 pub use media_transport::{
     MEDIA_SPEEDS, media_settings_block, media_transport_block, speed_label as media_speed_label,
@@ -470,6 +470,10 @@ pub struct StudioUiState {
     /// The latest refused input add or remove, published once with its
     /// rejection.
     pub catalogue_refusal: Option<CatalogueRefusal>,
+    /// The latest refused command, published once with its rejection; its
+    /// typed reason (Protocol 2.45) words the error toast in the console
+    /// language.
+    pub command_refusal: Option<CommandRefusalNotice>,
     /// The replicated authoritative project state while control is ready;
     /// the title editor syncs its titles from it.
     pub project_state: Option<ProjectState>,
@@ -518,6 +522,7 @@ impl StudioUiState {
             monitor_images: [None, None],
             catalogue_pending: Vec::new(),
             catalogue_refusal: None,
+            command_refusal: None,
             project_state: None,
             title_access: TitleAccess::new(false, false, false),
             title_updates: Vec::new(),
@@ -1617,6 +1622,8 @@ impl StudioShell {
         if catalogue.refusal_announced {
             // The refusal toast below already explains this rejection.
             self.toasts.acknowledge_error(state.error.as_ref());
+            self.toasts
+                .acknowledge_refusal(state.command_refusal.as_ref());
         }
         self.toasts.observe(state);
         for toast in catalogue.toasts {

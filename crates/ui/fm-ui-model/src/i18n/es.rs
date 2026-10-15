@@ -2095,7 +2095,6 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::InUseStinger,
         t("«{name}» es el medio del Stinger {slot}."),
     ),
-    (Msg::InUseOther, t("«{name}» está en uso: {detail}.")),
     (
         Msg::AdviceRouteAway,
         t("Enrute otra entrada a ese bus primero."),
@@ -2116,6 +2115,118 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AdviceOffline,
         t("Quite esa referencia sin conexión primero."),
     ),
+    (
+        Msg::InUseSceneLayer,
+        t("«{name}» es una fuente de capa de la escena {scene}."),
+    ),
+    (
+        Msg::InUseSceneAudio,
+        t("«{name}» es la fuente de audio de la escena «{scene}»."),
+    ),
+    (
+        Msg::InUseAliasTarget,
+        t("«{name}» es el destino del alias «{alias}»."),
+    ),
+    (
+        Msg::InUsePlaylistEntry,
+        t("«{name}» se reproduce en la entrada {entry} de la lista."),
+    ),
+    (
+        Msg::InUseSceneOnAir,
+        t("«{name}» se muestra en una escena al aire."),
+    ),
+    (
+        Msg::AdviceSceneLayer,
+        t("Quite esa capa de la escena primero."),
+    ),
+    (Msg::AdvicePlaylist, t("Quítela de la lista primero.")),
+    (
+        Msg::AdviceSceneOffAir,
+        t("Saque esa escena del aire primero."),
+    ),
+    // Typed command refusals (Protocol 2.45).
+    (
+        Msg::CommandRefused,
+        t("Comando rechazado ({code}): {reason}"),
+    ),
+    (
+        Msg::RsnPermissionDenied,
+        t("Esta sesión no tiene permiso para hacerlo."),
+    ),
+    (
+        Msg::RsnDeadlineExceeded,
+        t("El comando llegó después de su plazo; inténtelo de nuevo."),
+    ),
+    (
+        Msg::RsnRevisionConflict,
+        t("El proyecto pasó a la revisión {revision}; inténtelo de nuevo."),
+    ),
+    (Msg::RsnUnknownId, t("{what} ya no existe.")),
+    (Msg::RsnDuplicateId, t("{what} ya existe.")),
+    (
+        Msg::RsnDuplicateName,
+        t("Ese nombre ya está en uso; elija otro."),
+    ),
+    (
+        Msg::RsnInvalidName,
+        t("Use un nombre no vacío de {max} bytes como máximo."),
+    ),
+    (
+        Msg::RsnProjectLocked,
+        t("El proyecto está bloqueado; abra el candado de la barra superior para editar."),
+    ),
+    (
+        Msg::RsnInputLocked,
+        t("«{name}» tiene su propio candado; ábralo primero."),
+    ),
+    (
+        Msg::RsnDisplayInUse,
+        t("Esa pantalla ya la usa la salida de pantalla {slot}."),
+    ),
+    (
+        Msg::RsnBoundsExceeded,
+        t("{field} supera su límite de {max}."),
+    ),
+    (Msg::RsnNothingToUndo, t("No queda nada que deshacer.")),
+    (Msg::RsnNothingToRedo, t("No queda nada que rehacer.")),
+    (
+        Msg::RsnHistoryConflict,
+        t("Otra persona editó primero; su edición es la siguiente del historial."),
+    ),
+    (
+        Msg::RsnHistoryDrift,
+        t("El ajuste editado cambió desde entonces; deshágalo o rehágalo a mano."),
+    ),
+    (
+        Msg::RsnStingerRealizing,
+        t("El Stinger {slot} aún se está preparando; inténtelo de nuevo en un momento."),
+    ),
+    (
+        Msg::RsnPlaylistTakeScheduled,
+        t("Hay una toma de la lista programada para el cuadro {frame}; espérela."),
+    ),
+    (
+        Msg::RsnNotDurable,
+        t("El daemon no pudo guardar este cambio, así que no cambió nada; inténtelo de nuevo."),
+    ),
+    (
+        Msg::RsnRateLimited,
+        t("Demasiados comandos a la vez; inténtelo de nuevo en un momento."),
+    ),
+    (
+        Msg::RsnRuntimeUnsupported,
+        t(
+            "El motor de medios de este daemon no puede hacerlo en marcha; haga el cambio sin conexión.",
+        ),
+    ),
+    (Msg::IdKindInput, t("Entrada {id}")),
+    (Msg::IdKindOutput, t("Salida {id}")),
+    (Msg::IdKindCategory, t("Categoría {id}")),
+    (Msg::IdKindGrade, t("Corrección de color {id}")),
+    (Msg::IdKindLut, t("LUT {id}")),
+    (Msg::IdKindPreset, t("Preset de animación {id}")),
+    (Msg::IdKindTitle, t("Título {id}")),
+    (Msg::IdKindPlaylistEntry, t("Entrada de lista {id}")),
     // Titles tab.
     (
         Msg::TitlesIntro,

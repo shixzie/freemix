@@ -2068,6 +2068,9 @@ pub enum CommandResult {
         fields: Vec<FieldIssue>,
         current_revision: u64,
         retryable: bool,
+        /// The typed reason (Protocol 2.45); `message` is its English
+        /// fallback, and a refusal without one is worded from `message`.
+        reason: Option<fm_command::RefusalReason>,
     },
 }
 

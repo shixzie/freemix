@@ -1424,6 +1424,10 @@ fn decode_result(fields: &mut Fields) -> Result<CommandResult, CodecError> {
             fields: parse_field_issues(&fields.required("fields")?)?,
             current_revision: fields.parse_required("current_revision")?,
             retryable: fields.boolean("retryable")?,
+            reason: fields
+                .optional("reason")
+                .map(|reason| super::decode_refusal_reason(&reason))
+                .transpose()?,
         }),
         _ => Err(CodecError::InvalidField {
             field: "status",

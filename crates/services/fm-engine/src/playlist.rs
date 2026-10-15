@@ -239,7 +239,25 @@ fn playlist_rejection(error: PlaylistError) -> Rejection {
         | PlaylistError::EditWhileActive => RejectionCode::Conflict,
     };
     // The automation engine words time in milliseconds; here it is frames.
-    Rejection::new(code, error.to_string().replace(" ms", " frames"))
+    let rejection = Rejection::new(code, error.to_string().replace(" ms", " frames"));
+    match error {
+        PlaylistError::UnknownEntry(entry) => {
+            rejection.with_reason(fm_command::RefusalReason::UnknownId {
+                kind: fm_command::IdKind::PlaylistEntry,
+                id: u128::from(entry.get()),
+            })
+        }
+        PlaylistError::DuplicateEntry(entry) => {
+            rejection.with_reason(fm_command::RefusalReason::DuplicateId {
+                kind: fm_command::IdKind::PlaylistEntry,
+                id: u128::from(entry.get()),
+            })
+        }
+        PlaylistError::TooManyEntries { max, .. } => {
+            rejection.with_reason(fm_command::RefusalReason::bounds("entries", max as u64))
+        }
+        _ => rejection,
+    }
 }
 
 /// The program transition a cue starts on `switcher`, if any. A cue for the

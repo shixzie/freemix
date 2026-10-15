@@ -240,6 +240,7 @@ pub(super) fn playlist_command_refusal(
         fields: Vec::new(),
         current_revision,
         retryable: false,
+        reason: None,
     })
 }
 

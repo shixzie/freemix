@@ -1431,6 +1431,7 @@ impl<A: AuthorizationHook> ControlService<A> {
                 fields: Vec::new(),
                 current_revision: self.engine.revision().get(),
                 retryable: false,
+                reason: Some(fm_command::RefusalReason::PermissionDenied),
             };
             return Ok(PrepareSubmitOutcome::Prepared(PreparedSubmission {
                 control: self,
@@ -2748,6 +2749,7 @@ fn command_result(receipt: &CommandReceipt<EngineAcceptance>) -> CommandResult {
                 .collect(),
             current_revision: rejection.current_revision.get(),
             retryable: rejection.rejection.retryable,
+            reason: rejection.rejection.reason.clone(),
         },
     }
 }

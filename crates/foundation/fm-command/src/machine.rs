@@ -1,5 +1,5 @@
 use crate::{
-    AcceptedReceipt, CommandEnvelope, CommandReceipt, EventSequence, IdempotencyKey,
+    AcceptedReceipt, CommandEnvelope, CommandReceipt, EventSequence, IdempotencyKey, RefusalReason,
     RejectedReceipt, Rejection, RejectionCode, Revision, StateEpoch, Transaction,
 };
 use core::fmt;
@@ -310,11 +310,14 @@ impl<S: Clone, R: Clone> CommandState<S, R> {
         } = envelope;
 
         if deadline.is_some_and(|value| value.is_exceeded_at(now_millis)) {
-            return PrepareOutcome::Prepared(self.prepared_rejection(
-                id,
-                idempotency_key,
-                Rejection::new(RejectionCode::DeadlineExceeded, "command deadline exceeded"),
-            ));
+            return PrepareOutcome::Prepared(
+                self.prepared_rejection(
+                    id,
+                    idempotency_key,
+                    Rejection::new(RejectionCode::DeadlineExceeded, "command deadline exceeded")
+                        .with_reason(RefusalReason::DeadlineExceeded),
+                ),
+            );
         }
 
         if expected_revision.is_some_and(|value| value != self.revision) {
@@ -326,7 +329,10 @@ impl<S: Clone, R: Clone> CommandState<S, R> {
                         RejectionCode::RevisionConflict,
                         "expected revision does not match current revision",
                     )
-                    .retryable(true),
+                    .retryable(true)
+                    .with_reason(RefusalReason::RevisionConflict {
+                        current: self.revision.get(),
+                    }),
                 ),
             );
         }

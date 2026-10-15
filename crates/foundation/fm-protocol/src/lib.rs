@@ -19,8 +19,8 @@ pub use codec::{
     CodecError, LineDecoder, MAX_BATCH_EVENTS, MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES,
     MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH,
     MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES,
-    decode_line, encode_line, motion_wire_bytes, scene_clip_wire_bytes, scene_layout_wire_bytes,
-    title_clip_wire_bytes,
+    decode_line, decode_refusal_reason, encode_line, encode_refusal_reason, motion_wire_bytes,
+    scene_clip_wire_bytes, scene_layout_wire_bytes, title_clip_wire_bytes,
 };
 pub use display_output::{
     DisplayId, DisplayInventory, DisplayInventoryEntry, DisplayInventoryMessage,
@@ -83,6 +83,7 @@ pub use dto::{
     TitlePreviewImage, TitlePreviewRequest, TitlePreviewSample, WireTitleClip, WireTitleElementId,
     WireTitleElementKind, WireTitleElementOutline, WireTitleLayout,
 };
+pub use fm_command::{IdKind, InputUse, MAX_REFUSAL_FIELD_BYTES, RefusalReason};
 pub use input_lifecycle::{
     AddedInput, ImportItemSpec, ImportRefusal, InputCategoryStatus, InputColorLabel,
     InputLifecycleOperation, InputLifecycleStatus, InputOfflineReason, MAX_BATCH_IMPORT_ITEMS,

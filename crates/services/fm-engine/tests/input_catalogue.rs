@@ -3,7 +3,9 @@
 use core::num::NonZeroU128;
 
 use fm_clock::ClockDomainId;
-use fm_command::{CommandEnvelope, IdempotencyKey, Rejection, RejectionCode};
+use fm_command::{
+    CommandEnvelope, IdKind, IdempotencyKey, InputUse, RefusalReason, Rejection, RejectionCode,
+};
 use fm_engine::{
     EditLockScope, EditRejectionKind, Engine, EngineCommand, EngineCommandKind,
     EngineCommandOutcome, EngineEvent, EngineInputAudioStripState, EngineInputSource,
@@ -84,6 +86,15 @@ fn rejection(outcome: &EngineCommandOutcome) -> &Rejection {
 
 fn issue(outcome: &EngineCommandOutcome) -> &str {
     &rejection(outcome).fields[0].code
+}
+
+/// The typed refusal reason (Protocol 2.45).
+fn reason(outcome: &EngineCommandOutcome) -> Option<&RefusalReason> {
+    rejection(outcome).reason.as_ref()
+}
+
+fn in_use(input: u128, usage: InputUse) -> RefusalReason {
+    RefusalReason::InputInUse { input, usage }
 }
 
 fn assert_accepted(outcome: &EngineCommandOutcome) {
@@ -174,13 +185,27 @@ fn add_refuses_duplicate_identity_and_names_and_the_project_padlock() {
     let duplicate_id = run(&mut engine, "dup-id", add(2, "Other", RED));
     assert_eq!(rejection(&duplicate_id).code, RejectionCode::Conflict);
     assert_eq!(issue(&duplicate_id), "duplicate_input");
+    assert_eq!(
+        reason(&duplicate_id),
+        Some(&RefusalReason::DuplicateId {
+            kind: IdKind::Input,
+            id: 2
+        })
+    );
 
     let duplicate_name = run(&mut engine, "dup-name", add(4, "Input 1", RED));
     assert_eq!(rejection(&duplicate_name).code, RejectionCode::Conflict);
     assert_eq!(issue(&duplicate_name), "duplicate_name");
+    assert_eq!(reason(&duplicate_name), Some(&RefusalReason::DuplicateName));
 
     let blank = run(&mut engine, "blank", add(4, "  ", RED));
     assert_eq!(rejection(&blank).code, RejectionCode::InvalidCommand);
+    assert_eq!(
+        reason(&blank),
+        Some(&RefusalReason::InvalidName {
+            max_bytes: u32::try_from(fm_types::MAX_INPUT_NAME_BYTES).unwrap()
+        })
+    );
 
     assert_accepted(&run(
         &mut engine,
@@ -195,6 +220,7 @@ fn add_refuses_duplicate_identity_and_names_and_the_project_padlock() {
         EditRejectionKind::of(rejection(&locked)),
         Some(EditRejectionKind::ProjectLocked)
     );
+    assert_eq!(reason(&locked), Some(&RefusalReason::ProjectLocked));
     assert_eq!(ids(&engine), [1, 2, 3]);
 }
 
@@ -210,18 +236,33 @@ fn add_refuses_beyond_the_input_bound() {
     );
     let full = run(&mut engine, "full", add(10_000, "One more", RED));
     assert_eq!(issue(&full), "too_many_inputs");
+    assert_eq!(
+        reason(&full),
+        Some(&RefusalReason::bounds("inputs", MAX_SHOW_INPUTS as u64))
+    );
 }
 
 #[test]
 fn remove_refuses_inputs_on_air_configured_or_locked() {
     let mut engine = engine();
-    for (key, value) in [("program", 1), ("preview", 2)] {
+    for (key, value, usage) in [
+        ("program", 1, InputUse::Program),
+        ("preview", 2, InputUse::Preview),
+    ] {
         let outcome = run(&mut engine, key, remove(value));
         assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
         assert_eq!(issue(&outcome), "input_in_use");
+        assert_eq!(reason(&outcome), Some(&in_use(value, usage)));
     }
     let unknown = run(&mut engine, "unknown", remove(9));
     assert_eq!(rejection(&unknown).code, RejectionCode::NotFound);
+    assert_eq!(
+        reason(&unknown),
+        Some(&RefusalReason::UnknownId {
+            kind: IdKind::Input,
+            id: 9
+        })
+    );
 
     let channel = OverlayChannelId::new(1).unwrap();
     assert_accepted(&run(
@@ -234,6 +275,10 @@ fn remove_refuses_inputs_on_air_configured_or_locked() {
     ));
     let overlay = run(&mut engine, "overlay-remove", remove(3));
     assert!(rejection(&overlay).message.contains("overlay 1"));
+    assert_eq!(
+        reason(&overlay),
+        Some(&in_use(3, InputUse::Overlay { channel: 1 }))
+    );
     assert_accepted(&run(
         &mut engine,
         "overlay-off",
@@ -261,27 +306,40 @@ fn remove_refuses_inputs_on_air_configured_or_locked() {
         "{:?}",
         stinger.receipt
     );
+    assert_eq!(
+        reason(&stinger),
+        Some(&in_use(3, InputUse::Stinger { slot: 1 }))
+    );
     assert_accepted(&run(
         &mut engine,
         "stinger-clear",
         EngineCommand::RemoveStinger { slot },
     ));
 
+    assert_padlocks_refuse_removal(&mut engine);
+}
+
+/// Both padlocks refuse removing input 3, with their typed reasons.
+fn assert_padlocks_refuse_removal(engine: &mut Engine) {
     assert_accepted(&run(
-        &mut engine,
+        engine,
         "lock-input",
         EngineCommand::SetEditLock {
             scope: EditLockScope::Input(input(3)),
             locked: true,
         },
     ));
-    let input_locked = run(&mut engine, "locked-remove", remove(3));
+    let input_locked = run(engine, "locked-remove", remove(3));
     assert_eq!(
         EditRejectionKind::of(rejection(&input_locked)),
         Some(EditRejectionKind::InputLocked)
     );
+    assert_eq!(
+        reason(&input_locked),
+        Some(&RefusalReason::InputLocked { input: 3 })
+    );
     assert_accepted(&run(
-        &mut engine,
+        engine,
         "unlock-input",
         EngineCommand::SetEditLock {
             scope: EditLockScope::Input(input(3)),
@@ -289,19 +347,20 @@ fn remove_refuses_inputs_on_air_configured_or_locked() {
         },
     ));
     assert_accepted(&run(
-        &mut engine,
+        engine,
         "lock-project",
         EngineCommand::SetEditLock {
             scope: EditLockScope::Project,
             locked: true,
         },
     ));
-    let project_locked = run(&mut engine, "project-locked-remove", remove(3));
+    let project_locked = run(engine, "project-locked-remove", remove(3));
     assert_eq!(
         EditRejectionKind::of(rejection(&project_locked)),
         Some(EditRejectionKind::ProjectLocked)
     );
-    assert_eq!(ids(&engine), [1, 2, 3]);
+    assert_eq!(reason(&project_locked), Some(&RefusalReason::ProjectLocked));
+    assert_eq!(ids(engine), [1, 2, 3]);
 }
 
 #[test]

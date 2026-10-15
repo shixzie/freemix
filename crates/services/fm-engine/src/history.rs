@@ -326,11 +326,25 @@ impl EditRejection {
                 ),
             ),
         };
-        Rejection::new(code, message.clone()).with_field(FieldIssue::new(
-            field,
-            self.kind().code(),
-            message,
-        ))
+        Rejection::new(code, message.clone())
+            .with_field(FieldIssue::new(field, self.kind().code(), message))
+            .with_reason(self.reason())
+    }
+
+    /// The typed refusal reason (Protocol 2.45).
+    #[must_use]
+    pub const fn reason(self) -> fm_command::RefusalReason {
+        use fm_command::RefusalReason;
+        match self {
+            Self::ProjectLocked => RefusalReason::ProjectLocked,
+            Self::InputLocked(input) => RefusalReason::InputLocked {
+                input: input.get().get(),
+            },
+            Self::NothingToUndo => RefusalReason::NothingToUndo,
+            Self::NothingToRedo => RefusalReason::NothingToRedo,
+            Self::HistoryConflict { .. } => RefusalReason::HistoryConflict,
+            Self::HistoryDrift { .. } => RefusalReason::HistoryDrift,
+        }
     }
 }
 

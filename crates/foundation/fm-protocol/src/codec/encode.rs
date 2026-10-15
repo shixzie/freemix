@@ -1252,6 +1252,7 @@ fn encode_result(record: &mut Record, message: &CommandResult) -> Result<(), Cod
             fields,
             current_revision,
             retryable,
+            reason,
         } => {
             record.field("status", "rejected")?;
             record.field_str("id", id)?;
@@ -1260,6 +1261,9 @@ fn encode_result(record: &mut Record, message: &CommandResult) -> Result<(), Cod
             record.field_string("fields", field_issues(fields)?)?;
             record.field("current_revision", current_revision)?;
             record.field("retryable", u8::from(*retryable))?;
+            if let Some(reason) = reason {
+                record.field_string("reason", super::encode_refusal_reason(reason)?)?;
+            }
         }
     }
     Ok(())

@@ -283,6 +283,44 @@ fn runtime_event(
 }
 
 #[test]
+fn a_typed_refusal_reason_survives_the_wire_into_the_model() {
+    // Protocol 2.45: the client keeps the refusal's typed reason, so a
+    // console can word it in its own language.
+    let mut client = ready_client(8);
+    let command = client
+        .queue_command(
+            CommandPayload::RemoveInput { input: input(2) },
+            "remove-2".to_owned(),
+            Some(4),
+            None,
+        )
+        .unwrap();
+    assert!(matches!(
+        client.pop_outbound(),
+        Some(Outbound::Command(queued)) if queued == command
+    ));
+    let reason = fm_protocol::RefusalReason::InputInUse {
+        input: 2,
+        usage: fm_protocol::InputUse::SceneLayer { scene: 100 },
+    };
+    let line = fm_protocol::encode_line(&WireMessage::CommandResult(CommandResult::Rejected {
+        id: command.id.clone(),
+        code: "conflict".to_owned(),
+        message: "input 2 cannot be removed: it is a layer source of scene 100".to_owned(),
+        fields: Vec::new(),
+        current_revision: 4,
+        retryable: false,
+        reason: Some(reason.clone()),
+    }))
+    .unwrap();
+    let decoded = fm_protocol::decode_line(&line).unwrap();
+    assert_eq!(client.intake(decoded).unwrap(), Intake::ResultReconciled);
+    let rejection = client.model().last_rejection().unwrap();
+    assert_eq!(rejection.code, "conflict");
+    assert_eq!(rejection.reason, Some(reason));
+}
+
+#[test]
 fn connect_snapshot_resume_and_reconnect_are_deterministic() {
     let mut client = Client::new(config(4)).unwrap();
     client.start_connect().unwrap();

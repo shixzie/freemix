@@ -167,8 +167,13 @@ fn scene_of(state: &ShowState, input: InputId) -> Result<&EngineScene, Rejection
 fn edit_rejection(error: &SceneAnimationError) -> Rejection {
     let message = error.to_string();
     match error {
-        SceneAnimationError::UnknownLayer(_) => {
-            rejection(RejectionCode::NotFound, "layer", "unknown_layer", message)
+        SceneAnimationError::UnknownLayer(layer) => {
+            rejection(RejectionCode::NotFound, "layer", "unknown_layer", message).with_reason(
+                fm_command::RefusalReason::UnknownId {
+                    kind: fm_command::IdKind::Layer,
+                    id: u128::from(layer.get()),
+                },
+            )
         }
         SceneAnimationError::UnsupportedProperty { .. } => rejection(
             RejectionCode::InvalidCommand,

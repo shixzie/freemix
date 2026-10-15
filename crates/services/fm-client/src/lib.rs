@@ -1712,6 +1712,7 @@ impl Client {
                 fields: Vec::new(),
                 current_revision,
                 retryable: false,
+                reason: None,
             })?;
             if let Some(record) = self.commands.get_mut(id) {
                 record.status = CommandStatus::TerminalUncertain(

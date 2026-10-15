@@ -1398,6 +1398,9 @@ pub struct RejectedCommand {
     pub fields: Vec<FieldIssue>,
     pub current_revision: Revision,
     pub retryable: bool,
+    /// The typed refusal reason (Protocol 2.45), worded by
+    /// [`crate::i18n::refusal_reason_text`].
+    pub reason: Option<fm_protocol::RefusalReason>,
 }
 
 /// Whether the local cursor can be treated as current.
@@ -2844,6 +2847,7 @@ impl ClientModel {
                 fields,
                 current_revision,
                 retryable,
+                reason,
             } => {
                 let id = CommandId::new(id.clone());
                 let index = self.pending_index(&id)?;
@@ -2855,6 +2859,7 @@ impl ClientModel {
                     fields: fields.clone(),
                     current_revision: Revision::new(*current_revision),
                     retryable: *retryable,
+                    reason: reason.clone(),
                 };
                 self.note_known_revision(rejection.current_revision);
                 self.last_rejection = Some(rejection.clone());

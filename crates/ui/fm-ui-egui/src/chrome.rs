@@ -666,6 +666,20 @@ fn bar_divider(ui: &mut Ui) {
 /// Picks the most important one-line status message.
 pub(crate) fn status_message(l: Locale, state: &StudioUiState) -> (String, Color32) {
     if let Some(error) = &state.error {
+        // A typed refusal reason words the error in the console language.
+        if let Some(refusal) = state
+            .command_refusal
+            .as_ref()
+            .filter(|refusal| refusal.reason.is_some())
+        {
+            return (
+                l.format(
+                    Msg::StatusError,
+                    &[("message", Arg::Str(&refusal.text(l, state.view.as_ref())))],
+                ),
+                ERROR,
+            );
+        }
         return (
             l.format(
                 Msg::StatusError,

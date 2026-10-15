@@ -375,5 +375,39 @@ pub(crate) fn grade_rejection(error: &GradeEditError) -> Rejection {
         }
     };
     let message = error.to_string();
-    Rejection::new(code, message.clone()).with_field(FieldIssue::new(field, issue, message))
+    let rejection =
+        Rejection::new(code, message.clone()).with_field(FieldIssue::new(field, issue, message));
+    match grade_reason(error) {
+        Some(reason) => rejection.with_reason(reason),
+        None => rejection,
+    }
+}
+
+/// The typed refusal reason of a grading edit, where it has one.
+fn grade_reason(error: &GradeEditError) -> Option<fm_command::RefusalReason> {
+    use fm_command::{IdKind, RefusalReason};
+    let id = |kind, id: u128| RefusalReason::UnknownId { kind, id };
+    let duplicate = |kind, id: u128| RefusalReason::DuplicateId { kind, id };
+    Some(match error {
+        GradeEditError::UnknownInput(input) => crate::error::unknown_input_reason(*input),
+        GradeEditError::UnknownScene(scene) => id(IdKind::Scene, scene.get().get()),
+        GradeEditError::UnknownGrade(grade) => id(IdKind::Grade, u128::from(grade.get().get())),
+        GradeEditError::UnknownLut(lut) => id(IdKind::Lut, u128::from(lut.get().get())),
+        GradeEditError::DuplicateGradeId(grade) => {
+            duplicate(IdKind::Grade, u128::from(grade.get().get()))
+        }
+        GradeEditError::DuplicateLutId(lut) => duplicate(IdKind::Lut, u128::from(lut.get().get())),
+        GradeEditError::DuplicateName(_) => RefusalReason::DuplicateName,
+        GradeEditError::NameTooLong { maximum, .. } => RefusalReason::InvalidName {
+            max_bytes: u32::try_from(*maximum).unwrap_or(u32::MAX),
+        },
+        GradeEditError::TooManyGrades { maximum } => {
+            RefusalReason::bounds("grades", *maximum as u64)
+        }
+        GradeEditError::TooManyLuts { maximum } => RefusalReason::bounds("luts", *maximum as u64),
+        GradeEditError::TooManyLayerGrades { maximum } => {
+            RefusalReason::bounds("layer_grades", *maximum as u64)
+        }
+        _ => return None,
+    })
 }

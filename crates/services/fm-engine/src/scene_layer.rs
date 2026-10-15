@@ -129,6 +129,14 @@ fn rejection(code: RejectionCode, field: &str, issue: &str, message: String) -> 
     Rejection::new(code, message.clone()).with_field(FieldIssue::new(field, issue, message))
 }
 
+/// The typed "scene does not exist" refusal reason.
+fn unknown_scene(scene: SceneId) -> fm_command::RefusalReason {
+    fm_command::RefusalReason::UnknownId {
+        kind: fm_command::IdKind::Scene,
+        id: scene.get().get(),
+    }
+}
+
 fn edit_rejection(error: SceneLayerEditError, change: &SceneLayerChange) -> Rejection {
     let message = error.to_string();
     let (code, field) = match error {
@@ -155,7 +163,22 @@ fn edit_rejection(error: SceneLayerEditError, change: &SceneLayerChange) -> Reje
         | SceneLayerEditError::TooManyEffects
         | SceneLayerEditError::InvalidEffect { .. } => (RejectionCode::InvalidCommand, "spec"),
     };
-    rejection(code, field, error.code(), message)
+    let rejection = rejection(code, field, error.code(), message);
+    match error {
+        SceneLayerEditError::UnknownLayer(layer) => {
+            rejection.with_reason(fm_command::RefusalReason::UnknownId {
+                kind: fm_command::IdKind::Layer,
+                id: u128::from(layer.get()),
+            })
+        }
+        SceneLayerEditError::TooManyEffects => {
+            rejection.with_reason(fm_command::RefusalReason::bounds(
+                "effects",
+                fm_model::LayerEffect::MAX_EFFECTS_PER_LAYER as u64,
+            ))
+        }
+        _ => rejection,
+    }
 }
 
 /// The scenes `source` draws, directly, nested, or through alias inputs,
@@ -191,7 +214,8 @@ fn check_source(state: &ShowState, scene: SceneId, source: SourceRef) -> Result<
                 "spec",
                 "unknown_input",
                 format!("layer source input {input} does not exist"),
-            ));
+            )
+            .with_reason(crate::error::unknown_input_reason(input)));
         }
         SourceRef::Scene(source) if state.scene(source).is_none() => {
             return Err(rejection(
@@ -199,7 +223,8 @@ fn check_source(state: &ShowState, scene: SceneId, source: SourceRef) -> Result<
                 "spec",
                 "unknown_scene",
                 format!("layer source scene {source} does not exist"),
-            ));
+            )
+            .with_reason(unknown_scene(source)));
         }
         SourceRef::Input(_) | SourceRef::Scene(_) => {}
     }
@@ -223,6 +248,7 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineSceneLayerEdit) -> Resul
             "unknown_scene",
             format!("scene {} does not exist", edit.scene),
         )
+        .with_reason(unknown_scene(edit.scene))
     })?;
     match &edit.change {
         SceneLayerChange::Add { layer, .. } => {
@@ -232,7 +258,11 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineSceneLayerEdit) -> Resul
                     "layer",
                     "too_many_layers",
                     format!("a scene holds at most {MAX_SCENE_LAYERS} layers"),
-                ));
+                )
+                .with_reason(fm_command::RefusalReason::bounds(
+                    "layers",
+                    MAX_SCENE_LAYERS as u64,
+                )));
             }
             if layer.name.len() > MAX_SCENE_LAYER_NAME_BYTES
                 || layer.name.chars().any(char::is_control)

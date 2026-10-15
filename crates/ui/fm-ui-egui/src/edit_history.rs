@@ -7,9 +7,12 @@
 //! the server refuses a different one instead of reverting someone else's
 //! later work.
 
+use core::num::NonZeroU128;
 use egui::{Event, Key, Ui};
-use fm_protocol::FieldIssue;
+
+use fm_protocol::{CommandResult, FieldIssue, RefusalReason};
 use fm_types::InputId;
+use fm_ui_model::ClientView;
 
 use crate::gating::{Capability, unavailable_reason};
 use crate::input_bank::project_editing_available;
@@ -335,6 +338,62 @@ pub fn input_edit_lock_reason(state: &StudioUiState, input: InputId) -> Option<&
         Some(INPUT_LOCKED_REASON)
     } else {
         None
+    }
+}
+
+/// A refused command as the console words it (Protocol 2.45): published
+/// once with its rejection, toasted in the console language from its typed
+/// reason. A refusal without a reason keeps the worker's English text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandRefusalNotice {
+    /// The refused command's identifier; each refusal is announced once.
+    pub command_id: String,
+    /// Top-level rejection code (`conflict`, `not_found`, ...).
+    pub code: String,
+    /// The daemon's English text, the fallback wording.
+    pub message: String,
+    pub reason: Option<RefusalReason>,
+}
+
+impl CommandRefusalNotice {
+    /// The notice of a rejected command result; `None` for an acceptance.
+    #[must_use]
+    pub fn from_result(result: &CommandResult) -> Option<Self> {
+        match result {
+            CommandResult::Rejected {
+                id,
+                code,
+                message,
+                reason,
+                ..
+            } => Some(Self {
+                command_id: id.clone(),
+                code: code.clone(),
+                message: message.clone(),
+                reason: reason.clone(),
+            }),
+            CommandResult::Accepted { .. } => None,
+        }
+    }
+
+    /// The refusal in the console language, naming inputs from `view`.
+    #[must_use]
+    pub fn text(&self, l: Locale, view: Option<&ClientView>) -> String {
+        let names = |input: u128| {
+            let input = InputId::new(NonZeroU128::new(input)?);
+            let view = view?;
+            view.inputs
+                .iter()
+                .position(|candidate| *candidate == input)
+                .and_then(|index| view.input_names.get(index).cloned())
+        };
+        fm_ui_model::i18n::command_refusal_text(
+            l,
+            &self.code,
+            &self.message,
+            self.reason.as_ref(),
+            &names,
+        )
     }
 }
 

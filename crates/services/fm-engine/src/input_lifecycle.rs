@@ -265,6 +265,7 @@ fn unknown_input(input: InputId) -> Rejection {
         "unknown_input",
         format!("input {input} is not part of this show"),
     )
+    .with_reason(crate::error::unknown_input_reason(input))
 }
 
 fn require_input(state: &ShowState, input: InputId) -> Result<(), Rejection> {
@@ -441,7 +442,7 @@ fn catalogue(error: crate::InputCatalogueError) -> Rejection {
             (RejectionCode::InvalidCommand, "invalid_name")
         }
     };
-    rejection(code, "input", issue, message)
+    rejection(code, "input", issue, message).with_reason(error.reason())
 }
 
 /// Applies `edit` to the desired show; returns its one durable event.
@@ -533,7 +534,11 @@ pub(crate) fn apply(
                     "category",
                     "unknown_category",
                     format!("category {category} does not exist"),
-                ));
+                )
+                .with_reason(fm_command::RefusalReason::UnknownId {
+                    kind: fm_command::IdKind::Category,
+                    id: u128::from(category.get()),
+                }));
             }
             set_lifecycle(state, *input, |lifecycle| lifecycle.category = *category)?;
         }
@@ -550,7 +555,11 @@ pub(crate) fn apply(
                     "input",
                     "input_on_air",
                     format!("input {input} cannot be closed while it is {usage}"),
-                ));
+                )
+                .with_reason(fm_command::RefusalReason::InputInUse {
+                    input: input.get().get(),
+                    usage: crate::error::input_use(usage),
+                }));
             }
             if *closed && ShownInputs::of(state).air.contains(input) {
                 return Err(rejection(
@@ -558,7 +567,11 @@ pub(crate) fn apply(
                     "input",
                     "input_in_use",
                     format!("input {input} cannot be closed while a scene on air shows it"),
-                ));
+                )
+                .with_reason(fm_command::RefusalReason::InputInUse {
+                    input: input.get().get(),
+                    usage: fm_command::InputUse::SceneOnAir,
+                }));
             }
             set_lifecycle(state, *input, |lifecycle| lifecycle.closed = *closed)?;
         }
