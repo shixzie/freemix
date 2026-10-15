@@ -37,8 +37,10 @@
 //!
 //! The keyframe animation timeline is not part of the console yet, so it is
 //! audited standalone under the same rules: in Simple and Advanced modes,
-//! with keys selected and an active row, with nothing selected, and with a
-//! refused edit showing, each pinned to the audited language. The colour
+//! with keys selected and an active row, with nothing selected, with a
+//! refused edit showing, and with a custom curve selected (the curve
+//! editor and the value graph's bezier handles, also under a lock), each
+//! pinned to the audited language. The colour
 //! grading panel is audited the same way: Simple and Advanced modes, fresh
 //! (with its keys disabled for a reason) and edited (with a LUT, compare
 //! slots, a copied grade, bypass, the wipe compare, and a hue curve), and
@@ -951,6 +953,35 @@ fn timeline_scenes(language: Language) -> Vec<Scene> {
                 }),
             });
         }
+    }
+    // The custom curve editor and the value graph's bezier handles: the
+    // lower third's first opacity key shaped by a custom curve, selected,
+    // with opacity the active row; then the same under a lock.
+    for (variant, lock) in [
+        ("curve", None),
+        ("curve-locked", Some(Msg::AnimReasonSaving.en())),
+    ] {
+        use fm_ui_model::animation_editor::{CurvePreset, CurveTarget};
+        let mut document = animation_document();
+        document.set_mode(EditorMode::Advanced);
+        document.set_selection(&KeySelection::from_iter([KeyRef {
+            track: opacity,
+            frame: 0,
+        }]));
+        document
+            .apply_curve_preset(CurveTarget::Selection, CurvePreset::Back)
+            .unwrap();
+        let mut state = AnimationTimelineState::default();
+        state.active_row = Some(opacity);
+        state.lock_reason = lock;
+        scenes.push(Scene {
+            name: format!("timeline/advanced-{variant}"),
+            draw: Box::new(move |ui| {
+                let _output = AnimationTimelineWidget::new(&mut document, &mut state)
+                    .locale(locale)
+                    .show(ui);
+            }),
+        });
     }
     scenes
 }

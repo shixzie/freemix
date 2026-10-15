@@ -300,7 +300,7 @@ fn with_kind<T: Copy + Ord>(
     }
 }
 
-fn modifiers(ui: &Ui) -> Modifiers {
+pub(super) fn modifiers(ui: &Ui) -> Modifiers {
     ui.input(|input| Modifiers {
         shift: input.modifiers.shift,
         alt: input.modifiers.alt,
@@ -570,6 +570,13 @@ fn handle_pointer<T: Copy + Ord>(
                 Err(error) => state.show_error(&error),
             }
         }
+    }
+    // A curve handle drag belongs to the inspector.
+    if document
+        .drag()
+        .is_some_and(fm_ui_model::animation_editor::DragSession::is_curve)
+    {
+        return;
     }
     if document.drag().is_some() {
         if let Some(position) = ui.input(|input| input.pointer.interact_pos()) {

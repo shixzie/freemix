@@ -275,6 +275,11 @@ pub enum AnimEditorError<T> {
     DragActive,
     NothingToUndo,
     NothingToRedo,
+    /// A curve edit on the last key of a track, which starts no segment.
+    NoSegment {
+        track: TrackKey<T>,
+        frame: u32,
+    },
     /// The draft violated a structural invariant (never expected from editor
     /// actions).
     InvalidClip,
@@ -300,6 +305,7 @@ impl<T> AnimEditorError<T> {
             Self::NothingToUndo => "anim-editor-nothing-to-undo",
             Self::NothingToRedo => "anim-editor-nothing-to-redo",
             Self::InvalidClip => "anim-editor-invalid-clip",
+            Self::NoSegment { .. } => "anim-editor-no-segment",
         }
     }
 }
@@ -345,7 +351,8 @@ impl<T: fmt::Debug> fmt::Display for AnimEditorError<T> {
             Self::KeyCollision { track, frame }
             | Self::KeyOutsidePhase { track, frame }
             | Self::InvalidValue { track, frame }
-            | Self::UnknownKey { track, frame } => {
+            | Self::UnknownKey { track, frame }
+            | Self::NoSegment { track, frame } => {
                 write!(formatter, "{}: {track:?} at frame {frame}", self.msg_key())
             }
             Self::UnknownTarget(target) => write!(formatter, "unknown target {target:?}"),

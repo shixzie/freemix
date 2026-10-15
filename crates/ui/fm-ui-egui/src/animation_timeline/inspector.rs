@@ -1,6 +1,8 @@
-//! Advanced-mode inspector: easing for the selected keys, the active row's
-//! value at the playhead, an "animate property" menu, and a value graph of
-//! the active row aligned with the timeline above it.
+//! Advanced-mode inspector: easing for the selected keys (named curves or
+//! a custom bezier, edited in the [`super::curve_editor`]), the active
+//! row's value at the playhead, an "animate property" menu, and a value
+//! graph of the active row aligned with the timeline above it, whose
+//! selected segments show their bezier handles.
 
 use egui::{
     Align2, Color32, CornerRadius, DragValue, FontFamily, FontId, Painter, Pos2, Rect, Sense,
@@ -10,7 +12,7 @@ use fm_animation::{EASE_ONE, Easing, EasingPreset, Property, TrackKey, Value};
 use fm_ui_model::animation_editor::{AnimDocument, phase_state};
 use fm_ui_model::i18n::{Arg, Locale, Msg};
 
-use super::{AnimationTimelineState, TrackGeometry, text};
+use super::{AnimationTimelineState, TrackGeometry, curve_editor, text};
 use crate::gating::Hint;
 use crate::theme::{
     AMBER, accent_color, border_color, field_label, legible, muted_color, raised_color, text_color,
@@ -42,6 +44,7 @@ pub(super) fn draw<T: Copy + Ord>(
         ui.separator();
         add_property_menu(ui, l, document, state);
     });
+    curve_editor::draw_editor(ui, l, document, state);
     curve(ui, l, document, state, geometry);
 }
 
@@ -80,12 +83,16 @@ fn easing_picker<T: Copy + Ord>(
         l.text(Msg::AnimReasonDrag)
     };
     let mut chosen = None;
+    state.curve_layout.custom_item = None;
     let response = ui
         .add_enabled_ui(enabled, |ui| {
             egui::ComboBox::from_id_salt("anim-easing")
                 .selected_text(selected_text)
                 .width(150.0)
                 .show_ui(ui, |ui| {
+                    // First, so the long list never scrolls it out of view.
+                    curve_editor::custom_item(ui, l, document, state);
+                    ui.separator();
                     for preset in EasingPreset::ALL {
                         let response = ui
                             .horizontal(|ui| {
@@ -105,6 +112,7 @@ fn easing_picker<T: Copy + Ord>(
                 .response
         })
         .inner;
+    state.curve_layout.easing_picker = Some(response.rect);
     response.hint_in(l, l.text(Msg::AnimEasingHover), reason);
     if let Some(easing) = current.filter(|_| !empty) {
         easing_thumbnail(ui, easing, vec2(36.0, 22.0)).on_hover_text(l.format(
@@ -298,12 +306,12 @@ fn add_property_menu<T: Copy + Ord>(
 fn curve<T: Copy + Ord>(
     ui: &mut Ui,
     l: Locale,
-    document: &AnimDocument<T>,
-    state: &AnimationTimelineState<T>,
+    document: &mut AnimDocument<T>,
+    state: &mut AnimationTimelineState<T>,
     geometry: &TrackGeometry,
 ) {
     let width = geometry.rect.width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, CURVE_HEIGHT), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, CURVE_HEIGHT), Sense::click());
     let plot = Rect::from_min_max(
         pos2(
             rect.left() + (geometry.track_left - geometry.rect.left()),
@@ -321,6 +329,7 @@ fn curve<T: Copy + Ord>(
     );
     let small = FontId::new(legible(10.0), FontFamily::Proportional);
     let Some(row) = state.active_row else {
+        state.curve_layout.graph_handles.clear();
         painter.text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -338,7 +347,19 @@ fn curve<T: Copy + Ord>(
         FontId::new(legible(11.0), FontFamily::Proportional),
         text_color(),
     );
-    let view = document.view();
+    let view = *document.view();
+    // Clicking between two keys selects the segment's first key.
+    if response.clicked()
+        && let Some(position) = response.interact_pointer_pos()
+        && plot.contains(position)
+    {
+        let frame = view.frame_at_x(position.x - plot.left());
+        if let Some(key) = curve_editor::segment_key_at(document, row, frame)
+            && let Err(error) = document.click_key(key, super::tracks::modifiers(ui))
+        {
+            state.show_error(&error);
+        }
+    }
     let (first, last) = view.visible_range(geometry.track_width());
     let last = last.min(document.phase_frames());
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Small positive.
@@ -362,6 +383,7 @@ fn curve<T: Copy + Ord>(
         .unwrap_or_default();
 
     if row.property == Property::Color {
+        state.curve_layout.graph_handles.clear();
         for pair in frames.windows(2) {
             if let Some(Value::Color(color)) = sample(pair[0]) {
                 plot_painter.rect_filled(
@@ -388,13 +410,16 @@ fn curve<T: Copy + Ord>(
             Value::Scalar(value) => Some(value as f64),
             Value::Color(_) => None,
         });
-        let (low, high) = values
-            .iter()
-            .map(|(_, value)| *value)
-            .chain(key_values)
-            .fold((f64::MAX, f64::MIN), |(low, high), value| {
-                (low.min(value), high.max(value))
-            });
+        let (low, high) = state.graph_range.unwrap_or_else(|| {
+            values
+                .iter()
+                .map(|(_, value)| *value)
+                .chain(key_values)
+                .chain(curve_editor::handle_values(document, row))
+                .fold((f64::MAX, f64::MIN), |(low, high), value| {
+                    (low.min(value), high.max(value))
+                })
+        });
         if low <= high {
             let (low, high) = if (high - low).abs() < f64::EPSILON {
                 (low - 1.0, high + 1.0)
@@ -434,6 +459,25 @@ fn curve<T: Copy + Ord>(
                     super::tracks::paint_key(&plot_painter, center, key.easing, selected);
                 }
             }
+            curve_editor::graph_handles(
+                ui,
+                l,
+                document,
+                state,
+                row,
+                curve_editor::GraphScale {
+                    plot,
+                    low,
+                    high,
+                    top,
+                    bottom,
+                },
+                &x_of,
+                &plot_painter,
+            );
+            if document.curve_drag().is_some() {
+                curve_editor::paint_graph_snap(&painter, l, plot);
+            }
         }
     }
     let playhead = x_of(document.playhead());
@@ -447,9 +491,13 @@ fn curve<T: Copy + Ord>(
         Stroke::new(1.0, AMBER.gamma_multiply(0.6)),
     );
     hover_readout(&painter, &response, l, document, row, plot);
-    response.on_hover_text(l.format(
-        Msg::AnimGraphHover,
-        &[("property", Arg::Str(text::property_name(l, row.property)))],
+    response.on_hover_text(format!(
+        "{}\n{}",
+        l.format(
+            Msg::AnimGraphHover,
+            &[("property", Arg::Str(text::property_name(l, row.property)))],
+        ),
+        l.text(Msg::AnimGraphSegmentHint)
     ));
 }
 

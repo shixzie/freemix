@@ -4,7 +4,7 @@
 //! values in operator units with the locale's number format.
 
 use fm_animation::{AnimationPreset, Easing, EasingPreset, Phase, Property, Value};
-use fm_ui_model::animation_editor::{AnimEditorError, AnimLimit};
+use fm_ui_model::animation_editor::{AnimEditorError, AnimLimit, CurveControl, CurvePreset};
 use fm_ui_model::i18n::{Arg, Locale, Msg};
 
 /// The sentence for a core error id in `locale`, or `None` for an unknown
@@ -223,6 +223,41 @@ pub fn easing_preset_hover(locale: Locale, preset: EasingPreset) -> &'static str
         EasingPreset::BounceIn => Msg::AnimEaseBounceInHover,
         EasingPreset::BounceOut => Msg::AnimEaseBounceOutHover,
         EasingPreset::BounceInOut => Msg::AnimEaseBounceInOutHover,
+    })
+}
+
+/// Display name of a custom curve's starting shape.
+#[must_use]
+pub fn curve_preset_name(locale: Locale, preset: CurvePreset) -> &'static str {
+    locale.text(match preset {
+        CurvePreset::EaseIn => Msg::AnimCurvePresetEaseIn,
+        CurvePreset::EaseOut => Msg::AnimCurvePresetEaseOut,
+        CurvePreset::EaseInOut => Msg::AnimCurvePresetEaseInOut,
+        CurvePreset::Back => Msg::AnimCurvePresetBack,
+        CurvePreset::Anticipate => Msg::AnimEaseAnticipate,
+    })
+}
+
+/// What a custom curve's starting shape does.
+#[must_use]
+pub fn curve_preset_hover(locale: Locale, preset: CurvePreset) -> &'static str {
+    locale.text(match preset {
+        CurvePreset::EaseIn => Msg::AnimEaseInHover,
+        CurvePreset::EaseOut => Msg::AnimEaseOutHover,
+        CurvePreset::EaseInOut => Msg::AnimEaseInOutHover,
+        CurvePreset::Back => Msg::AnimEaseOvershootHover,
+        CurvePreset::Anticipate => Msg::AnimEaseAnticipateHover,
+    })
+}
+
+/// Hover help of one of a custom curve's four numbers.
+#[must_use]
+pub fn curve_control_hover(locale: Locale, control: CurveControl) -> &'static str {
+    locale.text(match control {
+        CurveControl::X1 => Msg::AnimCurveX1Hover,
+        CurveControl::Y1 => Msg::AnimCurveY1Hover,
+        CurveControl::X2 => Msg::AnimCurveX2Hover,
+        CurveControl::Y2 => Msg::AnimCurveY2Hover,
     })
 }
 

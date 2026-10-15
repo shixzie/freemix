@@ -791,3 +791,253 @@ fn timeline_view_maps_frames_and_pixels() {
     assert!(approx(view.scroll_frame(), 0.0));
     assert_eq!(view.visible_range(10.0), (0, 640));
 }
+
+// ----- custom curves ------------------------------------------------------
+
+fn bezier(document: &AnimDocument<u32>, property: Property, frame: u32) -> [f64; 4] {
+    match document
+        .clip()
+        .key(track(property), frame)
+        .map(|key| key.easing)
+    {
+        Some(Easing::CubicBezier(curve)) => curve::unit_controls(curve),
+        other => panic!("{property:?}@{frame} is not a custom curve: {other:?}"),
+    }
+}
+
+fn close(left: [f64; 4], right: [f64; 4]) -> bool {
+    left.iter()
+        .zip(right)
+        .all(|(left, right)| (left - right).abs() < 1e-4)
+}
+
+fn easing(document: &AnimDocument<u32>, property: Property, frame: u32) -> Easing {
+    document.clip().key(track(property), frame).unwrap().easing
+}
+
+#[test]
+fn curve_points_are_constrained_to_the_engines_limits() {
+    use fm_animation::{EASE_ONE, MAX_BEZIER_Y, MIN_BEZIER_Y};
+    assert_eq!(curve::constrain_point([-0.4, 3.5]), (0, MAX_BEZIER_Y));
+    assert_eq!(
+        curve::constrain_point([1.7, -9.0]),
+        (EASE_ONE, MIN_BEZIER_Y)
+    );
+    assert_eq!(curve::constrain_point([0.5, 1.25]), (32_768, 81_920));
+    assert_eq!(curve::constrain_point([f64::NAN, f64::INFINITY]), (0, 0));
+    let start = CurvePreset::EaseInOut.curve();
+    let (moved, _) = curve::with_handle(start, CurveHandle::In, [4.0, -4.0], None);
+    assert!(close(
+        curve::unit_controls(moved),
+        [0.42, 0.0, 1.0, MIN_CURVE_Y]
+    ));
+    let typed = curve::with_control(start, CurveControl::Y1, 7.0);
+    assert!(close(curve::unit_controls(typed), [0.42, 2.0, 0.58, 1.0]));
+}
+
+#[test]
+fn handles_snap_to_quarters_and_thirds_per_axis() {
+    let (point, snap) = curve::snap_point([0.335, 0.74], DEFAULT_CURVE_SNAP);
+    assert!((point[0] - 1.0 / 3.0).abs() < 1e-9 && (point[1] - 0.75).abs() < 1e-9);
+    assert_eq!(snap.x, Some(21_845));
+    assert_eq!(snap.y, Some(49_152));
+    let (point, snap) = curve::snap_point([0.41, 1.52], DEFAULT_CURVE_SNAP);
+    assert!((point[0] - 0.41).abs() < 1e-9, "nothing near 0.41");
+    assert_eq!(snap.x, None);
+    assert_eq!(snap.unit_y(), Some(1.5), "the overshoot mark");
+}
+
+#[test]
+fn seeds_keep_custom_curves_and_approximate_named_easings() {
+    let custom = CurvePreset::Back.curve();
+    assert_eq!(curve_seed(Easing::CubicBezier(custom)), custom);
+    assert_eq!(
+        curve_seed(Easing::CubicOut),
+        fm_animation::EasingPreset::CubicOut.to_bezier().unwrap()
+    );
+    assert_eq!(curve_seed(Easing::Hold), default_curve());
+    assert_eq!(curve_seed(Easing::Step), default_curve());
+    // Presets overshoot and anticipate where they say they do.
+    assert!(curve::unit_controls(CurvePreset::Back.curve())[1] > 1.0);
+    assert!(curve::unit_controls(CurvePreset::Anticipate.curve())[1] < 0.0);
+    let ids: std::collections::BTreeSet<_> =
+        CurvePreset::ALL.iter().map(|preset| preset.id()).collect();
+    assert_eq!(ids.len(), CurvePreset::ALL.len());
+}
+
+#[test]
+fn dragging_a_segment_handle_sets_its_easing_in_one_undo_step() {
+    let mut document = document(100, &[(Property::Opacity, &[(0, 0), (40, 255), (80, 0)])]);
+    let segment = key(Property::Opacity, 0);
+    let generation = document.generation();
+    let start = document
+        .begin_curve_drag(CurveTarget::Segment(segment), CurveHandle::Out)
+        .unwrap();
+    // Linear seeds its handles on the diagonal at thirds.
+    assert!(close(
+        curve::unit_controls(start),
+        [1.0 / 3.0, 1.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0]
+    ));
+    assert!(document.drag().unwrap().is_curve());
+    // Snapped: 0.26 -> 0.25, 0.02 -> 0.
+    let snap = document
+        .update_curve_drag([0.26, 0.02], Modifiers::NONE, DEFAULT_CURVE_SNAP)
+        .unwrap();
+    assert_eq!(snap.unit_x(), Some(0.25));
+    assert_eq!(snap.unit_y(), Some(0.0));
+    assert!(close(
+        bezier(&document, Property::Opacity, 0),
+        [0.25, 0.0, 2.0 / 3.0, 2.0 / 3.0]
+    ));
+    // Shift moves freely, and overshoot is clamped to the engine's limit.
+    let snap = document
+        .update_curve_drag([0.26, 2.4], Modifiers::SHIFT, DEFAULT_CURVE_SNAP)
+        .unwrap();
+    assert_eq!(snap, CurveSnap::NONE);
+    let controls = bezier(&document, Property::Opacity, 0);
+    assert!((controls[0] - 0.26).abs() < 1e-4 && (controls[1] - MAX_CURVE_Y).abs() < 1e-9);
+    assert!(
+        document.generation() > generation,
+        "the draft shows it live"
+    );
+    assert_eq!(document.undo_depth(), 0);
+    // Timeline pointer updates leave a curve drag alone; edits wait.
+    assert_eq!(
+        document.update_drag(Pointer::at(30), Modifiers::NONE),
+        Ok(None)
+    );
+    assert_eq!(document.undo(), Err(AnimEditorError::DragActive));
+    assert_eq!(
+        document.set_curve(CurveTarget::Segment(segment), default_curve()),
+        Err(AnimEditorError::DragActive)
+    );
+    let (handle, _, _) = document.curve_drag().unwrap();
+    assert_eq!(handle, CurveHandle::Out);
+    let outcome = document.commit_drag().unwrap();
+    assert!(outcome.edited);
+    assert_eq!(document.undo_depth(), 1, "the whole drag is one step");
+    // Only the segment's outgoing key changed.
+    assert_eq!(easing(&document, Property::Opacity, 40), Easing::Linear);
+    document.undo().unwrap();
+    assert_eq!(easing(&document, Property::Opacity, 0), Easing::Linear);
+}
+
+#[test]
+fn a_cancelled_curve_drag_restores_the_easing() {
+    let mut document = document(60, &[(Property::Opacity, &[(0, 0), (40, 255)])]);
+    document
+        .begin_curve_drag(
+            CurveTarget::Segment(key(Property::Opacity, 0)),
+            CurveHandle::In,
+        )
+        .unwrap();
+    document
+        .update_curve_drag([0.9, 1.4], Modifiers::SHIFT, DEFAULT_CURVE_SNAP)
+        .unwrap();
+    document.cancel_drag().unwrap();
+    assert_eq!(easing(&document, Property::Opacity, 0), Easing::Linear);
+    assert_eq!(document.undo_depth(), 0);
+    assert_eq!(
+        document.update_curve_drag([0.5, 0.5], Modifiers::NONE, DEFAULT_CURVE_SNAP),
+        Err(AnimEditorError::NoDrag)
+    );
+}
+
+#[test]
+fn the_last_key_of_a_track_has_no_segment() {
+    let mut document = document(60, &[(Property::Opacity, &[(0, 0), (40, 255)])]);
+    let last = key(Property::Opacity, 40);
+    assert_eq!(document.segment(last), None);
+    let error = document
+        .begin_curve_drag(CurveTarget::Segment(last), CurveHandle::Out)
+        .unwrap_err();
+    assert_eq!(error.msg_key(), "anim-editor-no-segment");
+    assert_eq!(
+        document.set_curve(CurveTarget::Selection, default_curve()),
+        Err(AnimEditorError::EmptySelection)
+    );
+    assert!(document.drag().is_none());
+}
+
+#[test]
+fn numeric_entry_and_presets_edit_the_selection_in_one_step_each() {
+    let mut document = document(
+        60,
+        &[
+            (Property::Opacity, &[(0, 0), (40, 255)]),
+            (Property::PositionX, &[(0, -100), (40, 0)]),
+        ],
+    );
+    document.set_selection(&fm_animation::KeySelection::from_iter([
+        key(Property::Opacity, 0),
+        key(Property::PositionX, 0),
+    ]));
+    document
+        .apply_curve_preset(CurveTarget::Selection, CurvePreset::Back)
+        .unwrap();
+    assert_eq!(document.undo_depth(), 1);
+    for property in [Property::Opacity, Property::PositionX] {
+        assert!(close(
+            bezier(&document, property, 0),
+            [0.34, 1.56, 0.64, 1.0]
+        ));
+    }
+    document
+        .set_curve_control(CurveTarget::Selection, CurveControl::Y1, 1.2)
+        .unwrap();
+    assert_eq!(document.undo_depth(), 2);
+    assert!(close(
+        bezier(&document, Property::PositionX, 0),
+        [0.34, 1.2, 0.64, 1.0]
+    ));
+    // Out-of-range numbers are clamped.
+    document
+        .set_curve_control(CurveTarget::Selection, CurveControl::X2, 1.5)
+        .unwrap();
+    assert!((bezier(&document, Property::Opacity, 0)[2] - 1.0).abs() < 1e-9);
+    document.undo().unwrap();
+    document.undo().unwrap();
+    assert!(close(
+        bezier(&document, Property::Opacity, 0),
+        [0.34, 1.56, 0.64, 1.0]
+    ));
+}
+
+#[test]
+fn segments_report_influence_and_speed() {
+    let mut document = document(100, &[(Property::PositionX, &[(10, 0), (60, 500)])]);
+    let segment = document.segment_at(track(Property::PositionX), 30).unwrap();
+    assert_eq!(segment.key, key(Property::PositionX, 10));
+    assert_eq!(segment.frames(), 50);
+    assert_eq!(document.segment_at(track(Property::PositionX), 60), None);
+    assert_eq!(document.segment_at(track(Property::PositionX), 5), None);
+    let curve = curve::curve_from_unit([0.25, 0.5, 0.5, 1.0]);
+    assert!((Segment::<u32>::influence(curve, CurveHandle::Out) - 0.25).abs() < 1e-4);
+    assert!((Segment::<u32>::influence(curve, CurveHandle::In) - 0.5).abs() < 1e-4);
+    // Slope 2 over 500 px in 50 frames: 20 px per frame leaving the key.
+    let speed = segment.speed_per_frame(curve, CurveHandle::Out).unwrap();
+    assert!((speed - 20.0).abs() < 0.01, "{speed}");
+    // Arriving flat: zero speed.
+    let arriving = segment.speed_per_frame(curve, CurveHandle::In).unwrap();
+    assert!(arriving.abs() < 1e-9);
+    let jump = curve::curve_from_unit([0.0, 0.5, 0.5, 1.0]);
+    assert_eq!(segment.speed_per_frame(jump, CurveHandle::Out), None);
+    document.set_selection(&fm_animation::KeySelection::from_iter([key(
+        Property::PositionX,
+        10,
+    )]));
+    assert_eq!(
+        document.curve(CurveTarget::Selection).unwrap(),
+        curve_seed(Easing::Linear)
+    );
+}
+
+#[test]
+fn sampling_a_custom_curve_matches_the_engine() {
+    let curve = CurvePreset::EaseInOut.curve();
+    assert!(curve::sample_curve(curve, 0.0).abs() < 1e-9);
+    assert!((curve::sample_curve(curve, 1.0) - 1.0).abs() < 1e-9);
+    assert!((curve::sample_curve(curve, 0.5) - 0.5).abs() < 1e-3);
+    let [x, y] = curve::bezier_point(curve, 1.0);
+    assert!((x - 1.0).abs() < 1e-9 && (y - 1.0).abs() < 1e-9);
+}

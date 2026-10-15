@@ -14,13 +14,20 @@
 //! * [`interaction`]: drag sessions, click/box selection, retime handles,
 //!   and one-step edits (key at playhead, delete, copy/paste, easing,
 //!   presets, phase duration, nudge) plus playback.
+//! * [`curve`]: custom cubic-bezier easing: seeds, handle drag math,
+//!   snapping, and one-step curve edits for the curve editor.
 //! * [`preview`]: sampled values, the wireframe proxy and onion skins, and
 //!   the latest-wins [`PreviewScheduler`] for exact previews.
 
+pub mod curve;
 pub mod document;
 pub mod interaction;
 pub mod preview;
 
+pub use curve::{
+    CURVE_SNAP_X, CURVE_SNAP_Y, CurveControl, CurveHandle, CurvePreset, CurveSnap, CurveTarget,
+    DEFAULT_CURVE_SNAP, MAX_CURVE_Y, MIN_CURVE_Y, Segment, curve_seed, default_curve,
+};
 pub use document::{
     AnimDocument, AnimEditorError, AnimLimit, DEFAULT_FRAMES_PER_PIXEL, DEFAULT_SNAP_THRESHOLD_PX,
     EditorMode, MAX_FRAMES_PER_PIXEL, MIN_FRAMES_PER_PIXEL, TargetBounds, TargetKind,

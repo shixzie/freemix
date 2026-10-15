@@ -20,6 +20,7 @@ use fm_animation::{
     stretch_frame,
 };
 
+use super::curve::{CurveHandle, CurveSnap};
 use super::document::{AnimDocument, AnimEditorError, Snapshot};
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
@@ -131,6 +132,20 @@ pub enum DragKind<T> {
         first: u32,
         last: u32,
     },
+    /// A bezier handle of a custom easing curve
+    /// ([`AnimDocument::begin_curve_drag`]); timeline pointer updates leave
+    /// it alone.
+    Curve {
+        /// The keys whose easing the drag sets.
+        keys: KeySelection<T>,
+        handle: CurveHandle,
+        /// The curve before the drag.
+        start: fm_animation::CubicBezier,
+        /// The curve shown now.
+        current: fm_animation::CubicBezier,
+        /// The axes the last update snapped on.
+        snap: CurveSnap,
+    },
 }
 
 /// A drag in progress.
@@ -146,9 +161,43 @@ pub struct DragSession<T> {
 }
 
 impl<T> DragSession<T> {
+    pub(crate) const fn new(kind: DragKind<T>, origin: Snapshot<T>, origin_playhead: u32) -> Self {
+        Self {
+            kind,
+            origin,
+            origin_playhead,
+            grab_frame: 0,
+            snaps: SnapTargets::new(),
+            snap: None,
+            rejected: None,
+        }
+    }
+
+    pub(crate) const fn origin(&self) -> &Snapshot<T> {
+        &self.origin
+    }
+
+    pub(crate) fn set_rejected(&mut self, rejected: Option<AnimEditorError<T>>) {
+        self.rejected = rejected;
+    }
+
+    pub(crate) const fn set_curve(&mut self, curve: fm_animation::CubicBezier, snapped: CurveSnap) {
+        if let DragKind::Curve { current, snap, .. } = &mut self.kind {
+            *current = curve;
+            *snap = snapped;
+        }
+    }
+
     #[must_use]
     pub const fn kind(&self) -> &DragKind<T> {
         &self.kind
+    }
+
+    /// Whether this drags a curve handle rather than something on the
+    /// timeline.
+    #[must_use]
+    pub const fn is_curve(&self) -> bool {
+        matches!(self.kind, DragKind::Curve { .. })
     }
 
     /// The landmark the last update snapped to, for a guide line.
@@ -459,6 +508,8 @@ impl<T: Copy + Ord> AnimDocument<T> {
                 self.show_drag_result(clip, selection);
                 Ok(snap)
             }
+            // Moved by `update_curve_drag` in curve coordinates.
+            DragKind::Curve { .. } => Ok(None),
         }
     }
 

@@ -283,6 +283,7 @@ fn every_animation_editor_refusal_has_a_message() {
         AnimEditorError::NothingToUndo,
         AnimEditorError::NothingToRedo,
         AnimEditorError::InvalidClip,
+        AnimEditorError::NoSegment { track, frame: 1 },
     ];
     let mut seen = std::collections::BTreeSet::new();
     for error in &errors {

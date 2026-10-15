@@ -2614,6 +2614,100 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::AnimGraphReadout, t("fotograma {frame}: {value}")),
+    (
+        Msg::AnimErrNoSegment,
+        t(
+            "La última clave de una propiedad no tiene clave siguiente, así que no tiene curva que modelar",
+        ),
+    ),
+    (Msg::AnimEaseCustomEllipsis, t("Curva personalizada…")),
+    (
+        Msg::AnimEaseCustomHover,
+        t(
+            "Dé forma a su propia curva con dos tiradores, partiendo de el suavizado actual (un paso de deshacer)",
+        ),
+    ),
+    (
+        Msg::AnimCurveEditorHover,
+        t(
+            "Curva personalizada: el tiempo avanza de izquierda a derecha y el valor de abajo arriba. Arrastre un tirador para cambiar su forma (un paso de deshacer por arrastre); los tiradores se ajustan a cuartos y tercios, mantenga Mayús para moverlos libremente. Por encima del borde superior o por debajo del inferior, el movimiento rebasa o se anticipa.",
+        ),
+    ),
+    (
+        Msg::AnimCurveHandleOutHover,
+        t(
+            "Tirador de salida ({x}, {y}): cómo sale el movimiento de la clave. Más a la derecha llega más lejos; más alto arranca más rápido. Mayús: sin ajuste",
+        ),
+    ),
+    (
+        Msg::AnimCurveHandleInHover,
+        t(
+            "Tirador de llegada ({x}, {y}): cómo llega el movimiento a la clave siguiente. Más a la izquierda llega más lejos; más bajo llega más rápido. Mayús: sin ajuste",
+        ),
+    ),
+    (Msg::AnimCurveStartFrom, t("Partir de")),
+    (Msg::AnimCurvePresetEaseIn, t("Entrada suave")),
+    (Msg::AnimCurvePresetEaseOut, t("Salida suave")),
+    (Msg::AnimCurvePresetEaseInOut, t("Entrada y salida suaves")),
+    (Msg::AnimCurvePresetBack, t("Rebase")),
+    (
+        Msg::AnimCurvePresetHover,
+        t(
+            "{help}. Sustituye la curva personalizada por esta forma de partida (un paso de deshacer)",
+        ),
+    ),
+    (
+        Msg::AnimCurveX1Hover,
+        t(
+            "x1, influencia de salida: hasta dónde llega el tirador de salida a lo largo del tramo (de 0 a 1). Escriba o arrastre; se aplica al soltar (un paso de deshacer)",
+        ),
+    ),
+    (
+        Msg::AnimCurveY1Hover,
+        t(
+            "y1, altura de salida: el valor del tirador de salida (de -1 a 2); por encima de 1 rebasa. Se aplica al soltar (un paso de deshacer)",
+        ),
+    ),
+    (
+        Msg::AnimCurveX2Hover,
+        t(
+            "x2, influencia de llegada: dónde se sitúa el tirador de llegada a lo largo del tramo (de 0 a 1); cuanto menor, más lejos llega. Se aplica al soltar (un paso de deshacer)",
+        ),
+    ),
+    (
+        Msg::AnimCurveY2Hover,
+        t(
+            "y2, altura de llegada: el valor del tirador de llegada (de -1 a 2); por debajo de 0 se anticipa, por encima de 1 rebasa. Se aplica al soltar (un paso de deshacer)",
+        ),
+    ),
+    (
+        Msg::AnimCurvePreviewHover,
+        t("Vista previa: el punto se mueve al ritmo de la curva, en bucle"),
+    ),
+    (
+        Msg::AnimCurveShiftHint,
+        t("Ajuste a cuartos y tercios · Mayús: mover libremente"),
+    ),
+    (Msg::AnimCurveSpeedInstant, t("instantánea")),
+    (Msg::AnimCurveSpeedPerSecond, t("{value}/s")),
+    (
+        Msg::AnimGraphHandleOutHover,
+        t(
+            "Tirador de salida de los fotogramas {from}–{to}: influencia {influence} %, velocidad {speed}. Arrástrelo a los lados para la influencia y arriba o abajo para la velocidad; el suavizado de esta clave pasa a ser una curva personalizada (un paso de deshacer). Mayús: sin ajuste",
+        ),
+    ),
+    (
+        Msg::AnimGraphHandleInHover,
+        t(
+            "Tirador de llegada de los fotogramas {from}–{to}: influencia {influence} %, llega a {speed}. Arrástrelo a los lados para la influencia y arriba o abajo para la velocidad; el suavizado de esta clave pasa a ser una curva personalizada (un paso de deshacer). Mayús: sin ajuste",
+        ),
+    ),
+    (
+        Msg::AnimGraphSegmentHint,
+        t(
+            "Haga clic entre dos claves para seleccionar ese tramo; arrastre sus tiradores para dar forma a su curva.",
+        ),
+    ),
     (Msg::AnimElement, t("Elemento")),
     (Msg::AnimElementNumbered, t("Elemento {n}")),
     (Msg::AnimNoElements, t("No hay elementos que animar")),

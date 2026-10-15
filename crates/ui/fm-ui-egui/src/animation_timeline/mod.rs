@@ -15,7 +15,9 @@
 //!   snapping guide line, and retime handles on the selection;
 //! * in Advanced mode, an inspector ([`inspector`]) with the easing picker
 //!   for the selected keys, the active row's value at the playhead, an
-//!   "animate property" menu, and a value graph;
+//!   "animate property" menu, the custom curve editor ([`curve_editor`])
+//!   when the selection shares a custom bezier, and a value graph whose
+//!   selected segments show draggable bezier handles;
 //! * an inline notice for refused edits, worded from
 //!   [`AnimEditorError::msg_key`] ([`text`]).
 //!
@@ -46,6 +48,7 @@ use crate::theme::{
     line_width, muted_color, panel_color, section_label, text_color, text_dim_color, widget_color,
 };
 
+pub mod curve_editor;
 pub mod inspector;
 pub mod overlay;
 pub mod text;
@@ -55,6 +58,7 @@ pub mod transport;
 #[cfg(test)]
 mod tests;
 
+pub use curve_editor::{CURVE_EDITOR_SIZE, CurveFrame, CurveLayout};
 pub use overlay::{OverlayOptions, paint_canvas_overlay, paint_document_overlay};
 pub use tracks::TrackGeometry;
 pub use transport::{ActionSpec, TimelineAction, action_spec, perform};
@@ -141,6 +145,15 @@ pub struct AnimationTimelineState<T> {
     last_time: Option<f64>,
     length_edit: Option<u32>,
     pub(crate) value_edit: Option<f64>,
+    /// A curve number being typed or dragged, committed when the field
+    /// lets go.
+    pub(crate) curve_edit: Option<(fm_ui_model::animation_editor::CurveControl, f64)>,
+    /// The curve editor's value range, frozen during a handle drag.
+    pub(crate) curve_view: Option<(f64, f64)>,
+    /// The value graph's range, frozen during a handle drag on it.
+    pub(crate) graph_range: Option<(f64, f64)>,
+    /// Where the curve editor's parts were drawn last frame.
+    pub(crate) curve_layout: CurveLayout,
     track_width: f32,
     /// The language of the last frame drawn, for notices raised between
     /// frames.
@@ -161,6 +174,10 @@ impl<T> Default for AnimationTimelineState<T> {
             last_time: None,
             length_edit: None,
             value_edit: None,
+            curve_edit: None,
+            curve_view: None,
+            graph_range: None,
+            curve_layout: CurveLayout::default(),
             track_width: 0.0,
             locale: Locale::ENGLISH,
         }
@@ -179,6 +196,13 @@ impl<T> AnimationTimelineState<T> {
     #[must_use]
     pub const fn locale(&self) -> Locale {
         self.locale
+    }
+
+    /// Where the curve editor and the value graph's handles were drawn on
+    /// the last frame.
+    #[must_use]
+    pub const fn curve_layout(&self) -> &CurveLayout {
+        &self.curve_layout
     }
 
     /// Shows `error` inline, worded in [`Self::locale`].
@@ -284,6 +308,13 @@ impl<'a, T: Copy + Ord> AnimationTimelineWidget<'a, T> {
                 state.track_width = geometry.track_width();
                 if document.mode() == EditorMode::Advanced {
                     inspector::draw(ui, l, document, state, &geometry);
+                } else {
+                    state.curve_layout = CurveLayout::default();
+                }
+                // A curve drag whose handle is gone (mode switch, selection
+                // change) ends when the pointer lets go.
+                if document.curve_drag().is_some() && !ui.input(|input| input.pointer.any_down()) {
+                    curve_editor::finish_curve_drag(document, state);
                 }
                 notice(ui, l, state);
                 geometry
