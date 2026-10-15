@@ -20,8 +20,13 @@
 //! [`title_render`]) in the animation pose the engine reports for the frame
 //! cursor, cached per title state and pose and, only for clock or ticker
 //! templates, frame cursor. A simulated title take realizes its whole In
-//! phase and an off-air its whole Out phase within the command, so between
-//! commands a simulated title holds or is gone.
+//! phase within the command, so the engine reports the Hold pose right
+//! after it; the tap replays an In phase it saw start over the following
+//! wall time at the show's rate (see [`SimulatedMonitorTap::replay_titles`]),
+//! so the monitor shows the title animating on as the native output does.
+//! An off-air realizes its whole Out phase within the command and leaves no
+//! trace of it afterwards (a plain overlay off looks the same), so a
+//! simulated title still leaves the monitor at once.
 //!
 //! The Program tap then composites every realized active overlay over the
 //! Program picture with its opacity, position, and border preset, using the
@@ -55,7 +60,7 @@ use fm_protocol::{
 };
 use fm_sim::{ImageFrame, Rgba8, SimulatedPipeline, SimulatedSource, SourcePattern};
 use fm_switcher::{OverlayBorderPreset, OverlayPositionPreset};
-use fm_titles::AnimSample;
+use fm_titles::{AnimSample, TitleAir};
 use fm_types::{InputId, VideoDimensions};
 use freemixd::overlay_layout::{overlay_border_width, overlay_transform};
 
@@ -216,6 +221,12 @@ pub(crate) struct RealizedMonitorState {
     /// phase on Program or Preview (GX-011 stage 5), ascending by input;
     /// any other scene renders its Hold pose.
     pub(crate) scenes: Vec<(InputId, AnimSample)>,
+    /// The In or Out phase each of those titles is in (where it started and
+    /// how long it plays), ascending by input. The simulated engine realizes
+    /// a whole phase within the take or off-air command, so `titles` already
+    /// holds; the tap replays a phase it saw start over the following wall
+    /// time (see [`SimulatedMonitorTap::replay_titles`]).
+    pub(crate) airs: Vec<(InputId, TitleAir)>,
 }
 
 /// The realized fields whose change publishes a frame immediately.
@@ -250,6 +261,11 @@ impl RealizedMonitorState {
                 .scenes_on_air()
                 .into_iter()
                 .map(|scene| (scene.input, scene.frame.sample))
+                .collect(),
+            airs: control
+                .titles_on_air()
+                .into_iter()
+                .map(|title| (title.input, title.air))
                 .collect(),
         }
     }
@@ -351,6 +367,13 @@ pub(crate) struct SimulatedMonitorTap {
     /// was first seen there, which since-take clocks count from. Observed
     /// once per poll, so a take is dated to the first poll that sees it.
     taken_titles: BTreeMap<InputId, u64>,
+    /// The title phase each title on air is in, and the instant this tap saw
+    /// that phase start (`None` when it did not: the phase began before the
+    /// tap was watching, or its replay has caught up with the engine).
+    title_replays: BTreeMap<InputId, (TitleAir, Option<Instant>)>,
+    /// Whether the previous step rendered for a demanded state, so a phase
+    /// first seen now started while this tap was watching.
+    watching: bool,
     /// The latest Program picture with overlays composited.
     program_overlaid: Option<(ProgramKey, Option<Arc<ImageFrame>>)>,
     /// Scene compositions performed, observed by tests to prove caching.
@@ -416,6 +439,8 @@ impl SimulatedMonitorTap {
             self.pipeline = simulated_pipeline(project);
             self.built_revision = Some(state.revision);
         }
+        let replayed = self.replay_titles(state, project.settings().frame_rate, now);
+        let state = &replayed;
         let change_key = state.change_key();
         let changed = self.last_key.as_ref() != Some(&change_key);
         let due = self.last_emit.is_none_or(|last| {
@@ -711,6 +736,61 @@ impl SimulatedMonitorTap {
     fn idle(&mut self) {
         self.last_emit = None;
         self.last_key = None;
+        self.watching = false;
+        self.title_replays.clear();
+    }
+
+    /// `state` with each title's pose replayed in wall time.
+    ///
+    /// The simulated engine has no frame clock: a title take (or off-air)
+    /// renders its whole In (or Out) phase within the command, so every
+    /// state after it reports the settled pose and the monitor never showed
+    /// the animation. A phase this tap saw start is instead sampled at the
+    /// frame wall time has reached since then, at the show's rate, until
+    /// that catches up with the engine's frame cursor; from there on the
+    /// engine's own pose is shown. A phase that began before the tap was
+    /// watching is not replayed: it shows the engine's pose at once.
+    fn replay_titles(
+        &mut self,
+        state: &RealizedMonitorState,
+        rate: fm_types::FrameRate,
+        now: Instant,
+    ) -> RealizedMonitorState {
+        let watching = std::mem::replace(&mut self.watching, true);
+        self.title_replays
+            .retain(|input, _| state.airs.iter().any(|(on_air, _)| on_air == input));
+        let mut replayed = state.clone();
+        for (input, air) in &state.airs {
+            let replay = self
+                .title_replays
+                .entry(*input)
+                .or_insert((*air, watching.then_some(now)));
+            if replay.0 != *air {
+                // A new take, off-air, or re-take: its phase starts now.
+                *replay = (*air, watching.then_some(now));
+            }
+            let Some(since) = replay.1 else {
+                continue;
+            };
+            let frame = air
+                .start_frame()
+                .saturating_add(wall_frames(now.saturating_duration_since(since), rate));
+            if frame >= state.frame {
+                replay.1 = None;
+                continue;
+            }
+            let Some(sample) = air.at(frame).map(|frame| frame.sample) else {
+                continue;
+            };
+            match replayed
+                .titles
+                .binary_search_by_key(input, |(title, _)| *title)
+            {
+                Ok(index) => replayed.titles[index].1 = sample,
+                Err(index) => replayed.titles.insert(index, (*input, sample)),
+            }
+        }
+        replayed
     }
 
     /// Dates each title input newly on Program or a realized overlay to the
@@ -730,6 +810,13 @@ impl SimulatedMonitorTap {
     fn taken_frame(&self, input: InputId) -> Option<u64> {
         self.taken_titles.get(&input).copied()
     }
+}
+
+/// Whole frames of a show at `rate` in `elapsed` wall time.
+fn wall_frames(elapsed: Duration, rate: fm_types::FrameRate) -> u64 {
+    let frames = elapsed.as_nanos() * u128::from(rate.numerator())
+        / (u128::from(rate.denominator()) * 1_000_000_000);
+    u64::try_from(frames).unwrap_or(u64::MAX)
 }
 
 /// Layers each overlay source over `program` with the native overlay
@@ -1150,6 +1237,7 @@ mod tests {
             overlays: Vec::new(),
             titles: Vec::new(),
             scenes: Vec::new(),
+            airs: Vec::new(),
         }
     }
 
@@ -1739,6 +1827,74 @@ mod tests {
             ([200, 40, 10, 255], 3)
         );
         assert_eq!(program_at(3, None), ([200, 40, 10, 255], 3));
+    }
+
+    #[test]
+    fn a_simulated_title_take_plays_its_in_phase_on_the_monitor_in_wall_time() {
+        use fm_titles::fm_animation::Phase;
+        use fm_titles::{TitleAir, TitleAirTiming};
+
+        // The simulated engine realizes a take's whole In phase within the
+        // command, so every state after it reports the Hold pose. The tap
+        // plays the phase it saw start over the following wall time.
+        let mut project = project(1_920, 1_080);
+        add_title(&mut project, 20, FADE_TITLE_URI, (200, 40, 10));
+        let rate = project.settings().frame_rate;
+        let timing = TitleAirTiming::of(
+            &title_assets()
+                .template(FADE_TITLE_URI)
+                .unwrap()
+                .current()
+                .animation,
+        );
+        let in_frames = timing.output_frames(Phase::In, rate);
+        assert!(in_frames >= 8, "{in_frames}");
+        let frame_time = |frames: u64| {
+            Duration::from_nanos(
+                frames * 1_000_000_000 * u64::from(rate.denominator())
+                    / u64::from(rate.numerator()),
+            )
+        };
+        let server = server();
+        let start = Instant::now();
+        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
+        // Watching before the take: Program shows another input.
+        let watched = tap.poll_state(state(1, 1, 1), &project, &server, start, true);
+        assert_eq!(watched.len(), 2);
+        let taken = |frame_after_take: u64| {
+            // The title alone on Program, so its picture is over black.
+            let mut realized = state(2, 20, 1);
+            realized.frame = 10 + in_frames + frame_after_take;
+            realized.titles = vec![(input_id(20), AnimSample::Hold)];
+            realized.airs = vec![(input_id(20), TitleAir::take(timing, rate, 10))];
+            realized
+        };
+        let mut bar_at = |at: Instant| {
+            let frames = tap.poll_state(taken(0), &project, &server, at, true);
+            let program = frames
+                .iter()
+                .rev()
+                .find(|(tap, _)| *tap == MonitorTap::Program)
+                .map(|(_, bytes)| decode(bytes))
+                .expect("a Program frame");
+            pixel(&program, 200, 100)
+        };
+        let take = start + Duration::from_millis(400);
+        // The first picture after the take is the In phase's first frame.
+        let first = bar_at(take);
+        assert!(first[0] < 40, "{first:?}");
+        // Half way through the In phase in wall time, half faded in.
+        let half = bar_at(take + frame_time(in_frames / 2));
+        assert!((60..=150).contains(&half[0]), "{half:?}");
+        // Once the phase's wall time has passed, the title holds.
+        assert_eq!(bar_at(take + frame_time(in_frames + 2)), [200, 40, 10, 255]);
+
+        // A tap that starts watching after the take shows the hold at once:
+        // it never saw the take, so it does not replay it.
+        let mut late = SimulatedMonitorTap::with_titles(title_assets());
+        let frames = late.poll_state(taken(0), &project, &server, take, true);
+        let program = decode(&frames.last().unwrap().1);
+        assert_eq!(pixel(&program, 200, 100), [200, 40, 10, 255]);
     }
 
     #[test]

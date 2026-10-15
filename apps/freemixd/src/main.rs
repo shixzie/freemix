@@ -9068,8 +9068,10 @@ impl IdleReplayBudget {
 /// command, so the journal records only where each command ended; the frame
 /// it began at is that end minus the frames the command itself realizes.
 /// Replay ticks the engine idle up to there, exactly as the pacer did. A
-/// simulated daemon renders no idle frames, so this ticks nothing for its
-/// journal.
+/// simulated daemon renders idle frames only to catch a client's playlist
+/// control up to the show's wall-clock frame
+/// (`playlist_clock::PlaylistClock::catch_up`); replay ticks those the same
+/// way, and nothing for any other command.
 ///
 /// The clock's `playlist_advance` is accepted only for the playlist's
 /// pending boundary, or for the next frame once that boundary has passed: a

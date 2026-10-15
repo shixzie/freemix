@@ -11,6 +11,9 @@
 //!   wall time reaches the boundary frame it submits the advance. Executing
 //!   it ticks the engine up to the boundary, so the entry's input reaches
 //!   Program on the scheduled frame and its transition runs to completion.
+//!   A client's playlist control first catches the engine up to the
+//!   anchored wall-clock frame (see [`PlaylistClock::catch_up`]), so a Pause
+//!   holds the entry where the show had played it to.
 //! - The native media runtime's frame pacer realizes every engine frame on
 //!   its deadline, so the engine cursor *is* the show's frame. The clock
 //!   submits the advance once the boundary is the next frame the pacer will
@@ -50,9 +53,15 @@ pub(super) enum Pacing {
 /// Paces pending playlist boundaries against the show's frame.
 #[derive(Debug, Default)]
 pub(super) struct PlaylistClock {
-    /// Simulated pacing only: the engine frame cursor and the instant it was
+    /// Simulated pacing only: the show's frame and the instant it was
     /// observed when the pending boundary was first seen.
     anchor: Option<(u64, Instant)>,
+    /// The engine cursor at the previous pass, before any command executed
+    /// since. The anchor starts there: the command that made a boundary
+    /// pending (a Start) began on that frame at about this instant, and the
+    /// frames it rendered at once (its transition) are part of the show's
+    /// wall time, not a head start on it.
+    previous_cursor: Option<u64>,
     /// The revision at which the last advance was refused; the clock retries
     /// only after another accepted command changes the show.
     refused_at: Option<u64>,
@@ -67,14 +76,16 @@ impl PlaylistClock {
         control: &ControlService<Policy>,
         pacing: Pacing,
     ) -> Option<(u64, u64)> {
+        let cursor = control.frame_cursor();
+        let previous = self.previous_cursor.replace(cursor);
         let Some(frame) = control.playlist_advance_frame() else {
             self.anchor = None;
             return None;
         };
-        let cursor = control.frame_cursor();
         let reached = match pacing {
             Pacing::Wall { now, rate } => {
-                let (anchor_frame, anchor_at) = *self.anchor.get_or_insert((cursor, now));
+                let start = previous.map_or(cursor, |previous| previous.min(cursor));
+                let (anchor_frame, anchor_at) = *self.anchor.get_or_insert((start, now));
                 wall_frame(anchor_frame, anchor_at, now, rate)
             }
             // `frame` is never behind the cursor, so this holds exactly when
@@ -138,6 +149,40 @@ impl PlaylistClock {
             process_shutdown,
         )?;
         self.observe(frame, revision, &delivery.result);
+        Ok(())
+    }
+
+    /// Simulated runtime only: before a client's playlist control executes,
+    /// realizes the idle frames wall time has played since the anchor, so
+    /// the command lands on the show's frame. Without this a Pause recorded
+    /// the entry's position at the engine cursor, which on the simulated
+    /// engine only moves while commands execute (often just the entry's
+    /// transition frames), so a long-running entry paused near its start;
+    /// Next, Previous, Jump, and Stop were timed the same way.
+    ///
+    /// Never ticks onto the pending boundary, so the clock's own advance
+    /// still takes the next entry on its frame. Journal replay ticks the
+    /// same idle frames before the command (see `replay_idle_frames`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an engine tick failure.
+    pub(super) fn catch_up(
+        &self,
+        control: &mut ControlService<Policy>,
+        server: &fm_protocol::ServerIdentity,
+        rate: FrameRate,
+        now: Instant,
+    ) -> AppResult<()> {
+        let Some(boundary) = control.playlist_advance_frame() else {
+            return Ok(());
+        };
+        let target = self
+            .observed_frame(control.frame_cursor(), rate, now)
+            .min(boundary.saturating_sub(1));
+        while control.frame_cursor() < target {
+            control.tick(server)?;
+        }
         Ok(())
     }
 

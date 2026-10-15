@@ -5478,6 +5478,117 @@ fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery()
     );
 }
 
+/// A pause on the simulated daemon holds the entry where the show's wall
+/// clock had played it to, not where the engine's frame cursor last stopped
+/// (the simulated engine renders frames only while executing commands), and
+/// that position survives a kill and recovery.
+#[test]
+fn simulated_playlist_pause_holds_the_wall_clock_position_across_recovery() {
+    use fm_protocol::{
+        PlaylistEntrySpec, PlaylistLoopMode, PlaylistOperation, PlaylistRunState, PlaylistStart,
+        PlaylistTransitionKind,
+    };
+
+    fn playlist_state(client: &mut Client, revision: u64) -> PlaylistRunState {
+        match durable_event_at(client, revision).payload {
+            EventPayload::PlaylistChanged { state, .. } => state,
+            other => panic!("expected playlist_changed at {revision}, got {other:?}"),
+        }
+    }
+
+    let directory = TestDirectory::new("playlist-pause");
+    let project_path = directory.project_path();
+    create_rename_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.handshake_as(Role::Admin, None);
+    assert!(matches!(admin.receive(), WireMessage::Snapshot(_)));
+
+    // One 20 s entry at 25 fps, entered with a 24-frame slide.
+    admin.send(&command(
+        "set-playlist",
+        "set-playlist-key",
+        CommandPayload::SetPlaylist {
+            loop_mode: PlaylistLoopMode::Off,
+            entries: vec![PlaylistEntrySpec {
+                id: 1,
+                input: input(2),
+                duration_frames: 500,
+                transition: PlaylistTransitionKind::Slide,
+                transition_frames: 24,
+                enabled: true,
+            }],
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "set-playlist"), 1);
+    let _ = playlist_state(&mut admin, 1);
+    admin.send(&command(
+        "start-playlist",
+        "start-playlist-key",
+        CommandPayload::PlaylistControl {
+            operation: PlaylistOperation::Start {
+                at: PlaylistStart::Now,
+                from: None,
+            },
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "start-playlist"), 2);
+    assert!(matches!(
+        playlist_state(&mut admin, 2),
+        PlaylistRunState::Playing { entry: 1, .. }
+    ));
+    let started = Instant::now();
+    std::thread::sleep(Duration::from_millis(1_600));
+    admin.send(&command(
+        "pause-playlist",
+        "pause-playlist-key",
+        CommandPayload::PlaylistControl {
+            operation: PlaylistOperation::Pause,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut admin, "pause-playlist"), 3);
+    let played = started.elapsed();
+    let PlaylistRunState::Paused {
+        entry: 1,
+        elapsed_frames,
+        ..
+    } = playlist_state(&mut admin, 3)
+    else {
+        panic!("expected the entry paused");
+    };
+    // 1.6 s at 25 fps is 40 frames; the slide alone is 24.
+    let upper = u64::try_from(played.as_millis() / 40).unwrap() + 2;
+    assert!(
+        (38..=upper).contains(&elapsed_frames),
+        "paused at {elapsed_frames} frames after {played:?}"
+    );
+    let (_, paused) = playlist_sync(&daemon);
+    assert!(matches!(
+        paused.state,
+        PlaylistRunState::Paused { elapsed_frames: e, .. } if e == elapsed_frames
+    ));
+    drop(admin);
+    daemon.stop();
+
+    // Journal replay reproduces the paused position exactly.
+    let daemon = Daemon::start(&project_path);
+    let (_, recovered) = playlist_sync(&daemon);
+    assert!(
+        matches!(
+            recovered.state,
+            PlaylistRunState::Paused { entry: 1, elapsed_frames: e, .. } if e == elapsed_frames
+        ),
+        "recovered {:?}",
+        recovered.state
+    );
+    daemon.wait_success();
+}
+
 /// Reads the snapshot, its `title_state` records, and the
 /// `title_animation_state` of every announced title (Protocol 2.29), and
 /// then every title's `title_layout_state` (Protocol 2.30), which must be

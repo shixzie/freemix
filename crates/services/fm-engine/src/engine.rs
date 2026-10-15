@@ -324,6 +324,10 @@ pub struct TitleCue {
 pub struct EngineTitleAir {
     pub input: InputId,
     pub channel: OverlayChannelId,
+    /// The title's current In or Out phase: where it started and how long
+    /// it plays, so a renderer sampling on its own clock (the simulated
+    /// monitor) can play the phase the engine realized at once.
+    pub air: TitleAir,
     pub frame: TitleAirFrame,
 }
 
@@ -2536,6 +2540,7 @@ fn title_air_frames(
             air.at(frame).map(|frame| EngineTitleAir {
                 input: *input,
                 channel: *channel,
+                air: *air,
                 frame,
             })
         })

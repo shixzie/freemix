@@ -500,6 +500,7 @@ pub(super) fn run(
     let title_previews = crate::title_preview::spawn_preview_worker(Arc::clone(titles))?;
     let runtime = Runtime {
         server,
+        authority,
         control,
         store,
         titles,
@@ -887,6 +888,8 @@ impl From<QueueRefusal> for DispatchError {
 
 struct Runtime<'a> {
     server: &'a Server<ControlHandle>,
+    /// The daemon identity engine ticks run under.
+    authority: &'a ServerIdentity,
     control: &'a SharedControl,
     store: &'a dyn DurableStore,
     /// Templates and fonts for simulated monitor frames and exact title
@@ -900,6 +903,31 @@ struct Runtime<'a> {
 }
 
 impl Runtime<'_> {
+    /// Simulated runtime: the engine's cursor trails the show's wall clock,
+    /// so a client's playlist control first catches up to the show's frame
+    /// (a Pause then holds the entry where it had played to). The native
+    /// pacer's cursor is the show's frame already.
+    fn catch_up_playlist(
+        &self,
+        command: &fm_protocol::CommandMessage,
+        durable: &StoredProject,
+        simulated: bool,
+    ) -> Result<(), DispatchError> {
+        if !simulated || !matches!(command.payload, CommandPayload::PlaylistControl { .. }) {
+            return Ok(());
+        }
+        self.playlist_clock
+            .borrow()
+            .catch_up(
+                &mut self.control.borrow_mut(),
+                self.authority,
+                durable.project().settings().frame_rate,
+                Instant::now(),
+            )
+            .map_err(DispatchError::Daemon)
+    }
+
+    #[allow(clippy::too_many_lines)] // one match over every client message
     fn dispatch(
         &self,
         peer: &mut Peer,
@@ -913,6 +941,7 @@ impl Runtime<'_> {
         let mut native = native;
         match message {
             WireMessage::Command(command) => {
+                self.catch_up_playlist(&command, durable, native.is_none())?;
                 let delivery = execute_session_command(
                     peer.session.as_mut().expect("active peers have sessions"),
                     self.control,
