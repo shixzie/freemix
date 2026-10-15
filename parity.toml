@@ -15,8 +15,8 @@ state = "planned"
 [[tests]]
 id = "accept-in-003"
 state = "present"
-paths = ["crates/io/fm-codec-ffmpeg/tests/ffmpeg.rs"]
-commands = ["cargo test -p fm-codec-ffmpeg --test ffmpeg"]
+paths = ["crates/io/fm-codec-ffmpeg/tests/ffmpeg.rs", "crates/io/fm-codec-ffmpeg/tests/media_playback.rs", "crates/media/fm-playback/tests/media_controller.rs"]
+commands = ["cargo test -p fm-codec-ffmpeg --test ffmpeg", "cargo test -p fm-codec-ffmpeg --test media_playback", "cargo test -p fm-playback --test media_controller"]
 [[tests]]
 id = "accept-in-004"
 state = "planned"

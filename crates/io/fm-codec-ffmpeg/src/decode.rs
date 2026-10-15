@@ -352,46 +352,7 @@ impl Adapter {
         requested_count: usize,
         requirement: CountRequirement,
     ) -> Result<PreparedVideo, Error> {
-        let width = stream.width.ok_or(Error::MalformedProbe)?;
-        let height = stream.height.ok_or(Error::MalformedProbe)?;
-        check_dimension(width, self.limits().max_width, LimitKind::Width)?;
-        check_dimension(height, self.limits().max_height, LimitKind::Height)?;
-        if !matches!(stream.sample_aspect_ratio.as_deref(), Some("1:1" | "1/1")) {
-            return Err(Error::Unsupported(Unsupported::NonSquarePixels));
-        }
-        if stream
-            .rotation_degrees
-            .is_some_and(|rotation| rotation % 360 != 0)
-        {
-            return Err(Error::Unsupported(Unsupported::Rotation));
-        }
-        if stream
-            .field_order
-            .as_deref()
-            .is_some_and(|order| order != "progressive" && order != "unknown")
-        {
-            return Err(Error::Unsupported(Unsupported::InterlacedVideo));
-        }
-        let pixel_format = stream
-            .pixel_format
-            .as_deref()
-            .ok_or(Error::MalformedProbe)?;
-        if !supported_non_alpha_pixel_format(pixel_format)
-            && !supported_alpha_pixel_format(pixel_format)
-        {
-            return Err(Error::Unsupported(if source_has_alpha(pixel_format) {
-                Unsupported::AlphaVideo
-            } else {
-                Unsupported::PixelFormat
-            }));
-        }
-        if stream
-            .color_transfer
-            .as_deref()
-            .is_some_and(is_hdr_transfer)
-        {
-            return Err(Error::Unsupported(Unsupported::HdrTransfer));
-        }
+        let (width, height, pixel_format) = validate_video_stream(self.limits(), &stream)?;
         let metadata = self.frame_records(source, stream.index, start, requested_count)?;
         validate_pts_order(&metadata.records)?;
         let requested_end = start
@@ -1950,7 +1911,7 @@ fn validate_audio_span(
     }
 }
 
-fn media_timing(
+pub(crate) fn media_timing(
     pts: i64,
     duration_ticks: u64,
     time_base: TimeBase,
@@ -2011,7 +1972,7 @@ const UNSPECIFIED_LAYOUTS: [&str; ChannelLayout::MAX_CHANNELS] = [
 /// they are rear or ordinary surrounds is ambiguous. A stream without a
 /// channel layout keeps the mono/stereo defaults for one or two channels and
 /// is otherwise decoded as `{n}C` into discrete channels `1..=n` (`n <= 16`).
-fn map_layout(
+pub(crate) fn map_layout(
     raw_layout: Option<&str>,
     channels: u32,
 ) -> Result<(&'static str, ChannelLayout), Error> {
@@ -2053,7 +2014,56 @@ fn map_layout(
     ))
 }
 
-fn mapped_video_metadata(stream: &StreamInfo) -> Option<VideoFrameMetadata> {
+/// Validates the decode contract of one probed video stream and returns its
+/// dimensions and source pixel format.
+pub(crate) fn validate_video_stream(
+    limits: crate::Limits,
+    stream: &StreamInfo,
+) -> Result<(u32, u32, &str), Error> {
+    let width = stream.width.ok_or(Error::MalformedProbe)?;
+    let height = stream.height.ok_or(Error::MalformedProbe)?;
+    check_dimension(width, limits.max_width, LimitKind::Width)?;
+    check_dimension(height, limits.max_height, LimitKind::Height)?;
+    if !matches!(stream.sample_aspect_ratio.as_deref(), Some("1:1" | "1/1")) {
+        return Err(Error::Unsupported(Unsupported::NonSquarePixels));
+    }
+    if stream
+        .rotation_degrees
+        .is_some_and(|rotation| rotation % 360 != 0)
+    {
+        return Err(Error::Unsupported(Unsupported::Rotation));
+    }
+    if stream
+        .field_order
+        .as_deref()
+        .is_some_and(|order| order != "progressive" && order != "unknown")
+    {
+        return Err(Error::Unsupported(Unsupported::InterlacedVideo));
+    }
+    let pixel_format = stream
+        .pixel_format
+        .as_deref()
+        .ok_or(Error::MalformedProbe)?;
+    if !supported_non_alpha_pixel_format(pixel_format)
+        && !supported_alpha_pixel_format(pixel_format)
+    {
+        return Err(Error::Unsupported(if source_has_alpha(pixel_format) {
+            Unsupported::AlphaVideo
+        } else {
+            Unsupported::PixelFormat
+        }));
+    }
+    if stream
+        .color_transfer
+        .as_deref()
+        .is_some_and(is_hdr_transfer)
+    {
+        return Err(Error::Unsupported(Unsupported::HdrTransfer));
+    }
+    Ok((width, height, pixel_format))
+}
+
+pub(crate) fn mapped_video_metadata(stream: &StreamInfo) -> Option<VideoFrameMetadata> {
     let primaries = map_primaries(stream.color_primaries.as_deref()?)?;
     let transfer = map_transfer(stream.color_transfer.as_deref()?)?;
     Some(VideoFrameMetadata::new(
@@ -2087,11 +2097,11 @@ fn map_transfer(value: &str) -> Option<TransferFunction> {
     }
 }
 
-fn is_hdr_transfer(value: &str) -> bool {
+pub(crate) fn is_hdr_transfer(value: &str) -> bool {
     matches!(value, "smpte2084" | "arib-std-b67")
 }
 
-fn supported_non_alpha_pixel_format(value: &str) -> bool {
+pub(crate) fn supported_non_alpha_pixel_format(value: &str) -> bool {
     matches!(
         value,
         "yuv420p"
@@ -2115,7 +2125,7 @@ fn supported_non_alpha_pixel_format(value: &str) -> bool {
     )
 }
 
-fn supported_alpha_pixel_format(value: &str) -> bool {
+pub(crate) fn supported_alpha_pixel_format(value: &str) -> bool {
     matches!(
         value,
         "yuva420p"
@@ -2140,13 +2150,13 @@ fn supported_alpha_pixel_format(value: &str) -> bool {
     )
 }
 
-fn source_has_alpha(value: &str) -> bool {
+pub(crate) fn source_has_alpha(value: &str) -> bool {
     value.starts_with("yuva")
         || value.starts_with("gbrap")
         || matches!(value, "rgba" | "bgra" | "argb" | "abgr" | "ya8" | "ya16le")
 }
 
-fn check_dimension(actual: u32, maximum: u32, kind: LimitKind) -> Result<(), Error> {
+pub(crate) fn check_dimension(actual: u32, maximum: u32, kind: LimitKind) -> Result<(), Error> {
     if actual == 0 {
         return Err(Error::MalformedProbe);
     }
@@ -2160,7 +2170,7 @@ fn check_dimension(actual: u32, maximum: u32, kind: LimitKind) -> Result<(), Err
     Ok(())
 }
 
-fn decoded_limit(actual: u64, maximum: usize) -> Error {
+pub(crate) fn decoded_limit(actual: u64, maximum: usize) -> Error {
     Error::LimitExceeded {
         kind: LimitKind::DecodedBytes,
         actual,

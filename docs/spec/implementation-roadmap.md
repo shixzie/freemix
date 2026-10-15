@@ -421,6 +421,41 @@ T-bar audio sources or certify other platforms and outputs. The Web runtime
 operator path also remains incomplete. Item 7 and the related parity rows
 therefore remain incomplete and planned.
 
+Current implementation boundary for video-file and growing-file playback
+(`IN-003`): `fm-playback::MediaPlayback` is a backend-independent rational
+transport. Its playhead is an exact source-frame fraction advanced per output
+tick by `rate x source_rate / output_rate`, so 0.25x-4x rates drop or
+duplicate frames by one floor rule and differing source/output rates never
+drift. It owns play, pause, resume, stop, exact frame and rational-time seek,
+inclusive-in/exclusive-out trim, looping of the trimmed (or whole) range, end
+actions (stop and cue, hold last frame, loop) with `Ended`, `Looped`, and a
+configurable lead `EndTrigger` event, audio-track selection by stream index
+with mid-play switching at the exact sample, and an audio speed policy (mute,
+or linear varispeed of exactly the covered source span; normal-rate audio is
+sample-contiguous). A growing source exposes `available - live_edge_offset`
+frames, waits (holding the last frame) at that live edge instead of ending,
+resumes without skipping when more frames arrive, and refuses a shrinking
+frame count. `fm-codec-ffmpeg::FilePlayer` drives it over one local file: a
+bounded ffprobe packet scan builds a sorted presentation-timestamp and keyframe
+index (constant frame rate is required), each video window seeks to the
+keyframe at or before the target, decodes forward with `-copyts`, selects by
+exact timestamp, and accepts output only when a `showinfo` side chain reports
+exactly the indexed timestamps (retrying from earlier keyframes, then from the
+start). Audio windows trim by exact sample timestamp and verify the first
+sample with `ashowinfo`; accuracy is bounded by the container's audio
+timestamps (sample-exact for NUT/MP4/WAV, +-0.5 ms in Matroska). Growing files
+are followed by size polling and full index rescans; a smaller file, a
+different file at the path, changed leading bytes, or changed indexed
+timestamps are refused with typed errors, and a complete source must not
+change at all. Acceptance (`accept-in-003`) asserts frame numbers from decoded
+pixels and sample indices from decoded ramps for Matroska/NUT/MPEG-TS with
+B-frames and 12-frame GOPs, and plays an MPEG-TS that is appended in three
+segments while playing. The transport is not yet wired into the engine,
+project schema, protocol, daemon, CLI, or Studio; there is no persistent
+decoder process (each window is a bounded tool run), no reverse play, no
+variable-frame-rate source support, and no pitch-preserving time stretch, so
+`IN-003` remains planned.
+
 Current implementation boundary for item 8: `fm-gpu` provides a portable,
 bounded latest-frame presentation policy plus opaque, context-bound native
 surface configuration, acquisition, submission, presentation dispatch, and

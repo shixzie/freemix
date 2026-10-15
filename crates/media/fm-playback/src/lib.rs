@@ -2,12 +2,16 @@
 //!
 //! This crate intentionally does not decode media. [`FixtureClip`] provides an
 //! in-memory reference source, while [`FrameCodec`] is the boundary for a real
-//! encoded-media adapter.
+//! encoded-media adapter. [`MediaPlayback`] is the rational, backend-independent
+//! transport for decoded media files (seek, trim, loop, rate, end actions,
+//! audio-track selection, and growing-file live edges); `fm-codec-ffmpeg`
+//! drives it over real files.
 
 mod clip;
 mod image_folder;
 mod image_sequence;
 mod list;
+mod media;
 mod playlist;
 mod slideshow;
 mod transport;
@@ -31,6 +35,11 @@ pub use list::{
     ActivationCause, ListAction, ListControlError, ListError, ListEvent, ListGo, ListGoError,
     ListItem, ListOptions, ListPlayer, ListTick, ListTickError, MAX_LIST_GO_RECORDS,
     MAX_LIST_ITEMS, MAX_PENDING_LIST_GO, MediaList,
+};
+pub use media::{
+    AudioPlan, AudioSpeedPolicy, AudioTrack, MAX_PLAYBACK_RATE, MIN_PLAYBACK_RATE,
+    MediaControlError, MediaEndAction, MediaEvent, MediaPlayback, MediaSourceConfig, MediaState,
+    MediaTick, PlaybackRate, RationalSeconds, resample_linear,
 };
 pub use playlist::{
     CancelGoOutcome, EndAction, GoError, GoScheduleOutcome, GoStatus, MAX_PENDING_PLAYLIST_GO,

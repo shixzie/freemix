@@ -27,6 +27,7 @@ mod audio_seek;
 mod config;
 mod decode;
 mod error;
+mod playback;
 mod probe;
 mod process;
 pub mod record;
@@ -49,6 +50,10 @@ pub use decode::{
     LocalAudioDecoder, LocalVideoDecoder, SequenceRequest,
 };
 pub use error::{Error, LimitKind, Tool, UnavailableReason, Unsupported};
+pub use playback::{
+    FilePlaybackConfig, FilePlaybackError, FilePlaybackTelemetry, FilePlayer, GrowingFileConfig,
+    MAX_PLAYBACK_WINDOW_FRAMES, PlaybackOutput, SeekReport, SourceRefresh,
+};
 pub use probe::{FormatInfo, Probe, StreamInfo, StreamKind, StreamSelector};
 use process::{RunOutput, RunRequest};
 
@@ -234,6 +239,35 @@ impl Adapter {
         result
     }
 
+    /// Runs one bounded tool invocation without the fixed-fingerprint source
+    /// checks. File playback applies its own (growth-tolerant) identity checks.
+    pub(crate) fn run_unchecked(
+        &self,
+        redaction: &str,
+        tool: Tool,
+        args: &[OsString],
+        timeout: std::time::Duration,
+        max_stdout: usize,
+    ) -> Result<RunOutput, Error> {
+        let redactions = [redaction];
+        process::run(RunRequest {
+            executable: self.executable(tool),
+            tool,
+            args,
+            env: &[],
+            timeout,
+            kill_timeout: self.limits.kill_timeout,
+            max_stdout,
+            max_stderr: self.limits.max_stderr_bytes,
+            redactions: &redactions,
+        })
+    }
+
+    /// Canonicalizes and admits one local path under the allowed root.
+    pub(crate) fn admit_path(&self, path: &Path) -> Result<PathBuf, Error> {
+        Ok(self.open_source(path)?.path)
+    }
+
     fn check_source(&self, source: &Source) -> Result<(), Error> {
         let fingerprint = match fingerprint(&source.path, self.limits.max_input_bytes) {
             Ok(fingerprint) => fingerprint,
@@ -278,7 +312,7 @@ fn executable(config: Executable, default: &str, tool: Tool) -> Result<OsString,
     }
 }
 
-fn probe_args(path: &Path) -> Vec<OsString> {
+pub(crate) fn probe_args(path: &Path) -> Vec<OsString> {
     [
         OsString::from("-v"),
         OsString::from("error"),
@@ -334,7 +368,7 @@ fn source_fingerprint(path: &Path, metadata: &Metadata) -> Result<SourceFingerpr
 /// identity the API cannot report, records no identity, matching the optional
 /// fingerprint fields; size and modified time always remain.
 #[cfg(windows)]
-fn platform_file_identity(path: &Path) -> (Option<u32>, Option<u64>) {
+pub(crate) fn platform_file_identity(path: &Path) -> (Option<u32>, Option<u64>) {
     let Ok(file) = std::fs::File::open(path) else {
         return (None, None);
     };
@@ -350,7 +384,7 @@ fn platform_file_identity(path: &Path) -> (Option<u32>, Option<u64>) {
 /// Non-Windows platforms carry no volume serial number or file index; the
 /// device, inode, and change time already identify the file.
 #[cfg(not(windows))]
-const fn platform_file_identity(_path: &Path) -> (Option<u32>, Option<u64>) {
+pub(crate) const fn platform_file_identity(_path: &Path) -> (Option<u32>, Option<u64>) {
     (None, None)
 }
 
@@ -373,7 +407,7 @@ fn availability_reason(error: &Error) -> UnavailableReason {
     }
 }
 
-fn map_input_io(error: &io::Error) -> Error {
+pub(crate) fn map_input_io(error: &io::Error) -> Error {
     match error.kind() {
         io::ErrorKind::NotFound => Error::InputNotFound,
         _ => Error::InputAccessDenied,
