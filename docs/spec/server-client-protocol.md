@@ -385,7 +385,8 @@ Protocol 2.28 edits and replicates project colour grading (`SW-019`):
 
 - Grade commands, all `EditProject` (the Graphics role, like title field
   saves), undoable through the shared edit history, and padlocked like other
-  project edits (an input padlock also covers that input's grade):
+  project edits (an input padlock also covers that input's grade, and so
+  refuses `grade_library_update` of a library grade the locked input uses):
   - `grade_input_set` (`input` plus exactly one of `library=<grade id>` or
     `grade=<grade>`) and `grade_input_clear` (`input`). The input must exist.
   - `grade_program_set` (exactly one of `library` or `grade`) and
@@ -470,7 +471,11 @@ Protocol 2.29 edits, replicates, and previews title animations (`GX-011`):
   `frames` is at most `fm_animation::MAX_PHASE_FRAMES`. Every applied edit,
   undo and redo included, advances the animation revision by exactly one;
   undo and redo restore the whole previous clip (the journal records them as
-  revision-checked `title_animation_set` commands).
+  revision-checked `title_animation_set` commands). An edit (undo and redo
+  included) whose resulting clip would not fit `MAX_TITLE_ANIMATION_BYTES`
+  is refused with `code=invalid_command` and field code `too_large`, so
+  every `title_animation_changed` and `title_animation_state` stays
+  encodable; a daemon refuses to start on a stored template beyond it.
 - `clip` is one unpadded base64url field of a compact binary encoding, at
   most **36 KiB raw** (`MAX_TITLE_ANIMATION_BYTES`, 48 KiB encoded, the field
   limit). Integers are minimal LEB128 varints, signed values zigzag-mapped:

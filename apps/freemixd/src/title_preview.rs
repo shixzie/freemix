@@ -11,20 +11,26 @@
 //! The answer is one four-channel QOI stream of straight RGBA8 pixels at the
 //! requested size (at most 640x360) split into `title_preview_frame` parts,
 //! written to a raw peer through its own latest-wins lossy slot, so a newer
-//! preview replaces one not yet started. Previews render on the session loop;
-//! the per-session `title_previews` rate (fm-server) bounds that work.
+//! preview replaces one not yet started. The session loop only resolves a
+//! preview ([`prepare_preview`]); it renders on a worker thread
+//! ([`TitlePreviewWorker`]), latest wins per peer, so a slow template never
+//! delays native frames, command results, or heartbeats. The per-session
+//! `title_previews` rate (fm-server) bounds the work.
 
-use std::sync::Arc;
+use std::collections::BTreeMap;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::{self, JoinHandle};
 
 use fm_auth::Policy;
 use fm_control::{ControlService, title_clip_from_wire};
-use fm_model::Project;
+use fm_model::{Project, TitleInput};
 use fm_protocol::{
     ServerIdentity, StructuredError, TitlePreviewFrameMessage, TitlePreviewRequest,
-    TitlePreviewSample, encode_qoi_rgba, title_preview_parts,
+    TitlePreviewSample, WireInputId, encode_qoi_rgba, title_preview_parts,
 };
 use fm_titles::fm_animation::{ClipPosition, ClipState, Phase};
 use fm_titles::{TitleClip, TitleTemplate};
+use fm_types::InputId;
 
 use crate::title_render::{self, TitleAssets};
 
@@ -60,21 +66,74 @@ fn pose(sample: TitlePreviewSample, clip: &TitleClip) -> Result<ClipState, Struc
     })
 }
 
-/// Renders the exact preview `request` asks for and splits it into the
-/// `title_preview_frame` parts `server` sends.
+/// One exact preview, resolved on the session loop from the engine and the
+/// durable project as of its request, and rendered off it
+/// ([`PreviewJob::render`] on a [`LatestWorker`]).
+pub(crate) struct PreviewJob {
+    server: ServerIdentity,
+    request_id: String,
+    wire_input: WireInputId,
+    input: InputId,
+    title: TitleInput,
+    template: Arc<TitleTemplate>,
+    time: title_render::TitleTime,
+    animation_revision: u64,
+    draft: bool,
+    width: u16,
+    height: u16,
+}
+
+impl PreviewJob {
+    /// Renders the preview and splits it into the `title_preview_frame`
+    /// parts its server sends.
+    ///
+    /// # Errors
+    ///
+    /// A `render_failed` refusal when the render or its encoding fails.
+    pub(crate) fn render(
+        &self,
+        assets: &TitleAssets,
+    ) -> Result<Vec<TitlePreviewFrameMessage>, StructuredError> {
+        let input = self.input;
+        let pixels = title_render::render_title_preview(
+            assets,
+            &self.template,
+            input,
+            &self.title,
+            self.time,
+            u32::from(self.width),
+            u32::from(self.height),
+        )
+        .ok_or_else(|| refusal("render_failed", format!("title {input} did not render")))?;
+        let qoi = encode_qoi_rgba(self.width, self.height, &pixels)
+            .map_err(|error| refusal("render_failed", error.to_string()))?;
+        Ok(title_preview_parts(
+            &self.server,
+            &self.request_id,
+            self.wire_input,
+            self.animation_revision,
+            self.draft,
+            self.width,
+            self.height,
+            &qoi,
+        ))
+    }
+}
+
+/// Resolves the exact preview `request` asks for: everything but the
+/// render, which [`PreviewJob::render`] does off the session loop.
 ///
 /// # Errors
 ///
 /// A `not_found` refusal for an input that is not a title with a loaded
-/// template, `invalid_request` for a draft clip the template refuses or a
-/// frame past its phase, and `render_failed` when the render fails.
-pub(crate) fn render_preview(
+/// template, and `invalid_request` for a draft clip the template refuses or
+/// a frame past its phase.
+pub(crate) fn prepare_preview(
     control: &ControlService<Policy>,
     project: &Project,
-    assets: &TitleAssets,
     server: &ServerIdentity,
     request: &TitlePreviewRequest,
-) -> Result<Vec<TitlePreviewFrameMessage>, StructuredError> {
+) -> Result<PreviewJob, StructuredError> {
     let input = request.input.to_domain();
     let title = title_render::title_of_input(project, input)
         .ok_or_else(|| refusal("not_found", format!("input {input} is not a title")))?;
@@ -104,26 +163,196 @@ pub(crate) fn render_preview(
         None,
         pose,
     );
-    let pixels = title_render::render_title_preview(
-        assets,
-        &template,
+    Ok(PreviewJob {
+        server: server.clone(),
+        request_id: request.request_id.clone(),
+        wire_input: request.input,
         input,
-        title,
+        title: title.clone(),
+        template,
         time,
-        u32::from(request.width),
-        u32::from(request.height),
-    )
-    .ok_or_else(|| refusal("render_failed", format!("title {input} did not render")))?;
-    let qoi = encode_qoi_rgba(request.width, request.height, &pixels)
-        .map_err(|error| refusal("render_failed", error.to_string()))?;
-    Ok(title_preview_parts(
-        server,
-        &request.request_id,
-        request.input,
         animation_revision,
-        request.clip.is_some(),
-        request.width,
-        request.height,
-        &qoi,
-    ))
+        draft: request.clip.is_some(),
+        width: request.width,
+        height: request.height,
+    })
+}
+
+/// A worker thread that runs jobs off the session loop, at most one
+/// pending job per peer: a newer job replaces one that has not started,
+/// and a newer answer replaces one the loop has not taken yet. Previews
+/// render here so a slow template never delays a native frame, a command
+/// result, or a heartbeat.
+pub(crate) struct LatestWorker<J, R> {
+    shared: Arc<WorkerShared<J, R>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+struct WorkerShared<J, R> {
+    slot: Mutex<WorkerSlot<J, R>>,
+    wake: Condvar,
+}
+
+struct WorkerSlot<J, R> {
+    pending: BTreeMap<u64, J>,
+    finished: BTreeMap<u64, R>,
+    shutdown: bool,
+}
+
+impl<J, R> WorkerShared<J, R> {
+    fn lock(&self) -> MutexGuard<'_, WorkerSlot<J, R>> {
+        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl<J: Send + 'static, R: Send + 'static> LatestWorker<J, R> {
+    /// Starts the worker thread `name`, running `run` on each job.
+    ///
+    /// # Errors
+    ///
+    /// Returns the operating system error when the thread cannot start.
+    pub(crate) fn spawn(
+        name: &str,
+        mut run: impl FnMut(J) -> R + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let shared = Arc::new(WorkerShared {
+            slot: Mutex::new(WorkerSlot {
+                pending: BTreeMap::new(),
+                finished: BTreeMap::new(),
+                shutdown: false,
+            }),
+            wake: Condvar::new(),
+        });
+        let worker_shared = Arc::clone(&shared);
+        let worker = thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                loop {
+                    let (peer, job) = {
+                        let mut slot = worker_shared.lock();
+                        loop {
+                            if slot.shutdown {
+                                return;
+                            }
+                            if let Some(next) = slot.pending.pop_first() {
+                                break next;
+                            }
+                            slot = worker_shared
+                                .wake
+                                .wait(slot)
+                                .unwrap_or_else(PoisonError::into_inner);
+                        }
+                    };
+                    let answer = run(job);
+                    worker_shared.lock().finished.insert(peer, answer);
+                }
+            })?;
+        Ok(Self {
+            shared,
+            worker: Some(worker),
+        })
+    }
+
+    /// Queues `job` for `peer`, replacing its job that has not started.
+    /// Never waits for a running job.
+    pub(crate) fn submit(&self, peer: u64, job: J) {
+        self.shared.lock().pending.insert(peer, job);
+        self.shared.wake.notify_one();
+    }
+
+    /// The answers finished since the last call, one per peer.
+    pub(crate) fn take_finished(&self) -> BTreeMap<u64, R> {
+        std::mem::take(&mut self.shared.lock().finished)
+    }
+}
+
+impl<J, R> Drop for LatestWorker<J, R> {
+    fn drop(&mut self) {
+        self.shared.lock().shutdown = true;
+        self.shared.wake.notify_all();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+/// The preview worker of a session loop: answers carry the request id and
+/// the parts, or the refusal, of the newest preview of each peer.
+pub(crate) type TitlePreviewWorker = LatestWorker<
+    PreviewJob,
+    (
+        String,
+        Result<Vec<TitlePreviewFrameMessage>, StructuredError>,
+    ),
+>;
+
+/// Starts the preview worker rendering with `assets`.
+///
+/// # Errors
+///
+/// Returns the operating system error when the thread cannot start.
+pub(crate) fn spawn_preview_worker(
+    assets: Arc<TitleAssets>,
+) -> std::io::Result<TitlePreviewWorker> {
+    LatestWorker::spawn("freemixd-title-preview", move |job: PreviewJob| {
+        let answer = job.render(&assets);
+        (job.request_id, answer)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    use super::LatestWorker;
+
+    fn wait_for<R>(
+        worker: &LatestWorker<u32, R>,
+        mut done: impl FnMut(&LatestWorker<u32, R>) -> bool,
+    ) where
+        R: Send + 'static,
+    {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(worker) {
+            assert!(Instant::now() < deadline, "worker did not finish");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Regression: previews render off the session loop. Submitting never
+    /// waits for a running render, a newer job replaces a peer's job that
+    /// has not started, and every peer is answered.
+    #[test]
+    fn preview_jobs_run_off_the_caller_and_the_latest_job_per_peer_wins() {
+        let (started_tx, started) = mpsc::channel();
+        let (release, release_rx) = mpsc::channel::<()>();
+        let worker = LatestWorker::spawn("test-preview", move |job: u32| {
+            started_tx.send(job).unwrap();
+            release_rx.recv().unwrap();
+            job * 10
+        })
+        .unwrap();
+        worker.submit(1, 1);
+        assert_eq!(started.recv_timeout(Duration::from_secs(10)).unwrap(), 1);
+        // The worker is busy rendering job 1: these return at once, and
+        // the newer of peer 1's pending jobs replaces the older.
+        let submitted = Instant::now();
+        worker.submit(1, 2);
+        worker.submit(2, 5);
+        worker.submit(1, 3);
+        assert!(submitted.elapsed() < Duration::from_secs(5));
+        assert!(worker.take_finished().is_empty());
+        for _ in 0..3 {
+            release.send(()).unwrap();
+        }
+        let mut answers = std::collections::BTreeMap::new();
+        wait_for(&worker, |worker| {
+            answers.extend(worker.take_finished());
+            answers.len() == 2 && answers.get(&1) == Some(&30)
+        });
+        assert_eq!(answers.get(&2), Some(&50));
+        let ran: Vec<u32> = started.try_iter().collect();
+        assert_eq!(ran, vec![3, 5]);
+    }
 }

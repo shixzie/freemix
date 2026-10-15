@@ -624,6 +624,9 @@ pub struct Engine {
     /// in motion, while its overlay channel still shows it. Runtime state:
     /// never snapshotted, so a restored title holds.
     title_air: BTreeMap<InputId, (OverlayChannelId, TitleAir)>,
+    /// Whether a title clip can be carried to clients (see
+    /// [`Self::set_title_clip_bound`]); `None` bounds nothing.
+    title_clip_bound: Option<crate::TitleClipBound>,
 }
 
 impl Engine {
@@ -643,7 +646,15 @@ impl Engine {
             history: EditHistory::default(),
             playlist_hold: None,
             title_air: BTreeMap::new(),
+            title_clip_bound: None,
         }
+    }
+
+    /// Refuses every title animation edit (undo and redo included) whose
+    /// resulting clip `bound` rejects: a clip the protocol cannot carry
+    /// would make every event and snapshot record naming it unencodable.
+    pub fn set_title_clip_bound(&mut self, bound: crate::TitleClipBound) {
+        self.title_clip_bound = Some(bound);
     }
 
     #[must_use]
@@ -958,6 +969,7 @@ impl Engine {
             _ => None,
         };
         let staged_resolution = resolution.clone();
+        let title_clip_bound = self.title_clip_bound;
         let outcome = self.commands.apply(envelope, now_millis, move |_, _| {
             let ResolvedCommand { command, .. } = staged_resolution?;
             if let Some(frame) = held_until {
@@ -1009,6 +1021,7 @@ impl Engine {
                 target_frame,
                 realized_on_air,
                 playlist,
+                title_clip_bound,
             })
         });
 
@@ -1280,6 +1293,7 @@ impl Engine {
             history: EditHistory::default(),
             playlist_hold: None,
             title_air: BTreeMap::new(),
+            title_clip_bound: None,
         })
     }
 }
@@ -1390,6 +1404,8 @@ struct EngineMutation {
     realized_on_air: Option<InputUsage>,
     /// The stepped playlist of a playlist command.
     playlist: Option<Result<PlaylistStep, Rejection>>,
+    /// The engine's title clip bound, for an animation edit.
+    title_clip_bound: Option<crate::TitleClipBound>,
 }
 
 impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
@@ -1427,7 +1443,7 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             return apply_title_mutation(state, events, self);
         }
         if let EngineCommand::TitleAnimation(edit) = &self.command {
-            crate::title_animation::apply(state, edit)?;
+            crate::title_animation::apply(state, edit, self.title_clip_bound)?;
             events.push(EngineEvent::TitleAnimationChanged { input: edit.input });
             return Ok(EngineAcceptance {
                 target_frame: self.target_frame,

@@ -392,30 +392,30 @@ impl Peer {
         }
     }
 
-    /// Coalesces the latest exact title preview group in its own slot: a
-    /// newer preview replaces one that has not started writing. Only raw
-    /// peers have lossy slots, so a web peer is answered with an error.
+    /// Coalesces the latest exact title preview answer (its
+    /// `title_preview_frame` parts, or the error its render met) in its own
+    /// slot: a newer preview replaces one that has not started writing.
+    /// Only raw peers are handed previews to render.
     fn replace_title_preview(
         &mut self,
-        request_id: &str,
-        parts: &[fm_protocol::TitlePreviewFrameMessage],
+        request_id: String,
+        answer: Result<Vec<fm_protocol::TitlePreviewFrameMessage>, StructuredError>,
+        current_revision: u64,
     ) -> Result<(), QueueRefusal> {
-        if self.transport.is_web() {
-            return self.reply(WireMessage::Error(ErrorMessage {
-                request_id: Some(request_id.to_owned()),
-                current_revision: None,
-                error: StructuredError {
-                    code: "unsupported".into(),
-                    message: "title previews are served to raw protocol sessions only".into(),
-                    fields: Vec::new(),
-                    retryable: false,
-                },
-            }));
-        }
         let mut bytes = Vec::new();
-        for part in parts {
-            let line = encode_line(&WireMessage::TitlePreviewFrame(part.clone()))
-                .map_err(|_| QueueRefusal::Fatal)?;
+        let messages = match answer {
+            Ok(parts) => parts
+                .into_iter()
+                .map(WireMessage::TitlePreviewFrame)
+                .collect(),
+            Err(error) => vec![WireMessage::Error(ErrorMessage {
+                request_id: Some(request_id),
+                current_revision: Some(current_revision),
+                error,
+            })],
+        };
+        for message in &messages {
+            let line = encode_line(message).map_err(|_| QueueRefusal::Fatal)?;
             bytes.extend_from_slice(line.as_bytes());
         }
         self.lossy.replace(LossySlot::TitlePreview, bytes);
@@ -495,11 +495,15 @@ pub(super) fn run(
     let mut peers = Vec::with_capacity(peer_limit);
     let mut next_peer_id = 0_u64;
     let mut once_peer = None;
+    // Exact title previews render off this loop, as simulated monitor
+    // frames do.
+    let title_previews = crate::title_preview::spawn_preview_worker(Arc::clone(titles))?;
     let runtime = Runtime {
         server,
         control,
         store,
         titles,
+        title_previews: &title_previews,
         process_shutdown,
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
     };
@@ -640,6 +644,20 @@ pub(super) fn run(
         }
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
+        }
+        let previews = title_previews.take_finished();
+        if !previews.is_empty() {
+            let current_revision = control.borrow().diagnostics().current_revision;
+            for (id, (request_id, answer)) in previews {
+                if let Some(index) = peers.iter().position(|peer| peer.id == id)
+                    && !close[index]
+                    && peers[index]
+                        .replace_title_preview(request_id, answer, current_revision)
+                        .is_err()
+                {
+                    close[index] = true;
+                }
+            }
         }
         // The playlist clock runs before the native frame is realized, so a
         // boundary that is the pacer's next frame is cut by its advance.
@@ -874,6 +892,8 @@ struct Runtime<'a> {
     /// Templates and fonts for simulated monitor frames and exact title
     /// previews, kept in step with the engine's templates.
     titles: &'a Arc<TitleAssets>,
+    /// Renders exact title previews off this loop.
+    title_previews: &'a crate::title_preview::TitlePreviewWorker,
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
@@ -996,36 +1016,49 @@ impl Runtime<'_> {
             .sync_templates(&self.control.borrow().title_templates());
     }
 
-    /// Admits, renders, and answers one exact title preview request (see
-    /// [`crate::title_preview`]). A refused or failed preview is answered
-    /// with an error naming its `request_id`.
+    /// Admits and resolves one exact title preview request and hands it to
+    /// the preview worker (see [`crate::title_preview`]), which renders it
+    /// off this loop. A refused preview is answered with an error naming its
+    /// `request_id`; only raw peers have the lossy slot previews use.
     fn title_preview(
         &self,
         peer: &mut Peer,
         request: &fm_protocol::TitlePreviewRequest,
         durable: &StoredProject,
     ) -> Result<(), DispatchError> {
+        if peer.transport.is_web() {
+            peer.reply(WireMessage::Error(ErrorMessage {
+                request_id: Some(request.request_id.clone()),
+                current_revision: None,
+                error: StructuredError {
+                    code: "unsupported".into(),
+                    message: "title previews are served to raw protocol sessions only".into(),
+                    fields: Vec::new(),
+                    retryable: false,
+                },
+            }))?;
+            return Ok(());
+        }
         let encoded_bytes = encode_line(&WireMessage::TitlePreviewRequest(request.clone()))
             .map_err(|_| ())?
             .len();
         let session = peer.session.as_mut().expect("active peers have sessions");
         let admitted =
             session.admit_title_preview(request, encoded_bytes, now_millis().map_err(|_| ())?);
-        let rendered = admitted
+        let prepared = admitted
             .map_err(|error| structured_session_error(&error))
             .and_then(|()| {
-                crate::title_preview::render_preview(
+                crate::title_preview::prepare_preview(
                     &self.control.borrow(),
                     durable.project(),
-                    self.titles,
                     peer.identity
                         .as_ref()
                         .expect("active peers have identities"),
                     request,
                 )
             });
-        match rendered {
-            Ok(parts) => peer.replace_title_preview(&request.request_id, &parts)?,
+        match prepared {
+            Ok(job) => self.title_previews.submit(peer.id, job),
             Err(error) => peer.reply(WireMessage::Error(ErrorMessage {
                 request_id: Some(request.request_id.clone()),
                 current_revision: Some(self.control.borrow().diagnostics().current_revision),

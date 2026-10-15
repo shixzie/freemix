@@ -64,6 +64,10 @@ impl EngineTitleTemplate {
     }
 }
 
+/// Whether a title clip may be the result of an animation edit (see
+/// [`crate::Engine::set_title_clip_bound`]).
+pub type TitleClipBound = fn(&TitleClip) -> bool;
+
 /// What one title animation edit changes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TitleAnimationChange {
@@ -254,8 +258,20 @@ pub fn title_template_inputs(state: &ShowState, input: InputId) -> Vec<InputId> 
 pub(crate) fn apply(
     state: &mut ShowState,
     edit: &EngineTitleAnimationEdit,
+    bound: Option<TitleClipBound>,
 ) -> Result<(), Rejection> {
-    let template = Arc::new(edited_template(state, edit)?);
+    let template = edited_template(state, edit)?;
+    if let Some(fits) = bound
+        && !fits(&template.animation.clip)
+    {
+        return Err(rejection(
+            RejectionCode::InvalidCommand,
+            "clip",
+            "too_large",
+            "the edited animation is too large to carry".into(),
+        ));
+    }
+    let template = Arc::new(template);
     let inputs = title_template_inputs(state, edit.input);
     for input in inputs {
         if let Some(title) = state.title_mut(input)

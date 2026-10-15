@@ -95,9 +95,15 @@ pub(crate) trait DurableStore {
     }
 
     /// Removes what [`Self::stage_title_animations`] staged at `revision`
-    /// when the command was not journaled after all. Best effort: a copy
-    /// left behind is discarded by the next startup's recovery.
-    fn discard_staged_title_animations(&self, _revision: u64, _uris: &[String]) {}
+    /// when the command was not journaled after all.
+    ///
+    /// A copy left behind must stop the daemon: the next accepted command
+    /// reuses `revision`, and the checkpoint that covers it would commit
+    /// the refused animation over the template. The next startup's recovery
+    /// discards every copy staged after the durable revision.
+    fn discard_staged_title_animations(&self, _revision: u64, _uris: &[String]) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 /// Every stored template URI a title input of `project` names.
@@ -241,12 +247,23 @@ impl DurableStore for DurableJournal<'_> {
         Ok(())
     }
 
-    fn discard_staged_title_animations(&self, revision: u64, uris: &[String]) {
+    fn discard_staged_title_animations(&self, revision: u64, uris: &[String]) -> AppResult<()> {
+        let mut failure = None;
         for uri in uris {
-            let _ = self
+            if let Err(error) = self
                 .writer
                 .project_store()
-                .discard_staged_title_animation(uri, revision);
+                .discard_staged_title_animation(uri, revision)
+            {
+                failure.get_or_insert(error);
+            }
+        }
+        match failure {
+            None => Ok(()),
+            Some(error) => Err(AppFailure(format!(
+                "staged title animation at revision {revision} could not be discarded: {error}"
+            ))
+            .into()),
         }
     }
 

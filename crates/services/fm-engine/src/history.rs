@@ -717,6 +717,15 @@ pub(crate) fn check_edit_locks(
             }
             Ok(())
         }
+        // Every input graded with the library grade shows the edit.
+        EngineCommand::Grade(EngineGradeEdit::UpdateGrade { id, .. }) => {
+            match state.grading().inputs.iter().find(|(input, source)| {
+                **source == fm_model::GradeSource::Library(*id) && state.is_input_locked(**input)
+            }) {
+                Some((locked, _)) => Err(EditRejection::InputLocked(*locked)),
+                None => Ok(()),
+            }
+        }
         // Every title sharing the animated template shows the edit.
         EngineCommand::TitleAnimation(edit) => {
             match crate::title_animation::title_template_inputs(state, edit.input)

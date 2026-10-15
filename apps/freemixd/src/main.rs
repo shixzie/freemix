@@ -9193,6 +9193,21 @@ fn load_title_templates(
             ))
             .into());
         }
+        // Every snapshot carries the animation in a `title_animation_state`
+        // record, so one without a wire encoding would lock out every
+        // session.
+        let animation_bytes = fm_protocol::title_clip_wire_bytes(&fm_control::title_clip_to_wire(
+            &template.animation.clip,
+        ));
+        if animation_bytes > fm_protocol::MAX_TITLE_ANIMATION_BYTES {
+            return Err(AppFailure(format!(
+                "title input {} template animation encodes to {animation_bytes} bytes, more \
+                 than the {} a title_animation_state record carries",
+                input.id,
+                fm_protocol::MAX_TITLE_ANIMATION_BYTES
+            ))
+            .into());
+        }
         templates.insert(input.id, template);
     }
     Ok(templates)
@@ -10746,7 +10761,9 @@ fn execute_durable_command_with_ticks(
     let revision = updated.position().revision;
     if let Err(error) = store.stage_title_animations(revision, &animations) {
         drop(prepared);
-        store.discard_staged_title_animations(revision, &staged_uris);
+        // A staged copy left behind would be committed by the checkpoint
+        // after the next command at this revision: stop instead.
+        store.discard_staged_title_animations(revision, &staged_uris)?;
         eprintln!(
             "FREEMIXD_DURABILITY\tv=1\tcommand={}\trevision={revision}\terror={error}",
             command.id
@@ -10764,7 +10781,7 @@ fn execute_durable_command_with_ticks(
     // commits it, before its events are published, and before the acceptance is
     // returned to the caller for acknowledgement.
     if let Err(error) = store.record(&journaled, now_millis, durable, &updated) {
-        store.discard_staged_title_animations(revision, &staged_uris);
+        store.discard_staged_title_animations(revision, &staged_uris)?;
         // Nothing was made durable, so nothing may be acknowledged. Dropping
         // the preparation abandons it without touching the engine: no revision,
         // no receipt, no events, so the same command may simply be sent again.
@@ -20915,5 +20932,253 @@ mod tests {
             assert_eq!(pair.sequence(), sequence);
             assert_eq!(pair.format(), &format);
         }
+    }
+
+    /// Regression: the compiled grades are shared across revisions that do
+    /// not change them, so a cut or a fader move never re-bakes and
+    /// re-uploads every native grade lattice on the frame loop.
+    #[test]
+    fn grade_cache_keeps_grades_across_commands_that_do_not_change_them() {
+        let project = test_project();
+        let mut control = test_control(&project);
+        let principal = operator();
+        let graded = control
+            .submit(
+                &principal,
+                test_command(
+                    "grade",
+                    "grade-key",
+                    CommandPayload::SetInputGrade {
+                        input: fm_protocol::WireInputId::from_domain(test_input_id(1)),
+                        source: Some(fm_protocol::WireGradeSource::Inline(Box::new(
+                            fm_grade::Grade {
+                                saturation_permille: 0,
+                                ..fm_grade::Grade::IDENTITY
+                            },
+                        ))),
+                    },
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(graded.is_accepted());
+        let mut cache = grading::GradeCache::default();
+        let before = cache.at(&control);
+        let cut = control
+            .submit(
+                &principal,
+                test_command("cut", "cut-key", CommandPayload::Cut),
+                0,
+            )
+            .unwrap();
+        assert!(cut.is_accepted());
+        let after = cache.at(&control);
+        assert!(Arc::ptr_eq(&before, &after));
+    }
+
+    const ANIMATED_TITLE_URI: &str = "asset://titles/unit.fmtitle";
+
+    fn animated_title_template(
+        elements: u128,
+        clip: fm_titles::TitleClip,
+    ) -> fm_titles::TitleTemplate {
+        fm_titles::TitleTemplate {
+            id: fm_titles::TemplateId::new(NonZeroU128::new(9).unwrap()),
+            name: "Lower".into(),
+            width: 32,
+            height: 18,
+            background: fm_titles::Color::TRANSPARENT,
+            fields: Vec::new(),
+            elements: (1..=elements)
+                .map(|element| fm_titles::Element {
+                    id: fm_titles::ElementId::new(NonZeroU128::new(element).unwrap()),
+                    name: format!("box {element}"),
+                    bounds: fm_titles::Bounds {
+                        x: 2,
+                        y: 2,
+                        width: 8,
+                        height: 8,
+                    },
+                    z_index: 0,
+                    visible: true,
+                    style: fm_titles::Style::default(),
+                    color_field: None,
+                    kind: fm_titles::ElementKind::Rectangle,
+                })
+                .collect(),
+            animation: fm_titles::TitleAnimation::new(clip, 0),
+        }
+    }
+
+    /// [`test_project`] with title input 3 naming [`ANIMATED_TITLE_URI`].
+    fn animated_title_project() -> StoredProject {
+        let baseline = test_project();
+        let mut project = baseline.project().clone();
+        project.add_input(Input {
+            id: test_input_id(3),
+            name: "Lower third".into(),
+            kind: InputKind::Title(fm_model::TitleInput {
+                template_uri: ANIMATED_TITLE_URI.into(),
+                field_revision: 0,
+                fields: Vec::new(),
+            }),
+            required_capabilities: Vec::new(),
+        });
+        StoredProject::from_project(
+            project,
+            baseline.runtime_routing(),
+            ProjectPosition::default(),
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    /// Refuses every journal append and every discard of a staged copy.
+    struct UndiscardableStager {
+        discarded: Cell<bool>,
+    }
+
+    impl DurableStore for UndiscardableStager {
+        fn record(
+            &self,
+            _command: &CommandMessage,
+            _now_millis: u64,
+            _previous: &StoredProject,
+            _updated: &StoredProject,
+        ) -> AppResult<()> {
+            Err(AppFailure("injected journal failure".into()).into())
+        }
+
+        fn checkpoint(&self, _project: &StoredProject) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn discard_staged_title_animations(
+            &self,
+            _revision: u64,
+            uris: &[String],
+        ) -> AppResult<()> {
+            assert_eq!(uris, [ANIMATED_TITLE_URI.to_owned()]);
+            self.discarded.set(true);
+            Err(AppFailure("injected discard failure".into()).into())
+        }
+    }
+
+    /// Regression: an animation edit refused after its template was staged
+    /// left the staged copy behind when discarding it failed. The next
+    /// command reuses the revision, and the checkpoint covering it committed
+    /// the refused animation over the template. A copy that cannot be
+    /// discarded now stops the daemon, whose next start discards it.
+    #[test]
+    fn a_staged_title_animation_that_cannot_be_discarded_stops_the_daemon() {
+        let rate = FrameRate::new(25, 1).unwrap();
+        let empty =
+            fm_titles::fm_animation::Clip::new(fm_titles::fm_animation::Timebase::new(rate), 0, 0)
+                .unwrap();
+        let mut durable = animated_title_project();
+        let assets = BundleAssets {
+            titles: [(test_input_id(3), animated_title_template(0, empty))].into(),
+            luts: std::collections::BTreeMap::new(),
+        };
+        let mut control = ControlService::new(
+            restore_engine_with_titles(&durable, &assets).unwrap(),
+            Policy::development(),
+            "unit-engine",
+            "unit-log",
+            ControlLimits::default(),
+        );
+        let server = test_server(&control);
+        let longer =
+            fm_titles::fm_animation::Clip::new(fm_titles::fm_animation::Timebase::new(rate), 10, 0)
+                .unwrap();
+        let command = test_command(
+            "animate",
+            "animate-key",
+            CommandPayload::SetTitleAnimation {
+                input: fm_protocol::WireInputId::from_domain(test_input_id(3)),
+                base_revision: 0,
+                clip: Box::new(fm_control::title_clip_to_wire(&longer)),
+            },
+        );
+        let store = UndiscardableStager {
+            discarded: Cell::new(false),
+        };
+        let outcome = execute_durable_command(
+            &mut control,
+            &store,
+            &mut durable,
+            &operator(),
+            &server,
+            &command,
+            0,
+        );
+        assert!(store.discarded.get());
+        assert!(
+            outcome.is_err(),
+            "an undiscardable staged copy must stop the daemon"
+        );
+        assert_eq!(control.diagnostics().current_revision, 0);
+    }
+
+    /// Regression: a stored template whose animation has no wire encoding
+    /// (beyond `MAX_TITLE_ANIMATION_BYTES`) made every snapshot's
+    /// `title_animation_state` unencodable, so no session could connect.
+    /// Like names beyond the `title_state` bounds, it refuses to start.
+    #[test]
+    fn templates_whose_animation_has_no_wire_encoding_refuse_to_start() {
+        use fm_titles::fm_animation::{
+            Clip, CubicBezier, Easing, Keyframe, MAX_PHASE_FRAMES, Phase, Property, Timebase,
+            Track, TrackKey, Value,
+        };
+
+        let bezier =
+            Easing::CubicBezier(CubicBezier::new(65_536, -65_536, 65_536, 131_072).unwrap());
+        let tracks = 16_u128;
+        let clip = Clip::from_tracks(
+            Timebase::new(FrameRate::new(25, 1).unwrap()),
+            MAX_PHASE_FRAMES,
+            0,
+            (1..=tracks)
+                .map(|element| {
+                    Track::new(
+                        TrackKey::new(
+                            fm_titles::ElementId::new(NonZeroU128::new(element).unwrap()),
+                            Phase::In,
+                            Property::PositionX,
+                        ),
+                        (0..256_u32)
+                            .map(|frame| {
+                                Keyframe::new(
+                                    frame * 100,
+                                    Value::Scalar(i64::from(i32::MIN)),
+                                    bezier,
+                                )
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap();
+        assert!(
+            fm_protocol::title_clip_wire_bytes(&fm_control::title_clip_to_wire(&clip))
+                > fm_protocol::MAX_TITLE_ANIMATION_BYTES
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+        let document =
+            fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
+                template: animated_title_template(tracks, clip),
+                fonts: Vec::new(),
+                clocks: Vec::new(),
+            })
+            .unwrap();
+        let path = store.assets_root().join("titles/unit.fmtitle");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, document).unwrap();
+
+        let error = load_title_templates(&store, animated_title_project().project())
+            .expect_err("an animation without a wire encoding refuses to start");
+        assert!(error.to_string().contains("animation"), "{error}");
     }
 }

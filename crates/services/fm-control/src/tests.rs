@@ -3725,6 +3725,146 @@ fn grade_commands_are_project_edits_with_state_records_and_undo() {
     assert_eq!(control.snapshot().snapshot.grade_states, 1);
 }
 
+/// Regression: an animation edit whose resulting clip has no wire encoding
+/// (it exceeds `MAX_TITLE_ANIMATION_BYTES`) is refused. A small stretch
+/// command can grow a clip that fits past the bound; accepting it made the
+/// `title_animation_changed` event and every later snapshot's
+/// `title_animation_state` unencodable, locking every session out.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn title_animation_edits_refuse_clips_without_a_wire_encoding() {
+    use fm_engine::EngineTitle;
+    use fm_protocol::{MAX_TITLE_ANIMATION_BYTES, WireMessage, encode_line, title_clip_wire_bytes};
+    use fm_titles::fm_animation::{
+        Clip, CubicBezier, Easing, Keyframe, MAX_PHASE_FRAMES, Phase, Property, Timebase, Track,
+        TrackKey, Value,
+    };
+    use fm_titles::{
+        Bounds, Color, Element, ElementId, ElementKind, Style, TemplateId, TitleAnimation,
+        TitleFieldSet, TitleTemplate,
+    };
+
+    const KEYS: u32 = 128;
+    let bezier = Easing::CubicBezier(CubicBezier::new(65_536, -65_536, 65_536, 131_072).unwrap());
+    let clip = |tracks: u128| {
+        Clip::from_tracks(
+            Timebase::new(FrameRate::new(60, 1).unwrap()),
+            KEYS - 1,
+            0,
+            (1..=tracks)
+                .map(|element| {
+                    Track::new(
+                        TrackKey::new(
+                            ElementId::new(NonZeroU128::new(element).unwrap()),
+                            Phase::In,
+                            Property::PositionX,
+                        ),
+                        (0..KEYS)
+                            .map(|frame| {
+                                Keyframe::new(frame, Value::Scalar(i64::from(i32::MIN)), bezier)
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
+        )
+        .unwrap()
+    };
+    // The most tracks whose clip still fits the wire bound.
+    let tracks = (1..=32_u128)
+        .take_while(|tracks| {
+            title_clip_wire_bytes(&title_clip_to_wire(&clip(*tracks))) <= MAX_TITLE_ANIMATION_BYTES
+        })
+        .last()
+        .unwrap();
+    let template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(9).unwrap()),
+        name: "Lower".into(),
+        width: 32,
+        height: 18,
+        background: Color::TRANSPARENT,
+        fields: Vec::new(),
+        elements: (1..=tracks)
+            .map(|element| Element {
+                id: ElementId::new(NonZeroU128::new(element).unwrap()),
+                name: format!("box {element}"),
+                bounds: Bounds {
+                    x: 2,
+                    y: 2,
+                    width: 8,
+                    height: 8,
+                },
+                z_index: 0,
+                visible: true,
+                style: Style::default(),
+                color_field: None,
+                kind: ElementKind::Rectangle,
+            })
+            .collect(),
+        animation: TitleAnimation::new(clip(tracks), 0),
+    };
+    let mut stretched = template.clone();
+    stretched
+        .stretch_animation(Phase::In, MAX_PHASE_FRAMES)
+        .unwrap();
+    assert!(
+        title_clip_wire_bytes(&title_clip_to_wire(&stretched.animation.clip))
+            > MAX_TITLE_ANIMATION_BYTES,
+        "the stretched clip must outgrow the wire bound"
+    );
+    let mut show = ShowState::new(
+        "show",
+        named_inputs([input(1), input(2), input(3)]),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    show.set_title(
+        input(3),
+        EngineTitle::new("Lower", TitleFieldSet::from_template(&template).unwrap())
+            .with_template("titles/lower.fmtitle", template.clone()),
+    )
+    .unwrap();
+    let mut control = ControlService::new(
+        Engine::new(
+            show,
+            FrameRate::new(60, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        ),
+        Policy::production(),
+        "engine-a",
+        "log-a",
+        ControlLimits {
+            retained_events: 8,
+            max_subscribers: 4,
+            subscriber_queue: 8,
+        },
+    );
+    let refused = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "stretch",
+                "stretch",
+                CommandPayload::StretchTitleAnimation {
+                    input: WireInputId::from_domain(input(3)),
+                    base_revision: 0,
+                    phase: Phase::In,
+                    frames: MAX_PHASE_FRAMES,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&refused), Some("invalid_command"));
+    assert_eq!(rejection_field_code(&refused), Some("too_large"));
+    let states = control.title_animation_states();
+    assert_eq!(states[0].animation_revision, 0);
+    for state in states {
+        encode_line(&WireMessage::TitleAnimationState(state)).unwrap();
+    }
+}
+
 /// GX-011 stage 4a: title animation edits are `EditProject`, revision
 /// checked, publish `title_animation_changed`, follow snapshots as
 /// `title_animation_state` records, and undo through the shared history

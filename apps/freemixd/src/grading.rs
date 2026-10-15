@@ -66,7 +66,8 @@ pub(crate) struct GradeCache {
 
 impl GradeCache {
     /// The compiled grades of `control`'s engine at its durable revision,
-    /// compiling only when the revision changed. A grade that cannot compile (never produced by an
+    /// compiling only when the revision changed, and the same shared grades
+    /// as before when the compiled result did not change. A grade that cannot compile (never produced by an
     /// accepted edit) renders ungraded.
     pub(crate) fn at(&mut self, control: &ControlService<Policy>) -> Arc<CompiledProjectGrades> {
         let revision = control.snapshot().snapshot.revision;
@@ -75,10 +76,17 @@ impl GradeCache {
         {
             return Arc::clone(grades);
         }
-        let grades = Arc::new(control.compiled_grades().unwrap_or_else(|error| {
+        let compiled = control.compiled_grades().unwrap_or_else(|error| {
             eprintln!("FREEMIXD_GRADING\tv=1\tstatus=ungraded\terror={error}");
             CompiledProjectGrades::default()
-        }));
+        });
+        // Most revisions change no grade: keep sharing the grades they left,
+        // so consumers that key baked or uploaded work on the shared
+        // grades (`Arc::ptr_eq`) redo it only when a grade changed.
+        let grades = match self.compiled.take() {
+            Some((_, previous)) if *previous == compiled => previous,
+            _ => Arc::new(compiled),
+        };
         self.compiled = Some((revision, Arc::clone(&grades)));
         grades
     }

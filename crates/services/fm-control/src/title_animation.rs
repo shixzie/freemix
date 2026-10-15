@@ -6,8 +6,8 @@ use fm_engine::{
     Engine, EngineCommand, EngineTitleAnimationEdit, TitleAnimationChange, title_template_inputs,
 };
 use fm_protocol::{
-    CommandPayload, EventPayload, TitleAnimationStateMessage, WireInputId, WireTitleClip,
-    WireTitleElementId,
+    CommandPayload, EventPayload, MAX_TITLE_ANIMATION_BYTES, TitleAnimationStateMessage,
+    WireInputId, WireTitleClip, WireTitleElementId, title_clip_wire_bytes,
 };
 use fm_titles::fm_animation::{Clip, ClipError, Track, TrackKey};
 use fm_titles::{ElementId, TitleAnimation, TitleClip};
@@ -23,6 +23,12 @@ use fm_types::InputId;
 pub fn title_clip_to_wire(clip: &TitleClip) -> WireTitleClip {
     retarget(clip, |element| WireTitleElementId::new(element.get()))
         .expect("an id-preserving retarget of a valid clip is valid")
+}
+
+/// Whether `clip`'s wire encoding fits [`MAX_TITLE_ANIMATION_BYTES`], the
+/// bound every title animation edit is held to.
+pub(crate) fn title_clip_fits_wire(clip: &TitleClip) -> bool {
+    title_clip_wire_bytes(&title_clip_to_wire(clip)) <= MAX_TITLE_ANIMATION_BYTES
 }
 
 /// The domain clip a wire clip names.

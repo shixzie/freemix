@@ -714,12 +714,15 @@ pub struct ControlService<A = Policy> {
 impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn new(
-        engine: Engine,
+        mut engine: Engine,
         authorizer: A,
         engine_id: impl Into<String>,
         log_id: impl Into<String>,
         limits: ControlLimits,
     ) -> Self {
+        // Every animation an edit leaves must be carried by its event and
+        // by later snapshots' `title_animation_state` records.
+        engine.set_title_clip_bound(title_animation::title_clip_fits_wire);
         let runtime_sequence_generation = engine.runtime_generation().get();
         let identity = EngineIdentity {
             engine_id: engine_id.into(),

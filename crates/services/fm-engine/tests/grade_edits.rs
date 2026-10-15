@@ -423,6 +423,60 @@ fn padlocks_guard_grade_edits() {
     }
 }
 
+/// Regression: a library grade a padlocked input uses is that input's look,
+/// so updating the library grade is covered by the input's padlock (as an
+/// animation edit is by the padlock of every title sharing the template).
+#[test]
+fn padlocks_guard_library_grades_a_locked_input_uses() {
+    let mut engine = engine();
+    accepted(&run(&mut engine, "add", add(1, "A", warm())));
+    accepted(&run(
+        &mut engine,
+        "use",
+        grade(EngineGradeEdit::SetInput {
+            input: input(2),
+            source: Some(GradeSource::Library(grade_id(1))),
+        }),
+    ));
+    accepted(&run(
+        &mut engine,
+        "lock-input",
+        EngineCommand::SetEditLock {
+            scope: EditLockScope::Input(input(2)),
+            locked: true,
+        },
+    ));
+    let outcome = run(
+        &mut engine,
+        "update",
+        grade(EngineGradeEdit::UpdateGrade {
+            id: grade_id(1),
+            name: "A".into(),
+            grade: Box::new(cool()),
+        }),
+    );
+    assert_eq!(
+        EditRejectionKind::of(rejection(&outcome)),
+        Some(EditRejectionKind::InputLocked)
+    );
+    assert_eq!(
+        engine.show().grading().grade(grade_id(1)).unwrap().grade,
+        warm()
+    );
+
+    // A library grade no locked input uses stays editable.
+    accepted(&run(&mut engine, "add-b", add(2, "B", warm())));
+    accepted(&run(
+        &mut engine,
+        "update-b",
+        grade(EngineGradeEdit::UpdateGrade {
+            id: grade_id(2),
+            name: "B".into(),
+            grade: Box::new(cool()),
+        }),
+    ));
+}
+
 #[test]
 fn unknown_inputs_and_removed_inputs_drop_grades() {
     let mut engine = engine();
