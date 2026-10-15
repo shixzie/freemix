@@ -849,7 +849,7 @@ impl<T: Copy + Ord> AnimDocument<T> {
         let outline = self
             .target(target)
             .ok_or(AnimEditorError::UnknownTarget(target))?;
-        let (width, height) = (outline.bounds.width.max(1), outline.bounds.height.max(1));
+        let (width, height) = outline.crop_box();
         self.ensure_idle()?;
         let shown = self.phase;
         self.phase = phase;
@@ -911,14 +911,8 @@ impl<T: Copy + Ord> AnimDocument<T> {
     /// [`MotionError::Empty`] when the target has no outline or nothing to
     /// save in `phase`, or a motion bound.
     pub fn capture_motion(&self, target: T, phase: Phase) -> Result<PhaseMotion, MotionError> {
-        let outline = self.target(target).ok_or(MotionError::Empty)?;
-        PhaseMotion::capture(
-            &self.draft,
-            target,
-            phase,
-            outline.bounds.width.max(1),
-            outline.bounds.height.max(1),
-        )
+        let (width, height) = self.target(target).ok_or(MotionError::Empty)?.crop_box();
+        PhaseMotion::capture(&self.draft, target, phase, width, height)
     }
 
     /// Sets `phase`'s length to `frames`, stretching its keys

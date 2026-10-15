@@ -227,14 +227,25 @@ pub fn import_grade(path: &Path, file: &Path, name: Option<&str>) -> AppResult<(
     })
 }
 
-/// `name`, or `name (2)`, `name (3)`, ... : the first `taken` refuses not.
+/// `name`, or `name (2)`, `name (3)`, ... : the first `taken` refuses not,
+/// with `name` cut (on a character boundary) so the suffixed name stays
+/// within the grade and LUT name bound.
 fn unused(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    const MAX_NAME_BYTES: usize = fm_model::MAX_GRADE_NAME_BYTES;
+    const _: () = assert!(MAX_NAME_BYTES == fm_model::MAX_LUT_NAME_BYTES);
     let name = name.trim();
     if !taken(name) {
         return name.to_owned();
     }
     (2..=u32::MAX)
-        .map(|count| format!("{name} ({count})"))
+        .map(|count| {
+            let suffix = format!(" ({count})");
+            let mut cut = MAX_NAME_BYTES.saturating_sub(suffix.len()).min(name.len());
+            while !name.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            format!("{}{suffix}", &name[..cut])
+        })
         .find(|candidate| !taken(candidate))
         .expect("a finite project leaves a free suffix")
 }

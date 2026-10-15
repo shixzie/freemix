@@ -592,3 +592,75 @@ fn scene_bindings_design_from_layouts_and_save_scene_clips() {
     let draft = binding.poll_preview(MS(400), true).unwrap();
     assert_eq!(draft.clip.as_deref(), Some(binding.document().clip()));
 }
+
+/// GX-011 user presets on scene layers: crop keys are pixels of a layer's
+/// own (unrotated) frame, so a quarter-turned layer saves and takes a
+/// motion against its `width` x `height`, not its swapped footprint, as
+/// the authority measures it.
+#[test]
+fn scene_user_presets_measure_crop_in_the_layer_frame() {
+    use core::num::NonZeroU32;
+
+    use fm_animation::PhaseMotion;
+    use fm_protocol::{WireSceneClip, WireSceneLayerId, WireSceneLayerOutline, WireSceneLayout};
+
+    use crate::title_animation::{SCENE_LAYER_PROPERTIES, SceneAnimationStatus};
+
+    let layer = |value: u32| WireSceneLayerId::new(NonZeroU32::new(value).unwrap());
+    let outline = |id: u32, quarter_turns: u8| WireSceneLayerOutline {
+        id: layer(id),
+        name: format!("Layer {id}"),
+        x: 0,
+        y: 0,
+        width: 640,
+        height: 360,
+        quarter_turns,
+        opacity: 255,
+        enabled: true,
+    };
+    let design = SceneDesign::from_layout(&WireSceneLayout {
+        width: 1_920,
+        height: 1_080,
+        layers: vec![outline(3, 1), outline(4, 0)],
+    });
+    // Layer 3 (turned a quarter) wipes half its own width away.
+    let timebase = Timebase::new(FrameRate::new(30, 1).unwrap());
+    let wipe = WireSceneClip::from_tracks(
+        timebase,
+        10,
+        0,
+        vec![Track::new(
+            TrackKey::new(layer(3), Phase::In, Property::CropLeft),
+            vec![
+                Keyframe::new(0, Value::Scalar(320), Easing::Linear),
+                Keyframe::new(10, Value::Scalar(0), Easing::Linear),
+            ],
+        )],
+    )
+    .unwrap();
+    let status = SceneAnimationStatus {
+        revision: 1,
+        clip: Arc::new(wipe),
+    };
+    let mut binding = SceneAnimationBinding::new(input(), &status);
+    binding.set_design(&design);
+    let motion = binding
+        .document()
+        .capture_motion(layer(3), Phase::In)
+        .expect("layer 3 wipes in");
+    assert_eq!((motion.width(), motion.height()), (640, 360));
+
+    // A motion measured on a 640 x 360 frame keeps its crop on the turned
+    // 640 x 360 layer.
+    let measured = PhaseMotion::new(motion.clip().clone(), 640, 360).unwrap();
+    binding
+        .document_mut()
+        .apply_motion(layer(3), Phase::In, &measured, 10, &SCENE_LAYER_PROPERTIES)
+        .unwrap();
+    let track = binding
+        .document()
+        .clip()
+        .track(TrackKey::new(layer(3), Phase::In, Property::CropLeft))
+        .unwrap();
+    assert_eq!(track.keys[0].value, Value::Scalar(320));
+}

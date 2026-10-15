@@ -2189,3 +2189,24 @@ fn animation_preset_states_and_changes_replicate_the_library() {
         assert_eq!(names(&copy), names(&model));
     }
 }
+
+#[test]
+fn animation_preset_ids_wrap_past_the_highest_id() {
+    // Any client may name any preset id, `u32::MAX` included; the next id
+    // then wraps to the lowest free one, as the project model allocates.
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    let mut announced = snapshot(project_id, 7);
+    announced.animation_preset_states = 2;
+    model.install_snapshot(announced).unwrap();
+    for (preset, name) in [(u32::MAX, "Last"), (1, "First")] {
+        model
+            .apply_animation_preset_state(fm_protocol::AnimationPresetStateMessage {
+                revision: 7,
+                entry: preset_entry(preset, name),
+            })
+            .unwrap();
+    }
+    let presets = model.state().unwrap().animation_presets();
+    assert_eq!(presets.next_id().map(core::num::NonZeroU32::get), Some(2));
+}

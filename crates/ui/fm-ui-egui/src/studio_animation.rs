@@ -450,7 +450,12 @@ impl AnimationWindow {
         &mut self,
         library: &AnimationPresetsStatus,
     ) -> Option<NonZeroU32> {
-        let after_issued = self.preset_issued.and_then(|issued| issued.checked_add(1));
+        // Past the last id asked for, unless another console has used it
+        // since (library ids may wrap below it).
+        let after_issued = self
+            .preset_issued
+            .and_then(|issued| issued.checked_add(1))
+            .filter(|id| library.get(*id).is_none());
         let id = match (library.next_id(), after_issued) {
             (Some(next), Some(issued)) => Some(next.max(issued)),
             (next, issued) => next.or(issued),

@@ -345,3 +345,28 @@ fn grades_travel_between_projects_with_their_luts() {
         "file is of kind `animation_preset`, not `grade`",
     );
 }
+
+/// A taken name at the byte bound still imports: the suffix replaces the
+/// end of the name (on a character boundary) instead of overflowing it.
+#[test]
+fn imports_rename_long_taken_names_within_the_bound() {
+    let root = Root::new("long-names");
+    let project = root.path("show.freemix");
+    let path = project.to_str().unwrap();
+    succeed(&["new", path]);
+    let long = "é".repeat(64); // 128 bytes, the grade name bound
+    succeed(&["grade-set", path, "1", "--save-as", &long]);
+    let shared = root.path("long.fmgrade");
+    let file = shared.to_str().unwrap();
+    succeed(&["grade-export", path, "1", file]);
+    succeed(&["grade-import", path, file]);
+    let stored = load(&project);
+    let names = stored
+        .project()
+        .grades()
+        .iter()
+        .map(|grade| grade.name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert_eq!(names[1], format!("{} (2)", "é".repeat(62)));
+}

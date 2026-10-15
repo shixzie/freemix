@@ -46,7 +46,9 @@ impl AnimationPresetsStatus {
         self.entries.iter().find(|entry| entry.name == name)
     }
 
-    /// The smallest id above every preset's, or `None` when exhausted.
+    /// The smallest id above every preset's, wrapping to the lowest unused
+    /// id once `u32::MAX` is used (any client may name any id), as the
+    /// project model allocates; `None` only when every id is used.
     #[must_use]
     pub fn next_id(&self) -> Option<NonZeroU32> {
         let highest = self
@@ -55,7 +57,14 @@ impl AnimationPresetsStatus {
             .map(|entry| entry.preset.get())
             .max()
             .unwrap_or(0);
-        highest.checked_add(1).and_then(NonZeroU32::new)
+        highest
+            .checked_add(1)
+            .and_then(NonZeroU32::new)
+            .or_else(|| {
+                (1..=highest)
+                    .filter_map(NonZeroU32::new)
+                    .find(|id| self.get(*id).is_none())
+            })
     }
 
     /// Appends one snapshot `animation_preset_state` entry, refusing a

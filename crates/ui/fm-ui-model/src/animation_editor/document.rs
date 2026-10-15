@@ -77,6 +77,10 @@ pub struct TargetOutline<T> {
     pub opacity: u8,
     /// Static straight RGBA tint/fill.
     pub color: Rgba,
+    /// `width` x `height` of the target's own frame, which crop keys are
+    /// pixels of, when it differs from `bounds` (a quarter-turned scene
+    /// layer, whose bounds are its footprint); `None` means `bounds`.
+    pub frame_size: Option<(u32, u32)>,
 }
 
 impl<T> TargetOutline<T> {
@@ -91,7 +95,18 @@ impl<T> TargetOutline<T> {
             rotation_mdeg: 0,
             opacity: u8::MAX,
             color: Rgba::new(255, 255, 255, 255),
+            frame_size: None,
         }
+    }
+
+    /// The box a saved motion's crop keys are measured against: the
+    /// target's own frame, each side at least one pixel.
+    #[must_use]
+    pub fn crop_box(&self) -> (u32, u32) {
+        let (width, height) = self
+            .frame_size
+            .unwrap_or((self.bounds.width, self.bounds.height));
+        (width.max(1), height.max(1))
     }
 }
 

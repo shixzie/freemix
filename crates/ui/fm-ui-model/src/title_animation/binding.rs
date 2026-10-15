@@ -102,6 +102,8 @@ impl AnimationDesign<WireSceneLayerId> {
                     TargetBounds::new(layer.x, layer.y, width, height),
                 );
                 outline.opacity = if layer.enabled { layer.opacity } else { 0 };
+                // Crop keys are pixels of the layer's own (unturned) frame.
+                outline.frame_size = Some((layer.width, layer.height));
                 outline
             })
             .collect();

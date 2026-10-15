@@ -403,13 +403,20 @@ pub fn decode_grade_preset_file(source: &str) -> Result<GradePresetFile, PresetF
 
 /// Reads at most `maximum` bytes of UTF-8 text from a regular file.
 fn read_text(path: &Path, maximum: u64) -> Result<String, PresetFileError> {
+    let not_regular = || {
+        PresetFileError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ))
+    };
+    // Checked before opening too: opening a FIFO or device can block.
+    if !fs::metadata(path)?.is_file() {
+        return Err(not_regular());
+    }
     let file = File::open(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() {
-        return Err(PresetFileError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{} is not a regular file", path.display()),
-        )));
+        return Err(not_regular());
     }
     if metadata.len() > maximum {
         return Err(PresetFileError::TooLarge {

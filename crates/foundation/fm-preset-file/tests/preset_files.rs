@@ -294,3 +294,29 @@ fn grade_files_embed_small_luts_and_place_large_ones_beside() {
         );
     }
 }
+
+/// A path that names something other than a regular file (here a FIFO, as
+/// a hostile sibling `.cube` could) is refused without opening it, so a
+/// read never blocks waiting for a writer.
+#[cfg(unix)]
+#[test]
+fn non_regular_files_are_refused_without_blocking() {
+    let directory = TestDirectory::new("fifo");
+    let path = directory.path("pipe.fmpreset");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&path)
+        .status()
+        .expect("mkfifo runs");
+    assert!(made.success());
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let read = path.clone();
+    std::thread::spawn(move || {
+        let _ = sender.send(read_animation_preset_file(&read).is_err());
+    });
+    let refused = receiver.recv_timeout(std::time::Duration::from_secs(5));
+    if refused.is_err() {
+        // Unblock the stuck reader before failing.
+        let _ = fs::OpenOptions::new().write(true).open(&path);
+    }
+    assert_eq!(refused, Ok(true), "reading a FIFO must not block");
+}
