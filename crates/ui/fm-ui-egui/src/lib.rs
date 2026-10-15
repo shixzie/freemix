@@ -39,8 +39,8 @@ mod edit_history;
 mod fade_to_black;
 mod gating;
 mod health;
-#[cfg(test)]
-mod hover_audit;
+#[doc(hidden)]
+pub mod hover_audit;
 mod input_bank;
 mod input_catalogue;
 mod l10n;

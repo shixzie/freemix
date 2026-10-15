@@ -1577,6 +1577,19 @@ status; Studio swallows the records beside meters and renders the roster with
 live samples. Snapshots still project only desired state; the lossy record is
 transport state and never durable.
 
+Current implementation boundary for SRT sessions (`IN-017`): `fm-io-srt` is a
+deterministic, socket-free SRT configuration and session contract with caller,
+listener, and rendezvous modes (listener stream-ID selection, rendezvous peer
+checks), validated latency, encryption, and reconnect settings, secret
+references redacted from debug output, bounded reconnect backoff, bounded
+packet queues, and RTT/loss/retransmit/bandwidth/queue-drop statistics. No
+other crate uses it yet. The only real SRT path is the FFmpeg output sink in
+caller mode, verified against a real listener as MPEG-TS with H.264/AAC.
+Remaining gaps: no SRT input, no libSRT or socket adapter, no real
+handshake, encryption, statistics, or reconnect over a network, no listener or
+rendezvous output, and no input-side MPEG-TS/AAC demux or multichannel audio
+mapping, so `IN-017` remains planned.
+
 Current implementation boundary for item 3: the authored model now carries a
 local HLS destination and an optional multi-bitrate HLS ladder.
 `StreamProtocol::Hls` is a keyless protocol whose endpoint is one absolute
@@ -1932,6 +1945,21 @@ independently with tested recovery.
 14. Make every operator control discoverable (`RC-018`): simple defaults with
     progressive disclosure and localized hover help naming the action, its
     shortcut, and why it is disabled.
+
+Current implementation boundary for item 14 (`RC-018`): every interactive
+Studio console control carries hover help naming its action and, where one
+exists, its single-key shortcut, and disabled controls add the localized
+`Unavailable: …` reason. The mixer's per-strip gain/balance/delay fields and
+the manual transition's details sit behind disclosure keys (also under View ›
+Advanced controls) that persist in `studio.conf`. `fm-ui-egui`'s hover audit
+renders the console, the animation timeline, and the colour panel headlessly
+in English and Spanish and fails on missing help, a disabled control without
+its reason or action, help longer than four lines, untranslated Spanish
+lines, or an unnamed shortcut; `cargo test -p fm-ui-egui --test hover_audit`
+runs it. Remaining gaps: the audit covers only the egui Studio console, not
+the web controller, CLI, or daemon messages; it relies on debug-build widget
+info; and only English and Spanish ship, so `RC-018` remains planned.
+
 The current persistence slice audits stored media asset references and
 provides a secret-free settings export with an import planner (`RC-013`):
 outputs, buses, stream targets, and video/audio settings export as one exact
@@ -2509,6 +2537,18 @@ length, end-of-media detection, or media-ended reports; no stinger
 transitions; no enable/disable, loop change, or list editing while the
 playlist runs; no scheduled starts from Studio; no per-entry hard starts or
 calendar recurrence; no vMix API or as-run log. `OR-015` remains planned.
+
+Current implementation boundary for item 5 per-input programmed GO
+(`RC-017`): `fm-automation`'s `GoEngine` binds one bounded ordered action list
+of command intents and millisecond delays to an input, previews its planned
+offsets, starts a run per press with idempotency-key replay suppression,
+fires due actions in order on poll, and cancels a run without firing the rest.
+`fm-control`'s `AutomationPlane` hosts the engine with program and active-run
+limits, but nothing in `freemixd`, the protocol, persistence, or Studio drives
+it. Remaining gaps: actions are opaque intents (no typed preview/take, play,
+overlay, data-update, or follow-up actions and no real engine effects), there
+is no GO button or list editor, and lists are not persisted. `RC-017` remains
+planned.
 
 Current implementation boundary for item 5 slideshows (`IN-009`):
 `fm-playback` provides a deterministic slideshow with per-slide frame

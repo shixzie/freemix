@@ -48,6 +48,11 @@
 //! the console: Simple mode without a known design (presets applied on the
 //! server), Advanced mode with a design, keys selected and an active row, a
 //! conflict, a padlock, and a session without permissions.
+//!
+//! The audits are hidden public entry points ([`check`],
+//! [`check_timeline`], [`check_color_panel`]) so the integration target
+//! `tests/hover_audit.rs` runs them in every shipped language. They rely on
+//! the widget info egui records only in debug builds.
 
 use core::fmt::Write as _;
 use core::num::NonZeroU128;
@@ -1449,7 +1454,7 @@ fn failed(findings: &Findings) -> bool {
 /// Audits every console scene in `language` and panics with a report of
 /// every control whose help is missing, unexplained, too long, or
 /// untranslated.
-fn check(language: Language) {
+pub fn check(language: Language) {
     let (findings, controls) = audit(language, scenes(language));
     dump("hover", language, &controls);
     println!("{}", report(language, &findings));
@@ -1479,19 +1484,9 @@ fn check(language: Language) {
     assert!(failures.is_empty(), "{failures}");
 }
 
-#[test]
-fn every_interactive_widget_explains_itself_in_english() {
-    check(Language::English);
-}
-
-#[test]
-fn every_interactive_widget_explains_itself_in_spanish() {
-    check(Language::Spanish);
-}
-
 /// Audits the standalone animation timeline in `language` under the same
 /// rules, and requires every transport shortcut to be named on its button.
-fn check_timeline(language: Language) {
+pub fn check_timeline(language: Language) {
     let locale = Locale::new(language);
     let (findings, controls) = audit(language, timeline_scenes(language));
     dump("hover-timeline", language, &controls);
@@ -1518,19 +1513,9 @@ fn check_timeline(language: Language) {
     assert!(failures.is_empty(), "{failures}");
 }
 
-#[test]
-fn every_animation_timeline_widget_explains_itself_in_english() {
-    check_timeline(Language::English);
-}
-
-#[test]
-fn every_animation_timeline_widget_explains_itself_in_spanish() {
-    check_timeline(Language::Spanish);
-}
-
 /// Audits the standalone colour panel in `language` under the same rules,
 /// and requires every action shortcut to be named on its key.
-fn check_color_panel(language: Language) {
+pub fn check_color_panel(language: Language) {
     let locale = Locale::new(language);
     let (findings, controls) = audit(language, color_panel_scenes(language));
     dump("hover-color", language, &controls);
@@ -1562,22 +1547,6 @@ fn check_color_panel(language: Language) {
         }
     }
     assert!(failures.is_empty(), "{failures}");
-}
-
-#[test]
-fn every_color_panel_widget_explains_itself_in_english() {
-    check_color_panel(Language::English);
-}
-
-#[test]
-fn every_color_panel_widget_explains_itself_in_spanish() {
-    check_color_panel(Language::Spanish);
-}
-
-#[test]
-fn every_shipped_language_is_audited() {
-    // A new catalog language needs its own audit test above.
-    assert_eq!(Language::ALL, [Language::English, Language::Spanish]);
 }
 
 #[test]
