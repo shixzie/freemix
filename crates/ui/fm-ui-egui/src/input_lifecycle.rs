@@ -581,8 +581,9 @@ impl StudioShell {
         }
     }
 
-    /// The bank toolbar: category filter chips, then Import files… and
-    /// Categories… on the trailing side.
+    /// The bank toolbar: Import files… and Categories… on the trailing
+    /// side, and the category filter chips in the space left before them,
+    /// wrapping onto further rows when the bank is too narrow for one.
     pub(crate) fn draw_bank_toolbar(&mut self, ui: &mut Ui, state: &StudioUiState) {
         let Some(view) = state.view.as_ref() else {
             return;
@@ -591,86 +592,102 @@ impl StudioShell {
         let note = l.text(Msg::LcFilterKeysNote);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let mut chip = |ui: &mut Ui, filter: BankFilter, label: &str, hover: String| {
-                let selected = self.lifecycle.filter == filter;
-                if ui
-                    .add(
-                        Button::selectable(
-                            selected,
-                            RichText::new(label).size(crate::theme::legible(10.5)),
+            ui.with_layout(
+                l10n::trailing_layout(l).with_cross_align(egui::Align::Min),
+                |ui| {
+                    let categories = project_edit_reason(state);
+                    if ui
+                        .add_enabled(
+                            categories.is_none(),
+                            small_button(l.text(Msg::LcCategoriesEllipsis)),
                         )
-                        .min_size(Vec2::new(0.0, 20.0)),
-                    )
-                    .on_hover_text(format!("{hover}\n{note}"))
-                    .clicked()
-                {
-                    self.lifecycle.filter = filter;
-                }
-            };
-            chip(
-                ui,
-                BankFilter::All,
-                l.text(Msg::LcFilterAll),
-                l.text(Msg::LcFilterAllHover).to_owned(),
-            );
-            if !view.input_categories.is_empty() {
-                for category in &view.input_categories {
-                    chip(
-                        ui,
-                        BankFilter::Category(category.id),
-                        &category.name,
-                        l.format(
-                            Msg::LcFilterCategoryHover,
-                            &[("category", Arg::Str(&category.name))],
-                        ),
+                        .hint(
+                            l.text(Msg::LcManageCategoriesHover),
+                            categories.unwrap_or(""),
+                        )
+                        .clicked()
+                    {
+                        self.open_categories(state);
+                    }
+                    let import = self.lifecycle_add_gate(state);
+                    if ui
+                        .add_enabled(import.enabled, small_button(l.text(Msg::LcImportEllipsis)))
+                        .hint(l.text(Msg::LcImportHover), import.reason)
+                        .clicked()
+                    {
+                        self.open_import(state);
+                    }
+                    ui.add_space(4.0);
+                    // The chips take only the width the buttons leave.
+                    ui.with_layout(
+                        l10n::leading_layout(l)
+                            .with_cross_align(egui::Align::Min)
+                            .with_main_wrap(true),
+                        |ui| self.draw_bank_filter_chips(ui, view, note),
                     );
-                }
+                },
+            );
+        });
+    }
+
+    /// The category filter chips and, while one filters, the shown count.
+    fn draw_bank_filter_chips(&mut self, ui: &mut Ui, view: &ClientView, note: &str) {
+        let l = self.locale;
+        let mut chip = |ui: &mut Ui, filter: BankFilter, label: &str, hover: String| {
+            let selected = self.lifecycle.filter == filter;
+            if ui
+                .add(
+                    Button::selectable(
+                        selected,
+                        RichText::new(label).size(crate::theme::legible(10.5)),
+                    )
+                    .min_size(Vec2::new(0.0, 20.0)),
+                )
+                .on_hover_text(format!("{hover}\n{note}"))
+                .clicked()
+            {
+                self.lifecycle.filter = filter;
+            }
+        };
+        chip(
+            ui,
+            BankFilter::All,
+            l.text(Msg::LcFilterAll),
+            l.text(Msg::LcFilterAllHover).to_owned(),
+        );
+        if !view.input_categories.is_empty() {
+            for category in &view.input_categories {
                 chip(
                     ui,
-                    BankFilter::Uncategorised,
-                    l.text(Msg::LcFilterUncategorised),
-                    l.text(Msg::LcFilterUncategorisedHover).to_owned(),
+                    BankFilter::Category(category.id),
+                    &category.name,
+                    l.format(
+                        Msg::LcFilterCategoryHover,
+                        &[("category", Arg::Str(&category.name))],
+                    ),
                 );
             }
-            if self.lifecycle.filter != BankFilter::All {
-                let shown = visible_inputs(view, self.lifecycle.filter).len();
-                ui.label(
-                    mono(l.format(
-                        Msg::LcFilterShowing,
-                        &[
-                            ("shown", Arg::from(shown)),
-                            ("total", Arg::from(view.inputs.len())),
-                        ],
-                    ))
-                    .size(crate::theme::legible(10.0))
-                    .color(muted_color()),
-                );
-            }
-            ui.with_layout(l10n::trailing_layout(l), |ui| {
-                let categories = project_edit_reason(state);
-                if ui
-                    .add_enabled(
-                        categories.is_none(),
-                        small_button(l.text(Msg::LcCategoriesEllipsis)),
-                    )
-                    .hint(
-                        l.text(Msg::LcManageCategoriesHover),
-                        categories.unwrap_or(""),
-                    )
-                    .clicked()
-                {
-                    self.open_categories(state);
-                }
-                let import = self.lifecycle_add_gate(state);
-                if ui
-                    .add_enabled(import.enabled, small_button(l.text(Msg::LcImportEllipsis)))
-                    .hint(l.text(Msg::LcImportHover), import.reason)
-                    .clicked()
-                {
-                    self.open_import(state);
-                }
-            });
-        });
+            chip(
+                ui,
+                BankFilter::Uncategorised,
+                l.text(Msg::LcFilterUncategorised),
+                l.text(Msg::LcFilterUncategorisedHover).to_owned(),
+            );
+        }
+        if self.lifecycle.filter != BankFilter::All {
+            let shown = visible_inputs(view, self.lifecycle.filter).len();
+            ui.label(
+                mono(l.format(
+                    Msg::LcFilterShowing,
+                    &[
+                        ("shown", Arg::from(shown)),
+                        ("total", Arg::from(view.inputs.len())),
+                    ],
+                ))
+                .size(crate::theme::legible(10.0))
+                .color(muted_color()),
+            );
+        }
     }
 
     /// The tile menu's lifecycle items: Duplicate, Replace source…, the
@@ -1329,6 +1346,85 @@ mod tests {
         InputLifecycleStatus {
             category,
             ..InputLifecycleStatus::default()
+        }
+    }
+
+    /// At a 1280 px window the bank is narrow: the filter chips stay left
+    /// of Import files… and Categories…, wrapping rather than running
+    /// under them.
+    #[test]
+    fn bank_filter_chips_wrap_before_the_toolbar_buttons() {
+        for language in fm_ui_model::i18n::Language::ALL {
+            let mut state = crate::hover_audit::bank_fixture();
+            state.view.as_mut().unwrap().input_categories = (1..=12)
+                .map(|id| category(id, &format!("Category number {id}")))
+                .collect();
+            let mut shell = StudioShell::default();
+            let locale = Locale::new(language);
+            shell.set_locale(locale);
+            let context = egui::Context::default();
+            // Records each widget's label, as the hover audit does.
+            context.all_styles_mut(|style| style.debug.show_interactive_widgets = true);
+            let area =
+                egui::Rect::from_min_size(egui::Pos2::new(10.0, 10.0), Vec2::new(560.0, 400.0));
+            for _ in 0..3 {
+                context.begin_pass(egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        Vec2::new(1280.0, 720.0),
+                    )),
+                    ..egui::RawInput::default()
+                });
+                let mut ui = Ui::new(
+                    context.clone(),
+                    egui::Id::new("bank-toolbar"),
+                    egui::UiBuilder::new()
+                        .layer_id(egui::LayerId::background())
+                        .max_rect(area),
+                );
+                shell.draw_bank_toolbar(&mut ui, &state);
+                drop(ui);
+                let _ = context.end_pass();
+            }
+            let widgets: Vec<(String, egui::Rect)> = context.viewport(|viewport| {
+                let widgets = &viewport.prev_pass.widgets;
+                widgets
+                    .layers()
+                    .flat_map(|(_, rects)| rects.iter().copied())
+                    .filter(|widget| widget.sense.interactive())
+                    .map(|widget| {
+                        let label = widgets
+                            .info(widget.id)
+                            .and_then(|info| info.label.clone())
+                            .unwrap_or_default();
+                        (label, widget.rect)
+                    })
+                    .collect()
+            });
+            let buttons = [Msg::LcImportEllipsis, Msg::LcCategoriesEllipsis]
+                .map(|msg| locale.text(msg).to_owned());
+            let (trailing, chips): (Vec<_>, Vec<_>) = widgets
+                .iter()
+                .partition(|(label, _)| buttons.contains(label));
+            assert_eq!(trailing.len(), 2, "{language:?}: {widgets:?}");
+            assert_eq!(chips.len(), 14, "{language:?}: {widgets:?}");
+            let rows: std::collections::BTreeSet<u32> = chips
+                .iter()
+                .map(|(_, rect)| rect.min.y.round().to_bits())
+                .collect();
+            assert!(rows.len() > 1, "{language:?}: the chips wrap");
+            for (label, chip) in &chips {
+                assert!(
+                    area.contains_rect(*chip),
+                    "{language:?}: {label} leaves the bank"
+                );
+                for (button, rect) in &trailing {
+                    assert!(
+                        !chip.intersects(*rect),
+                        "{language:?}: {label} runs under {button}"
+                    );
+                }
+            }
         }
     }
 

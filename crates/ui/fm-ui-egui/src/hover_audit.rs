@@ -988,6 +988,12 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes
 }
 
+/// The audit's show for an operator, for the input bank's layout tests.
+#[cfg(test)]
+pub(crate) fn bank_fixture() -> StudioUiState {
+    ready(true, Variant::default())
+}
+
 /// The audit's show (Scene input 3 showing scene 30, whose layers are Host
 /// and Guest) with exact previews, for the layer designer's tests.
 #[cfg(test)]

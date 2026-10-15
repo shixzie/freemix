@@ -143,6 +143,17 @@ struct NativeScenePlan {
     /// Every Scene input showing this scene, ascending.
     inputs: Vec<InputId>,
     sources: Vec<(SourceId, NativeSceneSource)>,
+    /// The last engine model a refresh declined to follow, with the other
+    /// scenes' drawn-layer count it was checked against: the same model
+    /// under the same budget is not rebuilt (and rejected) again each frame.
+    rejected: Option<(Arc<fm_model::Scene>, usize)>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many scene rebuilds [`NativeProjectPlan::refresh_scene_models`]
+    /// has attempted on this thread.
+    static SCENE_REFRESH_REBUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// `model` as drawn with no animation: every layer's anchor resolved, so
@@ -713,6 +724,7 @@ impl NativeProjectPlan {
                     .into_iter()
                     .map(|(source, token)| (token, source))
                     .collect(),
+                rejected: None,
             });
         }
 
@@ -960,7 +972,9 @@ impl NativeProjectPlan {
     /// ([`NativeProjectLimits::max_total_active_layers`], every planned
     /// scene's drawn layers together) is not followed: it keeps its last
     /// followed composition until an edit brings it back within the bound.
-    /// Returns whether any scene changed.
+    /// A declined model is remembered with the budget it was checked
+    /// against and only re-evaluated once the scene's model or the other
+    /// scenes' drawn layers change. Returns whether any scene changed.
     #[allow(clippy::too_many_lines)]
     pub fn refresh_scene_models(
         &mut self,
@@ -977,6 +991,22 @@ impl NativeProjectPlan {
             if Arc::ptr_eq(&model, &plan.followed) || *model == *plan.followed {
                 continue;
             }
+            let enabled =
+                |model: &fm_model::Scene| model.layers.iter().filter(|layer| layer.enabled).count();
+            let others = self
+                .scenes
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| *other != index)
+                .map(|(_, scene)| enabled(&scene.model))
+                .sum::<usize>();
+            if plan.rejected.as_ref().is_some_and(|(rejected, budget)| {
+                *budget == others && (Arc::ptr_eq(&model, rejected) || *model == **rejected)
+            }) {
+                continue;
+            }
+            #[cfg(test)]
+            SCENE_REFRESH_REBUILDS.with(|count| count.set(count.get() + 1));
             let mut next_source = self.next_source;
             let mut bound = Vec::new();
             let mut tokens = Vec::with_capacity(model.layers.len());
@@ -1027,17 +1057,8 @@ impl NativeProjectPlan {
                 }
                 Arc::new(drawn)
             };
-            let enabled =
-                |model: &fm_model::Scene| model.layers.iter().filter(|layer| layer.enabled).count();
-            let active = self
-                .scenes
-                .iter()
-                .enumerate()
-                .filter(|(other, _)| *other != index)
-                .map(|(_, scene)| enabled(&scene.model))
-                .sum::<usize>()
-                .saturating_add(enabled(&drawn));
-            if active > self.limits.max_total_active_layers {
+            if others.saturating_add(enabled(&drawn)) > self.limits.max_total_active_layers {
+                self.scenes[index].rejected = Some((model, others));
                 continue;
             }
             let tokens: Vec<SourceId> = tokens
@@ -1055,9 +1076,11 @@ impl NativeProjectPlan {
                     scene_inputs: &BTreeMap::new(),
                 },
             ) else {
+                self.scenes[index].rejected = Some((model, others));
                 continue;
             };
             let plan = &mut self.scenes[index];
+            plan.rejected = None;
             // Leaf sources no layer draws any more are released; nested
             // scenes stay, so the planned render order and budget hold.
             plan.sources.retain(|(token, source)| {
@@ -9501,12 +9524,78 @@ mod tests {
             }
             Arc::new(model)
         };
+        let rebuilds = || SCENE_REFRESH_REBUILDS.with(std::cell::Cell::get);
         let over = with(2);
+        let before = rebuilds();
         assert!(!plan.refresh_scene_models(|_| Some(Arc::clone(&over))));
         assert_eq!(plan.active_layer_count(), 1);
+        assert_eq!(rebuilds(), before + 1);
+        // The declined model is not rebuilt (nor rejected) again every
+        // frame, whether the engine hands out the same or an equal model.
+        for _ in 0..3 {
+            assert!(!plan.refresh_scene_models(|_| Some(Arc::clone(&over))));
+        }
+        let equal = Arc::new((*over).clone());
+        assert!(!plan.refresh_scene_models(|_| Some(Arc::clone(&equal))));
+        assert_eq!(rebuilds(), before + 1);
+        assert_eq!(plan.active_layer_count(), 1);
+        // An edit back within the bound is applied.
         let within = with(1);
         assert!(plan.refresh_scene_models(|_| Some(Arc::clone(&within))));
         assert_eq!(plan.active_layer_count(), 2);
+        assert_eq!(rebuilds(), before + 2);
+        // Going over again after following is declined once more.
+        assert!(!plan.refresh_scene_models(|_| Some(Arc::clone(&over))));
+        assert!(!plan.refresh_scene_models(|_| Some(Arc::clone(&over))));
+        assert_eq!(rebuilds(), before + 3);
+        assert_eq!(plan.active_layer_count(), 2);
+    }
+
+    /// SW-006: a declined scene is re-evaluated once the other scenes'
+    /// drawn layers free budget for it.
+    #[test]
+    fn declined_scene_models_are_rechecked_when_the_budget_frees() {
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, input(1));
+        add_scene_input(&mut project, input(2), scene(10), None);
+        add_scene_input(&mut project, input(3), scene(20), None);
+        let one = vec![layer(SourceRef::Input(input(1)), 0)];
+        add_scene(&mut project, scene(10), one.clone());
+        add_scene(&mut project, scene(20), one);
+        let mut plan = NativeProjectPlan::compile(
+            &project,
+            NativeProjectLimits {
+                max_total_active_layers: 3,
+                ..NativeProjectLimits::default()
+            },
+        )
+        .unwrap();
+        let base10 = Arc::new(project.scene(scene(10)).unwrap().clone());
+        let mut grown = (*base10).clone();
+        grown.layers.push(layer(SourceRef::Input(input(1)), 1));
+        grown.layers.push(layer(SourceRef::Input(input(1)), 2));
+        let grown = Arc::new(grown);
+        let mut emptied = project.scene(scene(20)).unwrap().clone();
+        emptied.layers[0].enabled = false;
+        let emptied = Arc::new(emptied);
+        let base20 = Arc::new(project.scene(scene(20)).unwrap().clone());
+        let rebuilds = || SCENE_REFRESH_REBUILDS.with(std::cell::Cell::get);
+        let before = rebuilds();
+        // Scene 10 grown to 3 layers alongside scene 20's one exceeds 3.
+        let current = |grown: &Arc<fm_model::Scene>, other: &Arc<fm_model::Scene>| {
+            let (grown, other) = (Arc::clone(grown), Arc::clone(other));
+            move |id: SceneId| Some(Arc::clone(if id == scene(10) { &grown } else { &other }))
+        };
+        assert!(!plan.refresh_scene_models(current(&grown, &base20)));
+        assert!(!plan.refresh_scene_models(current(&grown, &base20)));
+        assert_eq!(rebuilds(), before + 1);
+        assert_eq!(plan.active_layer_count(), 2);
+        // Disabling scene 20's layer frees the budget: the declined model
+        // is followed by the next refresh that sees the freed budget.
+        assert!(plan.refresh_scene_models(current(&grown, &emptied)));
+        plan.refresh_scene_models(current(&grown, &emptied));
+        assert_eq!(plan.active_layer_count(), 3);
+        assert!(!plan.refresh_scene_models(current(&grown, &emptied)));
     }
 
     #[test]
