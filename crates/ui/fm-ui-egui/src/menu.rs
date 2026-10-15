@@ -12,11 +12,13 @@ use egui::{Button, RichText, Ui, Vec2};
 use fm_protocol::{WireRecorderSlot, WireStingerSlotId, WireStreamTargetId};
 use fm_types::InputId;
 
+use crate::dock::{
+    DockLayout, LayoutPreset, NamedLayout, PanelId, PopOut, ToolWindow, WindowGeometry,
+};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::input_bank::{neighbour_move_lock_reason, project_editing_available};
 use crate::l10n::{self, Arg, Msg};
 use crate::outputs::{recorder_row, stream_row};
-use crate::panels::SideTab;
 use crate::panels::{
     latest_stream_sample, stinger_slot_presentation, stinger_slot_state, stinger_slot_tone,
 };
@@ -38,18 +40,19 @@ use crate::{
 };
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
-/// Which console regions are visible and how wide the side panel is;
+/// The console's panel arrangement and progressive-disclosure toggles;
 /// stored in the shell between frames and, by the host, between sessions.
-#[allow(clippy::struct_excessive_bools)] // each flag is one independent panel toggle
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)] // each flag is one independent toggle
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsoleLayout {
-    pub show_input_bank: bool,
-    pub show_mixer: bool,
-    pub show_side_panel: bool,
+    /// The docked panels and the panels popped out into their own windows.
+    pub dock: DockLayout,
+    /// The tool windows (Colour, Animation, layer designer) shown in their
+    /// own native windows instead of floating over the console.
+    pub tool_windows: Vec<PopOut<ToolWindow>>,
+    /// The operator's saved layouts, kept across Reset layout.
+    pub saved_layouts: Vec<NamedLayout>,
     pub show_status_bar: bool,
-    /// The side panel width the operator dragged to, in points; `None`
-    /// follows the default width. Clamped to the window when drawn.
-    pub side_panel_width: Option<u16>,
     /// Progressive disclosure: the mixer strips' typed gain, balance, and
     /// delay entries. Hidden by default; the fader, Mute, Solo, and AFV
     /// keys always show.
@@ -68,31 +71,30 @@ pub struct ConsoleLayout {
     /// The docked Animation panel's height the operator dragged to, in
     /// points; `None` uses the default height.
     pub animation_dock_height: Option<u16>,
+    /// Set when a persisted layout entry could not be used and the default
+    /// was put in its place; the shell announces it once and clears it.
+    /// Never written to preferences.
+    pub rejected: bool,
 }
 
 impl Default for ConsoleLayout {
     fn default() -> Self {
         Self {
-            show_input_bank: true,
-            show_mixer: true,
-            show_side_panel: true,
+            dock: DockLayout::default(),
+            tool_windows: Vec::new(),
+            saved_layouts: Vec::new(),
             show_status_bar: true,
-            side_panel_width: None,
             show_mixer_details: false,
             show_manual_details: false,
             animation_docked: false,
             animation_size: None,
             animation_dock_height: None,
+            rejected: false,
         }
     }
 }
 
 impl ConsoleLayout {
-    /// Narrowest side panel width the console draws, in points.
-    pub const MIN_SIDE_PANEL_WIDTH: u16 = 300;
-    /// Widest side panel width kept in preferences, in points.
-    pub const MAX_SIDE_PANEL_WIDTH: u16 = 1_200;
-
     /// Smallest floating Animation window side kept, in points.
     pub const MIN_ANIMATION_SIDE: u16 = 360;
     /// Largest floating Animation window side kept, in points.
@@ -102,47 +104,57 @@ impl ConsoleLayout {
     /// Tallest docked Animation panel kept, in points.
     pub const MAX_ANIMATION_DOCK_HEIGHT: u16 = 2_000;
 
-    /// Preference keys, in the order [`Self::preference_entries`] writes them.
+    /// Preference keys, in the order [`Self::preference_entries`] writes
+    /// them; `layout.saved` is written once per saved layout.
     pub const PREFERENCE_KEYS: [&'static str; 10] = [
-        "layout.input_bank",
-        "layout.mixer",
-        "layout.side_panel",
+        "layout.dock",
+        "layout.popouts",
+        "layout.tool_windows",
         "layout.status_bar",
-        "layout.side_panel_width",
         "layout.mixer_details",
         "layout.manual_details",
         "layout.animation",
         "layout.animation_size",
         "layout.animation_dock_height",
+        "layout.saved",
     ];
 
-    /// `key = value` pairs that reproduce this layout in a preferences file.
-    /// An automatic width, size, or height is written as `auto`; the
-    /// Animation window as `docked` or `floating`, its size as
-    /// `<width>x<height>`.
+    /// Whether this is the default arrangement; saved layouts do not count.
     #[must_use]
-    pub fn preference_entries(&self) -> [(&'static str, String); 10] {
+    pub fn is_default_arrangement(&self) -> bool {
+        Self {
+            saved_layouts: Vec::new(),
+            ..self.clone()
+        } == Self::default()
+    }
+
+    /// `key = value` pairs that reproduce this layout in a preferences file.
+    /// The dock tree and pop-outs use the [`DockLayout`] text forms; an
+    /// automatic size or height is written as `auto`; the Animation window
+    /// as `docked` or `floating`, its size as `<width>x<height>`; each
+    /// saved layout as `name | tree | popouts`.
+    #[must_use]
+    pub fn preference_entries(&self) -> Vec<(&'static str, String)> {
         let shown = |shown: bool| if shown { "shown" } else { "hidden" }.to_owned();
         let points =
             |value: Option<u16>| value.map_or_else(|| "auto".to_owned(), |value| value.to_string());
         let [
-            bank,
-            mixer,
-            side,
+            dock,
+            popouts,
+            tools,
             status,
-            width,
             mixer_details,
             manual_details,
             animation,
             animation_size,
             animation_dock_height,
+            saved,
         ] = Self::PREFERENCE_KEYS;
-        [
-            (bank, shown(self.show_input_bank)),
-            (mixer, shown(self.show_mixer)),
-            (side, shown(self.show_side_panel)),
+        let mut entries = vec![
+            (dock, self.dock.encode_tree()),
+            (popouts, self.dock.encode_popouts()),
+            (tools, crate::dock::encode_popouts(&self.tool_windows)),
             (status, shown(self.show_status_bar)),
-            (width, points(self.side_panel_width)),
             (mixer_details, shown(self.show_mixer_details)),
             (manual_details, shown(self.show_manual_details)),
             (
@@ -162,7 +174,13 @@ impl ConsoleLayout {
                 ),
             ),
             (animation_dock_height, points(self.animation_dock_height)),
-        ]
+        ];
+        entries.extend(
+            self.saved_layouts
+                .iter()
+                .map(|layout| (saved, layout.encode())),
+        );
+        entries
     }
 
     /// `value` as points within `range`.
@@ -189,8 +207,37 @@ impl ConsoleLayout {
             .is_some()
     }
 
+    /// Applies one dock entry's outcome: a value this version does not
+    /// write puts the default dock in place and flags [`Self::rejected`].
+    fn apply_dock_entry(&mut self, result: Result<(), crate::dock::DockError>) {
+        if result.is_err() {
+            self.dock = DockLayout::default();
+            self.rejected = true;
+        }
+    }
+
+    /// Adds (or replaces, by name) one saved layout.
+    fn apply_saved_layout(&mut self, value: &str) {
+        let Some(layout) = NamedLayout::decode(value) else {
+            self.rejected = true;
+            return;
+        };
+        if let Some(existing) = self
+            .saved_layouts
+            .iter_mut()
+            .find(|saved| saved.name == layout.name)
+        {
+            *existing = layout;
+        } else if self.saved_layouts.len() < crate::dock::MAX_SAVED_LAYOUTS {
+            self.saved_layouts.push(layout);
+        }
+    }
+
     /// Applies one preference entry. Returns `false`, leaving the layout
-    /// unchanged, for an unknown key or a value it cannot use.
+    /// unchanged, for an unknown key or a value it cannot use. A dock,
+    /// pop-out, tool window, or saved layout entry it cannot use is
+    /// answered with the default in its place and [`Self::rejected`] set,
+    /// so the operator is told.
     pub fn apply_preference(&mut self, key: &str, value: &str) -> bool {
         let shown = match value {
             "shown" | "true" | "on" => Some(true),
@@ -198,30 +245,43 @@ impl ConsoleLayout {
             _ => None,
         };
         let [
-            bank,
-            mixer,
-            side,
+            dock,
+            popouts,
+            tools,
             status,
-            width,
             mixer_details,
             manual_details,
             animation,
             animation_size,
             animation_dock_height,
+            saved,
         ] = Self::PREFERENCE_KEYS;
         let flag = match key {
-            key if key == bank => &mut self.show_input_bank,
-            key if key == mixer => &mut self.show_mixer,
-            key if key == side => &mut self.show_side_panel,
             key if key == status => &mut self.show_status_bar,
             key if key == mixer_details => &mut self.show_mixer_details,
             key if key == manual_details => &mut self.show_manual_details,
-            key if key == width => {
-                return Self::apply_points(
-                    &mut self.side_panel_width,
-                    value,
-                    &(Self::MIN_SIDE_PANEL_WIDTH..=Self::MAX_SIDE_PANEL_WIDTH),
-                );
+            key if key == dock => {
+                let result = self.dock.set_tree(value);
+                self.apply_dock_entry(result);
+                return true;
+            }
+            key if key == popouts => {
+                let result = self.dock.set_popouts(value);
+                self.apply_dock_entry(result);
+                return true;
+            }
+            key if key == tools => {
+                if let Some(windows) = crate::dock::decode_popouts(value) {
+                    self.tool_windows = windows;
+                } else {
+                    self.tool_windows.clear();
+                    self.rejected = true;
+                }
+                return true;
+            }
+            key if key == saved => {
+                self.apply_saved_layout(value);
+                return true;
             }
             key if key == animation => {
                 self.animation_docked = match value {
@@ -289,30 +349,33 @@ impl ConsoleLayout {
         self.animation_dock_height = Some(points);
     }
 
-    /// The side panel width to draw in a window allowing at most
-    /// `max_width`, given the default width.
+    /// `Some` (with its last place, if known) when `tool` is in its own
+    /// native window.
     #[must_use]
-    pub fn side_panel_width_within(&self, default_width: f32, max_width: f32) -> f32 {
-        let min = f32::from(Self::MIN_SIDE_PANEL_WIDTH);
-        let max = max_width.max(min);
-        self.side_panel_width
-            .map_or(default_width, f32::from)
-            .clamp(min, max)
+    pub fn tool_popped(&self, tool: ToolWindow) -> Option<Option<WindowGeometry>> {
+        self.tool_windows
+            .iter()
+            .find(|popout| popout.key == tool)
+            .map(|popout| popout.geometry)
     }
 
-    /// Records a side panel width the operator dragged to: the default
-    /// width, within a point, is stored as automatic.
-    pub fn record_side_panel_width(&mut self, width: f32, default_width: f32) {
-        self.side_panel_width = if (width - default_width).abs() < 1.0 {
-            None
-        } else {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped first
-            let points = width.round().clamp(
-                f32::from(Self::MIN_SIDE_PANEL_WIDTH),
-                f32::from(Self::MAX_SIDE_PANEL_WIDTH),
-            ) as u16;
-            Some(points)
-        };
+    /// Moves `tool` into its own window, or back over the console.
+    pub fn set_tool_popped(&mut self, tool: ToolWindow, popped: bool) {
+        if !popped {
+            self.tool_windows.retain(|popout| popout.key != tool);
+        } else if self.tool_popped(tool).is_none() {
+            self.tool_windows.push(PopOut {
+                key: tool,
+                geometry: None,
+            });
+        }
+    }
+
+    /// Records where popped-out `tool`'s window is.
+    pub fn set_tool_geometry(&mut self, tool: ToolWindow, geometry: WindowGeometry) {
+        if let Some(popout) = self.tool_windows.iter_mut().find(|p| p.key == tool) {
+            popout.geometry = Some(geometry);
+        }
     }
 }
 
@@ -545,7 +608,7 @@ impl StudioShell {
         ) && let Some((_, input)) = preview
             && let Some(name) = &name
         {
-            self.layout.show_input_bank = true;
+            self.layout.dock.show(PanelId::InputBank);
             self.rename_draft = Some(RenameDraft::new(input, name));
         }
         let neighbour_lock = |direction| {
@@ -659,13 +722,12 @@ impl StudioShell {
             self.open_designer(None);
         }
         ui.separator();
-        heading(ui, l.text(Msg::ViewPanels));
-        ui.checkbox(&mut self.layout.show_input_bank, l.text(Msg::InputBank))
-            .on_hover_text(l.text(Msg::ViewInputBankHover));
-        ui.checkbox(&mut self.layout.show_mixer, l.text(Msg::ViewAudioMixer))
-            .on_hover_text(l.text(Msg::ViewAudioMixerHover));
-        ui.checkbox(&mut self.layout.show_side_panel, l.text(Msg::ViewSidePanel))
-            .on_hover_text(l.text(Msg::ViewSidePanelHover));
+        ui.menu_button(l.text(Msg::ViewPanels), |ui| self.panels_menu(ui))
+            .response
+            .on_hover_text(l.text(Msg::ViewLayoutRemembered));
+        ui.menu_button(l.text(Msg::ViewLayouts), |ui| self.layouts_menu(ui))
+            .response
+            .on_hover_text(l.text(Msg::ViewLayoutsHover));
         ui.checkbox(&mut self.layout.show_status_bar, l.text(Msg::ViewStatusBar))
             .on_hover_text(l.text(Msg::ViewStatusBarHover));
         ui.separator();
@@ -681,18 +743,27 @@ impl StudioShell {
         )
         .on_hover_text(l.text(Msg::ViewManualDetailsHover));
         ui.separator();
-        heading(ui, l.text(Msg::ViewSidePanelTab));
-        let tab_reason = Msg::ReasonSidePanelHidden.en();
-        ui.add_enabled_ui(self.layout.show_side_panel, |ui| {
-            for tab in SideTab::ALL {
-                ui.radio_value(&mut self.side_tab, tab, l.text(tab.title()))
-                    .hint(l.text(tab.hover()), tab_reason);
+        heading(ui, l.text(Msg::ViewToolWindows));
+        for tool in ToolWindow::ALL {
+            let mut popped = self.layout.tool_popped(tool).is_some();
+            if ui
+                .checkbox(&mut popped, l.text(tool.title()))
+                .on_hover_text(l.format(
+                    Msg::ViewToolWindowHover,
+                    &[("tool", Arg::Str(l.text(tool.title())))],
+                ))
+                .changed()
+            {
+                self.layout.set_tool_popped(tool, popped);
+                if !popped {
+                    self.forget_tool_popout(tool);
+                }
             }
-        });
+        }
         ui.separator();
         if ui
             .add_enabled(
-                self.layout != ConsoleLayout::default(),
+                !self.layout.is_default_arrangement(),
                 Button::new(l.text(Msg::ViewResetLayout)),
             )
             .hint(
@@ -717,6 +788,114 @@ impl StudioShell {
         });
         ui.separator();
         self.language_menu_items(ui);
+    }
+
+    /// View › Panels: one checkbox per panel; a reopened panel docks back
+    /// where it belongs in the default layout.
+    fn panels_menu(&mut self, ui: &mut Ui) {
+        let l = self.locale;
+        ui.set_min_width(220.0);
+        for panel in PanelId::ALL {
+            let mut shown = self.layout.dock.is_visible(panel);
+            if ui
+                .checkbox(&mut shown, l.text(panel.title()))
+                .on_hover_text(l.format(
+                    Msg::ViewPanelToggleHover,
+                    &[("what", Arg::Str(l.text(panel.hover())))],
+                ))
+                .changed()
+            {
+                if shown {
+                    self.layout.dock.show(panel);
+                } else {
+                    self.layout.dock.close(panel);
+                }
+            }
+        }
+    }
+
+    /// View › Layouts: the built-in layouts, the saved ones (each with
+    /// Apply, Rename, and Delete), and Save current layout.
+    fn layouts_menu(&mut self, ui: &mut Ui) {
+        let l = self.locale;
+        ui.set_min_width(240.0);
+        for preset in LayoutPreset::ALL {
+            let current = self.dock_is(&preset.layout());
+            if ui
+                .radio(current, l.text(preset.title()))
+                .on_hover_text(l.format(
+                    Msg::LayoutBuiltInHover,
+                    &[("what", Arg::Str(l.text(preset.hover())))],
+                ))
+                .clicked()
+            {
+                self.apply_preset(preset);
+                ui.close();
+            }
+        }
+        ui.separator();
+        heading(ui, l.text(Msg::LayoutSavedHeading));
+        if self.layout.saved_layouts.is_empty() {
+            ui.label(
+                RichText::new(l.text(Msg::LayoutSavedNone))
+                    .size(crate::theme::legible(10.5))
+                    .color(muted_color()),
+            );
+        }
+        let mut apply = None;
+        let mut rename = None;
+        let mut delete = None;
+        for (index, saved) in self.layout.saved_layouts.iter().enumerate() {
+            let current = self.layout.dock == saved.layout;
+            let marker = if current { "● " } else { "" };
+            ui.menu_button(format!("{marker}{}", saved.name), |ui| {
+                if ui
+                    .button(l.text(Msg::ColorLibraryApply))
+                    .on_hover_text(l.text(Msg::LayoutApplyHover))
+                    .clicked()
+                {
+                    apply = Some(index);
+                    ui.close();
+                }
+                if ui
+                    .button(l.text(Msg::RenameEllipsis))
+                    .on_hover_text(l.text(Msg::LayoutRenameHover))
+                    .clicked()
+                {
+                    rename = Some(index);
+                    ui.close();
+                }
+                if ui
+                    .button(l.text(Msg::AnimDelete))
+                    .on_hover_text(l.text(Msg::LayoutDeleteHover))
+                    .clicked()
+                {
+                    delete = Some(index);
+                    ui.close();
+                }
+            })
+            .response
+            .on_hover_text(l.text(Msg::LayoutSavedEntryHover));
+        }
+        if let Some(index) = apply {
+            self.apply_saved_layout(index);
+        }
+        if let Some(index) = rename {
+            self.open_layout_name_dialog(Some(index));
+        }
+        if let Some(index) = delete {
+            self.delete_saved_layout(index);
+        }
+        ui.separator();
+        let full = self.layout.saved_layouts.len() >= crate::dock::MAX_SAVED_LAYOUTS;
+        if ui
+            .add_enabled(!full, Button::new(l.text(Msg::LayoutSaveCurrent)))
+            .hint(l.text(Msg::LayoutSaveCurrentHover), Msg::LayoutTooMany.en())
+            .clicked()
+        {
+            self.open_layout_name_dialog(None);
+            ui.close();
+        }
     }
 
     /// View › Language and clock: switches the console's language and hour
@@ -1184,17 +1363,11 @@ impl StudioShell {
             .hint(l.text(Msg::ClearStingerMenuHover), clear_reason);
         });
         if ui
-            .add_enabled(
-                self.layout.show_side_panel,
-                Button::new(l.text(Msg::StingerSlotsEllipsis)),
-            )
-            .hint(
-                l.text(Msg::StingerSlotsHover),
-                Msg::ReasonSidePanelHidden.en(),
-            )
+            .button(l.text(Msg::StingerSlotsEllipsis))
+            .on_hover_text(l.text(Msg::StingerSlotsHover))
             .clicked()
         {
-            self.side_tab = SideTab::Stingers;
+            self.layout.dock.show(PanelId::Stingers);
         }
     }
 

@@ -1341,7 +1341,6 @@ mod tests {
 
     use super::*;
     use crate::StudioShell;
-    use crate::panels::SideTab;
 
     const TITLE: u128 = 3;
     const ES: Locale = Locale::new(Language::Spanish);
@@ -1992,10 +1991,8 @@ mod tests {
     fn selecting_a_title_focuses_its_first_field_when_editable() {
         let model = model(keyed(TITLE, true, 255), keyed(TITLE, true, 255));
         let context = egui::Context::default();
-        let mut shell = StudioShell {
-            side_tab: SideTab::Titles,
-            ..StudioShell::default()
-        };
+        let mut shell = StudioShell::default();
+        shell.layout.dock.show(crate::dock::PanelId::Titles);
         let viewer = ready_state(&model, false, true);
         draw(&context, &mut shell, &viewer);
         // A session that cannot edit keeps focus where it was.
@@ -2019,10 +2016,10 @@ mod tests {
         let model = model(keyed(TITLE, true, 255), keyed(TITLE, true, 255));
         let state = ready_state(&model, true, true);
         let context = egui::Context::default();
-        let mut shell = StudioShell {
-            side_tab: SideTab::Titles,
-            ..StudioShell::default()
-        };
+        let mut shell = StudioShell::default();
+        shell.layout.dock.show(crate::dock::PanelId::Titles);
+        // The whole right column, so the editor's keys are in view.
+        shell.layout.dock.close(crate::dock::PanelId::Outputs);
         let english = draw(&context, &mut shell, &state);
         for expected in [
             "TITLES",

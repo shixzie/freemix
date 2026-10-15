@@ -612,7 +612,7 @@ fn the_window_docks_and_remembers_its_sizes_in_the_layout() {
     draw(&context, &mut shell, &state);
     assert!(!shell.animation_docked());
     // Docked, it draws as a panel along the bottom of the console.
-    let mut layout = shell.layout();
+    let mut layout = shell.layout().clone();
     layout.animation_docked = true;
     layout.animation_dock_height = Some(360);
     shell.set_layout(layout);

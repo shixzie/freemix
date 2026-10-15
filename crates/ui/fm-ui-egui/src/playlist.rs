@@ -1690,7 +1690,6 @@ mod tests {
 
     use super::*;
     use crate::StudioShell;
-    use crate::panels::SideTab;
 
     const ES: Locale = Locale::new(Language::Spanish);
 
@@ -2349,10 +2348,8 @@ mod tests {
         let synced = model(Some(stopped.clone()));
         let state = ready_state(&synced, true, true);
         let context = egui::Context::default();
-        let mut shell = StudioShell {
-            side_tab: SideTab::Playlist,
-            ..StudioShell::default()
-        };
+        let mut shell = StudioShell::default();
+        shell.layout.dock.show(crate::dock::PanelId::Playlist);
         idle(&context, &mut shell, &state);
         assert_eq!(context.memory(egui::Memory::focused), None);
 
@@ -2405,10 +2402,8 @@ mod tests {
         let synced = model(Some(running));
         let state = ready_state(&synced, true, true);
         let context = egui::Context::default();
-        let mut shell = StudioShell {
-            side_tab: SideTab::Playlist,
-            ..StudioShell::default()
-        };
+        let mut shell = StudioShell::default();
+        shell.layout.dock.show(crate::dock::PanelId::Playlist);
         let english = draw(&context, &mut shell, &state);
         for expected in [
             "PLAYLIST",

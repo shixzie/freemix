@@ -71,6 +71,7 @@ use crate::animation_timeline::{
     AnimationTimelineState, AnimationTimelineWidget, LibraryRequest, OverlayOptions,
     UserPresetItem, paint_document_overlay,
 };
+use crate::dock::ToolWindow;
 use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
@@ -80,7 +81,7 @@ use crate::theme::{
     section_label, small_button, status_chip, status_chip_painted, text_dim_color,
 };
 use crate::titles::title_display_name;
-use crate::{ConsoleLayout, StudioIntent, StudioShell, StudioUiState};
+use crate::{ConsoleLayout, StudioIntent, StudioShell, StudioUiState, workspace};
 
 /// The shortcut that opens and closes the Animation window.
 pub const ANIMATION_SHORTCUT: &str = "Ctrl+Shift+A";
@@ -882,6 +883,22 @@ impl StudioShell {
         self.draw_color_window(context, state, intents);
         self.draw_animation_window(context, state, intents);
         self.draw_designer_window(context, state, intents);
+        // A closed tool's own window reopens where it was last left.
+        for (tool, open) in [
+            (ToolWindow::Color, self.color.open),
+            (ToolWindow::Animation, self.animation.open),
+            (ToolWindow::Designer, self.designer.open),
+        ] {
+            if !open {
+                self.forget_tool_popout(tool);
+            }
+        }
+    }
+
+    /// Whether the Animation window is docked along the console's bottom:
+    /// docked and not in its own native window.
+    fn animation_docked_here(&self) -> bool {
+        self.layout.animation_docked && self.layout.tool_popped(ToolWindow::Animation).is_none()
     }
 
     /// Follows the authority for every draft and, when the window is open
@@ -890,7 +907,7 @@ impl StudioShell {
     pub(crate) fn draw_animation_dock(&mut self, ui: &mut Ui, state: &StudioUiState) {
         let context = ui.ctx().clone();
         self.animation.sync(&context, state);
-        if !(self.animation.open && self.layout.animation_docked) {
+        if !(self.animation.open && self.animation_docked_here()) {
             if self.animation.resize == Some(ResizeDrag::Dock) {
                 self.animation.resize = None;
             }
@@ -972,7 +989,24 @@ impl StudioShell {
         intents: &mut Vec<StudioIntent>,
     ) {
         let now = Duration::from_secs_f64(context.input(|input| input.time).max(0.0));
-        if self.animation.open && !self.layout.animation_docked {
+        if self.animation.open
+            && let Some(geometry) = self.layout.tool_popped(ToolWindow::Animation)
+        {
+            let l = self.locale;
+            let mut open = true;
+            let (id, builder) = self.tool_viewport(ToolWindow::Animation, geometry);
+            let outcome = context.show_viewport_immediate(id, builder, |ui, class| {
+                workspace::tool_popout_frame(ui, l, ToolWindow::Animation, class, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    self.draw_animation_contents(ui, state, &mut open);
+                })
+            });
+            self.finish_tool_popout(ToolWindow::Animation, outcome);
+            self.animation.last_size = None;
+            if !open {
+                self.close_animation();
+            }
+        } else if self.animation.open && !self.layout.animation_docked {
             let l = self.locale;
             let mut open = true;
             let viewport = context.viewport_rect();

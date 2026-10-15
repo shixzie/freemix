@@ -86,7 +86,7 @@ impl UiPreferences {
     /// [`Self::locale_with`].
     #[must_use]
     pub fn locale(self, env: impl Fn(&str) -> Option<String>) -> Locale {
-        self.locale_with(SavedPreferences::default(), env)
+        self.locale_with(&SavedPreferences::default(), env)
     }
 
     /// The console locale: `--lang`, else the saved language, else the
@@ -96,7 +96,7 @@ impl UiPreferences {
     #[must_use]
     pub fn locale_with(
         self,
-        saved: SavedPreferences,
+        saved: &SavedPreferences,
         env: impl Fn(&str) -> Option<String>,
     ) -> Locale {
         let language = self.language.or(saved.language).unwrap_or_else(|| {

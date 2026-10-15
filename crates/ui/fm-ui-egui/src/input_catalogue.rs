@@ -846,7 +846,7 @@ impl StudioShell {
     /// Opens the Add input dialog when the action is available.
     pub(crate) fn open_add_input(&mut self, state: &StudioUiState) {
         if add_input_availability(state, self.catalogue.adds_in_flight(state)).enabled {
-            self.layout.show_input_bank = true;
+            self.layout.dock.show(crate::dock::PanelId::InputBank);
             self.add_input = Some(AddInputDraft::new(state, &self.catalogue));
         }
     }

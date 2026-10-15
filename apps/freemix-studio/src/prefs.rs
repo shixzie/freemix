@@ -1,6 +1,7 @@
 //! Local console preferences that survive a restart: the UI language, the
 //! top-bar clock, the UI scale and high-contrast theme, and the panel
-//! layout (which regions are shown and the side panel width).
+//! layout (the docked panels, popped-out windows and their places, tool
+//! windows, and the operator's saved layouts).
 //!
 //! The file is plain `key = value` text in the platform configuration
 //! directory (`$XDG_CONFIG_HOME/freemix/studio.conf`, else
@@ -22,7 +23,7 @@ pub const PREFERENCES_ENV: &str = "FREEMIX_STUDIO_PREFS";
 const FILE_NAME: &str = "studio.conf";
 
 /// Preferences saved from an earlier session.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SavedPreferences {
     pub language: Option<Language>,
     pub hour_cycle: Option<HourCycle>,
@@ -49,7 +50,7 @@ impl SavedPreferences {
 
     /// The appearance these preferences select, defaults filling the gaps.
     #[must_use]
-    pub fn appearance(self) -> Appearance {
+    pub fn appearance(&self) -> Appearance {
         let default = Appearance::default();
         Appearance {
             ui_scale_percent: self.ui_scale_percent.unwrap_or(default.ui_scale_percent),
@@ -58,7 +59,9 @@ impl SavedPreferences {
     }
 
     /// Parses the file text; unknown keys, comments, and bad values are
-    /// skipped.
+    /// skipped. A layout entry this version does not write puts the
+    /// default layout in its place, flagged
+    /// [`ConsoleLayout::rejected`] so Studio says so.
     #[must_use]
     pub fn parse(text: &str) -> Self {
         let mut saved = Self::default();
@@ -83,7 +86,7 @@ impl SavedPreferences {
                         Appearance::parse_high_contrast(value).or(saved.high_contrast);
                 }
                 key => {
-                    let mut layout = saved.layout.unwrap_or_default();
+                    let mut layout = saved.layout.clone().unwrap_or_default();
                     if layout.apply_preference(key, value) {
                         saved.layout = Some(layout);
                     }
@@ -95,7 +98,7 @@ impl SavedPreferences {
 
     /// The file text for these preferences.
     #[must_use]
-    pub fn render(self) -> String {
+    pub fn render(&self) -> String {
         let mut text = String::from("# FreeMix Studio console preferences (local only)\n");
         if let Some(language) = self.language {
             text.push_str("language = ");
@@ -120,7 +123,7 @@ impl SavedPreferences {
                 "ui.high_contrast = off\n"
             });
         }
-        if let Some(layout) = self.layout {
+        if let Some(layout) = &self.layout {
             for (key, value) in layout.preference_entries() {
                 text.push_str(key);
                 text.push_str(" = ");
@@ -150,7 +153,7 @@ impl SavedPreferences {
     /// # Errors
     ///
     /// Returns directory creation, write, or rename errors.
-    pub fn save(self, path: &Path) -> io::Result<()> {
+    pub fn save(&self, path: &Path) -> io::Result<()> {
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -240,11 +243,11 @@ impl PreferenceStore {
     pub fn observe(
         &mut self,
         locale: Locale,
-        layout: ConsoleLayout,
+        layout: &ConsoleLayout,
         appearance: Appearance,
     ) -> io::Result<()> {
         if locale == self.known_locale
-            && layout == self.known_layout
+            && *layout == self.known_layout
             && appearance == self.known_appearance
         {
             return Ok(());
@@ -256,9 +259,9 @@ impl PreferenceStore {
             self.saved.hour_cycle = Some(locale.hour_cycle);
         }
         self.known_locale = locale;
-        if layout != self.known_layout {
-            self.known_layout = layout;
-            self.saved.layout = Some(layout);
+        if *layout != self.known_layout {
+            self.known_layout = layout.clone();
+            self.saved.layout = Some(layout.clone());
         }
         if appearance.ui_scale_percent != self.known_appearance.ui_scale_percent {
             self.saved.ui_scale_percent = Some(appearance.ui_scale_percent);

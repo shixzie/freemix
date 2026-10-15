@@ -17,15 +17,12 @@
 //! `input_lifecycle` (IN-026: colour labels, category filter, badges,
 //! duplicate, replace source, pause, close, and batch import).
 
-use egui::{
-    Align, CentralPanel, Event, Frame, Key, Layout, Margin, Modifiers, Panel, ScrollArea, Stroke,
-    Ui, Vec2,
-};
+use egui::{CentralPanel, Event, Frame, Key, Margin, Modifiers, Panel, Stroke, Ui, Vec2};
 use fm_protocol::{
     AudioMetersMessage, CommandPayload, LiveInputSource, ManualTransitionKind,
-    ManualTransitionPosition, MonitorFrameOrigin, MonitorImage, MonitorTap, ScenePreviewRequest,
-    StreamStatusMessage, TitlePreviewImage, TitlePreviewRequest, WireOverlayChannelId,
-    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    ManualTransitionPosition, MonitorImage, ScenePreviewRequest, StreamStatusMessage,
+    TitlePreviewImage, TitlePreviewRequest, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId, WireStreamTargetId,
 };
 use fm_protocol::{
     AutoTransitionKind, MediaOperation, OverlayTransitionKind, TransitionFavoriteStatus,
@@ -41,6 +38,7 @@ mod chrome;
 pub mod color_panel;
 mod connection_overlay;
 mod display_outputs;
+mod dock;
 mod edit_history;
 mod fade_to_black;
 mod gating;
@@ -74,9 +72,14 @@ mod theme;
 mod titles;
 mod toasts;
 mod transitions;
+mod workspace;
 
 pub use display_outputs::{
     display_output_block_reason, display_output_clear_intent, display_output_set_intent,
+};
+pub use dock::{
+    Axis, DockError, DockLayout, DockNode, DropZone, LayoutNameProblem, LayoutPreset, NamedLayout,
+    PanelId, PopOut, ToolWindow, WindowGeometry, check_layout_name,
 };
 pub use edit_history::{
     EditHistoryAvailability, EditLockSummary, HistoryActionAvailability, HistoryVerb,
@@ -116,14 +119,7 @@ pub use studio_color::{COLOR_SHORTCUT, GradeLutFile, GradeLutRequest, GradeRefus
 pub use titles::TitleUpdate;
 pub use transitions::next_overlay_transition;
 
-use panels::SideTab;
 use theme::{border_color, graphite_color, panel_color};
-
-const NARROW_MONITOR_WIDTH: f32 = 700.0;
-const SIDE_PANEL_WIDTH: f32 = 370.0;
-/// The side panel's egui id; its dragged width lives in egui memory.
-const SIDE_PANEL_ID: &str = "studio-side-panel";
-const MIN_LOWER_ROW_HEIGHT: f32 = 370.0;
 
 /// Changed controls for one input's Master audio strip.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1248,7 +1244,6 @@ pub struct StudioShell {
     transition_duration_frames: u32,
     fade_to_black_duration_frames: u32,
     rename_draft: Option<RenameDraft>,
-    side_tab: SideTab,
     stinger_editor: stinger_config::StingerEditor,
     layout: ConsoleLayout,
     show_shortcuts: bool,
@@ -1274,8 +1269,6 @@ pub struct StudioShell {
     playlist: playlist::PlaylistPanel,
     /// Meter and stream message arrival times for the status bar strip.
     health: health::HealthTracker,
-    /// Whether the side panel's edge was being dragged last frame.
-    side_panel_resizing: bool,
     /// UI scale and contrast; local to this console.
     appearance: preferences::Appearance,
     /// The locale "Reset to defaults" returns to.
@@ -1290,6 +1283,8 @@ pub struct StudioShell {
     designer: scene_designer::DesignerWindow,
     /// The Fullscreen outputs dialog and its slot drafts (OR-011).
     display_outputs: display_outputs::DisplayOutputsDialog,
+    /// Tab drags, native window placement, and the layout name dialog.
+    dock_ui: workspace::DockUi,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1345,55 +1340,27 @@ impl StudioShell {
         );
     }
 
-    /// Returns which console regions are visible.
+    /// Returns the console layout: docked and popped-out panels, saved
+    /// layouts, and the disclosure toggles.
     #[must_use]
-    pub const fn layout(&self) -> ConsoleLayout {
-        self.layout
+    pub const fn layout(&self) -> &ConsoleLayout {
+        &self.layout
     }
 
-    /// Shows or hides console regions.
-    pub const fn set_layout(&mut self, layout: ConsoleLayout) {
+    /// Replaces the console layout, for example with the one restored
+    /// from preferences. A layout flagged [`ConsoleLayout::rejected`] is
+    /// announced on the next frame.
+    pub fn set_layout(&mut self, layout: ConsoleLayout) {
         self.layout = layout;
     }
 
-    /// Restores every panel and the default side panel width, forgetting
-    /// the width egui keeps for the dragged panel edge.
-    pub(crate) fn reset_layout(&mut self, context: &egui::Context) {
-        self.layout = ConsoleLayout::default();
-        self.side_panel_resizing = false;
-        context.data_mut(|data| data.remove::<egui::PanelState>(egui::Id::new(SIDE_PANEL_ID)));
-    }
-
-    /// Keeps the side panel at the layout's width for this window: egui
-    /// remembers the panel's last width itself, so after a window resize or
-    /// a restored preference that width is dropped and the panel takes
-    /// `width` as its default. Never during a drag of the panel edge.
-    fn apply_side_panel_width(&self, context: &egui::Context, width: f32) {
-        let id = egui::Id::new(SIDE_PANEL_ID);
-        if !self.side_panel_resizing
-            && egui::PanelState::load(context, id)
-                .is_some_and(|panel| (panel.size().x - width).abs() > 0.5)
-        {
-            context.data_mut(|data| data.remove::<egui::PanelState>(id));
-        }
-    }
-
-    /// Records the side panel width once a drag of its edge ends, so the
-    /// host can remember it; window resizes that clamp the panel are not
-    /// operator choices and are not recorded.
-    fn track_side_panel_width(&mut self, context: &egui::Context, default_width: f32) {
-        let id = egui::Id::new(SIDE_PANEL_ID);
-        let dragging = context
-            .read_response(id.with("__resize"))
-            .is_some_and(|response| response.dragged());
-        if self.side_panel_resizing
-            && !dragging
-            && let Some(panel) = egui::PanelState::load(context, id)
-        {
-            self.layout
-                .record_side_panel_width(panel.size().x, default_width);
-        }
-        self.side_panel_resizing = dragging;
+    /// Returns to the Default layout and default sizes, docking every
+    /// panel and tool window back; saved layouts are kept.
+    pub(crate) fn reset_layout(&mut self, _context: &egui::Context) {
+        self.layout = ConsoleLayout {
+            saved_layouts: core::mem::take(&mut self.layout.saved_layouts),
+            ..ConsoleLayout::default()
+        };
     }
 
     /// Returns the console's UI language and clock preference.
@@ -1456,6 +1423,7 @@ impl StudioShell {
             || self.show_preferences
             || self.add_input.is_some()
             || self.remove_input.is_some()
+            || self.layout_dialog_open()
             || (!self.show_shortcuts && egui::Popup::is_any_open(&context));
         if other_owner || context.egui_wants_keyboard_input() {
             return;
@@ -1504,6 +1472,7 @@ impl StudioShell {
             || self.color_owns_keyboard()
             || self.animation_owns_keyboard()
             || self.designer_owns_keyboard()
+            || self.layout_dialog_open()
             || egui::Popup::is_any_open(context)
     }
 
@@ -1614,46 +1583,21 @@ impl StudioShell {
         // Docked, the Animation window spans the whole console width below
         // the monitors; it also follows the authority here every frame.
         self.draw_animation_dock(ui, state);
-        if self.layout.show_side_panel {
-            self.draw_side_panel_region(ui, state, &mut intents);
-        }
+        self.announce_rejected_layout();
+        let frame = workspace::panel_frame(self, state, manual_transition_controls, dt_ms);
         let central = CentralPanel::default()
             .frame(
                 Frame::new()
                     .fill(graphite_color())
-                    .inner_margin(Margin::same(12)),
+                    .inner_margin(Margin::same(8)),
             )
             .show(ui, |ui| {
-                // Tall canvases may grow their wells into about half the
-                // console height; 16:9 wells always fill their width.
-                let well_budget = (ui.available_height() * 0.5).max(200.0);
-                // Small windows keep every region reachable by scrolling.
-                ScrollArea::vertical()
-                    .id_salt("studio-console")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let top = ui.cursor().min;
-                        self.draw_switcher_row(
-                            ui,
-                            state,
-                            manual_transition_controls,
-                            well_budget,
-                            &mut intents,
-                        );
-                        let monitors = egui::Rect::from_min_max(
-                            top,
-                            egui::pos2(top.x + ui.available_width(), ui.min_rect().max.y),
-                        );
-                        if let Some(card) = connection_overlay::connection_card(self.locale, state)
-                        {
-                            connection_overlay::paint_connection_card(ui, monitors, &card);
-                        }
-                        if self.layout.show_input_bank || self.layout.show_mixer {
-                            ui.add_space(12.0);
-                            self.draw_lower_row(ui, state, dt_ms, &mut intents);
-                        }
-                    });
+                let monitors = self.draw_workspace(ui, state, &frame, &mut intents);
+                if let Some(card) = connection_overlay::connection_card(self.locale, state) {
+                    connection_overlay::paint_connection_card(ui, monitors, &card);
+                }
             });
+        self.draw_panel_popouts(ui.ctx(), state, &frame, &mut intents);
         self.draw_toasts(ui.ctx(), central.response.rect);
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
@@ -1661,39 +1605,10 @@ impl StudioShell {
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
         self.draw_lifecycle_dialogs(ui.ctx(), state, &mut intents);
         self.draw_tool_windows(ui.ctx(), state, &mut intents);
+        self.draw_layout_name_dialog(ui.ctx());
         self.track_catalogue_intents(ui.ctx(), state, &intents);
         theme::paint_focus_ring(ui.ctx());
         intents
-    }
-
-    /// The resizable side panel at the layout's remembered width.
-    fn draw_side_panel_region(
-        &mut self,
-        ui: &mut Ui,
-        state: &StudioUiState,
-        intents: &mut Vec<StudioIntent>,
-    ) {
-        // Compact windows give the monitors the width; wide ones may grow
-        // the side panel up to a quarter of the window.
-        let max_side = (ui.available_width() * 0.25).clamp(320.0, 560.0);
-        let default_side = SIDE_PANEL_WIDTH.min(max_side);
-        let side_width = self.layout.side_panel_width_within(default_side, max_side);
-        self.apply_side_panel_width(ui.ctx(), side_width);
-        Panel::right(SIDE_PANEL_ID)
-            .resizable(true)
-            .default_size(side_width)
-            .min_size(f32::from(ConsoleLayout::MIN_SIDE_PANEL_WIDTH))
-            .max_size(max_side)
-            .frame(
-                Frame::new()
-                    .fill(panel_color())
-                    .stroke(Stroke::new(crate::theme::line_width(), border_color()))
-                    .inner_margin(Margin::same(10)),
-            )
-            .show(ui, |ui| self.draw_side_panel(ui, state, intents));
-        // After the panel stored this frame's width, so the width on
-        // the frame a drag ends is the released one.
-        self.track_side_panel_width(ui.ctx(), default_side);
     }
 
     /// Announces this frame's new messages and input add/remove outcomes.
@@ -1752,156 +1667,6 @@ impl StudioShell {
             self.toasts.dismiss(id);
         }
     }
-
-    /// Preview monitor, transition column, Program monitor.
-    fn draw_switcher_row(
-        &mut self,
-        ui: &mut Ui,
-        state: &StudioUiState,
-        manual: ManualTransitionAvailability,
-        well_budget: f32,
-        intents: &mut Vec<StudioIntent>,
-    ) {
-        let gap = 12.0;
-        let canvas = self.canvas;
-        let available = ui.available_width();
-        let column = transitions::TRANSITION_COLUMN_WIDTH + 2.0 * gap;
-        let now = std::time::Instant::now();
-        let native_runtime = state
-            .monitor_images
-            .iter()
-            .flatten()
-            .any(|(image, _)| image.origin == MonitorFrameOrigin::Native);
-        let pictures = MonitorTap::ALL.map(|tap| {
-            self.monitor_textures
-                .picture(tap, &state.monitor_images, now)
-        });
-        let draw_bus = |ui: &mut Ui, bus: monitors::Bus, width: f32| {
-            monitors::draw_monitor(
-                ui,
-                bus,
-                state.view.as_ref(),
-                monitors::WellShape {
-                    width,
-                    video_height: monitors::monitor_video_height(width, canvas, well_budget),
-                    canvas,
-                },
-                pictures[bus.tap().index()],
-                native_runtime,
-            );
-        };
-        if available >= NARROW_MONITOR_WIDTH {
-            let monitor_width = ((available - column) / 2.0).floor();
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                draw_bus(ui, monitors::Bus::Preview, monitor_width);
-                fixed_width_column(ui, transitions::TRANSITION_COLUMN_WIDTH, |ui| {
-                    transitions::draw_transition_column(ui, self, state, manual, intents);
-                });
-                draw_bus(ui, monitors::Bus::Program, monitor_width);
-            });
-        } else {
-            let monitor_width = ((available - gap) / 2.0).floor();
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = gap;
-                draw_bus(ui, monitors::Bus::Preview, monitor_width);
-                draw_bus(ui, monitors::Bus::Program, monitor_width);
-            });
-            ui.add_space(gap);
-            fixed_width_column(ui, transitions::TRANSITION_COLUMN_WIDTH, |ui| {
-                transitions::draw_transition_column(ui, self, state, manual, intents);
-            });
-        }
-    }
-
-    /// Input bank beside the audio mixer; stacked when the window is narrow.
-    /// Either region may be hidden from the View menu.
-    fn draw_lower_row(
-        &mut self,
-        ui: &mut Ui,
-        state: &StudioUiState,
-        dt_ms: u32,
-        intents: &mut Vec<StudioIntent>,
-    ) {
-        let strips = state.view.as_ref().map_or(0, |view| {
-            view.input_audio_strips.len() + mixer::active_groups(view).len()
-        });
-        let available = ui.available_width();
-        let height = ui.available_height().max(MIN_LOWER_ROW_HEIGHT);
-        let show_bank = self.layout.show_input_bank;
-        let show_mixer = self.layout.show_mixer;
-        let mixer_width = if show_bank {
-            // Without synchronized strips the mixer keeps a readable share
-            // instead of collapsing to the Master strip's width.
-            let wanted = if state.view.is_some() {
-                mixer::mixer_width(strips)
-            } else {
-                available * 0.4
-            };
-            wanted.min(available * 0.55)
-        } else {
-            available
-        };
-        let bank_width = if show_mixer {
-            available - mixer_width - 12.0
-        } else {
-            available
-        };
-        let side_by_side =
-            !(show_bank && show_mixer) || bank_width >= input_bank::MIN_TILE_WIDTH * 2.0 + 24.0;
-        if side_by_side {
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                if show_bank {
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(bank_width, height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            theme::card().show(ui, |ui| {
-                                ui.set_min_size(Vec2::new(ui.available_width(), height - 22.0));
-                                self.draw_inputs(ui, state, intents);
-                            });
-                        },
-                    );
-                }
-                if show_mixer {
-                    ui.allocate_ui_with_layout(
-                        Vec2::new(mixer_width, height),
-                        Layout::top_down(Align::Min),
-                        |ui| {
-                            theme::card().show(ui, |ui| {
-                                ui.set_min_size(Vec2::new(ui.available_width(), height - 22.0));
-                                mixer::draw_mixer(
-                                    ui,
-                                    state,
-                                    &mut self.meters,
-                                    (dt_ms, &mut self.layout.show_mixer_details),
-                                    intents,
-                                );
-                            });
-                        },
-                    );
-                }
-            });
-        } else {
-            theme::card().show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.set_min_height(MIN_LOWER_ROW_HEIGHT);
-                self.draw_inputs(ui, state, intents);
-            });
-            ui.add_space(12.0);
-            theme::card().show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                mixer::draw_mixer(
-                    ui,
-                    state,
-                    &mut self.meters,
-                    (dt_ms, &mut self.layout.show_mixer_details),
-                    intents,
-                );
-            });
-        }
-    }
 }
 
 impl Default for StudioShell {
@@ -1910,7 +1675,6 @@ impl Default for StudioShell {
             transition_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
             fade_to_black_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
             rename_draft: None,
-            side_tab: SideTab::default(),
             stinger_editor: stinger_config::StingerEditor::default(),
             layout: ConsoleLayout::default(),
             show_shortcuts: false,
@@ -1927,7 +1691,6 @@ impl Default for StudioShell {
             titles: titles::TitlesPanel::default(),
             playlist: playlist::PlaylistPanel::default(),
             health: health::HealthTracker::default(),
-            side_panel_resizing: false,
             appearance: preferences::Appearance::default(),
             default_locale: Locale::ENGLISH,
             show_preferences: false,
@@ -1935,6 +1698,7 @@ impl Default for StudioShell {
             animation: studio_animation::AnimationWindow::default(),
             designer: scene_designer::DesignerWindow::default(),
             display_outputs: display_outputs::DisplayOutputsDialog::default(),
+            dock_ui: workspace::DockUi::default(),
         }
     }
 }
@@ -1969,6 +1733,7 @@ fn fixed_width_column(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
 mod tests {
     use core::num::NonZeroU128;
 
+    use fm_protocol::{MonitorFrameOrigin, MonitorTap};
     use fm_protocol::{
         OverlayBorderPreset, OverlayPositionPreset, OverlayTransitionKind, StingerReadiness,
         StreamRealizedState, StreamStatusSample,
@@ -2377,43 +2142,69 @@ mod tests {
     #[test]
     fn console_layout_defaults_to_every_region_and_round_trips() {
         let mut shell = StudioShell::default();
-        assert_eq!(shell.layout(), ConsoleLayout::default());
+        assert_eq!(shell.layout(), &ConsoleLayout::default());
+        assert!(shell.layout().is_default_arrangement());
+        for panel in PanelId::ALL {
+            assert!(shell.layout().dock.is_docked(panel), "{panel:?}");
+        }
         // Progressive disclosure: the advanced mixer and manual T-bar
         // controls start hidden.
         assert!(!shell.layout().show_mixer_details);
         assert!(!shell.layout().show_manual_details);
-        let layout = ConsoleLayout {
-            show_mixer: false,
-            ..ConsoleLayout::default()
-        };
-        shell.set_layout(layout);
-        assert_eq!(shell.layout(), layout);
+        let mut layout = ConsoleLayout::default();
+        layout.dock.close(PanelId::Mixer);
+        shell.set_layout(layout.clone());
+        assert_eq!(shell.layout(), &layout);
     }
 
     #[test]
     fn console_layout_preferences_round_trip_key_by_key() {
-        let layout = ConsoleLayout {
-            show_input_bank: false,
-            show_side_panel: false,
-            side_panel_width: Some(512),
+        let mut layout = ConsoleLayout {
             show_mixer_details: true,
             show_manual_details: true,
+            show_status_bar: false,
             ..ConsoleLayout::default()
         };
+        layout.dock.close(PanelId::InputBank);
+        layout
+            .dock
+            .move_panel(PanelId::Titles, PanelId::Preview, DropZone::Bottom);
+        layout.dock.pop_out(
+            PanelId::Mixer,
+            Some(WindowGeometry {
+                size: (700, 480),
+                position: Some((1_700, 40)),
+            }),
+        );
+        layout.set_tool_popped(ToolWindow::Designer, true);
+        layout.saved_layouts.push(NamedLayout {
+            name: "Interview".into(),
+            layout: LayoutPreset::Compact.layout(),
+        });
+        layout.saved_layouts.push(NamedLayout {
+            name: "Música".into(),
+            layout: LayoutPreset::AudioFocus.layout(),
+        });
         let mut read = ConsoleLayout::default();
         for (key, value) in layout.preference_entries() {
             assert!(read.apply_preference(key, &value), "{key} = {value}");
         }
         assert_eq!(read, layout);
-        let keys = layout.preference_entries().map(|(key, _)| key);
-        assert_eq!(keys, ConsoleLayout::PREFERENCE_KEYS);
+        let keys: Vec<_> = layout
+            .preference_entries()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        let mut expected = ConsoleLayout::PREFERENCE_KEYS.to_vec();
+        expected.push("layout.saved");
+        assert_eq!(keys, expected);
         // Unknown keys and unusable values leave the layout unchanged.
         let mut unchanged = ConsoleLayout::default();
         for (key, value) in [
-            ("layout.mixer", "sometimes"),
-            ("layout.side_panel_width", "299"),
-            ("layout.side_panel_width", "1201"),
-            ("layout.side_panel_width", "-4"),
+            ("layout.unknown", "hidden"),
+            ("layout.dock_width", "400"),
+            ("layout.status_bar", "sometimes"),
+            ("layout.animation", "sideways"),
             ("language", "es"),
         ] {
             assert!(!unchanged.apply_preference(key, value), "{key} = {value}");
@@ -2421,58 +2212,42 @@ mod tests {
         assert_eq!(unchanged, ConsoleLayout::default());
         assert!(unchanged.apply_preference("layout.status_bar", "off"));
         assert!(!unchanged.show_status_bar);
-        assert!(unchanged.apply_preference("layout.side_panel_width", "300"));
-        assert!(unchanged.apply_preference("layout.side_panel_width", "auto"));
-        assert_eq!(unchanged.side_panel_width, None);
+        // A dock, pop-out, tool window, or saved layout entry this version
+        // does not write falls back to the default and is flagged.
+        for (key, value) in [
+            ("layout.dock", "[preview|nonsense]"),
+            ("layout.popouts", "mixer:1x1"),
+            ("layout.tool_windows", "palette"),
+            ("layout.saved", "no tree"),
+        ] {
+            let mut layout = ConsoleLayout::default();
+            layout.dock.close(PanelId::Media);
+            assert!(layout.apply_preference(key, value), "{key} = {value}");
+            assert!(layout.rejected, "{key} = {value}");
+            if key != "layout.tool_windows" && key != "layout.saved" {
+                assert_eq!(layout.dock, DockLayout::default(), "{key}");
+            }
+        }
     }
 
     #[test]
-    fn side_panel_width_is_recorded_from_drags_and_clamped_to_the_window() {
-        let mut layout = ConsoleLayout::default();
-        // Automatic: the default width, clamped like any other.
-        assert!((layout.side_panel_width_within(370.0, 480.0) - 370.0).abs() < f32::EPSILON);
-        assert!((layout.side_panel_width_within(320.0, 320.0) - 320.0).abs() < f32::EPSILON);
-        layout.record_side_panel_width(452.4, 370.0);
-        assert_eq!(layout.side_panel_width, Some(452));
-        assert!((layout.side_panel_width_within(370.0, 560.0) - 452.0).abs() < f32::EPSILON);
-        // A smaller window clamps the drawn width but keeps the choice.
-        assert!((layout.side_panel_width_within(320.0, 320.0) - 320.0).abs() < f32::EPSILON);
-        assert_eq!(layout.side_panel_width, Some(452));
-        // Dragging back to the default width returns to automatic.
-        layout.record_side_panel_width(370.4, 370.0);
-        assert_eq!(layout.side_panel_width, None);
-        assert_eq!(layout, ConsoleLayout::default());
-        layout.record_side_panel_width(9_000.0, 370.0);
-        assert_eq!(
-            layout.side_panel_width,
-            Some(ConsoleLayout::MAX_SIDE_PANEL_WIDTH)
-        );
-    }
-
-    #[test]
-    fn reset_layout_restores_panels_and_forgets_the_dragged_width() {
+    fn reset_layout_restores_the_default_and_keeps_saved_layouts() {
         let context = egui::Context::default();
-        let id = egui::Id::new(SIDE_PANEL_ID);
-        context.data_mut(|data| {
-            data.insert_persisted(
-                id,
-                egui::PanelState {
-                    outer_rect: egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        Vec2::new(500.0, 400.0),
-                    ),
-                },
-            );
-        });
         let mut shell = StudioShell::default();
-        shell.set_layout(ConsoleLayout {
-            show_mixer: false,
-            side_panel_width: Some(500),
+        let mut layout = ConsoleLayout {
+            show_status_bar: false,
             ..ConsoleLayout::default()
+        };
+        layout.dock.pop_out(PanelId::Program, None);
+        layout.set_tool_popped(ToolWindow::Color, true);
+        layout.saved_layouts.push(NamedLayout {
+            name: "Mine".into(),
+            layout: LayoutPreset::Compact.layout(),
         });
+        shell.set_layout(layout.clone());
         shell.reset_layout(&context);
-        assert_eq!(shell.layout(), ConsoleLayout::default());
-        assert!(egui::PanelState::load(&context, id).is_none());
+        assert!(shell.layout().is_default_arrangement());
+        assert_eq!(shell.layout().saved_layouts, layout.saved_layouts);
     }
 
     #[test]

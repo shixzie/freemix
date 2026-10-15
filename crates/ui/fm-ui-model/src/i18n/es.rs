@@ -136,10 +136,6 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("esta ranura de Stinger no está configurada"),
     ),
     (
-        Msg::ReasonSidePanelHidden,
-        t("el panel lateral está oculto"),
-    ),
-    (
         Msg::ReasonInputLimit,
         t("el show ya tiene el máximo de 256 entradas"),
     ),
@@ -465,17 +461,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ViewAudioMixerHover,
         t("Muestra u oculta el mezclador de audio"),
     ),
-    (Msg::ViewSidePanel, t("Panel lateral")),
-    (
-        Msg::ViewSidePanelHover,
-        t("Muestra u oculta grabación, transmisiones, overlays, stingers y títulos"),
-    ),
     (Msg::ViewStatusBar, t("Barra de estado")),
     (
         Msg::ViewStatusBarHover,
         t("Muestra u oculta la barra de estado inferior"),
     ),
-    (Msg::ViewSidePanelTab, t("Pestaña del panel lateral")),
     (Msg::TabOverlays, t("Overlays")),
     (Msg::TabStingers, t("Stingers")),
     (Msg::TabTitles, t("Títulos")),
@@ -486,13 +476,178 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::ViewResetLayoutHover,
-        t("Mostrar todos los paneles y restaurar el ancho predeterminado del panel lateral"),
+        t(
+            "Vuelve al diseño predeterminado: todos los paneles acoplados, sin ventanas propias y tamaños predeterminados",
+        ),
     ),
     (
         Msg::ViewLayoutRemembered,
         t(
-            "Los paneles y el ancho del panel lateral (arrastre su borde) se recuerdan en esta consola",
+            "El diseño, las ventanas desacopladas y los diseños guardados se recuerdan en esta consola; arrastre una pestaña para mover un panel y los huecos para cambiar tamaños",
         ),
+    ),
+    (Msg::PanelPreview, t("Previo")),
+    (
+        Msg::PanelPreviewHover,
+        t("El monitor de Previo: la fuente que la próxima transición lleva al aire"),
+    ),
+    (Msg::PanelProgram, t("Programa")),
+    (
+        Msg::PanelProgramHover,
+        t("El monitor de Programa: lo que está al aire"),
+    ),
+    (
+        Msg::PanelTransitionsHover,
+        t("Teclas de transición, la T-bar manual, las favoritas y el fundido a negro"),
+    ),
+    (Msg::PanelOutputs, t("Grabación y transmisiones")),
+    (
+        Msg::PanelOutputsHover,
+        t("Grabadores y destinos de transmisión: iniciar, detener y su estado en vivo"),
+    ),
+    (
+        Msg::ToolColorHover,
+        t("Corrige el color de entradas y Programa con ruedas, curvas y LUT"),
+    ),
+    (
+        Msg::ToolAnimationHover,
+        t("Anima títulos y escenas con fotogramas clave en una línea de tiempo"),
+    ),
+    (
+        Msg::ToolDesignerHover,
+        t("Organiza las capas de una escena sobre su lienzo"),
+    ),
+    (
+        Msg::DockEmpty,
+        t(
+            "Todos los paneles están ocultos o en su propia ventana. Vuelva a mostrarlos desde Ver › Paneles o Ver › Diseños.",
+        ),
+    ),
+    (
+        Msg::DockTabHover,
+        t(
+            "Clic para mostrar este panel. Arrastre la pestaña al centro de otro panel para agruparlos, o a un borde para dividirlo; clic derecho para más.",
+        ),
+    ),
+    (Msg::DockPopOut, t("Desacoplar")),
+    (
+        Msg::DockPopOutHover,
+        t("Mueve este panel a su propia ventana; cierre esa ventana para volver a acoplarlo"),
+    ),
+    (
+        Msg::DockPopOutNamed,
+        t("Mueve {panel} a su propia ventana; cierre esa ventana para volver a acoplarlo"),
+    ),
+    (Msg::DockClosePanel, t("Cerrar panel")),
+    (
+        Msg::DockClosePanelHover,
+        t("Oculta este panel; vuelva a abrirlo desde Ver › Paneles"),
+    ),
+    (
+        Msg::DockClosePanelNamed,
+        t("Oculta {panel}; vuelva a abrirlo desde Ver › Paneles"),
+    ),
+    (Msg::DockBack, t("Acoplar de nuevo")),
+    (
+        Msg::DockBackNamed,
+        t("Devuelve {panel} a la consola; cerrar esta ventana hace lo mismo"),
+    ),
+    (Msg::DockSplitter, t("Divisor de paneles")),
+    (
+        Msg::DockSplitterHover,
+        t("Arrastre para cambiar el tamaño de los paneles a ambos lados"),
+    ),
+    (
+        Msg::LayoutRejected,
+        t("No se pudo leer el diseño de paneles guardado; se muestra el diseño predeterminado"),
+    ),
+    (Msg::LayoutDefault, t("Predeterminado")),
+    (
+        Msg::LayoutDefaultHover,
+        t(
+            "Monitores y transiciones arriba, el banco de entradas y el mezclador debajo, salidas y pestañas laterales a la derecha",
+        ),
+    ),
+    (Msg::LayoutCompact, t("Compacto")),
+    (
+        Msg::LayoutCompactHover,
+        t(
+            "Menos paneles y más grandes para pantallas pequeñas: el banco y el mezclador comparten pestañas, igual que las salidas y las pestañas laterales",
+        ),
+    ),
+    (Msg::LayoutAudioFocus, t("Enfoque en audio")),
+    (
+        Msg::LayoutAudioFocusHover,
+        t(
+            "Un mezclador de audio ancho y alto junto a un grupo de pestañas con el banco, las salidas y las pestañas laterales",
+        ),
+    ),
+    (
+        Msg::LayoutNameTooLong,
+        t("el nombre supera los 40 caracteres"),
+    ),
+    (
+        Msg::LayoutNameBadCharacter,
+        t("el nombre no puede contener | ni caracteres de control"),
+    ),
+    (
+        Msg::LayoutNameTaken,
+        t("otro diseño guardado ya usa este nombre"),
+    ),
+    (
+        Msg::LayoutTooMany,
+        t("ya hay 16 diseños guardados; elimine uno primero"),
+    ),
+    (Msg::LayoutSaveTitle, t("Guardar diseño")),
+    (Msg::LayoutRenameTitle, t("Renombrar diseño")),
+    (Msg::LayoutNameLabel, t("Nombre del diseño")),
+    (
+        Msg::LayoutNameHover,
+        t("Un nombre para este diseño: hasta 40 caracteres, único"),
+    ),
+    (Msg::LayoutNameConfirm, t("GUARDAR")),
+    (
+        Msg::LayoutNameConfirmHover,
+        t("Guarda el diseño con este nombre  [Intro]"),
+    ),
+    (Msg::LayoutNameCancelHover, t("Cerrar sin guardar  [Esc]")),
+    (Msg::ViewLayouts, t("Diseños")),
+    (
+        Msg::ViewLayoutsHover,
+        t("Cambia a una disposición de paneles incorporada o guardada"),
+    ),
+    (Msg::LayoutBuiltInHover, t("Diseño incorporado: {what}")),
+    (Msg::LayoutSavedHeading, t("Diseños guardados")),
+    (Msg::LayoutSavedNone, t("Aún no hay diseños guardados")),
+    (
+        Msg::LayoutSavedEntryHover,
+        t("Diseño guardado: aplicarlo, renombrarlo o eliminarlo"),
+    ),
+    (
+        Msg::LayoutApplyHover,
+        t("Cambia a este diseño guardado, con sus paneles desacoplados"),
+    ),
+    (
+        Msg::LayoutRenameHover,
+        t("Da otro nombre a este diseño guardado"),
+    ),
+    (
+        Msg::LayoutDeleteHover,
+        t("Olvida este diseño guardado; la disposición actual no cambia"),
+    ),
+    (Msg::LayoutSaveCurrent, t("Guardar diseño actual…")),
+    (
+        Msg::LayoutSaveCurrentHover,
+        t("Guarda la disposición actual, con los paneles desacoplados, con un nombre"),
+    ),
+    (
+        Msg::ViewPanelToggleHover,
+        t("Muestra u oculta este panel: {what}"),
+    ),
+    (Msg::ViewToolWindows, t("Ventanas propias")),
+    (
+        Msg::ViewToolWindowHover,
+        t("Abre {tool} en su propia ventana en lugar de sobre la consola"),
     ),
     (Msg::ViewLanguage, t("Idioma")),
     (

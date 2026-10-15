@@ -225,16 +225,33 @@ one toast instead of stacking. Audio meters go stale when no meter message has
 arrived for more than a second: lit segments, peak lines, and hold markers dim,
 peak readouts read `STALE`, and the mixer header shows `METERS STALE · x.y s`
 (not visible in these captures, whose synthetic feed never stalls).
-View toggles the input bank, mixer, side panel, and status bar; the side
-panel's left edge drags to resize it (300 px up to a quarter of the window,
-at most 560 px). Studio remembers the shown panels and the dragged width in
-`studio.conf` (`layout.input_bank = shown`, `layout.mixer = hidden`, …,
-`layout.side_panel_width = 480` or `auto`) and restores them at the next
-launch; a narrower window clamps the drawn width without forgetting the
-choice. View › Reset layout (enabled whenever the layout differs from the
-default; its tooltip says what it restores) shows every panel and returns the
-side panel to its default width, and a note under it says the layout is
-remembered on this console. Changing only the layout never writes back a
+The console is a docking layout (2026-10-15). Each of the eleven panels
+(Preview, Transitions, Program, Input bank, Audio mixer, Recording & streams,
+Overlays, Stingers, Titles, Playlist, Media) is a tab in a tile; dragging a
+tab onto another tile shows a blue drop preview and re-docks it into that
+tab group (middle of the tile or its tab bar) or splits that tile on the
+edge it is dropped on, the gaps between tiles drag to resize them, and every
+tile keeps a minimum size (its body scrolls below that) while the monitors
+keep the canvas aspect. Each tab bar has pop-out and close keys, and a tab's
+right-click menu has Pop out and Close panel: a popped-out panel moves into
+its own native window titled `<Panel> — FreeMix Studio` with a Dock back key;
+closing that window or pressing Dock back returns the panel to its home
+place. Console keys work in popped windows too. View › Own windows offers the
+same for the Colour grade, Animation, and Layer designer tool windows. View ›
+Panels shows or hides each panel, View › Layouts applies the built-in
+Default, Compact, and Audio focus layouts or a saved one, saves the current
+layout under a name (up to 16, renamed or deleted from the same submenu),
+and View › Reset layout (enabled whenever the layout differs from the
+default) restores Default and docks every window back. Studio remembers the
+layout in `studio.conf`: `layout.dock` (the tile tree, for example
+`h765(v520(…),v330([outputs],[overlays|stingers|titles|playlist|media]))`),
+`layout.popouts` and `layout.tool_windows` (each popped window with its size
+and position, `program:700x460@1180,520`), `layout.saved = name | tree |
+popouts` per saved layout, plus the status bar, disclosure, and animation
+keys. A tree or pop-out list this version does not write falls back to the
+Default layout with a notice. On Wayland the compositor neither reports nor
+honours window positions, so only popped windows' sizes are restored there.
+Changing only the layout never writes back a
 `--lang`/`--clock` session override, and vice versa. Every gated
 control, menu item, and tile action shows its action and shortcut as a tooltip
 and, when disabled, the first blocking gate ("Unavailable: this session lacks
@@ -265,8 +282,8 @@ message. With the synthetic meter feed, peak-hold markers, the dim peak
 band, and the latched clip lamp of Guest Remote (strip 4 peaks into 0 dBFS
 every six seconds) are visible in the round 7 captures.
 
-Window sizes: the side panel takes at most a quarter of the window (320-560
-px). At 2560x1440 the monitors, the input bank tiles (four columns of about
+Window sizes: (before the docking layout) the side panel took at most a
+quarter of the window (320-560 px). At 2560x1440 the monitors, the input bank tiles (four columns of about
 290 px), and the mixer faders (up to 620 px of travel) grow to use the space.
 At 1280x720 the switcher row keeps its full height and the console scrolls to
 reach the lower row; the lower row is at least 370 px tall so the bank and
@@ -300,6 +317,8 @@ the counts and lock chips.
 | `studio-console-spanish-shortcuts.png` | The same reference in Spanish, opened with F1 during a 1920x1080 `--lang es` session (REC 2 recording, O1 on air): `Atajos de teclado`, `Teclas activas`, `Lanzar la transición favorita 1 a 4`, the `Consola` group, and key names in Spanish (`Ctrl+Mayús+Z`, `Tab · Intro`, `Ctrl+Mayús+L`). |
 | `studio-console-health-strip.png` | 1920x1080 demo show hovering the `TX —` lamp: the status bar's health strip (`PGM FEED` and `METERS` green, `TX —` amber because the HLS ladder is desired but not live and the simulated daemon sends no transport samples) and its tooltip `Streams: 0 of 2 live · no recent transport samples to measure the rate · 0 A/V pairs dropped`. |
 | `studio-console-layout-restored.png` | Studio restarted on a `studio.conf` saved after dragging the side panel edge to 480 px and hiding the mixer from View: the restored layout (input bank across the full width, 480 px side panel) with View open (`Colour grade…  Ctrl+G`, `Animate title…  Ctrl+Shift+A`, `Design scene layout…  Ctrl+Shift+L`, the Panels checkboxes, the Advanced controls toggles, the five-way Side panel tab choice including `Media`, Language, 12-hour clock), and the enabled `Reset layout` item with its tooltip. |
+| `studio-docking.png` | 1920x1080 rearranged docking layout, restored from `studio.conf` after a restart: Preview over Media on the left, Titles in its own tile, a wide Transitions tile, Recording & streams over the Overlays/Stingers/Playlist tab group on the right, Input bank and Audio mixer tabbed along the bottom, and Program popped out into its own native window. The Overlays tab is being dragged and the blue drop preview (labelled `Overlays`) covers the bottom half of the Titles tile, where releasing would split it. Every tab bar carries its pop-out and close keys. |
+| `studio-popout.png` | The same restored session before the drag: the Program panel in its own native window (`Program — FreeMix Studio`, moved to 1180,520 and resized to 700x460; no window manager, so no decorations) with the Dock back key in its header, and the main window's tiles re-flowed without it. Studio restored the window at that place and size from `layout.popouts = program:700x460@1180,520`. |
 | `studio-console-input-menu.png` | Operator right-click menu on the Host Laptop tile: key cap and name header, Select on Preview / Cut to Program enabled, and `Grade…`, Duplicate, Replace source…, Category, Colour label, Pause/Close input, Rename, Move, and Remove disabled, with the footer note that the operator session lacks `edit_project`. |
 | `studio-console-add-input.png` | 1920x1080 admin session after clicking the `+` tile: the Add input dialog with `SOLID COLOUR` selected, the suggested name "Solid Colour 1", the amber preset chosen (`#f0a828`), and the preview swatch tagged `INPUT 8` / `SILENT`. |
 | `studio-console-add-input-bars.png` | The same dialog for a second add with `COLOUR BARS`: the suggestion "Colour Bars 1", the bars preview tagged `INPUT 9`, no colour row. |
@@ -622,7 +641,15 @@ and reconnecting captures repeat the English steps with `--lang es`; the
 Spanish shortcuts capture focuses the window (`xdotool windowfocus "$WIN"`)
 and presses F1, and the English one presses `?` (`xdotool key question`).
 
-The layout capture drags the side panel's left edge (`xdotool mousemove 1550
+The docking captures (Xvfb with no window manager) drag tabs with
+`xdotool mousedown 1`, `mousemove` in steps, and `mouseup 1` onto another
+tile, click the Program tile's pop-out key, and move and resize the new
+window with `xdotool windowmove`/`windowsize`; then stop Studio and its
+daemon (Studio's SIGTERM leaves the supervised `freemixd` running), relaunch
+with the same `FREEMIX_STUDIO_PREFS` file, and capture the restored session
+(`studio-popout.png`) and a tab drag held over the Titles tile
+(`studio-docking.png`). The older layout capture (before docking)
+dragged the side panel's left edge (`xdotool mousemove 1550
 700`, `mousedown 1`, `mousemove` in steps to x 1430, `mouseup 1`), unticks
 View › Audio mixer, restarts Studio with the same `FREEMIX_STUDIO_PREFS`
 file, opens View, and hovers `Reset layout`. The health-strip capture hovers

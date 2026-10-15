@@ -47,6 +47,7 @@ use fm_ui_model::scene_designer::{
 };
 use fm_ui_model::title_animation::preview_size;
 
+use crate::dock::ToolWindow;
 use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON, edit_history_availability};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
@@ -56,7 +57,7 @@ use crate::theme::{
     text_dim_color,
 };
 use crate::toasts::ToastKind;
-use crate::{StudioIntent, StudioShell, StudioUiState};
+use crate::{StudioIntent, StudioShell, StudioUiState, workspace};
 
 /// The shortcut that opens and closes the layer designer.
 pub const SCENE_DESIGNER_SHORTCUT: &str = "Ctrl+Shift+L";
@@ -575,30 +576,43 @@ impl StudioShell {
         let max = Vec2::new(viewport.width() - 24.0, viewport.height() - 60.0).max(MIN_WINDOW_SIZE);
         let mut copied = None;
         let mut history = Vec::new();
-        egui::Window::new(l.text(Msg::DesignTitle))
-            .id(egui::Id::new("studio-designer-window"))
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(true)
-            .default_size(DEFAULT_WINDOW_SIZE.min(max))
-            .min_size(MIN_WINDOW_SIZE)
-            .max_size(max)
-            .pivot(Align2::CENTER_TOP)
-            .default_pos(pos2(viewport.center().x, 36.0))
-            .frame(
-                Frame::new()
-                    .fill(raised_color())
-                    .stroke(Stroke::new(
-                        crate::theme::line_width(),
-                        border_strong_color(),
-                    ))
-                    .corner_radius(CornerRadius::same(8))
-                    .inner_margin(Margin::same(12)),
-            )
-            .show(context, |ui| {
-                ui.set_min_size(ui.available_size());
-                copied = draw_contents(ui, l, &mut self.designer, state, &mut open, &mut history);
+        if let Some(geometry) = self.layout.tool_popped(ToolWindow::Designer) {
+            let (id, builder) = self.tool_viewport(ToolWindow::Designer, geometry);
+            let designer = &mut self.designer;
+            let outcome = context.show_viewport_immediate(id, builder, |ui, class| {
+                workspace::tool_popout_frame(ui, l, ToolWindow::Designer, class, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    copied = draw_contents(ui, l, designer, state, &mut open, &mut history);
+                })
             });
+            self.finish_tool_popout(ToolWindow::Designer, outcome);
+        } else {
+            egui::Window::new(l.text(Msg::DesignTitle))
+                .id(egui::Id::new("studio-designer-window"))
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(true)
+                .default_size(DEFAULT_WINDOW_SIZE.min(max))
+                .min_size(MIN_WINDOW_SIZE)
+                .max_size(max)
+                .pivot(Align2::CENTER_TOP)
+                .default_pos(pos2(viewport.center().x, 36.0))
+                .frame(
+                    Frame::new()
+                        .fill(raised_color())
+                        .stroke(Stroke::new(
+                            crate::theme::line_width(),
+                            border_strong_color(),
+                        ))
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::same(12)),
+                )
+                .show(context, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    copied =
+                        draw_contents(ui, l, &mut self.designer, state, &mut open, &mut history);
+                });
+        }
         intents.extend(history);
         if let Some(count) = copied {
             self.toasts.push(

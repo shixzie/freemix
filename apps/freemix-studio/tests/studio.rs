@@ -30,7 +30,10 @@ use fm_protocol::{
     WireMessage, WireRecorderSlot, encode_line, encode_qoi_rgb, monitor_frame_parts,
 };
 use fm_types::{InputId, ProjectId};
-use fm_ui_egui::{Appearance, ConsoleLayout};
+use fm_ui_egui::{
+    Appearance, ConsoleLayout, DockLayout, DropZone, LayoutPreset, NamedLayout, PanelId,
+    ToolWindow, WindowGeometry,
+};
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 use freemix_studio::{
     ArgsError, Command, ConnectionConfig, ControlTransport, ExistingConfig, LifecycleState,
@@ -1718,17 +1721,17 @@ fn saved_preferences_persist_in_a_file_created_on_first_change() {
         Some(path.clone()),
         SavedPreferences::default(),
         Locale::ENGLISH,
-        layout,
+        layout.clone(),
         Appearance::default(),
     );
     // The startup locale is never written back.
     store
-        .observe(Locale::ENGLISH, layout, Appearance::default())
+        .observe(Locale::ENGLISH, &layout, Appearance::default())
         .unwrap();
     assert!(!path.exists());
     let spanish = Locale::new(Language::Spanish);
     store
-        .observe(spanish, layout, Appearance::default())
+        .observe(spanish, &layout, Appearance::default())
         .unwrap();
     // Only the changed preference is written: the language, not the clock.
     assert_eq!(
@@ -1741,7 +1744,7 @@ fn saved_preferences_persist_in_a_file_created_on_first_change() {
     store
         .observe(
             spanish.with_hour_cycle(HourCycle::H12),
-            layout,
+            &layout,
             Appearance::default(),
         )
         .unwrap();
@@ -1750,7 +1753,7 @@ fn saved_preferences_persist_in_a_file_created_on_first_change() {
     // The next launch starts in the saved locale ...
     let no_env = |_: &str| None;
     assert_eq!(
-        UiPreferences::default().locale_with(saved, no_env),
+        UiPreferences::default().locale_with(&saved, no_env),
         spanish.with_hour_cycle(HourCycle::H12)
     );
     // ... unless --lang / --clock override it for that session.
@@ -1759,7 +1762,7 @@ fn saved_preferences_persist_in_a_file_created_on_first_change() {
             language: Some(Language::English),
             hour_cycle: Some(HourCycle::H23),
         }
-        .locale_with(saved, no_env),
+        .locale_with(&saved, no_env),
         Locale::ENGLISH
     );
     // No temporary file is left behind.
@@ -1773,67 +1776,151 @@ fn saved_preferences_persist_in_a_file_created_on_first_change() {
         None,
         SavedPreferences::default(),
         Locale::ENGLISH,
-        layout,
+        layout.clone(),
         Appearance::default(),
     );
     detached
-        .observe(spanish, layout, Appearance::default())
+        .observe(spanish, &layout, Appearance::default())
         .unwrap();
     std::fs::remove_dir_all(&directory).unwrap();
 }
 
 #[test]
 fn saved_layout_round_trips_and_ignores_bad_values() {
-    let layout = ConsoleLayout {
-        show_mixer: false,
+    let mut layout = ConsoleLayout {
         show_status_bar: false,
-        side_panel_width: Some(480),
         show_mixer_details: true,
         ..ConsoleLayout::default()
     };
+    layout.dock.close(PanelId::Mixer);
+    layout
+        .dock
+        .move_panel(PanelId::Titles, PanelId::Program, DropZone::Right);
+    layout.dock.pop_out(
+        PanelId::Playlist,
+        Some(WindowGeometry {
+            size: (640, 480),
+            position: Some((-1_200, 60)),
+        }),
+    );
+    layout.set_tool_popped(ToolWindow::Color, true);
+    layout.set_tool_geometry(
+        ToolWindow::Color,
+        WindowGeometry {
+            size: (520, 760),
+            position: None,
+        },
+    );
+    layout.saved_layouts.push(NamedLayout {
+        name: "Audio night".into(),
+        layout: LayoutPreset::AudioFocus.layout(),
+    });
     let saved = SavedPreferences {
-        layout: Some(layout),
+        layout: Some(layout.clone()),
         ..SavedPreferences::default()
     };
     let text = saved.render();
-    assert!(text.contains("layout.mixer = hidden\n"), "{text}");
-    assert!(text.contains("layout.input_bank = shown\n"), "{text}");
-    assert!(text.contains("layout.side_panel_width = 480\n"), "{text}");
+    assert!(text.contains("layout.dock = h765(v520(h388([preview],h367([transitions],h500([program],[titles]))),[inputs]),"), "{text}");
+    assert!(
+        text.contains("layout.popouts = playlist:640x480@-1200,60\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("layout.tool_windows = color:520x760\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("layout.saved = Audio night | v430("),
+        "{text}"
+    );
+    assert!(text.contains("layout.status_bar = hidden\n"), "{text}");
     // The progressive-disclosure toggles persist like the panels.
     assert!(text.contains("layout.mixer_details = shown\n"), "{text}");
     assert!(text.contains("layout.manual_details = hidden\n"), "{text}");
     assert!(!text.contains("language"), "{text}");
+    assert!(!text.contains("rejected"), "{text}");
     assert_eq!(SavedPreferences::parse(&text), saved);
-    // An automatic width is written as `auto` and reads back as `None`.
-    let automatic = SavedPreferences {
+    // The default layout reads back as itself.
+    let default = SavedPreferences {
         layout: Some(ConsoleLayout::default()),
         ..SavedPreferences::default()
     };
-    assert!(
-        automatic
-            .render()
-            .contains("layout.side_panel_width = auto\n")
-    );
-    assert_eq!(SavedPreferences::parse(&automatic.render()), automatic);
-    // Out-of-range widths and unknown values are skipped key by key.
+    assert!(default.render().contains("layout.popouts = none\n"));
+    assert_eq!(SavedPreferences::parse(&default.render()), default);
+    // Unknown keys and unusable values are skipped key by key.
     assert_eq!(
         SavedPreferences::parse(
-            "layout.side_panel_width = 40\nlayout.mixer = maybe\nlayout.side_panel = hidden\n"
+            "layout.dock_width = 400\nlayout.unknown = hidden\nlayout.status_bar = maybe\n"
         ),
-        SavedPreferences {
-            layout: Some(ConsoleLayout {
-                show_side_panel: false,
-                ..ConsoleLayout::default()
-            }),
-            ..SavedPreferences::default()
-        }
-    );
-    assert_eq!(
-        SavedPreferences::parse("layout.side_panel_width = 99999\n"),
         SavedPreferences::default()
     );
+    // A damaged dock falls back to the default layout, flagged so Studio
+    // says so; the rest of the file still applies.
+    let damaged = SavedPreferences::parse(
+        "layout.dock = h500([preview],[mixer]\nlayout.status_bar = hidden\nlanguage = es\n",
+    );
+    assert_eq!(damaged.language, Some(Language::Spanish));
+    let fallback = damaged.layout.unwrap();
+    assert!(fallback.rejected);
+    assert_eq!(fallback.dock, DockLayout::default());
+    assert!(!fallback.show_status_bar);
+    // A popped panel that is also docked is just as unusable.
+    let twice = SavedPreferences::parse("layout.dock = [preview|mixer]\nlayout.popouts = mixer\n")
+        .layout
+        .unwrap();
+    assert!(twice.rejected);
+    assert_eq!(twice.dock, DockLayout::default());
 }
 
+#[test]
+fn pop_out_windows_and_their_places_persist_across_restarts() {
+    let directory = scratch_directory("popout-prefs");
+    let path = directory.join("studio.conf");
+    let mut store = PreferenceStore::new(
+        Some(path.clone()),
+        SavedPreferences::default(),
+        Locale::ENGLISH,
+        ConsoleLayout::default(),
+        Appearance::default(),
+    );
+    let mut layout = ConsoleLayout::default();
+    layout.dock.pop_out(PanelId::Mixer, None);
+    store
+        .observe(Locale::ENGLISH, &layout, Appearance::default())
+        .unwrap();
+    // The window manager placed and the operator resized the window.
+    layout.dock.set_geometry(
+        PanelId::Mixer,
+        WindowGeometry::from_points((812.4, 455.6), Some((1_930.0, 24.0))),
+    );
+    store
+        .observe(Locale::ENGLISH, &layout, Appearance::default())
+        .unwrap();
+    let saved = SavedPreferences::load(&path).unwrap();
+    let restored = saved.layout.unwrap();
+    assert_eq!(restored, layout);
+    assert_eq!(
+        restored.dock.popped(),
+        &[fm_ui_egui::PopOut {
+            key: PanelId::Mixer,
+            geometry: Some(WindowGeometry {
+                size: (812, 456),
+                position: Some((1_930, 24)),
+            }),
+        }]
+    );
+    assert!(!restored.dock.is_docked(PanelId::Mixer));
+    // Docking it back saves the default layout again.
+    layout.dock.dock_back(PanelId::Mixer);
+    store
+        .observe(Locale::ENGLISH, &layout, Appearance::default())
+        .unwrap();
+    assert_eq!(
+        SavedPreferences::load(&path).unwrap().layout,
+        Some(ConsoleLayout::default())
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+}
 #[test]
 fn layout_changes_save_without_writing_back_a_session_language_override() {
     let directory = scratch_directory("layout-prefs");
@@ -1844,29 +1931,27 @@ fn layout_changes_save_without_writing_back_a_session_language_override() {
     let spanish = Locale::new(Language::Spanish);
     let mut store = PreferenceStore::new(
         Some(path.clone()),
-        file,
+        file.clone(),
         spanish,
         ConsoleLayout::default(),
         Appearance::default(),
     );
     store
-        .observe(spanish, ConsoleLayout::default(), Appearance::default())
+        .observe(spanish, &ConsoleLayout::default(), Appearance::default())
         .unwrap();
     assert_eq!(SavedPreferences::load(&path).unwrap(), file);
     // Hiding the mixer saves the layout and keeps the file's language.
-    let hidden = ConsoleLayout {
-        show_mixer: false,
-        ..ConsoleLayout::default()
-    };
+    let mut hidden = ConsoleLayout::default();
+    hidden.dock.close(PanelId::Mixer);
     store
-        .observe(spanish, hidden, Appearance::default())
+        .observe(spanish, &hidden, Appearance::default())
         .unwrap();
     let saved = SavedPreferences::load(&path).unwrap();
     assert_eq!(saved.language, Some(Language::English));
     assert_eq!(saved.layout, Some(hidden));
     // Reset layout saves the default layout again.
     store
-        .observe(spanish, ConsoleLayout::default(), Appearance::default())
+        .observe(spanish, &ConsoleLayout::default(), Appearance::default())
         .unwrap();
     assert_eq!(
         SavedPreferences::load(&path).unwrap().layout,
@@ -1876,7 +1961,7 @@ fn layout_changes_save_without_writing_back_a_session_language_override() {
     store
         .observe(
             Locale::ENGLISH,
-            ConsoleLayout::default(),
+            &ConsoleLayout::default(),
             Appearance::default(),
         )
         .unwrap();
@@ -1895,14 +1980,14 @@ fn saved_language_wins_over_the_environment_but_not_over_the_flag() {
         layout: None,
         ..SavedPreferences::default()
     };
-    let locale = UiPreferences::default().locale_with(saved, env);
+    let locale = UiPreferences::default().locale_with(&saved, env);
     assert_eq!(locale, Locale::new(Language::Spanish));
     let flagged = UiPreferences {
         language: Some(Language::English),
         hour_cycle: Some(HourCycle::H12),
     };
     assert_eq!(
-        flagged.locale_with(saved, env),
+        flagged.locale_with(&saved, env),
         Locale::ENGLISH.with_hour_cycle(HourCycle::H12)
     );
 }
@@ -1968,14 +2053,19 @@ fn appearance_changes_save_without_writing_back_session_overrides() {
     file.save(&path).unwrap();
     let session = Locale::new(Language::Spanish).with_hour_cycle(HourCycle::H12);
     let layout = ConsoleLayout::default();
-    let mut store =
-        PreferenceStore::new(Some(path.clone()), file, session, layout, file.appearance());
+    let mut store = PreferenceStore::new(
+        Some(path.clone()),
+        file.clone(),
+        session,
+        layout.clone(),
+        file.appearance(),
+    );
     // Raising the UI scale saves only the scale.
     let larger = Appearance {
         ui_scale_percent: 125,
         high_contrast: false,
     };
-    store.observe(session, layout, larger).unwrap();
+    store.observe(session, &layout, larger).unwrap();
     let saved = SavedPreferences::load(&path).unwrap();
     assert_eq!(saved.language, Some(Language::English));
     assert_eq!(saved.hour_cycle, Some(HourCycle::H23));
@@ -1986,21 +2076,21 @@ fn appearance_changes_save_without_writing_back_session_overrides() {
         high_contrast: true,
         ..larger
     };
-    store.observe(session, layout, contrast).unwrap();
+    store.observe(session, &layout, contrast).unwrap();
     let saved = SavedPreferences::load(&path).unwrap();
     assert_eq!(saved.language, Some(Language::English));
     assert_eq!(saved.appearance(), contrast);
     // Switching the clock back to 24 hours saves the clock, not the
     // flagged language.
     store
-        .observe(session.with_hour_cycle(HourCycle::H23), layout, contrast)
+        .observe(session.with_hour_cycle(HourCycle::H23), &layout, contrast)
         .unwrap();
     let saved = SavedPreferences::load(&path).unwrap();
     assert_eq!(saved.language, Some(Language::English));
     assert_eq!(saved.hour_cycle, Some(HourCycle::H23));
     // Reset to defaults writes the defaults back explicitly.
     store
-        .observe(Locale::ENGLISH, layout, Appearance::default())
+        .observe(Locale::ENGLISH, &layout, Appearance::default())
         .unwrap();
     let saved = SavedPreferences::load(&path).unwrap();
     assert_eq!(saved.language, Some(Language::English));

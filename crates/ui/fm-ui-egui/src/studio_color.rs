@@ -41,6 +41,7 @@ use fm_ui_model::grade_editor::{
 };
 
 use crate::color_panel::{ColorPanelState, ColorPanelWidget, PREVIEW_MAX};
+use crate::dock::ToolWindow;
 use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
@@ -51,7 +52,7 @@ use crate::theme::{
     small_button, status_chip,
 };
 use crate::toasts::ToastKind;
-use crate::{StudioIntent, StudioShell, StudioUiState};
+use crate::{StudioIntent, StudioShell, StudioUiState, workspace};
 
 /// The shortcut that opens and closes the Colour window.
 pub const COLOR_SHORTCUT: &str = "Ctrl+G";
@@ -702,7 +703,21 @@ impl StudioShell {
             let l = self.locale;
             let mut open = true;
             let max_height = (context.viewport_rect().height() - 60.0).max(240.0);
-            egui::Window::new(l.text(Msg::GradeTitle))
+            if let Some(geometry) = self.layout.tool_popped(ToolWindow::Color) {
+                let (id, builder) = self.tool_viewport(ToolWindow::Color, geometry);
+                let outcome = context.show_viewport_immediate(id, builder, |ui, class| {
+                    workspace::tool_popout_frame(ui, l, ToolWindow::Color, class, |ui| {
+                        ScrollArea::vertical()
+                            .id_salt("studio-color-scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                self.draw_color_contents(ui, state, intents, &mut open);
+                            });
+                    })
+                });
+                self.finish_tool_popout(ToolWindow::Color, outcome);
+            } else {
+                egui::Window::new(l.text(Msg::GradeTitle))
                 .id(egui::Id::new("studio-color-window"))
                 .title_bar(false)
                 .auto_sized()
@@ -729,6 +744,7 @@ impl StudioShell {
                             self.draw_color_contents(ui, state, intents, &mut open);
                         });
                 });
+            }
             if !open {
                 self.color.open = false;
                 self.color.panel.keyboard_active = false;

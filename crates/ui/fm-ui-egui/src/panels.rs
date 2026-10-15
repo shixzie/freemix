@@ -1,13 +1,11 @@
-//! Right-hand side panel: on-air outputs (recording and streams) above a
-//! tabbed area for overlays, stingers, titles, the playlist, and media
-//! inputs.
+//! The Recording & streams and Stingers panels' parts: recorder status,
+//! Stinger slot cards, and their pure presentation helpers.
 
 use core::fmt::Write as _;
 use core::num::NonZeroU128;
 
 use egui::{
-    Align2, Button, Color32, CornerRadius, FontFamily, FontId, RichText, ScrollArea, Sense, Stroke,
-    StrokeKind, Ui, Vec2, pos2,
+    Align2, Color32, CornerRadius, FontFamily, FontId, Sense, Stroke, StrokeKind, Ui, Vec2, pos2,
 };
 use fm_protocol::{StingerReadiness, StreamStatusMessage, StreamStatusSample, WireStingerSlotId};
 use fm_ui_model::{StingerStatus, StreamStatus};
@@ -16,225 +14,18 @@ use crate::gating::{Capability, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg, frames};
 use crate::stinger_config::{self, StingerEditor};
 use crate::theme::{
-    AMBER, ERROR, PREVIEW, Tone, accent_color, border_color, border_strong_color, caption, card,
-    elided, graphite_color, mono, muted_color, paint_lamp, raised_color, section_label, text_color,
-    text_dim_color, widget_hover_color,
+    AMBER, ERROR, PREVIEW, Tone, accent_color, border_color, border_strong_color, caption, elided,
+    graphite_color, mono, muted_color, paint_lamp, section_label, text_color, text_dim_color,
+    widget_hover_color,
 };
 use crate::{
     RecordingAction, StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState,
-    TransitionGate, outputs, overlays, transition_availability,
+    TransitionGate, outputs, transition_availability,
 };
-
-/// Tabs of the lower side panel.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) enum SideTab {
-    #[default]
-    Overlays,
-    Stingers,
-    Titles,
-    Playlist,
-    Media,
-}
-
-impl SideTab {
-    /// Every tab in panel order.
-    pub(crate) const ALL: [Self; 5] = [
-        Self::Overlays,
-        Self::Stingers,
-        Self::Titles,
-        Self::Playlist,
-        Self::Media,
-    ];
-
-    /// The tab's title.
-    pub(crate) const fn title(self) -> Msg {
-        match self {
-            Self::Overlays => Msg::TabOverlays,
-            Self::Stingers => Msg::TabStingers,
-            Self::Titles => Msg::TabTitles,
-            Self::Playlist => Msg::TabPlaylist,
-            Self::Media => Msg::TabMedia,
-        }
-    }
-
-    /// What the tab holds, for its hover help.
-    pub(crate) const fn hover(self) -> Msg {
-        match self {
-            Self::Overlays => Msg::TabOverlaysHover,
-            Self::Stingers => Msg::TabStingersHover,
-            Self::Titles => Msg::TabTitlesHover,
-            Self::Playlist => Msg::TabPlaylistHover,
-            Self::Media => Msg::TabMediaHover,
-        }
-    }
-}
-
-/// The side tabs' label size and letter spacing: the largest step of the
-/// ladder at which every title fits `width` (measured, so it holds for
-/// every language and theme), else the smallest step.
-fn tab_label_style(ui: &Ui, titles: &[String], width: f32, high_contrast: bool) -> (f32, f32) {
-    let bump = if high_contrast { 1.0 } else { 0.0 };
-    let ladder = [
-        (11.0, 1.0),
-        (11.0, 0.5),
-        (10.5, 0.3),
-        (10.0, 0.0),
-        (9.5, 0.0),
-        (9.0, 0.0),
-        (8.5, 0.0),
-    ];
-    let fits = |(size, letter_spacing): (f32, f32)| {
-        titles.iter().all(|title| {
-            #[allow(clippy::cast_precision_loss)] // a short tab title
-            let spacing = letter_spacing * title.chars().count() as f32;
-            let text = ui
-                .painter()
-                .layout_no_wrap(
-                    title.clone(),
-                    egui::FontId::proportional(size + bump),
-                    text_color(),
-                )
-                .size()
-                .x;
-            text + spacing <= width
-        })
-    };
-    let (size, letter_spacing) = ladder
-        .into_iter()
-        .find(|step| fits(*step))
-        .unwrap_or(ladder[ladder.len() - 1]);
-    (size + bump, letter_spacing)
-}
 
 pub(crate) const STREAMS_NONE_CONFIGURED: &str = Msg::StreamsNoneConfigured.en();
 
 impl StudioShell {
-    /// The side panel's tab row: five equal tabs whose labels shrink
-    /// together to fit.
-    fn draw_side_tabs(&mut self, ui: &mut Ui) {
-        let l = self.locale;
-        ui.horizontal(|ui| {
-            let tabs = SideTab::ALL;
-            ui.spacing_mut().item_spacing.x = 2.0;
-            let spacing = ui.spacing().item_spacing.x;
-            // Every tab gets an exact share of the row, so the row never
-            // overflows a narrow panel.
-            #[allow(clippy::cast_precision_loss)] // five tabs
-            let tab_width = ((ui.available_width() - spacing * (tabs.len() - 1) as f32)
-                / tabs.len() as f32)
-                .floor()
-                .clamp(40.0, 96.0);
-            ui.spacing_mut().button_padding.x = 2.0;
-            let high_contrast = crate::theme::high_contrast();
-            let titles = tabs.map(|tab| l.text(tab.title()).to_uppercase());
-            // The labels shrink together (size, then letter spacing) until
-            // the longest fits its share, so no tab name is cut at the
-            // supported widths; only below the smallest size do they
-            // ellipsize, with the name still in the hover help.
-            let (size, letter_spacing) = tab_label_style(
-                ui,
-                &titles,
-                tab_width - 2.0 * ui.spacing().button_padding.x - 2.0,
-                high_contrast,
-            );
-            for (tab, title) in tabs.into_iter().zip(titles) {
-                let selected = self.side_tab == tab;
-                let text = RichText::new(title)
-                    .size(size)
-                    .strong()
-                    .extra_letter_spacing(letter_spacing)
-                    .color(if selected {
-                        text_color()
-                    } else {
-                        text_dim_color()
-                    });
-                let response = ui
-                    .add_sized(
-                        Vec2::new(tab_width, 26.0),
-                        Button::new(text)
-                            .fill(if selected {
-                                raised_color()
-                            } else {
-                                Color32::TRANSPARENT
-                            })
-                            .stroke(Stroke::new(
-                                crate::theme::line_width(),
-                                if selected {
-                                    border_color()
-                                } else {
-                                    Color32::TRANSPARENT
-                                },
-                            ))
-                            .truncate()
-                            .min_size(Vec2::new(tab_width, 26.0)),
-                    )
-                    .on_hover_text(format!("{}\n{}", l.text(tab.title()), l.text(tab.hover())));
-                if selected {
-                    let rect = response.rect;
-                    ui.painter().line_segment(
-                        [rect.left_bottom(), rect.right_bottom()],
-                        Stroke::new(2.0, accent_color()),
-                    );
-                }
-                if response.clicked() {
-                    self.side_tab = tab;
-                }
-            }
-        });
-    }
-
-    pub(crate) fn draw_side_panel(
-        &mut self,
-        ui: &mut Ui,
-        state: &StudioUiState,
-        intents: &mut Vec<StudioIntent>,
-    ) {
-        card().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 4.0;
-            if let Some(action) = self.draw_recording(ui, state) {
-                intents.push(StudioIntent::Recording(action));
-            }
-            ui.add_space(6.0);
-            outputs::draw_streams(ui, state, intents);
-        });
-        ui.add_space(8.0);
-        self.draw_side_tabs(ui);
-        ui.add_space(4.0);
-        ScrollArea::vertical()
-            .id_salt("studio-side-tabs")
-            .auto_shrink([false, false])
-            .show(ui, |ui| match self.side_tab {
-                SideTab::Overlays => {
-                    overlays::draw_overlays(ui, state, self.transition_duration_frames, intents);
-                }
-                SideTab::Stingers => {
-                    draw_stingers(
-                        ui,
-                        state,
-                        &mut self.stinger_editor,
-                        self.transition_duration_frames,
-                        intents,
-                    );
-                    stinger_config::draw_stinger_configuration(
-                        ui,
-                        state,
-                        &mut self.stinger_editor,
-                        self.transition_duration_frames,
-                        intents,
-                    );
-                }
-                SideTab::Titles => {
-                    self.titles.draw(ui, state, intents);
-                    if let Some(title) = self.titles.take_animate_request() {
-                        self.open_animation(Some(title));
-                    }
-                }
-                SideTab::Playlist => self.playlist.draw(ui, state, intents),
-                SideTab::Media => crate::media_transport::draw_media(ui, state, intents),
-            });
-    }
-
     /// Draws the recorder status rows and returns the selected action.
     ///
     /// Each row exposes exactly one action for the authoritative desired flag
@@ -414,7 +205,7 @@ pub(crate) const fn stinger_card_click(ready: bool, can_fire: bool) -> StingerCa
 
 const STINGER_CARD_HEIGHT: f32 = 50.0;
 
-fn draw_stingers(
+pub(crate) fn draw_stingers(
     ui: &mut Ui,
     state: &StudioUiState,
     editor: &mut StingerEditor,

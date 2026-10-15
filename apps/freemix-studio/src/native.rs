@@ -306,13 +306,13 @@ impl StudioApp {
                 ),
             },
         );
-        let locale = config.ui.locale_with(saved, env);
+        let locale = config.ui.locale_with(&saved, env);
         shell.set_locale(locale);
         // Preferences › Reset to defaults returns to the language the
         // environment selects, as if nothing were saved or flagged.
         shell.set_default_locale(crate::UiPreferences::default().locale(env));
-        let layout = saved.layout.unwrap_or_default();
-        shell.set_layout(layout);
+        let layout = saved.layout.clone().unwrap_or_default();
+        shell.set_layout(layout.clone());
         shell.set_appearance(saved.appearance());
         // The first frame already draws at the saved scale.
         creation_context

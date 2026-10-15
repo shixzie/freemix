@@ -96,7 +96,7 @@ use crate::animation_timeline::{AnimationTimelineState, AnimationTimelineWidget,
 use crate::color_panel::{
     COMPARE_SHORTCUT, ColorPanelState, ColorPanelWidget, GradeAction, PanelMode,
 };
-use crate::panels::SideTab;
+use crate::dock::PanelId;
 use crate::{StudioConnectionStatus, StudioShell, StudioUiState};
 use fm_ui_model::grade_editor::GradeTarget;
 
@@ -905,17 +905,17 @@ fn scenes(language: Language) -> Vec<Scene> {
     };
     let mut scenes = Vec::new();
     let tabs = [
-        ("overlays", SideTab::Overlays),
-        ("stingers", SideTab::Stingers),
-        ("titles", SideTab::Titles),
-        ("playlist", SideTab::Playlist),
-        ("media", SideTab::Media),
+        ("overlays", PanelId::Overlays),
+        ("stingers", PanelId::Stingers),
+        ("titles", PanelId::Titles),
+        ("playlist", PanelId::Playlist),
+        ("media", PanelId::Media),
     ];
     for (operator, role) in [(true, "operator"), (false, "viewer")] {
         for (tab_name, tab) in tabs {
             scenes.push(Scene::console(
                 format!("{role}/{tab_name}"),
-                shell(&|shell| shell.side_tab = tab),
+                shell(&|shell| shell.layout.dock.show(tab)),
                 ready(operator, Variant::default()),
             ));
         }
@@ -933,7 +933,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes.push(Scene::console(
         "operator/playlist-entry",
         shell(&|shell| {
-            shell.side_tab = SideTab::Playlist;
+            shell.layout.dock.show(PanelId::Playlist);
             let state = ready(true, Variant::default());
             shell.playlist.sync(&state, std::time::Instant::now());
             if let Some(playlist) = state.project_state.as_ref().and_then(|p| p.playlist()) {
@@ -968,7 +968,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     ));
     scenes.push(Scene::console(
         "operator/black-and-playing",
-        shell(&|shell| shell.side_tab = SideTab::Playlist),
+        shell(&|shell| shell.layout.dock.show(PanelId::Playlist)),
         ready(
             true,
             Variant {
@@ -1158,11 +1158,97 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes.extend(animation_scenes(locale));
     scenes.extend(designer_scenes(locale));
     scenes.extend(transition_menu_scenes(locale));
+    scenes.extend(dock_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
         shell(&|_| {}),
         StudioUiState::new(StudioConnectionStatus::Backoff),
     ));
+    scenes
+}
+
+/// The docking chrome: tab bars (with their right-click menus, which the
+/// audit opens), pop-out and close keys, splitters, popped-out panel and
+/// tool windows with their Dock back keys, View › Layouts with saved
+/// layouts, the Save and Rename layout dialogs, and an empty workspace.
+fn dock_scenes(locale: Locale) -> Vec<Scene> {
+    use crate::dock::{DropZone, LayoutPreset, NamedLayout, ToolWindow};
+    let shell = |configure: &dyn Fn(&mut StudioShell)| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.layout.saved_layouts = vec![
+            NamedLayout {
+                name: "Interview".into(),
+                layout: LayoutPreset::Compact.layout(),
+            },
+            NamedLayout {
+                name: "Late show".into(),
+                layout: LayoutPreset::AudioFocus.layout(),
+            },
+        ];
+        configure(&mut shell);
+        shell
+    };
+    let rearranged = |shell: &mut StudioShell| {
+        let dock = &mut shell.layout.dock;
+        dock.move_panel(PanelId::Mixer, PanelId::InputBank, DropZone::Center);
+        dock.move_panel(PanelId::Titles, PanelId::Program, DropZone::Right);
+        dock.pop_out(PanelId::Outputs, None);
+        dock.pop_out(PanelId::Playlist, None);
+    };
+    let mut designer_state = ready(true, Variant::default());
+    designer_state.title_previews = true;
+    let mut scenes = vec![
+        Scene::console(
+            "dock/rearranged-and-popped",
+            shell(&rearranged),
+            ready(true, Variant::default()),
+        ),
+        Scene::console(
+            "dock/save-layout",
+            shell(&|shell| {
+                shell.open_layout_name_dialog(None);
+                if let Some(dialog) = &mut shell.dock_ui.name_dialog {
+                    dialog.name = "Bad|name".into();
+                }
+            }),
+            ready(true, Variant::default()),
+        ),
+        Scene::console(
+            "dock/rename-layout",
+            shell(&|shell| shell.open_layout_name_dialog(Some(1))),
+            ready(true, Variant::default()),
+        ),
+        Scene::console(
+            "dock/all-hidden",
+            shell(&|shell| {
+                for panel in PanelId::ALL {
+                    shell.layout.dock.close(panel);
+                }
+            }),
+            ready(true, Variant::default()),
+        ),
+    ];
+    let mut tools = shell(&|shell| {
+        for tool in ToolWindow::ALL {
+            shell.layout.set_tool_popped(tool, true);
+        }
+        shell.open_color(None);
+    });
+    tools.open_scene_designer(scene_id());
+    tools.designer.sync(
+        &egui::Context::default(),
+        &designer_state,
+        core::time::Duration::ZERO,
+    );
+    scenes.push(Scene::console("dock/tool-windows", tools, designer_state));
+    let mut animation = shell(&|shell| {
+        shell.layout.set_tool_popped(ToolWindow::Animation, true);
+        shell.open_animation(Some(input(TITLE_INPUT)));
+    });
+    let state = ready(true, Variant::default());
+    animation.animation.sync(&egui::Context::default(), &state);
+    scenes.push(Scene::console("dock/animation-window", animation, state));
     scenes
 }
 
@@ -1309,7 +1395,7 @@ fn animation_scenes(locale: Locale) -> Vec<Scene> {
     let prepare = |state: &StudioUiState, configure: &dyn Fn(&mut StudioShell)| {
         let mut shell = StudioShell::default();
         shell.set_locale(locale);
-        shell.side_tab = SideTab::Titles;
+        shell.layout.dock.show(PanelId::Titles);
         shell.open_animation(Some(title));
         shell.animation.sync(&egui::Context::default(), state);
         configure(&mut shell);
