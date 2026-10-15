@@ -92,6 +92,7 @@ use freemixd::{ReadinessRecord, StatusReadinessRecord};
 // preflight and its constants are used in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod disk;
+mod grading;
 mod hls_server;
 mod journal;
 mod latest_record;
@@ -571,6 +572,13 @@ struct NativeDaemon {
     latest_project_outputs: Vec<NativeOutputFrame>,
     master: NativeMasterRuntime,
     project_plan: NativeProjectPlan,
+    /// Compiled grades per engine revision and their GPU uploads, attached
+    /// to [`Self::project_plan`] before every render.
+    grade_cache: grading::GradeCache,
+    prepared_grades: Option<(
+        Arc<fm_engine::CompiledProjectGrades>,
+        freemixd::native_media::NativeProjectGrades,
+    )>,
     playback: freemixd::native_media::NativeSourcePlayback,
     stingers: freemixd::native_media::NativeSourcePlayback,
     projected_frame: Option<FrameResult>,
@@ -4410,6 +4418,8 @@ impl NativeDaemon {
             latest_project_outputs: Vec::new(),
             master,
             project_plan,
+            grade_cache: grading::GradeCache::default(),
+            prepared_grades: None,
             playback,
             stingers,
             projected_frame: None,
@@ -5550,6 +5560,28 @@ impl NativeDaemon {
         Ok(audio_covered && video_covered && stinger_covered && titles_covered)
     }
 
+    /// Attaches the grades of `control`'s current revision to the project
+    /// plan, baking and uploading them only when they changed.
+    fn refresh_grades(&mut self, control: &ControlService<Policy>) -> AppResult<()> {
+        let compiled = self.grade_cache.at(control);
+        let current = match &self.prepared_grades {
+            Some((cached, prepared)) if Arc::ptr_eq(cached, &compiled) => prepared.clone(),
+            _ => {
+                let revision = control.snapshot().snapshot.revision;
+                let prepared = self
+                    .runtime
+                    .prepare_project_grades_blocking(revision, &compiled)
+                    .map_err(Box::<dyn Error>::from)?;
+                self.prepared_grades = Some((compiled, prepared.clone()));
+                prepared
+            }
+        };
+        if *self.project_plan.grades() != current {
+            self.project_plan.set_grades(current);
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     fn realize_one(
         &mut self,
@@ -5559,6 +5591,7 @@ impl NativeDaemon {
         // Accepted StreamStart commands start on this frame boundary, before
         // the frame is produced, so the first fed pair is the next real frame.
         self.start_pending_streams();
+        self.refresh_grades(control)?;
         let runtime = &self.runtime;
         let registry = self.playback.registry();
         let stinger_registry = self.stingers.registry();
@@ -8277,13 +8310,13 @@ fn serve_inner(
 
     let store = ProjectStore::new(path)?;
     let project = load_and_recover(&store, recover_to_checkpoint)?;
-    let title_templates = load_title_templates(&store, project.project())?;
+    let bundle_assets = load_bundle_assets(&store, project.project())?;
     // Opened once and held for the run: this process is the journal's only
     // writer, and reopening it per command is what made an accepted command
     // cost what the whole show had cost so far.
     let journal = DurableJournal::new(store.open_journal_writer()?);
     let project_id = project.project().id();
-    let engine = restore_engine_with_titles(&project, &title_templates)?;
+    let engine = restore_engine_with_titles(&project, &bundle_assets)?;
     let identity = format!("project-{project_id}");
     let control = Rc::new(RefCell::new(ControlService::new(
         engine,
@@ -8772,8 +8805,8 @@ fn load_and_recover(store: &ProjectStore, recover_to_checkpoint: bool) -> AppRes
         .last()
         .map_or_else(|| scan.checkpoint_sequence(), MutationBatch::sequence);
 
-    let title_templates = load_title_templates(store, manifest.project())?;
-    let durable = replay_journal(&manifest, &title_templates, scan.batches(), progress)?;
+    let bundle_assets = load_bundle_assets(store, manifest.project())?;
+    let durable = replay_journal(&manifest, &bundle_assets, scan.batches(), progress)?;
     // Fold the replayed mutations into the manifest and discard them, so the
     // next crash replays only what happened after this point and a second
     // recovery of the same batches is impossible.
@@ -8848,7 +8881,7 @@ fn abandon_to_checkpoint(
 /// becoming the project's state.
 fn replay_journal(
     manifest: &StoredProject,
-    title_templates: &TitleTemplates,
+    bundle_assets: &BundleAssets,
     batches: &[MutationBatch],
     progress: Option<ProjectPosition>,
 ) -> AppResult<StoredProject> {
@@ -8856,7 +8889,7 @@ fn replay_journal(
     let project_id = durable.project().id();
     let identity = format!("project-{project_id}");
     let mut control = ControlService::new(
-        restore_engine_with_titles(&durable, title_templates)?,
+        restore_engine_with_titles(&durable, bundle_assets)?,
         Policy::development(),
         identity.clone(),
         format!("{identity}-log"),
@@ -9073,6 +9106,27 @@ fn switcher_recorder_slot(slot: ModelRecorderSlot) -> RecorderSlot {
 /// The stored template of every title input, keyed by input id.
 type TitleTemplates = std::collections::BTreeMap<InputId, fm_titles::TitleTemplate>;
 
+/// What a restored engine needs from the project bundle besides
+/// `project.json`: every title input's template and every imported LUT's
+/// text.
+#[derive(Default)]
+struct BundleAssets {
+    titles: TitleTemplates,
+    luts: std::collections::BTreeMap<fm_model::LutId, fm_engine::EngineLut>,
+}
+
+/// Loads the title templates (see [`load_title_templates`]) and the LUTs
+/// (see [`grading::load_grade_luts`]) of `project`.
+fn load_bundle_assets(
+    store: &ProjectStore,
+    project: &fm_model::Project,
+) -> AppResult<BundleAssets> {
+    Ok(BundleAssets {
+        titles: load_title_templates(store, project)?,
+        luts: grading::load_grade_luts(store, project),
+    })
+}
+
 /// Loads the stored template of every title input in `project`.
 ///
 /// Title field state is restored against its template, so a title whose
@@ -9171,12 +9225,12 @@ fn restore_titles(
 
 #[cfg(test)]
 fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
-    restore_engine_with_titles(project, &TitleTemplates::new())
+    restore_engine_with_titles(project, &BundleAssets::default())
 }
 
 fn restore_engine_with_titles(
     project: &StoredProject,
-    title_templates: &TitleTemplates,
+    bundle_assets: &BundleAssets,
 ) -> AppResult<Engine> {
     let canonical = project.project();
     let inputs = canonical
@@ -9259,8 +9313,10 @@ fn restore_engine_with_titles(
     realized.restore_settled_fade_to_black(fade_to_black.realized.target_active);
     restore_overlays(&mut show, &mut realized, project.runtime_overlays())?;
     restore_edit_locks(&mut show, canonical)?;
-    restore_titles(&mut show, canonical, title_templates)?;
+    restore_titles(&mut show, canonical, &bundle_assets.titles)?;
     show.set_playlist(fm_engine::playlist_from_model(canonical.playlist())?)?;
+    show.restore_grading(canonical.grading().clone(), bundle_assets.luts.clone())
+        .map_err(|error| AppFailure(format!("project grading cannot be restored: {error}")))?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -9452,6 +9508,9 @@ fn handle_client(
                     &mut session,
                     &WireMessage::PlaylistState(state),
                 )?;
+            }
+            for state in control.borrow().grade_states() {
+                write_session_message(&mut writer, &mut session, &WireMessage::GradeState(state))?;
             }
         }
         SyncPayload::Resume(events) => {
@@ -10766,7 +10825,14 @@ fn command_ticks(
         | CommandPayload::RemoveInput { .. }
         | CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
-        | CommandPayload::PlaylistAdvance { .. } => 1,
+        | CommandPayload::PlaylistAdvance { .. }
+        | CommandPayload::SetInputGrade { .. }
+        | CommandPayload::SetProgramGrade { .. }
+        | CommandPayload::AddLibraryGrade { .. }
+        | CommandPayload::UpdateLibraryGrade { .. }
+        | CommandPayload::RemoveLibraryGrade { .. }
+        | CommandPayload::ImportGradeLut { .. }
+        | CommandPayload::RemoveGradeLut { .. } => 1,
     })
 }
 
@@ -10898,6 +10964,7 @@ fn stored_project_with_receipts(
     sync_project_edit_locks(&mut project, show)?;
     sync_project_titles(&mut project, show)?;
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
+    project.set_grading(show.grading().clone());
     StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {
@@ -18462,7 +18529,7 @@ mod tests {
         let scan = store.scan_journal().unwrap();
         assert_eq!(scan.batches().len(), 5);
         let replayed =
-            replay_journal(&manifest, &TitleTemplates::new(), scan.batches(), None).unwrap();
+            replay_journal(&manifest, &BundleAssets::default(), scan.batches(), None).unwrap();
         assert_eq!(replayed.project().playlist(), durable.project().playlist());
         assert_eq!(replayed.runtime_routing(), durable.runtime_routing());
         assert_eq!(replayed.position(), durable.position());
@@ -18561,7 +18628,7 @@ mod tests {
         assert_eq!(realized.last().unwrap().1, test_input_id(2));
         let scan = store.scan_journal().unwrap();
         let replayed =
-            replay_journal(&manifest, &TitleTemplates::new(), scan.batches(), None).unwrap();
+            replay_journal(&manifest, &BundleAssets::default(), scan.batches(), None).unwrap();
         assert_eq!(replayed.position(), durable.position());
         assert_eq!(replayed.project().playlist(), durable.project().playlist());
     }
@@ -18644,7 +18711,7 @@ mod tests {
         let marker = decode_progress(scan.progress().unwrap().payload()).unwrap();
         let replayed = replay_journal(
             &manifest,
-            &TitleTemplates::new(),
+            &BundleAssets::default(),
             scan.batches(),
             Some(marker),
         )
@@ -18702,7 +18769,7 @@ mod tests {
             ..manifest.position()
         };
         let started = Instant::now();
-        let error = replay_journal(&manifest, &TitleTemplates::new(), &[], Some(damaged))
+        let error = replay_journal(&manifest, &BundleAssets::default(), &[], Some(damaged))
             .unwrap_err()
             .to_string();
         assert!(
@@ -18872,7 +18939,7 @@ mod tests {
         let scan = reloaded.scan_journal().unwrap();
         assert_eq!(scan.batches().len(), 1);
         let replayed =
-            replay_journal(&manifest, &TitleTemplates::new(), scan.batches(), None).unwrap();
+            replay_journal(&manifest, &BundleAssets::default(), scan.batches(), None).unwrap();
         assert_eq!(replayed.position().revision, 1);
         assert_eq!(replayed.project().recording_desired_slots(), [false, false]);
 

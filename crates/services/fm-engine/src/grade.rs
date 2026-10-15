@@ -13,7 +13,7 @@ use core::fmt;
 use std::{collections::BTreeMap, sync::Arc};
 
 use fm_grade::{CompiledGrade, CubeLut, Grade, GradeError};
-use fm_model::{GradeId, GradeSource, LutId, Project, lut_id_from_uri};
+use fm_model::{GradeId, GradeSource, LutId, Project, ProjectGrading, lut_id_from_uri};
 use fm_types::InputId;
 
 /// Compiled per-input and program grades of one project.
@@ -73,7 +73,20 @@ impl CompiledProjectGrades {
         project: &Project,
         luts: &BTreeMap<LutId, Arc<CubeLut>>,
     ) -> Result<Self, GradeCompileError> {
-        let grading = project.grading();
+        Self::compile_grading(project.grading(), luts)
+    }
+
+    /// Compiles every input and program grade of `grading` against the
+    /// parsed LUTs in `luts`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GradeCompileError`] for a dangling library reference or a
+    /// grade outside its bounds.
+    pub fn compile_grading(
+        grading: &ProjectGrading,
+        luts: &BTreeMap<LutId, Arc<CubeLut>>,
+    ) -> Result<Self, GradeCompileError> {
         let mut compiler = Compiler {
             luts,
             library: BTreeMap::new(),

@@ -822,6 +822,186 @@ fn append_remaps_alias_targets_and_keeps_mix_feeds() {
     assert!(appended.project().validate().is_ok());
 }
 
+fn cube(scale: f32) -> String {
+    let mut text = String::from("LUT_3D_SIZE 2\n");
+    for blue in 0..2_u8 {
+        for green in 0..2_u8 {
+            for red in 0..2_u8 {
+                let [red, green, blue] = [red, green, blue].map(|value| f32::from(value) * scale);
+                text += &[red, green, blue].map(|value| value.to_string()).join(" ");
+                text.push('\n');
+            }
+        }
+    }
+    text
+}
+
+fn graded_with_lut(lut: u32, exposure_millistops: i16) -> fm_grade::Grade {
+    fm_grade::Grade {
+        exposure_millistops,
+        lut: Some(fm_grade::GradeLut::new(
+            fm_model::lut_asset_uri(lut_id(lut)),
+            500,
+        )),
+        ..fm_grade::Grade::IDENTITY
+    }
+}
+
+fn lut_id(value: u32) -> fm_model::LutId {
+    fm_model::LutId::new(std::num::NonZeroU32::new(value).unwrap())
+}
+
+fn grade_id(value: u32) -> fm_model::GradeId {
+    fm_model::GradeId::new(std::num::NonZeroU32::new(value).unwrap())
+}
+
+fn film_lut(id: u32) -> fm_model::ProjectLut {
+    fm_model::ProjectLut {
+        id: lut_id(id),
+        name: "Film".into(),
+        kind: fm_grade::CubeKind::ThreeD,
+        size: 2,
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn append_keeps_input_grades_and_imports_their_library_grades_and_luts() {
+    use fm_model::{GradeSource, ProjectGrade, ProjectGrading};
+
+    let temp = TestDirectory::new("append-grades");
+    let target_store = temp.store("target.freemix");
+    let source_store = temp.store("source.freemix");
+
+    // Target: LUT 1 "Film" and library grade 1 "Warm" already exist.
+    let mut target = media_project(1, &[(1, "asset://a.mov")]);
+    let mut grading = ProjectGrading::default();
+    grading.add_lut(film_lut(1)).unwrap();
+    grading
+        .insert_grade(
+            None,
+            ProjectGrade {
+                id: grade_id(1),
+                name: "Warm".into(),
+                grade: graded_with_lut(1, 100),
+            },
+        )
+        .unwrap();
+    grading
+        .set_input(input_id(1), Some(GradeSource::Library(grade_id(1))))
+        .unwrap();
+    target.set_grading(grading);
+    let target = stored(target);
+    target_store.save(&target).unwrap();
+    write_asset(&target_store, "a.mov", b"a");
+    target_store
+        .write_lut_source(lut_id(1), &cube(1.0))
+        .unwrap();
+
+    // Source: the same ids and names with different contents; input 1 uses
+    // library grade 1, input 2 an inline grade, both on LUT 1. An unused
+    // library grade and LUT stay behind, as does the program grade.
+    let mut source = media_project(2, &[(1, "asset://b.mov"), (2, "asset://c.mov")]);
+    let mut grading = ProjectGrading::default();
+    grading.add_lut(film_lut(1)).unwrap();
+    grading
+        .add_lut(fm_model::ProjectLut {
+            name: "Unused".into(),
+            ..film_lut(7)
+        })
+        .unwrap();
+    grading
+        .insert_grade(
+            None,
+            ProjectGrade {
+                id: grade_id(1),
+                name: "Warm".into(),
+                grade: graded_with_lut(1, 200),
+            },
+        )
+        .unwrap();
+    grading
+        .insert_grade(
+            None,
+            ProjectGrade {
+                id: grade_id(5),
+                name: "Spare".into(),
+                grade: graded_with_lut(7, 0),
+            },
+        )
+        .unwrap();
+    grading
+        .set_input(input_id(1), Some(GradeSource::Library(grade_id(1))))
+        .unwrap();
+    grading
+        .set_input(
+            input_id(2),
+            Some(GradeSource::Inline(Box::new(graded_with_lut(1, 300)))),
+        )
+        .unwrap();
+    grading
+        .set_program(Some(GradeSource::Inline(Box::new(graded_with_lut(1, 0)))))
+        .unwrap();
+    source.set_grading(grading);
+    let source = stored(source);
+    source_store.save(&source).unwrap();
+    write_asset(&source_store, "b.mov", b"b");
+    write_asset(&source_store, "c.mov", b"c");
+    source_store
+        .write_lut_source(lut_id(1), &cube(0.5))
+        .unwrap();
+    source_store
+        .write_lut_source(lut_id(7), &cube(0.25))
+        .unwrap();
+
+    let (appended, report) = target_store.append_project(&target, &source_store).unwrap();
+    assert_eq!(
+        report.inputs,
+        [(input_id(1), input_id(2)), (input_id(2), input_id(3))]
+    );
+    assert_eq!(report.luts, [(lut_id(1), lut_id(2))]);
+    assert_eq!(report.grades, [(grade_id(1), grade_id(2))]);
+    assert!(report.skipped.program_grade);
+
+    let grading = appended.project().grading();
+    assert_eq!(
+        grading
+            .luts
+            .iter()
+            .map(|lut| (lut.id, lut.name.as_str()))
+            .collect::<Vec<_>>(),
+        [(lut_id(1), "Film"), (lut_id(2), "Film (2)")]
+    );
+    assert_eq!(grading.grades.len(), 2);
+    assert_eq!(grading.grades[0].grade, graded_with_lut(1, 100));
+    assert_eq!(grading.grades[1].id, grade_id(2));
+    assert_eq!(grading.grades[1].name, "Warm (2)");
+    assert_eq!(grading.grades[1].grade, graded_with_lut(2, 200));
+    assert_eq!(
+        grading.inputs.get(&input_id(1)),
+        Some(&GradeSource::Library(grade_id(1)))
+    );
+    assert_eq!(
+        grading.inputs.get(&input_id(2)),
+        Some(&GradeSource::Library(grade_id(2)))
+    );
+    assert_eq!(
+        grading.inputs.get(&input_id(3)),
+        Some(&GradeSource::Inline(Box::new(graded_with_lut(2, 300))))
+    );
+    assert_eq!(grading.program, None);
+    assert!(appended.project().validate().is_ok());
+
+    // The source LUT's exact text now lives under its fresh id; the
+    // target's own LUT is untouched.
+    target_store.save(&appended).unwrap();
+    let (copied, _) = target_store.load_lut_source(&grading.luts[1]).unwrap();
+    assert_eq!(&*copied, cube(0.5));
+    let (original, _) = target_store.load_lut_source(&grading.luts[0]).unwrap();
+    assert_eq!(&*original, cube(1.0));
+    assert!(!target_store.assets_root().join("luts/3.cube").exists());
+}
+
 // ---------------------------------------------------------------------------
 // Media import
 // ---------------------------------------------------------------------------

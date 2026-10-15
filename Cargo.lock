@@ -1208,6 +1208,7 @@ name = "fm-client"
 version = "0.1.0"
 dependencies = [
  "fm-command",
+ "fm-grade",
  "fm-protocol",
  "fm-types",
  "fm-ui-model",
@@ -1291,6 +1292,8 @@ dependencies = [
  "fm-clock",
  "fm-command",
  "fm-engine",
+ "fm-grade",
+ "fm-model",
  "fm-protocol",
  "fm-switcher",
  "fm-titles",
@@ -1476,6 +1479,7 @@ name = "fm-protocol"
 version = "0.1.0"
 dependencies = [
  "fm-command",
+ "fm-grade",
  "fm-types",
 ]
 
@@ -1775,6 +1779,7 @@ dependencies = [
  "fm-engine",
  "fm-frame",
  "fm-gpu",
+ "fm-grade",
  "fm-io-api",
  "fm-io-macos",
  "fm-io-network",

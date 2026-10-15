@@ -224,6 +224,206 @@ impl ProjectGrading {
     }
 }
 
+impl ProjectGrading {
+    /// Inserts a named grade into the library at `index` (the end when
+    /// `None`).
+    ///
+    /// # Errors
+    ///
+    /// Refuses a full library, a used id or name, an invalid name, an index
+    /// past the end, and a grade that violates a bound or names a LUT that
+    /// was not imported.
+    pub fn insert_grade(
+        &mut self,
+        index: Option<usize>,
+        grade: ProjectGrade,
+    ) -> Result<(), GradeEditError> {
+        if self.grades.len() >= MAX_PROJECT_GRADES {
+            return Err(GradeEditError::TooManyGrades {
+                maximum: MAX_PROJECT_GRADES,
+            });
+        }
+        if self.grade(grade.id).is_some() {
+            return Err(GradeEditError::DuplicateGradeId(grade.id));
+        }
+        if let Some(error) = grade_name_error(&grade.name, MAX_GRADE_NAME_BYTES) {
+            return Err(error);
+        }
+        if self
+            .grades
+            .iter()
+            .any(|candidate| candidate.name == grade.name)
+        {
+            return Err(GradeEditError::DuplicateName(grade.name));
+        }
+        check_grade(&grade.grade, &self.luts)?;
+        let index = index.unwrap_or(self.grades.len());
+        if index > self.grades.len() {
+            return Err(GradeEditError::IndexOutOfRange {
+                index,
+                len: self.grades.len(),
+            });
+        }
+        self.grades.insert(index, grade);
+        Ok(())
+    }
+
+    /// Renames a library grade and replaces its values; every target
+    /// referencing it follows.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown id, an invalid name or one another grade uses, and
+    /// an invalid grade.
+    pub fn update_grade(
+        &mut self,
+        id: GradeId,
+        name: String,
+        grade: Grade,
+    ) -> Result<(), GradeEditError> {
+        if self.grade(id).is_none() {
+            return Err(GradeEditError::UnknownGrade(id));
+        }
+        if let Some(error) = grade_name_error(&name, MAX_GRADE_NAME_BYTES) {
+            return Err(error);
+        }
+        if self
+            .grades
+            .iter()
+            .any(|candidate| candidate.id != id && candidate.name == name)
+        {
+            return Err(GradeEditError::DuplicateName(name));
+        }
+        check_grade(&grade, &self.luts)?;
+        let entry = self
+            .grades
+            .iter_mut()
+            .find(|candidate| candidate.id == id)
+            .ok_or(GradeEditError::UnknownGrade(id))?;
+        entry.name = name;
+        entry.grade = grade;
+        Ok(())
+    }
+
+    /// Removes a library grade no input or program references and returns
+    /// its former index with it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown id and a grade that is still assigned.
+    pub fn remove_grade(&mut self, id: GradeId) -> Result<(usize, ProjectGrade), GradeEditError> {
+        let index = self
+            .grades
+            .iter()
+            .position(|candidate| candidate.id == id)
+            .ok_or(GradeEditError::UnknownGrade(id))?;
+        if self.grade_in_use(id) {
+            return Err(GradeEditError::GradeInUse(id));
+        }
+        Ok((index, self.grades.remove(index)))
+    }
+
+    /// Registers an imported LUT after the others.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a full LUT table, a used id or name, an invalid name, and a
+    /// size outside the `.cube` bounds for its kind.
+    pub fn add_lut(&mut self, lut: ProjectLut) -> Result<(), GradeEditError> {
+        if self.luts.len() >= MAX_PROJECT_LUTS {
+            return Err(GradeEditError::TooManyLuts {
+                maximum: MAX_PROJECT_LUTS,
+            });
+        }
+        if self.lut(lut.id).is_some() {
+            return Err(GradeEditError::DuplicateLutId(lut.id));
+        }
+        if let Some(error) = grade_name_error(&lut.name, MAX_LUT_NAME_BYTES) {
+            return Err(error);
+        }
+        if self.luts.iter().any(|candidate| candidate.name == lut.name) {
+            return Err(GradeEditError::DuplicateName(lut.name));
+        }
+        if !lut.size_in_bounds() {
+            return Err(GradeEditError::LutSizeOutOfRange {
+                kind: lut.kind,
+                size: lut.size,
+            });
+        }
+        self.luts.push(lut);
+        Ok(())
+    }
+
+    /// Unregisters a LUT no grade references.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown id and a LUT that is still referenced.
+    pub fn remove_lut(&mut self, id: LutId) -> Result<ProjectLut, GradeEditError> {
+        let index = self
+            .luts
+            .iter()
+            .position(|candidate| candidate.id == id)
+            .ok_or(GradeEditError::UnknownLut(id))?;
+        if self.lut_in_use(id) {
+            return Err(GradeEditError::LutInUse(id));
+        }
+        Ok(self.luts.remove(index))
+    }
+
+    /// Sets or clears one input's grade without checking that the input
+    /// exists (the caller owns the input catalogue).
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown library grade and an invalid inline grade.
+    pub fn set_input(
+        &mut self,
+        input: InputId,
+        grade: Option<GradeSource>,
+    ) -> Result<(), GradeEditError> {
+        match grade {
+            Some(source) => {
+                self.check_source(&source)?;
+                self.inputs.insert(input, source);
+            }
+            None => {
+                self.inputs.remove(&input);
+            }
+        }
+        Ok(())
+    }
+
+    /// Sets or clears the program output grade.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown library grade and an invalid inline grade.
+    pub fn set_program(&mut self, grade: Option<GradeSource>) -> Result<(), GradeEditError> {
+        if let Some(source) = &grade {
+            self.check_source(source)?;
+        }
+        self.program = grade;
+        Ok(())
+    }
+
+    /// Checks that `source` names a library grade or is a valid inline
+    /// grade whose LUT was imported.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown library grade and an invalid inline grade.
+    pub fn check_source(&self, source: &GradeSource) -> Result<(), GradeEditError> {
+        match source {
+            GradeSource::Library(id) => self
+                .grade(*id)
+                .map(|_| ())
+                .ok_or(GradeEditError::UnknownGrade(*id)),
+            GradeSource::Inline(grade) => check_grade(grade, &self.luts),
+        }
+    }
+}
+
 /// Checks a grade or LUT name: nonblank, bounded, and free of control
 /// characters.
 pub(crate) fn grade_name_error(name: &str, maximum: usize) -> Option<GradeEditError> {
@@ -272,6 +472,11 @@ pub enum GradeEditError {
     UnregisteredLut(String),
     GradeInUse(GradeId),
     LutInUse(LutId),
+    /// An insertion index past the end of its list.
+    IndexOutOfRange {
+        index: usize,
+        len: usize,
+    },
 }
 
 impl fmt::Display for GradeEditError {
@@ -308,6 +513,9 @@ impl fmt::Display for GradeEditError {
             }
             Self::GradeInUse(id) => write!(formatter, "grade {id} is still assigned"),
             Self::LutInUse(id) => write!(formatter, "LUT {id} is still used by a grade"),
+            Self::IndexOutOfRange { index, len } => {
+                write!(formatter, "index {index} is past the end of {len} entries")
+            }
         }
     }
 }

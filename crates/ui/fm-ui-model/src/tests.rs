@@ -122,6 +122,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         titles: Vec::new(),
         frame_rate: fm_types::FrameRate::new(25, 1).unwrap(),
         playlist_follows: false,
+        grade_states: 0,
     }
 }
 
@@ -1418,6 +1419,7 @@ mod titles {
             titles: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
+            grade_states: 0,
         }
     }
 

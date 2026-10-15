@@ -3632,3 +3632,95 @@ mod playlists {
         );
     }
 }
+
+/// SW-019 stage 3: grade commands are `EditProject`, publish
+/// `grade_changed`, follow snapshots as `grade_state` records, and undo
+/// through the shared history.
+#[test]
+fn grade_commands_are_project_edits_with_state_records_and_undo() {
+    use fm_protocol::{GradeChange, GradeEntry, WireGradeSource};
+
+    let mut control = service(16, 16);
+    let warm = Box::new(fm_grade::builtin_preset("warm").unwrap().grade.clone());
+    let grade_id = core::num::NonZeroU32::new(4).unwrap();
+    let add = CommandPayload::AddLibraryGrade {
+        grade: grade_id,
+        name: "Warm".into(),
+        value: warm.clone(),
+        index: None,
+    };
+    let set = CommandPayload::SetInputGrade {
+        input: WireInputId::from_domain(input(2)),
+        source: Some(WireGradeSource::Library(grade_id)),
+    };
+    for payload in [&add, &set] {
+        assert_eq!(
+            control.required_classes(payload).primary(),
+            CommandClass::EditProject
+        );
+    }
+
+    let denied = control
+        .submit(&principal(Role::Viewer), command("v", "v", add.clone()), 0)
+        .unwrap();
+    assert!(!denied.is_accepted());
+
+    let added = control
+        .submit(&principal(Role::Graphics), command("a", "a", add), 0)
+        .unwrap();
+    assert!(added.is_accepted(), "{:?}", added.output.result);
+    assert_eq!(
+        added.output.events[0].payload,
+        EventPayload::GradeChanged(GradeChange::Library {
+            grade: grade_id,
+            index: 0,
+            name: "Warm".into(),
+            value: warm.clone(),
+        })
+    );
+    let set = control
+        .submit(&principal(Role::Graphics), command("s", "s", set), 0)
+        .unwrap();
+    assert!(set.is_accepted(), "{:?}", set.output.result);
+
+    assert_eq!(control.snapshot().snapshot.grade_states, 2);
+    let states = control.grade_states();
+    assert_eq!(
+        states.iter().map(|state| &state.entry).collect::<Vec<_>>(),
+        [
+            &GradeEntry::Library {
+                grade: grade_id,
+                name: "Warm".into(),
+                value: warm,
+            },
+            &GradeEntry::Input {
+                input: WireInputId::from_domain(input(2)),
+                source: WireGradeSource::Library(grade_id),
+            },
+        ]
+    );
+    let revision = control.snapshot().snapshot.revision;
+    assert!(states.iter().all(|state| state.revision == revision));
+    assert!(control.compiled_grades().unwrap().input(input(2)).is_some());
+
+    // Undo needs the undone edit's class and clears the input grade.
+    let undo = CommandPayload::Undo {
+        expected_edit: None,
+    };
+    assert_eq!(
+        control.required_classes(&undo).additional(),
+        Some(CommandClass::EditProject)
+    );
+    let undone = control
+        .submit(&principal(Role::Graphics), command("u", "u", undo), 0)
+        .unwrap();
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    assert_eq!(
+        undone.output.events[0].payload,
+        EventPayload::GradeChanged(GradeChange::Input {
+            input: WireInputId::from_domain(input(2)),
+            source: None,
+        })
+    );
+    assert_eq!(control.snapshot().snapshot.grade_states, 1);
+}

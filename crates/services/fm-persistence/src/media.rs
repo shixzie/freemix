@@ -82,6 +82,9 @@ pub enum BundleError {
     EmptyName,
     /// Fresh ids for appended entities would overflow.
     IdSpaceExhausted,
+    /// Appended grades do not fit the target's grading (for example a full
+    /// library or LUT table).
+    Grading(fm_model::GradeEditError),
 }
 
 impl fmt::Display for BundleError {
@@ -135,6 +138,7 @@ impl fmt::Display for BundleError {
             }
             Self::EmptyName => formatter.write_str("project name must not be blank"),
             Self::IdSpaceExhausted => formatter.write_str("no fresh entity ids remain"),
+            Self::Grading(error) => write!(formatter, "appended grades do not fit: {error}"),
         }
     }
 }

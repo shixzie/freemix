@@ -2144,14 +2144,34 @@ balance, contrast, saturation, and LUT overrides, inline or saved to the
 library with `--save-as`, or `--grade` by reference), `grade-clear`,
 `grade-import-lut`, and `grade-list`, honouring the project and input
 padlocks; `render` grades each input before the transition or scene-layer
-transform and grades the composed program picture. Remaining gaps: grades
-are per input, not per scene layer; freemixd (simulated monitors and native
-media) does not apply project grades and the protocol carries no grade
-commands or state; grade edits are not engine edits with undo; project
-append drops appended inputs' grades; presets cannot be exported between
-projects; and there is no Studio grading panel, wheel or curve editor,
-before/after split preview, or scopes beside it, so `SW-019` remains
-planned.
+transform and grades the composed program picture. Grade edits are engine
+commands (`fm-engine` `EngineGradeEdit`): set/clear an input or the program
+grade, add/update/remove a library grade, and import/remove a LUT whose
+caller-supplied `.cube` text the engine validates with `fm_grade::parse_cube`
+under the 16 MiB cap. They are project edits on the shared undo/redo history
+(an input padlock covers that input's grade, the project padlock all of
+them; removing a LUT is not undoable, undoing an import removes it) and are
+`EditProject` (Graphics role) in `fm-control`. Protocol 2.28 carries the
+nine `grade_*` commands, `event=grade_changed`, and `grade_state` records
+announced by the snapshot's `grade_states` count after the playlist state,
+which `fm-client`/`fm-ui-model` replicate into a minimal `GradingStatus`
+view. With no chunked upload, a LUT import over the protocol is capped at
+32 KiB of `.cube` text (base64url in one field); larger LUTs are imported
+offline with `grade-import-lut`. `freemixd` journals grade edits, writes an
+imported LUT's file before its journal batch, saves grades through the
+normal project save, restores them (and the bundled LUTs) on restart, and
+renders them: the simulated monitor path grades each simulated input and
+the composed Program, and the native path grades each leaf input before
+mixes, scene layers, and overlays and each Program output after overlays and
+before Fade-to-Black through `NativeGradeRenderer` LUTs uploaded once per
+revision. Project append keeps appended inputs' grades, appending the
+library grades they use and copying the LUTs they reference under fresh
+ids (renamed on a clash). Remaining gaps: grades are per input, not per
+scene layer; the simulated monitor path does not grade scene, title, or
+media sources and native Stinger media is ungraded; presets cannot be
+exported between projects; and there is no Studio grading panel, wheel or
+curve editor, before/after split preview, or scopes beside it, so `SW-019`
+remains planned.
 
 Current implementation boundary for item 2 browser title control (`GX-006`):
 `freemix-web` provides a transport-free title editor model over a narrow server

@@ -1402,6 +1402,7 @@ mod tests {
             }],
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
+            grade_states: 0,
         };
         let mut model = ClientModel::new(project);
         model

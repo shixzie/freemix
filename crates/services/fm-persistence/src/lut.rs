@@ -194,6 +194,15 @@ impl ProjectStore {
     /// exceeds the size cap, does not parse, or differs from the recorded
     /// kind and size.
     pub fn load_lut(&self, lut: &ProjectLut) -> Result<Arc<CubeLut>, LutError> {
+        self.load_lut_source(lut).map(|(_, parsed)| parsed)
+    }
+
+    /// Loads one registered LUT from the bundle with its exact text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LutError`] exactly like [`Self::load_lut`].
+    pub fn load_lut_source(&self, lut: &ProjectLut) -> Result<(Arc<str>, Arc<CubeLut>), LutError> {
         let path = self
             .resolve_asset_uri(&lut.asset_uri())
             .map_err(LutError::Asset)?;
@@ -205,7 +214,26 @@ impl ProjectStore {
                 found: (parsed.kind(), parsed.size()),
             });
         }
-        Ok(Arc::new(parsed))
+        Ok((Arc::from(text), Arc::new(parsed)))
+    }
+
+    /// Writes `.cube` text the caller already validated (for example a LUT
+    /// imported through the engine) to `assets/luts/<id>.cube`, atomically
+    /// replacing any earlier file at that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LutError::TooLarge`] above [`MAX_LUT_FILE_BYTES`] and
+    /// [`LutError::Io`] when the file cannot be written.
+    pub fn write_lut_source(&self, id: LutId, text: &str) -> Result<(), LutError> {
+        if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_LUT_FILE_BYTES {
+            return Err(LutError::TooLarge {
+                maximum: MAX_LUT_FILE_BYTES,
+            });
+        }
+        let destination = fsutil::create_parents_within(&self.assets_root(), &lut_asset_key(id))?;
+        fsutil::write_atomically(&destination, text.as_bytes())?;
+        Ok(())
     }
 
     /// Loads every LUT a grade of `project` references.

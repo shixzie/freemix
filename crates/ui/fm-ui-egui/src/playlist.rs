@@ -2147,6 +2147,7 @@ mod tests {
             titles: Vec::new(),
             frame_rate: rate(),
             playlist_follows: playlist.is_some(),
+            grade_states: 0,
         };
         let mut model = ClientModel::new(project);
         model

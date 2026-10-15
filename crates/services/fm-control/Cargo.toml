@@ -11,10 +11,14 @@ fm-automation = { path = "../../features/fm-automation" }
 fm-clock = { path = "../../media/fm-clock" }
 fm-command = { path = "../../foundation/fm-command" }
 fm-engine = { path = "../fm-engine" }
+fm-model = { path = "../../foundation/fm-model" }
 fm-protocol = { path = "../../foundation/fm-protocol" }
 fm-switcher = { path = "../../features/fm-switcher" }
 fm-titles = { path = "../../features/fm-titles" }
 fm-types = { path = "../../foundation/fm-types" }
+
+[dev-dependencies]
+fm-grade = { path = "../../foundation/fm-grade" }
 
 [lints]
 workspace = true

@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::{SocketAddr, TcpStream},
-    num::NonZeroU128,
+    num::{NonZeroU32, NonZeroU128},
     path::{Path, PathBuf},
     process::{Child, Command as ProcessCommand, Stdio},
     sync::{
@@ -3412,6 +3412,256 @@ fn simulated_studio_peer_receives_monitor_frames_and_integration_peer_none() {
     daemon.stop();
 }
 
+/// A Studio peer whose Program and Preview monitor images can be awaited.
+struct GradedMonitor {
+    client: Client,
+    assemblers: [fm_protocol::MonitorFrameAssembler; 2],
+}
+
+impl GradedMonitor {
+    /// Connects a Studio peer as `role` and returns it with every record
+    /// that followed its snapshot before the first monitor frame.
+    fn connect(daemon: &Daemon, role: Role) -> (Self, fm_protocol::SnapshotMessage) {
+        let mut client = daemon.connect();
+        client
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            build: "process-test".into(),
+            client_type: ClientType::Studio,
+            desired_role: role,
+            resume_cursor: None,
+        }));
+        assert!(matches!(
+            client.receive(),
+            WireMessage::HandshakeResponse(_)
+        ));
+        let WireMessage::Snapshot(snapshot) = client.receive() else {
+            panic!("expected snapshot");
+        };
+        (
+            Self {
+                client,
+                assemblers: [
+                    fm_protocol::MonitorFrameAssembler::new(),
+                    fm_protocol::MonitorFrameAssembler::new(),
+                ],
+            },
+            snapshot,
+        )
+    }
+
+    /// The next `tap` image `accept` takes.
+    fn image(
+        &mut self,
+        tap: fm_protocol::MonitorTap,
+        expected: &str,
+        accept: impl Fn(&fm_protocol::MonitorImage) -> bool,
+    ) -> fm_protocol::MonitorImage {
+        let assemblers = &mut self.assemblers;
+        receive_within(
+            &mut self.client,
+            Duration::from_secs(10),
+            expected,
+            |message| {
+                let WireMessage::MonitorFrame(part) = message else {
+                    return None;
+                };
+                assemblers[part.tap.index()]
+                    .push(&part)
+                    .unwrap()
+                    .filter(|image| image.tap == tap && accept(image))
+            },
+        )
+    }
+}
+
+fn grey(pixel: [u8; 4]) -> bool {
+    let [red, green, blue, _] = pixel.map(i16::from);
+    (red - green).abs() <= 1 && (green - blue).abs() <= 1
+}
+
+fn all_pixels(image: &fm_protocol::MonitorImage, accept: impl Fn([u8; 4]) -> bool) -> bool {
+    image
+        .rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| accept(*pixel))
+}
+
+/// SW-019 stage 3 end to end on the simulated path: a LUT imported over
+/// Protocol 2.28 and an input grade colour that input wherever it airs, a
+/// program grade colours the composed Program monitor, every grade edit is
+/// journaled, and after a restart the snapshot announces the same grading,
+/// which renders the same picture from the bundled LUT file.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn grade_commands_change_monitor_output_and_survive_restart() {
+    use fm_protocol::{GradeEntry, MonitorTap, WireGradeSource};
+
+    const INVERT_CUBE: &str =
+        "LUT_3D_SIZE 2\n1 1 1\n0 1 1\n1 0 1\n0 0 1\n1 1 0\n0 1 0\n1 0 0\n0 0 0\n";
+
+    let directory = TestDirectory::new("grade-commands");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let lut = NonZeroU32::new(3).unwrap();
+    let inverted = fm_grade::Grade {
+        lut: Some(fm_grade::GradeLut::new(
+            fm_model::lut_asset_uri(fm_model::LutId::new(lut)),
+            1_000,
+        )),
+        ..fm_grade::Grade::IDENTITY
+    };
+    let monochrome = fm_grade::Grade {
+        saturation_permille: 0,
+        ..fm_grade::Grade::IDENTITY
+    };
+
+    let graded_program = {
+        let daemon = Daemon::start_without_once(&project_path);
+        let (mut monitor, snapshot) = GradedMonitor::connect(&daemon, Role::Graphics);
+        assert_eq!(snapshot.grade_states, 0);
+        // Program is the solid (12, 34, 56) input 1; Preview is bars.
+        let program = monitor.image(MonitorTap::Program, "ungraded program", |_| true);
+        assert!(all_pixels(&program, |pixel| pixel == [12, 34, 56, 255]));
+        let preview = monitor.image(MonitorTap::Preview, "ungraded preview", |_| true);
+        assert!(!all_pixels(&preview, grey), "bars have colour");
+
+        // Viewers cannot grade.
+        let mut viewer = daemon.connect();
+        viewer.handshake_as(Role::Viewer, None);
+        permission_denied(
+            &mut viewer,
+            "viewer-grade",
+            CommandPayload::SetProgramGrade { source: None },
+        );
+
+        for (id, payload) in [
+            (
+                "import",
+                CommandPayload::ImportGradeLut {
+                    lut,
+                    name: "Invert".into(),
+                    data: INVERT_CUBE.into(),
+                },
+            ),
+            (
+                "input-1",
+                CommandPayload::SetInputGrade {
+                    input: input(1),
+                    source: Some(WireGradeSource::Inline(Box::new(inverted.clone()))),
+                },
+            ),
+            (
+                "input-2",
+                CommandPayload::SetInputGrade {
+                    input: input(2),
+                    source: Some(WireGradeSource::Inline(Box::new(monochrome.clone()))),
+                },
+            ),
+        ] {
+            monitor
+                .client
+                .send(&command(id, &format!("{id}-key"), payload));
+        }
+        // The inverted input makes Program warm instead of blue; the
+        // monochrome input grade makes the bars grey.
+        let program = monitor.image(MonitorTap::Program, "inverted program", |image| {
+            all_pixels(image, |[red, _, blue, _]| red > 200 && blue < 210)
+        });
+        assert_eq!(program.input, input(1));
+        monitor.image(MonitorTap::Preview, "grey preview", |image| {
+            all_pixels(image, grey)
+        });
+
+        monitor.client.send(&command(
+            "program",
+            "program-key",
+            CommandPayload::SetProgramGrade {
+                source: Some(WireGradeSource::Inline(Box::new(monochrome.clone()))),
+            },
+        ));
+        let program = monitor.image(MonitorTap::Program, "monochrome program", |image| {
+            all_pixels(image, grey)
+        });
+        drop(monitor);
+        drop(viewer);
+        daemon.stop();
+        program.rgba[..4].to_vec()
+    };
+
+    // The manifest names the LUT and its file holds the imported text.
+    let store = ProjectStore::new(&project_path).unwrap();
+    let lut_file = store.assets_root().join("luts/3.cube");
+    assert_eq!(std::fs::read_to_string(lut_file).unwrap(), INVERT_CUBE);
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let (mut monitor, snapshot) = GradedMonitor::connect(&daemon, Role::Graphics);
+    assert_eq!(snapshot.grade_states, 4);
+    let mut entries = Vec::new();
+    while entries.len() < 4 {
+        if let WireMessage::GradeState(state) = monitor.client.receive() {
+            assert_eq!(state.revision, snapshot.revision);
+            entries.push(state.entry);
+        }
+    }
+    assert!(matches!(
+        &entries[0],
+        GradeEntry::Lut { lut: id, size: 2, .. } if *id == lut
+    ));
+    assert_eq!(
+        entries[1..],
+        [
+            GradeEntry::Input {
+                input: input(1),
+                source: WireGradeSource::Inline(Box::new(inverted)),
+            },
+            GradeEntry::Input {
+                input: input(2),
+                source: WireGradeSource::Inline(Box::new(monochrome)),
+            },
+            GradeEntry::Program {
+                source: WireGradeSource::Inline(Box::new(fm_grade::Grade {
+                    saturation_permille: 0,
+                    ..fm_grade::Grade::IDENTITY
+                })),
+            },
+        ]
+    );
+    let program = monitor.image(MonitorTap::Program, "restored program", |_| true);
+    assert_eq!(&program.rgba[..4], &graded_program[..]);
+    assert!(all_pixels(&program, grey));
+
+    // Clearing the program grade is journaled like any edit and undoable.
+    monitor.client.send(&command(
+        "clear",
+        "clear-key",
+        CommandPayload::SetProgramGrade { source: None },
+    ));
+    monitor.image(MonitorTap::Program, "ungraded program again", |image| {
+        all_pixels(image, |[red, _, blue, _]| red > blue + 20)
+    });
+    monitor.client.send(&command(
+        "undo",
+        "undo-key",
+        CommandPayload::Undo {
+            expected_edit: None,
+        },
+    ));
+    monitor.image(
+        MonitorTap::Program,
+        "program grade restored by undo",
+        |image| all_pixels(image, grey),
+    );
+    drop(monitor);
+    daemon.stop();
+}
+
 const TITLE_TEMPLATE_KEY: &str = "titles/process-title.fmtitle";
 
 /// The canonical 1280x720 project plus title input 4 (realized Preview)
@@ -4698,11 +4948,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.27.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 27));
+    // The previous protocol is refused; the current one is 2.28.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 28));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 26),
+        protocol: ProtocolVersion::new(2, 27),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -4718,7 +4968,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 27)
+        ProtocolVersion::new(2, 28)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

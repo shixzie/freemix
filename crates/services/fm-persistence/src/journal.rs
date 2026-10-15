@@ -974,6 +974,14 @@ pub struct JournalWriter<'store> {
     state: RefCell<WriterState>,
 }
 
+impl<'store> JournalWriter<'store> {
+    /// The project store this writer journals for.
+    #[must_use]
+    pub const fn project_store(&self) -> &'store ProjectStore {
+        self.store
+    }
+}
+
 /// What a writer knows about the journal it owns.
 ///
 /// The writer is the journal's only writer, so what it last committed is what

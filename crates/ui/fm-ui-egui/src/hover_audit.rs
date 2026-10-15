@@ -251,6 +251,7 @@ fn model(variant: Variant) -> ClientModel {
         }],
         frame_rate: FrameRate::new(25, 1).unwrap(),
         playlist_follows: true,
+        grade_states: 0,
     };
     let mut model = ClientModel::new(project);
     model

@@ -139,6 +139,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         titles: Vec::new(),
         frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
         playlist_follows: false,
+        grade_states: 0,
     }
 }
 
@@ -1733,6 +1734,7 @@ mod playlists {
                 Vec::new()
             },
             playlist_follows: true,
+            grade_states: 0,
             ..snapshot(revision)
         }
     }
@@ -1890,5 +1892,184 @@ mod playlists {
         let _ = client.transport_disconnected();
         client.start_connect().unwrap();
         assert_eq!(client.transport_connected().unwrap().resume_cursor, None);
+    }
+}
+
+/// Protocol 2.28: a snapshot announces its `grade_state` records, which
+/// complete it after the playlist state, and `grade_changed` keeps the
+/// replicated grading current.
+mod grading {
+    use core::num::NonZeroU32;
+
+    use fm_protocol::{GradeChange, GradeEntry, GradeStateMessage, WireGradeSource};
+
+    use super::*;
+
+    fn id(value: u32) -> NonZeroU32 {
+        NonZeroU32::new(value).unwrap()
+    }
+
+    fn warm() -> Box<fm_grade::Grade> {
+        Box::new(fm_grade::builtin_preset("warm").unwrap().grade.clone())
+    }
+
+    fn states(revision: u64) -> Vec<GradeStateMessage> {
+        [
+            GradeEntry::Lut {
+                lut: id(3),
+                name: "Film".into(),
+                kind: fm_grade::CubeKind::ThreeD,
+                size: 17,
+            },
+            GradeEntry::Library {
+                grade: id(1),
+                name: "Warm".into(),
+                value: warm(),
+            },
+            GradeEntry::Input {
+                input: input(2),
+                source: WireGradeSource::Library(id(1)),
+            },
+            GradeEntry::Program {
+                source: WireGradeSource::Inline(warm()),
+            },
+        ]
+        .into_iter()
+        .map(|entry| GradeStateMessage { revision, entry })
+        .collect()
+    }
+
+    fn synchronizing(revision: u64, grade_states: u16) -> Client {
+        let mut client = Client::new(config(4)).unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client.accept_handshake(handshake(revision, None)).unwrap();
+        client
+            .intake(WireMessage::Snapshot(SnapshotMessage {
+                grade_states,
+                ..snapshot(revision)
+            }))
+            .unwrap();
+        client
+    }
+
+    fn resyncs(client: &mut Client, state: GradeStateMessage) {
+        let error = client.intake(WireMessage::GradeState(state)).unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn announced_grade_states_complete_the_snapshot_in_order() {
+        let mut client = synchronizing(4, 4);
+        for state in states(4) {
+            assert!(!client.model().state().unwrap().grading_complete());
+            assert!(matches!(
+                client.state(),
+                ConnectionState::Synchronizing {
+                    mode: SyncMode::Snapshot,
+                    ..
+                }
+            ));
+            assert_eq!(
+                client.intake(WireMessage::GradeState(state)).unwrap(),
+                Intake::GradeStateApplied
+            );
+        }
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let grading = client.model().state().unwrap().grading().clone();
+        assert_eq!(grading.luts.len(), 1);
+        assert_eq!(grading.library[0].name, "Warm");
+        assert_eq!(
+            grading.resolve(&grading.inputs[&input(2).to_domain()]),
+            Some(&*warm())
+        );
+        assert_eq!(grading.program, Some(WireGradeSource::Inline(warm())));
+
+        // grade_changed edits the replicated view; an unknown library grade
+        // is refused.
+        let event = |revision: u64, change: GradeChange| {
+            WireMessage::Event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision,
+                },
+                payload: EventPayload::GradeChanged(change),
+            })
+        };
+        client
+            .intake(event(
+                5,
+                GradeChange::Input {
+                    input: input(2),
+                    source: None,
+                },
+            ))
+            .unwrap();
+        assert!(client.model().state().unwrap().grading().inputs.is_empty());
+        client
+            .intake(event(6, GradeChange::Program { source: None }))
+            .unwrap();
+        assert_eq!(client.model().state().unwrap().grading().program, None);
+        assert!(
+            client
+                .intake(event(
+                    7,
+                    GradeChange::Input {
+                        input: input(1),
+                        source: Some(WireGradeSource::Library(id(9))),
+                    },
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unannounced_out_of_order_or_stale_grade_states_force_a_fresh_snapshot() {
+        // Beyond the announced count.
+        let mut client = synchronizing(4, 0);
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        resyncs(&mut client, states(4).remove(0));
+
+        // Out of order: an input before the library grade it names.
+        let mut client = synchronizing(4, 4);
+        resyncs(&mut client, states(4).remove(2));
+
+        // At another revision.
+        let mut client = synchronizing(4, 4);
+        resyncs(&mut client, states(3).remove(0));
+
+        // Naming an input the snapshot lacks.
+        let mut client = synchronizing(4, 1);
+        resyncs(
+            &mut client,
+            GradeStateMessage {
+                revision: 4,
+                entry: GradeEntry::Input {
+                    input: input(9),
+                    source: WireGradeSource::Inline(warm()),
+                },
+            },
+        );
+
+        // An event before the announced states arrive.
+        let mut client = synchronizing(4, 4);
+        let error = client
+            .intake(WireMessage::Event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision: 5,
+                },
+                payload: EventPayload::GradeChanged(GradeChange::Program { source: None }),
+            }))
+            .unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
     }
 }

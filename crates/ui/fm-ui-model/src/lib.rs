@@ -20,10 +20,14 @@ use fm_protocol::{
     StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
     TitleFieldUpdate, TitlePhase, TitleStateMessage, WireRecorderSlot,
 };
+use fm_protocol::{GradeChange, GradeStateMessage};
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
+
+pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
 
 pub mod animation_editor;
 pub mod grade_editor;
+mod grading;
 pub mod i18n;
 pub mod title_editor;
 
@@ -333,6 +337,8 @@ pub struct ProjectSnapshot {
     /// Whether a `playlist_state` completes this snapshot. Otherwise the
     /// playlist is empty, stopped, and does not loop.
     pub playlist_follows: bool,
+    /// How many `grade_state` records complete this snapshot.
+    pub grade_states: u16,
 }
 
 impl ProjectSnapshot {
@@ -401,6 +407,7 @@ impl ProjectSnapshot {
                 .collect(),
             frame_rate: message.frame_rate,
             playlist_follows: message.playlist_follows,
+            grade_states: message.grade_states,
         }
     }
 }
@@ -466,6 +473,8 @@ pub enum DurableChange {
         selection: BusSelection,
         playlist: PlaylistStatus,
     },
+    /// One accepted grade edit.
+    GradeChanged(GradeChange),
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -606,6 +615,7 @@ impl DurableProjectEvent {
                     state,
                 },
             },
+            EventPayload::GradeChanged(change) => DurableChange::GradeChanged(change),
         };
         Self {
             cursor: ProjectCursor {
@@ -676,9 +686,25 @@ pub struct ProjectState {
     frame_rate: FrameRate,
     /// `None` while the snapshot's announced `playlist_state` is awaited.
     playlist: Option<PlaylistStatus>,
+    grading: GradingStatus,
+    /// `grade_state` records the snapshot announced that have not arrived.
+    grade_states_pending: u16,
 }
 
 impl ProjectState {
+    /// Returns the replicated project grading. Complete only once
+    /// [`Self::grading_complete`].
+    #[must_use]
+    pub const fn grading(&self) -> &GradingStatus {
+        &self.grading
+    }
+
+    /// Returns whether every `grade_state` the snapshot announced arrived.
+    #[must_use]
+    pub const fn grading_complete(&self) -> bool {
+        self.grade_states_pending == 0
+    }
+
     /// Returns the replicated playlist: the snapshot's (its `playlist_state`,
     /// or the empty playlist it implies) kept current by `playlist_changed`.
     /// `None` only while an announced `playlist_state` has not arrived.
@@ -1073,6 +1099,11 @@ pub enum ModelError {
     /// A `playlist_state` arrived that the applied snapshot did not announce
     /// or still awaits at another revision.
     PlaylistStateMismatch,
+    /// A `grade_state` arrived that the applied snapshot did not announce,
+    /// at another revision, or out of order.
+    GradeStateMismatch,
+    /// A `grade_changed` does not apply to the replicated grading.
+    InvalidGradeChange,
     /// A title change's fields are not the title's field set, or its field
     /// revision went backwards.
     InvalidTitleChange(InputId),
@@ -1180,6 +1211,8 @@ impl fmt::Display for ModelError {
             | Self::TitleStateMismatch(_)
             | Self::TitleIncomplete(_)
             | Self::PlaylistStateMismatch
+            | Self::GradeStateMismatch
+            | Self::InvalidGradeChange
             | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
         }
     }
@@ -1213,6 +1246,12 @@ fn write_catalogue_message(error: &ModelError, formatter: &mut fmt::Formatter<'_
         }
         ModelError::PlaylistStateMismatch => {
             formatter.write_str("playlist state does not match the snapshot it follows")
+        }
+        ModelError::GradeStateMismatch => {
+            formatter.write_str("grade state does not match the snapshot it follows")
+        }
+        ModelError::InvalidGradeChange => {
+            formatter.write_str("grade change does not match the replicated grading")
         }
         _ => Ok(()),
     }
@@ -1544,6 +1583,8 @@ impl ClientModel {
             titles: snapshot.titles,
             frame_rate: snapshot.frame_rate,
             playlist: (!snapshot.playlist_follows).then(PlaylistStatus::empty),
+            grading: GradingStatus::default(),
+            grade_states_pending: snapshot.grade_states,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -1726,6 +1767,37 @@ impl ClientModel {
             return Err(ModelError::UnknownInput(entry.input.to_domain()));
         }
         state.playlist = Some(PlaylistStatus::from_protocol(message));
+        Ok(())
+    }
+
+    /// Adds one of the `grade_state` records the installed snapshot
+    /// announced.
+    ///
+    /// `message` must be at the applied revision, the snapshot must still
+    /// await a grade state, and the entry must follow the documented order
+    /// and name only show inputs and known library grades.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::GradeStateMismatch`] otherwise; the model is then
+    /// unchanged and the caller must resynchronize.
+    pub fn apply_grade_state(&mut self, message: GradeStateMessage) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if Revision::new(message.revision) != revision || state.grade_states_pending == 0 {
+            return Err(ModelError::GradeStateMismatch);
+        }
+        let mut grading = state.grading.clone();
+        if !grading.push_entry(message.entry, &state.inputs) {
+            return Err(ModelError::GradeStateMismatch);
+        }
+        state.grading = grading;
+        state.grade_states_pending -= 1;
         Ok(())
     }
 
@@ -2246,6 +2318,14 @@ fn validate_playlist_change(
     Ok(())
 }
 
+fn validate_grade_change(change: &GradeChange, state: &ProjectState) -> Result<(), ModelError> {
+    if state.grading_complete() && state.grading.accepts(change, &state.inputs) {
+        Ok(())
+    } else {
+        Err(ModelError::InvalidGradeChange)
+    }
+}
+
 fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), ModelError> {
     let (selection, manual_transition, stingers, overlays, input_audio_strips) = match change {
         DurableChange::InputOrderChanged { inputs } => {
@@ -2280,6 +2360,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             return validate_input_catalogue_change(change, state);
         }
         DurableChange::TitleChanged { .. } => return validate_title_change(change, state),
+        DurableChange::GradeChanged(change) => return validate_grade_change(change, state),
         DurableChange::PlaylistChanged {
             selection,
             playlist,
@@ -2445,6 +2526,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
         .retain(|strip| strip.input != input);
     state.edit_locks.set(EditLockTarget::Input(input), false);
     state.titles.retain(|title| title.input != input);
+    state.grading.inputs.remove(&input);
     // A settled-off overlay forgets a removed input it retained.
     for overlay in state
         .desired_overlays
@@ -2548,6 +2630,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.switcher.desired = selection;
             state.playlist = Some(playlist);
         }
+        DurableChange::GradeChanged(change) => state.grading.apply(change),
     }
 }
 

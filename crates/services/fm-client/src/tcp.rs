@@ -1159,7 +1159,7 @@ impl TcpSession {
                 })
             }
             WireMessage::Error(error) => Ok(SessionEvent::ServerError(error)),
-            // Title and playlist states complete a snapshot while connecting; one
+            // Title, playlist, and grade states complete a snapshot while connecting; one
             // arriving afterwards is out of order and forces a fresh snapshot.
             WireMessage::TitleState(state) => {
                 self.intake(WireMessage::TitleState(state))?;
@@ -1168,6 +1168,11 @@ impl TcpSession {
             }
             WireMessage::PlaylistState(state) => {
                 self.intake(WireMessage::PlaylistState(state))?;
+                self.transition_disconnect();
+                Err(TcpSessionError::UnexpectedMessage)
+            }
+            WireMessage::GradeState(state) => {
+                self.intake(WireMessage::GradeState(state))?;
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

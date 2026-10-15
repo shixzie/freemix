@@ -6,9 +6,11 @@
 //!
 //! - **Project edits** change durable show configuration: the input
 //!   catalogue (adding and removing inputs), input names and order, Stinger
-//!   slots, and overlay transition, appearance, and output inclusion. They
-//!   are rejected while the edit padlock covers them, and all but input
-//!   removal are recorded in the undo history.
+//!   slots, overlay transition, appearance, and output inclusion, and the
+//!   project grading ([`crate::EngineGradeEdit`]). They are rejected while
+//!   the edit padlock covers them (an input's padlock also covers its
+//!   grade), and all but input and LUT removal are recorded in the undo
+//!   history.
 //! - **Live operations** act on what is on air or being delivered: Preview
 //!   selection, cuts and transitions (including Stinger playback and the
 //!   T-bar), overlay take/update/off/queue, Fade to Black, audio strip moves,
@@ -78,9 +80,10 @@
 use std::collections::VecDeque;
 
 use fm_command::{CommandId, FieldIssue, Rejection, RejectionCode, Revision};
+use fm_model::LutId;
 use fm_types::InputId;
 
-use crate::{EngineCommand, ShowState};
+use crate::{EngineCommand, EngineGradeEdit, ShowState};
 
 /// Maximum number of project edits retained for undo (and therefore redo).
 pub const MAX_EDIT_HISTORY: usize = 100;
@@ -117,7 +120,8 @@ impl EngineCommand {
             | Self::ConfigureOverlayTransition { .. }
             | Self::ConfigureOverlayAppearance { .. }
             | Self::SetOverlayOutputInclusion { .. }
-            | Self::SetPlaylist { .. } => EngineCommandKind::ProjectEdit,
+            | Self::SetPlaylist { .. }
+            | Self::Grade(_) => EngineCommandKind::ProjectEdit,
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }
@@ -334,6 +338,11 @@ pub(crate) enum HistoryStep {
     Forget {
         input: InputId,
     },
+    /// LUT removal, which has no journalable inverse. Clears the redo stack
+    /// and forgets undo entries that name the removed LUT.
+    ForgetLut {
+        lut: LutId,
+    },
     Undo,
     Redo,
 }
@@ -374,11 +383,18 @@ impl EditHistory {
                 command: command.clone(),
                 step: HistoryStep::Forget { input: *input },
             }),
-            command => Ok(ResolvedCommand {
+            EngineCommand::Grade(EngineGradeEdit::RemoveLut { id }) => Ok(ResolvedCommand {
                 command: command.clone(),
-                step: inverse_for(state, command)
-                    .map_or(HistoryStep::None, |inverse| HistoryStep::Record { inverse }),
+                step: HistoryStep::ForgetLut { lut: *id },
             }),
+            command => {
+                let command = normalized(state, command);
+                Ok(ResolvedCommand {
+                    step: inverse_for(state, &command)
+                        .map_or(HistoryStep::None, |inverse| HistoryStep::Record { inverse }),
+                    command,
+                })
+            }
         }
     }
 
@@ -457,6 +473,12 @@ impl EditHistory {
                     !names_input(&entry.forward, input) && !names_input(&entry.inverse, input)
                 });
             }
+            HistoryStep::ForgetLut { lut } => {
+                self.redo.clear();
+                self.undo.retain(|entry| {
+                    !names_lut(&entry.forward, lut) && !names_lut(&entry.inverse, lut)
+                });
+            }
             HistoryStep::Undo => {
                 if let Some(entry) = self.undo.pop_back() {
                     self.redo.push(entry);
@@ -488,8 +510,50 @@ fn reverses(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) 
                 && state.inputs().last() == Some(input)
                 && state.input_name(*input) == Some(name.as_str())
         }
+        // Undoing an import removes the LUT it imported, which must still be
+        // the last LUT with the recorded name and text, so redo re-imports
+        // it to the same position.
+        (
+            EngineCommand::Grade(EngineGradeEdit::RemoveLut { id }),
+            EngineCommand::Grade(EngineGradeEdit::ImportLut {
+                id: imported,
+                name,
+                source,
+            }),
+        ) => {
+            id == imported
+                && state
+                    .grading()
+                    .luts
+                    .last()
+                    .is_some_and(|lut| lut.id == *id && lut.name == *name)
+                && state
+                    .luts()
+                    .get(id)
+                    .is_some_and(|lut| lut.source() == source)
+        }
         _ => inverse_for(state, apply).as_ref() == Some(recorded),
     }
+}
+
+/// Returns `command` with every implicit position made explicit against
+/// `state`, so its recorded form replays exactly: a library grade added
+/// without an index is added at the end of the current library.
+fn normalized(state: &ShowState, command: &EngineCommand) -> EngineCommand {
+    match command {
+        EngineCommand::Grade(EngineGradeEdit::AddGrade { grade, index: None }) => {
+            EngineCommand::Grade(EngineGradeEdit::AddGrade {
+                grade: grade.clone(),
+                index: Some(state.grading().grades.len()),
+            })
+        }
+        command => command.clone(),
+    }
+}
+
+/// Returns whether `command` refers to LUT `lut`.
+fn names_lut(command: &EngineCommand, lut: LutId) -> bool {
+    matches!(command, EngineCommand::Grade(edit) if edit.names_lut(lut))
 }
 
 /// Returns whether `command` refers to `input`.
@@ -500,6 +564,7 @@ fn names_input(command: &EngineCommand, input: InputId) -> bool {
         | EngineCommand::RemoveInput { input: named } => *named == input,
         EngineCommand::ReorderInputs { inputs } => inputs.contains(&input),
         EngineCommand::ConfigureStinger { descriptor, .. } => descriptor.media_input == input,
+        EngineCommand::Grade(edit) => edit.input() == Some(input),
         _ => false,
     }
 }
@@ -552,7 +617,54 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
             output: *output,
             included: switcher.overlay(*channel).is_included_in(*output),
         }),
+        EngineCommand::Grade(edit) => grade_inverse(state, edit).map(EngineCommand::Grade),
         _ => None,
+    }
+}
+
+/// The exact edit that reverts grade `edit` on `state`, or `None` when the
+/// edit targets nothing in `state` or (LUT removal) has no inverse.
+fn grade_inverse(state: &ShowState, edit: &EngineGradeEdit) -> Option<EngineGradeEdit> {
+    let grading = state.grading();
+    match edit {
+        EngineGradeEdit::SetInput { input, .. } => {
+            state
+                .inputs()
+                .contains(input)
+                .then(|| EngineGradeEdit::SetInput {
+                    input: *input,
+                    source: grading.inputs.get(input).cloned(),
+                })
+        }
+        EngineGradeEdit::SetProgram { .. } => Some(EngineGradeEdit::SetProgram {
+            source: grading.program.clone(),
+        }),
+        EngineGradeEdit::AddGrade { grade, .. } => grading
+            .grade(grade.id)
+            .is_none()
+            .then_some(EngineGradeEdit::RemoveGrade { id: grade.id }),
+        EngineGradeEdit::UpdateGrade { id, .. } => {
+            grading
+                .grade(*id)
+                .map(|current| EngineGradeEdit::UpdateGrade {
+                    id: *id,
+                    name: current.name.clone(),
+                    grade: Box::new(current.grade.clone()),
+                })
+        }
+        EngineGradeEdit::RemoveGrade { id } => grading
+            .grades
+            .iter()
+            .position(|candidate| candidate.id == *id)
+            .map(|index| EngineGradeEdit::AddGrade {
+                grade: Box::new(grading.grades[index].clone()),
+                index: Some(index),
+            }),
+        EngineGradeEdit::ImportLut { id, .. } => grading
+            .lut(*id)
+            .is_none()
+            .then_some(EngineGradeEdit::RemoveLut { id: *id }),
+        EngineGradeEdit::RemoveLut { .. } => None,
     }
 }
 
@@ -568,7 +680,9 @@ pub(crate) fn check_edit_locks(
         return Err(EditRejection::ProjectLocked);
     }
     match command {
-        EngineCommand::RenameInput { input, .. } | EngineCommand::RemoveInput { input }
+        EngineCommand::RenameInput { input, .. }
+        | EngineCommand::RemoveInput { input }
+        | EngineCommand::Grade(EngineGradeEdit::SetInput { input, .. })
             if state.is_input_locked(*input) =>
         {
             Err(EditRejection::InputLocked(*input))

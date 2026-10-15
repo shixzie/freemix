@@ -1282,7 +1282,7 @@ mod daemon_tests {
             required_capabilities: Vec::new(),
         });
         let plan = NativeProjectPlan::compile(&planned, NativeProjectLimits::default()).unwrap();
-        let templates = crate::load_title_templates(&store, stored.project()).unwrap();
+        let templates = crate::load_bundle_assets(&store, stored.project()).unwrap();
         let control = ControlService::new(
             crate::restore_engine_with_titles(&stored, &templates).unwrap(),
             Policy::development(),
@@ -1452,7 +1452,7 @@ mod daemon_tests {
             required_capabilities: Vec::new(),
         });
         let plan = NativeProjectPlan::compile(&planned, NativeProjectLimits::default()).unwrap();
-        let templates = crate::load_title_templates(&store, stored.project()).unwrap();
+        let templates = crate::load_bundle_assets(&store, stored.project()).unwrap();
         let mut engine = crate::restore_engine_with_titles(&stored, &templates).unwrap();
         let channel = OverlayChannelId::new(1).unwrap();
         // The engine's show has no outputs, so the overlay is mirrored onto a

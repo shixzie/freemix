@@ -41,14 +41,15 @@ use fm_color::{
 use fm_compositor::{
     CompositionPlan, Effect as CompositorEffect, FadeToBlackPlan, FadeToBlackPlanError,
     FadeToBlackPosition as CompositorFadeToBlackPosition, NativeCompositionError,
-    NativeCompositionRenderer, NativeFadeToBlackError, NativeFadeToBlackRenderer,
-    NativeSourceFrame, NativeStingerError, NativeStingerRenderer, NativeTransitionError,
-    NativeTransitionRenderer, OutputTarget, PlanError, RectMask as CompositorRectMask,
-    Rgba8 as CompositorRgba8, Rotation as CompositorRotation, Scene as CompositorScene, SourceId,
-    SourceLayer, StingerFramePlan, StingerPlanError, Transform, TransitionError, TransitionKind,
-    TransitionPlan, compile_scene,
+    NativeCompositionRenderer, NativeFadeToBlackError, NativeFadeToBlackRenderer, NativeGradeError,
+    NativeGradeLut, NativeGradeRenderer, NativeSourceFrame, NativeStingerError,
+    NativeStingerRenderer, NativeTransitionError, NativeTransitionRenderer, OutputTarget,
+    PlanError, RectMask as CompositorRectMask, Rgba8 as CompositorRgba8,
+    Rotation as CompositorRotation, Scene as CompositorScene, SourceId, SourceLayer,
+    StingerFramePlan, StingerPlanError, Transform, TransitionError, TransitionKind, TransitionPlan,
+    compile_scene,
 };
-use fm_engine::FrameResult;
+use fm_engine::{CompiledProjectGrades, FrameResult};
 use fm_frame::{
     AudioBlock, ClockDomainId, CpuVideoFrame, MediaTimestamp, MediaTiming, NormalizedDuration,
     NormalizedTimestamp, OriginalTimestamp, SequenceNumber, TimingError,
@@ -279,7 +280,70 @@ pub struct NativeProjectPlan {
     scenes: Vec<NativeScenePlan>,
     peak_rgba16f_targets: usize,
     transient_rgba16f_bytes: u64,
+    grades: NativeProjectGrades,
 }
+
+/// The per-input and program grades (SW-019) of one engine revision, baked
+/// and uploaded on the runtime's context by
+/// [`NativeMediaRuntime::prepare_project_grades`].
+///
+/// Input grades colour each leaf input's frame wherever the project uses it
+/// (Program/Preview mixes, scene layers, overlays); the program grade colours
+/// each composed output after its overlays and before Fade-to-Black. Stinger
+/// media renders ungraded. Identity grades are never uploaded.
+#[derive(Clone, Debug, Default)]
+pub struct NativeProjectGrades {
+    revision: Option<u64>,
+    inputs: BTreeMap<InputId, Arc<NativeGradeLut>>,
+    program: Option<Arc<NativeGradeLut>>,
+}
+
+impl NativeProjectGrades {
+    /// The engine revision these grades were prepared at, if any.
+    #[must_use]
+    pub const fn revision(&self) -> Option<u64> {
+        self.revision
+    }
+
+    /// Whether no input and no program grade applies.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inputs.is_empty() && self.program.is_none()
+    }
+
+    /// Inputs with a prepared, non-identity grade.
+    pub fn graded_inputs(&self) -> impl Iterator<Item = InputId> + '_ {
+        self.inputs.keys().copied()
+    }
+
+    /// Whether a non-identity program grade applies.
+    #[must_use]
+    pub const fn has_program(&self) -> bool {
+        self.program.is_some()
+    }
+}
+
+impl PartialEq for NativeProjectGrades {
+    /// Prepared grades are equal when they are the same uploads.
+    fn eq(&self, other: &Self) -> bool {
+        self.revision == other.revision
+            && self.inputs.len() == other.inputs.len()
+            && self
+                .inputs
+                .iter()
+                .zip(&other.inputs)
+                .all(|((left_id, left), (right_id, right))| {
+                    left_id == right_id && Arc::ptr_eq(left, right)
+                })
+            && match (&self.program, &other.program) {
+                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
+
+impl Eq for NativeProjectGrades {}
 
 impl NativeProjectPlan {
     /// Compiles all scene-input roots and their enabled dependencies without I/O.
@@ -564,7 +628,19 @@ impl NativeProjectPlan {
             scenes,
             peak_rgba16f_targets,
             transient_rgba16f_bytes,
+            grades: NativeProjectGrades::default(),
         })
+    }
+
+    /// The prepared grades every project render applies.
+    #[must_use]
+    pub const fn grades(&self) -> &NativeProjectGrades {
+        &self.grades
+    }
+
+    /// Replaces the prepared grades every project render applies.
+    pub fn set_grades(&mut self, grades: NativeProjectGrades) {
+        self.grades = grades;
     }
 
     #[must_use]
@@ -946,6 +1022,7 @@ pub enum NativeMediaError {
     Compositor(NativeTransitionError),
     Stinger(NativeStingerError),
     FadeToBlack(NativeFadeToBlackError),
+    Grade(NativeGradeError),
 }
 
 impl fmt::Display for NativeMediaError {
@@ -962,6 +1039,7 @@ impl fmt::Display for NativeMediaError {
             Self::FadeToBlack(error) => {
                 write!(formatter, "native Fade-to-Black setup failed: {error}")
             }
+            Self::Grade(error) => write!(formatter, "native colour grade setup failed: {error}"),
         }
     }
 }
@@ -976,7 +1054,14 @@ impl Error for NativeMediaError {
             Self::Compositor(error) => Some(error),
             Self::Stinger(error) => Some(error),
             Self::FadeToBlack(error) => Some(error),
+            Self::Grade(error) => Some(error),
         }
+    }
+}
+
+impl From<NativeGradeError> for NativeMediaError {
+    fn from(value: NativeGradeError) -> Self {
+        Self::Grade(value)
     }
 }
 
@@ -1376,6 +1461,7 @@ pub enum NativeSourceRenderError {
     Stinger(NativeStingerError),
     InvalidFadeToBlack(FadeToBlackPlanError),
     FadeToBlack(NativeFadeToBlackError),
+    Grade(NativeGradeError),
 }
 
 impl fmt::Display for NativeSourceRenderError {
@@ -1435,6 +1521,7 @@ impl fmt::Display for NativeSourceRenderError {
             Self::FadeToBlack(error) => {
                 write!(formatter, "native Fade-to-Black rendering failed: {error}")
             }
+            Self::Grade(error) => write!(formatter, "native colour grading failed: {error}"),
         }
     }
 }
@@ -1450,6 +1537,7 @@ impl Error for NativeSourceRenderError {
             Self::Stinger(error) => Some(error),
             Self::InvalidFadeToBlack(error) => Some(error),
             Self::FadeToBlack(error) => Some(error),
+            Self::Grade(error) => Some(error),
             Self::MissingSource { .. }
             | Self::DimensionMismatch { .. }
             | Self::MissingTransitionKind
@@ -5487,17 +5575,30 @@ fn registered_source<T>(
         .ok_or(NativeSourceRenderError::MissingSource { input })
 }
 
+/// The texture of leaf `input` at `deadline`: its graded frame when it has an
+/// input grade, otherwise the registry frame.
+fn leaf_texture<'a>(
+    registry: &'a NativeSourceRegistry,
+    graded: &'a BTreeMap<InputId, NativeTexture>,
+    input: InputId,
+    deadline: ClockTime,
+) -> Result<&'a NativeTexture, NativeSourceRenderError> {
+    match graded.get(&input) {
+        Some(texture) => Ok(texture),
+        None => Ok(registry_frame(registry, input, deadline)?.texture()),
+    }
+}
+
 fn project_texture<'a>(
     registry: &'a NativeSourceRegistry,
+    graded: &'a BTreeMap<InputId, NativeTexture>,
     project: &NativeProjectPlan,
     scene_outputs: &'a BTreeMap<SceneId, (SourceId, NativeTexture)>,
     input: InputId,
     deadline: ClockTime,
 ) -> Result<&'a NativeTexture, NativeSourceRenderError> {
     match project.video_route(input) {
-        Some(NativeVideoRoute::Leaf(leaf)) => {
-            Ok(registry_frame(registry, leaf, deadline)?.texture())
-        }
+        Some(NativeVideoRoute::Leaf(leaf)) => leaf_texture(registry, graded, leaf, deadline),
         Some(NativeVideoRoute::Scene(scene)) => scene_outputs
             .get(&scene)
             .map(|(_, texture)| texture)
@@ -5514,6 +5615,7 @@ pub struct NativeMediaRuntime {
     renderer: NativeTransitionRenderer,
     stinger_renderer: NativeStingerRenderer,
     fade_to_black_renderer: NativeFadeToBlackRenderer,
+    grade_renderer: NativeGradeRenderer,
     project_rendering: AtomicBool,
     project_frames: Mutex<NativeProjectFrameState>,
 }
@@ -5610,6 +5712,7 @@ impl NativeMediaRuntime {
         let renderer = NativeTransitionRenderer::new(&context).await?;
         let stinger_renderer = NativeStingerRenderer::new(&context).await?;
         let fade_to_black_renderer = NativeFadeToBlackRenderer::new(&context).await?;
+        let grade_renderer = NativeGradeRenderer::new(&context).await?;
         Ok(Self {
             context,
             normalizer,
@@ -5617,6 +5720,7 @@ impl NativeMediaRuntime {
             renderer,
             stinger_renderer,
             fade_to_black_renderer,
+            grade_renderer,
             project_rendering: AtomicBool::new(false),
             project_frames: Mutex::new(NativeProjectFrameState::default()),
         })
@@ -5626,6 +5730,99 @@ impl NativeMediaRuntime {
     #[must_use]
     pub const fn context(&self) -> &NativeContext {
         &self.context
+    }
+
+    /// Bakes and uploads the non-identity grades of `grades`, the compiled
+    /// grades of engine `revision`, for [`NativeProjectPlan::set_grades`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a mapped GPU upload failure.
+    pub async fn prepare_project_grades(
+        &self,
+        revision: u64,
+        grades: &CompiledProjectGrades,
+    ) -> Result<NativeProjectGrades, NativeMediaError> {
+        let mut prepared = NativeProjectGrades {
+            revision: Some(revision),
+            ..NativeProjectGrades::default()
+        };
+        for (&input, grade) in grades.inputs() {
+            if let Some(lut) = self.grade_renderer.prepare(&self.context, grade).await? {
+                prepared.inputs.insert(input, Arc::new(lut));
+            }
+        }
+        if let Some(grade) = grades.program() {
+            prepared.program = self
+                .grade_renderer
+                .prepare(&self.context, grade)
+                .await?
+                .map(Arc::new);
+        }
+        Ok(prepared)
+    }
+
+    /// Synchronous wrapper for [`Self::prepare_project_grades`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::prepare_project_grades`].
+    pub fn prepare_project_grades_blocking(
+        &self,
+        revision: u64,
+        grades: &CompiledProjectGrades,
+    ) -> Result<NativeProjectGrades, NativeMediaError> {
+        block_on(self.prepare_project_grades(revision, grades))
+    }
+
+    /// Grades every leaf input this frame reads from `registry` (directly or
+    /// through a required scene) that has a prepared input grade.
+    ///
+    /// A leaf that does not resolve is skipped here; the composition lookup
+    /// reports its typed failure.
+    async fn grade_project_leaves(
+        &self,
+        registry: &NativeSourceRegistry,
+        project: &NativeProjectPlan,
+        inputs: &[InputId],
+        execution: &NativeSceneExecution,
+        deadline: ClockTime,
+    ) -> Result<BTreeMap<InputId, NativeTexture>, NativeSourceRenderError> {
+        let mut graded = BTreeMap::new();
+        if project.grades.inputs.is_empty() {
+            return Ok(graded);
+        }
+        let direct = inputs
+            .iter()
+            .filter_map(|input| match project.video_route(*input) {
+                Some(NativeVideoRoute::Leaf(leaf)) => Some(leaf),
+                Some(NativeVideoRoute::Scene(_)) | None => None,
+            });
+        let scene_leaves = project
+            .scenes
+            .iter()
+            .filter(|scene| execution.required.contains(&scene.id))
+            .flat_map(|scene| scene.sources.iter())
+            .filter_map(|(_, source)| match source {
+                NativeSceneSource::Leaf(input) => Some(*input),
+                NativeSceneSource::Scene(_) => None,
+            });
+        let leaves = direct.chain(scene_leaves).collect::<BTreeSet<_>>();
+        for leaf in leaves {
+            let Some(lut) = project.grades.inputs.get(&leaf) else {
+                continue;
+            };
+            let Ok(frame) = registry_frame(registry, leaf, deadline) else {
+                continue;
+            };
+            let texture = self
+                .grade_renderer
+                .apply(&self.context, lut, frame.texture())
+                .await
+                .map_err(NativeSourceRenderError::Grade)?;
+            graded.insert(leaf, texture);
+        }
+        Ok(graded)
     }
 
     /// Returns bounded project-frame completion and slot accounting.
@@ -6664,6 +6861,7 @@ impl NativeMediaRuntime {
     async fn render_project_scenes(
         &self,
         registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
         project: &NativeProjectPlan,
         frame: &FrameResult,
         execution: &mut NativeSceneExecution,
@@ -6679,7 +6877,7 @@ impl NativeMediaRuntime {
                 .map(|(token, source)| {
                     let texture = match source {
                         NativeSceneSource::Leaf(input) => {
-                            registry_frame(registry, *input, frame.deadline)?.texture()
+                            leaf_texture(registry, graded, *input, frame.deadline)?
                         }
                         NativeSceneSource::Scene(dependency) => {
                             &outputs
@@ -6831,9 +7029,13 @@ impl NativeMediaRuntime {
             .scene_execution(&inputs)
             .ok_or(NativeSourceRenderError::ResourceBounds)?;
         let _frame_slot = self.begin_project_frame()?;
+        let graded = self
+            .grade_project_leaves(registry, project, &inputs, &execution, frame.deadline)
+            .await?;
         let (program, scene_outputs) = self
             .render_project_base_with_stingers(
                 registry,
+                &graded,
                 stingers,
                 project,
                 frame,
@@ -6846,6 +7048,7 @@ impl NativeMediaRuntime {
             let composed = self
                 .render_project_overlays(
                     registry,
+                    &graded,
                     project,
                     &scene_outputs,
                     frame.deadline,
@@ -6853,6 +7056,15 @@ impl NativeMediaRuntime {
                     overlays,
                 )
                 .await?;
+            // The program grade colours each composed output before FTB.
+            let composed = match &project.grades.program {
+                Some(lut) => self
+                    .grade_renderer
+                    .apply(&self.context, lut, &composed)
+                    .await
+                    .map_err(NativeSourceRenderError::Grade)?,
+                None => composed,
+            };
             let texture = self
                 .fade_to_black_renderer
                 .render(&self.context, fade_to_black, &composed)
@@ -6864,9 +7076,11 @@ impl NativeMediaRuntime {
         Ok(rendered)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn render_project_base_with_stingers(
         &self,
         registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
         stingers: &NativeSourceRegistry,
         project: &NativeProjectPlan,
         frame: &FrameResult,
@@ -6877,12 +7091,13 @@ impl NativeMediaRuntime {
         NativeSourceRenderError,
     > {
         let scene_outputs = self
-            .render_project_scenes(registry, project, frame, execution)
+            .render_project_scenes(registry, graded, project, frame, execution)
             .await?;
         let program = match plan {
             NativeProjectMixPlan::Transition(plan) => {
                 let primary = project_texture(
                     registry,
+                    graded,
                     project,
                     &scene_outputs,
                     plan.primary,
@@ -6890,6 +7105,7 @@ impl NativeMediaRuntime {
                 )?;
                 let secondary = project_texture(
                     registry,
+                    graded,
                     project,
                     &scene_outputs,
                     plan.secondary,
@@ -6903,6 +7119,7 @@ impl NativeMediaRuntime {
             NativeProjectMixPlan::Stinger(plan) => {
                 let program = project_texture(
                     registry,
+                    graded,
                     project,
                     &scene_outputs,
                     plan.program,
@@ -6910,6 +7127,7 @@ impl NativeMediaRuntime {
                 )?;
                 let preview = project_texture(
                     registry,
+                    graded,
                     project,
                     &scene_outputs,
                     plan.preview,
@@ -6938,9 +7156,11 @@ impl NativeMediaRuntime {
         Ok((program, scene_outputs))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn render_project_overlays(
         &self,
         registry: &NativeSourceRegistry,
+        graded: &BTreeMap<InputId, NativeTexture>,
         project: &NativeProjectPlan,
         scene_outputs: &BTreeMap<SceneId, (SourceId, NativeTexture)>,
         deadline: ClockTime,
@@ -6984,8 +7204,14 @@ impl NativeMediaRuntime {
             let source = SourceId::new(
                 u64::try_from(index + 1).map_err(|_| NativeSourceRenderError::ResourceBounds)?,
             );
-            let texture =
-                project_texture(registry, project, scene_outputs, overlay.input, deadline)?;
+            let texture = project_texture(
+                registry,
+                graded,
+                project,
+                scene_outputs,
+                overlay.input,
+                deadline,
+            )?;
             sources.push(NativeSourceFrame::new(source, texture));
         }
         self.composition_renderer
@@ -11857,6 +12083,88 @@ mod tests {
         );
         assert!(at_cut[2] > at_cut[0], "Preview blue must be the cut base");
         assert!(before[1] > 0.0 && at_cut[1] > 0.0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires a native macOS Metal adapter"]
+    fn native_metal_project_applies_input_and_program_grades() {
+        let runtime = NativeMediaRuntime::new_blocking([NativeBackend::Metal]).unwrap();
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(79).unwrap());
+        let program = input(1);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [NativeResolvedSource::RetainedFrame {
+                    input: program,
+                    frame: colored_retained_frame(clock_domain, [255, 0, 0, 255]),
+                }],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut project = native_plan_project(1, 1);
+        add_leaf(&mut project, program);
+        let mut plan =
+            NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let frame = frame_result(0, program, None);
+        let render = |plan: &NativeProjectPlan| {
+            let output = runtime
+                .render_project_frame_result_blocking(playback.registry(), plan, &frame)
+                .unwrap();
+            rgba16f_components(
+                &block_on(runtime.diagnostic_readback(&output))
+                    .unwrap()
+                    .bytes,
+            )
+        };
+        let ungraded = render(&plan);
+        assert!(ungraded[0] > 0.5 && ungraded[1] < 0.05, "ungraded red");
+
+        // A monochrome input grade turns the red input grey.
+        let monochrome = fm_grade::Grade {
+            saturation_permille: 0,
+            ..fm_grade::Grade::IDENTITY
+        };
+        let mut grading = fm_model::ProjectGrading::default();
+        grading
+            .set_input(
+                program,
+                Some(fm_model::GradeSource::Inline(Box::new(monochrome))),
+            )
+            .unwrap();
+        let compiled =
+            fm_engine::CompiledProjectGrades::compile_grading(&grading, &BTreeMap::new()).unwrap();
+        plan.set_grades(
+            runtime
+                .prepare_project_grades_blocking(1, &compiled)
+                .unwrap(),
+        );
+        let input_graded = render(&plan);
+        assert!(
+            (input_graded[0] - input_graded[1]).abs() < 0.02,
+            "grey input"
+        );
+
+        // A darker program grade then lowers the composed output.
+        let darker = fm_grade::Grade {
+            exposure_millistops: -2000,
+            ..fm_grade::Grade::IDENTITY
+        };
+        grading
+            .set_program(Some(fm_model::GradeSource::Inline(Box::new(darker))))
+            .unwrap();
+        let compiled =
+            fm_engine::CompiledProjectGrades::compile_grading(&grading, &BTreeMap::new()).unwrap();
+        plan.set_grades(
+            runtime
+                .prepare_project_grades_blocking(2, &compiled)
+                .unwrap(),
+        );
+        let program_graded = render(&plan);
+        assert!(program_graded[1] < input_graded[1] * 0.75, "darker program");
+        assert!((program_graded[3] - 1.0).abs() < 1.0e-3, "alpha kept");
     }
 
     #[cfg(target_os = "macos")]

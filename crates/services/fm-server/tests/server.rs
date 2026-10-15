@@ -110,6 +110,7 @@ fn control() -> FakeControl {
         titles: Vec::new(),
         frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
         playlist_follows: false,
+        grade_states: 0,
     };
     let events = [3, 4]
         .map(|revision| EventMessage {

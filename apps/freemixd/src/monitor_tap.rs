@@ -42,6 +42,7 @@ use fm_compositor::{
     compile_scene, execute_cpu,
 };
 use fm_control::ControlService;
+use fm_engine::CompiledProjectGrades;
 use fm_model::{InputKind, Project, SimulatedVideo};
 use fm_protocol::{
     MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_WIDTH, MonitorFrameMessage, MonitorFrameOrigin,
@@ -55,6 +56,7 @@ use fm_titles::AnimSample;
 use fm_types::{InputId, VideoDimensions};
 use freemixd::overlay_layout::{overlay_border_width, overlay_transform};
 
+use crate::grading::GradeCache;
 use crate::scene_render;
 use crate::title_render::{self, TitleAssets, TitleKey};
 
@@ -318,6 +320,8 @@ pub(crate) struct SimulatedMonitorTap {
     built_revision: Option<u64>,
     /// Title templates and fonts loaded at startup.
     titles: Arc<TitleAssets>,
+    /// The per-input and program grades of the depicted revision.
+    grades: Arc<CompiledProjectGrades>,
     /// Scene compositions used by the most recent cadence step.
     composed: Vec<ComposedScene>,
     /// The latest render of each title input, keyed by its full title state.
@@ -420,6 +424,14 @@ impl SimulatedMonitorTap {
                     self.overlaid_program(program, state, project, &mut used_scenes)
                 });
             }
+            // The program grade colours the composed Program picture.
+            if tap == MonitorTap::Program
+                && let Some(grade) = self.grades.program()
+            {
+                image = image
+                    .and_then(|program| fm_compositor::apply_grade(&program, grade).ok())
+                    .map(Arc::new);
+            }
             let Some(image) = image else {
                 continue;
             };
@@ -479,11 +491,16 @@ impl SimulatedMonitorTap {
                 .and_then(|rendered| rendered.flat.clone());
         }
         // Other non-simulated inputs are never registered, so they render
-        // nothing.
-        self.pipeline
+        // nothing. A simulated input carries its input grade.
+        let source = self
+            .pipeline
             .as_ref()
-            .and_then(|pipeline| pipeline.render_source(input, state.frame).ok())
-            .map(Arc::new)
+            .and_then(|pipeline| pipeline.render_source(input, state.frame).ok())?;
+        match self.grades.input(input) {
+            Some(grade) => fm_compositor::apply_grade(&source, grade).ok(),
+            None => Some(source),
+        }
+        .map(Arc::new)
     }
 
     /// Returns the scene picture of `input` at the fitted size, composing it
@@ -726,7 +743,13 @@ fn composite_overlays(
 
 /// What the composition worker renders: the realized state and the project
 /// it depicts, or `None` when no peer wants frames.
-type MonitorWork = Option<(RealizedMonitorState, Arc<Project>)>;
+type MonitorWork = Option<(RealizedMonitorState, Arc<MonitorProject>)>;
+
+/// The project a realized state depicts and its compiled grades.
+pub(crate) struct MonitorProject {
+    project: Project,
+    grades: Arc<CompiledProjectGrades>,
+}
 
 /// Renders one cadence step of `MonitorWork` at `Instant`, handing each
 /// finished tap group to the sink as soon as it is encoded.
@@ -772,8 +795,11 @@ impl WorkerShared {
 pub(crate) struct SimulatedMonitorWorker {
     shared: Arc<WorkerShared>,
     worker: Option<JoinHandle<()>>,
-    project: Option<(u64, Arc<Project>)>,
+    project: Option<(u64, Arc<MonitorProject>)>,
     published: Published,
+    grade_cache: GradeCache,
+    /// The grades of the latest demanded poll.
+    grades: Arc<CompiledProjectGrades>,
 }
 
 /// The last work handed to the worker, so unchanged polls skip the lock.
@@ -793,8 +819,9 @@ impl SimulatedMonitorWorker {
     pub(crate) fn spawn(server: ServerIdentity, titles: Arc<TitleAssets>) -> std::io::Result<Self> {
         let mut tap = SimulatedMonitorTap::with_titles(titles);
         Self::spawn_with(Box::new(move |work, now, emit| {
-            if let Some((state, project)) = work {
-                tap.poll_state_into(&state, &project, &server, now, true, emit);
+            if let Some((state, work)) = work {
+                tap.grades = Arc::clone(&work.grades);
+                tap.poll_state_into(&state, &work.project, &server, now, true, emit);
             } else {
                 tap.idle();
             }
@@ -820,6 +847,8 @@ impl SimulatedMonitorWorker {
             worker: Some(worker),
             project: None,
             published: Published::Nothing,
+            grade_cache: GradeCache::default(),
+            grades: Arc::default(),
         })
     }
 
@@ -833,6 +862,9 @@ impl SimulatedMonitorWorker {
         demand: bool,
     ) -> Vec<(MonitorTap, Vec<u8>)> {
         let state = demand.then(|| RealizedMonitorState::from_control(control));
+        if demand {
+            self.grades = self.grade_cache.at(control);
+        }
         self.poll_state(state, project)
     }
 
@@ -861,12 +893,16 @@ impl SimulatedMonitorWorker {
             .collect()
     }
 
-    /// Shares one project copy per realized revision with the worker.
-    fn project_at(&mut self, revision: u64, project: &Project) -> Arc<Project> {
+    /// Shares one project copy, with its compiled grades, per realized
+    /// revision with the worker.
+    fn project_at(&mut self, revision: u64, project: &Project) -> Arc<MonitorProject> {
         match &self.project {
             Some((cached, shared)) if *cached == revision => Arc::clone(shared),
             _ => {
-                let shared = Arc::new(project.clone());
+                let shared = Arc::new(MonitorProject {
+                    project: project.clone(),
+                    grades: Arc::clone(&self.grades),
+                });
                 self.project = Some((revision, Arc::clone(&shared)));
                 shared
             }

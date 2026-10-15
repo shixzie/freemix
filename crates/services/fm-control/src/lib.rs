@@ -16,6 +16,7 @@ use std::{
 };
 
 mod automation;
+mod grade;
 mod playlist;
 
 pub use automation::{
@@ -38,9 +39,9 @@ use fm_engine::{
 use fm_protocol::{
     CommandMessage, CommandPayload, CommandResult, EditHistoryStatus, EditLockScope,
     EditLockStatus, EngineIdentity, EventCursor, EventMessage, EventPayload, FadeToBlackPosition,
-    FadeToBlackState, FieldIssue, InputAudioStripStatus, InputStatus, LiveInputSource,
-    ManualTransitionKind, ManualTransitionPosition, ManualTransitionState, ManualTransitionStatus,
-    OutputStatus, OverlayBorderPreset as ProtocolOverlayBorder,
+    FadeToBlackState, FieldIssue, GradeStateMessage, InputAudioStripStatus, InputStatus,
+    LiveInputSource, ManualTransitionKind, ManualTransitionPosition, ManualTransitionState,
+    ManualTransitionStatus, OutputStatus, OverlayBorderPreset as ProtocolOverlayBorder,
     OverlayPositionPreset as ProtocolOverlayPosition, OverlayStatus,
     OverlayTransitionKind as ProtocolOverlayTransition, PlaylistStateMessage, RecordingStatus,
     RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
@@ -763,6 +764,26 @@ impl<A: AuthorizationHook> ControlService<A> {
         title_states(&self.engine)
     }
 
+    /// Compiles the engine's current per-input and program grades.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fm_engine::GradeCompileError`] for a grade outside its
+    /// bounds, which accepted edits never produce.
+    pub fn compiled_grades(
+        &self,
+    ) -> Result<fm_engine::CompiledProjectGrades, fm_engine::GradeCompileError> {
+        self.engine.show().compiled_grades()
+    }
+
+    /// Returns the `grade_state` records a session writes after
+    /// [`Self::snapshot`]'s title states and playlist state, exactly as many
+    /// as the snapshot announces.
+    #[must_use]
+    pub fn grade_states(&self) -> Vec<GradeStateMessage> {
+        grade::grade_states(&self.engine)
+    }
+
     /// Returns the `playlist_state` a session writes after [`Self::snapshot`]
     /// (and its title states) when the snapshot announces one
     /// ([`SnapshotMessage::playlist_follows`]), at the current revision and
@@ -1314,7 +1335,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::RemoveInput { .. }
         | EngineCommand::SetEditLock { .. }
         | EngineCommand::SetTitleFields { .. }
-        | EngineCommand::SetPlaylist { .. } => "project",
+        | EngineCommand::SetPlaylist { .. }
+        | EngineCommand::Grade(_) => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         _ => "switcher",
     }
@@ -1334,9 +1356,20 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
 /// Graphics role); taking a title on or off air switches, so it is
 /// `Transition`. A take that also carries field values additionally needs
 /// `EditProject` ([`additional_command_class`]).
+///
+/// Grade edits (input, program, and library grades and LUT imports) change
+/// the project's look like title content, so they are `EditProject` (the
+/// Graphics role), never switching.
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
-        CommandPayload::ReorderInputs { .. }
+        CommandPayload::SetInputGrade { .. }
+        | CommandPayload::SetProgramGrade { .. }
+        | CommandPayload::AddLibraryGrade { .. }
+        | CommandPayload::UpdateLibraryGrade { .. }
+        | CommandPayload::RemoveLibraryGrade { .. }
+        | CommandPayload::ImportGradeLut { .. }
+        | CommandPayload::RemoveGradeLut { .. }
+        | CommandPayload::ReorderInputs { .. }
         | CommandPayload::RenameInput { .. }
         | CommandPayload::AddInput { .. }
         | CommandPayload::RemoveInput { .. }
@@ -1395,31 +1428,41 @@ const fn additional_command_class(payload: &CommandPayload) -> Option<CommandCla
     }
 }
 
+fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
+    let CommandPayload::SetInputAudioStrip {
+        input,
+        gain_millidb,
+        balance_basis_points,
+        muted,
+        soloed,
+        follow_video,
+        delay_samples,
+    } = payload
+    else {
+        unreachable!("only input audio strip commands are delegated")
+    };
+    EngineCommand::SetInputAudioStrip {
+        input: input.to_domain(),
+        state: EngineInputAudioStripState {
+            gain_millidb: *gain_millidb,
+            balance_basis_points: *balance_basis_points,
+            muted: *muted,
+            soloed: *soloed,
+            follow_video: *follow_video,
+            delay_samples: *delay_samples,
+        },
+    }
+}
+
 fn engine_command(payload: &CommandPayload) -> EngineCommand {
     match payload {
         payload @ (CommandPayload::ReorderInputs { .. }
         | CommandPayload::RenameInput { .. }
         | CommandPayload::AddInput { .. }
         | CommandPayload::RemoveInput { .. }) => input_catalogue_engine_command(payload),
-        CommandPayload::SetInputAudioStrip {
-            input,
-            gain_millidb,
-            balance_basis_points,
-            muted,
-            soloed,
-            follow_video,
-            delay_samples,
-        } => EngineCommand::SetInputAudioStrip {
-            input: input.to_domain(),
-            state: EngineInputAudioStripState {
-                gain_millidb: *gain_millidb,
-                balance_basis_points: *balance_basis_points,
-                muted: *muted,
-                soloed: *soloed,
-                follow_video: *follow_video,
-                delay_samples: *delay_samples,
-            },
-        },
+        payload @ CommandPayload::SetInputAudioStrip { .. } => {
+            input_audio_strip_engine_command(payload)
+        }
         CommandPayload::SelectPreview { input } => EngineCommand::SelectPreview(input.to_domain()),
         CommandPayload::Cut => EngineCommand::Cut,
         CommandPayload::Fade { duration_frames } => EngineCommand::Fade {
@@ -1491,6 +1534,13 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         payload @ (CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }) => playlist::playlist_engine_command(payload),
+        payload @ (CommandPayload::SetInputGrade { .. }
+        | CommandPayload::SetProgramGrade { .. }
+        | CommandPayload::AddLibraryGrade { .. }
+        | CommandPayload::UpdateLibraryGrade { .. }
+        | CommandPayload::RemoveLibraryGrade { .. }
+        | CommandPayload::ImportGradeLut { .. }
+        | CommandPayload::RemoveGradeLut { .. }) => grade::grade_engine_command(payload),
     }
 }
 
@@ -1817,6 +1867,7 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
             output: WireOutputId::from_domain(*output),
             included: *included,
         },
+        EngineCommand::Grade(edit) => grade::wire_grade_payload(edit),
         _ => return None,
     })
 }
@@ -2100,6 +2151,14 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     {
         return title_changed(engine, input);
     }
+    if let Some(edit) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::GradingChanged(edit) = &event.payload else {
+            return None;
+        };
+        Some(edit)
+    }) {
+        return grade::grade_changed(engine, edit);
+    }
     if let Some(frame) = outcome.events.iter().find_map(|event| {
         let EngineEvent::PlaylistChanged { frame, .. } = &event.payload else {
             return None;
@@ -2282,6 +2341,7 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
             .collect(),
         frame_rate: engine.frame_rate(),
         playlist_follows: playlist::playlist_follows(engine),
+        grade_states: grade::grade_state_count(engine),
     };
     SnapshotRecord {
         cursor: EventCursor {

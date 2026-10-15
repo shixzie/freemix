@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 fm-command = { path = "../fm-command" }
+fm-grade = { path = "../fm-grade" }
 fm-types = { path = "../fm-types" }
 
 [lints]

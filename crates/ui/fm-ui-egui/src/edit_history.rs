@@ -480,6 +480,7 @@ mod tests {
             titles: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
+            grade_states: 0,
         };
         snapshot.edit_locks.project = locks.project;
         snapshot.edit_locks.inputs = locks

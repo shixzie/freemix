@@ -3,6 +3,7 @@
 mod engine;
 mod error;
 mod grade;
+mod grade_edit;
 mod history;
 mod playlist;
 mod state;
@@ -20,6 +21,7 @@ pub use error::{
     EngineError, InputCatalogueError, ShowError, SnapshotError, TitleRejection, TitleRejectionKind,
 };
 pub use grade::{CompiledProjectGrades, GradeCompileError, GradeTarget};
+pub use grade_edit::{EngineGradeEdit, EngineLut};
 pub use history::{
     EditHistoryEntry, EditLockScope, EditRejection, EditRejectionKind, EngineCommandKind,
     MAX_EDIT_HISTORY,

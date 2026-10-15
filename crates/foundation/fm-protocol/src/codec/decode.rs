@@ -6,18 +6,24 @@ use crate::{
     CodecError, CommandMessage, CommandPayload, CommandResult, DiagnosticsRequest,
     DiagnosticsResponse, DurableEventBatch, DurableGap, EditHistoryStatus, EditLockScope,
     EditLockStatus, EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload,
-    FadeToBlackPosition, FadeToBlackState, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
-    HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioMeters, InputAudioStripStatus,
-    LiveInputSource, MAX_AUDIO_METER_CHANNELS, ManualTransitionKind, ManualTransitionPosition,
+    FadeToBlackPosition, FadeToBlackState, GradeChange, GradeEntry, GradeStateMessage,
+    HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
+    HeartbeatMessage, InputAudioMeters, InputAudioStripStatus, LiveInputSource,
+    MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin,
     MonitorTap, OverlayStatus, PlaylistOperation, PlaylistStateMessage, ResumeCursor,
     RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
     SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
     StingerReadiness, StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample,
-    StructuredError, TitleFieldStatus, TitleStateMessage, WireInputId, WireMessage, WireOutputId,
-    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    StructuredError, TitleFieldStatus, TitleStateMessage, WireGradeSource, WireInputId,
+    WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
+    WireStreamTargetId,
 };
 
+use super::grade::{
+    decode_cube_kind, decode_grade, decode_lut_data, parse_grade_id, validate_grade_name,
+    validate_lut_size,
+};
 use super::playlist::{
     decode_frame_rate, decode_optional_entry, decode_playlist_entries, decode_playlist_start,
     decode_playlist_state, parse_playlist_loop,
@@ -97,6 +103,7 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
         "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
         "playlist_state" => WireMessage::PlaylistState(decode_playlist_state_record(&mut fields)?),
+        "grade_state" => WireMessage::GradeState(decode_grade_state(&mut fields)?),
         _ => return Err(CodecError::UnknownMessage(kind.to_owned())),
     };
     fields.finish()?;
@@ -381,36 +388,7 @@ fn decode_command_payload(
             active: fields.boolean("active")?,
             duration_frames: fields.parse_required("duration_frames")?,
         },
-        "manual_start" => {
-            let value = fields.required("transition")?;
-            let kind = match value.as_str() {
-                "fade" => crate::ManualTransitionKind::Fade,
-                "wipe" => crate::ManualTransitionKind::Wipe,
-                "alpha_fade" => crate::ManualTransitionKind::AlphaFade,
-                "slide" => crate::ManualTransitionKind::Slide,
-                _ => {
-                    return Err(CodecError::InvalidField {
-                        field: "transition",
-                        value,
-                    });
-                }
-            };
-            CommandPayload::StartManualTransition { kind }
-        }
-        "manual_position" => {
-            let value = fields.required("position_basis_points")?;
-            let basis_points = value.parse().map_err(|_| CodecError::InvalidField {
-                field: "position_basis_points",
-                value: value.clone(),
-            })?;
-            let position = crate::ManualTransitionPosition::new(basis_points).ok_or(
-                CodecError::InvalidField {
-                    field: "position_basis_points",
-                    value,
-                },
-            )?;
-            CommandPayload::SetManualTransitionPosition { position }
-        }
+        manual @ ("manual_start" | "manual_position") => decode_manual_command(fields, manual)?,
         "manual_commit" => CommandPayload::CommitManualTransition,
         "manual_cancel" => CommandPayload::CancelManualTransition,
         edit @ ("undo" | "redo" | "edit_lock") => decode_edit_command(fields, edit)?,
@@ -418,6 +396,7 @@ fn decode_command_payload(
             decode_title_command(fields, title)?
         }
         name if name.starts_with("playlist_") => decode_playlist_command(fields, name)?,
+        name if name.starts_with("grade_") => decode_grade_command(fields, name)?,
         _ => {
             return Err(CodecError::InvalidField {
                 field: "payload",
@@ -425,6 +404,37 @@ fn decode_command_payload(
             });
         }
     })
+}
+
+/// Decodes the manual transition start and position commands.
+fn decode_manual_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
+    if name == "manual_start" {
+        let value = fields.required("transition")?;
+        let kind = match value.as_str() {
+            "fade" => crate::ManualTransitionKind::Fade,
+            "wipe" => crate::ManualTransitionKind::Wipe,
+            "alpha_fade" => crate::ManualTransitionKind::AlphaFade,
+            "slide" => crate::ManualTransitionKind::Slide,
+            _ => {
+                return Err(CodecError::InvalidField {
+                    field: "transition",
+                    value,
+                });
+            }
+        };
+        return Ok(CommandPayload::StartManualTransition { kind });
+    }
+    let value = fields.required("position_basis_points")?;
+    let basis_points = value.parse().map_err(|_| CodecError::InvalidField {
+        field: "position_basis_points",
+        value: value.clone(),
+    })?;
+    let position =
+        crate::ManualTransitionPosition::new(basis_points).ok_or(CodecError::InvalidField {
+            field: "position_basis_points",
+            value,
+        })?;
+    Ok(CommandPayload::SetManualTransitionPosition { position })
 }
 
 /// Decodes the playlist commands: list edit, controls, and clock advance.
@@ -851,6 +861,16 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
     )?;
     let frame_rate = decode_frame_rate(fields.required("frame_rate")?)?;
     let playlist_follows = fields.boolean("playlist")?;
+    let grade_states = {
+        let value = fields.required("grade_states")?;
+        parse_canonical_u64(&value)
+            .and_then(|count| u16::try_from(count).ok())
+            .filter(|count| *count <= MAX_GRADE_STATES)
+            .ok_or(CodecError::InvalidField {
+                field: "grade_states",
+                value,
+            })?
+    };
     Ok(SnapshotMessage {
         engine: decode_identity(fields)?,
         revision,
@@ -879,6 +899,191 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         titles,
         frame_rate,
         playlist_follows,
+        grade_states,
+    })
+}
+
+/// Decodes `library=<id>` or `grade=<grade>`: exactly one of them, or, when
+/// `optional`, neither.
+fn decode_grade_source(
+    fields: &mut Fields,
+    optional: bool,
+) -> Result<Option<WireGradeSource>, CodecError> {
+    match (fields.optional("library"), fields.optional("grade")) {
+        (Some(library), None) => Ok(Some(WireGradeSource::Library(parse_grade_id(
+            "library", &library,
+        )?))),
+        (None, Some(grade)) => Ok(Some(WireGradeSource::Inline(decode_grade(&grade)?))),
+        (None, None) if optional => Ok(None),
+        (None, None) => Err(CodecError::MissingField("grade")),
+        (Some(_), Some(grade)) => Err(CodecError::InvalidField {
+            field: "grade",
+            value: grade,
+        }),
+    }
+}
+
+fn decode_required_grade_source(fields: &mut Fields) -> Result<WireGradeSource, CodecError> {
+    decode_grade_source(fields, false)?.ok_or(CodecError::MissingField("grade"))
+}
+
+fn decode_grade_name(fields: &mut Fields) -> Result<String, CodecError> {
+    let name = fields.required("name")?;
+    validate_grade_name(&name)?;
+    Ok(name)
+}
+
+fn decode_list_index(value: String) -> Result<u16, CodecError> {
+    parse_canonical_u64(&value)
+        .and_then(|index| u16::try_from(index).ok())
+        .filter(|index| usize::from(*index) < MAX_LIST_ITEMS)
+        .ok_or(CodecError::InvalidField {
+            field: "index",
+            value,
+        })
+}
+
+/// Decodes the LUT id, name, kind, and size of an imported LUT.
+fn decode_lut_metadata(
+    fields: &mut Fields,
+) -> Result<(core::num::NonZeroU32, String, fm_grade::CubeKind, u32), CodecError> {
+    let lut = parse_grade_id("lut_id", &fields.required("lut_id")?)?;
+    let name = decode_grade_name(fields)?;
+    let kind = decode_cube_kind(&fields.required("kind")?)?;
+    let size = {
+        let value = fields.required("size")?;
+        parse_canonical_u64(&value)
+            .and_then(|size| u32::try_from(size).ok())
+            .ok_or(CodecError::InvalidField {
+                field: "size",
+                value,
+            })?
+    };
+    validate_lut_size(kind, size)?;
+    Ok((lut, name, kind, size))
+}
+
+/// Decodes the grade commands (Protocol 2.28).
+fn decode_grade_command(fields: &mut Fields, name: &str) -> Result<CommandPayload, CodecError> {
+    Ok(match name {
+        "grade_input_set" => CommandPayload::SetInputGrade {
+            input: fields.canonical_input("input")?,
+            source: Some(decode_required_grade_source(fields)?),
+        },
+        "grade_input_clear" => CommandPayload::SetInputGrade {
+            input: fields.canonical_input("input")?,
+            source: None,
+        },
+        "grade_program_set" => CommandPayload::SetProgramGrade {
+            source: Some(decode_required_grade_source(fields)?),
+        },
+        "grade_program_clear" => CommandPayload::SetProgramGrade { source: None },
+        "grade_library_add" => CommandPayload::AddLibraryGrade {
+            grade: parse_grade_id("grade_id", &fields.required("grade_id")?)?,
+            name: decode_grade_name(fields)?,
+            value: decode_grade(&fields.required("grade")?)?,
+            index: fields
+                .optional("index")
+                .map(decode_list_index)
+                .transpose()?,
+        },
+        "grade_library_update" => CommandPayload::UpdateLibraryGrade {
+            grade: parse_grade_id("grade_id", &fields.required("grade_id")?)?,
+            name: decode_grade_name(fields)?,
+            value: decode_grade(&fields.required("grade")?)?,
+        },
+        "grade_library_remove" => CommandPayload::RemoveLibraryGrade {
+            grade: parse_grade_id("grade_id", &fields.required("grade_id")?)?,
+        },
+        "grade_lut_import" => CommandPayload::ImportGradeLut {
+            lut: parse_grade_id("lut_id", &fields.required("lut_id")?)?,
+            name: decode_grade_name(fields)?,
+            data: decode_lut_data(&fields.required("data")?)?,
+        },
+        "grade_lut_remove" => CommandPayload::RemoveGradeLut {
+            lut: parse_grade_id("lut_id", &fields.required("lut_id")?)?,
+        },
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "payload",
+                value: name.to_owned(),
+            });
+        }
+    })
+}
+
+fn decode_grade_state(fields: &mut Fields) -> Result<GradeStateMessage, CodecError> {
+    let revision = fields.canonical_required("revision")?;
+    let entry = fields.required("entry")?;
+    let entry = match entry.as_str() {
+        "lut" => {
+            let (lut, name, kind, size) = decode_lut_metadata(fields)?;
+            GradeEntry::Lut {
+                lut,
+                name,
+                kind,
+                size,
+            }
+        }
+        "library" => GradeEntry::Library {
+            grade: parse_grade_id("grade_id", &fields.required("grade_id")?)?,
+            name: decode_grade_name(fields)?,
+            value: decode_grade(&fields.required("grade")?)?,
+        },
+        "input" => GradeEntry::Input {
+            input: fields.canonical_input("input")?,
+            source: decode_required_grade_source(fields)?,
+        },
+        "program" => GradeEntry::Program {
+            source: decode_required_grade_source(fields)?,
+        },
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "entry",
+                value: entry,
+            });
+        }
+    };
+    Ok(GradeStateMessage { revision, entry })
+}
+
+fn decode_grade_change(fields: &mut Fields) -> Result<GradeChange, CodecError> {
+    let change = fields.required("change")?;
+    Ok(match change.as_str() {
+        "lut_imported" => {
+            let (lut, name, kind, size) = decode_lut_metadata(fields)?;
+            GradeChange::LutImported {
+                lut,
+                name,
+                kind,
+                size,
+            }
+        }
+        "lut_removed" => GradeChange::LutRemoved {
+            lut: parse_grade_id("lut_id", &fields.required("lut_id")?)?,
+        },
+        "library" => GradeChange::Library {
+            grade: parse_grade_id("grade_id", &fields.required("grade_id")?)?,
+            index: decode_list_index(fields.required("index")?)?,
+            name: decode_grade_name(fields)?,
+            value: decode_grade(&fields.required("grade")?)?,
+        },
+        "library_removed" => GradeChange::LibraryRemoved {
+            grade: parse_grade_id("grade_id", &fields.required("grade_id")?)?,
+        },
+        "input" => GradeChange::Input {
+            input: fields.canonical_input("input")?,
+            source: decode_grade_source(fields, true)?,
+        },
+        "program" => GradeChange::Program {
+            source: decode_grade_source(fields, true)?,
+        },
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "change",
+                value: change,
+            });
+        }
     })
 }
 
@@ -1249,6 +1454,7 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             program: fields.canonical_input("program")?,
             preview: fields.canonical_input("preview")?,
         },
+        "grade_changed" => EventPayload::GradeChanged(decode_grade_change(fields)?),
         _ => {
             return Err(CodecError::InvalidField {
                 field: "event",

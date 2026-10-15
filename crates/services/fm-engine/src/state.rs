@@ -2,6 +2,7 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fm_automation::{Playlist, PlaylistConfig};
+use fm_model::{GradeEditError, LutId, ProjectGrading};
 use fm_switcher::{
     DesiredStream, InputUsage, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherEvent,
     SwitcherState, TBarState,
@@ -11,7 +12,10 @@ use fm_types::{
     InputId, InputOrderError, MAX_INPUT_NAME_BYTES, OutputId, RenameInputError, validate_input_name,
 };
 
-use crate::{InputCatalogueError, ShowError};
+use crate::{
+    CompiledProjectGrades, EngineLut, GradeCompileError, InputCatalogueError, ShowError,
+    grade_edit::checked_grading,
+};
 
 /// Largest number of inputs a show may hold once inputs are added live.
 ///
@@ -103,6 +107,8 @@ pub struct ShowState {
     locked_inputs: BTreeSet<InputId>,
     titles: BTreeMap<InputId, EngineTitle>,
     playlist: Playlist,
+    grading: ProjectGrading,
+    luts: BTreeMap<LutId, EngineLut>,
 }
 
 impl ShowState {
@@ -165,6 +171,8 @@ impl ShowState {
             titles: BTreeMap::new(),
             playlist: Playlist::new(Vec::new(), PlaylistConfig::default())
                 .expect("an empty playlist is valid"),
+            grading: ProjectGrading::default(),
+            luts: BTreeMap::new(),
         })
     }
 
@@ -400,6 +408,7 @@ impl ShowState {
         self.input_audio_strips.remove(&input);
         self.locked_inputs.remove(&input);
         self.titles.remove(&input);
+        self.grading.inputs.remove(&input);
         Ok(())
     }
 
@@ -586,6 +595,64 @@ impl ShowState {
 
     pub(crate) fn replace_playlist(&mut self, playlist: Playlist) {
         self.playlist = playlist;
+    }
+
+    /// Returns the project grading: the grade library, imported LUTs, and
+    /// the per-input and program grades.
+    #[must_use]
+    pub const fn grading(&self) -> &ProjectGrading {
+        &self.grading
+    }
+
+    /// Returns every imported LUT whose text the show holds, by id. A LUT
+    /// registered in [`Self::grading`] without an entry here (its bundled
+    /// file was missing at restore) is bypassed when rendering.
+    #[must_use]
+    pub const fn luts(&self) -> &BTreeMap<LutId, EngineLut> {
+        &self.luts
+    }
+
+    /// Installs a restored grading and the LUTs loaded for it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`GradeEditError`] an edit building the same
+    /// grading would report, [`GradeEditError::UnknownInput`] for a grade on
+    /// an input outside this show, and [`GradeEditError::UnknownLut`] for a
+    /// loaded LUT that is not registered. The show is unchanged on error.
+    pub fn restore_grading(
+        &mut self,
+        grading: ProjectGrading,
+        luts: BTreeMap<LutId, EngineLut>,
+    ) -> Result<(), GradeEditError> {
+        self.grading = checked_grading(&self.inputs, grading, &luts)?;
+        self.luts = luts;
+        Ok(())
+    }
+
+    /// Compiles the per-input and program grades against the held LUTs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GradeCompileError`] for a grade outside its bounds, which
+    /// accepted edits never produce.
+    pub fn compiled_grades(&self) -> Result<CompiledProjectGrades, GradeCompileError> {
+        let luts = self
+            .luts
+            .iter()
+            .map(|(id, lut)| (*id, std::sync::Arc::clone(lut.cube())))
+            .collect();
+        CompiledProjectGrades::compile_grading(&self.grading, &luts)
+    }
+
+    pub(crate) fn grading_parts_mut(
+        &mut self,
+    ) -> (
+        &[InputId],
+        &mut ProjectGrading,
+        &mut BTreeMap<LutId, EngineLut>,
+    ) {
+        (&self.inputs, &mut self.grading, &mut self.luts)
     }
 
     pub const fn desired_switcher_mut(&mut self) -> &mut SwitcherState {

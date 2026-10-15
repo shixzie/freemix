@@ -37,6 +37,10 @@ pub use dto::{
     WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId,
     choose_handshake_outcome,
 };
+pub use dto::{
+    GradeChange, GradeEntry, GradeStateMessage, MAX_GRADE_LUT_IMPORT_BYTES, MAX_GRADE_NAME_BYTES,
+    MAX_GRADE_STATES, WireGradeSource,
+};
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, decode_qoi_rgb, encode_qoi_rgb, monitor_frame_parts,
 };

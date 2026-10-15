@@ -142,6 +142,15 @@ pub fn append(target: &Path, source: &Path) -> AppResult<()> {
             asset.source_uri, asset.target_uri
         );
     }
+    for (from, to) in &report.grades {
+        println!("grade {from} -> {to}");
+    }
+    for (from, to) in &report.luts {
+        println!("lut {from} -> {to}");
+    }
+    if report.skipped.program_grade {
+        println!("not appended: program_grade");
+    }
     let skipped = report.skipped;
     if skipped.outputs + skipped.audio_buses + skipped.stream_targets + skipped.stingers > 0
         || skipped.main_mix

@@ -135,6 +135,10 @@ impl DurableStore for DurableJournal<'_> {
         if self.pending.get() >= MAX_MUTATIONS_PER_CHECKPOINT {
             self.checkpoint(previous)?;
         }
+        // An imported LUT's file is written before its batch, so every
+        // manifest and journal that names the LUT finds the file.
+        crate::grading::write_imported_lut(self.writer.project_store(), command)
+            .map_err(|error| AppFailure(format!("imported LUT could not be written: {error}")))?;
         let sequence = self
             .writer
             .head_sequence()

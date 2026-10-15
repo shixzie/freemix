@@ -24,8 +24,8 @@ use crate::playlist::{
     is_playlist_command, playlist_due_frame, playlist_step, realize_cue,
 };
 use crate::{
-    EditHistoryEntry, EditLockScope, EngineError, EngineInputAudioStripState, EngineInputSource,
-    InputCatalogueError, ShowState, SnapshotError, TitleRejection,
+    EditHistoryEntry, EditLockScope, EngineError, EngineGradeEdit, EngineInputAudioStripState,
+    EngineInputSource, InputCatalogueError, ShowState, SnapshotError, TitleRejection,
 };
 
 type RuntimeScheduler = FrameScheduler<(), (), EngineCommand, ()>;
@@ -289,6 +289,8 @@ pub enum EngineCommand {
     /// The runtime action of an accepted [`Self::TakeTitle`] or
     /// [`Self::TitleOffAir`]. Never accepted as a command.
     RealizeTitle(TitleCue),
+    /// Edits the project grading (see [`EngineGradeEdit`]). A project edit.
+    Grade(EngineGradeEdit),
 }
 
 /// What an accepted title command does on air.
@@ -370,6 +372,9 @@ pub enum EngineEvent {
         frame: u64,
         cue: Option<PlaylistCue>,
     },
+    /// A grade edit was accepted; the grading afterwards is read from
+    /// [`ShowState::grading`].
+    GradingChanged(EngineGradeEdit),
 }
 
 /// Engine-level desired status of one stream target; realization is owned by
@@ -964,6 +969,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::ReorderInputs { .. })
                 && !matches!(&command, EngineCommand::AddInput { .. })
                 && !matches!(&command, EngineCommand::SetEditLock { .. })
+                && !matches!(&command, EngineCommand::Grade(_))
                 && !matches!(
                     &command,
                     EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
@@ -1410,6 +1416,14 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
         if is_title_command(&self.command) {
             return apply_title_mutation(state, events, self);
         }
+        if let EngineCommand::Grade(edit) = self.command {
+            let (inputs, grading, luts) = state.grading_parts_mut();
+            crate::grade_edit::apply_grade_edit(inputs, grading, luts, &edit)?;
+            events.push(EngineEvent::GradingChanged(edit));
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if matches!(
             &self.command,
             EngineCommand::ConfigureStinger { .. } | EngineCommand::RemoveStinger { .. }
@@ -1651,6 +1665,9 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             | EngineCommand::PlaylistAdvance { .. }
             | EngineCommand::RealizePlaylistCue(_) => {
                 unreachable!("playlist mutations return before switcher command mapping")
+            }
+            EngineCommand::Grade(_) => {
+                unreachable!("grade mutations return before switcher command mapping")
             }
         };
         state
@@ -1988,6 +2005,7 @@ fn apply_runtime(
             | EngineCommand::SetInputAudioStrip { .. }
             | EngineCommand::SetEditLock { .. }
             | EngineCommand::SetTitleFields { .. }
+            | EngineCommand::Grade(_)
     ) {
         return Ok(Vec::new());
     }
@@ -2127,6 +2145,9 @@ fn apply_runtime(
         | EngineCommand::RealizePlaylistCue(_) => {
             unreachable!("playlist commands are scheduled as playlist cues")
         }
+        EngineCommand::Grade(_) => {
+            unreachable!("grade commands return before switcher command mapping")
+        }
     })
 }
 
@@ -2253,7 +2274,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::PlaylistControl(_)
         | EngineCommand::PlaylistAdvance { .. }
         | EngineCommand::RealizePlaylistCue(_)
-        | EngineCommand::RealizeTitle(_) => None,
+        | EngineCommand::RealizeTitle(_)
+        | EngineCommand::Grade(_) => None,
     }
 }
 

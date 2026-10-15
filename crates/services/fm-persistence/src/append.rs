@@ -11,9 +11,16 @@
 //! different contents, or a title asset missing from the source, refuses the
 //! append before anything is copied.
 //!
-//! Outputs, audio buses, stream targets, stingers, the main mix, recording
-//! flags, and runtime state are not appended; the report counts what was
-//! left behind so a caller can tell the operator.
+//! Appended inputs keep their grades (SW-019). A library grade an appended
+//! input uses is appended to the target library under a fresh id (renamed
+//! on a name clash), and every imported LUT those grades reference is
+//! copied to the target bundle under a fresh LUT id, with the grades'
+//! LUT URIs rewritten to match. Library grades and LUTs no appended input
+//! uses stay behind.
+//!
+//! Outputs, audio buses, stream targets, stingers, the main mix, the program
+//! grade, recording flags, and runtime state are not appended; the report
+//! counts what was left behind so a caller can tell the operator.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -21,7 +28,13 @@ use std::{
     num::NonZeroU128,
 };
 
-use fm_model::{InputKind, Project, Scene, SourceRef};
+use core::num::NonZeroU32;
+
+use fm_grade::Grade;
+use fm_model::{
+    GradeId, GradeSource, InputKind, LutId, MAX_GRADE_NAME_BYTES, MAX_LUT_NAME_BYTES, Project,
+    ProjectGrade, ProjectLut, Scene, SourceRef, lut_asset_uri, lut_id_from_uri,
+};
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES, SceneId};
 
 use crate::{
@@ -69,6 +82,8 @@ pub struct SkippedContent {
     pub stream_targets: usize,
     pub stingers: usize,
     pub main_mix: bool,
+    /// Whether the source project had a program output grade.
+    pub program_grade: bool,
 }
 
 /// Everything an append changed or declined to change.
@@ -82,6 +97,12 @@ pub struct AppendReport {
     pub renamed_scenes: Vec<RenamedEntity<SceneId>>,
     /// Distinct source media URIs, sorted.
     pub assets: Vec<AppendedAsset>,
+    /// Source library grade id to new target id, in source library order,
+    /// for every library grade an appended input uses.
+    pub grades: Vec<(GradeId, GradeId)>,
+    /// Source LUT id to new target id, in source import order, for every
+    /// LUT an appended grade references.
+    pub luts: Vec<(LutId, LutId)>,
     pub skipped: SkippedContent,
 }
 
@@ -123,6 +144,8 @@ impl ProjectStore {
             renamed_inputs: Vec::new(),
             renamed_scenes: Vec::new(),
             assets: Vec::new(),
+            grades: Vec::new(),
+            luts: Vec::new(),
             skipped: skipped(incoming),
         };
         for input in incoming.inputs() {
@@ -154,6 +177,7 @@ impl ProjectStore {
             },
             &mut report,
         )?;
+        self.append_grading(&mut project, incoming, source, &input_map, &mut report)?;
 
         let appended = target.with_project(project)?;
         Ok((appended, report))
@@ -300,6 +324,144 @@ impl ProjectStore {
     }
 }
 
+impl ProjectStore {
+    /// Carries the appended inputs' grades, the library grades they use,
+    /// and the LUTs those grades reference into `project`, copying each LUT
+    /// file into this bundle under its fresh id.
+    fn append_grading(
+        &self,
+        project: &mut Project,
+        incoming: &Project,
+        source: &ProjectStore,
+        input_map: &BTreeMap<InputId, InputId>,
+        report: &mut AppendReport,
+    ) -> Result<(), BundleError> {
+        let from = incoming.grading();
+        if from.inputs.is_empty() {
+            return Ok(());
+        }
+        let used_grades = from
+            .inputs
+            .values()
+            .filter_map(|source| match source {
+                GradeSource::Library(id) => Some(*id),
+                GradeSource::Inline(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let library = from
+            .grades
+            .iter()
+            .filter(|grade| used_grades.contains(&grade.id))
+            .collect::<Vec<_>>();
+        let used_luts = library
+            .iter()
+            .map(|grade| &grade.grade)
+            .chain(from.inputs.values().filter_map(|source| match source {
+                GradeSource::Inline(grade) => Some(grade.as_ref()),
+                GradeSource::Library(_) => None,
+            }))
+            .filter_map(|grade| grade.lut.as_ref())
+            .filter_map(|lut| lut_id_from_uri(&lut.asset_uri))
+            .collect::<BTreeSet<_>>();
+
+        let mut grading = project.grading().clone();
+        let mut next_lut = next_u32(grading.luts.iter().map(|lut| lut.id.get()));
+        let mut lut_map = BTreeMap::new();
+        for lut in from.luts.iter().filter(|lut| used_luts.contains(&lut.id)) {
+            let id = LutId::new(allocate_u32(&mut next_lut)?);
+            let (text, _) =
+                source
+                    .load_lut_source(lut)
+                    .map_err(|_| BundleError::UnresolvedLut {
+                        uri: lut.asset_uri(),
+                    })?;
+            self.write_lut_source(id, &text)
+                .map_err(|_| BundleError::UnresolvedLut {
+                    uri: lut_asset_uri(id),
+                })?;
+            let name = unique_name(&lut.name, MAX_LUT_NAME_BYTES, |candidate| {
+                grading.luts.iter().any(|other| other.name == candidate)
+            })?;
+            grading
+                .add_lut(ProjectLut {
+                    id,
+                    name,
+                    kind: lut.kind,
+                    size: lut.size,
+                })
+                .map_err(grading_failure)?;
+            lut_map.insert(lut.id, id);
+            report.luts.push((lut.id, id));
+        }
+
+        let mut next_grade = next_u32(grading.grades.iter().map(|grade| grade.id.get()));
+        let mut grade_map = BTreeMap::new();
+        for grade in library {
+            let id = GradeId::new(allocate_u32(&mut next_grade)?);
+            let name = unique_name(&grade.name, MAX_GRADE_NAME_BYTES, |candidate| {
+                grading.grades.iter().any(|other| other.name == candidate)
+            })?;
+            grading
+                .insert_grade(
+                    None,
+                    ProjectGrade {
+                        id,
+                        name,
+                        grade: relinked(&grade.grade, &lut_map),
+                    },
+                )
+                .map_err(grading_failure)?;
+            grade_map.insert(grade.id, id);
+            report.grades.push((grade.id, id));
+        }
+
+        for (input, source) in &from.inputs {
+            let Some(&target) = input_map.get(input) else {
+                continue;
+            };
+            let source = match source {
+                GradeSource::Library(id) => GradeSource::Library(grade_map[id]),
+                GradeSource::Inline(grade) => {
+                    GradeSource::Inline(Box::new(relinked(grade, &lut_map)))
+                }
+            };
+            grading
+                .set_input(target, Some(source))
+                .map_err(grading_failure)?;
+        }
+        project.set_grading(grading);
+        Ok(())
+    }
+}
+
+/// `grade` with its LUT reference rewritten through `luts`.
+fn relinked(grade: &Grade, luts: &BTreeMap<LutId, LutId>) -> Grade {
+    let mut grade = grade.clone();
+    if let Some(lut) = &mut grade.lut
+        && let Some(target) = lut_id_from_uri(&lut.asset_uri).and_then(|id| luts.get(&id))
+    {
+        lut.asset_uri = lut_asset_uri(*target);
+    }
+    grade
+}
+
+/// Appended grades that do not fit the target (a full library or LUT table).
+const fn grading_failure(error: fm_model::GradeEditError) -> BundleError {
+    BundleError::Grading(error)
+}
+
+fn next_u32(existing: impl Iterator<Item = NonZeroU32>) -> Option<NonZeroU32> {
+    existing
+        .max()
+        .map_or(NonZeroU32::new(1), |max| max.checked_add(1))
+}
+
+fn allocate_u32(next: &mut Option<NonZeroU32>) -> Result<NonZeroU32, BundleError> {
+    let id = next.ok_or(BundleError::IdSpaceExhausted)?;
+    *next = id.checked_add(1);
+    Ok(id)
+}
+
 struct IdMaps<'a> {
     inputs: &'a BTreeMap<InputId, InputId>,
     scenes: &'a BTreeMap<SceneId, SceneId>,
@@ -416,6 +578,7 @@ fn skipped(project: &Project) -> SkippedContent {
         stream_targets: project.stream_targets().len(),
         stingers: project.stingers().len(),
         main_mix: project.main_mix().is_some(),
+        program_grade: project.grading().program.is_some(),
     }
 }
 

@@ -738,6 +738,7 @@ fn serve_streams_snapshot_peer(
             titles: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
+            grade_states: 0,
         }),
     );
 }
@@ -1290,6 +1291,7 @@ fn write_handshake_version_with_manual(
             titles: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
+            grade_states: 0,
         }),
     );
 }
@@ -1368,6 +1370,7 @@ fn write_handshake_version_with_fade_to_black(
             titles: Vec::new(),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
+            grade_states: 0,
         }),
     );
 }

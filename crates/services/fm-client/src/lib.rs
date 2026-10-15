@@ -16,10 +16,11 @@ use std::fmt;
 use fm_command::{CommandId, Revision};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    DurableGap, EngineIdentity, EventMessage, HandshakeOutcome, HandshakeRequest,
-    HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage, PlaylistStateMessage,
-    ProtocolVersion, ResumeCursor, Role, RuntimeEventMessage, RuntimeLifecycleEvent, ServerHello,
-    ServerIdentity, SnapshotMessage, StructuredError, TitleStateMessage, WireMessage,
+    DurableGap, EngineIdentity, EventMessage, GradeStateMessage, HandshakeOutcome,
+    HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage,
+    PlaylistStateMessage, ProtocolVersion, ResumeCursor, Role, RuntimeEventMessage,
+    RuntimeLifecycleEvent, ServerHello, ServerIdentity, SnapshotMessage, StructuredError,
+    TitleStateMessage, WireMessage,
 };
 use fm_types::ProjectId;
 use fm_ui_model::{
@@ -167,6 +168,8 @@ pub enum Intake {
     TitleStateApplied,
     /// The `playlist_state` the snapshot announced completed it.
     PlaylistStateApplied,
+    /// A `grade_state` completed one grading item the snapshot announced.
+    GradeStateApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -561,6 +564,10 @@ impl Client {
                 self.apply_playlist_state(state)?;
                 Ok(Intake::PlaylistStateApplied)
             }
+            WireMessage::GradeState(state) => {
+                self.apply_grade_state(state)?;
+                Ok(Intake::GradeStateApplied)
+            }
             WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)
@@ -786,18 +793,63 @@ impl Client {
         Ok(())
     }
 
+    /// Completes one grading item the snapshot announced with its
+    /// `grade_state`.
+    ///
+    /// Grade states arrive only while synchronizing from a snapshot, after
+    /// the snapshot's title states and playlist state and before any event.
+    ///
+    /// # Errors
+    ///
+    /// A grade state in any other state, at another revision, that the
+    /// snapshot did not announce, out of order, or before the title and
+    /// playlist states forces a fresh-snapshot reconnect
+    /// ([`ClientError::ResyncRequired`]).
+    pub fn apply_grade_state(&mut self, state: GradeStateMessage) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let playlist_complete = self
+            .model
+            .state()
+            .is_none_or(fm_ui_model::ProjectState::playlist_complete);
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !self.titles_complete()
+            || !playlist_complete
+            || self.model.apply_grade_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
             .is_none_or(fm_ui_model::ProjectState::titles_complete)
     }
 
-    /// Whether the installed snapshot has every title and playlist state it
-    /// announced.
+    /// Whether the installed snapshot has every title, playlist, and grade
+    /// state it announced.
     fn snapshot_complete(&self) -> bool {
-        self.model
-            .state()
-            .is_none_or(|state| state.titles_complete() && state.playlist_complete())
+        self.model.state().is_none_or(|state| {
+            state.titles_complete() && state.playlist_complete() && state.grading_complete()
+        })
     }
 
     /// Applies exactly the next ordered event through [`ClientModel`].
@@ -1051,7 +1103,14 @@ impl Client {
             | CommandPayload::TitleOffAir { .. }
             | CommandPayload::SetPlaylist { .. }
             | CommandPayload::PlaylistControl { .. }
-            | CommandPayload::PlaylistAdvance { .. } => None,
+            | CommandPayload::PlaylistAdvance { .. }
+            | CommandPayload::SetInputGrade { .. }
+            | CommandPayload::SetProgramGrade { .. }
+            | CommandPayload::AddLibraryGrade { .. }
+            | CommandPayload::UpdateLibraryGrade { .. }
+            | CommandPayload::RemoveLibraryGrade { .. }
+            | CommandPayload::ImportGradeLut { .. }
+            | CommandPayload::RemoveGradeLut { .. } => None,
         };
         self.model
             .track_command(CommandId::new(command.id.clone()), optimistic)?;

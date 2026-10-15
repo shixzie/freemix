@@ -165,6 +165,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         titles: Vec::new(),
         frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
         playlist_follows: false,
+        grade_states: 0,
     }
 }
 
@@ -2144,6 +2145,7 @@ fn dependency_tree_contains_only_client_side_freemix_crates() {
         "fm-animation",
         "fm-client",
         "fm-command",
+        "fm-grade",
         "fm-protocol",
         "fm-types",
         "fm-ui-egui",

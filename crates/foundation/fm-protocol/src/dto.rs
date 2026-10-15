@@ -1,6 +1,10 @@
-use core::{fmt, num::NonZeroU128};
+use core::{
+    fmt,
+    num::{NonZeroU32, NonZeroU128},
+};
 
 use fm_command::{CommandEnvelope, Deadline, Revision, StateEpoch};
+use fm_grade::{CubeKind, Grade};
 use fm_types::{FrameRate, InputId, OutputId};
 
 use crate::ProtocolVersion;
@@ -921,6 +925,139 @@ pub enum CommandPayload {
     PlaylistAdvance {
         frame: u64,
     },
+    /// Sets (`Some`) or clears (`None`) one input's grade (Protocol 2.28).
+    /// Wire payloads `grade_input_set` and `grade_input_clear`.
+    SetInputGrade {
+        input: WireInputId,
+        source: Option<WireGradeSource>,
+    },
+    /// Sets (`Some`) or clears (`None`) the program output grade. Wire
+    /// payloads `grade_program_set` and `grade_program_clear`.
+    SetProgramGrade {
+        source: Option<WireGradeSource>,
+    },
+    /// Adds a named grade to the library at `index` (the end when absent).
+    AddLibraryGrade {
+        grade: NonZeroU32,
+        name: String,
+        value: Box<Grade>,
+        index: Option<u16>,
+    },
+    /// Renames a library grade and replaces its values.
+    UpdateLibraryGrade {
+        grade: NonZeroU32,
+        name: String,
+        value: Box<Grade>,
+    },
+    /// Removes a library grade no input or the program uses.
+    RemoveLibraryGrade {
+        grade: NonZeroU32,
+    },
+    /// Imports `.cube` text, at most [`MAX_GRADE_LUT_IMPORT_BYTES`], as LUT
+    /// `lut`. The authority parses it; kind and size come from the text.
+    ImportGradeLut {
+        lut: NonZeroU32,
+        name: String,
+        data: String,
+    },
+    /// Unregisters a LUT no grade uses. Not undoable.
+    RemoveGradeLut {
+        lut: NonZeroU32,
+    },
+}
+
+/// Largest `.cube` text one `grade_lut_import` carries, in bytes. The text
+/// travels base64url-encoded (unpadded) in one field, so the bound keeps the
+/// encoded field within [`crate::MAX_FIELD_VALUE_BYTES`]. Larger LUTs are
+/// imported into the project bundle offline (for example with the CLI).
+pub const MAX_GRADE_LUT_IMPORT_BYTES: usize = 32 * 1024;
+/// Longest grade or LUT name, in UTF-8 bytes.
+pub const MAX_GRADE_NAME_BYTES: usize = 128;
+/// Most `grade_state` records one snapshot announces: every LUT, library
+/// grade, input grade, and the program grade of a maximal project.
+pub const MAX_GRADE_STATES: u16 = 64 + 256 + 256 + 1;
+
+/// The grade one input or the program carries on the wire.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WireGradeSource {
+    /// A grade from the project library (`library=<grade id>`).
+    Library(NonZeroU32),
+    /// A grade owned by its target alone (`grade=<grade>`).
+    Inline(Box<Grade>),
+}
+
+/// One item of the project grading, as carried by a `grade_state` record.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GradeEntry {
+    /// An imported LUT: its id, name, kind, and size (edge length for 3D,
+    /// entry count for 1D).
+    Lut {
+        lut: NonZeroU32,
+        name: String,
+        kind: CubeKind,
+        size: u32,
+    },
+    /// A named library grade.
+    Library {
+        grade: NonZeroU32,
+        name: String,
+        value: Box<Grade>,
+    },
+    /// The grade one input carries.
+    Input {
+        input: WireInputId,
+        source: WireGradeSource,
+    },
+    /// The program output grade.
+    Program { source: WireGradeSource },
+}
+
+/// One grading item at a snapshot's `revision` (Protocol 2.28).
+///
+/// A session writes exactly [`SnapshotMessage::grade_states`] of these after
+/// the snapshot's title states and playlist state and before any event:
+/// every LUT in import order, then every library grade in library order,
+/// then every graded input in ascending input order, then the program grade
+/// when there is one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GradeStateMessage {
+    pub revision: u64,
+    pub entry: GradeEntry,
+}
+
+/// What one accepted grade edit changed (`grade_changed`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GradeChange {
+    /// A LUT was imported; it is the last LUT.
+    LutImported {
+        lut: NonZeroU32,
+        name: String,
+        kind: CubeKind,
+        size: u32,
+    },
+    LutRemoved {
+        lut: NonZeroU32,
+    },
+    /// A library grade was added at `index`, or (keeping its index) renamed
+    /// and updated. `index` is its position in the library afterwards.
+    Library {
+        grade: NonZeroU32,
+        index: u16,
+        name: String,
+        value: Box<Grade>,
+    },
+    LibraryRemoved {
+        grade: NonZeroU32,
+    },
+    /// An input's grade afterwards; `None` when it is ungraded.
+    Input {
+        input: WireInputId,
+        source: Option<WireGradeSource>,
+    },
+    /// The program grade afterwards; `None` when it is ungraded.
+    Program {
+        source: Option<WireGradeSource>,
+    },
 }
 
 /// Most entries one playlist may hold; one `entries` list fits one record.
@@ -1137,6 +1274,9 @@ pub struct SnapshotMessage {
     /// (after its title states). `false` means the playlist is empty,
     /// stopped, and does not loop.
     pub playlist_follows: bool,
+    /// How many [`GradeStateMessage`] records follow this snapshot (after
+    /// its title states and playlist state), at most [`MAX_GRADE_STATES`].
+    pub grade_states: u16,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -1228,6 +1368,8 @@ pub enum EventPayload {
         program: WireInputId,
         preview: WireInputId,
     },
+    /// A grade edit was accepted (Protocol 2.28).
+    GradeChanged(GradeChange),
 }
 
 /// One durable revision.
@@ -1571,4 +1713,5 @@ pub enum WireMessage {
     Error(ErrorMessage),
     TitleState(TitleStateMessage),
     PlaylistState(PlaylistStateMessage),
+    GradeState(GradeStateMessage),
 }

@@ -1,20 +1,26 @@
+use core::num::NonZeroU32;
 use std::collections::BTreeSet;
+
+use fm_grade::{CubeKind, Grade};
 
 use crate::{
     AudioMeterChannel, AudioMetersMessage, CapabilityReportMessage, CapabilityReportSummary,
     CommandMessage, CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse,
     DurableEventBatch, DurableGap, EditHistoryStatus, EditLockScope, EditLockStatus,
     EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload, FadeToBlackState,
-    HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
-    HeartbeatMessage, InputAudioStripStatus, LiveInputSource, MAX_AUDIO_METER_CHANNELS,
-    ManualTransitionKind, ManualTransitionStatus, MonitorFrameMessage, OverlayStatus,
-    PlaylistOperation, PlaylistStateMessage, ResumeCursor, RuntimeEventMessage,
-    RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
-    SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback, StingerReadiness,
-    StingerStatus, StreamStatusMessage, StructuredError, TitleFieldUpdate, TitleStateMessage,
-    WireMessage,
+    GradeChange, GradeEntry, GradeStateMessage, HandshakeOutcome, HandshakeRequest,
+    HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioStripStatus,
+    LiveInputSource, MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind,
+    ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, PlaylistOperation,
+    PlaylistStateMessage, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
+    RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
+    StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
+    StructuredError, TitleFieldUpdate, TitleStateMessage, WireGradeSource, WireMessage,
 };
 
+use super::grade::{
+    encode_cube_kind, encode_grade, encode_lut_data, validate_grade_name, validate_lut_size,
+};
 use super::playlist::{
     encode_frame_rate, encode_optional_entry, encode_playlist_entries, encode_playlist_start,
     encode_playlist_state, playlist_loop,
@@ -74,6 +80,7 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         WireMessage::PlaylistState(message) => {
             encode_playlist_state_record(&mut record, message)?;
         }
+        WireMessage::GradeState(message) => encode_grade_state(&mut record, message)?,
     }
     record.finish()
 }
@@ -181,24 +188,23 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
     record.optional("expected_revision", message.expected_revision)?;
     record.optional("deadline_ms", message.deadline_ms)?;
     match &message.payload {
-        CommandPayload::ReorderInputs { inputs } => {
-            record.field("payload", "input_reorder")?;
-            record.field_string("inputs", input_ids(inputs)?)?;
-        }
-        CommandPayload::RenameInput { input, name } => {
-            record.field("payload", "input_rename")?;
-            record.field("input", input)?;
-            record.field_str("name", name)?;
-        }
-        payload @ (CommandPayload::AddInput { .. } | CommandPayload::RemoveInput { .. }) => {
-            encode_input_catalogue_command(record, payload)?;
-        }
+        payload @ (CommandPayload::ReorderInputs { .. }
+        | CommandPayload::RenameInput { .. }
+        | CommandPayload::AddInput { .. }
+        | CommandPayload::RemoveInput { .. }) => encode_input_catalogue_command(record, payload)?,
         payload @ (CommandPayload::SetTitleFields { .. }
         | CommandPayload::TakeTitle { .. }
         | CommandPayload::TitleOffAir { .. }) => encode_title_command(record, payload)?,
         payload @ (CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }) => encode_playlist_command(record, payload)?,
+        payload @ (CommandPayload::SetInputGrade { .. }
+        | CommandPayload::SetProgramGrade { .. }
+        | CommandPayload::AddLibraryGrade { .. }
+        | CommandPayload::UpdateLibraryGrade { .. }
+        | CommandPayload::RemoveLibraryGrade { .. }
+        | CommandPayload::ImportGradeLut { .. }
+        | CommandPayload::RemoveGradeLut { .. }) => encode_grade_command(record, payload)?,
         payload @ CommandPayload::SetInputAudioStrip { .. } => {
             encode_input_audio_strip_command(record, payload)?;
         }
@@ -277,6 +283,15 @@ fn encode_input_catalogue_command(
     payload: &CommandPayload,
 ) -> Result<(), CodecError> {
     match payload {
+        CommandPayload::ReorderInputs { inputs } => {
+            record.field("payload", "input_reorder")?;
+            record.field_string("inputs", input_ids(inputs)?)
+        }
+        CommandPayload::RenameInput { input, name } => {
+            record.field("payload", "input_rename")?;
+            record.field("input", input)?;
+            record.field_str("name", name)
+        }
         CommandPayload::AddInput {
             input,
             name,
@@ -735,7 +750,202 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         .collect::<Vec<_>>();
     record.field_string("titles", encode_title_summaries(&message.titles, &inputs)?)?;
     record.field_string("frame_rate", encode_frame_rate(message.frame_rate))?;
-    record.field("playlist", u8::from(message.playlist_follows))
+    record.field("playlist", u8::from(message.playlist_follows))?;
+    if message.grade_states > MAX_GRADE_STATES {
+        return Err(CodecError::InvalidField {
+            field: "grade_states",
+            value: message.grade_states.to_string(),
+        });
+    }
+    record.field("grade_states", message.grade_states)
+}
+
+/// Writes a grade source as `library=<id>` or `grade=<grade>`.
+fn encode_grade_source(record: &mut Record, source: &WireGradeSource) -> Result<(), CodecError> {
+    match source {
+        WireGradeSource::Library(grade) => record.field("library", grade),
+        WireGradeSource::Inline(grade) => record.field_string("grade", encode_grade(grade)?),
+    }
+}
+
+fn encode_library_grade(
+    record: &mut Record,
+    grade: NonZeroU32,
+    name: &str,
+    value: &Grade,
+) -> Result<(), CodecError> {
+    validate_grade_name(name)?;
+    let value = encode_grade(value)?;
+    record.field("grade_id", grade)?;
+    record.field_str("name", name)?;
+    record.field_string("grade", value)
+}
+
+fn encode_lut_metadata(
+    record: &mut Record,
+    lut: NonZeroU32,
+    name: &str,
+    kind: CubeKind,
+    size: u32,
+) -> Result<(), CodecError> {
+    validate_grade_name(name)?;
+    validate_lut_size(kind, size)?;
+    record.field("lut_id", lut)?;
+    record.field_str("name", name)?;
+    record.field("kind", encode_cube_kind(kind))?;
+    record.field("size", size)
+}
+
+/// Encodes the grade commands (Protocol 2.28).
+fn encode_grade_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
+    match payload {
+        CommandPayload::SetInputGrade { input, source } => {
+            record.field(
+                "payload",
+                if source.is_some() {
+                    "grade_input_set"
+                } else {
+                    "grade_input_clear"
+                },
+            )?;
+            record.field("input", input)?;
+            source
+                .as_ref()
+                .map_or(Ok(()), |source| encode_grade_source(record, source))
+        }
+        CommandPayload::SetProgramGrade { source } => {
+            record.field(
+                "payload",
+                if source.is_some() {
+                    "grade_program_set"
+                } else {
+                    "grade_program_clear"
+                },
+            )?;
+            source
+                .as_ref()
+                .map_or(Ok(()), |source| encode_grade_source(record, source))
+        }
+        CommandPayload::AddLibraryGrade {
+            grade,
+            name,
+            value,
+            index,
+        } => {
+            if index.is_some_and(|index| usize::from(index) >= MAX_LIST_ITEMS) {
+                return Err(CodecError::InvalidField {
+                    field: "index",
+                    value: index.unwrap_or_default().to_string(),
+                });
+            }
+            record.field("payload", "grade_library_add")?;
+            encode_library_grade(record, *grade, name, value)?;
+            record.optional("index", *index)
+        }
+        CommandPayload::UpdateLibraryGrade { grade, name, value } => {
+            record.field("payload", "grade_library_update")?;
+            encode_library_grade(record, *grade, name, value)
+        }
+        CommandPayload::RemoveLibraryGrade { grade } => {
+            record.field("payload", "grade_library_remove")?;
+            record.field("grade_id", grade)
+        }
+        CommandPayload::ImportGradeLut { lut, name, data } => {
+            validate_grade_name(name)?;
+            let data = encode_lut_data(data)?;
+            record.field("payload", "grade_lut_import")?;
+            record.field("lut_id", lut)?;
+            record.field_str("name", name)?;
+            record.field_string("data", data)
+        }
+        CommandPayload::RemoveGradeLut { lut } => {
+            record.field("payload", "grade_lut_remove")?;
+            record.field("lut_id", lut)
+        }
+        _ => unreachable!("only grade commands are delegated"),
+    }
+}
+
+/// Encodes one `grade_state` record.
+fn encode_grade_state(record: &mut Record, message: &GradeStateMessage) -> Result<(), CodecError> {
+    record.kind("grade_state");
+    record.field("revision", message.revision)?;
+    match &message.entry {
+        GradeEntry::Lut {
+            lut,
+            name,
+            kind,
+            size,
+        } => {
+            record.field("entry", "lut")?;
+            encode_lut_metadata(record, *lut, name, *kind, *size)
+        }
+        GradeEntry::Library { grade, name, value } => {
+            record.field("entry", "library")?;
+            encode_library_grade(record, *grade, name, value)
+        }
+        GradeEntry::Input { input, source } => {
+            record.field("entry", "input")?;
+            record.field("input", input)?;
+            encode_grade_source(record, source)
+        }
+        GradeEntry::Program { source } => {
+            record.field("entry", "program")?;
+            encode_grade_source(record, source)
+        }
+    }
+}
+
+/// Encodes the fields of one `grade_changed` event.
+fn encode_grade_change(record: &mut Record, change: &GradeChange) -> Result<(), CodecError> {
+    match change {
+        GradeChange::LutImported {
+            lut,
+            name,
+            kind,
+            size,
+        } => {
+            record.field("change", "lut_imported")?;
+            encode_lut_metadata(record, *lut, name, *kind, *size)
+        }
+        GradeChange::LutRemoved { lut } => {
+            record.field("change", "lut_removed")?;
+            record.field("lut_id", lut)
+        }
+        GradeChange::Library {
+            grade,
+            index,
+            name,
+            value,
+        } => {
+            if usize::from(*index) >= MAX_LIST_ITEMS {
+                return Err(CodecError::InvalidField {
+                    field: "index",
+                    value: index.to_string(),
+                });
+            }
+            record.field("change", "library")?;
+            encode_library_grade(record, *grade, name, value)?;
+            record.field("index", index)
+        }
+        GradeChange::LibraryRemoved { grade } => {
+            record.field("change", "library_removed")?;
+            record.field("grade_id", grade)
+        }
+        GradeChange::Input { input, source } => {
+            record.field("change", "input")?;
+            record.field("input", input)?;
+            source
+                .as_ref()
+                .map_or(Ok(()), |source| encode_grade_source(record, source))
+        }
+        GradeChange::Program { source } => {
+            record.field("change", "program")?;
+            source
+                .as_ref()
+                .map_or(Ok(()), |source| encode_grade_source(record, source))
+        }
+    }
 }
 
 /// Encodes one `playlist_state` record: the complete playlist after a
@@ -1036,6 +1246,10 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             encode_overlays(record, "overlays", overlays)?;
         }
         payload @ EventPayload::PlaylistChanged { .. } => encode_playlist_changed(record, payload)?,
+        EventPayload::GradeChanged(change) => {
+            record.field("event", "grade_changed")?;
+            encode_grade_change(record, change)?;
+        }
     }
     encode_edit_history(record, &message.edit_history, message.cursor.revision)
 }

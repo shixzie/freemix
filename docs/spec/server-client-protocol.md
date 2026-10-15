@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.27 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.28 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -380,6 +380,74 @@ Protocol 2.26 replicates the playlist to late-joining clients:
   never resumes. Resumed event streams carry no playlist state;
   `playlist_changed` keeps the replicated playlist current.
 - 2.25 is refused.
+
+Protocol 2.28 edits and replicates project colour grading (`SW-019`):
+
+- Grade commands, all `EditProject` (the Graphics role, like title field
+  saves), undoable through the shared edit history, and padlocked like other
+  project edits (an input padlock also covers that input's grade):
+  - `grade_input_set` (`input` plus exactly one of `library=<grade id>` or
+    `grade=<grade>`) and `grade_input_clear` (`input`). The input must exist.
+  - `grade_program_set` (exactly one of `library` or `grade`) and
+    `grade_program_clear`. The program grade colours the composed Program
+    picture after overlays and before Fade-to-Black.
+  - `grade_library_add` (`grade_id`, `name`, `grade`, optional
+    `index` below 256, else appended), `grade_library_update` (`grade_id`,
+    `name`, `grade`; every target referencing the grade follows), and
+    `grade_library_remove` (`grade_id`; refused while an input or the
+    program uses it).
+  - `grade_lut_import` (`lut_id`, `name`, `data`) and `grade_lut_remove`
+    (`lut_id`; refused while any grade references it).
+- Ids are chosen by the client, like `input_add`: grade and LUT ids are
+  canonical nonzero 32-bit decimals, and an id already in use is refused.
+  Names are nonblank, at most 128 bytes, free of control characters, and
+  unique among library grades (or among LUTs).
+- `grade` is seventeen `;`-separated sections,
+  `enabled;temperature,tint;exposure;contrast,pivot;saturation;lift;gamma;gain;offset;master;red;green;blue;hue_vs_hue;hue_vs_saturation;luma_vs_saturation;lut`:
+  `enabled` is `0|1`; wheels are `x,y,master`; RGB curves are `x:y` points
+  joined by `,`; hue curves are empty or `position:value` points joined by
+  `,`; `lut` is `-` or `<lut id>:<strength permille>` naming the imported
+  LUT `asset://luts/<lut id>.cube`. Numbers are canonical decimals (`-` only
+  on nonzero values) and every grade bound is enforced on encode, decode,
+  and in the engine; a grade naming a LUT that was not imported is refused.
+- LUT import size limit: there is no chunked client-to-server upload, so
+  `data` carries the whole `.cube` text in one command field as unpadded
+  base64url (canonical trailing bits, valid UTF-8) and is capped at
+  **32 KiB of `.cube` text** (about 43 KiB encoded, inside the 48 KiB field
+  and 64 KiB line limits). That covers 1D LUTs and 3D LUTs up to roughly
+  edge 17. Larger LUTs (up to the 16 MiB project limit) are imported offline
+  with `freemix-cli grade-import-lut`. The engine parses and validates the
+  text (`fm_grade::parse_cube`); `kind` and `size` come from the parse.
+  The daemon writes the exact text to `assets/luts/<lut id>.cube` before
+  the command's journal batch, so a durable import always finds its file.
+  Removing a LUT is not undoable (a project-loaded LUT may exceed what one
+  journal record can carry); undoing an import removes it.
+- Every accepted grade command publishes `event=grade_changed` with
+  `change=lut_imported` (`lut_id`, `name`, `kind=1d|3d`, `size`),
+  `lut_removed` (`lut_id`), `library` (`grade_id`, `name`, `grade`, and its
+  library `index`; an add or update), `library_removed` (`grade_id`),
+  `input` (`input` and, unless cleared, `library` or `grade`), or `program`
+  (`library` or `grade` unless cleared).
+- Snapshots end with `grade_states=<count>` (at most 577: 64 LUTs, 256
+  library grades, 256 graded inputs, and the program). The count announces
+  that many `kind=grade_state` records, each carrying `revision` (the
+  snapshot revision) and `entry=lut|library|input|program` with the fields
+  of the matching `grade_changed` change (no library `index`: library
+  records arrive in library order). They follow the `playlist_state` record
+  and precede any event, ordered LUTs (import order), library grades,
+  graded inputs (ascending id), then the program grade.
+- A client stays synchronizing until every announced `grade_state` has
+  arrived. A record at another revision, beyond the count, out of order,
+  naming an unknown input, library grade, or LUT, arriving before the title
+  and playlist states, or at any other time forces a fresh snapshot.
+  Resumed event streams carry no grade states; `grade_changed` keeps the
+  replicated grading current. Clients apply no optimistic change for grade
+  commands.
+- Durability: grades are project state (schema 31); the daemon renders
+  input grades on each input wherever it is used and the program grade on
+  each Program output, in both the simulated monitor path and the native
+  GPU path, and restores them on restart.
+- 2.27 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
