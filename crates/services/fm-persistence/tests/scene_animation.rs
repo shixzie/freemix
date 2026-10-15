@@ -179,7 +179,7 @@ fn scene_animations_and_layer_ids_round_trip_exactly() {
     let expected = stored(project());
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 37,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 38,\n"));
     assert!(
         encoded.contains("{\n            \"id\": 9,\n            \"name\": \"Right\""),
         "{encoded}"

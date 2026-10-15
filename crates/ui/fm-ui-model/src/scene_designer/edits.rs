@@ -1,13 +1,15 @@
-//! The designer's edits as the existing scene layer edit commands.
+//! The designer's edits as offline scene layer edit commands.
 //!
 //! Each [`SceneLayerEdit`] is exactly one of the project's scene layer
 //! operations (`fm_model::Project::move_scene_layer`,
 //! `set_scene_layer_geometry`, `set_scene_layer_appearance`,
-//! `set_scene_layer_crop`, `set_scene_layer_mask`), addressed by zero-based
-//! layer index as those operations and their `freemix-cli scene-layer-*`
-//! commands are. The protocol has no live counterpart yet (scene layouts
-//! change only between snapshots), so the designer hands a draft over as
-//! a `freemix-cli` script ([`SceneLayerEdit::cli_command`]).
+//! `set_scene_layer_crop`, `set_scene_layer_mask`,
+//! `set_scene_layer_z_order`), addressed by zero-based layer index as
+//! those operations and their `freemix-cli scene-layer-*` commands are. A
+//! running server takes the designer's edits live (by layer id); these
+//! commands are the secondary export, a `freemix-cli` script
+//! ([`SceneLayerEdit::cli_command`]) that reproduces a layout in a project
+//! bundle.
 
 use fm_protocol::WireSceneId;
 
@@ -40,6 +42,22 @@ pub enum SceneLayerEdit {
         index: usize,
         mask: Option<MaskRect>,
     },
+    /// Sets the layer's drawing order key (`scene-layer-z-order`).
+    ZOrder { index: usize, z_order: i32 },
+}
+
+/// A clockwise angle in millidegrees as degrees with at most three
+/// decimals and no trailing zeros (`90`, `-12.5`).
+fn degrees_text(millidegrees: i64) -> String {
+    let sign = if millidegrees < 0 { "-" } else { "" };
+    let magnitude = millidegrees.unsigned_abs();
+    let (whole, fraction) = (magnitude / 1_000, magnitude % 1_000);
+    if fraction == 0 {
+        format!("{sign}{whole}")
+    } else {
+        let digits = format!("{fraction:03}");
+        format!("{sign}{whole}.{}", digits.trim_end_matches('0'))
+    }
 }
 
 /// `value` quoted for a POSIX shell when it needs it.
@@ -62,17 +80,29 @@ impl SceneLayerEdit {
     pub fn cli_arguments(&self) -> (&'static str, Vec<String>) {
         match *self {
             Self::Move { from, to } => ("scene-layer-move", vec![from.to_string(), to.to_string()]),
-            Self::Geometry { index, placement } => (
-                "scene-layer-geometry",
-                vec![
+            Self::Geometry { index, placement } => ("scene-layer-geometry", {
+                let mut arguments = vec![
                     index.to_string(),
                     placement.x.to_string(),
                     placement.y.to_string(),
                     placement.width.to_string(),
                     placement.height.to_string(),
-                    (u16::from(placement.quarter_turns % 4) * 90).to_string(),
-                ],
-            ),
+                    degrees_text(placement.rotation_millidegrees()),
+                ];
+                if (placement.anchor_x, placement.anchor_y)
+                    != (
+                        super::geometry::ANCHOR_CENTER,
+                        super::geometry::ANCHOR_CENTER,
+                    )
+                {
+                    arguments.extend([
+                        "--anchor".to_owned(),
+                        placement.anchor_x.to_string(),
+                        placement.anchor_y.to_string(),
+                    ]);
+                }
+                arguments
+            }),
             Self::Appearance {
                 index,
                 enabled,
@@ -113,6 +143,10 @@ impl SceneLayerEdit {
                     mask.height.to_string(),
                     if mask.inverted { "inverted" } else { "normal" }.to_owned(),
                 ],
+            ),
+            Self::ZOrder { index, z_order } => (
+                "scene-layer-z-order",
+                vec![index.to_string(), z_order.to_string()],
             ),
         }
     }

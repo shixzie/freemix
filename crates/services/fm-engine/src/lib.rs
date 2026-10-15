@@ -10,6 +10,7 @@ mod input_lifecycle;
 mod media;
 mod playlist;
 mod scene_animation;
+mod scene_layer;
 mod state;
 mod title_animation;
 
@@ -48,6 +49,9 @@ pub use playlist::{
 pub use scene_animation::{
     EngineScene, EngineSceneAir, EngineSceneAnimationEdit, SceneAnimationChange, SceneClipBound,
     scene_inputs_sharing,
+};
+pub use scene_layer::{
+    EngineSceneLayerEdit, MAX_SCENE_LAYER_NAME_BYTES, MAX_SCENE_LAYERS, scene_inputs_showing,
 };
 pub use state::{
     EngineInputAudioStripState, EngineInputSource, EngineTitle, MAX_SHOW_INPUTS, ShowState,

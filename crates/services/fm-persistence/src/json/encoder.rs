@@ -566,13 +566,16 @@ fn write_scenes(output: &mut String, project: &fm_model::Project) {
             .expect("writing to a string cannot fail");
             write!(
                 output,
-                ",\n            \"enabled\": {},\n            \"geometry\": {{\"translation_x\": {}, \"translation_y\": {}, \"width\": {}, \"height\": {}, \"rotation\": \"{}\"}},\n            \"crop\": ",
+                ",\n            \"enabled\": {},\n            \"geometry\": {{\"translation_x\": {}, \"translation_y\": {}, \"width\": {}, \"height\": {}, \"rotation\": \"{}\", \"tilt_millidegrees\": {}, \"anchor_x\": {}, \"anchor_y\": {}}},\n            \"crop\": ",
                 layer.enabled,
                 layer.geometry.translation_x,
                 layer.geometry.translation_y,
                 layer.geometry.width,
                 layer.geometry.height,
                 rotation(layer.geometry.rotation),
+                layer.geometry.tilt_millidegrees,
+                layer.geometry.anchor.x,
+                layer.geometry.anchor.y,
             )
             .expect("writing to a string cannot fail");
             if let Some(crop) = layer.crop {

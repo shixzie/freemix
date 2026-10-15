@@ -140,6 +140,12 @@ struct NativeScenePlan {
     sources: Vec<(SourceId, NativeSceneSource)>,
 }
 
+/// `model` as drawn with no animation: every layer's anchor resolved, so
+/// its stored tilt turns about its anchor (SW-006).
+fn resolved_scene(model: &fm_model::Scene) -> fm_model::Scene {
+    model.posed(fm_model::fm_animation::ClipState::Static, 1, 1)
+}
+
 /// Compiles one scene's layers into its native composition, each enabled
 /// layer bound to its source token (`layer_tokens`, one per layer in scene
 /// order). The plan compiles every scene in its static pose and ungraded; a
@@ -286,7 +292,7 @@ impl NativeScenePlan {
             Some(pose) => {
                 std::borrow::Cow::Owned(self.model.posed(pose.frame.sample, width, height))
             }
-            None if has_grades => std::borrow::Cow::Borrowed(self.model.as_ref()),
+            None if has_grades => std::borrow::Cow::Owned(resolved_scene(&self.model)),
             None => return std::borrow::Cow::Borrowed(&self.composition),
         };
         // Posing keeps every layer's source and only shrinks crops and
@@ -663,7 +669,7 @@ impl NativeProjectPlan {
             }
             let composition = native_scene_composition(
                 scene_id,
-                model,
+                &resolved_scene(model),
                 &layer_tokens,
                 dimensions.width(),
                 dimensions.height(),
@@ -856,6 +862,78 @@ impl NativeProjectPlan {
 
     pub fn scene_order(&self) -> impl ExactSizeIterator<Item = SceneId> + '_ {
         self.scenes.iter().map(|scene| scene.id)
+    }
+
+    /// Follows live scene layer and animation edits (SW-006): every scene
+    /// whose `current` model differs from the planned one is recompiled
+    /// with it, its layers bound to the scene's planned source tokens.
+    /// A scene that now draws a source it was not planned with (a layer
+    /// added with a new source) keeps its plan until the next start.
+    /// Returns whether any scene changed.
+    pub fn refresh_scene_models(
+        &mut self,
+        current: impl Fn(SceneId) -> Option<Arc<fm_model::Scene>>,
+    ) -> bool {
+        let mut changed = false;
+        let width = self.dimensions.width();
+        let height = self.dimensions.height();
+        for index in 0..self.scenes.len() {
+            let plan = &self.scenes[index];
+            let Some(model) = current(plan.id) else {
+                continue;
+            };
+            if Arc::ptr_eq(&model, &plan.model) || *model == *plan.model {
+                continue;
+            }
+            let token_of = |source: NativeSceneSource| {
+                plan.sources
+                    .iter()
+                    .find(|(_, candidate)| *candidate == source)
+                    .map(|(token, _)| *token)
+            };
+            let tokens = model
+                .layers
+                .iter()
+                .map(|layer| {
+                    if !layer.enabled {
+                        return Some(SourceId::new(0));
+                    }
+                    let source = match layer.source {
+                        SourceRef::Input(input) => match self.video_routes.get(&input) {
+                            Some(NativeVideoRoute::Scene(scene)) => {
+                                NativeSceneSource::Scene(*scene)
+                            }
+                            Some(NativeVideoRoute::Leaf(_)) => NativeSceneSource::Leaf(input),
+                            None => return None,
+                        },
+                        SourceRef::Scene(scene) => NativeSceneSource::Scene(scene),
+                    };
+                    token_of(source)
+                })
+                .collect::<Option<Vec<_>>>();
+            let Some(tokens) = tokens else {
+                continue;
+            };
+            let Ok(composition) = native_scene_composition(
+                plan.id,
+                &resolved_scene(&model),
+                &tokens,
+                width,
+                height,
+                NativeSceneGrades {
+                    layers: &BTreeMap::new(),
+                    scene_inputs: &BTreeMap::new(),
+                },
+            ) else {
+                continue;
+            };
+            let plan = &mut self.scenes[index];
+            plan.model = model;
+            plan.layer_tokens = tokens;
+            plan.composition = composition;
+            changed = true;
+        }
+        changed
     }
 
     #[must_use]

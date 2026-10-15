@@ -3235,7 +3235,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 37,
+  "schema_version": 38,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -3442,7 +3442,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 37", "\"schema_version\": 36"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 38", "\"schema_version\": 37"),
     )
     .unwrap();
     assert_failure_contains(
@@ -3456,7 +3456,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 36 is unsupported; expected 37",
+        "title template schema 37 is unsupported; expected 38",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -3474,7 +3474,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 37,
+  "schema_version": 38,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -3737,7 +3737,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 37,
+  "schema_version": 38,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -3967,7 +3967,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 37,
+  "schema_version": 38,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4064,7 +4064,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 37,
+  "schema_version": 38,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5139,13 +5139,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        37
+        38
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 37);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 38);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5158,7 +5158,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 37);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 38);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -5234,7 +5234,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        37
+        38
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -5242,7 +5242,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 37);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 38);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -5252,7 +5252,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 37);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 38);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -5260,7 +5260,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 37);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 38);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -9622,7 +9622,7 @@ fn edit_current_configuration(project: &Path) {
     replace_once(
         &mut source,
         r#""scenes": []"#,
-        r#""scenes": [{"id": 11, "name": "Edited scene", "background": {"red": 0, "green": 0, "blue": 0, "alpha": 255}, "layers": [{"id": 1, "name": "Source", "source": {"type": "input", "id": 1}, "enabled": true, "geometry": {"translation_x": 0, "translation_y": 0, "width": 1280, "height": 720, "rotation": "deg0"}, "crop": null, "mask": null, "effects": [], "opacity": 255, "z_order": 0}], "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}}]"#,
+        r#""scenes": [{"id": 11, "name": "Edited scene", "background": {"red": 0, "green": 0, "blue": 0, "alpha": 255}, "layers": [{"id": 1, "name": "Source", "source": {"type": "input", "id": 1}, "enabled": true, "geometry": {"translation_x": 0, "translation_y": 0, "width": 1280, "height": 720, "rotation": "deg0", "tilt_millidegrees": 0, "anchor_x": 5000, "anchor_y": 5000}, "crop": null, "mask": null, "effects": [], "opacity": 255, "z_order": 0}], "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}}]"#,
     );
     replace_once(
         &mut source,
@@ -10728,5 +10728,115 @@ fn scene_rotation_renders_at_any_angle() {
     // Clockwise: the right end swings down, the left end up.
     assert_eq!(ppm_pixel(&tilted, 640, 360, 440, 260), layer);
     assert_eq!(ppm_pixel(&tilted, 640, 360, 200, 260), background);
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// SW-006: `scene-layer-geometry` takes a free rotation in degrees (up to
+/// three decimals) and an optional `--anchor` pivot in basis points; the
+/// project stores the nearest quarter turn, the tilt left over and the
+/// anchor, and the local render tilts the layer about that anchor. An
+/// anchor past the far edge is refused and leaves the project unchanged.
+#[test]
+fn scene_layer_geometry_turns_about_its_anchor() {
+    let root = unique_test_root();
+    let project = root.join("anchor.freemix");
+    fs::create_dir_all(&root).unwrap();
+    let path = project.to_str().unwrap();
+    let run = |arguments: &[&str]| {
+        let output = invoke_bounded(arguments);
+        assert_success(&output);
+        stdout(&output)
+    };
+    run(&["new", path]);
+    run(&["input-replace-solid", path, "1", "200", "100", "50", "255"]);
+    run(&["scene-input-add", path, "3", "10", "Cam"]);
+    run(&["scene-background", path, "10", "10", "20", "30", "255"]);
+    run(&["scene-layer-add", path, "10", "1", "0", "L1"]);
+    // 960x540 at (480, 270), turned 120.5 degrees clockwise about its
+    // top-left corner: one quarter turn plus a 30.5 degree tilt.
+    run(&[
+        "scene-layer-geometry",
+        path,
+        "10",
+        "0",
+        "480",
+        "270",
+        "960",
+        "540",
+        "120.5",
+        "--anchor",
+        "0",
+        "0",
+    ]);
+    let scene_id = SceneId::new(NonZeroU128::new(10).unwrap());
+    let geometry = |project: &Path| {
+        let stored = ProjectStore::new(project).unwrap().load().unwrap();
+        stored.project().scene(scene_id).unwrap().layers[0].geometry
+    };
+    let stored = geometry(&project);
+    assert_eq!(
+        (stored.translation_x, stored.translation_y),
+        (480, 270),
+        "{stored:?}"
+    );
+    assert_eq!((stored.width, stored.height), (960, 540));
+    assert_eq!(stored.rotation, Rotation::Deg90);
+    assert_eq!(stored.tilt_millidegrees, 30_500);
+    assert_eq!(stored.anchor, fm_model::LayerAnchor::new(0, 0));
+
+    let refused = invoke_bounded(&[
+        "scene-layer-geometry",
+        path,
+        "10",
+        "0",
+        "0",
+        "0",
+        "960",
+        "540",
+        "0",
+        "--anchor",
+        "10001",
+        "0",
+    ]);
+    assert!(!refused.status.success());
+    assert_eq!(geometry(&project), stored);
+
+    // A 30.5 degree tilt about the top-left corner renders.
+    run(&[
+        "scene-layer-geometry",
+        path,
+        "10",
+        "0",
+        "480",
+        "270",
+        "960",
+        "540",
+        "30.5",
+        "--anchor",
+        "0",
+        "0",
+    ]);
+    let tilted = geometry(&project);
+    assert_eq!(tilted.rotation, Rotation::Deg0);
+    assert_eq!(tilted.tilt_millidegrees, 30_500);
+    let output = root.join("anchor.ppm");
+    run(&[
+        "scene-render-frame",
+        path,
+        "10",
+        "--phase",
+        "out",
+        "--frame",
+        "0",
+        output.to_str().unwrap(),
+    ]);
+    let layer = [200, 100, 50];
+    let background = [10, 20, 30];
+    // The box tilts about the anchor (480, 270), output (160, 90), which
+    // stays put: the untilted box just below its top edge right of the
+    // anchor is uncovered, and the region below and left of the anchor is
+    // covered. A centre pivot would do the opposite at both points.
+    assert_eq!(ppm_pixel(&output, 640, 360, 260, 93), background);
+    assert_eq!(ppm_pixel(&output, 640, 360, 130, 190), layer);
     fs::remove_dir_all(root).unwrap();
 }

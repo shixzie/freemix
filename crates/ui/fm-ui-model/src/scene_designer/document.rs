@@ -1,12 +1,31 @@
 //! The layer designer's document: one scene's layers as the server last
-//! reported them, the operator's draft over them, the selection, and the
-//! draft's undo history (one step per gesture or field edit).
+//! reported them, the operator's draft over them, the selection, what has
+//! been sent live, and the draft's local undo history (one step per
+//! gesture or field edit).
+//!
+//! # Live edits
+//!
+//! [`SceneLayoutDocument::take_live_edits`] turns what changed since the
+//! last call into the live `scene_layer_*` commands, by layer id. The edits
+//! of one gesture or field scrub (everything from [`SceneLayoutDocument::begin`]
+//! to the next) send `continues: false` for a layer property the first
+//! time and `true` after, so the server folds the whole gesture into one
+//! undo step per layer. While an edit is open the draft leads; once every
+//! change is sent and the edit is closed, the next replicated layout
+//! becomes the draft again ([`SceneLayoutDocument::rebase`]).
 
-use fm_protocol::{WireSceneId, WireSceneLayerId, WireSceneLayerSource, WireSceneLayout};
+use std::collections::BTreeSet;
+
+use fm_protocol::{
+    SceneLayerEdit as WireSceneLayerEdit, SceneLayerOperation, WireLayerCrop, WireLayerGeometry,
+    WireLayerMask, WireSceneId, WireSceneLayerId, WireSceneLayerSource, WireSceneLayout,
+};
 
 use super::edits::SceneLayerEdit;
-use super::geometry::{CropInsets, LayerPlacement, MAX_LAYER_SIDE, MaskRect, Point};
-use super::gesture::ActiveGesture;
+use super::geometry::{
+    ANCHOR_MAX, CropInsets, LayerPlacement, MAX_LAYER_SIDE, MaskRect, Point, split_millidegrees,
+};
+use super::gesture::{ActiveGesture, millidegrees};
 
 /// Most undo steps the draft keeps.
 pub const MAX_UNDO_STEPS: usize = 200;
@@ -24,6 +43,9 @@ pub struct DesignLayer {
     pub crop: CropInsets,
     /// Rectangular mask in post-crop source pixels.
     pub mask: Option<MaskRect>,
+    /// Drawing order key: layers draw by ascending z-order, ties in list
+    /// order.
+    pub z_order: i32,
 }
 
 /// What an undo step did, for the Undo and Redo tooltips.
@@ -33,6 +55,7 @@ pub enum EditLabel {
     Nudge,
     Scale,
     Rotate,
+    Anchor,
     Crop,
     Field(Field),
     Reorder,
@@ -52,8 +75,16 @@ pub enum Field {
     /// Zoom: unturned width as a percentage of the canvas width; changing
     /// it scales both sides about the centre.
     Zoom,
-    /// Clockwise rotation in degrees (stored as quarter turns).
+    /// Clockwise rotation in degrees, to the millidegree; it turns about
+    /// the anchor.
     Rotation,
+    /// Anchor across the unturned width, basis points (`0..=10000`); the
+    /// layer stays put.
+    AnchorX,
+    /// Anchor down the unturned height, basis points.
+    AnchorY,
+    /// Drawing order key.
+    ZOrder,
     /// Opacity, `0..=255`.
     Opacity,
     CropLeft,
@@ -104,9 +135,25 @@ pub struct SceneLayoutDocument {
     pub(super) gesture: Option<ActiveGesture>,
     /// Whether the server's layout changed under unsaved draft edits.
     base_changed: bool,
+    /// The layers as last sent live (the base until anything is sent).
+    sent: Vec<DesignLayer>,
+    /// The layer properties the open gesture has sent, so later sends
+    /// continue its undo step.
+    live_keys: BTreeSet<(WireSceneLayerId, LiveProperty)>,
+}
+
+/// A layer property one live edit sets.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) enum LiveProperty {
+    Geometry,
+    Appearance,
+    Crop,
+    Mask,
+    ZOrder,
 }
 
 fn layers_of(layout: &WireSceneLayout) -> Vec<DesignLayer> {
+    let canvas = (layout.width.max(1), layout.height.max(1));
     layout
         .layers
         .iter()
@@ -120,13 +167,186 @@ fn layers_of(layout: &WireSceneLayout) -> Vec<DesignLayer> {
                 outline.width.max(1),
                 outline.height.max(1),
                 outline.quarter_turns,
-            ),
+            )
+            .with_tilt(outline.tilt_millidegrees)
+            .with_anchor(outline.anchor_x, outline.anchor_y),
             opacity: outline.opacity,
             enabled: outline.enabled,
-            crop: CropInsets::default(),
-            mask: None,
+            crop: outline
+                .crop
+                .map_or_else(CropInsets::default, |crop| CropInsets {
+                    left: crop.x,
+                    top: crop.y,
+                    right: canvas.0.saturating_sub(crop.x.saturating_add(crop.width)),
+                    bottom: canvas.1.saturating_sub(crop.y.saturating_add(crop.height)),
+                }),
+            mask: outline.mask.map(|mask| MaskRect {
+                x: mask.x,
+                y: mask.y,
+                width: mask.width,
+                height: mask.height,
+                inverted: mask.invert,
+            }),
+            z_order: outline.z_order,
         })
         .collect()
+}
+
+/// A layer's placement on the wire.
+#[must_use]
+pub fn wire_geometry(placement: LayerPlacement) -> WireLayerGeometry {
+    WireLayerGeometry {
+        x: placement.x,
+        y: placement.y,
+        width: placement.width,
+        height: placement.height,
+        quarter_turns: placement.quarter_turns % 4,
+        tilt_millidegrees: placement.tilt_millidegrees,
+        anchor_x: placement.anchor_x,
+        anchor_y: placement.anchor_y,
+    }
+}
+
+/// The least cropped size that keeps `mask` whole.
+fn mask_extent(mask: Option<MaskRect>) -> (u32, u32) {
+    mask.map_or((1, 1), |mask| {
+        (
+            mask.x.saturating_add(mask.width),
+            mask.y.saturating_add(mask.height),
+        )
+    })
+}
+
+/// The moves (layer, destination index) that restack `from` into `to`'s
+/// order: placing each layer from the bottom up, or from the top down,
+/// whichever takes fewer moves (raising one layer to the top is one move
+/// either way it is found).
+fn restack_moves(from: &[DesignLayer], to: &[DesignLayer]) -> Vec<(WireSceneLayerId, usize)> {
+    let start: Vec<WireSceneLayerId> = from.iter().map(|layer| layer.id).collect();
+    let target: Vec<WireSceneLayerId> = to
+        .iter()
+        .map(|layer| layer.id)
+        .filter(|id| start.contains(id))
+        .collect();
+    let pass = |indices: &mut dyn Iterator<Item = usize>| {
+        let mut order = start.clone();
+        let mut moves = Vec::new();
+        for index in indices {
+            let Some(id) = target.get(index) else {
+                continue;
+            };
+            if let Some(position) = order.iter().position(|candidate| candidate == id)
+                && position != index
+            {
+                let restacked = order.remove(position);
+                order.insert(index, restacked);
+                moves.push((*id, index));
+            }
+        }
+        (moves, order)
+    };
+    let (upward, upward_order) = pass(&mut (0..target.len()));
+    let (downward, downward_order) = pass(&mut (0..target.len()).rev());
+    if downward.len() < upward.len() && downward_order == target {
+        downward
+    } else {
+        debug_assert!(upward_order == target || start.len() != target.len());
+        upward
+    }
+}
+
+/// The live edits that turn `from` into `to` (by layer id): stacking moves
+/// first, then each changed property. Each comes with the property it
+/// sets, or `None` for a move.
+fn live_operations(
+    canvas: (u32, u32),
+    from: &[DesignLayer],
+    to: &[DesignLayer],
+) -> Vec<(WireSceneLayerId, Option<LiveProperty>, SceneLayerOperation)> {
+    let mut operations: Vec<(WireSceneLayerId, Option<LiveProperty>, SceneLayerOperation)> =
+        restack_moves(from, to)
+            .into_iter()
+            .map(|(id, index)| {
+                (
+                    id,
+                    None,
+                    SceneLayerOperation::Move {
+                        index: u16::try_from(index).unwrap_or(u16::MAX),
+                    },
+                )
+            })
+            .collect();
+    for after in to {
+        let Some(before) = from.iter().find(|layer| layer.id == after.id) else {
+            continue;
+        };
+        let id = after.id;
+        if before.placement != after.placement {
+            operations.push((
+                id,
+                Some(LiveProperty::Geometry),
+                SceneLayerOperation::SetGeometry(wire_geometry(after.placement)),
+            ));
+        }
+        if before.enabled != after.enabled || before.opacity != after.opacity {
+            operations.push((
+                id,
+                Some(LiveProperty::Appearance),
+                SceneLayerOperation::SetAppearance {
+                    enabled: after.enabled,
+                    opacity: after.opacity,
+                },
+            ));
+        }
+        let wire_mask = |mask: Option<MaskRect>| {
+            SceneLayerOperation::SetMask(mask.map(|mask| WireLayerMask {
+                x: mask.x,
+                y: mask.y,
+                width: mask.width,
+                height: mask.height,
+                invert: mask.inverted,
+            }))
+        };
+        let crop_changed = before.crop != after.crop;
+        let mask_changed = before.mask != after.mask;
+        // A mask must fit the crop it sits in: shrink the mask before a
+        // crop that would cut it, grow it after.
+        let mask_first = {
+            let (width, height) = mask_extent(after.mask);
+            let cropped = before.crop.cropped(canvas);
+            width <= cropped.0 && height <= cropped.1
+        };
+        if mask_changed && mask_first {
+            operations.push((id, Some(LiveProperty::Mask), wire_mask(after.mask)));
+        }
+        if crop_changed {
+            operations.push((
+                id,
+                Some(LiveProperty::Crop),
+                SceneLayerOperation::SetCrop(after.crop.rect(canvas).map(
+                    |(x, y, width, height)| WireLayerCrop {
+                        x,
+                        y,
+                        width,
+                        height,
+                    },
+                )),
+            ));
+        }
+        if mask_changed && !mask_first {
+            operations.push((id, Some(LiveProperty::Mask), wire_mask(after.mask)));
+        }
+        if before.z_order != after.z_order {
+            operations.push((
+                id,
+                Some(LiveProperty::ZOrder),
+                SceneLayerOperation::SetZOrder {
+                    z_order: after.z_order,
+                },
+            ));
+        }
+    }
+    operations
 }
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped first.
@@ -150,6 +370,7 @@ impl SceneLayoutDocument {
             scene,
             canvas: (layout.width.max(1), layout.height.max(1)),
             layers: base.clone(),
+            sent: base.clone(),
             base,
             selection: Vec::new(),
             undo: Vec::new(),
@@ -157,41 +378,95 @@ impl SceneLayoutDocument {
             transaction: None,
             gesture: None,
             base_changed: false,
+            live_keys: BTreeSet::new(),
         }
     }
 
-    /// Follows a newly replicated layout: a clean draft takes it as is; a
-    /// draft with edits keeps them and flags [`Self::base_changed`].
+    /// Follows a newly replicated layout. A draft holding nothing unsent
+    /// (every change sent live, or none made) with no edit open takes it
+    /// as is; an open edit keeps leading; unsent offline edits are kept
+    /// and flag [`Self::base_changed`].
     pub fn rebase(&mut self, layout: &WireSceneLayout) {
         let base = layers_of(layout);
         let canvas = (layout.width.max(1), layout.height.max(1));
         if base == self.base && canvas == self.canvas {
             return;
         }
-        let clean = !self.is_dirty();
+        let settled = self.layers == self.sent;
+        let idle = self.gesture.is_none() && self.transaction.is_none();
         self.base = base;
         self.canvas = canvas;
-        if clean && self.gesture.is_none() && self.transaction.is_none() {
+        if settled && idle {
             self.layers = self.base.clone();
+            self.sent = self.base.clone();
             self.undo.clear();
             self.redo.clear();
-        } else {
+            self.base_changed = false;
+        } else if !settled {
             self.base_changed = true;
         }
-        self.selection
-            .retain(|id| self.layers.iter().any(|layer| layer.id == *id));
+        self.retain_selection();
+    }
+
+    /// Takes the server's layout again when nothing is open or unsent (a
+    /// live edit the server refused leaves no replicated change to follow).
+    pub fn settle(&mut self) {
+        if self.gesture.is_none() && self.transaction.is_none() && self.layers == self.sent {
+            self.layers = self.base.clone();
+            self.sent = self.base.clone();
+            self.retain_selection();
+        }
     }
 
     /// Discards the draft and every step: back to the server's layout.
     pub fn revert(&mut self) {
         self.layers = self.base.clone();
+        self.sent = self.base.clone();
         self.undo.clear();
         self.redo.clear();
         self.transaction = None;
         self.gesture = None;
         self.base_changed = false;
-        self.selection
-            .retain(|id| self.layers.iter().any(|layer| layer.id == *id));
+        self.live_keys.clear();
+        self.retain_selection();
+    }
+
+    /// Whether the draft holds changes not yet sent live.
+    #[must_use]
+    pub fn has_unsent(&self) -> bool {
+        self.layers != self.sent
+    }
+
+    /// The live commands for everything changed since the last call, in
+    /// an order that applies cleanly. An open gesture's later sends
+    /// continue its undo step.
+    pub fn take_live_edits(&mut self) -> Vec<WireSceneLayerEdit> {
+        if !self.has_unsent() {
+            return Vec::new();
+        }
+        let operations = live_operations(self.canvas, &self.sent, &self.layers);
+        self.sent = self.layers.clone();
+        operations
+            .into_iter()
+            .map(|(layer, property, operation)| {
+                let continues =
+                    property.is_some_and(|property| !self.live_keys.insert((layer, property)));
+                WireSceneLayerEdit {
+                    scene: self.scene,
+                    layer,
+                    operation,
+                    continues,
+                }
+            })
+            .collect()
+    }
+
+    /// The layers in drawing order: ascending z-order, ties in list order.
+    #[must_use]
+    pub fn draw_order(&self) -> Vec<&DesignLayer> {
+        let mut layers: Vec<&DesignLayer> = self.layers.iter().collect();
+        layers.sort_by_key(|layer| layer.z_order);
+        layers
     }
 
     #[must_use]
@@ -288,9 +563,11 @@ impl SceneLayoutDocument {
 
     // Transactions and history.
 
-    /// Opens one undo step; edits until [`Self::commit`] join it.
+    /// Opens one undo step; edits until [`Self::commit`] join it (and its
+    /// live edits continue one server undo step).
     pub fn begin(&mut self, label: EditLabel) {
         if self.transaction.is_none() {
+            self.live_keys.clear();
             self.transaction = Some(Transaction {
                 label,
                 before: self.layers.clone(),
@@ -394,7 +671,10 @@ impl SceneLayoutDocument {
             Field::Width => f64::from(placement.width),
             Field::Height => f64::from(placement.height),
             Field::Zoom => f64::from(placement.width) * 100.0 / f64::from(self.canvas.0),
-            Field::Rotation => placement.angle_degrees(),
+            Field::Rotation => placement.angle_degrees().rem_euclid(360.0),
+            Field::AnchorX => f64::from(placement.anchor_x),
+            Field::AnchorY => f64::from(placement.anchor_y),
+            Field::ZOrder => f64::from(layer.z_order),
             Field::Opacity => f64::from(layer.opacity),
             Field::CropLeft => f64::from(layer.crop.left),
             Field::CropTop => f64::from(layer.crop.top),
@@ -572,6 +852,12 @@ impl SceneLayoutDocument {
                     placement: after.placement,
                 });
             }
+            if before.z_order != after.z_order {
+                edits.push(SceneLayerEdit::ZOrder {
+                    index,
+                    z_order: after.z_order,
+                });
+            }
             if before.opacity != after.opacity || before.enabled != after.enabled {
                 edits.push(SceneLayerEdit::Appearance {
                     index,
@@ -613,18 +899,65 @@ impl SceneLayoutDocument {
             .join("\n")
     }
 
+    /// Every layer's whole design as edit commands, by index: its
+    /// geometry, appearance, mask clear, crop, mask, and z-order. Applied
+    /// to a scene with the same layers in the same order, they reproduce
+    /// the draft's layout.
+    #[must_use]
+    pub fn layout_edits(&self) -> Vec<SceneLayerEdit> {
+        let mut edits = Vec::new();
+        for (index, layer) in self.layers.iter().enumerate() {
+            edits.push(SceneLayerEdit::Geometry {
+                index,
+                placement: layer.placement,
+            });
+            edits.push(SceneLayerEdit::Appearance {
+                index,
+                enabled: layer.enabled,
+                opacity: layer.opacity,
+            });
+            edits.push(SceneLayerEdit::Mask { index, mask: None });
+            edits.push(SceneLayerEdit::Crop {
+                index,
+                rect: layer.crop.rect(self.canvas),
+            });
+            if layer.mask.is_some() {
+                edits.push(SceneLayerEdit::Mask {
+                    index,
+                    mask: layer.mask,
+                });
+            }
+            edits.push(SceneLayerEdit::ZOrder {
+                index,
+                z_order: layer.z_order,
+            });
+        }
+        edits
+    }
+
+    /// The draft's whole layout as `freemix-cli` commands for the project
+    /// bundle at `project`, one command per line ([`Self::layout_edits`]).
+    #[must_use]
+    pub fn layout_script(&self, project: &str) -> String {
+        self.layout_edits()
+            .iter()
+            .map(|edit| edit.cli_command(project, self.scene))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// The draft layer's centre on the canvas.
     #[must_use]
     pub fn centre(&self, id: WireSceneLayerId) -> Option<Point> {
-        self.layer(id)
-            .map(|layer| layer.placement.footprint().centre())
+        self.layer(id).map(|layer| layer.placement.frame().centre)
     }
 }
 
 /// Applies one field value to `layer` on a `canvas`.
+#[allow(clippy::too_many_lines)] // one arm per inspector field
 fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, u32)) {
     let placement = layer.placement;
-    let centre = placement.footprint().centre();
+    let anchor = (placement.anchor_x, placement.anchor_y);
     match field {
         Field::X => layer.placement.x = to_i32(value),
         Field::Y => layer.placement.y = to_i32(value),
@@ -637,22 +970,44 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
         Field::Zoom => {
             let width = f64::from(canvas.0) * value.max(0.0) / 100.0;
             let scale = width / f64::from(placement.width);
-            layer.placement = LayerPlacement::centred(
-                centre,
+            layer.placement = LayerPlacement::pivoted(
+                placement.anchor_point(),
                 f64::from(placement.width) * scale,
                 f64::from(placement.height) * scale,
-                placement.quarter_turns,
+                placement.rotation_millidegrees(),
+                anchor,
             );
         }
         Field::Rotation => {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // rem_euclid(4).
-            let turns = (value / 90.0).round().rem_euclid(4.0) as u8;
-            layer.placement = LayerPlacement::centred(
-                centre,
-                f64::from(placement.width),
-                f64::from(placement.height),
-                turns,
-            );
+            let (turns, tilt) = split_millidegrees(millidegrees(value));
+            if (turns, tilt) != (placement.quarter_turns % 4, placement.tilt_millidegrees) {
+                layer.placement = LayerPlacement::pivoted(
+                    placement.anchor_point(),
+                    f64::from(placement.width),
+                    f64::from(placement.height),
+                    millidegrees(value),
+                    anchor,
+                );
+            }
+        }
+        Field::AnchorX | Field::AnchorY => {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped first.
+            let basis_points = value.round().clamp(0.0, f64::from(ANCHOR_MAX)) as u16;
+            let anchor = if field == Field::AnchorX {
+                (basis_points, anchor.1)
+            } else {
+                (anchor.0, basis_points)
+            };
+            if anchor != (placement.anchor_x, placement.anchor_y) {
+                layer.placement = placement.reanchored(anchor);
+            }
+        }
+        Field::ZOrder => {
+            #[allow(clippy::cast_possible_truncation)] // Clamped first.
+            let z_order = value
+                .round()
+                .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+            layer.z_order = z_order;
         }
         Field::Opacity => layer.opacity = u8::try_from(to_u32(value, 255)).unwrap_or(u8::MAX),
         Field::CropLeft | Field::CropTop | Field::CropRight | Field::CropBottom => {
@@ -662,12 +1017,12 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
                 Field::CropRight => super::geometry::Edge::Right,
                 _ => super::geometry::Edge::Bottom,
             };
-            layer
-                .crop
-                .set(edge, to_u32(value, canvas.0.max(canvas.1)), canvas);
-            if let Some(mask) = layer.mask {
-                layer.mask = Some(mask.clamped(layer.crop.cropped(canvas)));
-            }
+            layer.crop.set_keeping(
+                edge,
+                to_u32(value, canvas.0.max(canvas.1)),
+                canvas,
+                mask_extent(layer.mask),
+            );
         }
         Field::MaskX | Field::MaskY | Field::MaskWidth | Field::MaskHeight => {
             let cropped = layer.crop.cropped(canvas);

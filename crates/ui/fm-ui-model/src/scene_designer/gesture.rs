@@ -14,15 +14,20 @@
 //!   put; Shift keeps the aspect ratio. The dragged handle snaps; Ctrl/Cmd
 //!   moves it freely.
 //! - **Rotate** (the handle above the top edge): the layer turns about its
-//!   centre; Shift steps the free angle by 15°. Stored layers hold whole
-//!   quarter turns, so the result is the nearest quarter turn.
+//!   anchor to any angle (to the millidegree); Shift steps it by 15°.
+//! - **Anchor** (Alt on the anchor handle, the centre by default; a plain
+//!   press there moves the layer): the scale and
+//!   rotation pivot moves within the layer, snapping to the centre, edges,
+//!   and corners (Ctrl/Cmd moves it freely); the layer stays put.
 //! - **Crop** (Alt on an edge handle): that edge's crop inset follows the
 //!   pointer in source pixels; the layer's box stays put.
 
 use fm_protocol::WireSceneLayerId;
 
 use super::document::{DesignLayer, EditLabel, SceneLayoutDocument};
-use super::geometry::{Edge, Handle, HitLayer, HitTarget, LayerPlacement, Point, hit_test};
+use super::geometry::{
+    ANCHOR_MAX, Edge, Handle, HitLayer, HitTarget, LayerPlacement, Point, hit_test,
+};
 use super::snapping::{Guide, SnapSettings, SnapTargets, snap_bounds, snap_point};
 
 /// The rotate step with Shift held, in degrees.
@@ -44,6 +49,7 @@ pub enum GestureKind {
     Move,
     Scale(Handle),
     Rotate,
+    Anchor,
     Crop(Edge),
 }
 
@@ -61,10 +67,27 @@ pub struct CanvasMetrics {
 /// A live readout of the gesture for the canvas.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Readout {
-    Position { x: i32, y: i32 },
-    Size { width: u32, height: u32 },
-    Angle { free: f64, stored: f64 },
-    Crop { edge: Edge, pixels: u32 },
+    Position {
+        x: i32,
+        y: i32,
+    },
+    Size {
+        width: u32,
+        height: u32,
+    },
+    Angle {
+        free: f64,
+        stored: f64,
+    },
+    /// The anchor, in percent of the layer's width and height.
+    Anchor {
+        x: f64,
+        y: f64,
+    },
+    Crop {
+        edge: Edge,
+        pixels: u32,
+    },
 }
 
 /// What the canvas draws over a running gesture.
@@ -98,8 +121,8 @@ impl SceneLayoutDocument {
     #[must_use]
     pub fn hit(&self, point: Point, metrics: CanvasMetrics) -> Option<HitTarget> {
         let layers: Vec<HitLayer> = self
-            .layers
-            .iter()
+            .draw_order()
+            .into_iter()
             .map(|layer| HitLayer {
                 id: layer.id,
                 frame: layer.placement.frame(),
@@ -130,11 +153,18 @@ impl SceneLayoutDocument {
         };
         let (layer, kind) = match target {
             HitTarget::Handle(layer, Handle::Rotate) => (layer, GestureKind::Rotate),
+            // The anchor sits on the body (the centre by default): Alt
+            // grabs it, a plain press moves the layer.
+            HitTarget::Handle(layer, Handle::Anchor) if modifiers.alt => {
+                (layer, GestureKind::Anchor)
+            }
             HitTarget::Handle(layer, Handle::Edge(edge)) if modifiers.alt => {
                 (layer, GestureKind::Crop(edge))
             }
+            HitTarget::Handle(layer, Handle::Anchor) | HitTarget::Body(layer) => {
+                (layer, GestureKind::Move)
+            }
             HitTarget::Handle(layer, handle) => (layer, GestureKind::Scale(handle)),
-            HitTarget::Body(layer) => (layer, GestureKind::Move),
         };
         let was_selected = self.is_selected(layer);
         if !was_selected {
@@ -149,12 +179,13 @@ impl SceneLayoutDocument {
             .layers
             .iter()
             .filter(|candidate| !moving.contains(&candidate.id) && candidate.enabled)
-            .map(|candidate| candidate.placement.footprint())
+            .map(|candidate| candidate.placement.frame().bounds())
             .collect();
         let label = match kind {
             GestureKind::Move => EditLabel::Move,
             GestureKind::Scale(_) => EditLabel::Scale,
             GestureKind::Rotate => EditLabel::Rotate,
+            GestureKind::Anchor => EditLabel::Anchor,
             GestureKind::Crop(_) => EditLabel::Crop,
         };
         self.begin(label);
@@ -192,6 +223,7 @@ impl SceneLayoutDocument {
             GestureKind::Move => self.drag_move(&gesture, point, modifiers),
             GestureKind::Scale(handle) => self.drag_scale(&gesture, handle, point, modifiers),
             GestureKind::Rotate => self.drag_rotate(&gesture, point, modifiers),
+            GestureKind::Anchor => self.drag_anchor(&gesture, point, modifiers),
             GestureKind::Crop(edge) => self.drag_crop(&gesture, edge, point),
         };
         self.gesture = Some(gesture);
@@ -240,8 +272,8 @@ impl SceneLayoutDocument {
         };
         let group = moving
             .iter()
-            .fold(first.placement.footprint(), |bounds, layer| {
-                bounds.union(layer.placement.footprint())
+            .fold(first.placement.frame().bounds(), |bounds, layer| {
+                bounds.union(layer.placement.frame().bounds())
             });
         let mut guides = Vec::new();
         if gesture.snapping && !modifiers.shift && !modifiers.command {
@@ -295,7 +327,7 @@ impl SceneLayoutDocument {
         let (sx, sy) = match handle {
             Handle::Corner(corner) => corner.signs(),
             Handle::Edge(edge) => edge.signs(),
-            Handle::Rotate => return GestureFeedback::default(),
+            Handle::Rotate | Handle::Anchor => return GestureFeedback::default(),
         };
         // The world axes the handle moves along.
         let along = |local: Point| {
@@ -349,11 +381,12 @@ impl SceneLayoutDocument {
                 anchor.y + sy * height / 2.0
             },
         );
-        let scaled = LayerPlacement::centred(
+        let scaled = LayerPlacement::framed(
             frame.to_world(centre_local),
             width,
             height,
-            placement.quarter_turns,
+            placement.rotation_millidegrees(),
+            (placement.anchor_x, placement.anchor_y),
         );
         self.set_placement(gesture.layer, scaled);
         GestureFeedback {
@@ -375,25 +408,68 @@ impl SceneLayoutDocument {
             return GestureFeedback::default();
         };
         let placement = origin.placement;
-        let centre = placement.footprint().centre();
-        let angle = |at: Point| (at.y - centre.y).atan2(at.x - centre.x).to_degrees();
+        let pivot = placement.anchor_point();
+        let angle = |at: Point| (at.y - pivot.y).atan2(at.x - pivot.x).to_degrees();
         let free = rotation_angle(
             placement.angle_degrees() + angle(point) - angle(gesture.start),
             modifiers.shift,
         );
-        let turns = quarter_turns(free);
-        let turned = LayerPlacement::centred(
-            centre,
+        let turned = LayerPlacement::pivoted(
+            pivot,
             f64::from(placement.width),
             f64::from(placement.height),
-            turns,
+            millidegrees(free),
+            (placement.anchor_x, placement.anchor_y),
         );
         self.set_placement(gesture.layer, turned);
         GestureFeedback {
             guides: Vec::new(),
             readout: Some(Readout::Angle {
                 free,
-                stored: f64::from(turns) * 90.0,
+                stored: turned.angle_degrees().rem_euclid(360.0),
+            }),
+        }
+    }
+
+    fn drag_anchor(
+        &mut self,
+        gesture: &ActiveGesture,
+        point: Point,
+        modifiers: GestureModifiers,
+    ) -> GestureFeedback {
+        let Some(origin) = Self::origin_of(gesture, gesture.layer) else {
+            return GestureFeedback::default();
+        };
+        let placement = origin.placement;
+        let frame = placement.frame();
+        let local = frame.to_local(point);
+        let max = f64::from(ANCHOR_MAX);
+        let snap = |offset: f64, half: f64| {
+            let share = (offset / (half * 2.0) + 0.5).clamp(0.0, 1.0);
+            if gesture.snapping && !modifiers.command {
+                let tolerance = gesture.metrics.snap_distance / (half * 2.0);
+                for target in [0.0, 0.5, 1.0] {
+                    if (share - target).abs() <= tolerance {
+                        return target;
+                    }
+                }
+            }
+            share
+        };
+        let share_x = snap(local.x, frame.half_width);
+        let share_y = snap(local.y, frame.half_height);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // In 0..=ANCHOR_MAX.
+        let anchor = (
+            (share_x * max).round() as u16,
+            (share_y * max).round() as u16,
+        );
+        let anchored = placement.reanchored(anchor);
+        self.set_placement(gesture.layer, anchored);
+        GestureFeedback {
+            guides: Vec::new(),
+            readout: Some(Readout::Anchor {
+                x: f64::from(anchor.0) / 100.0,
+                y: f64::from(anchor.1) / 100.0,
             }),
         }
     }
@@ -426,16 +502,21 @@ impl SceneLayoutDocument {
             .round()
             .clamp(0.0, f64::from(canvas.0.max(canvas.1))) as u32;
         let mut crop = origin.crop;
-        crop.set(edge, value, canvas);
+        // A crop never cuts into the mask (shrink the mask first), so the
+        // gesture changes the crop alone.
+        let least = origin.mask.map_or((1, 1), |mask| {
+            (
+                mask.x.saturating_add(mask.width),
+                mask.y.saturating_add(mask.height),
+            )
+        });
+        crop.set_keeping(edge, value, canvas, least);
         if let Some(layer) = self
             .layers
             .iter_mut()
             .find(|layer| layer.id == gesture.layer)
         {
             layer.crop = crop;
-            if let Some(mask) = origin.mask {
-                layer.mask = Some(mask.clamped(crop.cropped(canvas)));
-            }
         }
         GestureFeedback {
             guides: Vec::new(),
@@ -462,6 +543,13 @@ pub fn rotation_angle(degrees: f64, stepped: bool) -> f64 {
     } else {
         normalized
     }
+}
+
+/// A clockwise angle in degrees as whole millidegrees.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // Clamped first.
+pub fn millidegrees(degrees: f64) -> i64 {
+    (degrees * 1_000.0).round().clamp(-1.0e15, 1.0e15) as i64
 }
 
 /// The quarter turn nearest a clockwise angle.

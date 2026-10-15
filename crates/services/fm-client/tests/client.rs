@@ -2395,6 +2395,12 @@ mod scene_animation {
                     quarter_turns: 0,
                     opacity: 255,
                     enabled: true,
+                    tilt_millidegrees: 0,
+                    anchor_x: 5_000,
+                    anchor_y: 5_000,
+                    z_order: 0,
+                    crop: None,
+                    mask: None,
                     source: fm_protocol::WireSceneLayerSource::Input(input(3)),
                 }],
             }),
@@ -2497,6 +2503,84 @@ mod scene_animation {
             matches!(
                 error,
                 ClientError::Model(fm_ui_model::ModelError::InvalidSceneChange(_))
+            ),
+            "{error:?}"
+        );
+    }
+
+    /// SW-006, Protocol 2.39: a live layer edit's `scene_layout_changed`
+    /// replaces the scene's replicated layout everywhere it is shown, and
+    /// a change for a scene without a replicated layout is refused.
+    #[test]
+    fn scene_layout_changes_replace_the_replicated_layout() {
+        let mut client = synchronizing_client();
+        for shown_by in [1, 2] {
+            client
+                .intake(WireMessage::SceneAnimationState(animation(4, shown_by)))
+                .unwrap();
+        }
+        for id in [SHOWN, SPARE] {
+            client
+                .intake(WireMessage::SceneLayoutState(layout(4, id)))
+                .unwrap();
+        }
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let mut edited = (*layout(4, SHOWN).layout).clone();
+        let geometry = fm_protocol::WireLayerGeometry {
+            x: 100,
+            y: 60,
+            width: 640,
+            height: 360,
+            quarter_turns: 1,
+            tilt_millidegrees: -2_500,
+            anchor_x: 0,
+            anchor_y: 10_000,
+        };
+        edited.layers[0].set_geometry(geometry);
+        edited.layers[0].z_order = 4;
+        let edit = fm_protocol::SceneLayerEdit {
+            scene: scene(SHOWN),
+            layer: layer(1),
+            operation: fm_protocol::SceneLayerOperation::SetGeometry(geometry),
+            continues: true,
+        };
+        let change = |revision: u64, edit: fm_protocol::SceneLayerEdit| EventMessage {
+            edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            cursor: EventCursor {
+                engine: engine(),
+                revision,
+            },
+            payload: EventPayload::SceneLayoutChanged {
+                edit,
+                layout: Box::new(edited.clone()),
+            },
+        };
+        client.apply_event(change(5, edit.clone())).unwrap();
+        let state = client.model().state().unwrap();
+        for shown_by in [1, 2] {
+            let shown = state.scene(input(shown_by).to_domain()).unwrap();
+            assert_eq!(shown.layout.as_deref(), Some(&edited));
+        }
+        let entry = state.scene_layout(scene(SHOWN).to_domain()).unwrap();
+        assert_eq!(entry.layout.as_deref(), Some(&edited));
+        assert_eq!(entry.name, "Scene 10");
+        let spare = state.scene_layout(scene(SPARE).to_domain()).unwrap();
+        assert_eq!(spare.layout.as_deref(), Some(&*layout(4, SPARE).layout));
+
+        // A scene the client has no layout for is a mismatch.
+        let error = client
+            .apply_event(change(
+                6,
+                fm_protocol::SceneLayerEdit {
+                    scene: scene(12),
+                    ..edit
+                },
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ClientError::Model(fm_ui_model::ModelError::SceneLayoutMismatch(_))
             ),
             "{error:?}"
         );

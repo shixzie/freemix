@@ -227,7 +227,9 @@ fn dragging_a_layer_on_the_canvas_moves_it_as_one_draft_step() {
     let document = shell.designer.document().unwrap();
     assert_eq!(document.selection(), &[layer(1)]);
     assert_eq!(document.undo_label(), Some(EditLabel::Move));
+    // Sent live; the draft leads until the server's layout follows.
     assert!(document.is_dirty());
+    assert!(!document.has_unsent());
     // The guides and readout clear on release.
     assert!(shell.designer.feedback.readout.is_none());
 }
@@ -448,10 +450,21 @@ fn the_canvas_shows_the_scenes_exact_picture_paced_and_held_during_drags() {
     assert_eq!(scene_previews(&none).len(), 0);
 }
 
+/// The live scene layer edits among `intents`.
+fn layer_edits(intents: &[StudioIntent]) -> Vec<fm_protocol::SceneLayerEdit> {
+    intents
+        .iter()
+        .filter_map(|intent| match intent {
+            StudioIntent::SceneLayer(edit) => Some(edit.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn the_draft_never_reaches_the_server_as_commands() {
-    const { assert!(!LIVE_LAYER_EDITS) };
-    let (mut driver, mut shell, state, _) = opened(true, false);
+fn a_drag_sends_paced_live_edits_that_continue_one_server_undo_step() {
+    const { assert!(LIVE_LAYER_EDITS) };
+    let (mut driver, mut shell, state, scene) = opened(true, false);
     let from = on_canvas(&shell, 480.0, 540.0);
     let intents = driver.drag(
         &mut shell,
@@ -460,22 +473,98 @@ fn the_draft_never_reaches_the_server_as_commands() {
         from + vec2(60.0, 0.0),
         Modifiers::NONE,
     );
-    assert!(
-        intents
-            .iter()
-            .all(|intent| matches!(intent, StudioIntent::ScenePreview(_))),
-        "{intents:?}"
+    let edits = layer_edits(&intents);
+    // The drag's frames are 50 ms apart and sends at most every 80 ms:
+    // fewer sends than moves, the last one at the release.
+    assert!(edits.len() >= 2 && edits.len() < 9, "{edits:?}");
+    assert!(!edits[0].continues);
+    assert!(edits[1..].iter().all(|edit| edit.continues));
+    for edit in &edits {
+        assert_eq!(edit.scene, fm_protocol::WireSceneId::from_domain(scene));
+        assert_eq!(edit.layer, layer(1));
+        assert!(matches!(
+            edit.operation,
+            fm_protocol::SceneLayerOperation::SetGeometry(_)
+        ));
+    }
+    let moved = placement(&shell, 1);
+    assert_eq!(
+        edits.last().unwrap().operation,
+        fm_protocol::SceneLayerOperation::SetGeometry(fm_ui_model::scene_designer::wire_geometry(
+            moved
+        ))
     );
+    // Nothing more is sent once the drag is over.
+    let idle = driver.frame(&mut shell, &state, Vec::new());
+    assert_eq!(layer_edits(&idle).len(), 0);
+    assert!(!shell.designer.document().unwrap().has_unsent());
+
+    // A typed value is sent at once, as a new step.
+    let document = shell.designer.document_mut().unwrap();
+    document.select(layer(2), false);
+    document.set_field(fm_ui_model::scene_designer::Field::Opacity, 128.0);
+    let typed = layer_edits(&driver.frame(&mut shell, &state, Vec::new()));
+    assert_eq!(typed.len(), 1);
+    assert!(!typed[0].continues);
+    assert_eq!(
+        typed[0].operation,
+        fm_protocol::SceneLayerOperation::SetAppearance {
+            enabled: true,
+            opacity: 128,
+        }
+    );
+
+    // The secondary export copies the whole layout as offline commands.
     let script = shell
         .designer
         .document()
         .unwrap()
-        .cli_script(PROJECT_PLACEHOLDER);
+        .layout_script(PROJECT_PLACEHOLDER);
     assert!(script.starts_with("freemix-cli scene-layer-geometry '<show.freemix>' 30 0 "));
     shell.set_project_path(Some("/shows/evening.freemix".into()));
     assert_eq!(
         shell.designer.project_path.as_deref(),
         Some("/shows/evening.freemix")
+    );
+}
+
+#[test]
+fn a_padlocked_draft_sends_nothing() {
+    let (mut driver, mut shell, state, _) = opened(true, true);
+    let document = shell.designer.document_mut().unwrap();
+    document.select(layer(1), false);
+    document.set_field(fm_ui_model::scene_designer::Field::X, 40.0);
+    let intents = driver.frame(&mut shell, &state, Vec::new());
+    assert_eq!(layer_edits(&intents).len(), 0);
+    assert!(!shell.designer.document().unwrap().is_dirty());
+}
+
+#[test]
+fn closing_mid_drag_sends_the_layer_back() {
+    let (mut driver, mut shell, state, _) = opened(true, false);
+    let from = on_canvas(&shell, 480.0, 540.0);
+    driver.frame(&mut shell, &state, vec![Event::PointerMoved(from)]);
+    driver.frame(&mut shell, &state, vec![press(from, true, Modifiers::NONE)]);
+    let mut sent = Vec::new();
+    for step in 1..=4_u8 {
+        let at = from + vec2(20.0 * f32::from(step), 0.0);
+        sent.extend(layer_edits(&driver.frame(
+            &mut shell,
+            &state,
+            vec![Event::PointerMoved(at)],
+        )));
+    }
+    assert_ne!(sent.len(), 0);
+    let chord = Modifiers::COMMAND | Modifiers::SHIFT;
+    let closed = layer_edits(&driver.frame_held(&mut shell, &state, key(Key::L, chord), chord));
+    // The cancel continues the gesture back to where it started.
+    let last = closed.last().expect("the cancelled drag is put back");
+    assert!(last.continues);
+    assert_eq!(
+        last.operation,
+        fm_protocol::SceneLayerOperation::SetGeometry(fm_ui_model::scene_designer::wire_geometry(
+            fm_ui_model::scene_designer::geometry::LayerPlacement::new(0, 270, 960, 540, 0)
+        ))
     );
 }
 

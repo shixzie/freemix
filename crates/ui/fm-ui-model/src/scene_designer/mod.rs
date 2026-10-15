@@ -8,22 +8,21 @@
 //!   the guides a snapped result lines up with.
 //! - [`gesture`]: press, drag, and release on the canvas: move (the whole
 //!   selection), scale (corner or edge, Shift keeps the aspect), rotate
-//!   (Shift steps 15°), and crop (Alt on an edge), one undo step each.
+//!   about the anchor to any angle (Shift steps 15°), move the anchor, and
+//!   crop (Alt on an edge), one undo step each.
 //! - [`SceneLayoutDocument`]: the server's layout, the operator's draft
-//!   over it, the selection, field edits, stacking order, and the draft's
-//!   undo history.
-//! - [`SceneLayerEdit`]: the draft as the existing scene layer edit
-//!   commands, by zero-based layer index.
+//!   over it, the selection, field edits, stacking order, the draft's
+//!   undo history, and the live edits it sends.
+//! - [`SceneLayerEdit`]: the layout as offline scene layer edit commands,
+//!   by zero-based layer index (the secondary `freemix-cli` export).
 //! - [`preview`]: pacing of exact `scene_preview_request`s.
 //!
-//! The protocol carries a scene's layout only in snapshots
-//! (`scene_layout_state`) and has no live scene layer edit command, so a
-//! draft cannot be sent to a running server ([`LIVE_LAYER_EDITS`]). The
-//! designer keeps it locally and hands it over as the equivalent
-//! `freemix-cli scene-layer-*` commands. The replicated layout also omits
-//! each layer's crop, mask, and z-order, so the draft starts those as
-//! uncropped, unmasked, and stacked in list order, and only edits the
-//! operator makes to them become commands.
+//! The replicated layout (`scene_layout_state`, `scene_layout_changed`)
+//! carries every layer's geometry (quarter turns, tilt, and anchor), crop,
+//! mask, and z-order, and a running server takes live `scene_layer_*`
+//! edits (Protocol 2.39, [`LIVE_LAYER_EDITS`]): the designer sends the
+//! draft while a gesture runs, paced by the window, and the server's undo
+//! takes back a whole gesture of one layer at once.
 
 mod document;
 mod edits;
@@ -38,13 +37,15 @@ use core::hash::{Hash, Hasher};
 
 use fm_protocol::{WireSceneLayerSource, WireSceneLayout};
 
-pub use document::{DesignLayer, EditLabel, Field, MAX_UNDO_STEPS, SceneLayoutDocument};
+pub use document::{
+    DesignLayer, EditLabel, Field, MAX_UNDO_STEPS, SceneLayoutDocument, wire_geometry,
+};
 pub use edits::SceneLayerEdit;
 
-/// Whether a running server accepts live scene layer edits. The protocol
-/// has no scene layer edit command yet, so a draft is applied offline with
-/// `freemix-cli` (see [`SceneLayoutDocument::cli_script`]).
-pub const LIVE_LAYER_EDITS: bool = false;
+/// Whether a running server accepts live scene layer edits (Protocol
+/// 2.39): the designer sends its draft as `scene_layer_*` commands
+/// ([`SceneLayoutDocument::take_live_edits`]).
+pub const LIVE_LAYER_EDITS: bool = true;
 
 /// A stamp that changes whenever `layout` does, for preview pacing.
 #[must_use]
@@ -66,6 +67,19 @@ pub fn layout_stamp(layout: &WireSceneLayout) -> u64 {
             layer.quarter_turns,
             layer.opacity,
             layer.enabled,
+        )
+            .hash(&mut hasher);
+        (
+            layer.tilt_millidegrees,
+            layer.anchor_x,
+            layer.anchor_y,
+            layer.z_order,
+            layer
+                .crop
+                .map(|crop| (crop.x, crop.y, crop.width, crop.height)),
+            layer
+                .mask
+                .map(|mask| (mask.x, mask.y, mask.width, mask.height, mask.invert)),
         )
             .hash(&mut hasher);
     }

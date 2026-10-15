@@ -1449,6 +1449,7 @@ impl Client {
             | CommandPayload::SetTransitionFavorite { .. }
             | CommandPayload::Media { .. }
             | CommandPayload::InputLifecycle(_)
+            | CommandPayload::SceneLayer(_)
             | CommandPayload::Stinger { .. }
             | CommandPayload::ConfigureStinger { .. }
             | CommandPayload::RemoveStinger { .. }

@@ -7,6 +7,7 @@ mod playlist;
 mod project;
 mod resolve;
 mod scene_animation;
+mod scene_layer_edit;
 mod stream;
 mod title;
 mod transition_favorite;
@@ -52,16 +53,16 @@ pub use project::{
     AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DuplicateInputError,
     DuplicateSceneInputError, Input, InputAudioStrip, InputAudioStripState,
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, InputReference, Layer,
-    LayerEffect, LayerEffectError, LayerGeometry, MainMix, MixFeed, Output, OutputFormat, Project,
-    ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RecorderSlotError, RectMask,
-    RelinkMediaInputError, RemoveAudioBusError, RemoveInputError, RemoveOutputError,
+    LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry, MainMix, MixFeed, Output,
+    OutputFormat, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RecorderSlotError,
+    RectMask, RelinkMediaInputError, RemoveAudioBusError, RemoveInputError, RemoveOutputError,
     RemoveSceneError, RemoveStreamTargetError, RenameAudioBusError, RenameOutputError,
     RenameProjectError, RenameSceneError, ReplaceInputError, RestartPolicy, Rgba8, Rotation, Scene,
     SceneInputAudioSourceError, SceneLayerError, SchemaVersion, SetInputLockError,
     SetOutputRouteError, SetOutputStartupError, SetSceneAnimationError, SetSceneBackgroundError,
-    SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
-    StartupPolicy, StingerAudioPolicy, StingerConfig, StingerMissingMediaFallback,
-    StingerSlotNumber, UpdateStreamTargetError,
+    SetSceneLayersError, SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo,
+    SolidColor, SourceRef, StartupPolicy, StingerAudioPolicy, StingerConfig,
+    StingerMissingMediaFallback, StingerSlotNumber, UpdateStreamTargetError,
 };
 pub use resolve::{
     AudioRoute, FrameContext, LayerSource, MixFeedHistory, MixSelection, RenderSource,
@@ -69,8 +70,9 @@ pub use resolve::{
 };
 pub use scene_animation::{
     LayerId, LayerPose, SCENE_ANIMATION_PROPERTIES, SceneAnimation, SceneAnimationError, SceneClip,
-    apply_pose, default_scene_timebase, footprint, pose_layer, scene_animates,
+    apply_pose, default_scene_timebase, footprint, pose_layer, resolve_anchor, scene_animates,
 };
+pub use scene_layer_edit::{SceneLayerChange, SceneLayerEditError, check_scene_layer};
 pub use stream::{
     DEFAULT_VIDEO_BITRATE_KBPS, MAX_STREAM_ENDPOINT_BYTES, MAX_STREAM_KEY_BYTES,
     MAX_STREAM_LADDER_HEIGHT, MAX_STREAM_LADDER_RUNGS, MAX_STREAM_LADDER_WIDTH,

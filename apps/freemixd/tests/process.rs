@@ -3866,6 +3866,142 @@ fn scene_layer_grades_colour_the_scene_and_survive_restart() {
     daemon.stop();
 }
 
+/// SW-006, Protocol 2.39 end to end on the simulated path: a live scene
+/// layer edit moves, tilts and re-anchors the layer a Scene input shows on
+/// Program, is replicated as `scene_layout_changed` with the scene's whole
+/// layout, changes the Program monitor picture, and after a restart the
+/// snapshot's `scene_layout_state` carries the edited layer and the
+/// monitor renders the same picture.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn scene_layer_edits_change_the_monitor_and_survive_restart() {
+    use fm_protocol::{
+        MonitorTap, SceneLayerEdit, SceneLayerOperation, WireLayerGeometry, WireSceneId,
+        WireSceneLayerId,
+    };
+
+    fn corner(image: &fm_protocol::MonitorImage) -> [u8; 4] {
+        // Monitor (5, 5) is project (15, 15): inside layer 2 before the
+        // edit (input 1), on the black scene background after it.
+        let offset = (5 * usize::from(image.width) + 5) * 4;
+        image.rgba[offset..offset + 4].try_into().unwrap()
+    }
+
+    let directory = TestDirectory::new("layer-edits");
+    let project_path = directory.project_path();
+    create_scene_program_project(&project_path);
+    let scene = WireSceneId::from_domain(scene_id(1));
+    let layer = WireSceneLayerId::new(NonZeroU32::new(2).unwrap());
+    let geometry = WireLayerGeometry {
+        x: 400,
+        y: 200,
+        width: 1_280,
+        height: 720,
+        quarter_turns: 0,
+        tilt_millidegrees: 10_000,
+        anchor_x: 0,
+        anchor_y: 0,
+    };
+
+    let edited = {
+        let daemon = Daemon::start_without_once(&project_path);
+        let (mut monitor, _) = GradedMonitor::connect(&daemon, Role::Graphics);
+        monitor.image(MonitorTap::Program, "unedited scene", |image| {
+            corner(image) == [12, 34, 56, 255]
+        });
+
+        monitor.client.send(&command(
+            "layer",
+            "layer-key",
+            CommandPayload::SceneLayer(SceneLayerEdit {
+                scene,
+                layer,
+                operation: SceneLayerOperation::SetGeometry(geometry),
+                continues: false,
+            }),
+        ));
+        // Monitor parts keep feeding their assemblers, so no group is torn.
+        let assemblers = &mut monitor.assemblers;
+        let (edit, layout) = receive_within(
+            &mut monitor.client,
+            Duration::from_secs(10),
+            "scene layout change",
+            |message| match message {
+                WireMessage::Event(event) => match event.payload {
+                    EventPayload::SceneLayoutChanged { edit, layout } => Some((edit, layout)),
+                    _ => None,
+                },
+                WireMessage::MonitorFrame(part) => {
+                    assemblers[part.tap.index()].push(&part).unwrap();
+                    None
+                }
+                _ => None,
+            },
+        );
+        assert_eq!(edit.scene, scene);
+        assert_eq!(edit.layer, layer);
+        assert_eq!(layout.layers.len(), 1);
+        assert_eq!(layout.layers[0].geometry(), geometry);
+        let program = monitor.image(MonitorTap::Program, "moved scene layer", |image| {
+            corner(image) == [0, 0, 0, 255]
+        });
+        drop(monitor);
+        daemon.stop();
+        program.rgba
+    };
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Graphics,
+        resume_cursor: None,
+    }));
+    assert!(matches!(
+        client.receive(),
+        WireMessage::HandshakeResponse(_)
+    ));
+    let WireMessage::Snapshot(snapshot) = client.receive() else {
+        panic!("expected snapshot");
+    };
+    assert_eq!(snapshot.layout_scenes, [scene]);
+    let mut monitor = GradedMonitor {
+        client,
+        assemblers: [
+            fm_protocol::MonitorFrameAssembler::new(),
+            fm_protocol::MonitorFrameAssembler::new(),
+        ],
+    };
+    let assemblers = &mut monitor.assemblers;
+    let restored = receive_within(
+        &mut monitor.client,
+        Duration::from_secs(10),
+        "restored scene layout",
+        |message| match message {
+            WireMessage::SceneLayoutState(state) => Some(state),
+            WireMessage::MonitorFrame(part) => {
+                assemblers[part.tap.index()].push(&part).unwrap();
+                None
+            }
+            _ => None,
+        },
+    );
+    assert_eq!(restored.scene, scene);
+    assert_eq!(restored.layout.layers[0].geometry(), geometry);
+    monitor.image(MonitorTap::Program, "restored layer edit", |image| {
+        corner(image) == [0, 0, 0, 255] && image.rgba == edited
+    });
+    drop(monitor);
+    daemon.stop();
+}
+
 const TITLE_TEMPLATE_KEY: &str = "titles/process-title.fmtitle";
 
 /// The stored template of the process title: one rectangle at (200, 100)
@@ -5150,11 +5286,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.38.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 38));
+    // The previous protocol is refused; the current one is 2.39.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 39));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 37),
+        protocol: ProtocolVersion::new(2, 38),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5170,7 +5306,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 38)
+        ProtocolVersion::new(2, 39)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

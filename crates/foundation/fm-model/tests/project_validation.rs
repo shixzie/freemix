@@ -4,7 +4,7 @@ use fm_model::{
     AddInputError, AddSceneInputError, AddSceneLayerError, AddStreamTargetError, AudioBus, BusSend,
     CURRENT_SCHEMA_VERSION, CropRect, DEFAULT_VIDEO_BITRATE_KBPS, DuplicateSceneInputError,
     EntityRef, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
-    InputGainMilliDb, InputKind, Layer, LayerEffect, LayerEffectError, LayerGeometry,
+    InputGainMilliDb, InputKind, Layer, LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry,
     MAX_STREAM_ENDPOINT_BYTES, MAX_STREAM_LADDER_HEIGHT, MAX_STREAM_LADDER_RUNGS,
     MAX_STREAM_LADDER_WIDTH, MAX_VIDEO_BITRATE_KBPS, MIN_STREAM_LADDER_DIMENSION,
     MIN_STREAM_LADDER_RUNGS, MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project,
@@ -269,18 +269,26 @@ fn scene_layer_geometry_checked_validation_is_atomic() {
         );
         assert_eq!(project, before);
     }
-    // Tilts are posed only, never stored.
-    assert_eq!(
-        project.set_scene_layer_geometry(
-            scene,
-            0,
-            LayerGeometry::new(1, 2, 100, 100, Rotation::Deg0).with_tilt(1)
-        ),
-        Err(SceneLayerError::InvalidGeometry { scene, index: 0 })
-    );
-    assert_eq!(project, before);
+    // A stored tilt stays below half a quarter turn either way, and the
+    // anchor within the box.
+    for geometry in [
+        LayerGeometry::new(1, 2, 100, 100, Rotation::Deg0).with_tilt(45_000),
+        LayerGeometry::new(1, 2, 100, 100, Rotation::Deg0).with_tilt(-45_001),
+        LayerGeometry::new(1, 2, 100, 100, Rotation::Deg0)
+            .with_anchor(LayerAnchor::new(LayerAnchor::MAX + 1, 0)),
+        LayerGeometry::new(1, 2, 100, 100, Rotation::Deg0)
+            .with_anchor(LayerAnchor::new(0, LayerAnchor::MAX + 1)),
+    ] {
+        assert_eq!(
+            project.set_scene_layer_geometry(scene, 0, geometry),
+            Err(SceneLayerError::InvalidGeometry { scene, index: 0 })
+        );
+        assert_eq!(project, before);
+    }
 
-    let geometry = LayerGeometry::new(-12, 34, 640, 480, Rotation::Deg270);
+    let geometry = LayerGeometry::new(-12, 34, 640, 480, Rotation::Deg270)
+        .with_tilt(-45_000)
+        .with_anchor(LayerAnchor::new(0, LayerAnchor::MAX));
     project
         .set_scene_layer_geometry(scene, 0, geometry)
         .unwrap();
@@ -2597,9 +2605,9 @@ fn scene_composition_value_bounds_and_premultiplication_are_validated() {
         assert!(errors.iter().any(|error| error.field == field));
     }
 
-    // A stored layer is never tilted.
+    // A stored tilt is below half a quarter turn.
     let mut tilted = layer("Source", SourceRef::Input(input_id(1)));
-    tilted.geometry = tilted.geometry.with_tilt(5_000);
+    tilted.geometry = tilted.geometry.with_tilt(45_000);
     let mut project = Project::new(project_id(12), "Tilted", settings());
     project.add_input(Input {
         id: input_id(1),

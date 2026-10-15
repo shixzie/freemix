@@ -2,11 +2,13 @@
 //! handles, and hit-testing.
 //!
 //! A stored layer is a `width` x `height` box turned clockwise by whole
-//! quarter turns, its on-screen footprint's top-left at `(x, y)`
-//! ([`LayerPlacement`]). The handle math works on a [`LayerFrame`]: the
-//! same box about its centre at any angle, so every handle, the pointer's
-//! position in the layer's own axes, and hit-testing are exact for any
-//! rotation (a quarter turn is just one angle among others).
+//! quarter turns, its quarter-turned footprint's top-left at `(x, y)`, then
+//! tilted by up to half a quarter turn either way about its anchor (a point
+//! of the box in basis points, the centre by default) ([`LayerPlacement`]),
+//! exactly as the compositor draws it. The handle math works on a
+//! [`LayerFrame`]: the drawn box about its centre at its whole angle, so
+//! every handle, the pointer's position in the layer's own axes, and
+//! hit-testing are exact for any rotation.
 
 use fm_protocol::WireSceneLayerId;
 
@@ -111,8 +113,35 @@ impl Bounds {
 /// Largest stored layer side, matching the project video limit.
 pub const MAX_LAYER_SIDE: u32 = fm_protocol::MAX_SCENE_CANVAS_SIDE;
 
+/// The far edge of an anchor coordinate, in basis points.
+pub const ANCHOR_MAX: u16 = fm_protocol::SCENE_LAYER_ANCHOR_MAX;
+/// The centre, in basis points: the default anchor.
+pub const ANCHOR_CENTER: u16 = fm_protocol::SCENE_LAYER_ANCHOR_CENTER;
+/// The stored tilt range, in millidegrees (`MIN..MAX`).
+pub const MIN_TILT_MILLIDEGREES: i32 = fm_protocol::MIN_SCENE_LAYER_TILT_MILLIDEGREES;
+pub const MAX_TILT_MILLIDEGREES: i32 = fm_protocol::MAX_SCENE_LAYER_TILT_MILLIDEGREES;
+
+/// A clockwise angle in millidegrees as the nearest quarter turn (`0..=3`,
+/// halves rounding up) and the remaining tilt in
+/// [`MIN_TILT_MILLIDEGREES`]`..`[`MAX_TILT_MILLIDEGREES`], as the server
+/// stores it.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Reduced first.
+pub const fn split_millidegrees(millidegrees: i64) -> (u8, i32) {
+    let turn = millidegrees.rem_euclid(360_000);
+    let quarters = (turn + 45_000).div_euclid(90_000);
+    ((quarters % 4) as u8, (turn - quarters * 90_000) as i32)
+}
+
+/// `point` turned clockwise (y down) by `degrees`.
+fn turned(point: Point, degrees: f64) -> Point {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    Point::new(point.x * cos - point.y * sin, point.x * sin + point.y * cos)
+}
+
 /// A stored layer's placement: its unturned size, its clockwise quarter
-/// turns, and the top-left of its on-screen footprint.
+/// turns, the top-left of its quarter-turned footprint, its tilt, and its
+/// anchor (the scale and rotation pivot).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LayerPlacement {
     pub x: i32,
@@ -121,9 +150,18 @@ pub struct LayerPlacement {
     pub height: u32,
     /// Clockwise quarter turns, `0..=3`.
     pub quarter_turns: u8,
+    /// Clockwise tilt past the quarter turns, millidegrees, in
+    /// [`MIN_TILT_MILLIDEGREES`]`..`[`MAX_TILT_MILLIDEGREES`]; it turns the
+    /// box about its anchor.
+    pub tilt_millidegrees: i32,
+    /// The anchor in basis points of the unturned box from its top-left,
+    /// each `0..=`[`ANCHOR_MAX`].
+    pub anchor_x: u16,
+    pub anchor_y: u16,
 }
 
 impl LayerPlacement {
+    /// A quarter-turned placement with no tilt, anchored at its centre.
     #[must_use]
     pub const fn new(x: i32, y: i32, width: u32, height: u32, quarter_turns: u8) -> Self {
         Self {
@@ -132,7 +170,139 @@ impl LayerPlacement {
             width,
             height,
             quarter_turns: quarter_turns % 4,
+            tilt_millidegrees: 0,
+            anchor_x: ANCHOR_CENTER,
+            anchor_y: ANCHOR_CENTER,
         }
+    }
+
+    /// The placement tilted by `millidegrees` (clamped to the stored range).
+    #[must_use]
+    pub const fn with_tilt(mut self, millidegrees: i32) -> Self {
+        self.tilt_millidegrees = if millidegrees < MIN_TILT_MILLIDEGREES {
+            MIN_TILT_MILLIDEGREES
+        } else if millidegrees >= MAX_TILT_MILLIDEGREES {
+            MAX_TILT_MILLIDEGREES - 1
+        } else {
+            millidegrees
+        };
+        self
+    }
+
+    /// The placement anchored at (`x`, `y`) basis points (clamped).
+    #[must_use]
+    pub const fn with_anchor(mut self, x: u16, y: u16) -> Self {
+        self.anchor_x = if x > ANCHOR_MAX { ANCHOR_MAX } else { x };
+        self.anchor_y = if y > ANCHOR_MAX { ANCHOR_MAX } else { y };
+        self
+    }
+
+    /// The whole clockwise rotation in millidegrees, `-45_000..315_000`.
+    #[must_use]
+    pub const fn rotation_millidegrees(self) -> i64 {
+        (self.quarter_turns % 4) as i64 * 90_000 + self.tilt_millidegrees as i64
+    }
+
+    /// The anchor's offset from the box centre along the unturned axes,
+    /// pixels, for a `width` x `height` box.
+    fn anchor_offset_for(self, width: f64, height: f64) -> Point {
+        let max = f64::from(ANCHOR_MAX);
+        Point::new(
+            (f64::from(self.anchor_x) / max - 0.5) * width,
+            (f64::from(self.anchor_y) / max - 0.5) * height,
+        )
+    }
+
+    /// The anchor's offset from the box centre along the unturned axes.
+    #[must_use]
+    pub fn anchor_offset(self) -> Point {
+        self.anchor_offset_for(f64::from(self.width), f64::from(self.height))
+    }
+
+    /// Where the anchor sits on the canvas: the point turning and zooming
+    /// keep still.
+    #[must_use]
+    pub fn anchor_point(self) -> Point {
+        let centre = self.footprint().centre();
+        let offset = turned(
+            self.anchor_offset(),
+            f64::from(self.quarter_turns % 4) * 90.0,
+        );
+        Point::new(centre.x + offset.x, centre.y + offset.y)
+    }
+
+    /// The placement of a `width` x `height` box turned clockwise by
+    /// `millidegrees` and anchored at `anchor` (basis points) whose anchor
+    /// sits at `pivot`, rounded to whole pixels (each side at least one
+    /// pixel and at most [`MAX_LAYER_SIDE`]).
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped first.
+    pub fn pivoted(
+        pivot: Point,
+        width: f64,
+        height: f64,
+        millidegrees: i64,
+        anchor: (u16, u16),
+    ) -> Self {
+        let side = |value: f64| value.round().clamp(1.0, f64::from(MAX_LAYER_SIDE)) as u32;
+        let (quarter_turns, tilt) = split_millidegrees(millidegrees);
+        let mut placement = Self::new(0, 0, side(width), side(height), quarter_turns)
+            .with_tilt(tilt)
+            .with_anchor(anchor.0, anchor.1);
+        let offset = turned(placement.anchor_offset(), f64::from(quarter_turns) * 90.0);
+        let (footprint_width, footprint_height) = placement.footprint_size();
+        let coordinate = |value: f64| {
+            value
+                .round()
+                .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+        };
+        placement.x = coordinate(pivot.x - offset.x - f64::from(footprint_width) / 2.0);
+        placement.y = coordinate(pivot.y - offset.y - f64::from(footprint_height) / 2.0);
+        placement
+    }
+
+    /// The placement whose drawn box is centred on `centre`, `width` x
+    /// `height`, turned clockwise by `millidegrees`, and anchored at
+    /// `anchor`, rounded like [`Self::pivoted`].
+    #[must_use]
+    pub fn framed(
+        centre: Point,
+        width: f64,
+        height: f64,
+        millidegrees: i64,
+        anchor: (u16, u16),
+    ) -> Self {
+        #[allow(clippy::cast_precision_loss)] // Angles are far below 2^52.
+        let degrees = millidegrees as f64 / 1_000.0;
+        let probe = Self::new(0, 0, 1, 1, 0).with_anchor(anchor.0, anchor.1);
+        let offset = turned(
+            probe.anchor_offset_for(
+                width.round().clamp(1.0, f64::from(MAX_LAYER_SIDE)),
+                height.round().clamp(1.0, f64::from(MAX_LAYER_SIDE)),
+            ),
+            degrees,
+        );
+        Self::pivoted(
+            Point::new(centre.x + offset.x, centre.y + offset.y),
+            width,
+            height,
+            millidegrees,
+            anchor,
+        )
+    }
+
+    /// The same drawn box anchored at `anchor` instead (the box stays put,
+    /// up to whole-pixel rounding).
+    #[must_use]
+    pub fn reanchored(self, anchor: (u16, u16)) -> Self {
+        let frame = self.frame();
+        Self::framed(
+            frame.centre,
+            f64::from(self.width),
+            f64::from(self.height),
+            self.rotation_millidegrees(),
+            anchor,
+        )
     }
 
     /// The footprint's size on the canvas: a quarter turn swaps the sides.
@@ -154,20 +324,25 @@ impl LayerPlacement {
         Bounds::new(left, top, left + f64::from(width), top + f64::from(height))
     }
 
-    /// The clockwise rotation in degrees.
+    /// The whole clockwise rotation in degrees.
     #[must_use]
     pub fn angle_degrees(self) -> f64 {
-        f64::from(self.quarter_turns % 4) * 90.0
+        f64::from(self.quarter_turns % 4) * 90.0 + f64::from(self.tilt_millidegrees) / 1_000.0
     }
 
-    /// The placement as a turned frame about its centre.
+    /// The placement as drawn: the box about its centre at its whole angle
+    /// (the tilt turns it about the anchor).
     #[must_use]
     pub fn frame(self) -> LayerFrame {
+        let anchor = self.anchor_offset();
+        let pivot = self.anchor_point();
+        let offset = turned(anchor, self.angle_degrees());
         LayerFrame {
-            centre: self.footprint().centre(),
+            centre: Point::new(pivot.x - offset.x, pivot.y - offset.y),
             half_width: f64::from(self.width) / 2.0,
             half_height: f64::from(self.height) / 2.0,
             angle_degrees: self.angle_degrees(),
+            anchor,
         }
     }
 
@@ -177,18 +352,13 @@ impl LayerPlacement {
     #[must_use]
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped first.
     pub fn centred(centre: Point, width: f64, height: f64, quarter_turns: u8) -> Self {
-        let side = |value: f64| value.round().clamp(1.0, f64::from(MAX_LAYER_SIDE)) as u32;
-        let (width, height) = (side(width), side(height));
-        let mut placement = Self::new(0, 0, width, height, quarter_turns);
-        let (footprint_width, footprint_height) = placement.footprint_size();
-        let coordinate = |value: f64| {
-            value
-                .round()
-                .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-        };
-        placement.x = coordinate(centre.x - f64::from(footprint_width) / 2.0);
-        placement.y = coordinate(centre.y - f64::from(footprint_height) / 2.0);
-        placement
+        Self::framed(
+            centre,
+            width,
+            height,
+            i64::from(quarter_turns % 4) * 90_000,
+            (ANCHOR_CENTER, ANCHOR_CENTER),
+        )
     }
 }
 
@@ -202,6 +372,8 @@ pub struct LayerFrame {
     pub half_height: f64,
     /// Clockwise rotation in degrees.
     pub angle_degrees: f64,
+    /// The anchor's offset from the centre along the unturned axes.
+    pub anchor: Point,
 }
 
 impl LayerFrame {
@@ -271,6 +443,7 @@ impl LayerFrame {
                 Point::new(sx * w, sy * h)
             }
             Handle::Rotate => Point::new(0.0, -h - rotate_offset),
+            Handle::Anchor => self.anchor,
         };
         self.to_world(local)
     }
@@ -338,14 +511,18 @@ pub enum Handle {
     /// Scales one side, the opposite edge fixed; with Alt it crops that
     /// edge instead.
     Edge(Edge),
-    /// Turns the layer about its centre.
+    /// Turns the layer about its anchor.
     Rotate,
+    /// Moves the anchor (the scale and rotation pivot) within the layer;
+    /// the layer stays put.
+    Anchor,
 }
 
 impl Handle {
-    /// Every handle, the rotate handle first (it wins a tie).
-    pub const ALL: [Self; 9] = [
+    /// Every handle, the rotate and anchor handles first (they win a tie).
+    pub const ALL: [Self; 10] = [
         Self::Rotate,
+        Self::Anchor,
         Self::Corner(Corner::TopLeft),
         Self::Corner(Corner::TopRight),
         Self::Corner(Corner::BottomRight),
@@ -447,6 +624,23 @@ impl CropInsets {
             Edge::Top => self.top = value.min(height - 1 - self.bottom.min(height - 1)),
             Edge::Bottom => self.bottom = value.min(height - 1 - self.top.min(height - 1)),
         }
+    }
+
+    /// Sets the inset on `edge` like [`Self::set`], also keeping the
+    /// cropped size at least `least` (width, height): a crop never cuts
+    /// into the layer's mask.
+    pub fn set_keeping(&mut self, edge: Edge, value: u32, source: (u32, u32), least: (u32, u32)) {
+        let (width, height) = (source.0.max(1), source.1.max(1));
+        let room = |size: u32, opposite: u32, least: u32| {
+            size.saturating_sub(opposite).saturating_sub(least.max(1))
+        };
+        let value = match edge {
+            Edge::Left => value.min(room(width, self.right, least.0)),
+            Edge::Right => value.min(room(width, self.left, least.0)),
+            Edge::Top => value.min(room(height, self.bottom, least.1)),
+            Edge::Bottom => value.min(room(height, self.top, least.1)),
+        };
+        self.set(edge, value, source);
     }
 
     /// The stored crop rectangle `(x, y, width, height)` for a `source`

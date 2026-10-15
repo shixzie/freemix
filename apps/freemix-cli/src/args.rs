@@ -502,7 +502,11 @@ pub enum Command {
         y: i32,
         width: u32,
         height: u32,
-        rotation: u16,
+        /// Clockwise turn, any angle, in millidegrees.
+        rotation_millidegrees: i32,
+        /// Scale and rotation pivot in basis points of the box (centre when
+        /// absent).
+        anchor: Option<(u16, u16)>,
     },
     SceneLayerCrop {
         path: PathBuf,
@@ -3191,13 +3195,16 @@ fn parse_scene_layer_geometry(
     let y = number(&required(&mut arguments, "y")?, "y")?;
     let width = number(&required(&mut arguments, "width")?, "width")?;
     let height = number(&required(&mut arguments, "height")?, "height")?;
-    let rotation = number::<u16>(&required(&mut arguments, "rotation")?, "rotation")?;
-    if !matches!(rotation, 0 | 90 | 180 | 270) {
-        return Err(ArgsError::InvalidChoice {
-            field: "rotation",
-            value: rotation.to_string(),
-        });
-    }
+    let rotation_millidegrees = degrees_millidegrees(&required(&mut arguments, "rotation")?)?;
+    let anchor = match arguments.next() {
+        None => None,
+        Some(flag) if flag == "--anchor" => {
+            let anchor_x = anchor_basis_points(&required(&mut arguments, "anchor x")?, "anchor x")?;
+            let anchor_y = anchor_basis_points(&required(&mut arguments, "anchor y")?, "anchor y")?;
+            Some((anchor_x, anchor_y))
+        }
+        Some(other) => return Err(ArgsError::UnexpectedArgument(other)),
+    };
     reject_extra(&mut arguments)?;
     Ok(Command::SceneLayerGeometry {
         path,
@@ -3207,8 +3214,50 @@ fn parse_scene_layer_geometry(
         y,
         width,
         height,
-        rotation,
+        rotation_millidegrees,
+        anchor,
     })
+}
+
+/// A clockwise angle in degrees with at most three decimals (`-12.5`,
+/// `90`) as millidegrees, within one full turn either way.
+fn degrees_millidegrees(value: &str) -> Result<i32, ArgsError> {
+    let invalid = || ArgsError::InvalidNumber {
+        field: "rotation",
+        value: value.to_owned(),
+    };
+    let (negative, digits) = value
+        .strip_prefix('-')
+        .map_or((false, value), |rest| (true, rest));
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    if whole.is_empty()
+        || fraction.len() > 3
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        || (digits.contains('.') && fraction.is_empty())
+    {
+        return Err(invalid());
+    }
+    let whole: i64 = whole.parse().map_err(|_| invalid())?;
+    let fraction: i64 = format!("{fraction:0<3}").parse().map_err(|_| invalid())?;
+    let magnitude = whole
+        .checked_mul(1_000)
+        .and_then(|value| value.checked_add(fraction))
+        .filter(|value| *value <= 360_000)
+        .ok_or_else(invalid)?;
+    i32::try_from(if negative { -magnitude } else { magnitude }).map_err(|_| invalid())
+}
+
+/// An anchor coordinate in basis points, `0..=10000` (5000 is the centre).
+fn anchor_basis_points(value: &str, field: &'static str) -> Result<u16, ArgsError> {
+    let basis_points = number::<u16>(value, field)?;
+    if basis_points > fm_model::LayerAnchor::MAX {
+        return Err(ArgsError::InvalidNumber {
+            field,
+            value: value.to_owned(),
+        });
+    }
+    Ok(basis_points)
 }
 
 fn parse_scene_layer_crop(

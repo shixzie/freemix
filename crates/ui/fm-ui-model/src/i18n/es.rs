@@ -3736,11 +3736,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Abrir esta escena en el diseñador de capas para mover, escalar, recortar y apilar sus capas",
         ),
     ),
+    (Msg::DesignTileItem, t("Diseñar…")),
+    (
+        Msg::DesignTileHover,
+        t(
+            "Abrir la escena de esta entrada en el diseñador de capas: mover, escalar, girar, recortar y apilar sus capas en vivo",
+        ),
+    ),
     (Msg::DesignTitle, t("Diseñador de capas")),
     (
         Msg::DesignTitleHover,
         t(
-            "Organice las capas de una escena: arrastre en el lienzo o escriba valores exactos. Cada arrastre o cambio de campo es un paso de deshacer del borrador",
+            "Organice las capas de una escena en vivo: arrastre en el lienzo o escriba valores exactos. El servidor recibe cada cambio al hacerlo, y un arrastre o cambio de campo completo de una capa es un paso del deshacer del show",
         ),
     ),
     (Msg::DesignScenePickHover, t("Qué escena diseñar")),
@@ -3763,69 +3770,42 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::DesignClose, t("Cerrar el diseñador de capas")),
     (
         Msg::DesignUndoHover,
-        t("Deshacer el último cambio del borrador ({action})"),
+        t(
+            "Deshacer la última edición del proyecto en el servidor (un arrastre o cambio de campo completo de una capa es un paso)",
+        ),
     ),
     (
         Msg::DesignRedoHover,
-        t("Rehacer el cambio del borrador ({action})"),
+        t("Rehacer la edición del proyecto deshecha la última en el servidor"),
     ),
-    (
-        Msg::DesignReasonNothingToUndo,
-        t("no hay ningún cambio del borrador que deshacer"),
-    ),
-    (
-        Msg::DesignReasonNothingToRedo,
-        t("no hay ningún cambio del borrador que rehacer"),
-    ),
-    (Msg::DesignActionMove, t("mover")),
-    (Msg::DesignActionNudge, t("desplazar")),
-    (Msg::DesignActionScale, t("escalar")),
-    (Msg::DesignActionRotate, t("girar")),
-    (Msg::DesignActionCrop, t("recortar")),
-    (Msg::DesignActionField, t("cambio de campo")),
-    (Msg::DesignActionReorder, t("reapilar")),
-    (Msg::DesignStatusMatches, t("IGUAL AL SERVIDOR")),
+    (Msg::DesignStatusMatches, t("EDICIÓN EN VIVO")),
     (
         Msg::DesignStatusMatchesHover,
-        t("El borrador es la composición que informó el servidor"),
+        t("Cada cambio va al servidor al hacerlo; el lienzo muestra la composición del servidor"),
     ),
+    (Msg::DesignStatusSending, t("ENVIANDO CAMBIOS")),
     (
-        Msg::DesignStatusDraft,
-        plural("{count} CAMBIO", "{count} CAMBIOS"),
-    ),
-    (
-        Msg::DesignStatusDraftHover,
-        t(
-            "Cambios guardados en este equipo. La escena del servidor no cambia hasta aplicarlos con freemix-cli",
-        ),
-    ),
-    (
-        Msg::DesignLiveBanner,
-        t(
-            "La edición de capas en vivo no está disponible: el servidor no tiene un comando para editar capas de escena, así que las escenas se cambian sin conexión. Copie el borrador como comandos de freemix-cli y ejecútelos sobre el proyecto con el show detenido.",
-        ),
+        Msg::DesignStatusSendingHover,
+        t("Sus últimos cambios van de camino al servidor"),
     ),
     (
         Msg::DesignBaseChanged,
         t(
-            "La composición de esta escena cambió en el servidor mientras tenía cambios en el borrador. Revierta para partir de ella.",
+            "La composición de esta escena cambió en el servidor mientras sus cambios aún no se habían enviado. Se envían a continuación; después la composición del servidor manda.",
         ),
     ),
-    (
-        Msg::DesignRevertHover,
-        t("Descartar el borrador y volver a la composición del servidor"),
-    ),
-    (Msg::DesignReasonClean, t("el borrador no tiene cambios")),
     (Msg::DesignCopyCli, t("Copiar como comandos")),
     (
         Msg::DesignCopyCliHover,
-        t("Copiar el borrador como comandos scene-layer de freemix-cli para {project}"),
+        t(
+            "Copiar la composición completa de esta escena como comandos scene-layer de freemix-cli para {project}, para reproducirla sin conexión en un paquete de proyecto",
+        ),
     ),
     (
         Msg::DesignCopied,
         plural(
-            "Copiado {count} comando de freemix-cli del borrador de capas",
-            "Copiados {count} comandos de freemix-cli del borrador de capas",
+            "Copiado {count} comando de freemix-cli de la composición",
+            "Copiados {count} comandos de freemix-cli de la composición",
         ),
     ),
     (Msg::DesignSnap, t("Ajustar")),
@@ -3848,14 +3828,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::DesignCanvasHover,
         t(
-            "Haga clic en una capa para seleccionarla (Mayús añade). Arrastre para mover; los tiradores de esquina y de borde escalan (Mayús mantiene la proporción); el tirador superior la gira (Mayús: pasos de 15°, guardada en cuartos de vuelta); Alt y arrastrar un borde recorta. Las flechas desplazan 1 px (Mayús: 10 px); Esc cancela un arrastre",
+            "Haga clic en una capa para seleccionarla (Mayús añade). Arrastre para mover; los tiradores de esquina y de borde escalan (Mayús mantiene la proporción); el tirador superior la gira respecto a su ancla a cualquier ángulo (Mayús: pasos de 15°); Alt y arrastrar la marca del ancla la mueve; Alt y arrastrar un borde recorta. Las flechas desplazan 1 px (Mayús: 10 px); Esc cancela un arrastre. Cada cambio va al servidor al hacerlo",
         ),
     ),
     (Msg::DesignBadgeExact, t("IMAGEN DEL SERVIDOR")),
     (
         Msg::DesignBadgeExactHover,
         t(
-            "La composición de la escena tal como está guardada en el servidor, con sus fuentes en vivo; los contornos muestran su borrador",
+            "La composición de la escena en el servidor, con sus fuentes en vivo; los contornos siguen sus ediciones al momento",
         ),
     ),
     (Msg::DesignBadgeNone, t("SOLO CONTORNOS")),
@@ -3955,18 +3935,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::DesignZoomHover,
         t(
-            "Zoom: el ancho de la capa como porcentaje del ancho del lienzo. Al cambiarlo se escalan ambos lados respecto al centro",
+            "Zoom: el ancho de la capa como porcentaje del ancho del lienzo. Al cambiarlo se escalan ambos lados respecto al ancla",
         ),
     ),
     (
         Msg::DesignRotationHover,
         t(
-            "Girar la capa en sentido horario respecto a su centro. Las capas guardadas giran en cuartos de vuelta; anime cualquier ángulo en la ventana Animación",
+            "Girar la capa en sentido horario respecto a su ancla, a cualquier ángulo (hasta tres decimales)",
         ),
     ),
+    (Msg::DesignRotationField, t("Ángulo")),
     (
         Msg::DesignRotationOptionHover,
-        t("Girar la capa {angle}° en sentido horario"),
+        t("Girar la capa a {angle}° en sentido horario respecto a su ancla"),
     ),
     (
         Msg::DesignOpacityHover,
@@ -4002,24 +3983,39 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::DesignStackHover,
         t(
-            "Dónde está la capa en la pila (1 es el fondo); reapile con los botones o arrastrando filas en la lista",
+            "Dónde está la capa en la lista (1 es el fondo). Las capas se dibujan por orden z y luego por esta posición; reapile con los botones o arrastrando filas en la lista",
+        ),
+    ),
+    (Msg::DesignZOrder, t("Orden z")),
+    (
+        Msg::DesignZOrderHover,
+        t(
+            "Orden de dibujo: una capa con un orden z mayor se dibuja sobre las menores; con valores iguales, en el orden de la lista",
         ),
     ),
     (Msg::DesignAnchorCentre, t("Centro")),
     (
         Msg::DesignAnchorHover,
         t(
-            "Las capas giran y hacen zoom respecto a su centro, marcado con una cruz en el lienzo; las capas guardadas no tienen un punto de anclaje móvil",
+            "El punto respecto al que la capa gira y hace zoom, en porcentaje de su ancho y alto desde la esquina superior izquierda, marcado en el lienzo. Moverlo deja la capa donde está; en el lienzo, Alt y arrastrar la marca",
         ),
     ),
     (
-        Msg::DesignUnreported,
-        t(
-            "El servidor no informa del recorte, la máscara ni el orden z, así que empiezan sin recorte, sin máscara y en el orden de la lista; solo sus cambios en ellos se convierten en comandos.",
-        ),
+        Msg::DesignAnchorXHover,
+        t("Ancla a lo ancho de la capa, en porcentaje desde su borde izquierdo (antes de girarla)"),
     ),
-    (Msg::DesignReadoutAngle, t("{free}° · guardado {stored}°")),
+    (
+        Msg::DesignAnchorYHover,
+        t("Ancla a lo alto de la capa, en porcentaje desde su borde superior (antes de girarla)"),
+    ),
+    (
+        Msg::DesignAnchorCentreHover,
+        t("Devolver el ancla al centro de la capa; la capa se queda donde está"),
+    ),
+    (Msg::DesignReasonCentred, t("el ancla ya está en el centro")),
+    (Msg::DesignReadoutAngle, t("{free}°")),
     (Msg::DesignReadoutCrop, t("Recorte {edge} {pixels} px")),
+    (Msg::DesignReadoutAnchor, t("Ancla {x}% · {y}%")),
     // User animation presets and shared preset files (GX-011, SW-019).
     (Msg::AnimMyPresets, t("Mis preajustes")),
     (

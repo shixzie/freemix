@@ -4427,6 +4427,12 @@ fn scene_animation_edits_are_checked_project_edits_with_state_records_and_undo()
             quarter_turns: 1,
             opacity: 200,
             enabled: true,
+            tilt_millidegrees: 0,
+            anchor_x: 5_000,
+            anchor_y: 5_000,
+            z_order: 0,
+            crop: None,
+            mask: None,
         }
     );
     assert_eq!(
@@ -5458,4 +5464,187 @@ fn media_faults_take_inputs_offline_and_lifecycle_edits_replicate() {
             false
         )
     );
+}
+
+/// SW-006, Protocol 2.39: a live scene layer edit is an `EditProject`
+/// command whose `scene_layout_changed` event carries the edit and the
+/// scene's whole new layout (crop, mask, z-order, tilt, anchor), the
+/// layout records follow it, a gesture's continuing edits fold into one
+/// undo step, and undo journals the exact inverse edit.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn scene_layer_edits_replicate_the_whole_layout_and_undo_exactly() {
+    use fm_protocol::{
+        SceneLayerEdit, SceneLayerOperation, WireLayerCrop, WireLayerGeometry, WireSceneId,
+        WireSceneLayerId,
+    };
+
+    let (mut control, scene) = scene_control();
+    let scene_id = WireSceneId::new(NonZeroU128::new(40).unwrap());
+    let host = WireSceneLayerId::new(core::num::NonZeroU32::new(9).unwrap());
+    let geometry = |x: i32| WireLayerGeometry {
+        x,
+        y: 60,
+        width: 640,
+        height: 360,
+        quarter_turns: 0,
+        tilt_millidegrees: 17_500,
+        anchor_x: 0,
+        anchor_y: 10_000,
+    };
+    let edit = |operation: SceneLayerOperation, continues: bool| {
+        CommandPayload::SceneLayer(SceneLayerEdit {
+            scene: scene_id,
+            layer: host,
+            operation,
+            continues,
+        })
+    };
+    let first = edit(SceneLayerOperation::SetGeometry(geometry(300)), false);
+    assert_eq!(
+        control.required_classes(&first).primary(),
+        CommandClass::EditProject
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Operator),
+            command("o", "o", first.clone()),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    let applied = control
+        .submit(&principal(Role::Graphics), command("g1", "g1", first), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    assert_wire_exact(&control, &applied);
+    let layout = control.scene_layout_states()[0].layout.clone();
+    assert_eq!(layout.layers[1].geometry(), geometry(300));
+    assert_eq!(
+        applied.output.events[0].payload,
+        EventPayload::SceneLayoutChanged {
+            edit: SceneLayerEdit {
+                scene: scene_id,
+                layer: host,
+                operation: SceneLayerOperation::SetGeometry(geometry(300)),
+                continues: false,
+            },
+            layout: layout.clone(),
+        }
+    );
+    // The model the native renderer follows changed too.
+    let model = control.scene_model(scene.id).unwrap();
+    assert_eq!(model.layers[1].geometry.tilt_millidegrees, 17_500);
+
+    // The drag continues: one undo step.
+    for (index, x) in [320, 340].into_iter().enumerate() {
+        let key = format!("g{}", index + 2);
+        let continued = control
+            .submit(
+                &principal(Role::Graphics),
+                command(
+                    &key,
+                    &key,
+                    edit(SceneLayerOperation::SetGeometry(geometry(x)), true),
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(continued.is_accepted(), "{:?}", continued.output.result);
+        assert_eq!(continued.output.events[0].edit_history.undo_depth, 1);
+    }
+    // A crop and a z-order replicate in the layout too.
+    for (key, operation) in [
+        (
+            "crop",
+            SceneLayerOperation::SetCrop(Some(WireLayerCrop {
+                x: 10,
+                y: 20,
+                width: 1_000,
+                height: 500,
+            })),
+        ),
+        ("z", SceneLayerOperation::SetZOrder { z_order: -4 }),
+    ] {
+        let accepted = control
+            .submit(
+                &principal(Role::Graphics),
+                command(key, key, edit(operation, false)),
+                0,
+            )
+            .unwrap();
+        assert!(accepted.is_accepted(), "{:?}", accepted.output.result);
+        assert_wire_exact(&control, &accepted);
+    }
+    let layout = control.scene_layout_states()[0].layout.clone();
+    let outline = &layout.layers[1];
+    assert_eq!(outline.geometry(), geometry(340));
+    assert_eq!(outline.z_order, -4);
+    assert_eq!(
+        outline.crop,
+        Some(WireLayerCrop {
+            x: 10,
+            y: 20,
+            width: 1_000,
+            height: 500,
+        })
+    );
+
+    // Undo journals the exact inverse as a live edit.
+    for key in ["u1", "u2"] {
+        let undone = control
+            .submit(&principal(Role::Graphics), undo(key, None), 0)
+            .unwrap();
+        assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    }
+    let message = undo("u3", None);
+    let prepared = prepared(
+        control
+            .prepare_submit(&principal(Role::Graphics), message.clone(), 0)
+            .unwrap(),
+    );
+    let original = &scene.layers[1].geometry;
+    assert_eq!(
+        prepared.replay_command(&message).payload,
+        CommandPayload::SceneLayer(SceneLayerEdit {
+            scene: scene_id,
+            layer: host,
+            operation: SceneLayerOperation::SetGeometry(WireLayerGeometry {
+                x: original.translation_x,
+                y: original.translation_y,
+                width: original.width,
+                height: original.height,
+                quarter_turns: 0,
+                tilt_millidegrees: 0,
+                anchor_x: 5_000,
+                anchor_y: 5_000,
+            }),
+            continues: false,
+        })
+    );
+    let undone = prepared.commit().unwrap();
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    assert_eq!(
+        control.scene_model(scene.id).unwrap().layers[1].geometry,
+        *original
+    );
+
+    // An edit of a scene the show does not have is refused.
+    let unknown = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "x",
+                "x",
+                CommandPayload::SceneLayer(SceneLayerEdit {
+                    scene: WireSceneId::new(NonZeroU128::new(99).unwrap()),
+                    layer: host,
+                    operation: SceneLayerOperation::Remove,
+                    continues: false,
+                }),
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&unknown), Some("not_found"));
 }

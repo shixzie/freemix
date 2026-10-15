@@ -612,6 +612,25 @@ impl StudioShell {
         ) {
             self.open_color(Some(fm_ui_model::grade_editor::GradeTarget::Input(input)));
         }
+        // A Scene input: its scene in the layer designer, which opens to
+        // look even when edits are locked (it says why on every control).
+        let scene = state
+            .project_state
+            .as_ref()
+            .and_then(|project| project.scene(input))
+            .and_then(|shown| shown.scene);
+        if let Some(scene) = scene
+            && item(
+                ui,
+                true,
+                l.text(Msg::DesignTileItem),
+                crate::SCENE_DESIGNER_SHORTCUT,
+                l.text(Msg::DesignTileHover),
+                "",
+            )
+        {
+            self.open_designer(Some(scene));
+        }
         ui.separator();
         self.draw_lifecycle_menu(
             ui,

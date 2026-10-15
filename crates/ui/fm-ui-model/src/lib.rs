@@ -255,8 +255,8 @@ pub struct SceneStatus {
     /// The scene the input shows (Protocol 2.35).
     pub scene: Option<SceneId>,
     pub animation: Option<SceneAnimationStatus>,
-    /// The scene's canvas and layer outlines. No command changes a layout
-    /// between snapshots.
+    /// The scene's canvas and layer outlines, kept current by
+    /// `scene_layout_changed` (Protocol 2.39).
     pub layout: Option<Arc<WireSceneLayout>>,
 }
 
@@ -278,7 +278,9 @@ impl SceneStatus {
 ///
 /// A snapshot announces every scene in its `layout_scenes` list: `name` is
 /// empty and `layout` `None` until the session's `scene_layout_state` for
-/// it is applied. No command changes either between snapshots.
+/// it is applied. A live scene layer edit replaces the layout
+/// (`scene_layout_changed`, Protocol 2.39); the name changes only with a new
+/// snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SceneLayoutStatus {
     pub scene: SceneId,
@@ -605,6 +607,14 @@ pub enum DurableChange {
         inputs: Vec<InputId>,
         animation: SceneAnimationStatus,
     },
+    /// A scene's whole layout after a live scene layer edit, undo, or redo
+    /// (Protocol 2.39): the edit applied and the layout every Scene input
+    /// showing the scene shows.
+    SceneLayoutChanged {
+        scene: SceneId,
+        edit: fm_protocol::SceneLayerEdit,
+        layout: Arc<WireSceneLayout>,
+    },
     /// One accepted animation preset library edit (Protocol 2.34).
     AnimationPresetChanged(AnimationPresetChange),
     /// One favourite transition button after an assignment, undo, or redo
@@ -797,6 +807,13 @@ impl DurableProjectEvent {
                     clip: Arc::from(clip),
                 },
             },
+            EventPayload::SceneLayoutChanged { edit, layout } => {
+                DurableChange::SceneLayoutChanged {
+                    scene: edit.scene.to_domain(),
+                    edit,
+                    layout: Arc::from(layout),
+                }
+            }
         };
         Self {
             cursor: ProjectCursor {
@@ -3166,6 +3183,17 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         DurableChange::SceneAnimationChanged { inputs, animation } => {
             return validate_scene_animation_change(inputs, animation, state);
         }
+        DurableChange::SceneLayoutChanged { scene, .. } => {
+            return if state
+                .scene_layouts
+                .iter()
+                .any(|entry| entry.scene == *scene && entry.layout.is_some())
+            {
+                Ok(())
+            } else {
+                Err(ModelError::SceneLayoutMismatch(*scene))
+            };
+        }
         DurableChange::PlaylistChanged {
             selection,
             playlist,
@@ -3476,6 +3504,18 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             for scene in &mut state.scenes {
                 if inputs.contains(&scene.input) {
                     scene.animation = Some(animation.clone());
+                }
+            }
+        }
+        DurableChange::SceneLayoutChanged { scene, layout, .. } => {
+            for entry in &mut state.scene_layouts {
+                if entry.scene == scene {
+                    entry.layout = Some(Arc::clone(&layout));
+                }
+            }
+            for shown in &mut state.scenes {
+                if shown.scene == Some(scene) {
+                    shown.layout = Some(Arc::clone(&layout));
                 }
             }
         }

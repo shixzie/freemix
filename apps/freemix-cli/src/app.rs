@@ -367,12 +367,17 @@ pub fn run(command: Command) -> AppResult<()> {
             y,
             width,
             height,
-            rotation,
+            rotation_millidegrees,
+            anchor,
         } => set_scene_layer_geometry(
             &path,
             scene_id(scene)?,
             index,
-            LayerGeometry::new(x, y, width, height, cli_rotation(rotation)),
+            LayerGeometry::new(x, y, width, height, Rotation::Deg0)
+                .with_rotation_millidegrees(rotation_millidegrees)
+                .with_anchor(anchor.map_or(fm_model::LayerAnchor::CENTER, |(x, y)| {
+                    fm_model::LayerAnchor::new(x, y)
+                })),
         )?,
         Command::SceneLayerCrop {
             path,
@@ -4301,7 +4306,7 @@ Usage:
       of a scene over n frames (30/1 timebase), growing the phase to n
       frames when shorter. Off-canvas distances come from the layer's
       footprint and the project canvas. Layers animate position, scale,
-      rotation (any angle, clockwise about the layer centre), crop, and
+      rotation (any angle, clockwise about the layer anchor), crop, and
       opacity.
       The scene plays In when it reaches Program or Preview, holds, and
       plays Out while a transition takes it off Program (a cut plays no
@@ -4376,7 +4381,7 @@ Usage:
   freemix-cli scene-layer-source-scene <show.freemix> <scene-id> <zero-based-layer-index> <source-scene-id>
   freemix-cli scene-layer-z-order <show.freemix> <scene-id> <zero-based-layer-index> <signed-z-order>
   freemix-cli scene-layer-appearance <show.freemix> <scene-id> <zero-based-layer-index> <enabled:on|off> <opacity:0..=255>
-  freemix-cli scene-layer-geometry <show.freemix> <scene-id> <zero-based-layer-index> <x> <y> <width> <height> <rotation:0|90|180|270>
+  freemix-cli scene-layer-geometry <show.freemix> <scene-id> <zero-based-layer-index> <x> <y> <width> <height> <rotation-degrees> [--anchor <x-basis-points> <y-basis-points>]
   freemix-cli scene-layer-crop <show.freemix> <scene-id> <zero-based-layer-index> <x> <y> <width> <height>
   freemix-cli scene-layer-crop-clear <show.freemix> <scene-id> <zero-based-layer-index>
   freemix-cli scene-layer-mask <show.freemix> <scene-id> <zero-based-layer-index> <x> <y> <width> <height> <normal|inverted>
@@ -4713,16 +4718,6 @@ const fn model_stinger_audio_policy(policy: CliStingerAudioPolicy) -> ModelSting
         CliStingerAudioPolicy::Muted => ModelStingerAudioPolicy::Muted,
         CliStingerAudioPolicy::StingerOnly => ModelStingerAudioPolicy::StingerOnly,
         CliStingerAudioPolicy::MixWithProgram => ModelStingerAudioPolicy::MixWithProgram,
-    }
-}
-
-fn cli_rotation(rotation: u16) -> Rotation {
-    match rotation {
-        0 => Rotation::Deg0,
-        90 => Rotation::Deg90,
-        180 => Rotation::Deg180,
-        270 => Rotation::Deg270,
-        _ => unreachable!("CLI parser validates rotations"),
     }
 }
 

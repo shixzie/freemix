@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, num::NonZeroU128};
 
 use fm_model::{
     AudioBus, BusSend, CropRect, Input, InputAudioStrip, InputAudioStripState,
-    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerEffect,
-    LayerGeometry, MainMix, MixFeed, Output, Playlist, PlaylistEntry, PlaylistLoop,
+    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerAnchor,
+    LayerEffect, LayerGeometry, MainMix, MixFeed, Output, Playlist, PlaylistEntry, PlaylistLoop,
     PlaylistRunState, PlaylistTransition, PlaylistTransitionKind, Project, ProjectGrading,
     ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RectMask, RestartPolicy, Rgba8, Rotation,
     Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef, StartupPolicy,
@@ -635,7 +635,12 @@ fn parse_geometry(value: Value) -> Result<LayerGeometry, DecodeError> {
             "deg270" => Rotation::Deg270,
             value => return Err(unknown_enum("rotation", value)),
         },
-    );
+    )
+    .with_tilt(object.i32("tilt_millidegrees")?)
+    .with_anchor(LayerAnchor::new(
+        object.u16("anchor_x")?,
+        object.u16("anchor_y")?,
+    ));
     object.finish()?;
     Ok(geometry)
 }

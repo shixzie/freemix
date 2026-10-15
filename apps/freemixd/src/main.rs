@@ -5724,6 +5724,8 @@ impl NativeDaemon {
         // the frame is produced, so the first fed pair is the next real frame.
         self.start_pending_streams();
         self.refresh_grades(control)?;
+        self.project_plan
+            .refresh_scene_models(|scene| control.scene_model(scene));
         let runtime = &self.runtime;
         let registry = self.playback.registry();
         let stinger_registry = self.stingers.registry();
@@ -9713,9 +9715,25 @@ fn restore_scenes(show: &mut ShowState, project: &fm_model::Project) -> AppResul
     Ok(())
 }
 
-/// Persists every engine scene's animation (the only scene state the
-/// engine edits) back into the project.
+/// Persists every engine scene's layers (live scene layer edits, SW-006)
+/// and animation back into the project. Layers go first: an animation track
+/// may name a layer an edit added.
 fn sync_project_scenes(project: &mut fm_model::Project, show: &ShowState) -> AppResult<()> {
+    for scene in show.scenes().values() {
+        let layers_unchanged = project
+            .scene(scene.id())
+            .is_some_and(|stored| stored.layers == scene.scene.layers);
+        if !layers_unchanged {
+            project
+                .set_scene_layers(scene.id(), scene.scene.layers.clone())
+                .map_err(|error| {
+                    AppFailure(format!(
+                        "scene {} layers could not be persisted: {error}",
+                        scene.id()
+                    ))
+                })?;
+        }
+    }
     for scene in show.scenes().values() {
         let unchanged = project
             .scene(scene.id())
@@ -11508,6 +11526,7 @@ fn command_base_ticks(
         | CommandPayload::SetTransitionFavorite { .. }
         | CommandPayload::Media { .. }
         | CommandPayload::InputLifecycle(_)
+        | CommandPayload::SceneLayer(_)
         | CommandPayload::UpdateOverlay { .. }
         | CommandPayload::SetOverlayOutputInclusion { .. }
         | CommandPayload::ConfigureOverlayTransition { .. }

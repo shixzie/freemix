@@ -429,6 +429,28 @@ impl std::fmt::Display for SetSceneAnimationError {
 
 impl std::error::Error for SetSceneAnimationError {}
 
+/// Why [`Project::set_scene_layers`] refused a layer list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SetSceneLayersError {
+    UnknownScene(SceneId),
+    Invalid(Vec<crate::ValidationError>),
+}
+
+impl std::fmt::Display for SetSceneLayersError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownScene(scene) => write!(formatter, "unknown scene {scene}"),
+            Self::Invalid(errors) => write!(
+                formatter,
+                "the scene layers would leave the project invalid ({} errors)",
+                errors.len()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SetSceneLayersError {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetSceneBackgroundError {
     UnknownScene(SceneId),
@@ -824,7 +846,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(37);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(38);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1969,6 +1991,33 @@ impl Project {
         Ok(())
     }
 
+    /// Replaces a scene's whole layer list (as a live scene layer edit left
+    /// it), checking the project as a whole: every layer, source, cycle,
+    /// animation track, and layer grade must stay valid.
+    ///
+    /// # Errors
+    ///
+    /// [`SetSceneLayersError::UnknownScene`] for a missing scene and
+    /// [`SetSceneLayersError::Invalid`] with every validation error the new
+    /// list would cause; nothing changes on error.
+    pub fn set_scene_layers(
+        &mut self,
+        scene: SceneId,
+        layers: Vec<Layer>,
+    ) -> Result<(), SetSceneLayersError> {
+        let index = self
+            .scenes
+            .iter()
+            .position(|candidate| candidate.id == scene)
+            .ok_or(SetSceneLayersError::UnknownScene(scene))?;
+        let previous = core::mem::replace(&mut self.scenes[index].layers, layers);
+        if let Err(errors) = self.validate() {
+            self.scenes[index].layers = previous;
+            return Err(SetSceneLayersError::Invalid(errors));
+        }
+        Ok(())
+    }
+
     /// Appends a layer to a scene after checking the scene, name, and source.
     ///
     /// # Errors
@@ -2401,8 +2450,8 @@ impl Project {
     /// exist, [`SceneLayerError::LayerIndexOutOfRange`] when the index is
     /// beyond the scene's layer count, and
     /// [`SceneLayerError::InvalidGeometry`] when a dimension is zero or
-    /// exceeds the project limits, or the geometry is tilted (tilts are
-    /// posed, never stored).
+    /// exceeds the project limits, the tilt is outside its stored range, or
+    /// the anchor lies outside the box.
     pub fn set_scene_layer_geometry(
         &mut self,
         scene: SceneId,
@@ -2422,12 +2471,7 @@ impl Project {
                 length,
             });
         }
-        if geometry.width == 0
-            || geometry.height == 0
-            || geometry.width > ProjectSettings::MAX_VIDEO_WIDTH
-            || geometry.height > ProjectSettings::MAX_VIDEO_HEIGHT
-            || geometry.tilt_millidegrees != 0
-        {
+        if !geometry.is_storable() {
             return Err(SceneLayerError::InvalidGeometry { scene, index });
         }
         self.scenes[scene_index].layers[index].geometry = geometry;
@@ -3805,8 +3849,20 @@ impl std::fmt::Display for LayerEffectError {
 
 impl std::error::Error for LayerEffectError {}
 
-/// Where a scene layer draws: a `width` x `height` box turned clockwise by
-/// `rotation` quarter turns, its footprint's top-left at the translation.
+/// Where a scene layer draws.
+///
+/// The layer is a `width` x `height` box turned clockwise by `rotation`
+/// quarter turns, the top-left of that quarter-turned footprint at the
+/// translation. Free rotation extends the quarter turns: the box turns a
+/// further `tilt_millidegrees` clockwise (in
+/// `MIN_TILT_MILLIDEGREES..MAX_TILT_MILLIDEGREES`) about its anchor point,
+/// so the layer's whole clockwise turn is
+/// [`LayerGeometry::rotation_millidegrees`] and any angle has exactly one
+/// stored form ([`LayerGeometry::with_rotation_millidegrees`]).
+///
+/// The [`LayerAnchor`] is a point of the box in its own (unturned) frame:
+/// the pivot of the free rotation and of animated scale and rotation
+/// ([`crate::Scene::posed`]). The default anchor is the box centre.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LayerGeometry {
     pub translation_x: i32,
@@ -3814,14 +3870,22 @@ pub struct LayerGeometry {
     pub width: u32,
     pub height: u32,
     pub rotation: Rotation,
-    /// A further clockwise turn of the footprint about its centre, in
-    /// millidegrees. Only a posed scene ([`crate::Scene::posed`]) carries a
-    /// tilt, within `-45_000..45_000`; a stored project's layers are always
-    /// untilted (validation refuses anything else), so it is not persisted.
+    /// A further clockwise turn about the anchor, in millidegrees, in
+    /// `MIN_TILT_MILLIDEGREES..MAX_TILT_MILLIDEGREES`. A posed scene
+    /// ([`crate::Scene::posed`]) carries the tilt it draws about the
+    /// footprint centre instead, its anchor resolved to the centre.
     pub tilt_millidegrees: i32,
+    /// The scale and rotation pivot.
+    pub anchor: LayerAnchor,
 }
 
 impl LayerGeometry {
+    /// Smallest stored tilt (inclusive).
+    pub const MIN_TILT_MILLIDEGREES: i32 = -45_000;
+    /// Largest stored tilt (exclusive): a turn of 45 degrees or more is the
+    /// next quarter turn with a negative tilt.
+    pub const MAX_TILT_MILLIDEGREES: i32 = 45_000;
+
     #[must_use]
     pub const fn new(
         translation_x: i32,
@@ -3837,15 +3901,107 @@ impl LayerGeometry {
             height,
             rotation,
             tilt_millidegrees: 0,
+            anchor: LayerAnchor::CENTER,
         }
     }
 
-    /// The geometry turned a further `millidegrees` clockwise about its
-    /// footprint centre.
+    /// The geometry turned a further `millidegrees` clockwise.
     #[must_use]
     pub const fn with_tilt(mut self, millidegrees: i32) -> Self {
         self.tilt_millidegrees = millidegrees;
         self
+    }
+
+    /// The geometry with its scale and rotation pivot at `anchor`.
+    #[must_use]
+    pub const fn with_anchor(mut self, anchor: LayerAnchor) -> Self {
+        self.anchor = anchor;
+        self
+    }
+
+    /// Whether the tilt is in its stored range.
+    #[must_use]
+    pub const fn tilt_in_range(self) -> bool {
+        self.tilt_millidegrees >= Self::MIN_TILT_MILLIDEGREES
+            && self.tilt_millidegrees < Self::MAX_TILT_MILLIDEGREES
+    }
+
+    /// The whole clockwise turn, quarter turns plus tilt, in
+    /// `0..360_000` millidegrees.
+    #[must_use]
+    pub const fn rotation_millidegrees(self) -> i32 {
+        let quarters: i32 = match self.rotation {
+            Rotation::Deg0 => 0,
+            Rotation::Deg90 => 1,
+            Rotation::Deg180 => 2,
+            Rotation::Deg270 => 3,
+        };
+        (quarters * 90_000 + self.tilt_millidegrees).rem_euclid(360_000)
+    }
+
+    /// The geometry with its whole clockwise turn set to `millidegrees`
+    /// (reduced modulo a full turn): the nearest quarter turn (half up) and
+    /// the tilt left over, in the stored range. The translation is kept, so
+    /// the caller places the new footprint.
+    #[must_use]
+    pub const fn with_rotation_millidegrees(mut self, millidegrees: i32) -> Self {
+        let angle = millidegrees.rem_euclid(360_000);
+        // Half up: 45 degrees belongs to the next quarter turn.
+        let quarters = (angle + 45_000) / 90_000;
+        self.tilt_millidegrees = angle - quarters * 90_000;
+        self.rotation = match quarters % 4 {
+            1 => Rotation::Deg90,
+            2 => Rotation::Deg180,
+            3 => Rotation::Deg270,
+            _ => Rotation::Deg0,
+        };
+        self
+    }
+
+    /// Whether the geometry can be stored on a project layer: both sides in
+    /// `1..=` the project video limits, the tilt in range, and the anchor
+    /// inside the box.
+    #[must_use]
+    pub const fn is_storable(self) -> bool {
+        self.width != 0
+            && self.height != 0
+            && self.width <= ProjectSettings::MAX_VIDEO_WIDTH
+            && self.height <= ProjectSettings::MAX_VIDEO_HEIGHT
+            && self.tilt_in_range()
+            && self.anchor.is_valid()
+    }
+}
+
+/// A layer's scale and rotation pivot: a point of its box in the box's own
+/// (unturned) frame, in basis points of its width (`x`) and height (`y`) from
+/// the top-left corner, each in `0..=`[`LayerAnchor::MAX`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct LayerAnchor {
+    pub x: u16,
+    pub y: u16,
+}
+
+impl LayerAnchor {
+    /// The far edge, in basis points.
+    pub const MAX: u16 = 10_000;
+    /// The box centre: the default pivot.
+    pub const CENTER: Self = Self::new(5_000, 5_000);
+
+    #[must_use]
+    pub const fn new(x: u16, y: u16) -> Self {
+        Self { x, y }
+    }
+
+    /// Whether both coordinates lie within the box.
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.x <= Self::MAX && self.y <= Self::MAX
+    }
+}
+
+impl Default for LayerAnchor {
+    fn default() -> Self {
+        Self::CENTER
     }
 }
 

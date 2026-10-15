@@ -473,7 +473,8 @@ impl Remote {
                         | EventPayload::GradeChanged(_)
                         | EventPayload::AnimationPresetChanged(_)
                         | EventPayload::TitleAnimationChanged { .. }
-                        | EventPayload::SceneAnimationChanged { .. } => matches!(
+                        | EventPayload::SceneAnimationChanged { .. }
+                        | EventPayload::SceneLayoutChanged { .. } => matches!(
                             completion,
                             CommandCompletion::Project | CommandCompletion::History
                         ),

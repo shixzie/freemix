@@ -3,21 +3,24 @@
 //! exact values.
 //!
 //! The window edits a [`SceneLayoutDocument`] per project scene, built from
-//! the snapshot's `scene_layout_state` (Protocol 2.31/2.35). The canvas
-//! shows the server's exact composition of the scene
-//! ([`StudioIntent::ScenePreview`], paced by a [`PreviewPacer`] and held
-//! back while a drag runs) under the draft's layer outlines, handles,
-//! safe-area marks, and snap guides. Every gesture and every field change
-//! is one undo step of the draft; a field scrub is one step from press to
-//! release.
+//! the replicated layout (`scene_layout_state`, followed by every
+//! `scene_layout_changed`, Protocol 2.39): geometry with free rotation and
+//! anchor, crop, mask, and z-order. The canvas shows the server's exact
+//! composition of the scene ([`StudioIntent::ScenePreview`], paced by a
+//! [`PreviewPacer`] and held back while a drag runs) under the layer
+//! outlines, handles, the anchor mark, safe-area marks, and snap guides.
 //!
-//! The protocol has no live scene layer edit command
-//! ([`fm_ui_model::scene_designer::LIVE_LAYER_EDITS`]): layouts change only
-//! offline, between snapshots. The designer says so, keeps the draft on
-//! this computer, and copies it as the equivalent `freemix-cli
+//! Edits are live ([`fm_ui_model::scene_designer::LIVE_LAYER_EDITS`]):
+//! while a drag or field scrub runs the window sends the changed layer
+//! properties as `scene_layer_*` commands ([`StudioIntent::SceneLayer`])
+//! at most every [`LIVE_SEND_INTERVAL`], and the rest on release; the
+//! later sends of one gesture continue its first, so the show's undo
+//! (the window's Undo and Redo, the engine's shared history) takes back a
+//! whole gesture of one layer at once. "Copy as commands" stays as a
+//! secondary export: the scene's whole layout as `freemix-cli
 //! scene-layer-*` commands. Padlocks and the `edit_project` permission
-//! gate the draft exactly as they would gate the edit commands, with the
-//! reason on every disabled control.
+//! gate the edits exactly as the server does, with the reason on every
+//! disabled control.
 
 use core::time::Duration;
 use std::collections::BTreeMap;
@@ -42,7 +45,7 @@ use fm_ui_model::scene_designer::{
 };
 use fm_ui_model::title_animation::preview_size;
 
-use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
+use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON, edit_history_availability};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{
@@ -78,6 +81,13 @@ const PROJECT_PLACEHOLDER: &str = "<show.freemix>";
 const GUIDE: Color32 = Color32::from_rgb(236, 72, 200);
 /// Mask outline colour.
 const MASK: Color32 = Color32::from_rgb(90, 210, 230);
+/// Anchor mark colour.
+const ANCHOR: Color32 = Color32::from_rgb(255, 196, 64);
+/// Live edits of a running drag or scrub are sent at most this often.
+pub const LIVE_SEND_INTERVAL: Duration = Duration::from_millis(80);
+/// How long after its last send an idle draft takes the server's layout
+/// again even without a replicated change (a refused edit leaves none).
+const SETTLE_AFTER: Duration = Duration::from_millis(1_500);
 
 /// The exact picture shown on the canvas and the scene it shows.
 struct DesignTexture {
@@ -109,6 +119,8 @@ pub(crate) struct DesignerWindow {
     /// Where the canvas and the layer list rows were laid out last frame.
     pub(crate) canvas_rect: Option<Rect>,
     pub(crate) list_rows: Vec<(WireSceneLayerId, Rect)>,
+    /// When live edits were last sent.
+    last_send: Option<Duration>,
 }
 
 /// Clones what the console compares and the drafts; the picture and the
@@ -256,18 +268,6 @@ fn source_text(l: Locale, state: &StudioUiState, source: WireSceneLayerSource) -
     }
 }
 
-const fn action_text(label: EditLabel) -> Msg {
-    match label {
-        EditLabel::Move => Msg::DesignActionMove,
-        EditLabel::Nudge => Msg::DesignActionNudge,
-        EditLabel::Scale => Msg::DesignActionScale,
-        EditLabel::Rotate => Msg::DesignActionRotate,
-        EditLabel::Crop => Msg::DesignActionCrop,
-        EditLabel::Field(_) => Msg::DesignActionField,
-        EditLabel::Reorder => Msg::DesignActionReorder,
-    }
-}
-
 const fn edge_text(edge: Edge) -> Msg {
     match edge {
         Edge::Left => Msg::DesignEdgeLeft,
@@ -400,6 +400,51 @@ impl DesignerWindow {
         self.documents.get_mut(&self.scene?)
     }
 
+    /// Sends what the drafts changed as live scene layer edits: at once
+    /// when no drag or scrub is open, else at most every
+    /// [`LIVE_SEND_INTERVAL`]. A draft the session may not edit is put
+    /// back to the server's layout instead. An idle draft with nothing to
+    /// send settles on the server's layout [`SETTLE_AFTER`] its last send.
+    pub(crate) fn send_live_edits(
+        &mut self,
+        state: &StudioUiState,
+        now: Duration,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let due = self
+            .last_send
+            .is_none_or(|last| now.saturating_sub(last) >= LIVE_SEND_INTERVAL);
+        let settle = self
+            .last_send
+            .is_none_or(|last| now.saturating_sub(last) >= SETTLE_AFTER);
+        let mut sent = false;
+        for (scene, document) in &mut self.documents {
+            let open = document.gesture_kind().is_some() || document.editing();
+            if !document.has_unsent() {
+                if !open && settle {
+                    document.settle();
+                }
+                continue;
+            }
+            if design_lock_reason(state, *scene).is_some() {
+                if !open {
+                    document.revert();
+                }
+                continue;
+            }
+            if open && !due {
+                continue;
+            }
+            for edit in document.take_live_edits() {
+                intents.push(StudioIntent::SceneLayer(edit));
+                sent = true;
+            }
+        }
+        if sent {
+            self.last_send = Some(now);
+        }
+    }
+
     /// The picture's texture when it shows `scene`.
     fn texture_for(&self, scene: SceneId) -> Option<egui::TextureId> {
         self.texture
@@ -509,13 +554,15 @@ impl StudioShell {
         self.designer.sync(context, state, now);
         if !self.designer.open {
             self.designer.canvas_focused = false;
-            // A drag or scrub cut short by closing is abandoned.
+            // A drag or scrub cut short by closing is abandoned (and what
+            // it already sent is put back).
             for document in self.designer.documents.values_mut() {
                 if document.gesture_kind().is_some() || document.editing() {
                     document.cancel();
                 }
             }
             self.designer.feedback = GestureFeedback::default();
+            self.designer.send_live_edits(state, now, intents);
             return;
         }
         let l = self.locale;
@@ -523,6 +570,7 @@ impl StudioShell {
         let viewport = context.viewport_rect();
         let max = Vec2::new(viewport.width() - 24.0, viewport.height() - 60.0).max(MIN_WINDOW_SIZE);
         let mut copied = None;
+        let mut history = Vec::new();
         egui::Window::new(l.text(Msg::DesignTitle))
             .id(egui::Id::new("studio-designer-window"))
             .title_bar(false)
@@ -545,8 +593,9 @@ impl StudioShell {
             )
             .show(context, |ui| {
                 ui.set_min_size(ui.available_size());
-                copied = draw_contents(ui, l, &mut self.designer, state, &mut open);
+                copied = draw_contents(ui, l, &mut self.designer, state, &mut open, &mut history);
             });
+        intents.extend(history);
         if let Some(count) = copied {
             self.toasts.push(
                 ToastKind::Success,
@@ -560,7 +609,14 @@ impl StudioShell {
                 document.cancel();
             }
         }
+        self.designer.send_live_edits(state, now, intents);
         let window = &mut self.designer;
+        if window
+            .document()
+            .is_some_and(|document| document.gesture_kind().is_some() || document.editing())
+        {
+            context.request_repaint_after(LIVE_SEND_INTERVAL);
+        }
         let held = window
             .document()
             .is_some_and(|document| document.gesture_kind().is_some() || document.editing());
@@ -579,7 +635,7 @@ impl StudioShell {
 }
 
 /// The window's contents; returns how many commands were copied, if the
-/// operator copied the draft.
+/// operator copied the layout. Undo and Redo land in `history`.
 #[allow(clippy::too_many_lines)] // one window: header, toolbar, banners, columns
 fn draw_contents(
     ui: &mut Ui,
@@ -587,6 +643,7 @@ fn draw_contents(
     window: &mut DesignerWindow,
     state: &StudioUiState,
     open: &mut bool,
+    history: &mut Vec<StudioIntent>,
 ) -> Option<usize> {
     let scenes = scene_choices(l, state);
     let mut copied = None;
@@ -600,8 +657,8 @@ fn draw_contents(
         if !scenes.is_empty() {
             scene_picker(ui, l, window, &scenes);
         }
-        if let Some(document) = window.document_mut() {
-            status_and_history(ui, l, document);
+        if let Some(document) = window.document() {
+            status_and_history(ui, l, document, state, history);
         }
         ui.with_layout(l10n::trailing_layout(l), |ui| {
             if ui
@@ -645,31 +702,23 @@ fn draw_contents(
             .project_path
             .clone()
             .unwrap_or_else(|| PROJECT_PLACEHOLDER.to_owned());
-        let Some(document) = window.documents.get_mut(&scene) else {
+        let Some(document) = window.documents.get(&scene) else {
             return;
         };
-        let dirty = document.is_dirty();
-        let clean_reason = Msg::DesignReasonClean.en();
+        // The secondary export: the whole layout as offline commands.
+        let empty = document.layers().is_empty();
         if ui
-            .add_enabled(dirty, small_button(l.text(Msg::ColorRevert)))
-            .hint(l.text(Msg::DesignRevertHover), clean_reason)
-            .clicked()
-        {
-            document.revert();
-        }
-        if ui
-            .add_enabled(dirty, small_button(l.text(Msg::DesignCopyCli)))
+            .add_enabled(!empty, small_button(l.text(Msg::DesignCopyCli)))
             .hint(
                 &l.format(Msg::DesignCopyCliHover, &[("project", Arg::Str(&project))]),
-                clean_reason,
+                Msg::DesignNoScenesDetail.en(),
             )
             .clicked()
         {
-            ui.ctx().copy_text(document.cli_script(&project));
-            copied = Some(document.edits().len());
+            ui.ctx().copy_text(document.layout_script(&project));
+            copied = Some(document.layout_edits().len());
         }
     });
-    ui.add(egui::Label::new(caption(l.text(Msg::DesignLiveBanner)).color(text_dim_color())).wrap());
     if window
         .documents
         .get(&scene)
@@ -762,49 +811,45 @@ fn scene_picker(ui: &mut Ui, l: Locale, window: &mut DesignerWindow, scenes: &[(
     }
 }
 
-fn status_and_history(ui: &mut Ui, l: Locale, document: &mut SceneLayoutDocument) {
-    let changes = document.edits().len();
-    if changes == 0 {
-        status_chip(ui, l.text(Msg::DesignStatusMatches), Tone::Ready, 128.0)
-            .on_hover_text(l.text(Msg::DesignStatusMatchesHover));
+/// The live status chip and the show's Undo and Redo (the engine's shared
+/// history: a whole gesture of one layer is one step).
+fn status_and_history(
+    ui: &mut Ui,
+    l: Locale,
+    document: &SceneLayoutDocument,
+    state: &StudioUiState,
+    history: &mut Vec<StudioIntent>,
+) {
+    let sending = document.has_unsent() || document.gesture_kind().is_some() || document.editing();
+    if sending {
+        status_chip(ui, l.text(Msg::DesignStatusSending), Tone::Pending, 140.0)
+            .on_hover_text(l.text(Msg::DesignStatusSendingHover));
     } else {
-        status_chip(
-            ui,
-            &l.format(Msg::DesignStatusDraft, &[("count", Arg::from(changes))]),
-            Tone::Pending,
-            128.0,
+        status_chip(ui, l.text(Msg::DesignStatusMatches), Tone::Ready, 140.0)
+            .on_hover_text(l.text(Msg::DesignStatusMatchesHover));
+    }
+    let availability = edit_history_availability(state);
+    if ui
+        .add_enabled(
+            availability.undo.expected_edit.is_some(),
+            small_button(l.text(Msg::Undo)),
         )
-        .on_hover_text(l.text(Msg::DesignStatusDraftHover));
-    }
-    let undo = document.undo_label();
-    let undo_hover = l.format(
-        Msg::DesignUndoHover,
-        &[(
-            "action",
-            Arg::Str(l.text(undo.map_or(Msg::DesignActionField, action_text))),
-        )],
-    );
-    if ui
-        .add_enabled(undo.is_some(), small_button(l.text(Msg::Undo)))
-        .hint(&undo_hover, Msg::DesignReasonNothingToUndo.en())
+        .hint(l.text(Msg::DesignUndoHover), availability.undo.reason)
         .clicked()
+        && let Some(intent) = availability.undo_intent()
     {
-        document.undo();
+        history.push(intent);
     }
-    let redo = document.redo_label();
-    let redo_hover = l.format(
-        Msg::DesignRedoHover,
-        &[(
-            "action",
-            Arg::Str(l.text(redo.map_or(Msg::DesignActionField, action_text))),
-        )],
-    );
     if ui
-        .add_enabled(redo.is_some(), small_button(l.text(Msg::Redo)))
-        .hint(&redo_hover, Msg::DesignReasonNothingToRedo.en())
+        .add_enabled(
+            availability.redo.expected_edit.is_some(),
+            small_button(l.text(Msg::Redo)),
+        )
+        .hint(l.text(Msg::DesignRedoHover), availability.redo.reason)
         .clicked()
+        && let Some(intent) = availability.redo_intent()
     {
-        document.redo();
+        history.push(intent);
     }
 }
 
@@ -1054,9 +1099,9 @@ impl CanvasMap {
 /// The cursor a press at a hit target would show.
 fn cursor_for(target: HitTarget, alt: bool) -> CursorIcon {
     match target {
-        HitTarget::Body(_) => CursorIcon::Move,
         HitTarget::Handle(_, Handle::Rotate) => CursorIcon::Alias,
-        HitTarget::Handle(_, Handle::Edge(_)) if alt => CursorIcon::Crosshair,
+        HitTarget::Handle(_, Handle::Anchor | Handle::Edge(_)) if alt => CursorIcon::Crosshair,
+        HitTarget::Body(_) | HitTarget::Handle(_, Handle::Anchor) => CursorIcon::Move,
         HitTarget::Handle(_, Handle::Edge(Edge::Left | Edge::Right)) => {
             CursorIcon::ResizeHorizontal
         }
@@ -1235,7 +1280,7 @@ fn draw_canvas(
         }
     }
     let single = document.single_selection().map(|layer| layer.id);
-    for layer in document.layers() {
+    for layer in document.draw_order() {
         paint_layer(
             &painter,
             map,
@@ -1254,8 +1299,8 @@ fn draw_canvas(
         let mut group: Option<fm_ui_model::scene_designer::geometry::Bounds> = None;
         for id in document.selection() {
             if let Some(layer) = document.layer(*id) {
-                let footprint = layer.placement.footprint();
-                group = Some(group.map_or(footprint, |bounds| bounds.union(footprint)));
+                let bounds = layer.placement.frame().bounds();
+                group = Some(group.map_or(bounds, |group| group.union(bounds)));
             }
         }
         if let Some(group) = group {
@@ -1366,11 +1411,15 @@ fn readout_text(l: Locale, readout: Readout) -> String {
     match readout {
         Readout::Position { x, y } => format!("X {x}  Y {y}"),
         Readout::Size { width, height } => format!("W {width}  H {height}"),
-        Readout::Angle { free, stored } => l.format(
+        Readout::Angle { stored, .. } => l.format(
             Msg::DesignReadoutAngle,
+            &[("free", Arg::Str(&format!("{stored:.1}")))],
+        ),
+        Readout::Anchor { x, y } => l.format(
+            Msg::DesignReadoutAnchor,
             &[
-                ("free", Arg::Str(&format!("{free:.0}"))),
-                ("stored", Arg::Str(&format!("{stored:.0}"))),
+                ("x", Arg::Str(&format!("{x:.1}"))),
+                ("y", Arg::Str(&format!("{y:.1}"))),
             ],
         ),
         Readout::Crop { edge, pixels } => l.format(
@@ -1482,7 +1531,7 @@ fn paint_handles(painter: &egui::Painter, map: CanvasMap, layer: &DesignLayer, e
     painter.line_segment([top, rotate], stroke);
     painter.circle(rotate, HANDLE_SIZE + 0.5, fill, stroke);
     for handle in Handle::ALL {
-        if handle == Handle::Rotate {
+        if matches!(handle, Handle::Rotate | Handle::Anchor) {
             continue;
         }
         let at = map.screen(frame.handle_position(handle, rotate_offset));
@@ -1500,12 +1549,18 @@ fn paint_handles(painter: &egui::Painter, map: CanvasMap, layer: &DesignLayer, e
             egui::StrokeKind::Middle,
         );
     }
-    // The anchor: layers turn and zoom about their centre.
-    let centre = map.screen(frame.centre);
-    for direction in [vec2(6.0, 0.0), vec2(0.0, 6.0)] {
+    // The anchor: the layer turns and zooms about it (Alt-drag moves it).
+    let anchor = map.screen(frame.handle_position(Handle::Anchor, rotate_offset));
+    let colour = if editable {
+        ANCHOR
+    } else {
+        Color32::from_gray(140)
+    };
+    painter.circle_stroke(anchor, HANDLE_SIZE + 1.5, Stroke::new(1.5, colour));
+    for direction in [vec2(8.0, 0.0), vec2(0.0, 8.0)] {
         painter.line_segment(
-            [centre - direction, centre + direction],
-            Stroke::new(1.5, accent_color()),
+            [anchor - direction, anchor + direction],
+            Stroke::new(1.5, colour),
         );
     }
 }
@@ -1534,9 +1589,13 @@ fn scrub(
     ui.label(field_label(scrub.label));
     let stored = document.field_value(id, scrub.field).unwrap_or(0.0);
     let mut value = stored * scrub.shown_per_stored;
-    let decimals = usize::from(
-        (scrub.shown_per_stored - 1.0).abs() > f64::EPSILON || scrub.field == Field::Zoom,
-    );
+    let decimals = match scrub.field {
+        Field::Rotation => 3,
+        Field::AnchorX | Field::AnchorY => 2,
+        field => {
+            usize::from((scrub.shown_per_stored - 1.0).abs() > f64::EPSILON || field == Field::Zoom)
+        }
+    };
     let response = ui
         .add_enabled(
             blocked.is_none(),
@@ -1698,10 +1757,32 @@ fn inspector(
     ui.add_space(6.0);
     ui.label(section_label(l.text(Msg::AnimPropRotation)))
         .on_hover_text(l.text(Msg::DesignRotationHover));
+    egui::Grid::new("studio-designer-rotation")
+        .num_columns(2)
+        .spacing(Vec2::new(6.0, 4.0))
+        .show(ui, |ui| {
+            scrub(
+                ui,
+                l,
+                document,
+                id,
+                Scrub {
+                    field: Field::Rotation,
+                    label: l.text(Msg::DesignRotationField),
+                    hover: l.text(Msg::DesignRotationHover).to_owned(),
+                    range: -360.0..=360.0,
+                    speed: 0.25,
+                    suffix: " °",
+                    shown_per_stored: 1.0,
+                },
+                lock,
+            );
+            ui.end_row();
+        });
     ui.horizontal(|ui| {
         let current = document.field_value(id, Field::Rotation).unwrap_or(0.0);
         for angle in [0_u16, 90, 180, 270] {
-            let on = (current - f64::from(angle)).abs() < 0.5;
+            let on = (current - f64::from(angle)).abs() < 0.0005;
             let response = ui
                 .add_enabled(
                     lock.is_none(),
@@ -1865,11 +1946,76 @@ fn inspector(
         .color(text_color()),
     )
     .on_hover_text(l.text(Msg::DesignStackHover));
+    egui::Grid::new("studio-designer-z-order")
+        .num_columns(2)
+        .spacing(Vec2::new(6.0, 4.0))
+        .show(ui, |ui| {
+            scrub(
+                ui,
+                l,
+                document,
+                id,
+                Scrub {
+                    field: Field::ZOrder,
+                    label: l.text(Msg::DesignZOrder),
+                    hover: l.text(Msg::DesignZOrderHover).to_owned(),
+                    range: f64::from(i32::MIN)..=f64::from(i32::MAX),
+                    speed: 0.1,
+                    suffix: "",
+                    shown_per_stored: 1.0,
+                },
+                lock,
+            );
+            ui.end_row();
+        });
     group(ui, Msg::DesignGroupAnchor);
-    ui.label(RichText::new(l.text(Msg::DesignAnchorCentre)).color(text_color()))
+    ui.label(caption(l.text(Msg::DesignAnchorHover)).color(muted_color()))
         .on_hover_text(l.text(Msg::DesignAnchorHover));
-    ui.add_space(6.0);
-    ui.add(egui::Label::new(caption(l.text(Msg::DesignUnreported)).color(muted_color())).wrap());
+    egui::Grid::new("studio-designer-anchor")
+        .num_columns(4)
+        .spacing(Vec2::new(6.0, 4.0))
+        .show(ui, |ui| {
+            for (field, label, hover) in [
+                (Field::AnchorX, "X", Msg::DesignAnchorXHover),
+                (Field::AnchorY, "Y", Msg::DesignAnchorYHover),
+            ] {
+                scrub(
+                    ui,
+                    l,
+                    document,
+                    id,
+                    Scrub {
+                        field,
+                        label,
+                        hover: l.text(hover).to_owned(),
+                        range: 0.0..=100.0,
+                        speed: 0.25,
+                        suffix: " %",
+                        shown_per_stored: 0.01,
+                    },
+                    lock,
+                );
+            }
+            ui.end_row();
+        });
+    let centred = document.field_value(id, Field::AnchorX) == Some(5_000.0)
+        && document.field_value(id, Field::AnchorY) == Some(5_000.0);
+    if ui
+        .add_enabled(
+            lock.is_none() && !centred,
+            small_button(l.text(Msg::DesignAnchorCentre)),
+        )
+        .hint(
+            l.text(Msg::DesignAnchorCentreHover),
+            lock.unwrap_or(Msg::DesignReasonCentred.en()),
+        )
+        .clicked()
+    {
+        document.begin(EditLabel::Anchor);
+        document.set_field(Field::AnchorX, 5_000.0);
+        document.set_field(Field::AnchorY, 5_000.0);
+        document.commit();
+    }
 }
 
 #[cfg(test)]

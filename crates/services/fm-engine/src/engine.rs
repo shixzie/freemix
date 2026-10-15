@@ -321,6 +321,9 @@ pub enum EngineCommand {
     /// Edits an input's lifecycle or the input catalogue (IN-026; see
     /// [`crate::EngineInputLifecycleEdit`]). A project edit.
     InputLifecycle(crate::EngineInputLifecycleEdit),
+    /// Edits one layer of a scene live (SW-006; see
+    /// [`crate::EngineSceneLayerEdit`]). A project edit.
+    SceneLayer(crate::EngineSceneLayerEdit),
 }
 
 /// What an accepted title command does on air.
@@ -448,6 +451,9 @@ pub enum EngineEvent {
         added: Vec<(InputId, String)>,
         refused: Vec<(usize, fm_model::BatchImportRefusal)>,
     },
+    /// A live scene layer edit (or its undo or redo) was accepted (SW-006);
+    /// the scene afterwards is read from [`ShowState::scene`].
+    SceneLayoutChanged(crate::EngineSceneLayerEdit),
 }
 
 /// Engine-level desired status of one stream target; realization is owned by
@@ -1265,6 +1271,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::Grade(_))
                 && !matches!(&command, EngineCommand::TitleAnimation(_))
                 && !matches!(&command, EngineCommand::SceneAnimation(_))
+                && !matches!(&command, EngineCommand::SceneLayer(_))
                 && !matches!(&command, EngineCommand::AnimationPreset(_))
                 && !matches!(&command, EngineCommand::SetTransitionFavorite { .. })
                 && !matches!(&command, EngineCommand::Media(_))
@@ -1824,6 +1831,13 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SceneLayer(edit) = self.command {
+            crate::scene_layer::apply(state, &edit)?;
+            events.push(EngineEvent::SceneLayoutChanged(edit));
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::AnimationPreset(edit) = self.command {
             crate::animation_preset::apply(state.animation_presets_mut(), &edit)?;
             events.push(EngineEvent::AnimationPresetsChanged(edit));
@@ -2121,6 +2135,7 @@ impl EngineMutation {
             EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::SceneAnimation(_)
+            | EngineCommand::SceneLayer(_)
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
@@ -2469,6 +2484,7 @@ fn apply_runtime(
             | EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::SceneAnimation(_)
+            | EngineCommand::SceneLayer(_)
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
@@ -2624,6 +2640,7 @@ fn apply_runtime(
         EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
+        | EngineCommand::SceneLayer(_)
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
@@ -2790,6 +2807,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
+        | EngineCommand::SceneLayer(_)
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)

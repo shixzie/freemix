@@ -14,13 +14,12 @@ use fm_engine::{
     scene_inputs_sharing,
 };
 use fm_model::fm_animation::{Clip, ClipError, Track, TrackKey};
-use fm_model::{LayerId, Rotation, Scene, SceneClip};
+use fm_model::{LayerId, Scene, SceneClip};
 use fm_protocol::{
     CommandPayload, EventPayload, MAX_SCENE_ANIMATION_BYTES, MAX_SCENE_CANVAS_SIDE,
     MAX_SCENE_LAYER_NAME_BYTES, MAX_SCENE_LAYOUT_LAYERS, MAX_SCENE_NAME_BYTES,
     SceneAnimationStateMessage, SceneLayoutStateMessage, WireInputId, WireSceneClip, WireSceneId,
-    WireSceneLayerId, WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout,
-    scene_clip_wire_bytes,
+    WireSceneLayerId, WireSceneLayout, scene_clip_wire_bytes,
 };
 use fm_types::InputId;
 
@@ -319,7 +318,8 @@ fn display_name(name: &str, limit: usize) -> String {
 /// `scene`'s wire layout on a `canvas_width` x `canvas_height` canvas: its
 /// first [`MAX_SCENE_LAYOUT_LAYERS`] layers in scene order, each with its id,
 /// display name, source, static footprint origin and pre-rotation size,
-/// quarter turns, opacity, and enablement. Canvas sides are clamped to
+/// quarter turns, tilt, anchor, opacity, enablement, z-order, crop, and
+/// mask (Protocol 2.39). Canvas sides are clamped to
 /// `1..=`[`MAX_SCENE_CANVAS_SIDE`].
 #[must_use]
 pub fn scene_layout_to_wire(
@@ -335,29 +335,11 @@ pub fn scene_layout_to_wire(
             .layers
             .iter()
             .take(MAX_SCENE_LAYOUT_LAYERS)
-            .map(|layer| WireSceneLayerOutline {
-                id: WireSceneLayerId::new(layer.id.non_zero()),
-                name: display_name(&layer.name, MAX_SCENE_LAYER_NAME_BYTES),
-                source: match layer.source {
-                    fm_model::SourceRef::Input(input) => {
-                        WireSceneLayerSource::Input(WireInputId::from_domain(input))
-                    }
-                    fm_model::SourceRef::Scene(scene) => {
-                        WireSceneLayerSource::Scene(WireSceneId::from_domain(scene))
-                    }
-                },
-                x: layer.geometry.translation_x,
-                y: layer.geometry.translation_y,
-                width: layer.geometry.width,
-                height: layer.geometry.height,
-                quarter_turns: match layer.geometry.rotation {
-                    Rotation::Deg0 => 0,
-                    Rotation::Deg90 => 1,
-                    Rotation::Deg180 => 2,
-                    Rotation::Deg270 => 3,
-                },
-                opacity: layer.opacity,
-                enabled: layer.enabled,
+            .map(|layer| {
+                crate::scene_layer::wire_layer_outline(
+                    layer,
+                    display_name(&layer.name, MAX_SCENE_LAYER_NAME_BYTES),
+                )
             })
             .collect(),
     }

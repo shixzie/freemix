@@ -45,7 +45,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.38\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.39\tid=a\tidempotency_key=k";
 
 fn round_trip(message: &WireMessage) -> String {
     let line = encode_line(message).unwrap();
@@ -106,8 +106,8 @@ fn clip_bytes() -> Vec<u8> {
 }
 
 #[test]
-fn protocol_is_2_38() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 38));
+fn protocol_is_2_39() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 39));
 }
 
 #[test]
@@ -304,10 +304,16 @@ fn cam() -> WireSceneLayerOutline {
         quarter_turns: 1,
         opacity: 200,
         enabled: true,
+        tilt_millidegrees: 0,
+        anchor_x: 5_000,
+        anchor_y: 5_000,
+        z_order: 0,
+        crop: None,
+        mask: None,
     }
 }
 
-const CAM_BYTES: [u8; 15] = [
+const CAM_BYTES: [u8; 21] = [
     1, // id
     1, // flags: enabled
     1, // quarter turns
@@ -318,6 +324,10 @@ const CAM_BYTES: [u8; 15] = [
     0xAC, 0x02, // width 300
     40,   // height
     200,  // opacity
+    0,    // tilt (Protocol 2.39)
+    0x88, 0x27, // anchor x 5000
+    0x88, 0x27, // anchor y 5000
+    0,    // z-order
 ];
 
 fn layout_state(layers: Vec<WireSceneLayerOutline>) -> WireMessage {
@@ -437,6 +447,23 @@ fn the_worst_case_layout_fits_one_line() {
             quarter_turns: 3,
             opacity: 255,
             enabled: true,
+            tilt_millidegrees: -45_000,
+            anchor_x: 10_000,
+            anchor_y: 10_000,
+            z_order: i32::MIN,
+            crop: Some(fm_protocol::WireLayerCrop {
+                x: 128,
+                y: 128,
+                width: 1_792,
+                height: 952,
+            }),
+            mask: Some(fm_protocol::WireLayerMask {
+                x: 128,
+                y: 128,
+                width: 1_664,
+                height: 824,
+                invert: true,
+            }),
         })
         .collect();
     let line = round_trip(&layout_state(layers));
@@ -474,7 +501,7 @@ fn scene_preview_requests_round_trip_and_are_bounded() {
     let line = round_trip(&preview_request(TitlePreviewSample::In { frame: 4 }, None));
     assert_eq!(
         line,
-        "scene_preview_request\tprotocol=2.38\trequest_id=anim-preview-3\tinput=12\tphase=in\t\
+        "scene_preview_request\tprotocol=2.39\trequest_id=anim-preview-3\tinput=12\tphase=in\t\
          frame=4\twidth=640\theight=360\n"
     );
     let with_clip = round_trip(&preview_request(TitlePreviewSample::Hold, Some(clip())));
@@ -494,7 +521,7 @@ fn scene_preview_requests_round_trip_and_are_bounded() {
         ("phase=in\tframe=0\twidth=641\theight=360", "width"),
         ("phase=in\tframe=0\twidth=64\theight=0", "height"),
     ] {
-        let line = format!("scene_preview_request\tprotocol=2.38\trequest_id=p\tinput=7\t{bad}\n");
+        let line = format!("scene_preview_request\tprotocol=2.39\trequest_id=p\tinput=7\t{bad}\n");
         match decode_line(&line) {
             Err(CodecError::InvalidField { field: actual, .. }) => {
                 assert_eq!(actual, field, "{bad}");

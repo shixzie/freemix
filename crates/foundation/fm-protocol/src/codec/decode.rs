@@ -446,6 +446,14 @@ fn decode_command_payload(
             super::input_lifecycle::decode_lifecycle_operation(lifecycle, fields)?
                 .expect("every listed payload is a lifecycle operation"),
         ),
+        layer if layer.starts_with("scene_layer_") => CommandPayload::SceneLayer(
+            super::scene_layer::decode_scene_layer_edit(layer, fields)?.ok_or_else(|| {
+                CodecError::InvalidField {
+                    field: "payload",
+                    value: layer.to_owned(),
+                }
+            })?,
+        ),
         media if media.starts_with("media_") => {
             let input = fields.canonical_input("input")?;
             let operation =
@@ -2058,6 +2066,32 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             active: fields.boolean("active")?,
         },
         "media_changed" => decode_media_changed(fields)?,
+        "scene_layout_changed" => {
+            let operation = fields.required("operation")?;
+            let edit = super::scene_layer::decode_scene_layer_edit(&operation, fields)?.ok_or(
+                CodecError::InvalidField {
+                    field: "operation",
+                    value: operation,
+                },
+            )?;
+            let side = |fields: &mut Fields, name: &'static str| {
+                let value = fields.canonical_required(name)?;
+                u32::try_from(value).map_err(|_| CodecError::InvalidField {
+                    field: name,
+                    value: value.to_string(),
+                })
+            };
+            let width = side(fields, "layout_width")?;
+            let height = side(fields, "layout_height")?;
+            EventPayload::SceneLayoutChanged {
+                edit,
+                layout: Box::new(decode_scene_layout(
+                    width,
+                    height,
+                    &fields.required("layers")?,
+                )?),
+            }
+        }
         "input_lifecycle_changed" => {
             let operation = fields.required("operation")?;
             EventPayload::InputLifecycleChanged {

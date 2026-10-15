@@ -310,6 +310,12 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("kind", kind.token())?;
             record.field("duration_frames", duration_frames)?;
         }
+        CommandPayload::SceneLayer(edit) => {
+            record.field("payload", edit.operation.payload())?;
+            super::scene_layer::encode_scene_layer_edit(edit, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         CommandPayload::InputLifecycle(operation) => {
             record.field("payload", operation.payload())?;
             super::input_lifecycle::encode_lifecycle_operation(operation, &mut |name, value| {
@@ -1848,6 +1854,17 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         }
         EventPayload::AnimationPresetChanged(change) => {
             encode_animation_preset_changed(record, change)?;
+        }
+        EventPayload::SceneLayoutChanged { edit, layout } => {
+            let layers = encode_scene_layers(layout)?;
+            record.field("event", "scene_layout_changed")?;
+            record.field("operation", edit.operation.payload())?;
+            super::scene_layer::encode_scene_layer_edit(edit, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+            record.field("layout_width", layout.width)?;
+            record.field("layout_height", layout.height)?;
+            record.field_string("layers", layers)?;
         }
         EventPayload::InputLifecycleChanged {
             operation,

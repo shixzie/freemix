@@ -295,6 +295,11 @@ pub enum StudioIntent {
     /// stage 5): a `scene_animation_set` payload that carries its own base
     /// revision.
     SceneAnimation(CommandPayload),
+    /// Sends one live scene layer edit from the layer designer (Protocol
+    /// 2.39, SW-006): a layer's geometry, appearance, crop, mask, z-order,
+    /// or stacking position, by layer id. A drag's later edits continue
+    /// its first, so the server undoes the gesture at once.
+    SceneLayer(fm_protocol::SceneLayerEdit),
     /// Edits the project's animation preset library (Protocol 2.34): an
     /// `animation_preset_add`, `_rename`, or `_remove` payload. Each names
     /// its preset by id, so the server checks it against the current

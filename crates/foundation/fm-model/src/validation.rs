@@ -798,12 +798,7 @@ fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
         }
         for layer in &scene.layers {
             require_name(errors, entity, "layers.name", &layer.name);
-            if layer.geometry.width == 0
-                || layer.geometry.height == 0
-                || layer.geometry.width > ProjectSettings::MAX_VIDEO_WIDTH
-                || layer.geometry.height > ProjectSettings::MAX_VIDEO_HEIGHT
-                || layer.geometry.tilt_millidegrees != 0
-            {
+            if !layer.geometry.is_storable() {
                 errors.push(ValidationError {
                     entity,
                     field: "layers.geometry",

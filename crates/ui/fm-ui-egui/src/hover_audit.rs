@@ -664,6 +664,12 @@ fn scene_layout() -> fm_protocol::WireSceneLayout {
         quarter_turns: 0,
         opacity: 255,
         enabled: true,
+        tilt_millidegrees: 0,
+        anchor_x: 5_000,
+        anchor_y: 5_000,
+        z_order: 0,
+        crop: None,
+        mask: None,
         source: fm_protocol::WireSceneLayerSource::Input(wire(u128::from(id))),
     };
     fm_protocol::WireSceneLayout {

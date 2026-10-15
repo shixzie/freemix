@@ -48,6 +48,12 @@ fn outline(id: u32, x: i32, y: i32, width: u32, height: u32) -> WireSceneLayerOu
         quarter_turns: 0,
         opacity: 255,
         enabled: true,
+        tilt_millidegrees: 0,
+        anchor_x: 5_000,
+        anchor_y: 5_000,
+        z_order: 0,
+        crop: None,
+        mask: None,
     }
 }
 
@@ -127,6 +133,7 @@ fn local_and_world_coordinates_round_trip_at_any_angle() {
             half_width: 200.0,
             half_height: 80.0,
             angle_degrees: angle,
+            anchor: Point::default(),
         };
         let world = Point::new(700.0, 300.0);
         assert!(
@@ -139,6 +146,7 @@ fn local_and_world_coordinates_round_trip_at_any_angle() {
         half_width: 10.0,
         half_height: 5.0,
         angle_degrees: 90.0,
+        anchor: Point::default(),
     };
     // Clockwise in y-down canvas space: local +x points down.
     assert!(close(
@@ -208,6 +216,7 @@ fn hit_testing_follows_a_turned_box() {
         half_width: 300.0,
         half_height: 20.0,
         angle_degrees: 45.0,
+        anchor: Point::default(),
     };
     let layer = HitLayer {
         id: layer_id(7),
@@ -541,14 +550,22 @@ fn numeric_fields_clamp_and_scrubs_join_one_step() {
         document.field_value(layer_id(2), Field::Opacity),
         Some(128.0)
     );
+    // Any angle: the nearest quarter turn and a tilt, to the millidegree.
     document.set_field(Field::Rotation, 260.0);
+    let placement = document.layer(layer_id(2)).unwrap().placement;
     assert_eq!(
-        document.layer(layer_id(2)).unwrap().placement.quarter_turns,
-        3
+        (placement.quarter_turns, placement.tilt_millidegrees),
+        (3, -10_000)
     );
     assert_eq!(
         document.field_value(layer_id(2), Field::Rotation),
-        Some(270.0)
+        Some(260.0)
+    );
+    document.set_field(Field::Rotation, -0.0015);
+    let placement = document.layer(layer_id(2)).unwrap().placement;
+    assert_eq!(
+        (placement.quarter_turns, placement.tilt_millidegrees),
+        (0, -2)
     );
 }
 
@@ -573,10 +590,16 @@ fn masks_stay_inside_the_cropped_source() {
         (mask.x, mask.y, mask.width, mask.height),
         (480, 270, 960, 540)
     );
+    // A crop stops at the mask's far edge instead of cutting it.
+    document.set_field(Field::CropRight, 1_000.0);
+    let layer = document.layer(layer_id(1)).unwrap();
+    assert_eq!(layer.crop.cropped((1_920, 1_080)), (1_440, 1_080));
+    assert_eq!(layer.mask.unwrap().width, 960);
+    // A narrower mask lets the crop go further.
+    document.set_field(Field::MaskWidth, 440.0);
     document.set_field(Field::CropRight, 1_000.0);
     let layer = document.layer(layer_id(1)).unwrap();
     assert_eq!(layer.crop.cropped((1_920, 1_080)), (920, 1_080));
-    assert_eq!(layer.mask.unwrap().width, 440);
     document.set_field(Field::MaskInverted, 1.0);
     assert_eq!(
         document.field_value(layer_id(1), Field::MaskInverted),

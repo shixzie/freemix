@@ -6,6 +6,7 @@ mod input_lifecycle;
 mod layout;
 mod media;
 mod playlist;
+mod scene_layer;
 mod scene_layout;
 mod title;
 mod transition;
@@ -14,6 +15,7 @@ mod value;
 pub use animation::{motion_wire_bytes, scene_clip_wire_bytes, title_clip_wire_bytes};
 pub use decode::{LineDecoder, decode_line};
 pub use encode::encode_line;
+pub use scene_layout::scene_layout_wire_bytes;
 
 use core::fmt;
 

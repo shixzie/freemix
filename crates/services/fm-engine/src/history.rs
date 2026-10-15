@@ -8,10 +8,12 @@
 //!   catalogue (adding and removing inputs), input names and order, Stinger
 //!   slots, overlay transition, appearance, and output inclusion, and the
 //!   project grading ([`crate::EngineGradeEdit`]), the animation preset
-//!   library ([`crate::EngineAnimationPresetEdit`]), and the input lifecycle
+//!   library ([`crate::EngineAnimationPresetEdit`]), the input lifecycle
 //!   ([`crate::EngineInputLifecycleEdit`]: duplicate, source replacement,
 //!   categories, colour labels, pause, close, batch import, and multi-input
-//!   removal). They are rejected while
+//!   removal), and live scene layer edits ([`crate::EngineSceneLayerEdit`]:
+//!   geometry, appearance, crop, mask, z-order, position, add, and remove,
+//!   each with an exact inverse). They are rejected while
 //!   the edit padlock covers them (an input's padlock also covers its
 //!   grade), and all but input and LUT removal are recorded in the undo
 //!   history.
@@ -106,6 +108,10 @@ use crate::{EngineCommand, EngineGradeEdit, ShowState};
 /// Maximum number of project edits retained for undo (and therefore redo).
 pub const MAX_EDIT_HISTORY: usize = 100;
 
+/// How many of the newest undo entries a continuing scene layer edit looks
+/// through for its gesture's entry.
+const MAX_GESTURE_FOLD_DEPTH: usize = 32;
+
 /// The padlock target of an edit lock.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum EditLockScope {
@@ -142,6 +148,7 @@ impl EngineCommand {
             | Self::Grade(_)
             | Self::TitleAnimation(_)
             | Self::SceneAnimation(_)
+            | Self::SceneLayer(_)
             | Self::AnimationPreset(_)
             | Self::SetTransitionFavorite { .. }
             | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
@@ -486,6 +493,36 @@ impl EditHistory {
         })
     }
 
+    /// The undo entry a continuing scene layer `edit` folds into: the latest
+    /// entry editing the same property of the same layer, found among the
+    /// newest entries while they are all live edits of the same scene that
+    /// touch other layers (a multi-layer gesture records one entry per
+    /// layer, and edits of different layers commute). Any other entry ends
+    /// the search.
+    fn gesture_entry(
+        &mut self,
+        edit: &crate::EngineSceneLayerEdit,
+    ) -> Option<&mut EditHistoryEntry> {
+        if !edit.continues {
+            return None;
+        }
+        for entry in self.undo.iter_mut().rev().take(MAX_GESTURE_FOLD_DEPTH) {
+            let EngineCommand::SceneLayer(previous) = &entry.forward else {
+                return None;
+            };
+            if previous.scene != edit.scene {
+                return None;
+            }
+            if edit.folds_into(previous) {
+                return Some(entry);
+            }
+            if previous.layer == edit.layer {
+                return None;
+            }
+        }
+        None
+    }
+
     /// Applies the history change for one accepted, newly committed command.
     pub(crate) fn commit(
         &mut self,
@@ -497,6 +534,8 @@ impl EditHistory {
         match step {
             HistoryStep::None => {}
             HistoryStep::Record { inverse } => {
+                // A gesture never folds across an undo.
+                let foldable = self.redo.is_empty();
                 self.redo.clear();
                 // A recorded animation edit replays without a base revision;
                 // the drift check stands in for it.
@@ -506,6 +545,17 @@ impl EditHistory {
                     }
                     EngineCommand::SceneAnimation(edit) => {
                         EngineCommand::SceneAnimation(edit.unchecked())
+                    }
+                    // A gesture's continuing scene layer edit folds into the
+                    // gesture's entry for the same layer property: the entry
+                    // keeps its inverse (the state before the gesture) and
+                    // takes the new forward edit.
+                    EngineCommand::SceneLayer(edit) => {
+                        if foldable && let Some(entry) = self.gesture_entry(&edit) {
+                            entry.forward = EngineCommand::SceneLayer(edit.recorded());
+                            return;
+                        }
+                        EngineCommand::SceneLayer(edit.recorded())
                     }
                     command => command,
                 };
@@ -642,6 +692,7 @@ fn names_input(command: &EngineCommand, input: InputId) -> bool {
         EngineCommand::TitleAnimation(edit) => edit.input == input,
         EngineCommand::SceneAnimation(edit) => edit.input == input,
         EngineCommand::InputLifecycle(edit) => edit.names_input(input),
+        EngineCommand::SceneLayer(edit) => edit.names_input(input),
         _ => false,
     }
 }
@@ -705,6 +756,9 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
             crate::animation_preset::inverse(state, edit).map(EngineCommand::AnimationPreset)
         }
         EngineCommand::InputLifecycle(edit) => crate::input_lifecycle::inverse(state, edit),
+        EngineCommand::SceneLayer(edit) => {
+            crate::scene_layer::inverse(state, edit).map(EngineCommand::SceneLayer)
+        }
         EngineCommand::SetTransitionFavorite { slot, .. } => state
             .transition_favorites()
             .get(*slot)
@@ -815,8 +869,9 @@ pub(crate) fn check_edit_locks(
                 None => Ok(()),
             }
         }
-        // Every Scene input showing the graded layer's scene shows the edit.
-        EngineCommand::Grade(EngineGradeEdit::SetLayer { scene, .. }) => {
+        // Every Scene input showing the edited layer's scene shows the edit.
+        EngineCommand::Grade(EngineGradeEdit::SetLayer { scene, .. })
+        | EngineCommand::SceneLayer(crate::EngineSceneLayerEdit { scene, .. }) => {
             match state
                 .scene_inputs()
                 .iter()

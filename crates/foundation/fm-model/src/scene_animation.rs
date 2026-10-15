@@ -14,14 +14,22 @@
 //! rounded once, half up, so every renderer poses a frame identically:
 //!
 //! * `ScaleX`/`ScaleY` (basis points) scale the layer's box
-//!   (`geometry.width`/`height`, before its quarter-turn rotation) about the
-//!   centre of its on-screen footprint.
-//! * `Rotation` (millidegrees, clockwise) turns the layer about the centre of
-//!   its scaled footprint by any angle. It is split into the nearest quarter
-//!   turn (half up), added to the static quarter turn, and a remaining tilt
-//!   in `-45_000..45_000` millidegrees ([`LayerGeometry::tilt_millidegrees`])
-//!   that the compositor draws bilinearly about the footprint centre. A
-//!   multiple of 90 degrees has no tilt, so it stays pixel-exact.
+//!   (`geometry.width`/`height`, before its quarter-turn rotation) about its
+//!   anchor ([`crate::LayerAnchor`]; the centre by default).
+//! * `Rotation` (millidegrees, clockwise) turns the layer about its anchor
+//!   by any angle, on top of its stored turn (quarter turns plus stored
+//!   tilt). The whole turn is split into the nearest quarter turn (half up)
+//!   and a remaining tilt in `-45_000..45_000` millidegrees
+//!   ([`LayerGeometry::tilt_millidegrees`]) that the compositor draws
+//!   bilinearly about the footprint centre. A multiple of 90 degrees has no
+//!   tilt, so it stays pixel-exact.
+//! * An anchor away from the centre moves the drawn box rigidly: by
+//!   `R_q(v) - R_t(s * v)`, where `v` runs from the box centre to the anchor
+//!   in the box's own frame, `s` is the animated scale, `R_q` the stored
+//!   quarter turn and `R_t` the whole turn (Q30 sine and cosine, rounded
+//!   once, half up). A static scene is resolved the same way (`s` one, no
+//!   animated turn), so every posed layer is drawn about its footprint
+//!   centre with its anchor at the centre.
 //! * `PositionX`/`PositionY` add pixels to the footprint's top-left corner.
 //! * `CropLeft`/`Top`/`Right`/`Bottom` hide that many pixels of the scaled
 //!   box from each of its edges (in the layer's own frame, before rotation);
@@ -50,7 +58,7 @@ use fm_animation::{
 };
 use fm_types::FrameRate;
 
-use crate::{CropRect, Layer, LayerGeometry, RectMask, Rotation, Scene};
+use crate::{CropRect, Layer, LayerAnchor, LayerGeometry, RectMask, Rotation, Scene};
 
 /// The stable id of one layer within its scene: the target of every scene
 /// animation track. Unique within a scene and kept by every layer edit.
@@ -328,11 +336,14 @@ impl Scene {
     /// The scene as drawn at `state` of its animation, with layer sources
     /// `source_width` x `source_height` (the project canvas): every enabled
     /// layer posed by [`pose_layer`]. [`ClipState::Static`] or a static
-    /// animation returns the scene unchanged.
+    /// animation only resolves each layer's anchor ([`resolve_anchor`]).
     #[must_use]
     pub fn posed(&self, state: ClipState, source_width: u32, source_height: u32) -> Self {
         let mut posed = self.clone();
         if matches!(state, ClipState::Static) || self.animation.is_static() {
+            for layer in &mut posed.layers {
+                layer.geometry = resolve_anchor(layer.geometry);
+            }
             return posed;
         }
         for layer in &mut posed.layers {
@@ -344,6 +355,8 @@ impl Scene {
                     source_width,
                     source_height,
                 );
+            } else {
+                layer.geometry = resolve_anchor(layer.geometry);
             }
         }
         posed
@@ -460,9 +473,72 @@ fn tilt_shift(tilt: i128, dx2: i128, dy2: i128) -> (i128, i128) {
     )
 }
 
-/// The static quarter turn plus the animated turn `rotation`
-/// (millidegrees): the nearest quarter turn (half up) joins the static one,
-/// and the tilt left over, in `-45_000..45_000`, is returned beside it.
+/// How far an anchor away from the centre moves the drawn box (doubled
+/// nowhere: whole pixels, rounded once, half up): `R_q(v) - R_t(s * v)` for
+/// the box-centre-to-anchor vector `v` of a `width` x `height` box (static)
+/// and `scaled_width` x `scaled_height` (posed), the static quarter turn `q`
+/// and the whole turn `turn` (millidegrees).
+fn anchor_shift(
+    anchor: LayerAnchor,
+    (width, height): (u32, u32),
+    (scaled_width, scaled_height): (u32, u32),
+    quarter: Rotation,
+    turn: i64,
+) -> (i128, i128) {
+    if anchor == LayerAnchor::CENTER {
+        return (0, 0);
+    }
+    let half = i128::from(LayerAnchor::MAX / 2);
+    let offset_x = i128::from(anchor.x) - half;
+    let offset_y = i128::from(anchor.y) - half;
+    // In 1/10_000 pixel.
+    let (vx, vy) = (i128::from(width) * offset_x, i128::from(height) * offset_y);
+    let (sx, sy) = (
+        i128::from(scaled_width) * offset_x,
+        i128::from(scaled_height) * offset_y,
+    );
+    let turned = |millidegrees: i64, x: i128, y: i128| {
+        let (sin, cos) = fm_animation::sin_cos_q30(millidegrees);
+        let (sin, cos) = (i128::from(sin), i128::from(cos));
+        (cos * x - sin * y, sin * x + cos * y)
+    };
+    let (qx, qy) = turned(rotation_index(quarter) * 90_000, vx, vy);
+    let (tx, ty) = turned(turn, sx, sy);
+    let scale = i128::from(fm_animation::TRIG_ONE) * i128::from(LayerAnchor::MAX);
+    (round_half_up(qx - tx, scale), round_half_up(qy - ty, scale))
+}
+
+/// `geometry` as the compositor draws it with no animation: its stored tilt
+/// about its anchor turned into a tilt about the footprint centre (the box
+/// moved by [`anchor_shift`]) and its anchor at the centre.
+#[must_use]
+pub fn resolve_anchor(geometry: LayerGeometry) -> LayerGeometry {
+    if geometry.anchor == LayerAnchor::CENTER {
+        return geometry;
+    }
+    let (shift_x, shift_y) = if geometry.tilt_millidegrees == 0 {
+        (0, 0)
+    } else {
+        anchor_shift(
+            geometry.anchor,
+            (geometry.width, geometry.height),
+            (geometry.width, geometry.height),
+            geometry.rotation,
+            rotation_index(geometry.rotation) * 90_000 + i64::from(geometry.tilt_millidegrees),
+        )
+    };
+    LayerGeometry {
+        translation_x: to_i32(i128::from(geometry.translation_x) + shift_x),
+        translation_y: to_i32(i128::from(geometry.translation_y) + shift_y),
+        anchor: LayerAnchor::CENTER,
+        ..geometry
+    }
+}
+
+/// The static quarter turn plus the further turn `rotation` (millidegrees:
+/// the stored tilt and the animated turn): the nearest quarter turn (half
+/// up) joins the static one, and the tilt left over, in `-45_000..45_000`,
+/// is returned beside it.
 fn split_rotation(base: Rotation, rotation: i64) -> (Rotation, i128) {
     let turns = round_half_up(i128::from(rotation), 90_000);
     let tilt = i128::from(rotation) - turns * 90_000;
@@ -496,7 +572,9 @@ pub fn pose_layer(
 ) -> Layer {
     let pose = LayerPose::sample(clip, layer.id, state);
     if pose == LayerPose::IDENTITY {
-        return layer.clone();
+        let mut resolved = layer.clone();
+        resolved.geometry = resolve_anchor(layer.geometry);
+        return resolved;
     }
     apply_pose(layer, pose, source_width, source_height)
 }
@@ -504,6 +582,7 @@ pub fn pose_layer(
 /// `layer` with `pose` applied (see [`pose_layer`]).
 #[must_use]
 #[allow(clippy::similar_names)] // paired edges: x0/x1, y0/y1, and footprint sides
+#[allow(clippy::too_many_lines)] // one pose, applied in drawing order
 pub fn apply_pose(layer: &Layer, pose: LayerPose, source_width: u32, source_height: u32) -> Layer {
     let mut posed = layer.clone();
     let hidden = |mut layer: Layer| {
@@ -535,7 +614,16 @@ pub fn apply_pose(layer: &Layer, pose: LayerPose, source_width: u32, source_heig
     if box_width <= 0 || box_height <= 0 {
         return hidden(posed);
     }
-    let (rotation, tilt) = split_rotation(geometry.rotation, pose.rotation);
+    let turn = i64::from(geometry.tilt_millidegrees).saturating_add(pose.rotation);
+    let (rotation, tilt) = split_rotation(geometry.rotation, turn);
+    // A pivot away from the centre moves the whole box rigidly.
+    let (anchor_x, anchor_y) = anchor_shift(
+        geometry.anchor,
+        (geometry.width, geometry.height),
+        (width, height),
+        geometry.rotation,
+        (rotation_index(geometry.rotation) * 90_000).saturating_add(turn),
+    );
     // Centre of the static footprint, doubled to stay integral.
     let (static_width, static_height) =
         footprint(geometry.width, geometry.height, geometry.rotation);
@@ -554,8 +642,8 @@ pub fn apply_pose(layer: &Layer, pose: LayerPose, source_width: u32, source_heig
         2 * offset_y + i128::from(box_fh) - i128::from(scaled_fh),
     );
     posed.geometry = LayerGeometry::new(
-        to_i32(origin_x + offset_x + shift_x),
-        to_i32(origin_y + offset_y + shift_y),
+        to_i32(origin_x + offset_x + shift_x + anchor_x),
+        to_i32(origin_y + offset_y + shift_y + anchor_y),
         to_u32(box_width),
         to_u32(box_height),
         rotation,

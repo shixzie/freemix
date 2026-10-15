@@ -520,6 +520,12 @@ fn scene_bindings_design_from_layouts_and_save_scene_clips() {
         quarter_turns,
         opacity: 200,
         enabled,
+        tilt_millidegrees: 0,
+        anchor_x: 5_000,
+        anchor_y: 5_000,
+        z_order: 0,
+        crop: None,
+        mask: None,
         source: fm_protocol::WireSceneLayerSource::Input(fm_protocol::WireInputId::new(
             core::num::NonZeroU128::new(1).unwrap(),
         )),
@@ -623,6 +629,12 @@ fn scene_user_presets_measure_crop_in_the_layer_frame() {
         quarter_turns,
         opacity: 255,
         enabled: true,
+        tilt_millidegrees: 0,
+        anchor_x: 5_000,
+        anchor_y: 5_000,
+        z_order: 0,
+        crop: None,
+        mask: None,
     };
     let design = SceneDesign::from_layout(&WireSceneLayout {
         width: 1_920,

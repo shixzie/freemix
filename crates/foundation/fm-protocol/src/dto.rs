@@ -1073,10 +1073,11 @@ pub struct SceneAnimationStateMessage {
     pub clip: Box<WireSceneClip>,
 }
 
-/// Most layers one [`WireSceneLayout`] lists (Protocol 2.31). A scene with
-/// more lists its first layers in scene order; the rest cannot be targeted
-/// by an editor.
-pub const MAX_SCENE_LAYOUT_LAYERS: usize = 256;
+/// Most layers one [`WireSceneLayout`] lists (Protocol 2.31; 192 since 2.39,
+/// so the full layer design of every listed layer fits). A scene with more
+/// lists its first layers in scene order; the rest cannot be targeted by an
+/// editor, and a live layer add never grows a scene beyond it.
+pub const MAX_SCENE_LAYOUT_LAYERS: usize = 192;
 /// Longest layer display name in a [`WireSceneLayout`], in UTF-8 bytes
 /// (Protocol 2.35; room for each layer's source). Longer names are cut at
 /// a character boundary.
@@ -1088,7 +1089,7 @@ pub const MAX_SCENE_NAME_BYTES: usize = 128;
 /// (the project video limit).
 pub const MAX_SCENE_CANVAS_SIDE: u32 = 8_192;
 /// Largest binary encoding of one [`WireSceneLayout`]'s layer list, in
-/// bytes; with the bounds above every layout fits (worst case about 33
+/// bytes; with the bounds above every layout fits (worst case about 30
 /// KiB).
 pub const MAX_SCENE_LAYOUT_BYTES: usize = 36 * 1024;
 
@@ -1111,18 +1112,36 @@ pub struct WireSceneLayerOutline {
     pub name: String,
     /// What the layer draws.
     pub source: WireSceneLayerSource,
-    /// Static box in project canvas pixels: the top-left of its on-screen
-    /// footprint and its size before `quarter_turns`.
+    /// Static box in project canvas pixels: the top-left of its
+    /// quarter-turned (untilted) footprint and its size before
+    /// `quarter_turns`.
     pub x: i32,
     pub y: i32,
     pub width: u32,
     pub height: u32,
     /// Static clockwise quarter turns, `0..=3`.
     pub quarter_turns: u8,
+    /// Static further clockwise turn about the anchor (Protocol 2.39), in
+    /// `MIN_SCENE_LAYER_TILT_MILLIDEGREES..MAX_SCENE_LAYER_TILT_MILLIDEGREES`:
+    /// the layer's free rotation is `quarter_turns * 90_000 +
+    /// tilt_millidegrees` millidegrees.
+    pub tilt_millidegrees: i32,
+    /// The scale and rotation pivot in the box's own frame, in basis points
+    /// of its width and height, each `0..=`[`crate::SCENE_LAYER_ANCHOR_MAX`]
+    /// (Protocol 2.39).
+    pub anchor_x: u16,
+    pub anchor_y: u16,
     /// Static opacity, `0..=255`.
     pub opacity: u8,
     /// Whether the layer is drawn at all.
     pub enabled: bool,
+    /// Compositor z-order (Protocol 2.39).
+    pub z_order: i32,
+    /// Source crop in canvas pixels (Protocol 2.39), inside the canvas.
+    pub crop: Option<crate::WireLayerCrop>,
+    /// Rectangular mask in post-crop source pixels (Protocol 2.39), inside
+    /// the cropped source.
+    pub mask: Option<crate::WireLayerMask>,
 }
 
 /// A scene's static layout (Protocol 2.31): the project canvas and the
@@ -1143,8 +1162,9 @@ pub struct WireSceneLayout {
 /// A session writes exactly one `scene_layout_state` per scene of a
 /// snapshot's `layout_scenes` list (every project scene, whether or not a
 /// Scene input shows it), in list order, after the snapshot's
-/// `scene_animation_state` records and before any event. Scene layers are
-/// edited offline only, so a layout changes only with a new snapshot.
+/// `scene_animation_state` records and before any event. Since Protocol
+/// 2.39 a live scene layer edit (`scene_layer_*`) announces the scene's
+/// whole new layout in `event=scene_layout_changed`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SceneLayoutStateMessage {
     pub revision: u64,
@@ -1699,6 +1719,11 @@ pub enum CommandPayload {
     /// An input lifecycle edit (Protocol 2.38, IN-026; see
     /// [`crate::InputLifecycleOperation`]). A project edit.
     InputLifecycle(crate::InputLifecycleOperation),
+    /// A live scene layer edit (Protocol 2.39, SW-006; see
+    /// [`crate::SceneLayerEdit`]). A project edit, undoable, covered by the
+    /// project padlock and by the padlock of every Scene input showing the
+    /// scene.
+    SceneLayer(crate::SceneLayerEdit),
 }
 
 /// Most presets one animation preset library holds (Protocol 2.34).
@@ -2205,6 +2230,13 @@ pub enum EventPayload {
         inputs: Vec<WireInputId>,
         animation_revision: u64,
         clip: Box<WireSceneClip>,
+    },
+    /// A live scene layer edit (or its undo or redo) was accepted (Protocol
+    /// 2.39): the edit applied and the scene's whole layout afterwards.
+    /// Every Scene input showing the scene shows the change.
+    SceneLayoutChanged {
+        edit: crate::SceneLayerEdit,
+        layout: Box<WireSceneLayout>,
     },
     /// An animation preset library edit (or its undo or redo) was accepted
     /// (Protocol 2.34).

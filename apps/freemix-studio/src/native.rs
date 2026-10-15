@@ -1549,6 +1549,23 @@ fn handle_heartbeat_timeout(
     true
 }
 
+/// Whether `intent`'s command is checked against its own base rather than
+/// the project revision, so it is sent with no expected revision. Preset
+/// library edits name their preset by id and are checked against the
+/// current library, like a base revision; a live scene layer edit names its
+/// scene and layer by id and is checked against them (a drag sends several
+/// before the first is replicated).
+const fn carries_base_revision(intent: &StudioIntent) -> bool {
+    matches!(
+        intent,
+        StudioIntent::Title(_)
+            | StudioIntent::TitleAnimation(_)
+            | StudioIntent::SceneAnimation(_)
+            | StudioIntent::AnimationPreset(_)
+            | StudioIntent::SceneLayer(_)
+    )
+}
+
 fn begin_intent(
     runtime: &mut StudioRuntime,
     intent: StudioIntent,
@@ -1562,15 +1579,7 @@ fn begin_intent(
         StudioIntent::Title(command) => Some(command.clone()),
         _ => None,
     };
-    // Preset library edits name their preset by id and are checked
-    // against the current library, like a base revision.
-    let carries_base_revision = matches!(
-        intent,
-        StudioIntent::Title(_)
-            | StudioIntent::TitleAnimation(_)
-            | StudioIntent::SceneAnimation(_)
-            | StudioIntent::AnimationPreset(_)
-    );
+    let carries_base_revision = carries_base_revision(&intent);
     let payload = intent_payload(intent, view.as_ref())?;
     let expected_revision = view
         .as_ref()
@@ -2354,6 +2363,7 @@ fn intent_payload(
         StudioIntent::TitleAnimation(payload)
         | StudioIntent::SceneAnimation(payload)
         | StudioIntent::AnimationPreset(payload) => payload,
+        StudioIntent::SceneLayer(edit) => CommandPayload::SceneLayer(edit),
         StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_) => {
             return Err("An exact preview request is not a command".to_owned());
         }
@@ -4894,6 +4904,49 @@ mod tests {
             Ok(CommandPayload::ReorderInputs {
                 inputs: vec![ids[1], ids[2], ids[0]]
             })
+        );
+    }
+
+    /// SW-006: a designer's live scene layer edit is sent as the
+    /// `scene_layer` command it carries, with no expected revision (a drag
+    /// sends several before the first is replicated).
+    #[test]
+    fn scene_layer_intents_send_the_edit_without_a_base_revision() {
+        use fm_protocol::{
+            SceneLayerEdit, SceneLayerOperation, WireLayerGeometry, WireSceneId, WireSceneLayerId,
+        };
+        let project = ProjectId::new(NonZeroU128::new(7).unwrap());
+        let mut model = ClientModel::new(project);
+        model
+            .install_snapshot(ProjectSnapshot::from_protocol(
+                project,
+                heartbeat_snapshot(),
+            ))
+            .unwrap();
+        let view = model.view().unwrap();
+        let edit = SceneLayerEdit {
+            scene: WireSceneId::new(NonZeroU128::new(11).unwrap()),
+            layer: WireSceneLayerId::new(core::num::NonZeroU32::new(2).unwrap()),
+            operation: SceneLayerOperation::SetGeometry(WireLayerGeometry {
+                x: 10,
+                y: 20,
+                width: 640,
+                height: 360,
+                quarter_turns: 0,
+                tilt_millidegrees: 12_500,
+                anchor_x: 0,
+                anchor_y: 10_000,
+            }),
+            continues: true,
+        };
+        let intent = StudioIntent::SceneLayer(edit.clone());
+        assert!(carries_base_revision(&intent));
+        assert!(!carries_base_revision(&StudioIntent::RemoveInput {
+            input: view.inputs[0]
+        }));
+        assert_eq!(
+            intent_payload(intent, Some(&view)),
+            Ok(CommandPayload::SceneLayer(edit))
         );
     }
 

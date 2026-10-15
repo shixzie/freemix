@@ -1,4 +1,5 @@
-//! Scene layouts (Protocol 2.31; layer sources 2.35).
+//! Scene layouts (Protocol 2.31; layer sources 2.35; full layer design
+//! 2.39).
 //!
 //! A layout's canvas travels as the plain `width` and `height` fields; its
 //! layer list travels as one unpadded base64url `layers` field holding a
@@ -7,31 +8,53 @@
 //!
 //! ```text
 //! layers = count layer*
-//! layer  = id(varint, nonzero u32) flags(byte: bit 0 enabled, other bits
+//! layer  = id(varint, nonzero u32) flags(byte: bit 0 enabled, bit 1 crop,
+//!          bit 2 mask, bit 3 mask inverted (only with bit 2), other bits
 //!          zero) quarter_turns(byte, 0..=3) name_len(varint)
 //!          name(UTF-8 bytes) source x(zigzag) y(zigzag) width(varint)
-//!          height(varint) opacity(byte)
+//!          height(varint) opacity(byte) tilt(zigzag) anchor_x(varint)
+//!          anchor_y(varint) z_order(zigzag) crop? mask?
 //! source = kind(byte: 0 input, 1 scene) id(varint, nonzero u128)
+//! crop   = x(varint) y(varint) width(varint) height(varint)
+//! mask   = x(varint) y(varint) width(varint) height(varint)
 //! ```
 //!
 //! Layers keep scene order, so every layout has exactly one encoding. Both
 //! directions enforce: both canvas sides in `1..=MAX_SCENE_CANVAS_SIDE`; at
 //! most [`MAX_SCENE_LAYOUT_LAYERS`] layers with unique ids; names at most
 //! [`MAX_SCENE_LAYER_NAME_BYTES`] bytes of UTF-8 without control characters;
-//! and the encoding at most [`MAX_SCENE_LAYOUT_BYTES`].
+//! tilts in `MIN_SCENE_LAYER_TILT_MILLIDEGREES..MAX_SCENE_LAYER_TILT_MILLIDEGREES`;
+//! anchors within `0..=SCENE_LAYER_ANCHOR_MAX`; crops nonempty and inside
+//! the canvas and masks nonempty and inside the cropped source; and the
+//! encoding at most [`MAX_SCENE_LAYOUT_BYTES`].
+//!
+//! A `scene_layer_add` carries one complete layer as its `spec` field: the
+//! same `layer` encoding followed by its effects (base64url, unpadded):
+//!
+//! ```text
+//! spec   = layer effect_count(varint) effect*
+//! effect = name_len(varint) name(UTF-8 bytes) count(varint) value(zigzag)*
+//! ```
 
 use core::num::NonZeroU32;
 use std::collections::BTreeSet;
 
 use super::animation::{Reader, push_varint, zigzag};
 use crate::{
-    CodecError, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_LAYER_NAME_BYTES, MAX_SCENE_LAYOUT_BYTES,
-    MAX_SCENE_LAYOUT_LAYERS, WireInputId, WireSceneClip, WireSceneId, WireSceneLayerId,
-    WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout,
+    CodecError, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_LAYER_EFFECT_NAME_BYTES,
+    MAX_SCENE_LAYER_EFFECT_PARAMETERS, MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_NAME_BYTES,
+    MAX_SCENE_LAYER_TILT_MILLIDEGREES, MAX_SCENE_LAYOUT_BYTES, MAX_SCENE_LAYOUT_LAYERS,
+    MIN_SCENE_LAYER_TILT_MILLIDEGREES, SCENE_LAYER_ANCHOR_MAX, WireInputId, WireLayerCrop,
+    WireLayerEffect, WireLayerMask, WireSceneClip, WireSceneId, WireSceneLayerId,
+    WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayerSpec, WireSceneLayout,
 };
 
 const LAYERS: &str = "layers";
+const SPEC: &str = "spec";
 const ENABLED: u8 = 1;
+const CROPPED: u8 = 2;
+const MASKED: u8 = 4;
+const MASK_INVERTED: u8 = 8;
 const SOURCE_INPUT: u8 = 0;
 const SOURCE_SCENE: u8 = 1;
 
@@ -68,38 +91,203 @@ fn validate_layout(layout: &WireSceneLayout) -> Result<(), CodecError> {
                 format!("layer {} name of {} bytes", layer.id, layer.name.len()),
             ));
         }
-        if layer.quarter_turns > 3 {
-            return Err(invalid(
-                LAYERS,
-                format!("layer {} turned {} quarters", layer.id, layer.quarter_turns),
-            ));
+        validate_design(LAYERS, layer, Some((layout.width, layout.height)))?;
+    }
+    Ok(())
+}
+
+/// Whether `x, y, width, height` is nonempty and inside `limit`.
+const fn rect_inside(x: u32, y: u32, width: u32, height: u32, limit: (u32, u32)) -> bool {
+    width != 0
+        && height != 0
+        && x as u64 + width as u64 <= limit.0 as u64
+        && y as u64 + height as u64 <= limit.1 as u64
+}
+
+/// Enforces one layer's quarter turns, tilt, anchor, crop, and mask; crops
+/// and masks are checked against `canvas` when it is known (a layout), and
+/// only for being nonempty otherwise (a spec: the authority knows the
+/// canvas).
+fn validate_design(
+    field: &'static str,
+    layer: &WireSceneLayerOutline,
+    canvas: Option<(u32, u32)>,
+) -> Result<(), CodecError> {
+    let refuse = |what: &str| Err(invalid(field, format!("layer {} {what}", layer.id)));
+    if layer.quarter_turns > 3 {
+        return refuse(&format!("turned {} quarters", layer.quarter_turns));
+    }
+    if !(MIN_SCENE_LAYER_TILT_MILLIDEGREES..MAX_SCENE_LAYER_TILT_MILLIDEGREES)
+        .contains(&layer.tilt_millidegrees)
+    {
+        return refuse(&format!("tilted {}", layer.tilt_millidegrees));
+    }
+    if layer.anchor_x > SCENE_LAYER_ANCHOR_MAX || layer.anchor_y > SCENE_LAYER_ANCHOR_MAX {
+        return refuse("anchored outside its box");
+    }
+    let unbounded = (u32::MAX, u32::MAX);
+    if let Some(crop) = layer.crop
+        && !rect_inside(
+            crop.x,
+            crop.y,
+            crop.width,
+            crop.height,
+            canvas.unwrap_or(unbounded),
+        )
+    {
+        return refuse("cropped outside its source");
+    }
+    if let Some(mask) = layer.mask {
+        let source = match (layer.crop, canvas) {
+            (Some(crop), _) => (crop.width, crop.height),
+            (None, Some(canvas)) => canvas,
+            (None, None) => unbounded,
+        };
+        if !rect_inside(mask.x, mask.y, mask.width, mask.height, source) {
+            return refuse("masked outside its cropped source");
         }
     }
     Ok(())
+}
+
+fn push_layer(out: &mut Vec<u8>, layer: &WireSceneLayerOutline) {
+    push_varint(out, u128::from(layer.id.get().get()));
+    let mut flags = if layer.enabled { ENABLED } else { 0 };
+    if layer.crop.is_some() {
+        flags |= CROPPED;
+    }
+    if let Some(mask) = layer.mask {
+        flags |= MASKED;
+        if mask.invert {
+            flags |= MASK_INVERTED;
+        }
+    }
+    out.push(flags);
+    out.push(layer.quarter_turns);
+    push_varint(out, layer.name.len() as u128);
+    out.extend_from_slice(layer.name.as_bytes());
+    let (kind, id) = match layer.source {
+        WireSceneLayerSource::Input(input) => (SOURCE_INPUT, input.get()),
+        WireSceneLayerSource::Scene(scene) => (SOURCE_SCENE, scene.get()),
+    };
+    out.push(kind);
+    push_varint(out, id.get());
+    push_varint(out, u128::from(zigzag(i64::from(layer.x))));
+    push_varint(out, u128::from(zigzag(i64::from(layer.y))));
+    push_varint(out, u128::from(layer.width));
+    push_varint(out, u128::from(layer.height));
+    out.push(layer.opacity);
+    push_varint(out, u128::from(zigzag(i64::from(layer.tilt_millidegrees))));
+    push_varint(out, u128::from(layer.anchor_x));
+    push_varint(out, u128::from(layer.anchor_y));
+    push_varint(out, u128::from(zigzag(i64::from(layer.z_order))));
+    if let Some(crop) = layer.crop {
+        for value in [crop.x, crop.y, crop.width, crop.height] {
+            push_varint(out, u128::from(value));
+        }
+    }
+    if let Some(mask) = layer.mask {
+        for value in [mask.x, mask.y, mask.width, mask.height] {
+            push_varint(out, u128::from(value));
+        }
+    }
 }
 
 fn layers_bytes(layout: &WireSceneLayout) -> Vec<u8> {
     let mut out = Vec::new();
     push_varint(&mut out, layout.layers.len() as u128);
     for layer in &layout.layers {
-        push_varint(&mut out, u128::from(layer.id.get().get()));
-        out.push(if layer.enabled { ENABLED } else { 0 });
-        out.push(layer.quarter_turns);
-        push_varint(&mut out, layer.name.len() as u128);
-        out.extend_from_slice(layer.name.as_bytes());
-        let (kind, id) = match layer.source {
-            WireSceneLayerSource::Input(input) => (SOURCE_INPUT, input.get()),
-            WireSceneLayerSource::Scene(scene) => (SOURCE_SCENE, scene.get()),
-        };
-        out.push(kind);
-        push_varint(&mut out, id.get());
-        push_varint(&mut out, u128::from(zigzag(i64::from(layer.x))));
-        push_varint(&mut out, u128::from(zigzag(i64::from(layer.y))));
-        push_varint(&mut out, u128::from(layer.width));
-        push_varint(&mut out, u128::from(layer.height));
-        out.push(layer.opacity);
+        push_layer(&mut out, layer);
     }
     out
+}
+
+/// The size of `layout`'s layer list encoding, in bytes; a layout whose
+/// size exceeds [`MAX_SCENE_LAYOUT_BYTES`] cannot be carried.
+#[must_use]
+pub fn scene_layout_wire_bytes(layout: &WireSceneLayout) -> usize {
+    layers_bytes(layout).len()
+}
+
+fn validate_effects(effects: &[WireLayerEffect]) -> Result<(), CodecError> {
+    if effects.len() > MAX_SCENE_LAYER_EFFECTS {
+        return Err(invalid(SPEC, format!("{} effects", effects.len())));
+    }
+    for effect in effects {
+        if effect.name.is_empty()
+            || effect.name.len() > MAX_SCENE_LAYER_EFFECT_NAME_BYTES
+            || effect.name.chars().any(char::is_control)
+            || effect.parameters.len() > MAX_SCENE_LAYER_EFFECT_PARAMETERS
+        {
+            return Err(invalid(SPEC, format!("effect {:?}", effect.name)));
+        }
+    }
+    Ok(())
+}
+
+/// Enforces a spec: the layer's design bounds, a nonblank name, nonzero
+/// sides, and the effect bounds.
+fn validate_spec(spec: &WireSceneLayerSpec) -> Result<(), CodecError> {
+    let layer = &spec.layer;
+    if layer.name.trim().is_empty()
+        || layer.name.len() > MAX_SCENE_LAYER_NAME_BYTES
+        || layer.name.chars().any(char::is_control)
+    {
+        return Err(invalid(SPEC, format!("layer {} name", layer.id)));
+    }
+    if layer.width == 0 || layer.height == 0 {
+        return Err(invalid(SPEC, format!("layer {} is empty", layer.id)));
+    }
+    validate_design(SPEC, layer, None)?;
+    validate_effects(&spec.effects)
+}
+
+/// Validates and encodes a `scene_layer_add` spec.
+///
+/// # Errors
+///
+/// [`CodecError::InvalidField`] naming `spec` for a spec outside the bounds
+/// of the module documentation.
+pub(super) fn encode_layer_spec(spec: &WireSceneLayerSpec) -> Result<String, CodecError> {
+    validate_spec(spec)?;
+    let mut out = Vec::new();
+    push_layer(&mut out, &spec.layer);
+    push_varint(&mut out, spec.effects.len() as u128);
+    for effect in &spec.effects {
+        push_varint(&mut out, effect.name.len() as u128);
+        out.extend_from_slice(effect.name.as_bytes());
+        push_varint(&mut out, effect.parameters.len() as u128);
+        for value in &effect.parameters {
+            push_varint(&mut out, u128::from(zigzag(i64::from(*value))));
+        }
+    }
+    Ok(crate::monitor_image::base64url_encode(&out))
+}
+
+/// Strictly decodes a `scene_layer_add` spec.
+///
+/// # Errors
+///
+/// [`CodecError::InvalidField`] naming `spec` for non-canonical base64url,
+/// a truncated or trailing encoding, or any bound of the module
+/// documentation.
+pub(super) fn decode_layer_spec(value: &str) -> Result<WireSceneLayerSpec, CodecError> {
+    let encoded_limit = (MAX_SCENE_LAYOUT_BYTES * 4).div_ceil(3);
+    if value.len() > encoded_limit {
+        return Err(invalid(SPEC, format!("{} characters", value.len())));
+    }
+    let bytes = crate::monitor_image::base64url_decode(value)
+        .ok_or_else(|| invalid(SPEC, format!("{} characters", value.len())))?;
+    let mut reader = Reader {
+        bytes: &bytes,
+        position: 0,
+    };
+    let spec = reader
+        .layer_spec()
+        .filter(|_| reader.position == reader.bytes.len())
+        .ok_or_else(|| invalid(SPEC, format!("{} bytes", bytes.len())))?;
+    validate_spec(&spec)?;
+    Ok(spec)
 }
 
 /// Validates `layout` and encodes its layer list as one base64url field
@@ -119,23 +307,55 @@ pub(super) fn encode_scene_layers(layout: &WireSceneLayout) -> Result<String, Co
 }
 
 impl Reader<'_> {
-    fn scene_layer(&mut self) -> Option<WireSceneLayerOutline> {
-        let id = WireSceneLayerId::new(NonZeroU32::new(self.u32()?)?);
-        let enabled = match self.byte()? {
-            0 => false,
-            ENABLED => true,
-            _ => return None,
-        };
-        let quarter_turns = self.byte()?;
+    fn text(&mut self, limit: usize) -> Option<String> {
         let length = usize::try_from(self.varint(32)?).ok()?;
-        if length > MAX_SCENE_LAYER_NAME_BYTES {
+        if length > limit {
             return None;
         }
         let end = self.position.checked_add(length)?;
-        let name = core::str::from_utf8(self.bytes.get(self.position..end)?)
+        let text = core::str::from_utf8(self.bytes.get(self.position..end)?)
             .ok()?
             .to_owned();
         self.position = end;
+        Some(text)
+    }
+
+    fn rect(&mut self) -> Option<[u32; 4]> {
+        Some([self.u32()?, self.u32()?, self.u32()?, self.u32()?])
+    }
+
+    fn layer_spec(&mut self) -> Option<WireSceneLayerSpec> {
+        let layer = self.scene_layer()?;
+        let count = usize::try_from(self.varint(32)?).ok()?;
+        if count > MAX_SCENE_LAYER_EFFECTS {
+            return None;
+        }
+        let mut effects = Vec::with_capacity(count);
+        for _ in 0..count {
+            let name = self.text(MAX_SCENE_LAYER_EFFECT_NAME_BYTES)?;
+            let parameters = usize::try_from(self.varint(32)?).ok()?;
+            if parameters > MAX_SCENE_LAYER_EFFECT_PARAMETERS {
+                return None;
+            }
+            let parameters = (0..parameters)
+                .map(|_| self.i32())
+                .collect::<Option<Vec<_>>>()?;
+            effects.push(WireLayerEffect { name, parameters });
+        }
+        Some(WireSceneLayerSpec { layer, effects })
+    }
+
+    fn scene_layer(&mut self) -> Option<WireSceneLayerOutline> {
+        let id = WireSceneLayerId::new(NonZeroU32::new(self.u32()?)?);
+        let flags = self.byte()?;
+        if flags & !(ENABLED | CROPPED | MASKED | MASK_INVERTED) != 0
+            || (flags & MASK_INVERTED != 0 && flags & MASKED == 0)
+        {
+            return None;
+        }
+        let enabled = flags & ENABLED != 0;
+        let quarter_turns = self.byte()?;
+        let name = self.text(MAX_SCENE_LAYER_NAME_BYTES)?;
         let kind = self.byte()?;
         let source = core::num::NonZeroU128::new(self.varint(128)?)?;
         let source = match kind {
@@ -143,17 +363,55 @@ impl Reader<'_> {
             SOURCE_SCENE => WireSceneLayerSource::Scene(WireSceneId::new(source)),
             _ => return None,
         };
+        let x = self.i32()?;
+        let y = self.i32()?;
+        let width = self.u32()?;
+        let height = self.u32()?;
+        let opacity = self.byte()?;
+        let tilt_millidegrees = self.i32()?;
+        let anchor_x = u16::try_from(self.varint(16)?).ok()?;
+        let anchor_y = u16::try_from(self.varint(16)?).ok()?;
+        let z_order = self.i32()?;
+        let crop = if flags & CROPPED == 0 {
+            None
+        } else {
+            let [x, y, width, height] = self.rect()?;
+            Some(WireLayerCrop {
+                x,
+                y,
+                width,
+                height,
+            })
+        };
+        let mask = if flags & MASKED == 0 {
+            None
+        } else {
+            let [x, y, width, height] = self.rect()?;
+            Some(WireLayerMask {
+                x,
+                y,
+                width,
+                height,
+                invert: flags & MASK_INVERTED != 0,
+            })
+        };
         Some(WireSceneLayerOutline {
             id,
             name,
             source,
-            x: self.i32()?,
-            y: self.i32()?,
-            width: self.u32()?,
-            height: self.u32()?,
+            x,
+            y,
+            width,
+            height,
             quarter_turns,
-            opacity: self.byte()?,
+            tilt_millidegrees,
+            anchor_x,
+            anchor_y,
+            opacity,
             enabled,
+            z_order,
+            crop,
+            mask,
         })
     }
 

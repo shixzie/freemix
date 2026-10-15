@@ -22,6 +22,7 @@ mod input_lifecycle;
 mod media;
 mod playlist;
 mod scene_animation;
+mod scene_layer;
 mod title_animation;
 mod title_layout;
 mod transition;
@@ -35,6 +36,11 @@ pub use media::{
 };
 pub use scene_animation::{
     scene_clip_fits_wire, scene_clip_from_wire, scene_clip_to_wire, scene_layout_to_wire,
+};
+pub use scene_layer::{
+    domain_geometry, domain_layer, engine_scene_layer_edit, quarter_turns, wire_crop,
+    wire_geometry, wire_layer_outline, wire_layer_source, wire_layer_spec, wire_mask,
+    wire_scene_layer_edit,
 };
 pub use title_animation::{title_clip_fits_wire, title_clip_from_wire, title_clip_to_wire};
 pub use title_layout::title_layout_to_wire;
@@ -944,6 +950,16 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.show().input_lifecycle(input)
     }
 
+    /// The engine's current model of scene `scene` (layers and animation,
+    /// as live scene layer and animation edits left them).
+    #[must_use]
+    pub fn scene_model(&self, scene: fm_types::SceneId) -> Option<Arc<fm_model::Scene>> {
+        self.engine
+            .show()
+            .scene(scene)
+            .map(|shown| Arc::clone(&shown.scene))
+    }
+
     /// Whether media input `input` plays from an open source (see
     /// [`Engine::media_source_open`]).
     #[must_use]
@@ -1744,7 +1760,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
-        | EngineCommand::InputLifecycle(_) => "project",
+        | EngineCommand::InputLifecycle(_)
+        | EngineCommand::SceneLayer(_) => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         EngineCommand::Media(_) => "media",
         _ => "switcher",
@@ -1812,7 +1829,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetEditLock { .. }
         | CommandPayload::SetTitleFields { .. }
         | CommandPayload::SetPlaylist { .. }
-        | CommandPayload::InputLifecycle(_) => CommandClass::EditProject,
+        | CommandPayload::InputLifecycle(_)
+        | CommandPayload::SceneLayer(_) => CommandClass::EditProject,
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
@@ -1932,6 +1950,7 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         CommandPayload::InputLifecycle(operation) => {
             EngineCommand::InputLifecycle(input_lifecycle::engine_edit(operation))
         }
+        CommandPayload::SceneLayer(edit) => scene_layer::scene_layer_engine_command(edit),
         payload @ (CommandPayload::Stinger { .. }
         | CommandPayload::ConfigureStinger { .. }
         | CommandPayload::RemoveStinger { .. }) => stinger_engine_command(payload),
@@ -2345,6 +2364,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         EngineCommand::InputLifecycle(edit) => {
             CommandPayload::InputLifecycle(input_lifecycle::wire_operation(edit))
         }
+        EngineCommand::SceneLayer(edit) => {
+            CommandPayload::SceneLayer(scene_layer::wire_scene_layer_edit(edit))
+        }
         EngineCommand::SetTransitionFavorite { slot, favorite } => {
             CommandPayload::SetTransitionFavorite {
                 slot: *slot,
@@ -2674,6 +2696,14 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
         Some(input_lifecycle::lifecycle_changed(edit, added, refused))
     }) {
         return payload;
+    }
+    if let Some(edit) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::SceneLayoutChanged(edit) = &event.payload else {
+            return None;
+        };
+        Some(edit)
+    }) {
+        return scene_layer::scene_layout_changed(engine, edit);
     }
     if let Some(slot) = outcome.events.iter().find_map(|event| {
         let EngineEvent::TransitionFavoriteChanged { slot } = &event.payload else {

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.38 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.39 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -974,6 +974,67 @@ import, besides the existing add, remove, rename, and reorder):
 - Durability: categories and per-input lifecycle are project state
   (schema 37, `input_categories` and `input_lifecycle`).
 - 2.37 is refused.
+
+Protocol 2.39 makes the layer designer live (`SW-006`): every scene layer
+property is editable on a running show, addressed by scene id and stable
+layer id whether or not a Scene input shows the scene.
+
+- Commands, all project edits (`EditProject`, undoable with an exact
+  inverse, journaled, realized on the `project` domain, refused under the
+  project padlock and the padlock of every Scene input showing the scene).
+  Each carries `scene`, `layer`, and `continues` (`true|false`, required)
+  and then:
+  - `scene_layer_geometry_set`: `x`, `y` (top-left of the quarter-turned,
+    untilted footprint), `width`, `height` (nonzero, before the quarter
+    turns), `quarter_turns` (`0..=3`), `tilt_millidegrees`
+    (`-45000..45000`, a further clockwise turn about the anchor; the free
+    rotation is `quarter_turns * 90000 + tilt_millidegrees`), `anchor_x`,
+    `anchor_y` (the scale and rotation pivot in basis points of the box,
+    `0..=10000`, centre `5000`).
+  - `scene_layer_appearance_set`: `enabled`, `opacity` (`0..=255`).
+  - `scene_layer_crop_set` (`x`, `y`, `width`, `height`: nonempty and
+    inside the canvas) and `scene_layer_crop_clear`.
+  - `scene_layer_mask_set` (`x`, `y`, `width`, `height` in post-crop source
+    pixels, nonempty and inside the cropped source, and `invert`) and
+    `scene_layer_mask_clear`. A crop that would leave the mask outside the
+    cropped source is refused.
+  - `scene_layer_z_order_set` (`z_order`, any `i32`) and `scene_layer_move`
+    (`index`, the layer's new place in scene order).
+  - `scene_layer_add` (`index`, `spec`: one complete layer in the layout
+    layer encoding followed by its effects) and `scene_layer_remove`. A
+    scene source must not make the scene contain itself.
+  Each edit is checked as a whole before the scene changes: an unknown
+  scene or layer is `not_found`; a duplicate layer id, an out-of-range
+  index, a blank name, or an invalid geometry, crop, mask, or effect is
+  refused with the field; an added layer's source must be an input of the
+  show or a registered scene and must not make the scene draw itself; a
+  scene holds at most 192 layers; removing a layer is refused while the
+  scene's animation has a track for it or the layer is graded, so its undo
+  restores the scene exactly.
+- `continues=true` marks an edit that continues a gesture (a drag): when
+  the redo stack is empty and the newest history entries (at most 32,
+  skipping only edits of other layers of the same scene) hold an edit of the
+  same scene, layer, and property (geometry, appearance, crop, mask, or z
+  order), the edit folds into that entry, so a whole drag is one undo step
+  per layer that returns to the state before the drag. Undo and redo
+  journal the exact inverse or forward edit with `continues=false`.
+- `event=scene_layout_changed` (the edit's fields, then the scene's whole
+  `layout`: `width`, `height`, `layers`) announces each accepted edit and
+  its undo or redo; every Scene input showing the scene shows the change on
+  the next frame, in the simulated and native renderers alike (the native
+  daemon recompiles the scene with its planned sources; a layer added with
+  a source the scene was not planned with is drawn after the next start).
+- Each layout layer (in `scene_layout_state`, `scene_layout_changed`, and a
+  scene input's layout) now carries the whole design: flags gain bit 1
+  crop, bit 2 mask, bit 3 mask inverted, and after the opacity come the
+  tilt (zigzag), `anchor_x`, `anchor_y`, the z order (zigzag), then the
+  crop and the mask when flagged.
+- Scene animation poses compose with the stored design: an animated
+  rotation adds to the stored free rotation, and animated scale and
+  rotation pivot about the anchor.
+- Durability: tilt and anchor are project state (schema 38, each layer
+  geometry's `tilt_millidegrees`, `anchor_x`, and `anchor_y`).
+- 2.38 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
