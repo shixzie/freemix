@@ -18,6 +18,7 @@ fm-ui-model = { path = "../../ui/fm-ui-model" }
 tungstenite = { version = "0.30.0", default-features = false, optional = true }
 
 [dev-dependencies]
+fm-animation = { path = "../../foundation/fm-animation" }
 fm-grade = { path = "../../foundation/fm-grade" }
 
 [lints]

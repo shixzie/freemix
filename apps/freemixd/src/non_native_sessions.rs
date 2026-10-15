@@ -173,10 +173,12 @@ enum LossySlot {
     StreamStatus,
     PreviewFrame,
     ProgramFrame,
+    /// The latest exact title preview (`title_preview_frame` parts).
+    TitlePreview,
 }
 
 impl LossySlot {
-    const COUNT: usize = 4;
+    const COUNT: usize = 5;
 
     const fn index(self) -> usize {
         match self {
@@ -184,6 +186,7 @@ impl LossySlot {
             Self::StreamStatus => 1,
             Self::PreviewFrame => 2,
             Self::ProgramFrame => 3,
+            Self::TitlePreview => 4,
         }
     }
 
@@ -389,6 +392,36 @@ impl Peer {
         }
     }
 
+    /// Coalesces the latest exact title preview group in its own slot: a
+    /// newer preview replaces one that has not started writing. Only raw
+    /// peers have lossy slots, so a web peer is answered with an error.
+    fn replace_title_preview(
+        &mut self,
+        request_id: &str,
+        parts: &[fm_protocol::TitlePreviewFrameMessage],
+    ) -> Result<(), QueueRefusal> {
+        if self.transport.is_web() {
+            return self.reply(WireMessage::Error(ErrorMessage {
+                request_id: Some(request_id.to_owned()),
+                current_revision: None,
+                error: StructuredError {
+                    code: "unsupported".into(),
+                    message: "title previews are served to raw protocol sessions only".into(),
+                    fields: Vec::new(),
+                    retryable: false,
+                },
+            }));
+        }
+        let mut bytes = Vec::new();
+        for part in parts {
+            let line = encode_line(&WireMessage::TitlePreviewFrame(part.clone()))
+                .map_err(|_| QueueRefusal::Fatal)?;
+            bytes.extend_from_slice(line.as_bytes());
+        }
+        self.lossy.replace(LossySlot::TitlePreview, bytes);
+        Ok(())
+    }
+
     fn wants_monitor_frames(&self) -> bool {
         self.monitor_frames && self.phase == Phase::Active
     }
@@ -466,6 +499,7 @@ pub(super) fn run(
         server,
         control,
         store,
+        titles,
         process_shutdown,
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
     };
@@ -837,6 +871,9 @@ struct Runtime<'a> {
     server: &'a Server<ControlHandle>,
     control: &'a SharedControl,
     store: &'a dyn DurableStore,
+    /// Templates and fonts for simulated monitor frames and exact title
+    /// previews, kept in step with the engine's templates.
+    titles: &'a Arc<TitleAssets>,
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
     playlist_clock: std::cell::RefCell<crate::playlist_clock::PlaylistClock>,
@@ -876,6 +913,7 @@ impl Runtime<'_> {
                         DispatchError::Daemon(error)
                     }
                 })?;
+                self.sync_title_templates();
                 let CommandDelivery { result, .. } = delivery;
                 if let Some(slot) = recording_start_slot(&command.payload, &result)
                     && native
@@ -938,6 +976,9 @@ impl Runtime<'_> {
                 peer.reply(response)?;
                 Ok(())
             }
+            WireMessage::TitlePreviewRequest(request) => {
+                self.title_preview(peer, &request, durable)
+            }
             _ => {
                 peer.reply(error_message(
                     "unexpected_message",
@@ -948,9 +989,56 @@ impl Runtime<'_> {
         }
     }
 
+    /// Hands the engine's title templates to the title renderers: an
+    /// accepted animation edit changes what titles draw.
+    fn sync_title_templates(&self) {
+        self.titles
+            .sync_templates(&self.control.borrow().title_templates());
+    }
+
+    /// Admits, renders, and answers one exact title preview request (see
+    /// [`crate::title_preview`]). A refused or failed preview is answered
+    /// with an error naming its `request_id`.
+    fn title_preview(
+        &self,
+        peer: &mut Peer,
+        request: &fm_protocol::TitlePreviewRequest,
+        durable: &StoredProject,
+    ) -> Result<(), DispatchError> {
+        let encoded_bytes = encode_line(&WireMessage::TitlePreviewRequest(request.clone()))
+            .map_err(|_| ())?
+            .len();
+        let session = peer.session.as_mut().expect("active peers have sessions");
+        let admitted =
+            session.admit_title_preview(request, encoded_bytes, now_millis().map_err(|_| ())?);
+        let rendered = admitted
+            .map_err(|error| structured_session_error(&error))
+            .and_then(|()| {
+                crate::title_preview::render_preview(
+                    &self.control.borrow(),
+                    durable.project(),
+                    self.titles,
+                    peer.identity
+                        .as_ref()
+                        .expect("active peers have identities"),
+                    request,
+                )
+            });
+        match rendered {
+            Ok(parts) => peer.replace_title_preview(&request.request_id, &parts)?,
+            Err(error) => peer.reply(WireMessage::Error(ErrorMessage {
+                request_id: Some(request.request_id.clone()),
+                current_revision: Some(self.control.borrow().diagnostics().current_revision),
+                error,
+            }))?,
+        }
+        Ok(())
+    }
+
     /// Completes a queued snapshot with one `title_state` per title input,
     /// in input order, then the `playlist_state` and the `grade_state`
-    /// records it announced, before
+    /// records it announced, then one `title_animation_state` per title
+    /// input, before
     /// anything else reaches the peer. The playlist state's frame is the
     /// clock's wall-clock frame: the simulated engine renders only while it
     /// executes commands, so its cursor lags wall time mid-entry. The native
@@ -979,6 +1067,12 @@ impl Runtime<'_> {
                     .grade_states()
                     .into_iter()
                     .map(WireMessage::GradeState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .title_animation_states()
+                    .into_iter()
+                    .map(WireMessage::TitleAnimationState),
             );
         }
     }

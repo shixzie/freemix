@@ -582,6 +582,7 @@ fn command_rates_and_outbound_buffers_are_bounded() {
         max_outbound_bytes: 10,
         outbound_messages: RateLimit::new(10, 100),
         heartbeat_timeout_ms: 1_000,
+        title_previews: RateLimit::new(10, 1_000),
     };
     let server = ready_server(config().with_session_limits(limits));
     let mut session = server
@@ -636,6 +637,7 @@ fn outbound_message_rate_limit_is_retryable() {
         max_outbound_bytes: 10,
         outbound_messages: RateLimit::new(1, 100),
         heartbeat_timeout_ms: 1_000,
+        title_previews: RateLimit::new(10, 1_000),
     };
     let server = ready_server(config().with_session_limits(limits));
     let mut session = server
@@ -734,4 +736,65 @@ fn rate_window_reopens_when_the_clock_steps_backwards() {
     // until it catches up again.
     admit(&mut session, &command, 20, 0).unwrap();
     session.queue_outbound(5, 0).unwrap();
+}
+
+#[test]
+fn title_previews_need_edit_project_and_have_their_own_rate() {
+    use fm_protocol::{TitlePreviewRequest, TitlePreviewSample};
+
+    let limits = SessionLimits {
+        title_previews: RateLimit::new(2, 100),
+        ..SessionLimits::default()
+    };
+    let server = ready_server(config().with_session_limits(limits));
+    let session_for = |role: Role, auth_role: AuthRole| {
+        server
+            .handshake(&hello(role, None), &principal(auth_role), 0)
+            .unwrap()
+            .session
+    };
+    let request = TitlePreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "preview-1".into(),
+        input: input(3),
+        sample: TitlePreviewSample::Hold,
+        width: 64,
+        height: 36,
+        clip: None,
+    };
+
+    let mut operator = session_for(Role::Operator, AuthRole::Operator);
+    assert!(matches!(
+        operator.admit_title_preview(&request, 10, 0),
+        Err(SessionError::Authorization(_))
+    ));
+
+    let mut graphics = session_for(Role::Graphics, AuthRole::Graphics);
+    graphics.admit_title_preview(&request, 10, 0).unwrap();
+    graphics.admit_title_preview(&request, 10, 0).unwrap();
+    assert_eq!(
+        graphics.admit_title_preview(&request, 10, 50),
+        Err(SessionError::TitlePreviewRateLimited)
+    );
+    // Previews never hold a command slot, and the window reopens.
+    assert_eq!(graphics.accounting().inbound_commands_inflight, 0);
+    graphics.admit_title_preview(&request, 10, 100).unwrap();
+
+    let stale = TitlePreviewRequest {
+        protocol: ProtocolVersion::new(2, 28),
+        ..request
+    };
+    assert!(matches!(
+        graphics.admit_title_preview(&stale, 10, 100),
+        Err(SessionError::ProtocolMismatch { .. })
+    ));
+
+    let zero = SessionLimits {
+        title_previews: RateLimit::new(0, 1_000),
+        ..SessionLimits::default()
+    };
+    assert_eq!(
+        config().with_session_limits(zero).validate(),
+        Err(ConfigError::ZeroLimit("title_previews"))
+    );
 }

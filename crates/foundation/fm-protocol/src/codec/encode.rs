@@ -15,9 +15,14 @@ use crate::{
     PlaylistStateMessage, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
     RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
     StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamStatusMessage,
-    StructuredError, TitleFieldUpdate, TitleStateMessage, WireGradeSource, WireMessage,
+    StructuredError, TitleAnimationStateMessage, TitleFieldUpdate, TitlePreviewFrameMessage,
+    TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireMessage,
 };
 
+use super::animation::{
+    encode_animation_phase, encode_clip, encode_preview_sample, validate_animation_inputs,
+    validate_phase_frames, validate_preview_part, validate_preview_sample, validate_preview_size,
+};
 use super::grade::{
     encode_cube_kind, encode_grade, encode_lut_data, validate_grade_name, validate_lut_size,
 };
@@ -81,6 +86,15 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             encode_playlist_state_record(&mut record, message)?;
         }
         WireMessage::GradeState(message) => encode_grade_state(&mut record, message)?,
+        WireMessage::TitleAnimationState(message) => {
+            encode_title_animation_state(&mut record, message)?;
+        }
+        WireMessage::TitlePreviewRequest(message) => {
+            encode_title_preview_request(&mut record, message)?;
+        }
+        WireMessage::TitlePreviewFrame(message) => {
+            encode_title_preview_frame(&mut record, message)?;
+        }
     }
     record.finish()
 }
@@ -205,6 +219,11 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         | CommandPayload::RemoveLibraryGrade { .. }
         | CommandPayload::ImportGradeLut { .. }
         | CommandPayload::RemoveGradeLut { .. }) => encode_grade_command(record, payload)?,
+        payload @ (CommandPayload::SetTitleAnimation { .. }
+        | CommandPayload::ApplyTitleAnimationPreset { .. }
+        | CommandPayload::StretchTitleAnimation { .. }) => {
+            encode_title_animation_command(record, payload)?;
+        }
         payload @ CommandPayload::SetInputAudioStrip { .. } => {
             encode_input_audio_strip_command(record, payload)?;
         }
@@ -356,6 +375,139 @@ fn encode_title_command(record: &mut Record, payload: &CommandPayload) -> Result
         }
         _ => unreachable!("only title commands are delegated"),
     }
+}
+
+fn encode_title_animation_command(
+    record: &mut Record,
+    payload: &CommandPayload,
+) -> Result<(), CodecError> {
+    match payload {
+        CommandPayload::SetTitleAnimation {
+            input,
+            base_revision,
+            clip,
+        } => {
+            let clip = encode_clip(clip)?;
+            record.field("payload", "title_animation_set")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field_string("clip", clip)
+        }
+        CommandPayload::ApplyTitleAnimationPreset {
+            input,
+            base_revision,
+            element,
+            phase,
+            preset,
+            frames,
+        } => {
+            validate_phase_frames(*frames)?;
+            record.field("payload", "title_animation_preset")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field("element", element)?;
+            record.field("phase", encode_animation_phase(*phase))?;
+            record.field("preset", preset.id())?;
+            record.field("frames", frames)
+        }
+        CommandPayload::StretchTitleAnimation {
+            input,
+            base_revision,
+            phase,
+            frames,
+        } => {
+            validate_phase_frames(*frames)?;
+            record.field("payload", "title_animation_stretch")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field("phase", encode_animation_phase(*phase))?;
+            record.field("frames", frames)
+        }
+        _ => unreachable!("only title animation commands are delegated"),
+    }
+}
+
+fn encode_title_animation_changed(
+    record: &mut Record,
+    payload: &EventPayload,
+) -> Result<(), CodecError> {
+    let EventPayload::TitleAnimationChanged {
+        inputs,
+        animation_revision,
+        clip,
+    } = payload
+    else {
+        unreachable!("only title animation changes are delegated")
+    };
+    validate_animation_inputs(inputs)?;
+    let clip = encode_clip(clip)?;
+    record.field("event", "title_animation_changed")?;
+    record.field_string("inputs", input_ids(inputs)?)?;
+    record.field("animation_revision", animation_revision)?;
+    record.field_string("clip", clip)
+}
+
+fn encode_title_animation_state(
+    record: &mut Record,
+    message: &TitleAnimationStateMessage,
+) -> Result<(), CodecError> {
+    let clip = encode_clip(&message.clip)?;
+    record.kind("title_animation_state");
+    record.field("revision", message.revision)?;
+    record.field("input", message.input)?;
+    record.field("animation_revision", message.animation_revision)?;
+    record.field_string("clip", clip)
+}
+
+fn encode_title_preview_request(
+    record: &mut Record,
+    message: &TitlePreviewRequest,
+) -> Result<(), CodecError> {
+    validate_request_id(&message.request_id)?;
+    validate_preview_sample(message.sample)?;
+    validate_preview_size(message.width, message.height)?;
+    let clip = message.clip.as_deref().map(encode_clip).transpose()?;
+    let (phase, frame) = encode_preview_sample(message.sample);
+    record.kind("title_preview_request");
+    record.field("protocol", message.protocol)?;
+    record.field_str("request_id", &message.request_id)?;
+    record.field("input", message.input)?;
+    record.field("phase", phase)?;
+    record.field("frame", frame)?;
+    record.field("width", message.width)?;
+    record.field("height", message.height)?;
+    if let Some(clip) = clip {
+        record.field_string("clip", clip)?;
+    }
+    Ok(())
+}
+
+fn encode_title_preview_frame(
+    record: &mut Record,
+    message: &TitlePreviewFrameMessage,
+) -> Result<(), CodecError> {
+    validate_request_id(&message.request_id)?;
+    validate_preview_part(
+        message.width,
+        message.height,
+        message.part,
+        message.parts,
+        message.data.len(),
+    )?;
+    record.kind("title_preview_frame");
+    encode_server_identity(record, &message.server)?;
+    record.field_str("request_id", &message.request_id)?;
+    record.field("input", message.input)?;
+    record.field("animation_revision", message.animation_revision)?;
+    record.field("draft", u8::from(message.draft))?;
+    record.field("width", message.width)?;
+    record.field("height", message.height)?;
+    record.field("part", message.part)?;
+    record.field("parts", message.parts)?;
+    record.field_string(
+        "data",
+        crate::monitor_image::base64url_encode(&message.data),
+    )
 }
 
 fn encode_playlist_command(
@@ -1153,6 +1305,7 @@ fn encode_stingers(record: &mut Record, stingers: &[StingerStatus]) -> Result<()
     record.field_string("stingers", value)
 }
 
+#[allow(clippy::too_many_lines)]
 fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), CodecError> {
     record.kind("event");
     encode_cursor(record, &message.cursor)?;
@@ -1249,6 +1402,9 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::GradeChanged(change) => {
             record.field("event", "grade_changed")?;
             encode_grade_change(record, change)?;
+        }
+        payload @ EventPayload::TitleAnimationChanged { .. } => {
+            encode_title_animation_changed(record, payload)?;
         }
     }
     encode_edit_history(record, &message.edit_history, message.cursor.revision)

@@ -14,7 +14,7 @@ use std::sync::Arc;
 use crate::{
     MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_PART_BYTES, MAX_MONITOR_FRAME_PARTS,
     MAX_MONITOR_FRAME_WIDTH, MonitorFrameMessage, MonitorFrameOrigin, MonitorImage, MonitorTap,
-    ServerIdentity, WireInputId,
+    ServerIdentity, TitlePreviewFrameMessage, TitlePreviewImage, WireInputId,
 };
 
 const QOI_MAGIC: [u8; 4] = *b"qoif";
@@ -560,6 +560,312 @@ pub(crate) fn base64url_decode(text: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// Encodes tightly packed straight RGBA8 as one standard four-channel QOI
+/// stream (sRGB colorspace) for a `title_preview_frame`.
+///
+/// # Errors
+///
+/// [`MonitorImageError::InvalidDimensions`] outside `1..=640` x `1..=360`,
+/// and [`MonitorImageError::InvalidPixelLayout`] when `rgba` does not hold
+/// exactly `width * height` pixels.
+pub fn encode_qoi_rgba(width: u16, height: u16, rgba: &[u8]) -> Result<Vec<u8>, MonitorImageError> {
+    if !preview_dimensions_valid(width, height) {
+        return Err(MonitorImageError::InvalidDimensions { width, height });
+    }
+    let total = usize::from(width) * usize::from(height);
+    if rgba.len() != total * 4 {
+        return Err(MonitorImageError::InvalidPixelLayout);
+    }
+    let mut out = Vec::with_capacity(QOI_HEADER_BYTES + total + QOI_END_MARKER.len());
+    out.extend_from_slice(&QOI_MAGIC);
+    out.extend_from_slice(&u32::from(width).to_be_bytes());
+    out.extend_from_slice(&u32::from(height).to_be_bytes());
+    out.push(4);
+    out.push(0);
+    let mut index = [[0_u8; 4]; 64];
+    let mut previous = [0, 0, 0, 255];
+    let mut run = 0_u8;
+    for source in rgba.as_chunks::<4>().0 {
+        let pixel = *source;
+        if pixel == previous {
+            run += 1;
+            if run == QOI_MAX_RUN {
+                out.push(QOI_OP_RUN | (run - 1));
+                run = 0;
+            }
+            continue;
+        }
+        if run > 0 {
+            out.push(QOI_OP_RUN | (run - 1));
+            run = 0;
+        }
+        let hash = qoi_hash(pixel);
+        if index[hash] == pixel {
+            #[allow(clippy::cast_possible_truncation)]
+            out.push(QOI_OP_INDEX | hash as u8);
+        } else {
+            index[hash] = pixel;
+            if pixel[3] == previous[3] {
+                push_qoi_color(&mut out, previous, pixel);
+            } else {
+                out.extend_from_slice(&[QOI_OP_RGBA, pixel[0], pixel[1], pixel[2], pixel[3]]);
+            }
+        }
+        previous = pixel;
+    }
+    if run > 0 {
+        out.push(QOI_OP_RUN | (run - 1));
+    }
+    out.extend_from_slice(&QOI_END_MARKER);
+    Ok(out)
+}
+
+const fn preview_dimensions_valid(width: u16, height: u16) -> bool {
+    width != 0
+        && height != 0
+        && width <= crate::MAX_TITLE_PREVIEW_WIDTH
+        && height <= crate::MAX_TITLE_PREVIEW_HEIGHT
+}
+
+/// Strictly decodes one four-channel QOI stream into tightly packed straight
+/// RGBA8. The header must carry exactly `width` x `height`, four channels,
+/// and colorspace `0`; the stream must end with exactly the end marker.
+///
+/// # Errors
+///
+/// Returns a [`MonitorImageError`] describing the first violation.
+pub fn decode_qoi_rgba(width: u16, height: u16, data: &[u8]) -> Result<Vec<u8>, MonitorImageError> {
+    if !preview_dimensions_valid(width, height) {
+        return Err(MonitorImageError::InvalidDimensions { width, height });
+    }
+    if data.len() < QOI_HEADER_BYTES + QOI_END_MARKER.len()
+        || data[..4] != QOI_MAGIC
+        || data[4..8] != u32::from(width).to_be_bytes()
+        || data[8..12] != u32::from(height).to_be_bytes()
+        || data[12] != 4
+        || data[13] != 0
+    {
+        return Err(MonitorImageError::InvalidHeader);
+    }
+    let total = usize::from(width) * usize::from(height);
+    let end = data.len() - QOI_END_MARKER.len();
+    let mut out = Vec::with_capacity(total * 4);
+    let mut index = [[0_u8; 4]; 64];
+    let mut pixel = [0_u8, 0, 0, 255];
+    let mut position = QOI_HEADER_BYTES;
+    let mut produced = 0;
+    while produced < total {
+        if position >= end {
+            return Err(MonitorImageError::InvalidChunk);
+        }
+        let op = data[position];
+        position += 1;
+        let mut count = 1;
+        if op == QOI_OP_RGB {
+            if position + 3 > end {
+                return Err(MonitorImageError::InvalidChunk);
+            }
+            pixel[..3].copy_from_slice(&data[position..position + 3]);
+            position += 3;
+        } else if op == QOI_OP_RGBA {
+            if position + 4 > end {
+                return Err(MonitorImageError::InvalidChunk);
+            }
+            pixel.copy_from_slice(&data[position..position + 4]);
+            position += 4;
+        } else {
+            match op & QOI_MASK {
+                QOI_OP_INDEX => pixel = index[usize::from(op)],
+                QOI_OP_DIFF => {
+                    pixel[0] = pixel[0].wrapping_add((op >> 4) & 0x03).wrapping_sub(2);
+                    pixel[1] = pixel[1].wrapping_add((op >> 2) & 0x03).wrapping_sub(2);
+                    pixel[2] = pixel[2].wrapping_add(op & 0x03).wrapping_sub(2);
+                }
+                QOI_OP_LUMA => {
+                    if position + 1 > end {
+                        return Err(MonitorImageError::InvalidChunk);
+                    }
+                    let second = data[position];
+                    position += 1;
+                    let green = (op & 0x3f).wrapping_sub(32);
+                    pixel[0] = pixel[0]
+                        .wrapping_add(green)
+                        .wrapping_add(second >> 4)
+                        .wrapping_sub(8);
+                    pixel[1] = pixel[1].wrapping_add(green);
+                    pixel[2] = pixel[2]
+                        .wrapping_add(green)
+                        .wrapping_add(second & 0x0f)
+                        .wrapping_sub(8);
+                }
+                _ => {
+                    count = usize::from(op & 0x3f) + 1;
+                    if produced + count > total {
+                        return Err(MonitorImageError::RunOverflow);
+                    }
+                }
+            }
+        }
+        index[qoi_hash(pixel)] = pixel;
+        for _ in 0..count {
+            out.extend_from_slice(&pixel);
+        }
+        produced += count;
+    }
+    if data[position..position + QOI_END_MARKER.len()] != QOI_END_MARKER {
+        return Err(MonitorImageError::InvalidEndMarker);
+    }
+    if position + QOI_END_MARKER.len() != data.len() {
+        return Err(MonitorImageError::TrailingData);
+    }
+    Ok(out)
+}
+
+/// Splits one four-channel QOI stream into `title_preview_frame` parts of
+/// at most [`crate::MAX_TITLE_PREVIEW_PART_BYTES`] raw bytes, in send
+/// order, each repeating the header.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn title_preview_parts(
+    server: &ServerIdentity,
+    request_id: &str,
+    input: WireInputId,
+    animation_revision: u64,
+    draft: bool,
+    width: u16,
+    height: u16,
+    qoi: &[u8],
+) -> Vec<TitlePreviewFrameMessage> {
+    let chunks = qoi.chunks(crate::MAX_TITLE_PREVIEW_PART_BYTES);
+    let parts = u16::try_from(chunks.len()).unwrap_or(u16::MAX);
+    chunks
+        .enumerate()
+        .map(|(part, data)| TitlePreviewFrameMessage {
+            server: server.clone(),
+            request_id: request_id.to_owned(),
+            input,
+            animation_revision,
+            draft,
+            width,
+            height,
+            part: u16::try_from(part).unwrap_or(u16::MAX),
+            parts,
+            data: data.to_vec(),
+        })
+        .collect()
+}
+
+/// Reassembles `title_preview_frame` parts into decoded previews, with the
+/// same contiguity rules as [`MonitorFrameAssembler`]: a group starts at
+/// part `0`, continues with contiguous parts whose header fields are
+/// identical, and decodes when its last part arrives.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TitlePreviewAssembler {
+    pending: Option<(TitlePreviewFrameMessage, Vec<u8>)>,
+}
+
+impl TitlePreviewAssembler {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { pending: None }
+    }
+
+    /// Whether a group has started but not completed.
+    #[must_use]
+    pub const fn is_in_progress(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Discards any in-progress group.
+    pub fn reset(&mut self) {
+        self.pending = None;
+    }
+
+    /// Adds one part. Returns the decoded preview when `message` completes
+    /// its group.
+    ///
+    /// # Errors
+    ///
+    /// A [`MonitorImageError`] for an out-of-order or out-of-bounds part, a
+    /// header that differs from the in-progress group, or a stream that
+    /// fails strict decoding. The in-progress group is discarded on error.
+    pub fn push(
+        &mut self,
+        message: &TitlePreviewFrameMessage,
+    ) -> Result<Option<TitlePreviewImage>, MonitorImageError> {
+        let result = self.push_inner(message);
+        if result.is_err() {
+            self.pending = None;
+        }
+        result
+    }
+
+    fn push_inner(
+        &mut self,
+        message: &TitlePreviewFrameMessage,
+    ) -> Result<Option<TitlePreviewImage>, MonitorImageError> {
+        if !preview_dimensions_valid(message.width, message.height) {
+            return Err(MonitorImageError::InvalidDimensions {
+                width: message.width,
+                height: message.height,
+            });
+        }
+        let expected = self
+            .pending
+            .as_ref()
+            .map_or(0, |(header, _)| header.part + 1);
+        if message.parts == 0
+            || message.parts > crate::MAX_TITLE_PREVIEW_PARTS
+            || message.part != expected
+            || message.part >= message.parts
+            || message.data.is_empty()
+            || message.data.len() > crate::MAX_TITLE_PREVIEW_PART_BYTES
+        {
+            return Err(MonitorImageError::UnexpectedPart {
+                expected,
+                actual: message.part,
+            });
+        }
+        if let Some((header, data)) = self.pending.as_mut() {
+            let same = header.server == message.server
+                && header.request_id == message.request_id
+                && header.input == message.input
+                && header.animation_revision == message.animation_revision
+                && header.draft == message.draft
+                && header.width == message.width
+                && header.height == message.height
+                && header.parts == message.parts;
+            if !same {
+                return Err(MonitorImageError::HeaderMismatch);
+            }
+            header.part = message.part;
+            data.extend_from_slice(&message.data);
+        } else {
+            let header = TitlePreviewFrameMessage {
+                data: Vec::new(),
+                ..message.clone()
+            };
+            self.pending = Some((header, message.data.clone()));
+        }
+        if message.part + 1 < message.parts {
+            return Ok(None);
+        }
+        let Some((header, data)) = self.pending.take() else {
+            return Ok(None);
+        };
+        let rgba = decode_qoi_rgba(header.width, header.height, &data)?;
+        Ok(Some(TitlePreviewImage {
+            request_id: header.request_id,
+            input: header.input,
+            animation_revision: header.animation_revision,
+            draft: header.draft,
+            width: header.width,
+            height: header.height,
+            rgba: Arc::from(rgba),
+        }))
+    }
 }
 
 #[cfg(test)]

@@ -7,7 +7,9 @@ use fm_switcher::{
     DesiredStream, InputUsage, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherEvent,
     SwitcherState, TBarState,
 };
-use fm_titles::{TitleAirTiming, TitleFieldSet};
+use fm_titles::{TitleAirTiming, TitleAnimation, TitleFieldSet, TitleTemplate};
+
+use crate::EngineTitleTemplate;
 use fm_types::{
     InputId, InputOrderError, MAX_INPUT_NAME_BYTES, OutputId, RenameInputError, validate_input_name,
 };
@@ -67,13 +69,16 @@ impl Default for EngineInputAudioStripState {
 /// `name` is the title template's display name; `fields` holds the typed,
 /// revisioned values that title commands edit; `timing` is the template
 /// animation's In and Out phase lengths, which [`crate::EngineCommand::TakeTitle`]
-/// and [`crate::EngineCommand::TitleOffAir`] play on air. Layout and
-/// rendering stay with the media plane.
+/// and [`crate::EngineCommand::TitleOffAir`] play on air. `template`, when
+/// present, is the shared template whose animation
+/// [`crate::EngineCommand::TitleAnimation`] edits (see
+/// [`crate::EngineTitleTemplate`]). Rendering stays with the media plane.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineTitle {
     pub name: String,
     pub fields: TitleFieldSet,
     pub timing: TitleAirTiming,
+    pub template: Option<EngineTitleTemplate>,
 }
 
 impl EngineTitle {
@@ -84,7 +89,29 @@ impl EngineTitle {
             name: name.into(),
             fields,
             timing: TitleAirTiming::default(),
+            template: None,
         }
+    }
+
+    /// The title with its stored template, shared under `key` (the stored
+    /// template URI) with every title input naming the same key, and the
+    /// template animation's phase lengths.
+    #[must_use]
+    pub fn with_template(
+        mut self,
+        key: impl Into<std::sync::Arc<str>>,
+        template: TitleTemplate,
+    ) -> Self {
+        let template = EngineTitleTemplate::new(key, template);
+        self.timing = template.timing();
+        self.template = Some(template);
+        self
+    }
+
+    /// The template's animation, when the title has a template.
+    #[must_use]
+    pub fn animation(&self) -> Option<&TitleAnimation> {
+        self.template.as_ref().map(EngineTitleTemplate::animation)
     }
 
     /// The title with its template animation's phase lengths.

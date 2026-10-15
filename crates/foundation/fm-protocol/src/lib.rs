@@ -9,7 +9,7 @@ pub use codec::{
     CodecError, LineDecoder, MAX_BATCH_EVENTS, MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES,
     MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH,
     MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES,
-    decode_line, encode_line,
+    decode_line, encode_line, title_clip_wire_bytes,
 };
 pub use dto::{
     AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, AudioMetersMessage, CapabilityReportMessage,
@@ -41,7 +41,14 @@ pub use dto::{
     GradeChange, GradeEntry, GradeStateMessage, MAX_GRADE_LUT_IMPORT_BYTES, MAX_GRADE_NAME_BYTES,
     MAX_GRADE_STATES, WireGradeSource,
 };
+pub use dto::{
+    MAX_TITLE_ANIMATION_BYTES, MAX_TITLE_PREVIEW_HEIGHT, MAX_TITLE_PREVIEW_PART_BYTES,
+    MAX_TITLE_PREVIEW_PARTS, MAX_TITLE_PREVIEW_WIDTH, TitleAnimationStateMessage,
+    TitlePreviewFrameMessage, TitlePreviewImage, TitlePreviewRequest, TitlePreviewSample,
+    WireTitleClip, WireTitleElementId,
+};
 pub use monitor_image::{
-    MonitorFrameAssembler, MonitorImageError, decode_qoi_rgb, encode_qoi_rgb, monitor_frame_parts,
+    MonitorFrameAssembler, MonitorImageError, TitlePreviewAssembler, decode_qoi_rgb,
+    decode_qoi_rgba, encode_qoi_rgb, encode_qoi_rgba, monitor_frame_parts, title_preview_parts,
 };
 pub use version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};

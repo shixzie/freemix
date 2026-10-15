@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.28 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.29 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -448,6 +448,83 @@ Protocol 2.28 edits and replicates project colour grading (`SW-019`):
   each Program output, in both the simulated monitor path and the native
   GPU path, and restores them on restart.
 - 2.27 is refused.
+
+Protocol 2.29 edits, replicates, and previews title animations (`GX-011`):
+
+- Animation commands, all `EditProject` (the Graphics role, like title
+  field saves and title template edits), undoable through the shared edit
+  history, and padlocked like other project edits. A title template is
+  shared by every title input that loads the same `template_uri`, so an edit
+  through one input changes them all and an input padlock on any of them
+  refuses it. Each carries `input` (a title input with a loaded template)
+  and `base_revision`, the template's animation revision the edit was made
+  against; a mismatch is refused with `code=conflict` and field code
+  `revision_conflict` (optimistic concurrency, nothing applied):
+  - `title_animation_set` (`clip`): replaces the whole clip.
+  - `title_animation_preset` (`element`, `phase=in|out`, `preset`,
+    `frames`): `fm_titles` `apply_animation_preset`. `preset` is an
+    `fm_animation::AnimationPreset` id (`fade`, `slide-from-left`,
+    `slide-from-right`, `slide-from-top`, `slide-from-bottom`, `pop`,
+    `wipe`, `drop`).
+  - `title_animation_stretch` (`phase`, `frames`): `stretch_animation`.
+  `frames` is at most `fm_animation::MAX_PHASE_FRAMES`. Every applied edit,
+  undo and redo included, advances the animation revision by exactly one;
+  undo and redo restore the whole previous clip (the journal records them as
+  revision-checked `title_animation_set` commands).
+- `clip` is one unpadded base64url field of a compact binary encoding, at
+  most **36 KiB raw** (`MAX_TITLE_ANIMATION_BYTES`, 48 KiB encoded, the field
+  limit). Integers are minimal LEB128 varints, signed values zigzag-mapped:
+  `clip = rate_num rate_den in_frames out_frames track_count track*`;
+  `track = element(nonzero) phase(byte 0 in, 1 out) property(byte, index in
+  fm_animation::Property::ALL) key_count key*`; `key = frame value easing`
+  with `value` four `r g b a` bytes for colour and a zigzag varint
+  otherwise, and `easing` a tag in `fm_animation::Easing` declaration order
+  (`8` is a cubic bezier followed by `x1 y1 x2 y2` in Q16, `y` zigzag).
+  Tracks are strictly ascending by (element, phase, property) and keys by
+  frame, so each clip has exactly one encoding; decoding enforces every
+  `fm_animation` bound (`MAX_CLIP_TRACKS`, `MAX_TRACK_KEYS`, `MAX_CLIP_KEYS`,
+  `MAX_PHASE_FRAMES`, property ranges) and a lowest-terms frame rate.
+- Every accepted animation command publishes
+  `event=title_animation_changed` with `inputs` (every title input sharing
+  the template, ascending), `animation_revision`, and the resulting `clip`.
+- After the `grade_state` records, a snapshot sends one
+  `kind=title_animation_state` record per announced title, in the order of
+  the snapshot's `titles` list (no new count: the title list is the count),
+  each carrying `revision` (the snapshot revision), `input`,
+  `animation_revision`, and `clip`. A title without a loaded template
+  reports the empty clip at animation revision 0. A record at another
+  revision, for an unannounced input, out of order, twice, or before the
+  grade states forces a fresh snapshot; clients stay synchronizing until
+  every title's animation has arrived. Clients apply no optimistic change.
+- Exact preview: `kind=title_preview_request` (`protocol`, `request_id`,
+  `input`, `phase=static|in|hold|out`, `frame` (0 for `static` and `hold`,
+  else at most the phase length), `width` 1..=640, `height` 1..=360, and an
+  optional unsaved draft `clip` rendered in place of the template's
+  animation) needs `EditProject` and is rate limited per session (default 10
+  per second, `title_previews`); over the limit it is refused with
+  `resource_exhausted`. The server renders the input with its persisted
+  field values through `fm_titles` `render_sampled` at the template size,
+  nearest-neighbour scaled, straight alpha. The answer is one four-channel
+  QOI stream of straight RGBA8 split into `kind=title_preview_frame`
+  records (server identity, `request_id`, `input`, `animation_revision`,
+  `draft=0|1`, `width`, `height`, `part`, `parts`, base64url `data`), each
+  part at most **32 KiB** of QOI, at most **36 parts** (a 640x360 worst
+  case). The parts of one preview are written back to back with nothing
+  interleaved, through a latest-wins lossy slot: a newer preview replaces
+  one not yet started, so clients key previews by `request_id`. Refusals
+  (`permission_denied`, `not_found`, `invalid_request` for a frame past the
+  phase or a draft the template refuses, `render_failed`) are `kind=error`
+  records carrying the `request_id`. Only raw TCP sessions receive previews;
+  WebSocket sessions are refused with `unsupported`.
+- Durability: the animation lives in the template file
+  (`assets/titles/...`). Before an edit's journal batch the daemon stages
+  the edited template beside it as `<template>.staged-<revision>`; each
+  journal checkpoint and startup recovery commit the newest staged copy at
+  or below the durable revision over the template and remove older ones,
+  and recovery discards copies past the recovered revision. A failed
+  append discards its staged copy. Simulated and native daemons both
+  render the edited animation on air and restore it on restart.
+- 2.28 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

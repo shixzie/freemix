@@ -3724,3 +3724,202 @@ fn grade_commands_are_project_edits_with_state_records_and_undo() {
     );
     assert_eq!(control.snapshot().snapshot.grade_states, 1);
 }
+
+/// GX-011 stage 4a: title animation edits are `EditProject`, revision
+/// checked, publish `title_animation_changed`, follow snapshots as
+/// `title_animation_state` records, and undo through the shared history
+/// with a revision-checked replay command.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn title_animation_edits_are_checked_project_edits_with_state_records_and_undo() {
+    use fm_engine::EngineTitle;
+    use fm_protocol::{TitleAnimationStateMessage, WireTitleElementId};
+    use fm_titles::fm_animation::{AnimationPreset, Phase};
+    use fm_titles::{
+        Bounds, Color, Element, ElementId, ElementKind, Style, TemplateId, TitleAnimation,
+        TitleFieldSet, TitleTemplate,
+    };
+
+    let element = NonZeroU128::new(7).unwrap();
+    let template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::new(9).unwrap()),
+        name: "Lower".into(),
+        width: 32,
+        height: 18,
+        background: Color::TRANSPARENT,
+        fields: Vec::new(),
+        elements: vec![Element {
+            id: ElementId::new(element),
+            name: "box".into(),
+            bounds: Bounds {
+                x: 2,
+                y: 2,
+                width: 8,
+                height: 8,
+            },
+            z_index: 0,
+            visible: true,
+            style: Style::default(),
+            color_field: None,
+            kind: ElementKind::Rectangle,
+        }],
+        animation: TitleAnimation::default(),
+    };
+    let mut show = ShowState::new(
+        "show",
+        named_inputs([input(1), input(2), input(3)]),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    show.set_title(
+        input(3),
+        EngineTitle::new("Lower", TitleFieldSet::from_template(&template).unwrap())
+            .with_template("titles/lower.fmtitle", template.clone()),
+    )
+    .unwrap();
+    let mut control = ControlService::new(
+        Engine::new(
+            show,
+            FrameRate::new(60, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        ),
+        Policy::production(),
+        "engine-a",
+        "log-a",
+        ControlLimits {
+            retained_events: 8,
+            max_subscribers: 4,
+            subscriber_queue: 8,
+        },
+    );
+    let title = WireInputId::from_domain(input(3));
+    let initial = control.title_animation_states();
+    assert_eq!(
+        initial,
+        vec![TitleAnimationStateMessage {
+            revision: control.snapshot().snapshot.revision,
+            input: title,
+            animation_revision: 0,
+            clip: Box::new(title_clip_to_wire(&template.animation.clip)),
+        }]
+    );
+
+    let preset = CommandPayload::ApplyTitleAnimationPreset {
+        input: title,
+        base_revision: 0,
+        element: WireTitleElementId::new(element),
+        phase: Phase::In,
+        preset: AnimationPreset::Fade,
+        frames: 12,
+    };
+    assert_eq!(
+        control.required_classes(&preset).primary(),
+        CommandClass::EditProject
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Operator),
+            command("o", "o", preset.clone()),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+
+    let applied = control
+        .submit(&principal(Role::Graphics), command("p", "p", preset), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    let mut expected = template.clone();
+    expected
+        .apply_animation_preset(
+            ElementId::new(element),
+            Phase::In,
+            AnimationPreset::Fade,
+            12,
+        )
+        .unwrap();
+    let edited_clip = Box::new(title_clip_to_wire(&expected.animation.clip));
+    assert_eq!(
+        applied.output.events[0].payload,
+        EventPayload::TitleAnimationChanged {
+            inputs: vec![title],
+            animation_revision: 1,
+            clip: edited_clip.clone(),
+        }
+    );
+    assert_wire_exact(&control, &applied);
+    assert_eq!(control.title_animation_states()[0].clip, edited_clip);
+
+    // A stale base revision is a conflict.
+    let stale = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "s",
+                "s",
+                CommandPayload::StretchTitleAnimation {
+                    input: title,
+                    base_revision: 0,
+                    phase: Phase::In,
+                    frames: 24,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&stale), Some("conflict"));
+    assert_eq!(rejection_field_code(&stale), Some("revision_conflict"));
+
+    // Undo journals the restored clip as a revision-checked set.
+    let message = undo("undo", None);
+    let prepared = prepared(
+        control
+            .prepare_submit(&principal(Role::Graphics), message.clone(), 0)
+            .unwrap(),
+    );
+    assert_eq!(
+        prepared.replay_command(&message).payload,
+        CommandPayload::SetTitleAnimation {
+            input: title,
+            base_revision: 1,
+            clip: Box::new(title_clip_to_wire(&template.animation.clip)),
+        }
+    );
+    let undone = prepared.commit().unwrap();
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    assert_eq!(
+        undone.output.events[0].payload,
+        EventPayload::TitleAnimationChanged {
+            inputs: vec![title],
+            animation_revision: 2,
+            clip: Box::new(title_clip_to_wire(&template.animation.clip)),
+        }
+    );
+
+    // The journaled undo only applies on the state it was journaled at.
+    let replayed = control
+        .submit(
+            &principal(Role::Graphics),
+            command(
+                "r",
+                "r",
+                CommandPayload::SetTitleAnimation {
+                    input: title,
+                    base_revision: 1,
+                    clip: edited_clip.clone(),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&replayed), Some("conflict"));
+
+    let redone = control
+        .submit(&principal(Role::Graphics), redo("redo", None), 0)
+        .unwrap();
+    assert!(redone.is_accepted(), "{:?}", redone.output.result);
+    let states = control.title_animation_states();
+    assert_eq!(states[0].animation_revision, 3);
+    assert_eq!(states[0].clip, edited_clip);
+}

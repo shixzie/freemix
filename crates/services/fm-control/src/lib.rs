@@ -18,6 +18,8 @@ use std::{
 mod automation;
 mod grade;
 mod playlist;
+mod title_animation;
+pub use title_animation::{title_clip_from_wire, title_clip_to_wire};
 
 pub use automation::{
     ArmTimeAuthority, AuthorityResolver, AutomationBinding, AutomationError, AutomationIdentity,
@@ -47,10 +49,10 @@ use fm_protocol::{
     RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
     StingerAudioPolicy as ProtocolStingerAudioPolicy,
     StingerMissingMediaFallback as ProtocolStingerFallback, StingerReadiness, StingerStatus,
-    StreamRealizedState, StreamStatus, TitleAirRequirement, TitleFieldStatus, TitleFieldUpdate,
-    TitleFieldValue, TitlePhase, TitleStateMessage, TitleSummary, WireInputId, WireMessage,
-    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
-    WireTitleFieldId,
+    StreamRealizedState, StreamStatus, TitleAirRequirement, TitleAnimationStateMessage,
+    TitleFieldStatus, TitleFieldUpdate, TitleFieldValue, TitlePhase, TitleStateMessage,
+    TitleSummary, WireInputId, WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId, WireStreamTargetId, WireTitleFieldId,
 };
 use fm_switcher::{
     MissingMediaFallback, OverlayBorderPreset as SwitcherOverlayBorder, OverlayChannelId,
@@ -784,6 +786,35 @@ impl<A: AuthorizationHook> ControlService<A> {
         grade::grade_states(&self.engine)
     }
 
+    /// The template of title input `input`, when it was restored with one.
+    #[must_use]
+    pub fn title_template(&self, input: InputId) -> Option<&fm_engine::EngineTitleTemplate> {
+        self.engine.show().title(input)?.template.as_ref()
+    }
+
+    /// Every distinct title template the engine holds (one per shared key,
+    /// the stored template URI), as renderers must draw them now.
+    #[must_use]
+    pub fn title_templates(&self) -> Vec<fm_engine::EngineTitleTemplate> {
+        let mut templates: Vec<fm_engine::EngineTitleTemplate> = Vec::new();
+        for title in self.engine.show().titles().values() {
+            if let Some(template) = &title.template
+                && !templates.iter().any(|known| known.key == template.key)
+            {
+                templates.push(template.clone());
+            }
+        }
+        templates
+    }
+
+    /// Returns the `title_animation_state` records a session writes after
+    /// [`Self::grade_states`]: one per title [`Self::snapshot`] announces, in
+    /// the same order.
+    #[must_use]
+    pub fn title_animation_states(&self) -> Vec<TitleAnimationStateMessage> {
+        title_animation::title_animation_states(&self.engine)
+    }
+
     /// Returns the `playlist_state` a session writes after [`Self::snapshot`]
     /// (and its title states) when the snapshot announces one
     /// ([`SnapshotMessage::playlist_follows`]), at the current revision and
@@ -1336,7 +1367,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetEditLock { .. }
         | EngineCommand::SetTitleFields { .. }
         | EngineCommand::SetPlaylist { .. }
-        | EngineCommand::Grade(_) => "project",
+        | EngineCommand::Grade(_)
+        | EngineCommand::TitleAnimation(_) => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         _ => "switcher",
     }
@@ -1359,10 +1391,14 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
 ///
 /// Grade edits (input, program, and library grades and LUT imports) change
 /// the project's look like title content, so they are `EditProject` (the
-/// Graphics role), never switching.
+/// Graphics role), never switching. Title animation edits change a title
+/// template like a field save, so they are `EditProject` too.
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
-        CommandPayload::SetInputGrade { .. }
+        CommandPayload::SetTitleAnimation { .. }
+        | CommandPayload::ApplyTitleAnimationPreset { .. }
+        | CommandPayload::StretchTitleAnimation { .. }
+        | CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
         | CommandPayload::AddLibraryGrade { .. }
         | CommandPayload::UpdateLibraryGrade { .. }
@@ -1541,6 +1577,11 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::RemoveLibraryGrade { .. }
         | CommandPayload::ImportGradeLut { .. }
         | CommandPayload::RemoveGradeLut { .. }) => grade::grade_engine_command(payload),
+        payload @ (CommandPayload::SetTitleAnimation { .. }
+        | CommandPayload::ApplyTitleAnimationPreset { .. }
+        | CommandPayload::StretchTitleAnimation { .. }) => {
+            title_animation::title_animation_engine_command(payload)
+        }
     }
 }
 
@@ -1774,9 +1815,11 @@ fn edit_engine_command(payload: &CommandPayload) -> EngineCommand {
 /// top undo entry's inverse or the top redo entry's forward command.
 ///
 /// `None` for every other payload and for an empty stack, which the engine
-/// rejects without executing anything.
+/// rejects without executing anything. An animation edit carries the
+/// animation revision it applies at, so it journals as a revision-checked
+/// `title_animation_set`.
 fn history_target(engine: &Engine, payload: &CommandPayload) -> Option<EngineCommand> {
-    match payload {
+    let target = match payload {
         CommandPayload::Undo { .. } => engine
             .undo_entries()
             .last()
@@ -1786,7 +1829,8 @@ fn history_target(engine: &Engine, payload: &CommandPayload) -> Option<EngineCom
             .last()
             .map(|entry| entry.forward().clone()),
         _ => None,
-    }
+    }?;
+    Some(title_animation::checked_history_target(engine, target))
 }
 
 /// Maps an undoable engine project edit back to its exact wire payload.
@@ -1868,6 +1912,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
             included: *included,
         },
         EngineCommand::Grade(edit) => grade::wire_grade_payload(edit),
+        EngineCommand::TitleAnimation(edit) => {
+            return title_animation::wire_title_animation_payload(edit);
+        }
         _ => return None,
     })
 }
@@ -2158,6 +2205,14 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
         Some(edit)
     }) {
         return grade::grade_changed(engine, edit);
+    }
+    if let Some(input) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::TitleAnimationChanged { input } = &event.payload else {
+            return None;
+        };
+        Some(*input)
+    }) {
+        return title_animation::title_animation_changed(engine, input);
     }
     if let Some(frame) = outcome.events.iter().find_map(|event| {
         let EngineEvent::PlaylistChanged { frame, .. } = &event.payload else {

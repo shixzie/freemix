@@ -16,6 +16,24 @@ use fm_protocol::{
 use fm_types::ProjectId;
 use fm_ui_model::ManualTransitionStatus as ModelManualTransitionStatus;
 
+/// The empty static `title_animation_state` of title `title` at `revision`
+/// (Protocol 2.29), which completes a snapshot after its other follow-ons.
+fn animation_state(revision: u64, title: u128) -> fm_protocol::TitleAnimationStateMessage {
+    fm_protocol::TitleAnimationStateMessage {
+        revision,
+        input: input(title),
+        animation_revision: 0,
+        clip: Box::new(
+            fm_protocol::WireTitleClip::new(
+                fm_animation::Timebase::new(fm_types::FrameRate::new(30, 1).unwrap()),
+                0,
+                0,
+            )
+            .unwrap(),
+        ),
+    }
+}
+
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
 }
@@ -1593,7 +1611,22 @@ mod titles {
                 .unwrap(),
             Intake::TitleStateApplied
         );
+        // Protocol 2.29: the title's animation state completes the snapshot.
+        assert!(matches!(
+            client.state(),
+            ConnectionState::Synchronizing {
+                mode: SyncMode::Snapshot,
+                ..
+            }
+        ));
+        assert_eq!(
+            client
+                .intake(WireMessage::TitleAnimationState(animation_state(4, 2)))
+                .unwrap(),
+            Intake::TitleAnimationStateApplied
+        );
         assert_eq!(client.state(), &ConnectionState::Ready);
+        assert!(client.model().state().unwrap().title_animations_complete());
         let title = client
             .model()
             .state()
@@ -1659,6 +1692,39 @@ mod titles {
     }
 
     #[test]
+    fn animation_states_out_of_order_or_unannounced_force_a_fresh_snapshot() {
+        let resync = |client: &mut Client, revision: u64, title: u128| {
+            let error = client
+                .intake(WireMessage::TitleAnimationState(animation_state(
+                    revision, title,
+                )))
+                .unwrap_err();
+            assert!(
+                matches!(error, ClientError::ResyncRequired { .. }),
+                "{error:?}"
+            );
+        };
+        // Before the title's own state.
+        resync(&mut synchronizing_client(), 4, 2);
+        let completed_titles = || {
+            let mut client = synchronizing_client();
+            client
+                .intake(WireMessage::TitleState(title_state(4, 3)))
+                .unwrap();
+            client
+        };
+        // At another revision, or for a title the snapshot did not announce.
+        resync(&mut completed_titles(), 3, 2);
+        resync(&mut completed_titles(), 4, 1);
+        // A second one after the first completed the snapshot.
+        let mut client = completed_titles();
+        client
+            .intake(WireMessage::TitleAnimationState(animation_state(4, 2)))
+            .unwrap();
+        resync(&mut client, 4, 2);
+    }
+
+    #[test]
     fn incomplete_titles_never_resume() {
         let mut client = synchronizing_client();
         let _ = client.transport_disconnected();
@@ -1671,6 +1737,9 @@ mod titles {
         let mut client = synchronizing_client();
         client
             .intake(WireMessage::TitleState(title_state(4, 3)))
+            .unwrap();
+        client
+            .intake(WireMessage::TitleAnimationState(animation_state(4, 2)))
             .unwrap();
         let before = client.model().view().unwrap();
         for (key, payload) in [
@@ -1820,6 +1889,9 @@ mod playlists {
                 .unwrap(),
             Intake::PlaylistStateApplied
         );
+        client
+            .intake(WireMessage::TitleAnimationState(animation_state(4, 2)))
+            .unwrap();
         assert_eq!(client.state(), &ConnectionState::Ready);
         let playlist = client.model().state().unwrap().playlist().unwrap().clone();
         assert_eq!(playlist.frame, 900);

@@ -121,7 +121,8 @@ impl EngineCommand {
             | Self::ConfigureOverlayAppearance { .. }
             | Self::SetOverlayOutputInclusion { .. }
             | Self::SetPlaylist { .. }
-            | Self::Grade(_) => EngineCommandKind::ProjectEdit,
+            | Self::Grade(_)
+            | Self::TitleAnimation(_) => EngineCommandKind::ProjectEdit,
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }
@@ -457,10 +458,18 @@ impl EditHistory {
             HistoryStep::None => {}
             HistoryStep::Record { inverse } => {
                 self.redo.clear();
+                // A recorded animation edit replays without a base revision;
+                // the drift check stands in for it.
+                let forward = match command {
+                    EngineCommand::TitleAnimation(edit) => {
+                        EngineCommand::TitleAnimation(edit.unchecked())
+                    }
+                    command => command,
+                };
                 self.undo.push_back(EditHistoryEntry {
                     edit: revision,
                     command_id,
-                    forward: command,
+                    forward,
                     inverse,
                 });
                 while self.undo.len() > MAX_EDIT_HISTORY {
@@ -547,6 +556,10 @@ fn normalized(state: &ShowState, command: &EngineCommand) -> EngineCommand {
                 index: Some(state.grading().grades.len()),
             })
         }
+        // An animation preset or stretch is recorded as the clip it makes.
+        EngineCommand::TitleAnimation(edit) => {
+            EngineCommand::TitleAnimation(crate::title_animation::normalized(state, edit))
+        }
         command => command.clone(),
     }
 }
@@ -565,6 +578,7 @@ fn names_input(command: &EngineCommand, input: InputId) -> bool {
         EngineCommand::ReorderInputs { inputs } => inputs.contains(&input),
         EngineCommand::ConfigureStinger { descriptor, .. } => descriptor.media_input == input,
         EngineCommand::Grade(edit) => edit.input() == Some(input),
+        EngineCommand::TitleAnimation(edit) => edit.input == input,
         _ => false,
     }
 }
@@ -618,6 +632,9 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
             included: switcher.overlay(*channel).is_included_in(*output),
         }),
         EngineCommand::Grade(edit) => grade_inverse(state, edit).map(EngineCommand::Grade),
+        EngineCommand::TitleAnimation(edit) => {
+            crate::title_animation::inverse(state, edit).map(EngineCommand::TitleAnimation)
+        }
         _ => None,
     }
 }
@@ -699,6 +716,19 @@ pub(crate) fn check_edit_locks(
                 }
             }
             Ok(())
+        }
+        // Every title sharing the animated template shows the edit.
+        EngineCommand::TitleAnimation(edit) => {
+            match crate::title_animation::title_template_inputs(state, edit.input)
+                .into_iter()
+                .find(|input| state.is_input_locked(*input))
+            {
+                Some(locked) => Err(EditRejection::InputLocked(locked)),
+                None if state.is_input_locked(edit.input) => {
+                    Err(EditRejection::InputLocked(edit.input))
+                }
+                None => Ok(()),
+            }
         }
         _ => Ok(()),
     }

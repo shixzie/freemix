@@ -4,6 +4,7 @@ use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
 use fm_control::RequiredClasses;
 use fm_protocol::{
     CommandMessage, DiagnosticsRequest, EngineIdentity, EventCursor, ProtocolVersion,
+    TitlePreviewRequest,
 };
 
 use crate::{RateLimit, SessionLimits};
@@ -88,6 +89,7 @@ pub struct Session {
     limits: SessionLimits,
     inbound_window: WindowCounter,
     outbound_window: WindowCounter,
+    preview_window: WindowCounter,
     outbound_sizes: VecDeque<usize>,
     accounting: SessionAccounting,
     heartbeat: HeartbeatState,
@@ -113,6 +115,7 @@ impl Session {
             limits,
             inbound_window: WindowCounter::new(now_ms),
             outbound_window: WindowCounter::new(now_ms),
+            preview_window: WindowCounter::new(now_ms),
             outbound_sizes: VecDeque::new(),
             accounting: SessionAccounting::default(),
             heartbeat: HeartbeatState {
@@ -242,6 +245,55 @@ impl Session {
             return Err(SessionError::InboundRateLimited);
         }
         self.inbound_window.record();
+        Ok(())
+    }
+
+    /// Authorizes and accounts for one exact title preview request.
+    ///
+    /// A preview renders a title template, which only someone who may edit
+    /// it needs, so it requires [`CommandClass::EditProject`]. It counts
+    /// against both the inbound command rate and the tighter
+    /// [`SessionLimits::title_previews`] rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns a session, authorization, protocol, size, or rate error when
+    /// the preview cannot be admitted.
+    pub fn admit_title_preview(
+        &mut self,
+        request: &TitlePreviewRequest,
+        encoded_bytes: usize,
+        now_ms: u64,
+    ) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        self.policy
+            .authorize(&self.principal, CommandClass::EditProject)?;
+        if request.protocol != self.protocol {
+            return Err(SessionError::ProtocolMismatch {
+                expected: self.protocol,
+                received: request.protocol,
+            });
+        }
+        if encoded_bytes > self.limits.max_command_bytes {
+            return Err(SessionError::CommandTooLarge {
+                size: encoded_bytes,
+                maximum: self.limits.max_command_bytes,
+            });
+        }
+        if !self
+            .inbound_window
+            .has_capacity(now_ms, self.limits.inbound_commands)
+        {
+            return Err(SessionError::InboundRateLimited);
+        }
+        if !self
+            .preview_window
+            .has_capacity(now_ms, self.limits.title_previews)
+        {
+            return Err(SessionError::TitlePreviewRateLimited);
+        }
+        self.inbound_window.record();
+        self.preview_window.record();
         Ok(())
     }
 
@@ -413,6 +465,7 @@ pub enum SessionError {
     },
     TooManyInflightCommands,
     InboundRateLimited,
+    TitlePreviewRateLimited,
     OutboundRateLimited,
     NoInflightCommand,
     NoQueuedOutboundMessage,
@@ -442,6 +495,9 @@ impl fmt::Display for SessionError {
             }
             Self::TooManyInflightCommands => formatter.write_str("too many commands in flight"),
             Self::InboundRateLimited => formatter.write_str("inbound command rate limit exceeded"),
+            Self::TitlePreviewRateLimited => {
+                formatter.write_str("title preview rate limit exceeded")
+            }
             Self::OutboundRateLimited => {
                 formatter.write_str("outbound message rate limit exceeded")
             }

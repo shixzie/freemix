@@ -20,7 +20,7 @@ use fm_protocol::{
     HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage,
     PlaylistStateMessage, ProtocolVersion, ResumeCursor, Role, RuntimeEventMessage,
     RuntimeLifecycleEvent, ServerHello, ServerIdentity, SnapshotMessage, StructuredError,
-    TitleStateMessage, WireMessage,
+    TitleAnimationStateMessage, TitleStateMessage, WireMessage,
 };
 use fm_types::ProjectId;
 use fm_ui_model::{
@@ -170,6 +170,9 @@ pub enum Intake {
     PlaylistStateApplied,
     /// A `grade_state` completed one grading item the snapshot announced.
     GradeStateApplied,
+    /// A `title_animation_state` completed one title's animation the
+    /// snapshot announced.
+    TitleAnimationStateApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -568,6 +571,10 @@ impl Client {
                 self.apply_grade_state(state)?;
                 Ok(Intake::GradeStateApplied)
             }
+            WireMessage::TitleAnimationState(state) => {
+                self.apply_title_animation_state(state)?;
+                Ok(Intake::TitleAnimationStateApplied)
+            }
             WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)
@@ -578,6 +585,8 @@ impl Client {
             | WireMessage::CapabilityReport(_)
             | WireMessage::DiagnosticsRequest(_)
             | WireMessage::DiagnosticsResponse(_)
+            | WireMessage::TitlePreviewRequest(_)
+            | WireMessage::TitlePreviewFrame(_)
             | WireMessage::Error(_) => Err(ClientError::UnexpectedMessage),
         }
     }
@@ -838,17 +847,67 @@ impl Client {
         Ok(())
     }
 
+    /// Completes one title's animation the snapshot announced with its
+    /// `title_animation_state`.
+    ///
+    /// Animation states arrive only while synchronizing from a snapshot,
+    /// one per announced title after the title, playlist, and grade states
+    /// and before any event.
+    ///
+    /// # Errors
+    ///
+    /// An animation state in any other state, at another revision, for a
+    /// title the snapshot did not announce or already completed, or before
+    /// the earlier follow-on records forces a fresh-snapshot reconnect
+    /// ([`ClientError::ResyncRequired`]).
+    pub fn apply_title_animation_state(
+        &mut self,
+        state: TitleAnimationStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete() && state.playlist_complete() && state.grading_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_title_animation_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
             .is_none_or(fm_ui_model::ProjectState::titles_complete)
     }
 
-    /// Whether the installed snapshot has every title, playlist, and grade
-    /// state it announced.
+    /// Whether the installed snapshot has every title, playlist, grade, and
+    /// title animation state it announced.
     fn snapshot_complete(&self) -> bool {
         self.model.state().is_none_or(|state| {
-            state.titles_complete() && state.playlist_complete() && state.grading_complete()
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
         })
     }
 
@@ -1110,7 +1169,10 @@ impl Client {
             | CommandPayload::UpdateLibraryGrade { .. }
             | CommandPayload::RemoveLibraryGrade { .. }
             | CommandPayload::ImportGradeLut { .. }
-            | CommandPayload::RemoveGradeLut { .. } => None,
+            | CommandPayload::RemoveGradeLut { .. }
+            | CommandPayload::SetTitleAnimation { .. }
+            | CommandPayload::ApplyTitleAnimationPreset { .. }
+            | CommandPayload::StretchTitleAnimation { .. } => None,
         };
         self.model
             .track_command(CommandId::new(command.id.clone()), optimistic)?;

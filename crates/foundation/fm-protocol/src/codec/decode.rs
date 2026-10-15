@@ -15,11 +15,16 @@ use crate::{
     RuntimeEventMessage, RuntimeFailureDisposition, RuntimeLifecycleEvent, ServerIdentity,
     SnapshotMessage, SnapshotReason, StingerAudioPolicy, StingerMissingMediaFallback,
     StingerReadiness, StingerStatus, StreamLocalStatus, StreamStatusMessage, StreamStatusSample,
-    StructuredError, TitleFieldStatus, TitleStateMessage, WireGradeSource, WireInputId,
-    WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
-    WireStreamTargetId,
+    StructuredError, TitleAnimationStateMessage, TitleFieldStatus, TitlePreviewFrameMessage,
+    TitlePreviewRequest, TitleStateMessage, WireGradeSource, WireInputId, WireMessage,
+    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    WireTitleElementId,
 };
 
+use super::animation::{
+    decode_animation_phase, decode_animation_preset, decode_clip, decode_preview_sample,
+    validate_animation_inputs, validate_phase_frames, validate_preview_part, validate_preview_size,
+};
 use super::grade::{
     decode_cube_kind, decode_grade, decode_lut_data, parse_grade_id, validate_grade_name,
     validate_lut_size,
@@ -104,6 +109,15 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
         "playlist_state" => WireMessage::PlaylistState(decode_playlist_state_record(&mut fields)?),
         "grade_state" => WireMessage::GradeState(decode_grade_state(&mut fields)?),
+        "title_animation_state" => {
+            WireMessage::TitleAnimationState(decode_title_animation_state(&mut fields)?)
+        }
+        "title_preview_request" => {
+            WireMessage::TitlePreviewRequest(decode_title_preview_request(&mut fields)?)
+        }
+        "title_preview_frame" => {
+            WireMessage::TitlePreviewFrame(decode_title_preview_frame(&mut fields)?)
+        }
         _ => return Err(CodecError::UnknownMessage(kind.to_owned())),
     };
     fields.finish()?;
@@ -395,6 +409,9 @@ fn decode_command_payload(
         title @ ("title_fields" | "title_take" | "title_off_air") => {
             decode_title_command(fields, title)?
         }
+        name if name.starts_with("title_animation_") => {
+            decode_title_animation_command(fields, name)?
+        }
         name if name.starts_with("playlist_") => decode_playlist_command(fields, name)?,
         name if name.starts_with("grade_") => decode_grade_command(fields, name)?,
         _ => {
@@ -491,6 +508,163 @@ fn decode_title_command(fields: &mut Fields, name: &str) -> Result<CommandPayloa
             fields: decode_title_fields(&fields.required("fields")?)?,
         },
         _ => CommandPayload::TitleOffAir { input },
+    })
+}
+
+fn decode_title_animation_command(
+    fields: &mut Fields,
+    name: &str,
+) -> Result<CommandPayload, CodecError> {
+    let input = fields.canonical_input("input")?;
+    let base_revision = fields.canonical_required("base_revision")?;
+    Ok(match name {
+        "title_animation_set" => CommandPayload::SetTitleAnimation {
+            input,
+            base_revision,
+            clip: Box::new(decode_clip(&fields.required("clip")?)?),
+        },
+        "title_animation_preset" => {
+            let element = {
+                let value = fields.required("element")?;
+                parse_canonical_u128(&value)
+                    .and_then(NonZeroU128::new)
+                    .map(WireTitleElementId::new)
+                    .ok_or(CodecError::InvalidField {
+                        field: "element",
+                        value,
+                    })?
+            };
+            let phase = decode_animation_phase(fields.required("phase")?)?;
+            let preset = decode_animation_preset(fields.required("preset")?)?;
+            let frames = decode_phase_frames(fields)?;
+            CommandPayload::ApplyTitleAnimationPreset {
+                input,
+                base_revision,
+                element,
+                phase,
+                preset,
+                frames,
+            }
+        }
+        "title_animation_stretch" => CommandPayload::StretchTitleAnimation {
+            input,
+            base_revision,
+            phase: decode_animation_phase(fields.required("phase")?)?,
+            frames: decode_phase_frames(fields)?,
+        },
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "payload",
+                value: name.to_owned(),
+            });
+        }
+    })
+}
+
+fn decode_phase_frames(fields: &mut Fields) -> Result<u32, CodecError> {
+    let value = fields.required("frames")?;
+    let frames = parse_canonical_u64(&value)
+        .and_then(|frames| u32::try_from(frames).ok())
+        .ok_or(CodecError::InvalidField {
+            field: "frames",
+            value,
+        })?;
+    validate_phase_frames(frames)?;
+    Ok(frames)
+}
+
+/// Parses a canonical decimal `u128` (no sign, no leading zero).
+fn parse_canonical_u128(value: &str) -> Option<u128> {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.starts_with('0') && value != "0")
+    {
+        return None;
+    }
+    value.parse().ok()
+}
+
+fn decode_title_animation_state(
+    fields: &mut Fields,
+) -> Result<TitleAnimationStateMessage, CodecError> {
+    Ok(TitleAnimationStateMessage {
+        revision: fields.canonical_required("revision")?,
+        input: fields.canonical_input("input")?,
+        animation_revision: fields.canonical_required("animation_revision")?,
+        clip: Box::new(decode_clip(&fields.required("clip")?)?),
+    })
+}
+
+fn decode_title_preview_request(fields: &mut Fields) -> Result<TitlePreviewRequest, CodecError> {
+    let protocol = fields.required("protocol")?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    let input = fields.canonical_input("input")?;
+    let phase = fields.required("phase")?;
+    let frame = fields.canonical_required("frame")?;
+    let sample = decode_preview_sample(phase, frame)?;
+    let width = decode_preview_dimension(fields, "width")?;
+    let height = decode_preview_dimension(fields, "height")?;
+    validate_preview_size(width, height)?;
+    let clip = fields
+        .optional("clip")
+        .map(|clip| decode_clip(&clip).map(Box::new))
+        .transpose()?;
+    Ok(TitlePreviewRequest {
+        protocol: parse_version(&protocol).ok_or(CodecError::InvalidField {
+            field: "protocol",
+            value: protocol,
+        })?,
+        request_id,
+        input,
+        sample,
+        width,
+        height,
+        clip,
+    })
+}
+
+fn decode_preview_dimension(fields: &mut Fields, name: &'static str) -> Result<u16, CodecError> {
+    let value = fields.required(name)?;
+    parse_canonical_u64(&value)
+        .and_then(|dimension| u16::try_from(dimension).ok())
+        .ok_or(CodecError::InvalidField { field: name, value })
+}
+
+fn decode_title_preview_frame(fields: &mut Fields) -> Result<TitlePreviewFrameMessage, CodecError> {
+    let server = decode_server_identity(fields)?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    let input = fields.canonical_input("input")?;
+    let animation_revision = fields.canonical_required("animation_revision")?;
+    let draft = fields.boolean("draft")?;
+    let width = decode_preview_dimension(fields, "width")?;
+    let height = decode_preview_dimension(fields, "height")?;
+    let part = decode_preview_dimension(fields, "part")?;
+    let parts = decode_preview_dimension(fields, "parts")?;
+    let data_value = fields.required("data")?;
+    let encoded_limit = (crate::MAX_TITLE_PREVIEW_PART_BYTES * 4).div_ceil(3);
+    let data = if data_value.len() > encoded_limit {
+        None
+    } else {
+        crate::monitor_image::base64url_decode(&data_value)
+    }
+    .ok_or_else(|| CodecError::InvalidField {
+        field: "data",
+        value: format!("{} characters", data_value.len()),
+    })?;
+    validate_preview_part(width, height, part, parts, data.len())?;
+    Ok(TitlePreviewFrameMessage {
+        server,
+        request_id,
+        input,
+        animation_revision,
+        draft,
+        width,
+        height,
+        part,
+        parts,
+        data,
     })
 }
 
@@ -1455,6 +1629,15 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             preview: fields.canonical_input("preview")?,
         },
         "grade_changed" => EventPayload::GradeChanged(decode_grade_change(fields)?),
+        "title_animation_changed" => {
+            let inputs = parse_input_ids(&fields.required("inputs")?)?;
+            validate_animation_inputs(&inputs)?;
+            EventPayload::TitleAnimationChanged {
+                inputs,
+                animation_revision: fields.canonical_required("animation_revision")?,
+                clip: Box::new(decode_clip(&fields.required("clip")?)?),
+            }
+        }
         _ => {
             return Err(CodecError::InvalidField {
                 field: "event",

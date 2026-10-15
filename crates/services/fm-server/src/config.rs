@@ -34,6 +34,10 @@ pub struct SessionLimits {
     pub max_outbound_bytes: usize,
     pub outbound_messages: RateLimit,
     pub heartbeat_timeout_ms: u64,
+    /// Exact title previews (`title_preview_request`) one session may ask
+    /// for per window, on top of [`Self::inbound_commands`]: each renders a
+    /// frame, so they are bounded more tightly than commands.
+    pub title_previews: RateLimit,
 }
 
 impl Default for SessionLimits {
@@ -46,6 +50,7 @@ impl Default for SessionLimits {
             max_outbound_bytes: 4 * 1024 * 1024,
             outbound_messages: RateLimit::new(1_000, 1_000),
             heartbeat_timeout_ms: 15_000,
+            title_previews: RateLimit::new(10, 1_000),
         }
     }
 }
@@ -111,6 +116,7 @@ impl ServerConfig {
         for (name, limit) in [
             ("inbound_commands", limits.inbound_commands),
             ("outbound_messages", limits.outbound_messages),
+            ("title_previews", limits.title_previews),
         ] {
             if limit.maximum == 0 || limit.window_ms == 0 {
                 return Err(ConfigError::ZeroLimit(name));

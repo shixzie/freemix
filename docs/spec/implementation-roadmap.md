@@ -2111,8 +2111,24 @@ animates, the simulated daemon realizes a whole phase inside its command, and
 native freemixd renders every projected pose and holds a frame until its pose
 is ingested (bounded wait, late poses counted). Protocol 2.27 reports the
 phase in `title_state`. The daemon refreshes only clock and ticker titles on
-time otherwise. Remaining gaps: scene layers are not animated, there is no visual
-timeline, curve editor, scrubbed preview, or Studio/protocol surface, and
+time otherwise. Protocol 2.29 (stage 4a) edits animations remotely:
+`title_animation_set` (whole clip), `title_animation_preset`, and
+`title_animation_stretch` are revision-checked `EditProject` engine edits
+(a stale `base_revision` is a `conflict`) on the template every sharing input
+uses, padlocked across those inputs and undoable through the shared history;
+each applied edit advances the animation revision. `title_animation_changed`
+and one `title_animation_state` per snapshot title replicate the clip in a
+strict canonical binary encoding (36 KiB, every `fm-animation` limit).
+freemixd stages the edited template per journal revision and commits it at
+checkpoints and recovery, so an edit survives a kill and restart. A
+rate-limited `title_preview_request` renders the saved animation or an
+unsaved draft clip at an In/Hold/Out/static sample through `render_sampled`
+(at most 640x360, QOI parts over a latest-wins lossy slot, raw sessions
+only). `fm-client` replicates the clip and assembles previews, and
+`fm-ui-model` adapts the headless `AnimDocument` to the authority (reset,
+saved, or conflict) and turns its exact preview requests into wire
+requests. Remaining gaps: scene layers are not animated, Studio does not yet
+wire the timeline, curve editor, and scrubbed preview to the daemon, and
 production clocks and images are not drawn by the CLI frame render, so
 `GX-011` remains planned.
 

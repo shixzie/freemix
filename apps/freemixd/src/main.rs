@@ -115,6 +115,7 @@ mod status_listener;
 mod stinger_mutation;
 #[cfg(feature = "native-media")]
 mod stream_transport;
+mod title_preview;
 mod title_render;
 mod web;
 
@@ -8593,13 +8594,10 @@ fn serve_inner(
     }
 
     // Title templates and fonts load once, before serving, for the simulated
-    // monitor tap. Native media loads its own for its title render worker
-    // (see `native_titles`), so the session loop needs none.
-    let titles = Arc::new(if native.is_none() {
-        title_render::TitleAssets::load(&store, durable.project())
-    } else {
-        title_render::TitleAssets::default()
-    });
+    // monitor tap and for exact title previews (which native sessions serve
+    // too). Native media loads its own for its title render worker (see
+    // `native_titles`).
+    let titles = Arc::new(title_render::TitleAssets::load(&store, durable.project()));
     let session_result = non_native_sessions::run(
         &listener,
         &server,
@@ -8780,6 +8778,22 @@ fn snapshot_position(snapshot: &EngineSnapshot) -> ProjectPosition {
 /// [`abandon_to_checkpoint`].
 fn load_and_recover(store: &ProjectStore, recover_to_checkpoint: bool) -> AppResult<StoredProject> {
     let manifest = store.load()?;
+    // Finish any checkpoint that saved the manifest but did not commit its
+    // staged title animations yet, so templates load as the manifest has
+    // them; animations staged later wait for their replayed batches.
+    journal::commit_staged_title_animations(store, &manifest, false)?;
+    let durable = recover_from_manifest(store, manifest, recover_to_checkpoint)?;
+    // Commit what replay folded into the manifest and drop staged copies of
+    // batches that were never written or were abandoned.
+    journal::commit_staged_title_animations(store, &durable, true)?;
+    Ok(durable)
+}
+
+fn recover_from_manifest(
+    store: &ProjectStore,
+    manifest: StoredProject,
+    recover_to_checkpoint: bool,
+) -> AppResult<StoredProject> {
     if recover_to_checkpoint {
         return abandon_to_checkpoint(store, manifest);
     }
@@ -9214,10 +9228,12 @@ fn restore_titles(
                 input.id, title.template_uri
             ))
         })?;
+        // Every title input naming the same stored template shares one
+        // animation, keyed by its URI (GX-011).
         show.set_title(
             input.id,
             EngineTitle::new(template.name.clone(), fields)
-                .with_timing(fm_titles::TitleAirTiming::of(&template.animation)),
+                .with_template(title.template_uri.clone(), template.clone()),
         )?;
     }
     Ok(())
@@ -9511,6 +9527,13 @@ fn handle_client(
             }
             for state in control.borrow().grade_states() {
                 write_session_message(&mut writer, &mut session, &WireMessage::GradeState(state))?;
+            }
+            for state in control.borrow().title_animation_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::TitleAnimationState(state),
+                )?;
             }
         }
         SyncPayload::Resume(events) => {
@@ -10094,6 +10117,8 @@ fn execute_native_authority_command(
     // compares and hands over state.
     #[cfg(feature = "native-media")]
     native.titles.observe(durable.project());
+    #[cfg(feature = "native-media")]
+    native.titles.observe_templates(&control.title_templates());
     Ok(durable_delivery(execution))
 }
 
@@ -10714,10 +10739,32 @@ fn execute_durable_command_with_ticks(
             return refuse_staged_command(command, current_revision, error, Vec::new());
         }
     };
+    // An animation edit's template is staged before its batch, so whatever
+    // replays the batch finds the template the manifest it lands on needs.
+    let animations = staged_title_animations(&prepared, &updated);
+    let staged_uris: Vec<String> = animations.iter().map(|(uri, _)| uri.clone()).collect();
+    let revision = updated.position().revision;
+    if let Err(error) = store.stage_title_animations(revision, &animations) {
+        drop(prepared);
+        store.discard_staged_title_animations(revision, &staged_uris);
+        eprintln!(
+            "FREEMIXD_DURABILITY\tv=1\tcommand={}\trevision={revision}\terror={error}",
+            command.id
+        );
+        return Ok(DurableExecution {
+            submission: refused_submission(
+                command,
+                control.diagnostics().current_revision,
+                error.as_ref(),
+            ),
+            runtime_events: Vec::new(),
+        });
+    }
     // Durability comes first: the mutation survives a crash before the engine
     // commits it, before its events are published, and before the acceptance is
     // returned to the caller for acknowledgement.
     if let Err(error) = store.record(&journaled, now_millis, durable, &updated) {
+        store.discard_staged_title_animations(revision, &staged_uris);
         // Nothing was made durable, so nothing may be acknowledged. Dropping
         // the preparation abandons it without touching the engine: no revision,
         // no receipt, no events, so the same command may simply be sent again.
@@ -10748,6 +10795,40 @@ fn execute_durable_command_with_ticks(
         submission,
         runtime_events,
     })
+}
+
+/// The template animations an accepted command leaves `updated` with: one
+/// per `title_animation_changed` event, keyed by the stored template URI
+/// its titles name.
+fn staged_title_animations(
+    prepared: &fm_control::PreparedSubmission<'_, Policy>,
+    updated: &StoredProject,
+) -> Vec<(String, fm_titles::TitleAnimation)> {
+    if !prepared.submission().is_accepted() {
+        return Vec::new();
+    }
+    prepared
+        .output()
+        .events
+        .iter()
+        .filter_map(|event| {
+            let fm_protocol::EventPayload::TitleAnimationChanged {
+                inputs,
+                animation_revision,
+                clip,
+            } = &event.payload
+            else {
+                return None;
+            };
+            let title =
+                title_render::title_of_input(updated.project(), inputs.first()?.to_domain())?;
+            let clip = fm_control::title_clip_from_wire(clip).ok()?;
+            Some((
+                title.template_uri.clone(),
+                fm_titles::TitleAnimation::new(clip, *animation_revision),
+            ))
+        })
+        .collect()
 }
 
 fn command_ticks(
@@ -10826,6 +10907,9 @@ fn command_ticks(
         | CommandPayload::SetPlaylist { .. }
         | CommandPayload::PlaylistControl { .. }
         | CommandPayload::PlaylistAdvance { .. }
+        | CommandPayload::SetTitleAnimation { .. }
+        | CommandPayload::ApplyTitleAnimationPreset { .. }
+        | CommandPayload::StretchTitleAnimation { .. }
         | CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
         | CommandPayload::AddLibraryGrade { .. }
@@ -11493,6 +11577,7 @@ fn session_rejection(
         SessionError::CommandTooLarge { .. }
         | SessionError::TooManyInflightCommands
         | SessionError::InboundRateLimited
+        | SessionError::TitlePreviewRateLimited
         | SessionError::OutboundRateLimited => ("resource_exhausted", true),
         _ => ("session_error", false),
     };
@@ -11531,6 +11616,7 @@ fn structured_session_error(error: &SessionError) -> StructuredError {
         SessionError::ProtocolMismatch { .. } => ("protocol_mismatch", false),
         SessionError::CommandTooLarge { .. }
         | SessionError::InboundRateLimited
+        | SessionError::TitlePreviewRateLimited
         | SessionError::OutboundRateLimited => ("resource_exhausted", true),
         _ => ("session_error", false),
     };

@@ -1533,3 +1533,105 @@ fn diagnostics_wait_reconciles_results_answered_before_it() {
     ));
     server_thread.join().unwrap();
 }
+
+/// Protocol 2.29: a title preview request goes out as one record and its
+/// `title_preview_frame` parts assemble into the latest preview; an
+/// interleaved record breaks the atomic group.
+#[test]
+fn title_previews_are_requested_assembled_and_atomic() {
+    use fm_protocol::{
+        TitlePreviewRequest, TitlePreviewSample, encode_qoi_rgba, title_preview_parts,
+    };
+
+    let width = 300_u16;
+    let height = 200_u16;
+    let rgba: Vec<u8> = (0..u32::from(width) * u32::from(height))
+        .flat_map(|index| {
+            let [a, b, c, d] = index.wrapping_mul(2_654_435_761).to_le_bytes();
+            [a, b, c, d | 1]
+        })
+        .collect();
+    let qoi = encode_qoi_rgba(width, height, &rgba).unwrap();
+    let parts: Vec<WireMessage> = title_preview_parts(
+        &server(),
+        "anim-preview-3",
+        input(2),
+        4,
+        true,
+        width,
+        height,
+        &qoi,
+    )
+    .into_iter()
+    .map(WireMessage::TitlePreviewFrame)
+    .collect();
+    assert!(parts.len() > 1, "the test preview must span several parts");
+    let request = TitlePreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "anim-preview-3".into(),
+        input: input(2),
+        sample: TitlePreviewSample::In { frame: 5 },
+        width,
+        height,
+        clip: None,
+    };
+
+    let (release_tx, release_rx) = mpsc::channel();
+    let expected_request = request.clone();
+    let records = parts.clone();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        assert_eq!(
+            peer.receive(),
+            WireMessage::TitlePreviewRequest(expected_request)
+        );
+        release_rx.recv().unwrap();
+        let mut interleaved = records.clone();
+        interleaved.insert(1, WireMessage::AudioMeters(audio_meters(1)));
+        peer.send_all(&records);
+        peer.send_all(&interleaved);
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    session.send_title_preview(request).unwrap();
+    release_tx.send(()).unwrap();
+
+    for index in 0..parts.len() {
+        let complete = index + 1 == parts.len();
+        assert_eq!(
+            session.receive().unwrap(),
+            SessionEvent::TitlePreview {
+                request_id: "anim-preview-3".into(),
+                complete,
+            }
+        );
+        assert_eq!(session.latest_title_preview().is_some(), complete);
+    }
+    let (image, _) = session.latest_title_preview().unwrap();
+    assert_eq!(
+        (image.input, image.animation_revision, image.draft),
+        (input(2), 4, true)
+    );
+    assert_eq!((image.width, image.height), (width, height));
+    assert_eq!(&*image.rgba, rgba.as_slice());
+
+    // The second group is broken by an audio meter record.
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::TitlePreview {
+            complete: false,
+            ..
+        }
+    ));
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    assert!(matches!(
+        session.client().state(),
+        ConnectionState::Backoff(_)
+    ));
+    assert!(session.latest_title_preview().is_none());
+    server_thread.join().unwrap();
+}

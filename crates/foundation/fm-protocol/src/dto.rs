@@ -3,6 +3,7 @@ use core::{
     num::{NonZeroU32, NonZeroU128},
 };
 
+use fm_animation::{AnimationPreset, Clip, Phase};
 use fm_command::{CommandEnvelope, Deadline, Revision, StateEpoch};
 use fm_grade::{CubeKind, Grade};
 use fm_types::{FrameRate, InputId, OutputId};
@@ -650,6 +651,133 @@ impl fmt::Display for WireTitleFieldId {
     }
 }
 
+/// Stable identity of one title template element carried on the wire
+/// (Protocol 2.29): the target of every title animation track.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WireTitleElementId(NonZeroU128);
+
+impl WireTitleElementId {
+    #[must_use]
+    pub const fn new(value: NonZeroU128) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> NonZeroU128 {
+        self.0
+    }
+}
+
+impl fmt::Display for WireTitleElementId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// A title template's keyframe animation as carried on the wire: an
+/// [`fm_animation::Clip`] keyed by element. Every clip bound of
+/// `fm_animation` (tracks, keys, phase length, values, easings) holds.
+pub type WireTitleClip = Clip<WireTitleElementId>;
+
+/// Largest binary encoding of one [`WireTitleClip`], in bytes. The clip
+/// travels as unpadded base64url in one field, so this keeps the field
+/// within [`crate::MAX_FIELD_VALUE_BYTES`] (exactly 48 KiB encoded).
+pub const MAX_TITLE_ANIMATION_BYTES: usize = 36 * 1024;
+
+/// One title template's animation at a snapshot's `revision` (Protocol
+/// 2.29).
+///
+/// A session writes exactly one `title_animation_state` per [`TitleSummary`]
+/// of a snapshot, in summary order, after the snapshot's `grade_state`
+/// records and before any event. Title inputs that share a template report
+/// the same clip and revision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitleAnimationStateMessage {
+    pub revision: u64,
+    pub input: WireInputId,
+    /// The template's animation revision: the `base_revision` the next
+    /// animation edit must name.
+    pub animation_revision: u64,
+    pub clip: Box<WireTitleClip>,
+}
+
+/// Where an exact title preview samples the animation. Wire encoding:
+/// `phase=static|in|hold|out` with `frame` (zero unless `in` or `out`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TitlePreviewSample {
+    /// Static values only.
+    Static,
+    /// The In phase at a whole clip frame.
+    In { frame: u32 },
+    /// The resting on-air pose.
+    Hold,
+    /// The Out phase at a whole clip frame.
+    Out { frame: u32 },
+}
+
+/// Largest exact title preview, in pixels; the monitor frame cap.
+pub const MAX_TITLE_PREVIEW_WIDTH: u16 = 640;
+pub const MAX_TITLE_PREVIEW_HEIGHT: u16 = 360;
+/// Largest raw (pre-base64url) payload of one `title_preview_frame` part.
+pub const MAX_TITLE_PREVIEW_PART_BYTES: usize = 32 * 1024;
+/// Most parts of one preview: a worst-case 640x360 four-channel QOI stream
+/// (`640 * 360 * 5 + 22` bytes) fits.
+pub const MAX_TITLE_PREVIEW_PARTS: u16 = 36;
+
+/// A read-only request to render one title exactly as the authority would
+/// (Protocol 2.29): its persisted field values in `sample`, scaled to
+/// `width` x `height`. `clip`, when present, is an unsaved draft rendered
+/// instead of the template's animation. Not a command: it has no
+/// idempotency, revision, or durability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitlePreviewRequest {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub input: WireInputId,
+    pub sample: TitlePreviewSample,
+    pub width: u16,
+    pub height: u16,
+    pub clip: Option<Box<WireTitleClip>>,
+}
+
+/// One part of the answer to a [`TitlePreviewRequest`].
+///
+/// The image is one standard QOI stream with four channels (straight sRGB
+/// RGBA8, the template's transparency kept) split into `parts` contiguous
+/// chunks of at most [`MAX_TITLE_PREVIEW_PART_BYTES`]. Every part repeats
+/// the header fields. Lossy and latest-wins like a monitor frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitlePreviewFrameMessage {
+    pub server: ServerIdentity,
+    pub request_id: String,
+    pub input: WireInputId,
+    /// The template's animation revision when the frame was rendered.
+    pub animation_revision: u64,
+    /// Whether the request's draft clip was rendered.
+    pub draft: bool,
+    pub width: u16,
+    pub height: u16,
+    pub part: u16,
+    pub parts: u16,
+    /// Raw QOI bytes for this part; base64url (no padding) on the wire.
+    pub data: Vec<u8>,
+}
+
+/// One fully assembled and decoded title preview.
+///
+/// `rgba` holds exactly `width * height` straight RGBA8 pixels, row-major
+/// and tightly packed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TitlePreviewImage {
+    pub request_id: String,
+    pub input: WireInputId,
+    pub animation_revision: u64,
+    pub draft: bool,
+    pub width: u16,
+    pub height: u16,
+    pub rgba: std::sync::Arc<[u8]>,
+}
+
 /// One typed title field value.
 ///
 /// Inside a field list a value is `t:<len>:<text>`, `n:<i64>`,
@@ -963,6 +1091,33 @@ pub enum CommandPayload {
     /// Unregisters a LUT no grade uses. Not undoable.
     RemoveGradeLut {
         lut: NonZeroU32,
+    },
+    /// Replaces a title template's whole animation clip (Protocol 2.29).
+    /// Wire payload `title_animation_set`. Refused as a conflict unless the
+    /// template's animation revision is `base_revision`.
+    SetTitleAnimation {
+        input: WireInputId,
+        base_revision: u64,
+        clip: Box<WireTitleClip>,
+    },
+    /// Applies a built-in preset to one element of a title template's
+    /// animation over `frames` frames of `phase`. Wire payload
+    /// `title_animation_preset`.
+    ApplyTitleAnimationPreset {
+        input: WireInputId,
+        base_revision: u64,
+        element: WireTitleElementId,
+        phase: Phase,
+        preset: AnimationPreset,
+        frames: u32,
+    },
+    /// Scales every key of one phase of a title template's animation to a
+    /// new phase length. Wire payload `title_animation_stretch`.
+    StretchTitleAnimation {
+        input: WireInputId,
+        base_revision: u64,
+        phase: Phase,
+        frames: u32,
     },
 }
 
@@ -1370,6 +1525,14 @@ pub enum EventPayload {
     },
     /// A grade edit was accepted (Protocol 2.28).
     GradeChanged(GradeChange),
+    /// A title animation edit (or its undo or redo) was accepted (Protocol
+    /// 2.29): the template's complete clip and animation revision
+    /// afterwards, and every title input (ascending) whose template it is.
+    TitleAnimationChanged {
+        inputs: Vec<WireInputId>,
+        animation_revision: u64,
+        clip: Box<WireTitleClip>,
+    },
 }
 
 /// One durable revision.
@@ -1714,4 +1877,7 @@ pub enum WireMessage {
     TitleState(TitleStateMessage),
     PlaylistState(PlaylistStateMessage),
     GradeState(GradeStateMessage),
+    TitleAnimationState(TitleAnimationStateMessage),
+    TitlePreviewRequest(TitlePreviewRequest),
+    TitlePreviewFrame(TitlePreviewFrameMessage),
 }

@@ -291,6 +291,9 @@ pub enum EngineCommand {
     RealizeTitle(TitleCue),
     /// Edits the project grading (see [`EngineGradeEdit`]). A project edit.
     Grade(EngineGradeEdit),
+    /// Edits a title template's animation (see
+    /// [`crate::EngineTitleAnimationEdit`]). A project edit.
+    TitleAnimation(crate::EngineTitleAnimationEdit),
 }
 
 /// What an accepted title command does on air.
@@ -375,6 +378,12 @@ pub enum EngineEvent {
     /// A grade edit was accepted; the grading afterwards is read from
     /// [`ShowState::grading`].
     GradingChanged(EngineGradeEdit),
+    /// A title animation edit (or its undo or redo) was accepted for
+    /// `input`'s template; the animation afterwards is read from
+    /// [`ShowState::title`].
+    TitleAnimationChanged {
+        input: InputId,
+    },
 }
 
 /// Engine-level desired status of one stream target; realization is owned by
@@ -970,6 +979,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::AddInput { .. })
                 && !matches!(&command, EngineCommand::SetEditLock { .. })
                 && !matches!(&command, EngineCommand::Grade(_))
+                && !matches!(&command, EngineCommand::TitleAnimation(_))
                 && !matches!(
                     &command,
                     EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
@@ -1416,6 +1426,13 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
         if is_title_command(&self.command) {
             return apply_title_mutation(state, events, self);
         }
+        if let EngineCommand::TitleAnimation(edit) = &self.command {
+            crate::title_animation::apply(state, edit)?;
+            events.push(EngineEvent::TitleAnimationChanged { input: edit.input });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::Grade(edit) = self.command {
             let (inputs, grading, luts) = state.grading_parts_mut();
             crate::grade_edit::apply_grade_edit(inputs, grading, luts, &edit)?;
@@ -1666,8 +1683,8 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             | EngineCommand::RealizePlaylistCue(_) => {
                 unreachable!("playlist mutations return before switcher command mapping")
             }
-            EngineCommand::Grade(_) => {
-                unreachable!("grade mutations return before switcher command mapping")
+            EngineCommand::Grade(_) | EngineCommand::TitleAnimation(_) => {
+                unreachable!("grade and animation mutations return before switcher command mapping")
             }
         };
         state
@@ -2006,6 +2023,7 @@ fn apply_runtime(
             | EngineCommand::SetEditLock { .. }
             | EngineCommand::SetTitleFields { .. }
             | EngineCommand::Grade(_)
+            | EngineCommand::TitleAnimation(_)
     ) {
         return Ok(Vec::new());
     }
@@ -2145,8 +2163,8 @@ fn apply_runtime(
         | EngineCommand::RealizePlaylistCue(_) => {
             unreachable!("playlist commands are scheduled as playlist cues")
         }
-        EngineCommand::Grade(_) => {
-            unreachable!("grade commands return before switcher command mapping")
+        EngineCommand::Grade(_) | EngineCommand::TitleAnimation(_) => {
+            unreachable!("grade and animation commands return before switcher command mapping")
         }
     })
 }
@@ -2275,7 +2293,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::PlaylistAdvance { .. }
         | EngineCommand::RealizePlaylistCue(_)
         | EngineCommand::RealizeTitle(_)
-        | EngineCommand::Grade(_) => None,
+        | EngineCommand::Grade(_)
+        | EngineCommand::TitleAnimation(_) => None,
     }
 }
 

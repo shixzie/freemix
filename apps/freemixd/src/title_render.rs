@@ -33,6 +33,13 @@
 //! take) draws its Hold pose. The pose is part of [`TitleKey`], so a title
 //! mid-phase renders anew on every frame it advances.
 //!
+//! An accepted animation edit (GX-011) changes the engine's template; the
+//! session loop hands the engine's templates over with
+//! [`TitleAssets::sync_templates`], and the animation revision is part of
+//! [`TitleKey`], so the next render draws the edited animation. An exact
+//! preview ([`render_title_preview`]) renders one title with a given
+//! template — the engine's, or one carrying a client's unsaved draft.
+//!
 //! Production clock elements read the clocks their template defines (see
 //! [`fm_titles::TitleClock`]) through a registry built for each render from
 //! the daemon's clocks ([`TitleTime`]): the monotonic clock is the rendered
@@ -69,7 +76,9 @@ pub(crate) const MAX_TITLE_IMAGE_ATTEMPTS: usize = 4 * fm_titles::MAX_IMAGE_ASSE
 
 /// One loaded template and the assets it renders with.
 pub(crate) struct LoadedTitleTemplate {
-    template: Arc<TitleTemplate>,
+    /// The template as the engine holds it now: replaced, never mutated,
+    /// when an animation edit is accepted.
+    template: Mutex<Arc<TitleTemplate>>,
     /// Fonts and image assets; decoded images join on demand.
     images: Mutex<TitleImages>,
     /// Whether a rendered picture depends on scene time (a clock or ticker
@@ -99,7 +108,7 @@ impl LoadedTitleTemplate {
             )
         });
         Self {
-            template: Arc::new(template),
+            template: Mutex::new(Arc::new(template)),
             images: Mutex::new(TitleImages {
                 catalog,
                 attempted: BTreeSet::new(),
@@ -123,13 +132,18 @@ impl LoadedTitleTemplate {
         self.time_dependent
     }
 
+    /// The template as the engine holds it now.
+    pub(crate) fn current(&self) -> Arc<TitleTemplate> {
+        Arc::clone(&self.template.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
     /// The catalog to render `title` with, after loading every image it
     /// needs that was not tried yet. Cloning shares fonts and pixels.
     fn catalog_for(&self, store: Option<&ProjectStore>, title: &TitleInput) -> AssetCatalog {
+        let template = self.current();
         let mut images = self.images.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(store) = store {
-            let defaults = self
-                .template
+            let defaults = template
                 .fields
                 .iter()
                 .filter_map(|field| match &field.default {
@@ -244,6 +258,34 @@ impl TitleAssets {
     pub(crate) fn template(&self, uri: &str) -> Option<&LoadedTitleTemplate> {
         self.templates.get(uri)
     }
+
+    /// Takes the engine's current templates (keyed by stored template URI)
+    /// for every loaded URI they name, and returns the URIs whose animation
+    /// changed. Cheap when nothing changed: the engine shares each template
+    /// until an edit replaces it.
+    pub(crate) fn sync_templates(
+        &self,
+        templates: &[fm_engine::EngineTitleTemplate],
+    ) -> Vec<String> {
+        let mut changed = Vec::new();
+        for engine in templates {
+            let Some(loaded) = self.templates.get(&*engine.key) else {
+                continue;
+            };
+            let mut current = loaded
+                .template
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if Arc::ptr_eq(&current, &engine.template) {
+                continue;
+            }
+            if current.animation != engine.template.animation {
+                changed.push(engine.key.to_string());
+            }
+            *current = Arc::clone(&engine.template);
+        }
+        changed
+    }
 }
 
 /// Reads and decodes one image asset into premultiplied RGBA8, or `None`
@@ -346,6 +388,8 @@ pub(crate) struct TitleKey {
     frame: Option<u64>,
     taken_frame: Option<u64>,
     pose: AnimSample,
+    /// The template's animation revision: an accepted edit renders anew.
+    animation_revision: u64,
 }
 
 /// The cache key of `title` rendered in `pose` at `frame` after going on
@@ -365,6 +409,7 @@ pub(crate) fn title_key(
         frame: loaded.time_dependent().then_some(frame),
         taken_frame: taken_frame.filter(|_| loaded.uses_take),
         pose,
+        animation_revision: loaded.current().animation.revision,
     })
 }
 
@@ -453,11 +498,34 @@ pub(crate) fn render_title_at(
     height: u32,
 ) -> Option<ImageFrame> {
     let loaded = assets.template(&title.template_uri)?;
+    render_template_at(
+        assets,
+        loaded,
+        &loaded.current(),
+        input,
+        title,
+        time,
+        width,
+        height,
+    )
+}
+
+/// Renders `title` with `template` (the loaded template's, or a copy with
+/// another animation) at `time`, scaled to `width`x`height`; see
+/// [`render_title_at`].
+#[allow(clippy::too_many_arguments)]
+fn render_template_at(
+    assets: &TitleAssets,
+    loaded: &LoadedTitleTemplate,
+    template: &TitleTemplate,
+    input: InputId,
+    title: &TitleInput,
+    time: TitleTime,
+    width: u32,
+    height: u32,
+) -> Option<ImageFrame> {
     let catalog = loaded.catalog_for(assets.store.as_ref(), title);
-    let mut scene = loaded
-        .template
-        .instantiate(TitleId::new(input.get()))
-        .ok()?;
+    let mut scene = template.instantiate(TitleId::new(input.get())).ok()?;
     let updates = title
         .fields
         .iter()
@@ -482,6 +550,52 @@ pub(crate) fn render_title_at(
         return Some(output.frame);
     }
     fm_video::scale_nearest(&output.frame, width, height).ok()
+}
+
+/// Renders an exact preview of `title` exactly as [`render_title_at`]
+/// would draw it on air, but with `template` (the engine's template, or one
+/// carrying an unsaved draft animation), as straight (not premultiplied)
+/// RGBA8 pixels, row-major and tightly packed, at `width`x`height`.
+///
+/// Returns `None` when the title's template was not loaded or the render
+/// fails.
+pub(crate) fn render_title_preview(
+    assets: &TitleAssets,
+    template: &TitleTemplate,
+    input: InputId,
+    title: &TitleInput,
+    time: TitleTime,
+    width: u32,
+    height: u32,
+) -> Option<Vec<u8>> {
+    let loaded = assets.template(&title.template_uri)?;
+    let frame = render_template_at(assets, loaded, template, input, title, time, width, height)?;
+    let row_bytes = usize::try_from(frame.width()).ok()?.checked_mul(4)?;
+    let mut pixels =
+        Vec::with_capacity(row_bytes.checked_mul(usize::try_from(frame.height()).ok()?)?);
+    for row in frame.pixels().chunks(frame.stride()) {
+        for pixel in row.get(..row_bytes)?.as_chunks::<4>().0 {
+            pixels.extend_from_slice(&unpremultiply(*pixel));
+        }
+    }
+    Some(pixels)
+}
+
+/// Premultiplied to straight alpha, rounded to nearest; a fully transparent
+/// pixel is transparent black.
+pub(crate) fn unpremultiply([red, green, blue, alpha]: [u8; 4]) -> [u8; 4] {
+    match alpha {
+        0 => [0; 4],
+        u8::MAX => [red, green, blue, alpha],
+        _ => {
+            let alpha_wide = u16::from(alpha);
+            let channel = |value: u8| {
+                let straight = (u16::from(value) * 255 + alpha_wide / 2) / alpha_wide;
+                u8::try_from(straight).unwrap_or(u8::MAX)
+            };
+            [channel(red), channel(green), channel(blue), alpha]
+        }
+    }
 }
 
 /// Scene time at `frame`: `frame * 1000 * denominator / numerator`

@@ -1,3 +1,4 @@
+mod animation;
 mod decode;
 mod encode;
 mod grade;
@@ -5,6 +6,7 @@ mod playlist;
 mod title;
 mod value;
 
+pub use animation::title_clip_wire_bytes;
 pub use decode::{LineDecoder, decode_line};
 pub use encode::encode_line;
 

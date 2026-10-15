@@ -11,10 +11,20 @@
 //! a single overwritten journal row holding the position the show reached
 //! above the newest mutation, written at a bounded cadence, which replay
 //! ticks the engine idle up to after the last recorded command.
+//!
+//! A title animation edit (GX-011) also changes the stored template outside
+//! `project.json`. Its new animation is staged beside the template as of the
+//! edit's revision before the batch is appended
+//! ([`DurableStore::stage_title_animations`]), and committed over the
+//! template only once a manifest at or after that revision is durable (at
+//! every checkpoint, and at startup and after recovery, see
+//! [`commit_staged_title_animations`]). The template on disk therefore always
+//! matches the newest manifest, and journal replay re-applies exactly the
+//! edits the manifest does not hold yet.
 
 use std::cell::Cell;
 
-use fm_persistence::{JournalWriter, MutationBatch, ProjectPosition, StoredProject};
+use fm_persistence::{JournalWriter, MutationBatch, ProjectPosition, ProjectStore, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, ProtocolVersion, WireMessage, decode_line,
     encode_line,
@@ -71,6 +81,54 @@ pub(crate) trait DurableStore {
     fn record_progress(&self, _position: ProjectPosition) -> AppResult<()> {
         Ok(())
     }
+
+    /// Stages the template `animations` (stored template URI and the
+    /// animation every title naming it shows) an accepted command leaves at
+    /// project `revision`, before [`Self::record`] journals that command.
+    /// Stores without templates stage nothing.
+    fn stage_title_animations(
+        &self,
+        _revision: u64,
+        _animations: &[(String, fm_titles::TitleAnimation)],
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    /// Removes what [`Self::stage_title_animations`] staged at `revision`
+    /// when the command was not journaled after all. Best effort: a copy
+    /// left behind is discarded by the next startup's recovery.
+    fn discard_staged_title_animations(&self, _revision: u64, _uris: &[String]) {}
+}
+
+/// Every stored template URI a title input of `project` names.
+fn title_template_uris(project: &StoredProject) -> Vec<&str> {
+    project
+        .project()
+        .inputs()
+        .iter()
+        .filter_map(|input| match &input.kind {
+            fm_model::InputKind::Title(title) => Some(title.template_uri.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Commits the staged template animations of `project`'s titles through its
+/// revision (see the module docs); `discard_later` also removes copies
+/// staged after it, whose batches will never be replayed.
+pub(crate) fn commit_staged_title_animations(
+    store: &ProjectStore,
+    project: &StoredProject,
+    discard_later: bool,
+) -> AppResult<()> {
+    store
+        .commit_staged_title_animations(
+            title_template_uris(project),
+            project.position().revision,
+            discard_later,
+        )
+        .map_err(|error| AppFailure(format!("staged title animation: {error}")))?;
+    Ok(())
 }
 
 /// The live journal of a served project.
@@ -162,7 +220,34 @@ impl DurableStore for DurableJournal<'_> {
         self.writer
             .checkpoint_and_compact(project, self.writer.head_sequence())?;
         self.pending.set(0);
+        // The manifest now holds every staged animation edit through its
+        // revision; later ones still wait for their batches' checkpoint.
+        commit_staged_title_animations(self.writer.project_store(), project, false)
+    }
+
+    fn stage_title_animations(
+        &self,
+        revision: u64,
+        animations: &[(String, fm_titles::TitleAnimation)],
+    ) -> AppResult<()> {
+        for (uri, animation) in animations {
+            self.writer
+                .project_store()
+                .stage_title_animation(uri, revision, animation)
+                .map_err(|error| {
+                    AppFailure(format!("title animation could not be staged: {error}"))
+                })?;
+        }
         Ok(())
+    }
+
+    fn discard_staged_title_animations(&self, revision: u64, uris: &[String]) {
+        for uri in uris {
+            let _ = self
+                .writer
+                .project_store()
+                .discard_staged_title_animation(uri, revision);
+        }
     }
 
     fn record_progress(&self, position: ProjectPosition) -> AppResult<()> {

@@ -1207,6 +1207,7 @@ version = "0.1.0"
 name = "fm-client"
 version = "0.1.0"
 dependencies = [
+ "fm-animation",
  "fm-command",
  "fm-grade",
  "fm-protocol",
@@ -1478,6 +1479,7 @@ dependencies = [
 name = "fm-protocol"
 version = "0.1.0"
 dependencies = [
+ "fm-animation",
  "fm-command",
  "fm-grade",
  "fm-types",

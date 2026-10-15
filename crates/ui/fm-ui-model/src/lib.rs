@@ -8,6 +8,7 @@
 
 use core::{cmp::Ordering, fmt, num::NonZeroU128};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use fm_command::{CommandId, Revision};
 pub use fm_protocol::EditHistoryStatus;
@@ -20,15 +21,17 @@ use fm_protocol::{
     StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
     TitleFieldUpdate, TitlePhase, TitleStateMessage, WireRecorderSlot,
 };
-use fm_protocol::{GradeChange, GradeStateMessage};
+use fm_protocol::{GradeChange, GradeStateMessage, TitleAnimationStateMessage};
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
 pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
+pub use title_animation::TitleAnimationStatus;
 
 pub mod animation_editor;
 pub mod grade_editor;
 mod grading;
 pub mod i18n;
+pub mod title_animation;
 pub mod title_editor;
 
 /// Maximum number of replicated stream statuses accepted in one snapshot.
@@ -196,6 +199,10 @@ pub struct TitleStatus {
     pub phase_frame: u64,
     pub phase_frames: u64,
     pub complete: bool,
+    /// The template's animation: `None` until the snapshot's
+    /// `title_animation_state` for this title arrives, then kept current by
+    /// `title_animation_changed`.
+    pub animation: Option<TitleAnimationStatus>,
 }
 
 impl TitleStatus {
@@ -211,6 +218,7 @@ impl TitleStatus {
             phase_frame: 0,
             phase_frames: 0,
             complete: false,
+            animation: None,
         }
     }
 }
@@ -475,6 +483,13 @@ pub enum DurableChange {
     },
     /// One accepted grade edit.
     GradeChanged(GradeChange),
+    /// A title template's animation after an edit, undo, or redo: every
+    /// title input sharing the template (ascending) and the animation they
+    /// all show.
+    TitleAnimationChanged {
+        inputs: Vec<InputId>,
+        animation: TitleAnimationStatus,
+    },
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -616,6 +631,7 @@ impl DurableProjectEvent {
                 },
             },
             EventPayload::GradeChanged(change) => DurableChange::GradeChanged(change),
+            payload @ EventPayload::TitleAnimationChanged { .. } => title_animation_change(payload),
         };
         Self {
             cursor: ProjectCursor {
@@ -741,6 +757,13 @@ impl ProjectState {
     #[must_use]
     pub fn titles_complete(&self) -> bool {
         self.titles.iter().all(|title| title.complete)
+    }
+
+    /// Returns whether every title the snapshot announced has its
+    /// `title_animation_state`.
+    #[must_use]
+    pub fn title_animations_complete(&self) -> bool {
+        self.titles.iter().all(|title| title.animation.is_some())
     }
 
     /// Returns whether `input` is on air in the replicated desired state: on
@@ -1801,6 +1824,48 @@ impl ClientModel {
         Ok(())
     }
 
+    /// Adds the template animation of one title the installed snapshot
+    /// announced, from its `title_animation_state`.
+    ///
+    /// `message` must be at the applied revision (animation states follow
+    /// their snapshot before any event) and name an announced title whose
+    /// animation has not arrived.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::TitleStateMismatch`] otherwise; the model is then
+    /// unchanged and the caller must resynchronize.
+    pub fn apply_title_animation_state(
+        &mut self,
+        message: TitleAnimationStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.input.to_domain();
+        let mismatch = ModelError::TitleStateMismatch(input);
+        if Revision::new(message.revision) != revision {
+            return Err(mismatch);
+        }
+        let title = state
+            .titles
+            .iter_mut()
+            .find(|title| title.input == input)
+            .ok_or(mismatch.clone())?;
+        if title.animation.is_some() {
+            return Err(mismatch);
+        }
+        title.animation = Some(TitleAnimationStatus {
+            revision: message.animation_revision,
+            clip: Arc::from(message.clip),
+        });
+        Ok(())
+    }
+
     /// Applies runtime routing for a known durable desired-state revision.
     ///
     /// This path has independent ordering and intentionally leaves the durable
@@ -2318,6 +2383,58 @@ fn validate_playlist_change(
     Ok(())
 }
 
+/// The model change of a `title_animation_changed` payload.
+fn title_animation_change(payload: EventPayload) -> DurableChange {
+    let EventPayload::TitleAnimationChanged {
+        inputs,
+        animation_revision,
+        clip,
+    } = payload
+    else {
+        unreachable!("only title animation changes are delegated")
+    };
+    DurableChange::TitleAnimationChanged {
+        inputs: inputs
+            .into_iter()
+            .map(fm_protocol::WireInputId::to_domain)
+            .collect(),
+        animation: TitleAnimationStatus {
+            revision: animation_revision,
+            clip: Arc::from(clip),
+        },
+    }
+}
+
+/// A title animation change names ascending titles whose animations have
+/// arrived, each advanced past its current revision.
+fn validate_animation_change(
+    change: &DurableChange,
+    state: &ProjectState,
+) -> Result<(), ModelError> {
+    let DurableChange::TitleAnimationChanged { inputs, animation } = change else {
+        unreachable!("only title animation changes are delegated")
+    };
+    let Some(first) = inputs.first() else {
+        return Err(ModelError::InvalidTitles);
+    };
+    if !inputs.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(ModelError::InvalidTitleChange(*first));
+    }
+    for input in inputs {
+        let title = state
+            .title(*input)
+            .ok_or(ModelError::UnknownTitle(*input))?;
+        let current = title
+            .animation
+            .as_ref()
+            .ok_or(ModelError::TitleIncomplete(*input))?;
+        if animation.revision <= current.revision {
+            return Err(ModelError::InvalidTitleChange(*input));
+        }
+    }
+    Ok(())
+}
+
 fn validate_grade_change(change: &GradeChange, state: &ProjectState) -> Result<(), ModelError> {
     if state.grading_complete() && state.grading.accepts(change, &state.inputs) {
         Ok(())
@@ -2326,6 +2443,7 @@ fn validate_grade_change(change: &GradeChange, state: &ProjectState) -> Result<(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), ModelError> {
     let (selection, manual_transition, stingers, overlays, input_audio_strips) = match change {
         DurableChange::InputOrderChanged { inputs } => {
@@ -2361,6 +2479,9 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         }
         DurableChange::TitleChanged { .. } => return validate_title_change(change, state),
         DurableChange::GradeChanged(change) => return validate_grade_change(change, state),
+        DurableChange::TitleAnimationChanged { .. } => {
+            return validate_animation_change(change, state);
+        }
         DurableChange::PlaylistChanged {
             selection,
             playlist,
@@ -2631,6 +2752,13 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.playlist = Some(playlist);
         }
         DurableChange::GradeChanged(change) => state.grading.apply(change),
+        DurableChange::TitleAnimationChanged { inputs, animation } => {
+            for title in &mut state.titles {
+                if inputs.contains(&title.input) {
+                    title.animation = Some(animation.clone());
+                }
+            }
+        }
     }
 }
 

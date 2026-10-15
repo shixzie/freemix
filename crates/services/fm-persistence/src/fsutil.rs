@@ -103,6 +103,12 @@ pub(crate) fn copy_new_file(source: &Path, destination: &Path) -> io::Result<u64
     Ok(bytes)
 }
 
+/// Syncs the directory holding `path`, so renames and removals in it are
+/// durable.
+pub(crate) fn sync_parent(path: &Path) -> io::Result<()> {
+    sync_directory(parent_directory(path)).map_err(store_io)
+}
+
 /// Reports whether two files hold byte-identical contents.
 pub(crate) fn same_contents(left: &Path, right: &Path) -> io::Result<bool> {
     let mut left = File::open(left)?;

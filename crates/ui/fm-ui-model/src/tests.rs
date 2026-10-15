@@ -1269,8 +1269,8 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
 
 mod titles {
     use fm_protocol::{
-        TitleFieldStatus, TitleFieldUpdate, TitleFieldValue, TitleStateMessage, WireInputId,
-        WireTitleFieldId,
+        TitleAnimationStateMessage, TitleFieldStatus, TitleFieldUpdate, TitleFieldValue,
+        TitleStateMessage, WireInputId, WireTitleFieldId,
     };
 
     use super::*;
@@ -1631,6 +1631,204 @@ mod titles {
         let state = model.state().unwrap();
         assert_eq!(state.titles(), &[] as &[crate::TitleStatus]);
         assert_eq!(state.inputs(), snapshot_inputs.as_slice());
+    }
+
+    fn animation_clip(in_frames: u32) -> fm_protocol::WireTitleClip {
+        use fm_animation::{Easing, Keyframe, Phase, Property, Timebase, Track, TrackKey, Value};
+        fm_protocol::WireTitleClip::from_tracks(
+            Timebase::new(fm_types::FrameRate::new(30, 1).unwrap()),
+            in_frames,
+            0,
+            vec![Track::new(
+                TrackKey::new(
+                    fm_protocol::WireTitleElementId::new(NonZeroU128::new(1).unwrap()),
+                    Phase::In,
+                    Property::Opacity,
+                ),
+                vec![
+                    Keyframe::new(0, Value::Scalar(0), Easing::Linear),
+                    Keyframe::new(in_frames, Value::Scalar(255), Easing::Linear),
+                ],
+            )],
+        )
+        .unwrap()
+    }
+
+    fn animation_state(revision: u64, animation_revision: u64) -> TitleAnimationStateMessage {
+        TitleAnimationStateMessage {
+            revision,
+            input: WireInputId::from_domain(input(TITLE)),
+            animation_revision,
+            clip: Box::new(animation_clip(10)),
+        }
+    }
+
+    fn animation_changed(animation_revision: u64, in_frames: u32) -> DurableChange {
+        DurableChange::TitleAnimationChanged {
+            inputs: vec![input(TITLE)],
+            animation: crate::TitleAnimationStatus {
+                revision: animation_revision,
+                clip: std::sync::Arc::new(animation_clip(in_frames)),
+            },
+        }
+    }
+
+    #[test]
+    fn animation_states_complete_titles_and_changes_advance_them() {
+        let mut model = completed();
+        assert!(!model.state().unwrap().title_animations_complete());
+        // Wrong revision, unknown title: refused without change.
+        let mut unknown = animation_state(10, 4);
+        unknown.input = WireInputId::from_domain(input(1));
+        for message in [animation_state(9, 4), unknown] {
+            let input = message.input.to_domain();
+            assert_eq!(
+                model.apply_title_animation_state(message),
+                Err(ModelError::TitleStateMismatch(input))
+            );
+        }
+        // A change before the animation arrived is refused.
+        let engine_a = engine("engine-a", 1, "log-a");
+        assert_eq!(
+            model.apply_event(event(
+                project(1),
+                engine_a.clone(),
+                11,
+                animation_changed(5, 12)
+            )),
+            Err(ModelError::TitleIncomplete(input(TITLE)))
+        );
+
+        model
+            .apply_title_animation_state(animation_state(10, 4))
+            .unwrap();
+        assert_eq!(
+            model.apply_title_animation_state(animation_state(10, 4)),
+            Err(ModelError::TitleStateMismatch(input(TITLE))),
+            "an animation arrives once"
+        );
+        let state = model.state().unwrap();
+        assert!(state.title_animations_complete());
+        let animation = state
+            .title(input(TITLE))
+            .unwrap()
+            .animation
+            .clone()
+            .unwrap();
+        assert_eq!(animation.revision, 4);
+        assert_eq!(*animation.clip, animation_clip(10));
+
+        // A change must advance the revision.
+        assert_eq!(
+            model.apply_event(event(
+                project(1),
+                engine_a.clone(),
+                11,
+                animation_changed(4, 12)
+            )),
+            Err(ModelError::InvalidTitleChange(input(TITLE)))
+        );
+        model
+            .apply_event(event(project(1), engine_a, 11, animation_changed(5, 12)))
+            .unwrap();
+        let animation = model
+            .state()
+            .unwrap()
+            .title(input(TITLE))
+            .unwrap()
+            .animation
+            .clone()
+            .unwrap();
+        assert_eq!(animation.revision, 5);
+        assert_eq!(*animation.clip, animation_clip(12));
+    }
+
+    #[test]
+    fn the_document_adapter_follows_the_authority_and_builds_requests() {
+        use crate::animation_editor::{
+            AnimDocument, ExactPreviewRequest, PreviewKey, PreviewRequestId,
+        };
+        use crate::title_animation::{
+            AuthoritySync, preview_request, preview_request_id, preview_wire_id, save_payload,
+            sync_document,
+        };
+        use fm_animation::Phase;
+        use fm_protocol::{CommandPayload, TitlePreviewSample};
+
+        let status = |revision, in_frames| crate::TitleAnimationStatus {
+            revision,
+            clip: std::sync::Arc::new(animation_clip(in_frames)),
+        };
+        let mut document = AnimDocument::new(animation_clip(10), 4, 32, 18);
+        assert_eq!(
+            sync_document(&mut document, &status(4, 10)),
+            AuthoritySync::Unchanged
+        );
+        assert_eq!(save_payload(&document, input(TITLE)), None);
+        assert_eq!(
+            sync_document(&mut document, &status(5, 12)),
+            AuthoritySync::Reset
+        );
+        assert_eq!(document.base_revision(), 5);
+        assert_eq!(document.clip(), &animation_clip(12));
+
+        // A local edit makes the draft dirty: it saves and previews as a draft.
+        document.extend_phase(Phase::In, 20).unwrap();
+        assert!(document.is_dirty());
+        let draft = document.clip().clone();
+        assert_eq!(
+            save_payload(&document, input(TITLE)),
+            Some(CommandPayload::SetTitleAnimation {
+                input: WireInputId::from_domain(input(TITLE)),
+                base_revision: 5,
+                clip: Box::new(draft.clone()),
+            })
+        );
+        let request = ExactPreviewRequest {
+            id: PreviewRequestId(7),
+            key: PreviewKey {
+                generation: document.generation(),
+                phase: Phase::Out,
+                frame: 0,
+            },
+        };
+        let wire = preview_request(&document, input(TITLE), request, 320, 180);
+        assert_eq!(wire.request_id, "anim-preview-7");
+        assert_eq!(wire.sample, TitlePreviewSample::Out { frame: 0 });
+        assert_eq!(wire.clip.as_deref(), Some(&draft));
+        assert_eq!((wire.width, wire.height), (320, 180));
+        assert_eq!(
+            fm_protocol::decode_line(
+                &fm_protocol::encode_line(&fm_protocol::WireMessage::TitlePreviewRequest(
+                    wire.clone()
+                ))
+                .unwrap()
+            )
+            .unwrap(),
+            fm_protocol::WireMessage::TitlePreviewRequest(wire)
+        );
+        assert_eq!(
+            preview_request_id(&preview_wire_id(PreviewRequestId(7))),
+            Some(PreviewRequestId(7))
+        );
+        assert_eq!(preview_request_id("anim-preview-07"), None);
+        assert_eq!(preview_request_id("diagnostics-1"), None);
+
+        // Another editor's change conflicts with the dirty draft; our own
+        // save coming back marks it saved.
+        assert_eq!(
+            sync_document(&mut document, &status(6, 30)),
+            AuthoritySync::Conflict
+        );
+        assert!(document.is_dirty());
+        assert_eq!(document.base_revision(), 5);
+        let saved = crate::TitleAnimationStatus {
+            revision: 7,
+            clip: std::sync::Arc::new(draft),
+        };
+        assert_eq!(sync_document(&mut document, &saved), AuthoritySync::Saved);
+        assert!(!document.is_dirty());
+        assert_eq!(document.base_revision(), 7);
     }
 }
 

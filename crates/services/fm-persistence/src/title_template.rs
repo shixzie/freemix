@@ -465,6 +465,107 @@ impl ProjectStore {
         fsutil::write_atomically(&path, document.as_bytes()).map_err(TitleTemplateError::Io)
     }
 
+    /// Stages the template at `uri` with its animation replaced by
+    /// `animation`, as of project revision `revision`, without touching the
+    /// template itself.
+    ///
+    /// A daemon that journals commands stages each accepted animation edit
+    /// before its journal batch, then commits it
+    /// ([`Self::commit_staged_title_animations`]) once a manifest checkpoint
+    /// at or after `revision` is durable, so the template on disk always
+    /// matches the newest manifest. The staged copy is a sibling named
+    /// `<file>.staged-<revision>`; staging the same revision again replaces
+    /// it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the load errors of the current document, the encode errors of
+    /// the staged one, and [`TitleTemplateError::Io`] when the write fails.
+    pub fn stage_title_animation(
+        &self,
+        uri: &str,
+        revision: u64,
+        animation: &TitleAnimation,
+    ) -> Result<(), TitleTemplateError> {
+        let mut stored = self.load_title_template(uri)?;
+        stored.template.animation = animation.clone();
+        let document = encode_title_template(&stored)?;
+        let path = self
+            .resolve_asset_uri(uri)
+            .map_err(TitleTemplateError::Asset)?;
+        fsutil::write_atomically(&staged_template_path(&path, revision), document.as_bytes())
+            .map_err(TitleTemplateError::Io)
+    }
+
+    /// Removes the staged animation of `uri` at `revision`, if any: its
+    /// journal batch was never written.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TitleTemplateError::Asset`] when the URI does not resolve
+    /// and [`TitleTemplateError::Io`] when the removal fails.
+    pub fn discard_staged_title_animation(
+        &self,
+        uri: &str,
+        revision: u64,
+    ) -> Result<(), TitleTemplateError> {
+        let path = self
+            .resolve_asset_uri(uri)
+            .map_err(TitleTemplateError::Asset)?;
+        remove_staged(&[staged_template_path(&path, revision)]).map_err(TitleTemplateError::Io)
+    }
+
+    /// Makes the newest staged animation of each template in `uris` at or
+    /// before `through_revision` the template itself, and removes every
+    /// staged copy at or before it.
+    ///
+    /// Older copies are removed before the newest is renamed into place, so
+    /// a crash at any point leaves either the old template with the newest
+    /// copy still staged or the new template: committing again finishes the
+    /// job. Staged copies after `through_revision` are kept, or removed too
+    /// when `discard_later` is set (their journal batches will never be
+    /// replayed).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TitleTemplateError::Asset`] for a URI that does not resolve
+    /// and [`TitleTemplateError::Io`] when listing, renaming, or removing
+    /// fails.
+    pub fn commit_staged_title_animations<'uri>(
+        &self,
+        uris: impl IntoIterator<Item = &'uri str>,
+        through_revision: u64,
+        discard_later: bool,
+    ) -> Result<(), TitleTemplateError> {
+        let uris: BTreeSet<&str> = uris.into_iter().collect();
+        for uri in uris {
+            let path = self
+                .resolve_asset_uri(uri)
+                .map_err(TitleTemplateError::Asset)?;
+            let staged = staged_template_copies(&path).map_err(TitleTemplateError::Io)?;
+            let (due, later): (Vec<_>, Vec<_>) = staged
+                .into_iter()
+                .partition(|(revision, _)| *revision <= through_revision);
+            if discard_later {
+                remove_staged(&later.into_iter().map(|(_, path)| path).collect::<Vec<_>>())
+                    .map_err(TitleTemplateError::Io)?;
+            }
+            let Some(((_, newest), older)) = due.split_last() else {
+                continue;
+            };
+            remove_staged(
+                &older
+                    .iter()
+                    .map(|(_, path)| path.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(TitleTemplateError::Io)?;
+            std::fs::rename(newest, &path).map_err(TitleTemplateError::Io)?;
+            fsutil::sync_parent(&path).map_err(TitleTemplateError::Io)?;
+        }
+        Ok(())
+    }
+
     /// Imports a source template document and its fonts into this bundle.
     ///
     /// `template` is a `.fmtitle` document in the stored format whose `fonts`
@@ -814,6 +915,59 @@ fn check_clock_table(
             }
             TitleClockKind::SinceTake { .. } => {}
         }
+    }
+    Ok(())
+}
+
+/// The staged copy of the template at `path` as of `revision`.
+fn staged_template_path(path: &Path, revision: u64) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".staged-{revision}"));
+    path.with_file_name(name)
+}
+
+/// Every staged copy of the template at `path`, ascending by revision. Only
+/// names with a canonical decimal revision count.
+fn staged_template_copies(path: &Path) -> io::Result<Vec<(u64, PathBuf)>> {
+    let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+        return Ok(Vec::new());
+    };
+    let prefix = format!("{name}.staged-");
+    let directory = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut copies = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let Some(digits) = file_name
+            .to_str()
+            .and_then(|name| name.strip_prefix(&prefix))
+        else {
+            continue;
+        };
+        if digits.is_empty() || (digits.len() > 1 && digits.starts_with('0')) {
+            continue;
+        }
+        if let Ok(revision) = digits.parse::<u64>()
+            && entry.file_type()?.is_file()
+        {
+            copies.push((revision, entry.path()));
+        }
+    }
+    copies.sort();
+    Ok(copies)
+}
+
+/// Removes `paths` (a missing one is fine) and syncs their directory.
+fn remove_staged(paths: &[PathBuf]) -> io::Result<()> {
+    for path in paths {
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if let Some(first) = paths.first() {
+        fsutil::sync_parent(first)?;
     }
     Ok(())
 }

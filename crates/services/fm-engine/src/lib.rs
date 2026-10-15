@@ -7,6 +7,7 @@ mod grade_edit;
 mod history;
 mod playlist;
 mod state;
+mod title_animation;
 
 pub use engine::{
     Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineEvent,
@@ -32,6 +33,9 @@ pub use playlist::{
 };
 pub use state::{
     EngineInputAudioStripState, EngineInputSource, EngineTitle, MAX_SHOW_INPUTS, ShowState,
+};
+pub use title_animation::{
+    EngineTitleAnimationEdit, EngineTitleTemplate, TitleAnimationChange, title_template_inputs,
 };
 
 // Persisted title inputs (`fm_model`) and live title field sets (`fm_titles`)

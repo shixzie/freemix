@@ -2015,3 +2015,79 @@ fn scan_for_font(directory: &Path, depth: u32) -> Option<PathBuf> {
         .filter(|path| path.is_dir())
         .find_map(|path| scan_for_font(path, depth + 1))
 }
+
+/// GX-011 stage 4a: animation edits are staged per revision beside the
+/// template and committed through a revision; later copies survive unless
+/// discarded, and a crash between the steps is finished by committing again.
+#[test]
+fn staged_title_animations_commit_through_a_revision() {
+    let temp = TestDirectory::new("staged-animation");
+    let store = temp.store("show.freemix");
+    let source = write_source(&temp, "lower.fmtitle", &shape_template("Bar"));
+    let uri = store
+        .import_title_template(&source, &[])
+        .unwrap()
+        .template_uri;
+    let original = store.load_title_template(&uri).unwrap();
+
+    let animation = |in_frames: u32, revision: u64| {
+        let mut template = shape_template("Bar");
+        template
+            .edit_animation(|clip| clip.set_phase_frames_keeping_keys(Phase::In, in_frames))
+            .unwrap();
+        TitleAnimation::new(template.animation.clip, revision)
+    };
+    store
+        .stage_title_animation(&uri, 5, &animation(10, 1))
+        .unwrap();
+    store
+        .stage_title_animation(&uri, 7, &animation(20, 2))
+        .unwrap();
+    store
+        .stage_title_animation(&uri, 9, &animation(30, 3))
+        .unwrap();
+    store
+        .stage_title_animation(&uri, 11, &animation(40, 4))
+        .unwrap();
+    // Staging leaves the template itself alone.
+    assert_eq!(store.load_title_template(&uri).unwrap(), original);
+    // A batch that was never written is discarded.
+    store.discard_staged_title_animation(&uri, 11).unwrap();
+    assert_eq!(
+        assets_listing(&store),
+        vec![
+            "titles/lower.fmtitle",
+            "titles/lower.fmtitle.staged-5",
+            "titles/lower.fmtitle.staged-7",
+            "titles/lower.fmtitle.staged-9",
+        ]
+    );
+
+    // Nothing is due before the first staged revision.
+    store
+        .commit_staged_title_animations([uri.as_str()], 4, false)
+        .unwrap();
+    assert_eq!(store.load_title_template(&uri).unwrap(), original);
+
+    // Through revision 8: the newest due copy (7) wins, 5 is removed, 9 stays.
+    store
+        .commit_staged_title_animations([uri.as_str(), uri.as_str()], 8, false)
+        .unwrap();
+    let committed = store.load_title_template(&uri).unwrap();
+    assert_eq!(committed.template.animation, animation(20, 2));
+    assert_eq!(committed.fonts, original.fonts);
+    assert_eq!(
+        assets_listing(&store),
+        vec!["titles/lower.fmtitle", "titles/lower.fmtitle.staged-9"]
+    );
+
+    // Recovery ending at revision 8 discards the copy it never replayed.
+    store
+        .commit_staged_title_animations([uri.as_str()], 8, true)
+        .unwrap();
+    assert_eq!(assets_listing(&store), vec!["titles/lower.fmtitle"]);
+    assert_eq!(
+        store.load_title_template(&uri).unwrap().template.animation,
+        animation(20, 2)
+    );
+}

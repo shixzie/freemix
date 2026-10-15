@@ -3664,17 +3664,17 @@ fn grade_commands_change_monitor_output_and_survive_restart() {
 
 const TITLE_TEMPLATE_KEY: &str = "titles/process-title.fmtitle";
 
-/// The canonical 1280x720 project plus title input 4 (realized Preview)
-/// whose stored template draws one rectangle at (200, 100) sized 400x200,
-/// tinted by color field 1, on a transparent background. No font is needed.
-fn create_title_project(path: &Path) {
+/// The stored template of the process title: one rectangle at (200, 100)
+/// sized 400x200, tinted by color field 1, on a transparent 1280x720
+/// canvas, unanimated.
+fn process_title_template() -> fm_titles::TitleTemplate {
     use fm_titles::{
         Bounds, Color, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue,
         Style, TemplateId, TitleTemplate,
     };
 
     let field = FieldId::new(NonZeroU128::new(1).unwrap());
-    let template = TitleTemplate {
+    TitleTemplate {
         id: TemplateId::new(NonZeroU128::new(1).unwrap()),
         name: "Process title".into(),
         width: 1_280,
@@ -3701,7 +3701,14 @@ fn create_title_project(path: &Path) {
             kind: ElementKind::Rectangle,
         }],
         animation: fm_titles::TitleAnimation::default(),
-    };
+    }
+}
+
+/// The canonical 1280x720 project plus title input 4 (realized Preview)
+/// whose stored template draws one rectangle at (200, 100) sized 400x200,
+/// tinted by color field 1, on a transparent background. No font is needed.
+fn create_title_project(path: &Path) {
+    let template = process_title_template();
     let store = ProjectStore::new(path).unwrap();
     let document = fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
         template,
@@ -4948,11 +4955,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.28.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 28));
+    // The previous protocol is refused; the current one is 2.29.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 29));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 27),
+        protocol: ProtocolVersion::new(2, 28),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -4968,7 +4975,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 28)
+        ProtocolVersion::new(2, 29)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -5465,4 +5472,359 @@ fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery()
         playlist.state,
         fm_model::PlaylistRunState::Finished { last: Some(2) }
     );
+}
+
+/// Reads the snapshot, its `title_state` records, and the
+/// `title_animation_state` of every announced title (Protocol 2.29); the
+/// title project announces no playlist and no grades.
+fn title_animation_sync(
+    client: &mut Client,
+) -> (
+    fm_protocol::SnapshotMessage,
+    Vec<fm_protocol::TitleAnimationStateMessage>,
+) {
+    let (snapshot, _) = title_sync(client);
+    assert!(!snapshot.playlist_follows);
+    assert_eq!(snapshot.grade_states, 0);
+    let states = snapshot
+        .titles
+        .iter()
+        .map(|_| match client.receive() {
+            WireMessage::TitleAnimationState(state) => state,
+            other => panic!("expected title_animation_state after the title states, got {other:?}"),
+        })
+        .collect();
+    (snapshot, states)
+}
+
+/// The process title's template with `animation`, rendered exactly as the
+/// daemon's preview contract states: `fm_titles` `render_sampled` at the
+/// template size with input 4's persisted bar color, nearest-neighbor scaled,
+/// then straight alpha.
+fn expected_title_preview(
+    animation: &fm_titles::TitleAnimation,
+    sample: fm_titles::AnimSample,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    let store_template = {
+        let mut template = process_title_template();
+        template.animation = animation.clone();
+        template
+    };
+    let mut scene = store_template
+        .instantiate(fm_titles::TitleId::new(NonZeroU128::new(4).unwrap()))
+        .unwrap();
+    scene
+        .update_fields(
+            scene.revision(),
+            &[(
+                fm_titles::FieldId::new(NonZeroU128::new(1).unwrap()),
+                fm_titles::FieldValue::Color(fm_titles::Color::new(230, 20, 140, 255)),
+            )],
+        )
+        .unwrap();
+    let output = fm_titles::ReferenceRenderer
+        .render_sampled(&scene, 0, &fm_titles::AssetCatalog::new(), sample)
+        .unwrap();
+    let frame = fm_video::scale_nearest(&output.frame, width, height).unwrap();
+    let row_bytes = usize::try_from(width).unwrap() * 4;
+    let mut pixels = Vec::new();
+    for row in frame.pixels().chunks(frame.stride()) {
+        for &[red, green, blue, alpha] in row[..row_bytes].as_chunks::<4>().0 {
+            pixels.extend_from_slice(&match alpha {
+                0 => [0; 4],
+                u8::MAX => [red, green, blue, alpha],
+                _ => {
+                    let wide = u16::from(alpha);
+                    let straight = |value: u8| {
+                        u8::try_from((u16::from(value) * 255 + wide / 2) / wide).unwrap()
+                    };
+                    [straight(red), straight(green), straight(blue), alpha]
+                }
+            });
+        }
+    }
+    pixels
+}
+
+/// Sends `request` and assembles the `title_preview_frame` parts that
+/// answer it.
+fn title_preview(
+    client: &mut Client,
+    request: fm_protocol::TitlePreviewRequest,
+) -> fm_protocol::TitlePreviewImage {
+    let request_id = request.request_id.clone();
+    client.send(&WireMessage::TitlePreviewRequest(request));
+    let mut assembler = fm_protocol::TitlePreviewAssembler::new();
+    loop {
+        match client.receive() {
+            WireMessage::TitlePreviewFrame(part) => {
+                assert_eq!(part.request_id, request_id);
+                if let Some(image) = assembler.push(&part).unwrap() {
+                    return image;
+                }
+            }
+            WireMessage::Error(error) => panic!("preview refused: {error:?}"),
+            _ => assert!(!assembler.is_in_progress(), "a preview group is atomic"),
+        }
+    }
+}
+
+/// GX-011 stage 4a end to end: animation edits are revision-checked
+/// `EditProject` commands with undo, replicated to every session as
+/// `title_animation_changed` and `title_animation_state`, previewed exactly
+/// (the saved animation or an unsaved draft), and persisted into the stored
+/// template through a kill (journal recovery) and a further restart.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn title_animation_edits_preview_exactly_and_persist_through_restart() {
+    use fm_protocol::{
+        TitlePreviewRequest, TitlePreviewSample, WireTitleElementId, title_clip_wire_bytes,
+    };
+    use fm_titles::fm_animation::{AnimationPreset, ClipPosition, ClipState, Phase};
+
+    let directory = TestDirectory::new("title-animation");
+    let project_path = directory.project_path();
+    create_title_project(&project_path);
+    let element = WireTitleElementId::new(NonZeroU128::new(1).unwrap());
+    let to_wire = |clip: &fm_titles::TitleClip| {
+        let tracks = clip
+            .tracks()
+            .iter()
+            .map(|track| {
+                fm_titles::fm_animation::Track::new(
+                    fm_titles::fm_animation::TrackKey::new(
+                        WireTitleElementId::new(track.key.target.get()),
+                        track.key.phase,
+                        track.key.property,
+                    ),
+                    track.keys.clone(),
+                )
+            })
+            .collect();
+        fm_protocol::WireTitleClip::from_tracks(
+            clip.timebase(),
+            clip.in_frames(),
+            clip.out_frames(),
+            tracks,
+        )
+        .unwrap()
+    };
+    let mut faded = process_title_template();
+    faded
+        .apply_animation_preset(
+            fm_titles::ElementId::new(NonZeroU128::new(1).unwrap()),
+            Phase::In,
+            AnimationPreset::Fade,
+            10,
+        )
+        .unwrap();
+    let faded_clip = to_wire(&faded.animation.clip);
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut viewer = daemon.connect();
+    viewer.handshake_as(Role::Viewer, None);
+    let (snapshot, states) = title_animation_sync(&mut viewer);
+    assert_eq!(states.len(), 1);
+    assert_eq!(
+        (
+            states[0].revision,
+            states[0].input,
+            states[0].animation_revision
+        ),
+        (snapshot.revision, input(4), 0)
+    );
+    assert_eq!(
+        *states[0].clip,
+        to_wire(&fm_titles::TitleAnimation::default().clip)
+    );
+    let preset = CommandPayload::ApplyTitleAnimationPreset {
+        input: input(4),
+        base_revision: 0,
+        element,
+        phase: Phase::In,
+        preset: AnimationPreset::Fade,
+        frames: 10,
+    };
+    permission_denied(&mut viewer, "viewer-preset", preset.clone());
+    let viewer_preview = TitlePreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "viewer-preview".into(),
+        input: input(4),
+        sample: TitlePreviewSample::Hold,
+        width: 64,
+        height: 36,
+        clip: None,
+    };
+    viewer.send(&WireMessage::TitlePreviewRequest(viewer_preview));
+    loop {
+        if let WireMessage::Error(error) = viewer.receive() {
+            assert_eq!(error.request_id.as_deref(), Some("viewer-preview"));
+            assert_eq!(error.error.code, "permission_denied");
+            break;
+        }
+    }
+
+    let mut graphics = daemon.connect();
+    graphics
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    graphics.handshake_as(Role::Graphics, None);
+    title_animation_sync(&mut graphics);
+    graphics.send(&command("preset", "preset-key", preset));
+    assert_eq!(accepted_revision(&mut graphics, "preset"), 1);
+    let changed = EventPayload::TitleAnimationChanged {
+        inputs: vec![input(4)],
+        animation_revision: 1,
+        clip: Box::new(faded_clip.clone()),
+    };
+    assert_eq!(durable_event_at(&mut graphics, 1).payload, changed);
+    assert_eq!(durable_event_at(&mut viewer, 1).payload, changed);
+
+    // A second editor still based on revision 0 conflicts.
+    graphics.send(&command(
+        "stale",
+        "stale-key",
+        CommandPayload::StretchTitleAnimation {
+            input: input(4),
+            base_revision: 0,
+            phase: Phase::In,
+            frames: 20,
+        },
+    ));
+    assert!(matches!(
+        graphics.next_result(),
+        CommandResult::Rejected { ref code, .. } if code == "conflict"
+    ));
+    // Undo restores the empty clip and redo the faded one, each a new
+    // animation revision.
+    for (id, payload, revision, clip) in [
+        (
+            "undo",
+            CommandPayload::Undo {
+                expected_edit: None,
+            },
+            2,
+            to_wire(&fm_titles::TitleAnimation::default().clip),
+        ),
+        (
+            "redo",
+            CommandPayload::Redo {
+                expected_edit: None,
+            },
+            3,
+            faded_clip.clone(),
+        ),
+    ] {
+        graphics.send(&command(id, &format!("{id}-key"), payload));
+        let accepted = accepted_revision(&mut graphics, id);
+        assert_eq!(
+            durable_event_at(&mut graphics, accepted).payload,
+            EventPayload::TitleAnimationChanged {
+                inputs: vec![input(4)],
+                animation_revision: revision,
+                clip: Box::new(clip),
+            }
+        );
+    }
+
+    // The exact preview of the saved animation, mid-fade, is what
+    // `render_sampled` draws for it.
+    let mid_fade = ClipState::In(ClipPosition::frame(5));
+    let image = title_preview(
+        &mut graphics,
+        TitlePreviewRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: "saved".into(),
+            input: input(4),
+            sample: TitlePreviewSample::In { frame: 5 },
+            width: 640,
+            height: 360,
+            clip: None,
+        },
+    );
+    assert_eq!(
+        (image.input, image.animation_revision, image.draft),
+        (input(4), 3, false)
+    );
+    assert_eq!((image.width, image.height), (640, 360));
+    let expected = expected_title_preview(&faded.animation, mid_fade, 640, 360);
+    assert_eq!(&*image.rgba, expected.as_slice());
+    assert!(
+        image
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] > 0 && pixel[3] < 255),
+        "mid-fade pixels are partly transparent"
+    );
+
+    // An unsaved draft renders instead of the saved animation.
+    let mut draft = faded.clone();
+    draft.stretch_animation(Phase::In, 20).unwrap();
+    let image = title_preview(
+        &mut graphics,
+        TitlePreviewRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: "draft".into(),
+            input: input(4),
+            sample: TitlePreviewSample::In { frame: 5 },
+            width: 320,
+            height: 180,
+            clip: Some(Box::new(to_wire(&draft.animation.clip))),
+        },
+    );
+    assert!(image.draft);
+    assert_eq!(image.animation_revision, 3);
+    assert_eq!(
+        &*image.rgba,
+        expected_title_preview(&draft.animation, mid_fade, 320, 180).as_slice()
+    );
+    assert!(
+        title_clip_wire_bytes(&to_wire(&draft.animation.clip))
+            <= fm_protocol::MAX_TITLE_ANIMATION_BYTES
+    );
+    drop(graphics);
+    drop(viewer);
+    daemon.stop();
+
+    // A kill: recovery replays the journal and commits the staged template.
+    let template_path = ProjectStore::new(&project_path)
+        .unwrap()
+        .assets_root()
+        .join(TITLE_TEMPLATE_KEY);
+    for restart in ["recovered", "restarted"] {
+        let daemon = Daemon::start_without_once(&project_path);
+        let mut viewer = daemon.connect();
+        viewer.handshake_as(Role::Viewer, None);
+        let (_, states) = title_animation_sync(&mut viewer);
+        assert_eq!(states[0].animation_revision, 3, "{restart}");
+        assert_eq!(*states[0].clip, faded_clip, "{restart}");
+        let stored =
+            fm_persistence::decode_title_template(&fs::read_to_string(&template_path).unwrap())
+                .unwrap();
+        assert_eq!(
+            stored.template.animation,
+            fm_titles::TitleAnimation::new(faded.animation.clip.clone(), 3),
+            "{restart}"
+        );
+        let staged = fs::read_dir(template_path.parent().unwrap())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".staged-")
+            })
+            .count();
+        assert_eq!(staged, 0, "{restart}: every staged copy is committed");
+        drop(viewer);
+        daemon.stop();
+    }
 }

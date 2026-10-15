@@ -158,7 +158,7 @@ pub(crate) fn title_source_frame(image: &ImageFrame, timing: MediaTiming) -> Opt
         Vec::with_capacity(row_bytes.checked_mul(usize::try_from(image.height()).ok()?)?);
     for row in image.pixels().chunks(image.stride()) {
         for pixel in row.get(..row_bytes)?.as_chunks::<4>().0 {
-            pixels.extend_from_slice(&unpremultiply(*pixel));
+            pixels.extend_from_slice(&title_render::unpremultiply(*pixel));
         }
     }
     let plane = CpuVideoPlane::new(row_bytes, pixels).ok()?;
@@ -180,23 +180,6 @@ pub(crate) fn title_source_frame(image: &ImageFrame, timing: MediaTiming) -> Opt
             Some(AlphaMode::Straight),
         ))
         .ok()
-}
-
-/// Premultiplied to straight alpha, rounded to nearest; a fully transparent
-/// pixel is transparent black.
-fn unpremultiply([red, green, blue, alpha]: [u8; 4]) -> [u8; 4] {
-    match alpha {
-        0 => [0; 4],
-        u8::MAX => [red, green, blue, alpha],
-        _ => {
-            let alpha_wide = u16::from(alpha);
-            let channel = |value: u8| {
-                let straight = (u16::from(value) * 255 + alpha_wide / 2) / alpha_wide;
-                u8::try_from(straight).unwrap_or(u8::MAX)
-            };
-            [channel(red), channel(green), channel(blue), alpha]
-        }
-    }
 }
 
 /// State shared by the session loop and the title worker.
@@ -241,6 +224,8 @@ impl Shared {
 /// The native title sources of one daemon and their render worker.
 pub(crate) struct NativeTitleSources {
     shared: Arc<Shared>,
+    /// The worker's templates, kept in step with the engine's.
+    assets: Arc<TitleAssets>,
     worker: Option<JoinHandle<()>>,
     /// The state last handed to the worker, compared on the loop.
     submitted: BTreeMap<InputId, TitleInput>,
@@ -302,6 +287,7 @@ impl NativeTitleSources {
             let refresh =
                 Duration::from_nanos(format.frame_duration_ns()).max(MIN_ANIMATED_TITLE_REFRESH);
             let worker_shared = Arc::clone(&shared);
+            let worker_assets = Arc::clone(&assets);
             let sequences = submitted.keys().map(|input| (*input, 0)).collect();
             Some(
                 thread::Builder::new()
@@ -309,7 +295,7 @@ impl NativeTitleSources {
                     .spawn(move || {
                         run_worker(
                             &worker_shared,
-                            &assets,
+                            &worker_assets,
                             format,
                             &animated,
                             sequences,
@@ -322,6 +308,7 @@ impl NativeTitleSources {
         Ok((
             Self {
                 shared,
+                assets,
                 worker,
                 submitted,
             },
@@ -351,6 +338,24 @@ impl NativeTitleSources {
         for (input, title) in changed {
             state.desired.insert(input, title);
             state.dirty.insert(input);
+        }
+        drop(state);
+        self.shared.wake.notify_one();
+    }
+
+    /// Takes the engine's current templates and hands every title whose
+    /// template animation changed (an accepted GX-011 edit) to the worker.
+    /// Never renders.
+    pub(crate) fn observe_templates(&self, templates: &[fm_engine::EngineTitleTemplate]) {
+        let changed = self.assets.sync_templates(templates);
+        if changed.is_empty() || self.worker.is_none() {
+            return;
+        }
+        let mut state = self.shared.lock();
+        for (input, title) in &self.submitted {
+            if changed.contains(&title.template_uri) {
+                state.dirty.insert(*input);
+            }
         }
         drop(state);
         self.shared.wake.notify_one();
@@ -624,7 +629,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::title_render::LoadedTitleTemplate;
+    use crate::title_render::{LoadedTitleTemplate, unpremultiply};
 
     const BAR_URI: &str = "asset://titles/bar.fmtitle";
     const CLOCK_URI: &str = "asset://titles/clock.fmtitle";
