@@ -2693,4 +2693,425 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AnimRetimeModifiers,
         t("Alt: mover un borde · Mayús: sin ajuste · Esc: cancelar"),
     ),
+    // Colour grading panel (SW-019).
+    (Msg::GradeTitle, t("Corrección de color")),
+    (
+        Msg::GradeTitleHover,
+        t(
+            "Corrección de color de esta imagen. El modo Simple tiene estilos y controles básicos; el Avanzado añade ruedas de color, curvas y una LUT. Haga clic dentro del panel para usar sus atajos de teclado.",
+        ),
+    ),
+    (
+        Msg::GradeToAdvancedHover,
+        t("Cambiar al modo Avanzado: ruedas de color, curvas, curvas de tono y una LUT"),
+    ),
+    (
+        Msg::GradeToSimpleHover,
+        t("Cambiar al modo Simple: estilos y controles básicos"),
+    ),
+    (Msg::GradeBypass, t("Bypass")),
+    (
+        Msg::GradeBypassOffHover,
+        t("Omitir la corrección para ver la imagen sin tocar; los ajustes se conservan"),
+    ),
+    (
+        Msg::GradeBypassOnHover,
+        t(
+            "La corrección está omitida, así que la salida es la imagen sin tocar. Haga clic para reactivarla",
+        ),
+    ),
+    (Msg::GradeAb, t("A/B")),
+    (
+        Msg::GradeAbHover,
+        t(
+            "Comparar dos correcciones: guarda esta como {slot} y cambia a la otra. La primera pulsación copia esta corrección para que pruebe una variante",
+        ),
+    ),
+    (
+        Msg::GradeCopyHover,
+        t("Copiar toda la corrección para pegarla en otra imagen"),
+    ),
+    (
+        Msg::GradePasteHover,
+        t("Sustituir esta corrección por la copiada (se conserva el bypass)"),
+    ),
+    (
+        Msg::GradeUndoHover,
+        t("Deshacer la última edición de color (un arrastre completo es un paso)"),
+    ),
+    (
+        Msg::GradeRedoHover,
+        t("Rehacer la última edición de color deshecha"),
+    ),
+    (Msg::GradeResetAll, t("Restablecer todo")),
+    (
+        Msg::GradeResetAllHover,
+        t("Devolver todos los ajustes a neutro y quitar la LUT (un solo paso de deshacer)"),
+    ),
+    (
+        Msg::GradeReasonNothingToUndo,
+        t("no hay ninguna edición de color que deshacer"),
+    ),
+    (
+        Msg::GradeReasonNothingToRedo,
+        t("no hay ninguna edición de color que rehacer"),
+    ),
+    (
+        Msg::GradeReasonNothingCopied,
+        t("aún no se ha copiado ninguna corrección; copie una primero"),
+    ),
+    (Msg::GradeReasonNeutral, t("la corrección ya es neutra")),
+    (
+        Msg::GradeReasonDefault,
+        t("ya está en su valor predeterminado"),
+    ),
+    (Msg::GradeReasonNoLut, t("esta corrección no tiene LUT")),
+    (
+        Msg::GradeReasonNoLuts,
+        t("el proyecto aún no tiene archivos LUT"),
+    ),
+    (
+        Msg::GradeReasonNoPicture,
+        t("aún no hay ninguna imagen que analizar"),
+    ),
+    (
+        Msg::GradeErrInvalid,
+        t("Ese valor está fuera del rango de la corrección"),
+    ),
+    (
+        Msg::GradeErrEmptyClipboard,
+        t("Aún no hay nada copiado: copie una corrección primero"),
+    ),
+    (
+        Msg::GradeErrEmptySlot,
+        t("Esa memoria de comparación está vacía"),
+    ),
+    (Msg::GradeErrCurveFull, t("Esta curva está llena")),
+    (
+        Msg::GradeErrMaxPoints,
+        t("{message}: como máximo {max} puntos por curva."),
+    ),
+    (
+        Msg::GradeErrPointTaken,
+        t("Ya hay un punto ahí; arrástrelo"),
+    ),
+    (
+        Msg::GradeErrEndpointLocked,
+        t("Los extremos de una curva RGB se pueden mover pero no borrar"),
+    ),
+    (Msg::GradeErrUnknownPoint, t("Ese punto ya no existe")),
+    (Msg::GradeLooks, t("Estilos")),
+    (
+        Msg::GradeLooksHover,
+        t(
+            "Estilos listos para usar, previsualizados sobre esta imagen. Haga clic en uno para aplicarlo.",
+        ),
+    ),
+    (
+        Msg::GradeLookApply,
+        t(
+            "Haga clic para aplicar este estilo (un solo paso de deshacer); se conservan la LUT y el bypass.",
+        ),
+    ),
+    (Msg::GradeLookCurrent, t("Este estilo está aplicado ahora.")),
+    (Msg::GradePresetNeutral, t("Neutro")),
+    (Msg::GradePresetWarm, t("Cálido")),
+    (Msg::GradePresetCool, t("Frío")),
+    (Msg::GradePresetPunchy, t("Intenso")),
+    (Msg::GradePresetFaded, t("Desvaído")),
+    (Msg::GradePresetBw, t("B/N")),
+    (
+        Msg::GradePresetNeutralHover,
+        t("Neutro: sin ninguna corrección"),
+    ),
+    (
+        Msg::GradePresetWarmHover,
+        t("Cálido: balance de blancos ámbar y algo más de color"),
+    ),
+    (
+        Msg::GradePresetCoolHover,
+        t("Frío: un balance de blancos más azul"),
+    ),
+    (
+        Msg::GradePresetPunchyHover,
+        t("Intenso: más contraste y color más fuerte"),
+    ),
+    (
+        Msg::GradePresetFadedHover,
+        t("Desvaído: negros levantados, contraste suave y color apagado"),
+    ),
+    (
+        Msg::GradePresetBwHover,
+        t("B/N: blanco y negro con un toque de contraste"),
+    ),
+    (Msg::GradeBasics, t("Básicos")),
+    (
+        Msg::GradeBasicsHover,
+        t(
+            "Las correcciones principales. Arrastre un control en horizontal (Mayús para ajuste fino); doble clic para restablecerlo.",
+        ),
+    ),
+    (Msg::GradeExposure, t("Exposición")),
+    (Msg::GradeContrast, t("Contraste")),
+    (Msg::GradePivot, t("Pivote")),
+    (Msg::GradeSaturation, t("Saturación")),
+    (Msg::GradeTemperature, t("Temperatura")),
+    (Msg::GradeTint, t("Matiz")),
+    (Msg::GradeStrength, t("Intensidad")),
+    (Msg::GradeMaster, t("Maestro")),
+    (
+        Msg::GradeExposureHover,
+        t(
+            "Exposición: aclara u oscurece toda la imagen en pasos, como abrir o cerrar el diafragma",
+        ),
+    ),
+    (
+        Msg::GradeContrastHover,
+        t(
+            "Contraste: aleja los tonos del pivote, oscureciendo las sombras y aclarando las altas luces",
+        ),
+    ),
+    (
+        Msg::GradePivotHover,
+        t("Pivote: el tono alrededor del que gira el contraste; conserva su brillo"),
+    ),
+    (
+        Msg::GradeSaturationHover,
+        t("Saturación: cuánto color tiene la imagen; cero es blanco y negro"),
+    ),
+    (
+        Msg::GradeTemperatureHover,
+        t("Temperatura: balance de blancos de más frío (azul) a más cálido (ámbar)"),
+    ),
+    (
+        Msg::GradeTintHover,
+        t("Matiz: balance de blancos de verde a magenta, para dominantes de fluorescentes o LED"),
+    ),
+    (
+        Msg::GradeStrengthHover,
+        t("Intensidad: cuánto de la LUT se mezcla"),
+    ),
+    (
+        Msg::GradeSliderHelp,
+        t(
+            "Ahora {value}. Arrastre en horizontal para ajustar (Mayús: fino); doble clic para volver a {default}.",
+        ),
+    ),
+    (Msg::GradeAutoBalance, t("Balance automático")),
+    (
+        Msg::GradeAutoBalanceHover,
+        t(
+            "Ajustar temperatura y matiz para que el color medio de la imagen sea gris neutro (un solo paso de deshacer)",
+        ),
+    ),
+    (Msg::GradeWheels, t("Ruedas de color")),
+    (
+        Msg::GradeWheelsHover,
+        t(
+            "Teñir y aclarar las sombras (Lift), los medios tonos (Gamma), las altas luces (Gain) o todos los tonos (Offset)",
+        ),
+    ),
+    (Msg::GradeLift, t("Lift")),
+    (Msg::GradeGamma, t("Gamma")),
+    (Msg::GradeGain, t("Gain")),
+    (Msg::GradeOffset, t("Offset")),
+    (
+        Msg::GradeLiftHover,
+        t(
+            "Lift: el color de las sombras. Arrastre el punto hacia un tono para teñir los tonos oscuros.",
+        ),
+    ),
+    (
+        Msg::GradeGammaHover,
+        t("Gamma: el color de los medios tonos. Arrastre el punto hacia un tono para teñirlos."),
+    ),
+    (
+        Msg::GradeGainHover,
+        t("Gain: el color de las altas luces. Arrastre el punto hacia un tono para teñirlas."),
+    ),
+    (
+        Msg::GradeOffsetHover,
+        t(
+            "Offset: el color de todos los tonos a la vez. Arrastre el punto hacia un tono para teñir toda la imagen.",
+        ),
+    ),
+    (
+        Msg::GradeWheelHelp,
+        t(
+            "Ahora {angle}°, {amount}. Arrastre en cualquier punto de la rueda (Mayús: fino); doble clic para centrar.",
+        ),
+    ),
+    (
+        Msg::GradeWheelNeutralHelp,
+        t(
+            "Centrada (sin tinte). Arrastre en cualquier punto de la rueda (Mayús: fino); doble clic para centrar.",
+        ),
+    ),
+    (
+        Msg::GradeLiftMasterHover,
+        t("Maestro de Lift: sube o baja el nivel de negro"),
+    ),
+    (
+        Msg::GradeGammaMasterHover,
+        t("Maestro de Gamma: aclara u oscurece los medios tonos"),
+    ),
+    (
+        Msg::GradeGainMasterHover,
+        t("Maestro de Gain: aclara u oscurece las altas luces"),
+    ),
+    (
+        Msg::GradeOffsetMasterHover,
+        t("Maestro de Offset: sube o baja todos los tonos por igual"),
+    ),
+    (
+        Msg::GradeWheelResetHover,
+        t(
+            "Restablecer {wheel}: centrar la rueda y poner su maestro a cero (un solo paso de deshacer)",
+        ),
+    ),
+    (Msg::GradeCurves, t("Curvas")),
+    (
+        Msg::GradeCurvesHover,
+        t(
+            "Curvas de tono y de color. Elija una curva con las pestañas y dele forma en el gráfico.",
+        ),
+    ),
+    (Msg::GradeCurveMaster, t("RGB")),
+    (
+        Msg::GradeCurveMasterHover,
+        t("Curva maestra: da forma al brillo del rojo, el verde y el azul a la vez"),
+    ),
+    (
+        Msg::GradeCurveRedHover,
+        t("Curva roja: más o menos rojo en cada tono"),
+    ),
+    (
+        Msg::GradeCurveGreenHover,
+        t("Curva verde: más o menos verde en cada tono"),
+    ),
+    (
+        Msg::GradeCurveBlueHover,
+        t("Curva azul: más o menos azul en cada tono"),
+    ),
+    (Msg::GradeHueVsHue, t("Tono/tono")),
+    (Msg::GradeHueVsSat, t("Tono/sat.")),
+    (Msg::GradeLumaVsSat, t("Luma/sat.")),
+    (
+        Msg::GradeHueVsHueHover,
+        t(
+            "Tono/tono: convierte una gama de colores en otra; suba o baje un punto para girar ese tono",
+        ),
+    ),
+    (
+        Msg::GradeHueVsSatHover,
+        t("Tono/sat.: hace una gama de colores más o menos saturada"),
+    ),
+    (
+        Msg::GradeLumaVsSatHover,
+        t("Luma/sat.: hace las sombras, los medios tonos o las altas luces más o menos saturados"),
+    ),
+    (
+        Msg::GradeCurveCanvasHover,
+        t(
+            "Haga clic para añadir un punto y arrastre los puntos para moverlos (Mayús: fino). Doble clic o clic derecho en un punto para borrarlo.",
+        ),
+    ),
+    (Msg::GradeCurveReset, t("Restablecer curva")),
+    (
+        Msg::GradeCurveResetHover,
+        t("Restablecer la curva {curve} a neutra (un solo paso de deshacer)"),
+    ),
+    (
+        Msg::GradeCurveEmpty,
+        t("Plana: haga clic en la línea para añadir un punto"),
+    ),
+    (Msg::GradeLut, t("LUT")),
+    (
+        Msg::GradeLutHover,
+        t("LUT: una tabla de consulta (archivo .cube) aplicada después de las demás correcciones"),
+    ),
+    (Msg::GradeLutNone, t("Sin LUT")),
+    (
+        Msg::GradeLutPickHover,
+        t("Elegir una LUT de los archivos LUT del proyecto (un solo paso de deshacer)"),
+    ),
+    (Msg::GradeLutRemove, t("Quitar")),
+    (
+        Msg::GradeLutRemoveHover,
+        t("Quitar la LUT de esta corrección (un solo paso de deshacer)"),
+    ),
+    (
+        Msg::GradeLutMissing,
+        t("LUT no cargada: la vista previa muestra la corrección sin ella"),
+    ),
+    (
+        Msg::GradePreviewHover,
+        t("Esta imagen con la corrección aplicada"),
+    ),
+    (Msg::GradeCompareOff, t("Corregida")),
+    (Msg::GradeCompareSide, t("Lado a lado")),
+    (
+        Msg::GradeCompareOffHover,
+        t("Mostrar solo la imagen corregida"),
+    ),
+    (
+        Msg::GradeCompareWipeHover,
+        t("Mostrar el original a la izquierda de una línea y la imagen corregida a la derecha"),
+    ),
+    (
+        Msg::GradeCompareSideHover,
+        t("Mostrar el original y la imagen corregida una junto a la otra"),
+    ),
+    (
+        Msg::GradeWipeHandleHover,
+        t(
+            "Línea de cortina: arrástrela para comparar el original (izquierda) con la corrección (derecha); doble clic para centrarla",
+        ),
+    ),
+    (Msg::GradeOriginal, t("ORIGINAL")),
+    (Msg::GradeGraded, t("CORREGIDA")),
+    (Msg::GradeBypassed, t("OMITIDA")),
+    (
+        Msg::GradeNoPicture,
+        t("Aún no hay imagen para previsualizar"),
+    ),
+    (Msg::GradeScopes, t("Visores")),
+    (
+        Msg::GradeScopesHover,
+        t("Los visores miden la imagen corregida, para corregir con datos y no solo a ojo"),
+    ),
+    (Msg::GradeScopeWaveform, t("Forma de onda")),
+    (Msg::GradeScopeParade, t("Desfile RGB")),
+    (Msg::GradeScopeVectorscope, t("Vectorscopio")),
+    (Msg::GradeScopeHistogram, t("Histograma")),
+    (
+        Msg::GradeScopeWaveformHover,
+        t("Forma de onda: el brillo de cada columna de la imagen, negro abajo y blanco arriba"),
+    ),
+    (
+        Msg::GradeScopeParadeHover,
+        t(
+            "Desfile RGB: formas de onda roja, verde y azul una junto a otra; niveles iguales indican grises neutros",
+        ),
+    ),
+    (
+        Msg::GradeScopeVectorscopeHover,
+        t(
+            "Vectorscopio: el tono alrededor del círculo y la saturación hacia fuera desde el centro gris; las cajas marcan barras al 75 %",
+        ),
+    ),
+    (
+        Msg::GradeScopeHistogramHover,
+        t(
+            "Histograma: cuántos píxeles hay en cada nivel, negro a la izquierda y blanco a la derecha",
+        ),
+    ),
+    (
+        Msg::GradeScopeShowHover,
+        t("Haga clic para mostrar este visor."),
+    ),
+    (
+        Msg::GradeCurveShowHover,
+        t("Haga clic para editar esta curva."),
+    ),
 ];

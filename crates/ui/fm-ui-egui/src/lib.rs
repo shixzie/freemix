@@ -31,6 +31,7 @@ use fm_ui_model::{ClientView, ManualTransitionStatus, ProjectState, StreamStatus
 
 pub mod animation_timeline;
 mod chrome;
+pub mod color_panel;
 mod connection_overlay;
 mod edit_history;
 mod fade_to_black;
@@ -45,6 +46,8 @@ mod menu;
 mod meter_ballistics;
 mod mixer;
 mod monitors;
+#[cfg(test)]
+mod offscreen;
 mod outputs;
 mod overlay_status;
 mod overlays;

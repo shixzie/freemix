@@ -38,7 +38,11 @@
 //! The keyframe animation timeline is not part of the console yet, so it is
 //! audited standalone under the same rules: in Simple and Advanced modes,
 //! with keys selected and an active row, with nothing selected, and with a
-//! refused edit showing, each pinned to the audited language.
+//! refused edit showing, each pinned to the audited language. The colour
+//! grading panel is audited the same way: Simple and Advanced modes, fresh
+//! (with its keys disabled for a reason) and edited (with a LUT, compare
+//! slots, a copied grade, bypass, the wipe compare, and a hue curve), and
+//! with a refused edit showing.
 
 use core::fmt::Write as _;
 use core::num::NonZeroU128;
@@ -69,6 +73,9 @@ use fm_ui_model::title_editor::TitleAccess;
 use fm_ui_model::{ClientModel, ProjectSnapshot};
 
 use crate::animation_timeline::{AnimationTimelineState, AnimationTimelineWidget, TimelineAction};
+use crate::color_panel::{
+    COMPARE_SHORTCUT, ColorPanelState, ColorPanelWidget, GradeAction, PanelMode,
+};
 use crate::panels::SideTab;
 use crate::{StudioConnectionStatus, StudioShell, StudioUiState};
 
@@ -616,6 +623,73 @@ fn timeline_scenes(language: Language) -> Vec<Scene> {
     scenes
 }
 
+/// The colour panel drawn standalone, in `language`.
+fn color_panel_scenes(language: Language) -> Vec<Scene> {
+    use fm_grade::{CurveChannel, GradeLut, HueCurveKind, Wheel, WheelKind};
+    use fm_ui_model::grade_editor::{
+        CompareMode, CurveTarget, GradeDocument, GradeEditorError, GradeParam, ScopeKind,
+        sample_still,
+    };
+
+    let locale = Locale::new(language);
+    let still = sample_still(320, 180);
+    let mut scenes = Vec::new();
+    for (mode_name, mode) in [
+        ("simple", PanelMode::Simple),
+        ("advanced", PanelMode::Advanced),
+    ] {
+        for (variant, edited, refused) in [
+            ("fresh", false, false),
+            ("edited", true, false),
+            ("refused", true, true),
+        ] {
+            let mut document = GradeDocument::default();
+            let mut state = ColorPanelState::with_source(&still);
+            state.mode = mode;
+            if edited {
+                document.set_param(GradeParam::Exposure, 400).unwrap();
+                document
+                    .set_wheel(WheelKind::Gain, Wheel::new(200, -150, 100))
+                    .unwrap();
+                document
+                    .add_curve_point(CurveTarget::Rgb(CurveChannel::Master), [0.4, 0.5])
+                    .unwrap();
+                document
+                    .add_curve_point(CurveTarget::Hue(HueCurveKind::HueVsSaturation), [0.1, 0.8])
+                    .unwrap();
+                document
+                    .set_lut(Some(GradeLut::new("asset://luts/film.cube", 600)))
+                    .unwrap();
+                document.copy();
+                document.toggle_ab().unwrap();
+                document.set_bypass(true).unwrap();
+                document.undo().unwrap();
+                state.lut_choices = vec![
+                    "asset://luts/film.cube".to_owned(),
+                    "asset://luts/night.cube".to_owned(),
+                ];
+                state.compare = CompareMode::Wipe;
+                state.scope = ScopeKind::Vectorscope;
+                state.curve = CurveTarget::Hue(HueCurveKind::HueVsSaturation);
+            }
+            if refused {
+                state.compare = CompareMode::SideBySide;
+                state.scope = ScopeKind::Histogram;
+                state.show_error(&GradeEditorError::CurveFull { max: 16 });
+            }
+            scenes.push(Scene {
+                name: format!("color/{mode_name}-{variant}"),
+                draw: Box::new(move |ui| {
+                    let _output = ColorPanelWidget::new(&mut document, &mut state)
+                        .locale(locale)
+                        .show(ui);
+                }),
+            });
+        }
+    }
+    scenes
+}
+
 /// One interactive widget and the help it showed.
 #[derive(Clone, Debug)]
 struct Control {
@@ -1026,6 +1100,52 @@ fn every_animation_timeline_widget_explains_itself_in_english() {
 #[test]
 fn every_animation_timeline_widget_explains_itself_in_spanish() {
     check_timeline(Language::Spanish);
+}
+
+/// Audits the standalone colour panel in `language` under the same rules,
+/// and requires every action shortcut to be named on its key.
+fn check_color_panel(language: Language) {
+    let locale = Locale::new(language);
+    let (findings, controls) = audit(language, color_panel_scenes(language));
+    dump("hover-color", language, &controls);
+    println!("{}", report(language, &findings));
+    assert!(
+        findings.controls > 60,
+        "the colour panel audit found only {} widgets; is the fixture still rich?",
+        findings.controls
+    );
+    let mut failures = String::new();
+    if failed(&findings) {
+        failures.push_str(&report(language, &findings));
+    }
+    let hints = GradeAction::ALL
+        .into_iter()
+        .filter_map(|action| action.shortcut(locale))
+        .chain([COMPARE_SHORTCUT]);
+    for key in hints {
+        let hint = format!("[{key}]");
+        if !controls
+            .iter()
+            .filter_map(|control| control.tooltip.as_deref())
+            .any(|text| text.contains(&hint))
+        {
+            let _ = writeln!(
+                failures,
+                "no colour panel tooltip names the {hint} shortcut"
+            );
+        }
+    }
+    assert!(failures.is_empty(), "{failures}");
+}
+
+#[test]
+fn every_color_panel_widget_explains_itself_in_english() {
+    check_color_panel(Language::English);
+}
+
+#[test]
+fn every_color_panel_widget_explains_itself_in_spanish() {
+    check_color_panel(Language::Spanish);
 }
 
 #[test]

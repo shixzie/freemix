@@ -1589,6 +1589,7 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "fm-animation",
+ "fm-grade",
  "fm-protocol",
  "fm-types",
  "fm-ui-model",
@@ -1600,6 +1601,7 @@ version = "0.1.0"
 dependencies = [
  "fm-animation",
  "fm-command",
+ "fm-grade",
  "fm-protocol",
  "fm-types",
 ]
