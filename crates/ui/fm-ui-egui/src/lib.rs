@@ -1554,6 +1554,7 @@ impl StudioShell {
         );
         self.toggle_windows_on_keys(ui);
         let mut intents = self.keyboard_intents(ui, state, manual_transition_controls);
+        self.restore_tiles_on_escape(ui);
         // Studio repaints on timers, so egui's `stable_dt` stays at its 1/60 s
         // prediction however long a frame gap really is; toasts and meter
         // ballistics age by the measured time since the previous frame.

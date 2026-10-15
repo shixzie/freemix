@@ -1215,9 +1215,10 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes
 }
 
-/// The docking chrome: tab bars (with their right-click menus, which the
-/// audit opens), pop-out and close keys, splitters, popped-out panel and
-/// tool windows with their Dock back keys, View › Layouts with saved
+/// The docking chrome: tab bars (with their grips and right-click menus,
+/// which the audit opens), pop-out, restore, and close keys, splitters, a
+/// maximised tile, popped-out panel windows with their grips, Dock back
+/// to… menus, and Dock back keys, tool windows, View › Layouts with saved
 /// layouts, the Save and Rename layout dialogs, and an empty workspace.
 fn dock_scenes(locale: Locale) -> Vec<Scene> {
     use crate::dock::{DropZone, LayoutPreset, NamedLayout, ToolWindow};
@@ -1265,6 +1266,11 @@ fn dock_scenes(locale: Locale) -> Vec<Scene> {
         Scene::console(
             "dock/rename-layout",
             shell(&|shell| shell.open_layout_name_dialog(Some(1))),
+            ready(true, Variant::default()),
+        ),
+        Scene::console(
+            "dock/maximized",
+            shell(&|shell| shell.dock_ui.maximized = Some(PanelId::Mixer)),
             ready(true, Variant::default()),
         ),
         Scene::console(

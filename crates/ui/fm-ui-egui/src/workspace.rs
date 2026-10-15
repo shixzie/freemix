@@ -1,7 +1,9 @@
 //! The docking workspace: lays the [`DockLayout`] tree out over the
-//! console area, draws each tile's tab bar (drag a tab to re-dock it,
+//! console area, draws each tile's tab bar (drag a tab to re-dock it, the
+//! grip to move the whole group, double-click a tab to maximise the tile,
 //! right-click it for more) and the active panel, the splitters between
-//! tiles, and every popped-out panel in its own native window.
+//! tiles, and every popped-out panel in its own native window, whose
+//! header grip and Dock back to… menu dock it at a chosen place.
 //!
 //! The panels' own drawing functions are unchanged; this module is only
 //! the shell around them. Keyboard shortcuts are read in whichever window
@@ -10,10 +12,10 @@
 use std::collections::BTreeMap;
 
 use egui::{
-    Align, Align2, CentralPanel, Color32, CornerRadius, CursorIcon, FontId, Frame, Id, LayerId,
-    Layout, Margin, Order, Panel, Pos2, Rect, Response, ScrollArea, Sense, Stroke, StrokeKind, Ui,
-    UiBuilder, Vec2, ViewportBuilder, ViewportClass, ViewportId, WidgetInfo, WidgetType, pos2,
-    vec2,
+    Align, Align2, CentralPanel, Color32, CornerRadius, CursorIcon, FontId, Frame, Id, Key,
+    LayerId, Layout, Margin, Modifiers, Order, Panel, Pos2, Rect, Response, ScrollArea, Sense,
+    Stroke, StrokeKind, Ui, UiBuilder, Vec2, ViewportBuilder, ViewportClass, ViewportId,
+    WidgetInfo, WidgetType, pos2, vec2,
 };
 use fm_protocol::MonitorTap;
 use fm_ui_model::i18n::{Arg, Msg};
@@ -42,6 +44,81 @@ pub(crate) const GAP: f32 = 8.0;
 const TILE_PADDING: f32 = 8.0;
 /// Side of a tab bar icon key.
 const ICON_SIZE: f32 = 20.0;
+/// Width of the drag grip at the start of a tab bar.
+pub(crate) const GRIP_WIDTH: f32 = 14.0;
+/// The places a popped-out panel can dock beside a tile, in menu order.
+const DOCK_ZONES: [DropZone; 5] = [
+    DropZone::Center,
+    DropZone::Left,
+    DropZone::Right,
+    DropZone::Top,
+    DropZone::Bottom,
+];
+
+/// What a drag in the workspace carries.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DragSource {
+    /// One panel, dragged by its tab.
+    Tab(PanelId),
+    /// The whole tab group holding this panel, dragged by its grip.
+    Group(PanelId),
+}
+
+/// Where a popped-out panel would dock, previewed in the main window
+/// while its window's grip is dragged over it or a Dock back to… place
+/// is hovered.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RemoteDrop {
+    pub(crate) panel: PanelId,
+    pub(crate) target: PanelId,
+    pub(crate) zone: DropZone,
+}
+
+/// The menu name of a docked tab group: its panels' titles.
+fn group_title(l: Locale, panels: &[PanelId]) -> String {
+    panels
+        .iter()
+        .map(|panel| l.text(panel.title()))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+const fn zone_title(zone: DropZone) -> Msg {
+    match zone {
+        DropZone::Center => Msg::DockZoneCenter,
+        DropZone::Left => Msg::DockZoneLeft,
+        DropZone::Right => Msg::DockZoneRight,
+        DropZone::Top => Msg::DockZoneTop,
+        DropZone::Bottom => Msg::DockZoneBottom,
+    }
+}
+
+/// Whether dropping `source` at `zone` of `tile` would change nothing:
+/// a group onto itself, or a lone tab onto its own tile or a tab into its
+/// own group.
+pub(crate) fn drop_is_noop(source: DragSource, tile: &Tile, zone: DropZone) -> bool {
+    match source {
+        DragSource::Tab(panel) => {
+            tile.panels.contains(&panel) && (tile.panels.len() == 1 || zone == DropZone::Center)
+        }
+        DragSource::Group(panel) => tile.panels.contains(&panel),
+    }
+}
+
+/// `pos` in a popped-out window's points as a position in the main
+/// window's points: the same in an embedded window, else through both
+/// windows' places on screen when the platform reports them.
+pub(crate) fn to_main_window(
+    pos: Pos2,
+    embedded: bool,
+    window_origin: Option<Pos2>,
+    main_origin: Option<Pos2>,
+) -> Option<Pos2> {
+    if embedded {
+        return Some(pos);
+    }
+    Some(pos + (window_origin? - main_origin?))
+}
 
 /// Something shown in its own native window.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -77,8 +154,15 @@ pub(crate) struct DockUi {
     /// Each docked tile's rect last frame (rounded), by active panel, to
     /// size a panel's window when it is popped out.
     tile_rects: BTreeMap<PanelId, [i32; 4]>,
-    /// The panel whose tab is being dragged.
-    dragging: Option<PanelId>,
+    /// What is being dragged across the workspace.
+    dragging: Option<DragSource>,
+    /// The tile shown alone over the whole workspace, by a panel in it.
+    pub(crate) maximized: Option<PanelId>,
+    /// Where a popped-out panel would dock, previewed in the main window.
+    remote_drop: Option<RemoteDrop>,
+    /// The main window's inside top-left on screen, in whole points, when
+    /// the platform reports it.
+    main_origin: Option<[i32; 2]>,
     /// The open Save / Rename layout dialog.
     pub(crate) name_dialog: Option<LayoutNameDialog>,
 }
@@ -293,6 +377,16 @@ pub(crate) fn monitor_fit(size: Vec2, canvas: (u16, u16)) -> (f32, f32) {
     )
 }
 
+/// Where a monitor well `(width, video_height)` sits in a body `size`:
+/// its left and top offsets, centring it both ways.
+pub(crate) fn monitor_offset(size: Vec2, (width, video_height): (f32, f32)) -> (f32, f32) {
+    let height = video_height + monitors::MONITOR_HEADER_HEIGHT;
+    (
+        ((size.x - width) / 2.0).max(0.0).floor(),
+        ((size.y - height) / 2.0).max(0.0).floor(),
+    )
+}
+
 /// What a frame's panels share: the monitor pictures and gates.
 pub(crate) struct PanelFrame {
     pub(crate) manual: ManualTransitionAvailability,
@@ -308,6 +402,8 @@ enum DockAction {
     Close(PanelId),
     PopOut(PanelId),
     Move(PanelId, PanelId, DropZone),
+    MoveGroup(PanelId, PanelId, DropZone),
+    ToggleMaximized(PanelId),
 }
 
 /// A painted icon key's glyph.
@@ -316,12 +412,24 @@ enum Icon {
     PopOut,
     DockBack,
     Close,
+    Restore,
 }
 
 fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
     let stroke = Stroke::new(1.4, color);
     let r = rect.shrink(5.0);
     match icon {
+        Icon::Restore => {
+            // Two stacked windows: the tiles come back.
+            let back = Rect::from_min_max(
+                pos2(r.left() + 3.0, r.top()),
+                pos2(r.right(), r.bottom() - 3.0),
+            );
+            let front = back.translate(vec2(-3.0, 3.0));
+            painter.rect_stroke(back, CornerRadius::same(1), stroke, StrokeKind::Inside);
+            painter.rect_filled(front, CornerRadius::same(1), panel_color());
+            painter.rect_stroke(front, CornerRadius::same(1), stroke, StrokeKind::Inside);
+        }
         Icon::Close => {
             painter.line_segment([r.left_top(), r.right_bottom()], stroke);
             painter.line_segment([r.right_top(), r.left_bottom()], stroke);
@@ -364,6 +472,81 @@ fn icon_key(ui: &mut Ui, id: Id, rect: Rect, icon: Icon, label: &str, hover: &st
     response.on_hover_text(hover)
 }
 
+/// Paints a drag grip: two columns of dots.
+fn paint_grip(painter: &egui::Painter, rect: Rect, color: Color32) {
+    for row in [-1.0, 0.0, 1.0] {
+        for column in [-1.0, 1.0] {
+            let center = rect.center() + vec2(column * 2.5, row * 4.5);
+            painter.circle_filled(center, 1.2, color);
+        }
+    }
+}
+
+/// A drag grip with `hover` help, named `label` for assistive tech.
+fn grip(ui: &Ui, id: Id, rect: Rect, label: &str, hover: &str) -> Response {
+    let response = ui.interact(rect, id, Sense::drag());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, label));
+    let active = response.hovered() || response.dragged();
+    if active {
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(3), widget_hover_color());
+        ui.ctx().set_cursor_icon(if response.dragged() {
+            CursorIcon::Grabbing
+        } else {
+            CursorIcon::Grab
+        });
+    }
+    paint_grip(
+        ui.painter(),
+        rect,
+        if active {
+            text_color()
+        } else {
+            text_dim_color()
+        },
+    );
+    response.on_hover_text(hover)
+}
+
+/// Paints where a drop at `zone` of `tile` would land, labelled `label`
+/// beside `at` (the pointer) or in the preview's middle.
+fn paint_drop_preview(
+    context: &egui::Context,
+    tile: Rect,
+    zone: DropZone,
+    label: &str,
+    at: Option<Pos2>,
+) {
+    let preview = zone_preview(tile, zone).shrink(2.0);
+    let overlay =
+        context.layer_painter(LayerId::new(Order::Foreground, Id::new("studio-dock-drop")));
+    overlay.rect(
+        preview,
+        CornerRadius::same(6),
+        accent_color().gamma_multiply(0.25),
+        Stroke::new(2.0, accent_color()),
+        StrokeKind::Inside,
+    );
+    if label.is_empty() {
+        return;
+    }
+    // The label rides on a chip so it reads over any panel content.
+    let galley = overlay.layout_no_wrap(label.to_owned(), FontId::proportional(12.0), text_color());
+    let size = galley.size() + vec2(16.0, 8.0);
+    let chip = match at {
+        Some(pos) => Rect::from_min_size(pos + vec2(14.0, 14.0), size),
+        None => Rect::from_center_size(preview.center(), size),
+    };
+    overlay.rect(
+        chip,
+        CornerRadius::same(4),
+        graphite_color(),
+        Stroke::new(1.0, accent_color()),
+        StrokeKind::Inside,
+    );
+    overlay.galley(chip.min + vec2(8.0, 4.0), galley, text_color());
+}
+
 impl StudioShell {
     /// Lays the dock out over `ui`'s rect and draws it. Returns the rect
     /// over the docked monitors and transition controls (or the whole
@@ -376,12 +559,29 @@ impl StudioShell {
         intents: &mut Vec<StudioIntent>,
     ) -> Rect {
         let area = ui.max_rect();
+        #[allow(clippy::cast_possible_truncation)] // on-screen points
+        let origin = ui.input(|input| {
+            input
+                .viewport()
+                .inner_rect
+                .map(|rect| [rect.min.x.round() as i32, rect.min.y.round() as i32])
+        });
+        self.dock_ui.main_origin = origin;
         let Some(root) = self.layout.dock.root().cloned() else {
             self.dock_ui.tile_rects.clear();
+            self.dock_ui.maximized = None;
             self.draw_empty_workspace(ui, area);
             return area;
         };
-        let (tiles, splitters) = layout_tiles(&root, area);
+        // A maximised tile is laid out alone over the whole area.
+        let maximized = self
+            .dock_ui
+            .maximized
+            .and_then(|panel| self.layout.dock.tab_group(panel));
+        if maximized.is_none() {
+            self.dock_ui.maximized = None;
+        }
+        let (tiles, splitters) = layout_tiles(maximized.as_ref().unwrap_or(&root), area);
         let mut actions = Vec::new();
         for tile in &tiles {
             self.draw_dock_tile(ui, tile, state, frame, intents, &mut actions);
@@ -403,6 +603,17 @@ impl StudioShell {
             })
             .collect();
         self.track_tab_drag(ui, &tiles, &mut actions);
+        if let Some(drop) = self.dock_ui.remote_drop
+            && let Some(tile) = tiles.iter().find(|tile| tile.panels.contains(&drop.target))
+        {
+            paint_drop_preview(
+                ui.ctx(),
+                tile.rect,
+                drop.zone,
+                self.locale.text(drop.panel.title()),
+                None,
+            );
+        }
         for action in actions {
             self.apply_dock_action(ui.ctx(), action);
         }
@@ -471,16 +682,32 @@ impl StudioShell {
     fn draw_tab_bar(&self, ui: &mut Ui, tile: &Tile, bar: Rect, actions: &mut Vec<DockAction>) {
         let l = self.locale;
         let active = tile.active_panel();
-        let icons_width = 2.0 * (ICON_SIZE + 2.0) + 4.0;
+        let maximized = self.dock_ui.maximized.is_some();
+        let icons = if maximized { 3.0 } else { 2.0 };
+        let icons_width = icons * (ICON_SIZE + 2.0) + 4.0;
         let close_rect = Rect::from_center_size(
             pos2(bar.right() - 4.0 - ICON_SIZE / 2.0, bar.center().y),
             Vec2::splat(ICON_SIZE),
         );
         let pop_rect = close_rect.translate(vec2(-(ICON_SIZE + 2.0), 0.0));
-        let tabs_width = (bar.width() - icons_width - 8.0).max(0.0);
+        let restore_rect = pop_rect.translate(vec2(-(ICON_SIZE + 2.0), 0.0));
+        let grip_rect = Rect::from_min_size(
+            pos2(bar.left() + 3.0, bar.top() + 3.0),
+            vec2(GRIP_WIDTH, TAB_BAR_HEIGHT - 6.0),
+        );
+        // Its drag is followed by `track_tab_drag`.
+        grip(
+            ui,
+            Id::new("studio-dock-grip").with(active.key()),
+            grip_rect,
+            l.text(Msg::DockGrip),
+            l.text(Msg::DockGripHover),
+        );
+        let tabs_left = grip_rect.right() + 3.0;
+        let tabs_width = (bar.right() - tabs_left - icons_width - 4.0).max(0.0);
         #[allow(clippy::cast_precision_loss)] // a handful of tabs
         let share = (tabs_width / tile.panels.len() as f32).floor();
-        let mut x = bar.left() + 4.0;
+        let mut x = tabs_left;
         let font = FontId::proportional(crate::theme::legible(10.5));
         for panel in &tile.panels {
             let panel = *panel;
@@ -498,6 +725,19 @@ impl StudioShell {
             self.draw_tab(ui, panel, rect, panel == active, &label, &font, actions);
         }
         let name = l.text(active.title());
+        if maximized
+            && icon_key(
+                ui,
+                Id::new("studio-dock-restore").with(active.key()),
+                restore_rect,
+                Icon::Restore,
+                l.text(Msg::DockRestore),
+                l.text(Msg::DockRestoreHover),
+            )
+            .clicked()
+        {
+            actions.push(DockAction::ToggleMaximized(active));
+        }
         if icon_key(
             ui,
             Id::new("studio-dock-popout").with(active.key()),
@@ -589,12 +829,15 @@ impl StudioShell {
             actions.push(DockAction::Activate(panel));
         }
         let response = response.on_hover_text(format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
             l.text(panel.title()),
             l.text(panel.hover()),
-            l.text(Msg::DockTabHover)
+            l.text(Msg::DockTabHover),
+            l.text(Msg::DockTabMaximizeHover)
         ));
-        if response.clicked() {
+        if response.double_clicked() {
+            actions.push(DockAction::ToggleMaximized(panel));
+        } else if response.clicked() {
             actions.push(DockAction::Activate(panel));
         }
         if response.dragged() {
@@ -673,20 +916,25 @@ impl StudioShell {
         }
     }
 
-    /// While a tab is dragged: highlights where it would land; on release,
-    /// moves it there.
+    /// While a tab or a tile's grip is dragged: highlights where it would
+    /// land; on release, moves the panel or the whole tab group there.
     fn track_tab_drag(&mut self, ui: &Ui, tiles: &[Tile], actions: &mut Vec<DockAction>) {
         let context = ui.ctx();
-        let dragged = tiles
-            .iter()
-            .flat_map(|tile| tile.panels.iter())
-            .copied()
-            .find(|panel| {
-                context.is_being_dragged(Id::new("studio-dock-tab").with(panel.key()))
-                    || context.drag_stopped_id()
-                        == Some(Id::new("studio-dock-tab").with(panel.key()))
-            });
-        let Some(panel) = dragged.or(self.dock_ui.dragging) else {
+        let dragging =
+            |id: Id| context.is_being_dragged(id) || context.drag_stopped_id() == Some(id);
+        let dragged = tiles.iter().find_map(|tile| {
+            tile.panels
+                .iter()
+                .copied()
+                .find(|panel| dragging(Id::new("studio-dock-tab").with(panel.key())))
+                .map(DragSource::Tab)
+                .or_else(|| {
+                    let active = tile.active_panel();
+                    dragging(Id::new("studio-dock-grip").with(active.key()))
+                        .then_some(DragSource::Group(active))
+                })
+        });
+        let Some(source) = dragged.or(self.dock_ui.dragging) else {
             return;
         };
         let released = context.input(|input| input.pointer.any_released())
@@ -694,36 +942,35 @@ impl StudioShell {
         let pointer = context.pointer_latest_pos();
         let target = pointer.and_then(|pos| {
             let tile = tiles.iter().find(|tile| tile.rect.contains(pos))?;
-            Some((tile, drop_zone(tile.rect, pos)))
+            let zone = drop_zone(tile.rect, pos);
+            (!drop_is_noop(source, tile, zone)).then_some((tile, zone))
         });
         if released {
             self.dock_ui.dragging = None;
             if let Some((tile, zone)) = target {
-                actions.push(DockAction::Move(panel, tile.active_panel(), zone));
+                let target = tile.active_panel();
+                actions.push(match source {
+                    DragSource::Tab(panel) => DockAction::Move(panel, target, zone),
+                    DragSource::Group(panel) => DockAction::MoveGroup(panel, target, zone),
+                });
             }
             return;
         }
-        self.dock_ui.dragging = Some(panel);
+        self.dock_ui.dragging = Some(source);
         if let Some((tile, zone)) = target {
-            let preview = zone_preview(tile.rect, zone).shrink(2.0);
-            let overlay =
-                context.layer_painter(LayerId::new(Order::Foreground, Id::new("studio-dock-drop")));
-            overlay.rect(
-                preview,
-                CornerRadius::same(6),
-                accent_color().gamma_multiply(0.25),
-                Stroke::new(2.0, accent_color()),
-                StrokeKind::Inside,
-            );
-            if let Some(pos) = pointer {
-                overlay.text(
-                    pos + vec2(14.0, 14.0),
-                    Align2::LEFT_TOP,
-                    self.locale.text(panel.title()),
-                    FontId::proportional(12.0),
-                    text_color(),
-                );
-            }
+            let label = match source {
+                DragSource::Tab(panel) => self.locale.text(panel.title()).to_owned(),
+                DragSource::Group(panel) => self
+                    .layout
+                    .dock
+                    .tab_group(panel)
+                    .map(|group| match group {
+                        DockNode::Tabs { panels, .. } => group_title(self.locale, &panels),
+                        DockNode::Split { .. } => String::new(),
+                    })
+                    .unwrap_or_default(),
+            };
+            paint_drop_preview(context, tile.rect, zone, &label, pointer);
         }
     }
 
@@ -739,6 +986,30 @@ impl StudioShell {
             DockAction::Move(panel, target, zone) => {
                 self.layout.dock.move_panel(panel, target, zone);
             }
+            DockAction::MoveGroup(panel, target, zone) => {
+                self.layout.dock.move_group(panel, target, zone);
+            }
+            DockAction::ToggleMaximized(panel) => {
+                self.dock_ui.maximized = match self.dock_ui.maximized {
+                    Some(_) => None,
+                    None => Some(panel),
+                };
+            }
+        }
+    }
+
+    /// Esc restores a maximised tile, unless something else wants it: a
+    /// dialog, menu, or text field, or the console keys (Esc cancels a
+    /// manual transition first). Call after the console keys are read.
+    pub(crate) fn restore_tiles_on_escape(&mut self, ui: &Ui) {
+        if self.dock_ui.maximized.is_none()
+            || self.console_keys_blocked(ui.ctx())
+            || ui.ctx().egui_wants_keyboard_input()
+        {
+            return;
+        }
+        if ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.dock_ui.maximized = None;
         }
     }
 
@@ -827,8 +1098,11 @@ impl StudioShell {
         let canvas = self.canvas;
         let size = ui.available_size();
         let (width, video_height) = monitor_fit(size, canvas);
+        // Letterboxed in the tile: centred both ways.
+        let (left, top) = monitor_offset(size, (width, video_height));
+        ui.add_space(top);
         ui.horizontal_top(|ui| {
-            ui.add_space(((size.x - width) / 2.0).max(0.0).floor());
+            ui.add_space(left);
             monitors::draw_monitor(
                 ui,
                 bus,
@@ -858,10 +1132,15 @@ impl StudioShell {
                 self.draw_monitor_panel(ui, panel, state, frame);
             }
             PanelId::Transitions => {
-                let spare = (ui.available_width() - transitions::TRANSITION_COLUMN_WIDTH).max(0.0);
+                // The column follows the tile's width within its range and
+                // is centred in a wider tile, clear of the gutter where a
+                // short tile's scroll bar floats.
+                let room = ui.available_width() - transitions::SCROLL_GUTTER;
+                let width = transitions::column_width(room);
+                let spare = (room - width).max(0.0);
                 ui.horizontal_top(|ui| {
                     ui.add_space((spare / 2.0).floor());
-                    fixed_width_column(ui, transitions::TRANSITION_COLUMN_WIDTH, |ui| {
+                    fixed_width_column(ui, width, |ui| {
                         transitions::draw_transition_column(ui, self, state, frame.manual, intents);
                     });
                 });
@@ -951,6 +1230,9 @@ impl StudioShell {
             PopKey::Panel(panel) => popped.iter().any(|popout| popout.key == *panel),
             PopKey::Tool(_) => true,
         });
+        // The main window drew last frame's preview; this frame's windows
+        // say again what to preview.
+        let previous = self.dock_ui.remote_drop.take();
         for popout in popped {
             let panel = popout.key;
             let l = self.locale;
@@ -962,22 +1244,32 @@ impl StudioShell {
             );
             let key = PopKey::Panel(panel);
             let builder = self.popout_builder(key, &title, popout.geometry, min);
-            let outcome = context.show_viewport_immediate(key.viewport(), builder, |ui, class| {
-                let mut dock_back = false;
-                popout_header(ui, l, &title, panel.hover(), &mut dock_back);
-                CentralPanel::default()
-                    .frame(
-                        Frame::new()
-                            .fill(panel_color())
-                            .inner_margin(Margin::same(10)),
-                    )
-                    .show(ui, |ui| {
-                        self.draw_panel_body(ui, panel, state, frame, intents);
-                    });
-                self.native_window_keys(ui, class, state, frame.manual, intents);
-                window_outcome(ui, class, dock_back)
-            });
-            if outcome.dock_back {
+            let (outcome, header) =
+                context.show_viewport_immediate(key.viewport(), builder, |ui, class| {
+                    let last = previous.filter(|drop| drop.panel == panel);
+                    let header = self.panel_popout_header(ui, panel, class, last);
+                    CentralPanel::default()
+                        .frame(
+                            Frame::new()
+                                .fill(panel_color())
+                                .inner_margin(Margin::same(10)),
+                        )
+                        .show(ui, |ui| {
+                            self.draw_panel_body(ui, panel, state, frame, intents);
+                        });
+                    self.native_window_keys(ui, class, state, frame.manual, intents);
+                    (window_outcome(ui, class, header.dock_back), header)
+                });
+            if let Some((target, zone)) = header.preview {
+                self.dock_ui.remote_drop = Some(RemoteDrop {
+                    panel,
+                    target,
+                    zone,
+                });
+            }
+            if let Some((target, zone)) = header.drop {
+                self.layout.dock.move_panel(panel, target, zone);
+            } else if outcome.dock_back {
                 self.layout.dock.dock_back(panel);
             } else if let Some(geometry) = outcome.geometry
                 && popout.geometry != Some(geometry)
@@ -985,6 +1277,148 @@ impl StudioShell {
                 self.layout.dock.set_geometry(panel, geometry);
             }
         }
+        if self.dock_ui.remote_drop != previous {
+            context.request_repaint_of(ViewportId::ROOT);
+        }
+    }
+
+    /// The strip along the top of popped-out `panel`'s window: a grip to
+    /// drag it back onto the console, its title, Dock back to… (every
+    /// place beside or in a docked tile), and Dock back (home).
+    ///
+    /// `last` is the drop this window previewed last frame: the grip's
+    /// release lands there when the pointer has already left the window's
+    /// reach (X11 reports leaving as the button comes up).
+    fn panel_popout_header(
+        &self,
+        ui: &mut Ui,
+        panel: PanelId,
+        class: ViewportClass,
+        last: Option<RemoteDrop>,
+    ) -> PopoutHeader {
+        let l = self.locale;
+        let title = l.text(panel.title());
+        let groups = self.layout.dock.tab_groups();
+        let mut header = PopoutHeader::default();
+        Panel::top(Id::new("studio-popout-header").with(title))
+            .exact_size(30.0)
+            .frame(
+                Frame::new()
+                    .fill(graphite_color())
+                    .stroke(Stroke::new(line_width(), border_strong_color()))
+                    .inner_margin(Margin::symmetric(8, 0)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    let rect = ui.allocate_space(vec2(GRIP_WIDTH, ICON_SIZE)).1;
+                    let response = grip(
+                        ui,
+                        Id::new("studio-popout-grip").with(panel.key()),
+                        rect,
+                        l.text(Msg::DockPopoutGrip),
+                        &l.format(Msg::DockPopoutGripHover, &[("panel", Arg::Str(title))]),
+                    );
+                    if response.dragged() || response.drag_stopped() {
+                        let target = self.remote_target(ui, class);
+                        if response.drag_stopped() {
+                            header.drop =
+                                target.or_else(|| last.map(|drop| (drop.target, drop.zone)));
+                        } else {
+                            header.preview = target;
+                        }
+                    }
+                    ui.label(crate::theme::section_label(title))
+                        .on_hover_text(l.text(panel.hover()));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let rect = ui.allocate_space(Vec2::splat(ICON_SIZE)).1;
+                        if icon_key(
+                            ui,
+                            Id::new("studio-popout-dock").with(title),
+                            rect,
+                            Icon::DockBack,
+                            l.text(Msg::DockBack),
+                            &l.format(Msg::DockBackNamed, &[("panel", Arg::Str(title))]),
+                        )
+                        .clicked()
+                        {
+                            header.dock_back = true;
+                        }
+                        ui.menu_button(l.text(Msg::DockBackTo), |ui| {
+                            ui.set_min_width(200.0);
+                            if groups.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(l.text(Msg::DockBackToNone))
+                                        .size(crate::theme::legible(10.5))
+                                        .color(text_dim_color()),
+                                );
+                            }
+                            for (panels, active) in &groups {
+                                let target = panels[*active];
+                                let name = group_title(l, panels);
+                                ui.menu_button(&name, |ui| {
+                                    for zone in DOCK_ZONES {
+                                        let item = ui
+                                            .button(l.text(zone_title(zone)))
+                                            .on_hover_text(l.format(
+                                                Msg::DockZoneHover,
+                                                &[("panel", Arg::Str(title))],
+                                            ));
+                                        if item.hovered() {
+                                            header.preview = Some((target, zone));
+                                        }
+                                        if item.clicked() {
+                                            header.drop = Some((target, zone));
+                                            ui.close();
+                                        }
+                                    }
+                                })
+                                .response
+                                .on_hover_text(
+                                    l.format(Msg::DockTargetHover, &[("panels", Arg::Str(&name))]),
+                                );
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            l.format(Msg::DockBackToHover, &[("panel", Arg::Str(title))]),
+                        );
+                    });
+                });
+            });
+        header
+    }
+
+    /// The docked tile under the pointer of a popped-out window, and the
+    /// zone of it the pointer is over.
+    fn remote_target(&self, ui: &Ui, class: ViewportClass) -> Option<(PanelId, DropZone)> {
+        let (pointer, origin) = ui.input(|input| {
+            (
+                input.pointer.latest_pos(),
+                input.viewport().inner_rect.map(|rect| rect.min),
+            )
+        });
+        #[allow(clippy::cast_precision_loss)] // on-screen points
+        let main_origin = self
+            .dock_ui
+            .main_origin
+            .map(|[x, y]| pos2(x as f32, y as f32));
+        let pos = to_main_window(
+            pointer?,
+            class == ViewportClass::EmbeddedWindow,
+            origin,
+            main_origin,
+        )?;
+        self.dock_ui
+            .tile_rects
+            .iter()
+            .find_map(|(panel, [x, y, width, height])| {
+                #[allow(clippy::cast_precision_loss)] // on-screen points
+                let rect = Rect::from_min_size(
+                    pos2(*x as f32, *y as f32),
+                    vec2(*width as f32, *height as f32),
+                );
+                rect.contains(pos).then(|| (*panel, drop_zone(rect, pos)))
+            })
     }
 
     /// The native window for popped-out `tool`, and the builder to show it
@@ -1214,6 +1648,17 @@ fn popout_header(ui: &mut Ui, l: Locale, title: &str, hover: Msg, dock_back: &mu
                 });
             });
         });
+}
+
+/// What a popped-out panel's header asked for this frame.
+#[derive(Clone, Copy, Debug, Default)]
+struct PopoutHeader {
+    /// Dock back home (the Dock back key).
+    dock_back: bool,
+    /// The place to preview in the main window.
+    preview: Option<(PanelId, DropZone)>,
+    /// The place to dock now.
+    drop: Option<(PanelId, DropZone)>,
 }
 
 /// What a native window's frame reported.

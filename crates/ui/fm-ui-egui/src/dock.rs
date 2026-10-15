@@ -109,7 +109,9 @@ impl PanelId {
     pub const fn min_size(self) -> (f32, f32) {
         match self {
             Self::Preview | Self::Program => (240.0, 160.0),
-            Self::Transitions => (252.0, 280.0),
+            // The transition column's narrowest plus the gutter for its
+            // scroll bar; it widens with its tile up to its widest.
+            Self::Transitions => (212.0, 300.0),
             Self::InputBank => (340.0, 220.0),
             Self::Mixer => (220.0, 300.0),
             Self::Outputs => (300.0, 150.0),
@@ -520,6 +522,9 @@ pub fn decode_popouts<K: PopOutKey>(text: &str) -> Option<Vec<PopOut<K>>> {
     Some(popouts)
 }
 
+/// The Default layout's share for its upper row, in both columns.
+const DEFAULT_ROW_SPLIT: u16 = 500;
+
 /// A built-in layout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LayoutPreset {
@@ -561,14 +566,17 @@ impl LayoutPreset {
             InputBank, Media, Mixer, Outputs, Overlays, Playlist, Preview, Program, Stingers,
             Titles, Transitions,
         };
+        // Shares chosen so Preview and Program stay the same width from
+        // 1280 to 1920 points wide, where the transition column goes from
+        // its minimum to nearly its widest.
         let monitors = || {
             DockNode::split(
                 Axis::Horizontal,
-                388,
+                375,
                 DockNode::tabs(&[Preview]),
                 DockNode::split(
                     Axis::Horizontal,
-                    367,
+                    394,
                     DockNode::tabs(&[Transitions]),
                     DockNode::tabs(&[Program]),
                 ),
@@ -576,12 +584,14 @@ impl LayoutPreset {
         };
         let side = [Overlays, Stingers, Titles, Playlist, Media];
         let root = match self {
+            // Both columns split their height at one share, so the lower
+            // row's tab bars line up across the console.
             Self::Default => DockNode::split(
                 Axis::Horizontal,
                 765,
                 DockNode::split(
                     Axis::Vertical,
-                    520,
+                    DEFAULT_ROW_SPLIT,
                     monitors(),
                     DockNode::split(
                         Axis::Horizontal,
@@ -592,7 +602,7 @@ impl LayoutPreset {
                 ),
                 DockNode::split(
                     Axis::Vertical,
-                    330,
+                    DEFAULT_ROW_SPLIT,
                     DockNode::tabs(&[Outputs]),
                     DockNode::tabs(&side),
                 ),
@@ -858,19 +868,35 @@ impl DockLayout {
 
     /// Docks `panel` (not shown anywhere) at `zone` of `target`'s group.
     fn insert(&mut self, panel: PanelId, target: PanelId, zone: DropZone) {
+        self.insert_node(DockNode::tabs(&[panel]), target, zone);
+    }
+
+    /// Docks tab group `new` (none of whose panels is shown) at `zone` of
+    /// `target`'s group: into it, or split beside it.
+    fn insert_node(&mut self, new: DockNode, target: PanelId, zone: DropZone) {
         let Some(group) = self.root.as_mut().and_then(|root| root.group_mut(target)) else {
-            self.insert_at_edge(panel, zone);
+            let mut panels = Vec::new();
+            new.collect(&mut panels);
+            for panel in panels {
+                self.insert_at_edge(panel, zone);
+            }
             return;
         };
         if zone == DropZone::Center {
-            if let DockNode::Tabs { panels, active } = group {
-                panels.push(panel);
-                *active = panels.len() - 1;
+            if let (
+                DockNode::Tabs { panels, active },
+                DockNode::Tabs {
+                    panels: added,
+                    active: shown,
+                },
+            ) = (group, new)
+            {
+                *active = panels.len() + shown;
+                panels.extend(added);
             }
             return;
         }
         let old = core::mem::replace(group, DockNode::tabs(&[]));
-        let new = DockNode::tabs(&[panel]);
         *group = match zone {
             DropZone::Left => DockNode::split(Axis::Horizontal, 500, new, old),
             DropZone::Right => DockNode::split(Axis::Horizontal, 500, old, new),
@@ -917,6 +943,59 @@ impl DockLayout {
         self.close(panel);
         self.insert(panel, target, zone);
         true
+    }
+
+    /// Moves the whole tab group holding docked `panel`, tabs and shown
+    /// tab as they are, to `zone` of `target`'s group. Returns whether the
+    /// layout changed; dropping a group onto itself changes nothing.
+    pub fn move_group(&mut self, panel: PanelId, target: PanelId, zone: DropZone) -> bool {
+        let Some(DockNode::Tabs { panels, active }) = self.tab_group(panel) else {
+            return false;
+        };
+        if panels.contains(&target) || !self.is_docked(target) {
+            return false;
+        }
+        if panels.len() == 1 {
+            return self.move_panel(panel, target, zone);
+        }
+        for moved in &panels {
+            self.root = self.root.take().and_then(|root| root.without(*moved));
+        }
+        self.insert_node(DockNode::Tabs { panels, active }, target, zone);
+        true
+    }
+
+    /// The tab group holding docked `panel`.
+    #[must_use]
+    pub fn tab_group(&self, panel: PanelId) -> Option<DockNode> {
+        fn find(node: &DockNode, panel: PanelId) -> Option<&DockNode> {
+            match node {
+                DockNode::Tabs { panels, .. } => panels.contains(&panel).then_some(node),
+                DockNode::Split { first, second, .. } => {
+                    find(first, panel).or_else(|| find(second, panel))
+                }
+            }
+        }
+        find(self.root.as_ref()?, panel).cloned()
+    }
+
+    /// Every docked tab group's panels and shown tab, in tree order.
+    #[must_use]
+    pub fn tab_groups(&self) -> Vec<(Vec<PanelId>, usize)> {
+        fn walk(node: &DockNode, out: &mut Vec<(Vec<PanelId>, usize)>) {
+            match node {
+                DockNode::Tabs { panels, active } => out.push((panels.clone(), *active)),
+                DockNode::Split { first, second, .. } => {
+                    walk(first, out);
+                    walk(second, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        if let Some(root) = &self.root {
+            walk(root, &mut out);
+        }
+        out
     }
 
     /// Moves `panel` into its own window. Returns whether it changed.

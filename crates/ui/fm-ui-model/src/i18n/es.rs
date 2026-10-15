@@ -557,6 +557,55 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::DockSplitterHover,
         t("Arrastre para cambiar el tamaño de los paneles a ambos lados"),
     ),
+    (Msg::DockGrip, t("Mover panel")),
+    (
+        Msg::DockGripHover,
+        t(
+            "Arrastre para mover; suéltelo en un borde para dividir, o en el centro para unir sus pestañas",
+        ),
+    ),
+    (
+        Msg::DockTabMaximizeHover,
+        t("Doble clic para maximizar este panel; doble clic de nuevo o Esc para restaurarlo."),
+    ),
+    (Msg::DockRestore, t("Restaurar paneles")),
+    (
+        Msg::DockRestoreHover,
+        t("Vuelve a mostrar todos los paneles  [Esc]"),
+    ),
+    (Msg::DockPopoutGrip, t("Arrastrar para acoplar")),
+    (
+        Msg::DockPopoutGripHover,
+        t(
+            "Arrastre sobre la ventana de la consola para acoplar {panel} donde indica la vista previa azul; Acoplar en… ofrece los mismos lugares",
+        ),
+    ),
+    (Msg::DockBackTo, t("Acoplar en…")),
+    (
+        Msg::DockBackToHover,
+        t(
+            "Elija dónde se acopla {panel} en la consola: junto a un panel o en su grupo de pestañas",
+        ),
+    ),
+    (
+        Msg::DockBackToNone,
+        t("No hay paneles acoplados; Acoplar de nuevo devuelve este a su sitio"),
+    ),
+    (
+        Msg::DockTargetHover,
+        t(
+            "Acopla junto a {panels} o en su grupo; pase el puntero por un lugar para verlo en la consola",
+        ),
+    ),
+    (Msg::DockZoneCenter, t("En su grupo de pestañas")),
+    (Msg::DockZoneLeft, t("A su izquierda")),
+    (Msg::DockZoneRight, t("A su derecha")),
+    (Msg::DockZoneTop, t("Encima")),
+    (Msg::DockZoneBottom, t("Debajo")),
+    (
+        Msg::DockZoneHover,
+        t("Acopla {panel} aquí; la consola muestra dónde quedará"),
+    ),
     (
         Msg::LayoutRejected,
         t("No se pudo leer el diseño de paneles guardado; se muestra el diseño predeterminado"),

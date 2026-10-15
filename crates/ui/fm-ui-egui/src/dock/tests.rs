@@ -5,8 +5,8 @@ use PanelId::{
     Transitions,
 };
 
-const DEFAULT_TREE: &str = "h765(v520(h388([preview],h367([transitions],[program])),\
-h600([inputs],[mixer])),v330([outputs],[overlays|stingers|titles|playlist|media]))";
+const DEFAULT_TREE: &str = "h765(v500(h375([preview],h394([transitions],[program])),\
+h600([inputs],[mixer])),v500([outputs],[overlays|stingers|titles|playlist|media]))";
 
 fn group_of(layout: &DockLayout, panel: PanelId) -> Vec<PanelId> {
     let mut layout = layout.clone();
@@ -61,7 +61,7 @@ fn split_tab_and_move_rearrange_the_tree() {
     assert!(
         layout
             .encode_tree()
-            .contains("v520(h388([preview],h367([transitions],[program])),[inputs|mixer*])")
+            .contains("v500(h375([preview],h394([transitions],[program])),[inputs|mixer*])")
     );
 
     // Split Titles out to the left of the Program monitor.
@@ -109,12 +109,12 @@ fn close_and_reopen_restore_panels_to_their_home() {
     assert!(layout.close(Transitions));
     assert!(!layout.is_visible(Transitions));
     assert!(!layout.close(Transitions));
-    assert!(layout.encode_tree().contains("h388([preview],[program])"));
+    assert!(layout.encode_tree().contains("h375([preview],[program])"));
     layout.show(Transitions);
     assert!(
         layout
             .encode_tree()
-            .contains("h388(h500([preview],[transitions]),[program])")
+            .contains("h375(h500([preview],[transitions]),[program])")
     );
 
     // A side tab returns as a tab of the side group, in front.
@@ -162,6 +162,74 @@ fn closing_the_shown_tab_shows_its_left_neighbour() {
     assert!(layout.close(Stingers));
     assert!(layout.is_showing(Playlist));
     assert_eq!(group_of(&layout, Media), vec![Playlist, Media]);
+}
+
+#[test]
+fn a_whole_tab_group_moves_with_its_tabs_and_shown_tab() {
+    let mut layout = DockLayout::default();
+    layout.activate(Titles);
+    // Split the side tab group off to the left of the input bank.
+    assert!(layout.move_group(Playlist, InputBank, DropZone::Left));
+    all_shown_once(&layout);
+    assert!(
+        layout
+            .encode_tree()
+            .contains("h500([overlays|stingers|titles*|playlist|media],[inputs])"),
+        "{}",
+        layout.encode_tree()
+    );
+    // Its old split collapsed into Recording & streams alone.
+    assert!(layout.encode_tree().ends_with(",[outputs])"));
+    assert!(layout.is_showing(Titles));
+
+    // Join it into the mixer's group: appended, its shown tab in front.
+    assert!(layout.move_group(Overlays, Mixer, DropZone::Center));
+    assert_eq!(
+        group_of(&layout, Mixer),
+        vec![Mixer, Overlays, Stingers, Titles, Playlist, Media]
+    );
+    assert!(layout.is_showing(Titles));
+    all_shown_once(&layout);
+
+    // A group dropped onto itself, or a hidden target, changes nothing.
+    let before = layout.clone();
+    assert!(!layout.move_group(Mixer, Titles, DropZone::Left));
+    assert!(!layout.move_group(Mixer, Mixer, DropZone::Center));
+    layout.close(Outputs);
+    let before_hidden = layout.clone();
+    assert!(!layout.move_group(Mixer, Outputs, DropZone::Top));
+    assert_eq!(layout, before_hidden);
+    assert_ne!(layout, before);
+
+    // A lone group moves as its panel does.
+    let mut lone = DockLayout::default();
+    let mut by_panel = DockLayout::default();
+    assert!(lone.move_group(Program, Preview, DropZone::Bottom));
+    assert!(by_panel.move_panel(Program, Preview, DropZone::Bottom));
+    assert_eq!(lone, by_panel);
+}
+
+#[test]
+fn tab_groups_list_every_docked_group_in_tree_order() {
+    let mut layout = DockLayout::default();
+    layout.activate(Media);
+    let groups = layout.tab_groups();
+    assert_eq!(groups.len(), layout.active_tabs().len());
+    assert_eq!(groups[0], (vec![Preview], 0));
+    assert_eq!(
+        groups.last(),
+        Some(&(vec![Overlays, Stingers, Titles, Playlist, Media], 4))
+    );
+    assert_eq!(
+        layout.tab_group(Stingers),
+        Some(DockNode::Tabs {
+            panels: vec![Overlays, Stingers, Titles, Playlist, Media],
+            active: 4,
+        })
+    );
+    layout.pop_out(Preview, None);
+    assert_eq!(layout.tab_group(Preview), None);
+    assert_eq!(layout.tab_groups()[0], (vec![Transitions], 0));
 }
 
 #[test]
@@ -224,7 +292,7 @@ fn trees_and_popouts_round_trip_through_text() {
     let popouts = layout.encode_popouts();
     assert_eq!(
         tree,
-        "v560(h367([transitions],[program]),h333([inputs|mixer*],[outputs|overlays|titles|playlist|media]))"
+        "v560(h394([transitions],[program]),h333([inputs|mixer*],[outputs|overlays|titles|playlist|media]))"
     );
     assert_eq!(popouts, "stingers:500x300@10,-20; preview");
     assert_eq!(DockLayout::decode(&tree, &popouts), Ok(layout.clone()));

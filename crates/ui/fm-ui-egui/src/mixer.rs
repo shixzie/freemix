@@ -463,12 +463,25 @@ pub(crate) fn draw_mixer(
             if meters_stale {
                 stale_badge(ui, &stale_meter_label(l, ballistics.message_age_ms()));
             }
-            ui.label(
-                RichText::new(l.text(Msg::MeterLegend))
-                    .size(crate::theme::legible(10.0))
-                    .color(muted_color()),
-            )
-            .on_hover_text(l.text(Msg::MeterLegendHover));
+            // The key gives way first in a narrow mixer: it ends in an
+            // ellipsis (or goes) rather than run under the title, and its
+            // tooltip spells it out.
+            if ui.available_width() > 24.0 {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(l.text(Msg::MeterLegend))
+                            .size(crate::theme::legible(10.0))
+                            .color(muted_color()),
+                    )
+                    .truncate()
+                    .sense(Sense::hover()),
+                )
+                .on_hover_text(format!(
+                    "{}\n{}",
+                    l.text(Msg::MeterLegend),
+                    l.text(Msg::MeterLegendHover)
+                ));
+            }
         }
     });
     if reset_all {
@@ -501,7 +514,7 @@ pub(crate) fn draw_mixer(
     let mut clear = Vec::new();
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = STRIP_GAP;
-        ui.allocate_ui_with_layout(
+        let strips = ui.allocate_ui_with_layout(
             Vec2::new(inputs_width, ui.available_height()),
             egui::Layout::left_to_right(egui::Align::Min),
             |ui| {
@@ -572,6 +585,14 @@ pub(crate) fn draw_mixer(
                         });
                     });
             },
+        );
+        // The input strips start at the left; a rule sets the pinned
+        // Monitor and Master strips apart however much room is spare.
+        let rect = strips.response.rect;
+        ui.painter().vline(
+            rect.right() + STRIP_GAP / 2.0,
+            rect.top()..=rect.bottom(),
+            Stroke::new(1.0, border_color()),
         );
         let monitor = state
             .audio_meters

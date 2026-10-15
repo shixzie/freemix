@@ -20,12 +20,53 @@ use crate::{
     fade_to_black, transition_availability,
 };
 
-/// Fixed width of the transition column.
-pub(crate) const TRANSITION_COLUMN_WIDTH: f32 = 252.0;
-const BUTTON_SIZE: Vec2 = Vec2::new(94.0, 36.0);
-/// One favourite key: the four keys and their three 4-point gaps share
-/// the column width.
-const FAVORITE_SIZE: Vec2 = Vec2::new((TRANSITION_COLUMN_WIDTH - 3.0 * 4.0) / 4.0, 28.0);
+/// Narrowest transition column: keys still hold their labels.
+pub(crate) const TRANSITION_COLUMN_MIN_WIDTH: f32 = 200.0;
+/// Widest transition column; a wider tile centres it.
+pub(crate) const TRANSITION_COLUMN_MAX_WIDTH: f32 = 360.0;
+/// Room kept right of the column for a short tile's floating scroll bar.
+pub(crate) const SCROLL_GUTTER: f32 = 12.0;
+/// Height of a transition key; keys widen with the column, not taller.
+const BUTTON_HEIGHT: f32 = 36.0;
+/// Width beside the two key columns: the T-bar, its gap, and spacing.
+const T_BAR_COLUMN: f32 = 56.0;
+/// Height of a favourite key.
+const FAVORITE_HEIGHT: f32 = 28.0;
+
+/// The transition column's width in `available` points: the tile's width
+/// within the column's range.
+pub(crate) fn column_width(available: f32) -> f32 {
+    available
+        .clamp(TRANSITION_COLUMN_MIN_WIDTH, TRANSITION_COLUMN_MAX_WIDTH)
+        .floor()
+}
+
+/// Key sizes of a transition column `width` wide.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ColumnMetrics {
+    pub(crate) width: f32,
+    /// One automatic transition key: two columns of them beside the T-bar.
+    pub(crate) button: Vec2,
+    /// One favourite key: the four keys and their three 4-point gaps share
+    /// the column width.
+    pub(crate) favorite: Vec2,
+}
+
+impl ColumnMetrics {
+    pub(crate) fn new(width: f32) -> Self {
+        let width = column_width(width);
+        Self {
+            width,
+            button: Vec2::new(((width - T_BAR_COLUMN - 6.0) / 2.0).floor(), BUTTON_HEIGHT),
+            favorite: Vec2::new(((width - 3.0 * 4.0) / 4.0).floor(), FAVORITE_HEIGHT),
+        }
+    }
+
+    /// The width of both key columns with the gap between them.
+    fn keys_width(self) -> f32 {
+        2.0 * self.button.x + 6.0
+    }
+}
 const _: () = assert!(fm_protocol::TRANSITION_FAVORITE_COUNT == 4);
 /// Label size range of the favourite keys (points).
 const FAVORITE_LABEL_MIN: f32 = 9.0;
@@ -173,6 +214,7 @@ pub(crate) const fn favorite_intent(favorite: TransitionFavoriteStatus) -> Studi
 /// take it from the keyboard, and right-click assigns it.
 fn draw_favorites(
     ui: &mut Ui,
+    metrics: ColumnMetrics,
     shell: &StudioShell,
     state: &StudioUiState,
     intents: &mut Vec<StudioIntent>,
@@ -211,7 +253,7 @@ fn draw_favorites(
                 ui,
                 label,
                 (FAVORITE_LABEL_MIN, FAVORITE_LABEL_MAX),
-                FAVORITE_SIZE.x - 6.0,
+                metrics.favorite.x - 6.0,
             )
         })
         .fold(FAVORITE_LABEL_MAX, f32::min);
@@ -244,7 +286,7 @@ fn draw_favorites(
                 .add_enabled_ui(enabled, |ui| {
                     ui.spacing_mut().button_padding.x = 3.0;
                     ui.add_sized(
-                        FAVORITE_SIZE,
+                        metrics.favorite,
                         egui::Button::new(
                             RichText::new(label)
                                 .strong()
@@ -257,7 +299,7 @@ fn draw_favorites(
                             border_strong_color(),
                         ))
                         .corner_radius(CornerRadius::same(crate::theme::RADIUS))
-                        .min_size(FAVORITE_SIZE)
+                        .min_size(metrics.favorite)
                         .truncate(),
                     )
                 })
@@ -285,36 +327,34 @@ fn draw_favorites(
 /// The MORE key: a menu taking each automatic mix without a key of its own.
 fn draw_more_transitions(
     ui: &mut Ui,
-    key: egui::Button<'static>,
+    (key, width): (egui::Button<'static>, f32),
     (enabled, reason): (bool, &str),
     duration_frames: u32,
     intents: &mut Vec<StudioIntent>,
 ) {
     let l = l10n::locale(ui.ctx());
-    egui::containers::menu::MenuButton::from_button(
-        key.min_size(Vec2::new(2.0 * BUTTON_SIZE.x + 6.0, 24.0)),
-    )
-    .ui(ui, |ui| {
-        for kind in MORE_KINDS {
-            let label = l.text(mix_name(kind).name);
-            if ui
-                .add_enabled(enabled, egui::Button::new(label))
-                .hint(
-                    &l.format(Msg::AutoKindHover, &[("kind", Arg::Str(label))]),
-                    reason,
-                )
-                .clicked()
-            {
-                intents.push(StudioIntent::Transition {
-                    kind,
-                    duration_frames,
-                });
-                ui.close();
+    egui::containers::menu::MenuButton::from_button(key.min_size(Vec2::new(width, 24.0)))
+        .ui(ui, |ui| {
+            for kind in MORE_KINDS {
+                let label = l.text(mix_name(kind).name);
+                if ui
+                    .add_enabled(enabled, egui::Button::new(label))
+                    .hint(
+                        &l.format(Msg::AutoKindHover, &[("kind", Arg::Str(label))]),
+                        reason,
+                    )
+                    .clicked()
+                {
+                    intents.push(StudioIntent::Transition {
+                        kind,
+                        duration_frames,
+                    });
+                    ui.close();
+                }
             }
-        }
-    })
-    .0
-    .hint(l.text(Msg::MoreTransitionsHover), reason);
+        })
+        .0
+        .hint(l.text(Msg::MoreTransitionsHover), reason);
 }
 
 /// The right-click menu of an overlay channel's transition key: every
@@ -437,8 +477,11 @@ pub(crate) fn draw_transition_column(
     intents: &mut Vec<StudioIntent>,
 ) {
     let l = l10n::locale(ui.ctx());
-    ui.set_width(TRANSITION_COLUMN_WIDTH);
-    ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+    let metrics = ColumnMetrics::new(ui.available_width());
+    ui.set_width(metrics.width);
+    // Rows sit 5 points apart so the column fits the Default layout's upper
+    // row at 1080p without scrolling.
+    ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
     let desired = state
         .view
         .as_ref()
@@ -478,8 +521,8 @@ pub(crate) fn draw_transition_column(
     });
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
-            ui.set_width(2.0 * BUTTON_SIZE.x + 6.0);
-            draw_auto_transitions(ui, shell, state, intents);
+            ui.set_width(metrics.keys_width());
+            draw_auto_transitions(ui, metrics, shell, state, intents);
         });
         ui.add_space(4.0);
         draw_t_bar(
@@ -490,7 +533,7 @@ pub(crate) fn draw_transition_column(
             intents,
         );
     });
-    draw_favorites(ui, shell, state, intents);
+    draw_favorites(ui, metrics, shell, state, intents);
     ui.separator();
     let session_reason = unavailable_reason(state, Capability::Transition);
     let manual_reason = if state.connection_status.controls_enabled()
@@ -528,6 +571,7 @@ pub(crate) fn draw_transition_column(
 
 fn draw_auto_transitions(
     ui: &mut Ui,
+    metrics: ColumnMetrics,
     shell: &mut StudioShell,
     state: &StudioUiState,
     intents: &mut Vec<StudioIntent>,
@@ -541,11 +585,11 @@ fn draw_auto_transitions(
             label,
             ACCENT_FILL,
             accent_color().gamma_multiply(0.6),
-            BUTTON_SIZE,
+            metrics.button,
         )
     };
     let secondary =
-        |label: &str| console_button(label, widget_color(), border_strong_color(), BUTTON_SIZE);
+        |label: &str| console_button(label, widget_color(), border_strong_color(), metrics.button);
     ui.horizontal(|ui| {
         if ui
             .add_enabled(
@@ -556,7 +600,7 @@ fn draw_auto_transitions(
                     l.text(Msg::CutKey),
                     widget_active_color(),
                     text_color().gamma_multiply(0.7),
-                    BUTTON_SIZE,
+                    metrics.button,
                 ),
             )
             .hint(&with_key(l, l.text(Msg::ShortcutCut), "C"), reason)
@@ -606,7 +650,10 @@ fn draw_auto_transitions(
     });
     draw_more_transitions(
         ui,
-        secondary(l.text(Msg::MoreTransitionsKey)),
+        (
+            secondary(l.text(Msg::MoreTransitionsKey)),
+            metrics.keys_width(),
+        ),
         (availability.basic(), reason),
         duration_frames,
         intents,

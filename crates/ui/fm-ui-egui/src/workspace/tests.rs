@@ -262,6 +262,30 @@ fn dragging_a_splitter_resizes_and_a_tab_redocks() {
     );
 }
 
+/// Every painted text with its rect and whether it was elided.
+fn painted_galleys(output: &egui::FullOutput) -> Vec<(String, Rect, bool)> {
+    fn collect(shape: &egui::Shape, out: &mut Vec<(String, Rect, bool)>) {
+        match shape {
+            egui::Shape::Text(text) => out.push((
+                text.galley.text().to_owned(),
+                Rect::from_min_size(text.pos, text.galley.size()),
+                text.galley.elided,
+            )),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    collect(shape, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in &output.shapes {
+        collect(&clipped.shape, &mut out);
+    }
+    out
+}
+
 fn find_text(output: &egui::FullOutput, wanted: &str) -> Option<Pos2> {
     fn find(shape: &egui::Shape, wanted: &str) -> Option<Pos2> {
         match shape {
@@ -489,4 +513,444 @@ fn the_default_layout_renders_its_tiles_offscreen() {
     let program = tile_rect(&shell, PanelId::Program);
     assert!((preview.top() - program.top()).abs() < 0.5);
     assert!(preview.right() < program.left());
+}
+
+#[test]
+fn the_default_layout_is_the_classic_console_at_1080p_and_720p() {
+    let state = crate::hover_audit::bank_fixture();
+    for size in [vec2(1_920.0, 1_080.0), vec2(1_280.0, 720.0)] {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        frame_at(&context, &mut shell, &state, size, Vec::new());
+        let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
+        let rect = |panel| tile_rect(&shell, panel);
+        let (preview, transitions, program) = (
+            rect(PanelId::Preview),
+            rect(PanelId::Transitions),
+            rect(PanelId::Program),
+        );
+        let (bank, mixer, outputs, side) = (
+            rect(PanelId::InputBank),
+            rect(PanelId::Mixer),
+            rect(PanelId::Outputs),
+            rect(PanelId::Overlays),
+        );
+        // Preview | Transitions | Program, then Recording & streams, along
+        // the top; the bank, mixer, and side tabs along the bottom.
+        assert!(preview.right() < transitions.left(), "{size:?}");
+        assert!(transitions.right() < program.left(), "{size:?}");
+        assert!(program.right() < outputs.left(), "{size:?}");
+        assert!(bank.right() < mixer.left() && mixer.right() < side.left());
+        // Each row's tab bars line up across the console.
+        for tile in [transitions, program, outputs] {
+            assert!(
+                (tile.top() - preview.top()).abs() < 0.5,
+                "{size:?} {tile:?}"
+            );
+        }
+        for tile in [mixer, side] {
+            assert!((tile.top() - bank.top()).abs() < 0.5, "{size:?} {tile:?}");
+        }
+        // The right column lines up with the console's right edge above
+        // and below.
+        assert!((outputs.left() - side.left()).abs() < 0.5);
+        // Preview and Program are the same width.
+        assert!(
+            (preview.width() - program.width()).abs() <= 12.0,
+            "{size:?}: {preview:?} vs {program:?}"
+        );
+        // The transition column fits its tile: no wider than its widest.
+        let room = transitions.width() - 2.0 * TILE_PADDING - transitions::SCROLL_GUTTER;
+        let column = transitions::column_width(room);
+        assert!(column <= room + 0.5, "{size:?}: {column} in {room}");
+        assert!(column <= transitions::TRANSITION_COLUMN_MAX_WIDTH);
+        if size.x > 1_900.0 {
+            // At 1080p every tile holds its content without scrolling.
+            for panel in [PanelId::Preview, PanelId::Transitions, PanelId::InputBank] {
+                let (min_width, min_height) = panel.min_size();
+                let tile = rect(panel);
+                assert!(
+                    tile.width() >= min_width + 2.0 * TILE_PADDING
+                        && tile.height() >= min_height + TAB_BAR_HEIGHT + 2.0 * TILE_PADDING,
+                    "{panel:?} {tile:?}"
+                );
+            }
+            // The transition column's last line, Fade to Black's status,
+            // ends inside the tile.
+            let (_, status, _) = painted_galleys(&output)
+                .into_iter()
+                .find(|(text, _, _)| text == "PROGRAM LIVE")
+                .expect("the Fade to Black status line");
+            assert!(
+                status.bottom() + 4.0 <= transitions.bottom() - TILE_PADDING,
+                "{status:?} in {transitions:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn monitors_are_centred_both_ways_in_their_tile() {
+    let header = monitors::MONITOR_HEADER_HEIGHT;
+    // A tall tile: the well sits in the middle, top and bottom bars equal.
+    let size = vec2(540.0, 430.0);
+    let (width, video) = monitor_fit(size, (1_920, 1_080));
+    let (left, top) = monitor_offset(size, (width, video));
+    assert!(left.abs() < 0.5, "{left}");
+    let bottom = size.y - top - header - video;
+    assert!((top - bottom).abs() <= 1.0, "{top} vs {bottom}");
+    assert!(top > 20.0);
+    // A wide tile: pillarboxed, centred across.
+    let size = vec2(900.0, 300.0);
+    let (width, video) = monitor_fit(size, (1_920, 1_080));
+    let (left, top) = monitor_offset(size, (width, video));
+    assert!(top.abs() <= 1.0);
+    assert!((left - (size.x - width) / 2.0).abs() <= 1.0);
+}
+
+#[test]
+fn the_transition_column_follows_its_tile_within_its_range() {
+    use transitions::{
+        ColumnMetrics, TRANSITION_COLUMN_MAX_WIDTH, TRANSITION_COLUMN_MIN_WIDTH, column_width,
+    };
+    assert!((column_width(100.0) - TRANSITION_COLUMN_MIN_WIDTH).abs() < f32::EPSILON);
+    assert!((column_width(300.5) - 300.0).abs() < f32::EPSILON);
+    assert!((column_width(900.0) - TRANSITION_COLUMN_MAX_WIDTH).abs() < f32::EPSILON);
+    // A tile at its minimum holds the narrowest column and the gutter its
+    // scroll bar floats in.
+    assert!(
+        (PanelId::Transitions.min_size().0
+            - (TRANSITION_COLUMN_MIN_WIDTH + transitions::SCROLL_GUTTER))
+            .abs()
+            < f32::EPSILON
+    );
+    for width in [
+        TRANSITION_COLUMN_MIN_WIDTH,
+        252.0,
+        300.0,
+        TRANSITION_COLUMN_MAX_WIDTH,
+    ] {
+        let metrics = ColumnMetrics::new(width);
+        // Two keys, their gap, and the T-bar fill the column.
+        assert!(
+            2.0 * metrics.button.x + 6.0 + 56.0 <= width + 0.5,
+            "{metrics:?}"
+        );
+        assert!(
+            2.0 * metrics.button.x + 6.0 + 56.0 >= width - 2.0,
+            "{metrics:?}"
+        );
+        // Four favourites and their three gaps fill it too.
+        assert!(
+            4.0 * metrics.favorite.x + 12.0 <= width + 0.5,
+            "{metrics:?}"
+        );
+        assert!(
+            4.0 * metrics.favorite.x + 12.0 >= width - 4.0,
+            "{metrics:?}"
+        );
+        // Keys widen, never grow taller.
+        assert!((metrics.button.y - 36.0).abs() < f32::EPSILON);
+    }
+}
+
+#[test]
+fn the_mixer_key_ends_in_an_ellipsis_rather_than_run_under_its_title() {
+    let state = crate::hover_audit::bank_fixture();
+    let context = egui::Context::default();
+    let mut shell = StudioShell::default();
+    let size = vec2(1_280.0, 720.0);
+    frame_at(&context, &mut shell, &state, size, Vec::new());
+    let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
+    // The key is laid out right of the section title and elided.
+    let texts = painted_galleys(&output);
+    let title = texts
+        .iter()
+        .filter(|(text, _, _)| text == "AUDIO MIXER")
+        .map(|(_, rect, _)| *rect)
+        .max_by(|a, b| a.top().total_cmp(&b.top()))
+        .expect("the mixer's section title");
+    let (_, legend, elided) = texts
+        .iter()
+        .find(|(text, _, _)| text == Msg::MeterLegend.en())
+        .expect("the meter key");
+    assert!(*elided, "the key fits at 1280 wide only elided");
+    assert!(legend.left() >= title.right(), "{legend:?} over {title:?}");
+}
+
+fn pointer_click(pos: Pos2, pressed: bool) -> Event {
+    Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    }
+}
+
+fn escape() -> Vec<Event> {
+    vec![Event::Key {
+        key: egui::Key::Escape,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }]
+}
+
+fn double_click(
+    context: &egui::Context,
+    shell: &mut StudioShell,
+    state: &StudioUiState,
+    pos: Pos2,
+) {
+    // Past egui's triple-click window since any earlier click (frames
+    // advance 1/60 s), so these two clicks are a double-click of their own.
+    for _ in 0..48 {
+        frame(context, shell, state, vec![Event::PointerMoved(pos)]);
+    }
+    for _ in 0..2 {
+        frame(context, shell, state, vec![pointer_click(pos, true)]);
+        frame(context, shell, state, vec![pointer_click(pos, false)]);
+    }
+    frame(context, shell, state, Vec::new());
+}
+
+#[test]
+fn double_clicking_a_tab_maximises_its_tile_and_esc_restores_it() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    frame(&context, &mut shell, &state, Vec::new());
+    let output = frame(&context, &mut shell, &state, Vec::new());
+    let tab = find_text(&output, "AUDIO MIXER").expect("the mixer tab") + vec2(6.0, 4.0);
+    double_click(&context, &mut shell, &state, tab);
+    assert_eq!(shell.dock_ui.maximized, Some(PanelId::Mixer));
+    // Only the mixer's tile is laid out, over the whole workspace.
+    assert_eq!(
+        shell.dock_ui.tile_rects.keys().copied().collect::<Vec<_>>(),
+        vec![PanelId::Mixer]
+    );
+    assert!(tile_rect(&shell, PanelId::Mixer).width() > SCREEN.x - 40.0);
+    // The layout itself is untouched, so it is still the default.
+    assert_eq!(shell.layout.dock, DockLayout::default());
+    // Its tab bar offers Restore.
+    let output = frame(&context, &mut shell, &state, Vec::new());
+    assert!(
+        context
+            .read_response(Id::new("studio-dock-restore").with("mixer"))
+            .is_some()
+    );
+    drop(output);
+
+    // Esc restores every tile.
+    frame(&context, &mut shell, &state, escape());
+    frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(shell.dock_ui.maximized, None);
+    assert_eq!(shell.dock_ui.tile_rects.len(), 7);
+
+    // So does a second double-click.
+    double_click(&context, &mut shell, &state, tab);
+    assert_eq!(shell.dock_ui.maximized, Some(PanelId::Mixer));
+    let output = frame(&context, &mut shell, &state, Vec::new());
+    let tab = find_text(&output, "AUDIO MIXER").expect("the mixer tab") + vec2(6.0, 4.0);
+    double_click(&context, &mut shell, &state, tab);
+    frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(shell.dock_ui.maximized, None);
+}
+
+#[test]
+fn esc_cancels_a_manual_transition_before_it_restores_tiles() {
+    let context = egui::Context::default();
+    let mut state = crate::hover_audit::bank_fixture();
+    if let Some(view) = &mut state.view {
+        let active =
+            fm_ui_model::ManualTransitionStatus::Active(fm_ui_model::ActiveManualTransition {
+                kind: fm_protocol::ManualTransitionKind::Fade,
+                from: view.inputs[0],
+                to: view.inputs[1],
+                interval_start: fm_protocol::ManualTransitionPosition::START,
+                position: fm_protocol::ManualTransitionPosition::new(5_000).unwrap(),
+            });
+        view.switcher.desired_manual_transition = active;
+        view.switcher.realized_manual_transition = active;
+    }
+    let mut shell = StudioShell::default();
+    shell.dock_ui.maximized = Some(PanelId::Program);
+    frame(&context, &mut shell, &state, Vec::new());
+    let (intents, _) = frame_at(&context, &mut shell, &state, SCREEN, escape());
+    assert!(
+        intents.contains(&StudioIntent::CancelManualTransition),
+        "{intents:?}"
+    );
+    assert_eq!(shell.dock_ui.maximized, Some(PanelId::Program));
+}
+
+#[test]
+fn dragging_a_tile_grip_moves_its_whole_tab_group() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    shell.layout.dock.activate(PanelId::Titles);
+    frame(&context, &mut shell, &state, Vec::new());
+    frame(&context, &mut shell, &state, Vec::new());
+    let grip = context
+        .read_response(Id::new("studio-dock-grip").with("titles"))
+        .expect("the side tile's grip")
+        .rect
+        .center();
+    let bank = tile_rect(&shell, PanelId::InputBank);
+    drag(
+        &context,
+        &mut shell,
+        &state,
+        grip,
+        pos2(bank.left() + 12.0, bank.center().y),
+    );
+    assert!(
+        shell
+            .layout
+            .dock
+            .encode_tree()
+            .contains("h500([overlays|stingers|titles*|playlist|media],[inputs])"),
+        "{}",
+        shell.layout.dock.encode_tree()
+    );
+    // Dropped back onto itself, nothing changes.
+    let before = shell.layout.dock.clone();
+    let grip = context
+        .read_response(Id::new("studio-dock-grip").with("titles"))
+        .expect("the moved tile's grip")
+        .rect
+        .center();
+    let side = tile_rect(&shell, PanelId::Titles);
+    drag(&context, &mut shell, &state, grip, side.center());
+    assert_eq!(shell.layout.dock, before);
+}
+
+#[test]
+fn a_popped_window_grip_dragged_over_the_console_docks_it_there() {
+    let context = egui::Context::default();
+    let state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    frame(&context, &mut shell, &state, Vec::new());
+    shell.layout.dock.pop_out(PanelId::Mixer, None);
+    frame(&context, &mut shell, &state, Vec::new());
+    frame(&context, &mut shell, &state, Vec::new());
+    // Here the window is embedded, so it shares the console's points.
+    let grip = context
+        .read_response(Id::new("studio-popout-grip").with("mixer"))
+        .expect("the popped window's grip")
+        .rect
+        .center();
+    let program = tile_rect(&shell, PanelId::Program);
+    let target = pos2(program.center().x, program.bottom() - 12.0);
+    frame(
+        &context,
+        &mut shell,
+        &state,
+        vec![Event::PointerMoved(grip)],
+    );
+    frame(&context, &mut shell, &state, press(grip));
+    for step in 1..=4 {
+        #[allow(clippy::cast_precision_loss)]
+        let at = grip + (target - grip) * (step as f32 / 4.0);
+        frame(&context, &mut shell, &state, vec![Event::PointerMoved(at)]);
+    }
+    // While held, the console previews the drop below the Program monitor.
+    assert_eq!(
+        shell.dock_ui.remote_drop,
+        Some(RemoteDrop {
+            panel: PanelId::Mixer,
+            target: PanelId::Program,
+            zone: DropZone::Bottom,
+        })
+    );
+    frame(&context, &mut shell, &state, release(target));
+    frame(&context, &mut shell, &state, Vec::new());
+    assert!(!shell.layout.dock.is_popped(PanelId::Mixer));
+    assert!(
+        shell
+            .layout
+            .dock
+            .encode_tree()
+            .contains("v500([program],[mixer])"),
+        "{}",
+        shell.layout.dock.encode_tree()
+    );
+    assert_eq!(shell.dock_ui.remote_drop, None);
+}
+
+#[test]
+fn popped_window_points_map_onto_the_console_through_the_screen() {
+    let pos = pos2(10.0, 20.0);
+    assert_eq!(to_main_window(pos, true, None, None), Some(pos));
+    assert_eq!(
+        to_main_window(
+            pos,
+            false,
+            Some(pos2(1_200.0, 500.0)),
+            Some(pos2(0.0, 30.0))
+        ),
+        Some(pos2(1_210.0, 490.0))
+    );
+    // Without both windows' places (Wayland) there is no mapping; Dock
+    // back to… still lists every place.
+    assert_eq!(to_main_window(pos, false, None, Some(Pos2::ZERO)), None);
+    assert_eq!(to_main_window(pos, false, Some(Pos2::ZERO), None), None);
+}
+
+#[test]
+fn no_op_drops_are_not_previewed() {
+    let tile = Tile {
+        panels: vec![PanelId::Overlays, PanelId::Titles],
+        active: 0,
+        rect: Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0)),
+    };
+    assert!(drop_is_noop(
+        DragSource::Group(PanelId::Titles),
+        &tile,
+        DropZone::Left
+    ));
+    assert!(drop_is_noop(
+        DragSource::Tab(PanelId::Titles),
+        &tile,
+        DropZone::Center
+    ));
+    assert!(!drop_is_noop(
+        DragSource::Tab(PanelId::Titles),
+        &tile,
+        DropZone::Left
+    ));
+    assert!(!drop_is_noop(
+        DragSource::Tab(PanelId::Mixer),
+        &tile,
+        DropZone::Center
+    ));
+    let lone = Tile {
+        panels: vec![PanelId::Mixer],
+        ..tile
+    };
+    assert!(drop_is_noop(
+        DragSource::Tab(PanelId::Mixer),
+        &lone,
+        DropZone::Right
+    ));
+}
+
+#[test]
+#[ignore = "writes the offscreen renders to $FM_DOCK_RENDER_DIR for review"]
+fn render_the_default_layout_for_review() {
+    let Ok(dir) = std::env::var("FM_DOCK_RENDER_DIR") else {
+        return;
+    };
+    let state = crate::hover_audit::bank_fixture();
+    for size in [vec2(1_920.0, 1_080.0), vec2(1_280.0, 720.0)] {
+        let mut shell = StudioShell::default();
+        let (width, height, rgba) = render(&mut shell, &state, size, &[]);
+        std::fs::write(
+            format!("{dir}/default-{width}x{height}.png"),
+            crate::offscreen::encode_png(width, height, &rgba),
+        )
+        .unwrap();
+    }
 }

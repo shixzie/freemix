@@ -1934,7 +1934,7 @@ fn saved_layout_round_trips_and_ignores_bad_values() {
         ..SavedPreferences::default()
     };
     let text = saved.render();
-    assert!(text.contains("layout.dock = h765(v520(h388([preview],h367([transitions],h500([program],[titles]))),[inputs]),"), "{text}");
+    assert!(text.contains("layout.dock = h765(v500(h375([preview],h394([transitions],h500([program],[titles]))),[inputs]),"), "{text}");
     assert!(
         text.contains("layout.popouts = playlist:640x480@-1200,60\n"),
         "{text}"
