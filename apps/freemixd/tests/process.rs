@@ -5150,11 +5150,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.35.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 35));
+    // The previous protocol is refused; the current one is 2.36.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 36));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 34),
+        protocol: ProtocolVersion::new(2, 35),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5170,7 +5170,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 35)
+        ProtocolVersion::new(2, 36)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

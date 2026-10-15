@@ -144,7 +144,7 @@ fn the_library_round_trips_exactly_and_is_strict() {
     let text = fs::read_to_string(&manifest).unwrap();
     let fragment = format!(
         "\"animation_presets\": [\n      {{\"id\": 4, \"name\": \"Swoosh \\\"fast\\\"\", \
-         {MOTION_BODY}}},\n      {{\"id\": 2, \"name\": \"Drift\", {MOTION_BODY}}}\n    ]\n  }},"
+         {MOTION_BODY}}},\n      {{\"id\": 2, \"name\": \"Drift\", {MOTION_BODY}}}\n    ],\n    \"transition_favorites\": ["
     );
     assert!(text.contains(&fragment), "{text}");
 

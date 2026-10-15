@@ -143,6 +143,7 @@ pub struct ShowState {
     grading: ProjectGrading,
     luts: BTreeMap<LutId, EngineLut>,
     animation_presets: fm_model::AnimationPresetLibrary,
+    transition_favorites: fm_model::TransitionFavorites,
 }
 
 impl ShowState {
@@ -210,6 +211,7 @@ impl ShowState {
             grading: ProjectGrading::default(),
             luts: BTreeMap::new(),
             animation_presets: fm_model::AnimationPresetLibrary::default(),
+            transition_favorites: fm_model::TransitionFavorites::default(),
         })
     }
 
@@ -772,6 +774,45 @@ impl ShowState {
 
     pub(crate) const fn animation_presets_mut(&mut self) -> &mut fm_model::AnimationPresetLibrary {
         &mut self.animation_presets
+    }
+
+    /// The project's favourite transition buttons (SW-002).
+    #[must_use]
+    pub const fn transition_favorites(&self) -> &fm_model::TransitionFavorites {
+        &self.transition_favorites
+    }
+
+    /// Installs restored favourite transition buttons; each is valid by
+    /// construction.
+    pub const fn restore_transition_favorites(&mut self, favorites: fm_model::TransitionFavorites) {
+        self.transition_favorites = favorites;
+    }
+
+    /// Assigns one favourite, refusing a slot outside
+    /// `1..=`[`fm_model::TRANSITION_FAVORITE_COUNT`].
+    pub(crate) fn set_transition_favorite(
+        &mut self,
+        slot: u8,
+        favorite: fm_model::TransitionFavorite,
+    ) -> Result<(), fm_command::Rejection> {
+        self.transition_favorites
+            .set(slot, favorite)
+            .map(|_| ())
+            .ok_or_else(|| {
+                let message = format!(
+                    "favourite transition slot {slot} must be 1 through {}",
+                    fm_model::TRANSITION_FAVORITE_COUNT
+                );
+                fm_command::Rejection::new(
+                    fm_command::RejectionCode::InvalidCommand,
+                    message.clone(),
+                )
+                .with_field(fm_command::FieldIssue::new(
+                    "slot",
+                    "out_of_range",
+                    message,
+                ))
+            })
     }
 
     pub(crate) fn grading_parts_mut(

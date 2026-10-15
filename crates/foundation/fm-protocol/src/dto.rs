@@ -450,11 +450,205 @@ pub struct OverlayStatus {
     pub included_outputs: Vec<WireOutputId>,
 }
 
+/// How an overlay channel goes on and off air. Cut and Fade change its
+/// opacity; every other kind (Protocol 2.36) moves the layer in from, and
+/// out to, transparency with the Program transition of the same name.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OverlayTransitionKind {
     #[default]
     Cut,
     Fade,
+    Wipe,
+    VerticalWipe,
+    Slide,
+    VerticalSlide,
+    Zoom,
+    Fly,
+    FlyRotate,
+    Cube,
+    CubeZoom,
+    CrossZoom,
+    Merge,
+}
+
+impl OverlayTransitionKind {
+    /// Every overlay transition, in operator order.
+    pub const ALL: [Self; 13] = [
+        Self::Cut,
+        Self::Fade,
+        Self::Wipe,
+        Self::VerticalWipe,
+        Self::Slide,
+        Self::VerticalSlide,
+        Self::Zoom,
+        Self::Fly,
+        Self::FlyRotate,
+        Self::Cube,
+        Self::CubeZoom,
+        Self::CrossZoom,
+        Self::Merge,
+    ];
+
+    /// The wire token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Cut => "cut",
+            Self::Fade => "fade",
+            Self::Wipe => "wipe",
+            Self::VerticalWipe => "vertical_wipe",
+            Self::Slide => "slide",
+            Self::VerticalSlide => "vertical_slide",
+            Self::Zoom => "zoom",
+            Self::Fly => "fly",
+            Self::FlyRotate => "fly_rotate",
+            Self::Cube => "cube",
+            Self::CubeZoom => "cube_zoom",
+            Self::CrossZoom => "cross_zoom",
+            Self::Merge => "merge",
+        }
+    }
+
+    /// The overlay transition named by `token`.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.token() == token)
+    }
+}
+
+/// Every automatic mix transition other than a Stinger (Protocol 2.36),
+/// taken by kind with [`CommandPayload::Transition`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutoTransitionKind {
+    Fade,
+    AlphaFade,
+    Wipe,
+    VerticalWipe,
+    Slide,
+    VerticalSlide,
+    Zoom,
+    Fly,
+    FlyRotate,
+    Cube,
+    CubeZoom,
+    CrossZoom,
+    Merge,
+}
+
+impl AutoTransitionKind {
+    /// Every kind, in operator order.
+    pub const ALL: [Self; 13] = [
+        Self::Fade,
+        Self::AlphaFade,
+        Self::Wipe,
+        Self::VerticalWipe,
+        Self::Slide,
+        Self::VerticalSlide,
+        Self::Zoom,
+        Self::Fly,
+        Self::FlyRotate,
+        Self::Cube,
+        Self::CubeZoom,
+        Self::CrossZoom,
+        Self::Merge,
+    ];
+
+    /// The wire token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Fade => "fade",
+            Self::AlphaFade => "alpha_fade",
+            Self::Wipe => "wipe",
+            Self::VerticalWipe => "vertical_wipe",
+            Self::Slide => "slide",
+            Self::VerticalSlide => "vertical_slide",
+            Self::Zoom => "zoom",
+            Self::Fly => "fly",
+            Self::FlyRotate => "fly_rotate",
+            Self::Cube => "cube",
+            Self::CubeZoom => "cube_zoom",
+            Self::CrossZoom => "cross_zoom",
+            Self::Merge => "merge",
+        }
+    }
+
+    /// The kind named by `token`.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.token() == token)
+    }
+}
+
+/// Number of favourite transition buttons (Protocol 2.36).
+pub const TRANSITION_FAVORITE_COUNT: usize = 4;
+/// Longest favourite transition duration, in frames.
+pub const MAX_TRANSITION_FAVORITE_DURATION_FRAMES: u32 = 3_600;
+
+/// What a favourite transition button takes (Protocol 2.36).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransitionFavoriteEffect {
+    Cut,
+    Mix(AutoTransitionKind),
+    Stinger(WireStingerSlotId),
+}
+
+impl TransitionFavoriteEffect {
+    /// The wire token: `cut`, an [`AutoTransitionKind`] token, or
+    /// `stinger_<slot>`.
+    #[must_use]
+    pub fn token(self) -> String {
+        match self {
+            Self::Cut => "cut".to_owned(),
+            Self::Mix(kind) => kind.token().to_owned(),
+            Self::Stinger(slot) => format!("stinger_{slot}"),
+        }
+    }
+
+    /// The effect named by `token`.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        if token == "cut" {
+            return Some(Self::Cut);
+        }
+        if let Some(slot) = token.strip_prefix("stinger_") {
+            // One canonical digit: slots are 1 through 8.
+            if slot.len() != 1 {
+                return None;
+            }
+            return slot
+                .parse()
+                .ok()
+                .and_then(WireStingerSlotId::new)
+                .map(Self::Stinger);
+        }
+        AutoTransitionKind::from_token(token).map(Self::Mix)
+    }
+}
+
+/// One favourite transition button: its effect and duration (Protocol 2.36).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransitionFavoriteStatus {
+    pub effect: TransitionFavoriteEffect,
+    /// `1..=`[`MAX_TRANSITION_FAVORITE_DURATION_FRAMES`].
+    pub duration_frames: u32,
+}
+
+impl TransitionFavoriteStatus {
+    /// A new project's favourites: Fade, Wipe, Fly, and Cube over 30 frames.
+    #[must_use]
+    pub fn defaults() -> [Self; TRANSITION_FAVORITE_COUNT] {
+        let favorite = |kind| Self {
+            effect: TransitionFavoriteEffect::Mix(kind),
+            duration_frames: 30,
+        };
+        [
+            favorite(AutoTransitionKind::Fade),
+            favorite(AutoTransitionKind::Wipe),
+            favorite(AutoTransitionKind::Fly),
+            favorite(AutoTransitionKind::Cube),
+        ]
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1212,6 +1406,19 @@ pub enum CommandPayload {
     Zoom {
         duration_frames: u32,
     },
+    /// Takes any automatic mix transition by kind (Protocol 2.36). Wire
+    /// payload `transition`.
+    Transition {
+        kind: AutoTransitionKind,
+        duration_frames: u32,
+    },
+    /// Assigns favourite transition button `slot` (1 through
+    /// [`TRANSITION_FAVORITE_COUNT`]), an undoable project edit (Protocol
+    /// 2.36). Wire payload `transition_favorite_set`.
+    SetTransitionFavorite {
+        slot: u8,
+        favorite: TransitionFavoriteStatus,
+    },
     Stinger {
         slot: WireStingerSlotId,
         duration_frames: u32,
@@ -1868,6 +2075,8 @@ pub struct SnapshotMessage {
     /// snapshot (after every other follow-on record), at most
     /// [`MAX_ANIMATION_PRESETS`] (Protocol 2.34).
     pub animation_preset_states: u16,
+    /// The favourite transition buttons, slot 1 first (Protocol 2.36).
+    pub transition_favorites: [TransitionFavoriteStatus; TRANSITION_FAVORITE_COUNT],
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -1980,6 +2189,12 @@ pub enum EventPayload {
     /// An animation preset library edit (or its undo or redo) was accepted
     /// (Protocol 2.34).
     AnimationPresetChanged(AnimationPresetChange),
+    /// A favourite transition button was assigned (or the assignment undone
+    /// or redone) (Protocol 2.36): the slot and its favourite afterwards.
+    TransitionFavoriteChanged {
+        slot: u8,
+        favorite: TransitionFavoriteStatus,
+    },
 }
 
 /// One durable revision.

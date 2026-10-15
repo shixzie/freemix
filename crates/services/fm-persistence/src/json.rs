@@ -3,6 +3,7 @@ mod decoder;
 mod encoder;
 mod grade;
 mod scene_animation;
+mod transition_favorite;
 
 use crate::ProjectValidationError;
 

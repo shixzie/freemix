@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.35 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.36 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -812,6 +812,38 @@ their composed scene (`SW-019`):
   Scene input's grade over the whole preview), the native GPU composition,
   and `freemix-cli render` apply it the same way.
 - 2.34 is refused.
+
+Protocol 2.36 completes the transition family and adds favourite transition
+buttons (`SW-002`, `SW-005`):
+
+- `transition` (`kind`, `duration_frames`) takes any automatic mix by kind:
+  `fade`, `alpha_fade`, `wipe`, `vertical_wipe`, `slide`, `vertical_slide`,
+  `zoom`, `fly`, `fly_rotate`, `cube`, `cube_zoom`, `cross_zoom`, or `merge`.
+  It is a transition-class live operation with the same duration bounds,
+  in-flight refusal, and desired-state Cut projection as `fade`; a Stinger is
+  still taken with `stinger`, and the dedicated `fade`, `alpha_fade`,
+  `wipe`, `slide`, and `zoom` commands remain. The manual T-bar kinds and
+  playlist entry kinds are unchanged.
+- `overlay_transition` and the replicated `overlays` carry the same
+  geometric tokens besides `cut` and `fade` for an overlay channel. A motion
+  kind keeps the channel at opacity 255 and moves the layer in from
+  transparency on take, and out to transparency on off, over the channel's
+  duration; `overlay_take`, `overlay_off`, and `overlay_next` realize after
+  that duration.
+- `transition_favorite_set` (`slot` 1 through 4 with no leading zero,
+  `favorite`) assigns one favourite button. `favorite` is
+  `<effect>:<duration frames>`: `effect` is `cut`, a mix token, or
+  `stinger_<slot 1..8>`, and the duration is a canonical decimal from 1
+  through 3600. It is a transition-class project edit: refused while the
+  project is padlocked, undoable, and realized on the `project` domain.
+- `event=transition_favorite_changed` (`slot`, `favorite`) announces an
+  assignment and its undo or redo.
+- The snapshot gains `transition_favorites` (encoded last): exactly four
+  `favorite` values joined by `;`, slot 1 first.
+- Durability: the favourites are project state (schema 35,
+  `transition_favorites`); a new project starts with Fade, Wipe, Fly, and
+  Cube at 30 frames.
+- 2.35 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

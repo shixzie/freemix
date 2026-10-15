@@ -10,7 +10,43 @@ pub enum TransitionKind {
     Slide,
     Zoom,
     AlphaFade,
+    /// A vertical wipe that reveals the target from top to bottom.
+    VerticalWipe,
+    /// Program moves up while the target enters from the bottom.
+    VerticalSlide,
+    /// The target flies in from the right, growing to full size.
+    Fly,
+    /// Like [`Self::Fly`], turning half a turn as it lands.
+    FlyRotate,
+    /// A perspective cube turn: the target on the right face turns in.
+    Cube,
+    /// A cube turn that pulls back mid-way.
+    CubeZoom,
+    /// Program zooms in while crossfading to the target zooming out.
+    CrossZoom,
+    /// The target's two halves converge from the edges to the centre.
+    Merge,
     Stinger(StingerSlotId),
+}
+
+impl TransitionKind {
+    /// Every automatic mix transition kind other than Stinger, in operator
+    /// order.
+    pub const MIXES: [Self; 13] = [
+        Self::Fade,
+        Self::AlphaFade,
+        Self::Wipe,
+        Self::VerticalWipe,
+        Self::Slide,
+        Self::VerticalSlide,
+        Self::Zoom,
+        Self::Fly,
+        Self::FlyRotate,
+        Self::Cube,
+        Self::CubeZoom,
+        Self::CrossZoom,
+        Self::Merge,
+    ];
 }
 
 /// Normalized manual transition position expressed in basis points.

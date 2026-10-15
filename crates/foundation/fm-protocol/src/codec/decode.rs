@@ -45,6 +45,9 @@ use super::title::{
     decode_title_field_names, decode_title_fields, decode_title_phase, decode_title_summaries,
     parse_title_air_requirement, validate_title_name, validate_title_phase,
 };
+use super::transition::{
+    decode_auto_transition_kind, decode_favorite, decode_favorite_slot, decode_favorites,
+};
 use super::value::{
     parse_canonical_input, parse_canonical_u64, parse_client_type, parse_durable_events,
     parse_field_issues, parse_input_ids, parse_input_statuses, parse_output_statuses,
@@ -405,6 +408,14 @@ fn decode_command_payload(
         },
         "zoom" => CommandPayload::Zoom {
             duration_frames: fields.parse_required("duration_frames")?,
+        },
+        "transition" => CommandPayload::Transition {
+            kind: decode_auto_transition_kind(fields.required("kind")?, "kind")?,
+            duration_frames: fields.parse_required("duration_frames")?,
+        },
+        "transition_favorite_set" => CommandPayload::SetTransitionFavorite {
+            slot: decode_favorite_slot(fields.required("slot")?, "slot")?,
+            favorite: decode_favorite(&fields.required("favorite")?, "favorite")?,
         },
         "stinger" => {
             let number: u8 = fields.parse_required("slot")?;
@@ -1197,11 +1208,8 @@ fn decode_overlay_transition(
     value: String,
     field: &'static str,
 ) -> Result<crate::OverlayTransitionKind, CodecError> {
-    match value.as_str() {
-        "cut" => Ok(crate::OverlayTransitionKind::Cut),
-        "fade" => Ok(crate::OverlayTransitionKind::Fade),
-        _ => Err(CodecError::InvalidField { field, value }),
-    }
+    crate::OverlayTransitionKind::from_token(&value)
+        .ok_or(CodecError::InvalidField { field, value })
 }
 
 fn decode_overlay_position(
@@ -1411,6 +1419,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         playlist_follows,
         grade_states,
         animation_preset_states,
+        transition_favorites: decode_favorites(&fields.required("transition_favorites")?)?,
     })
 }
 
@@ -1972,6 +1981,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "recording_changed" => EventPayload::RecordingChanged {
             recorder: decode_recorder_slot(fields)?,
             active: fields.boolean("active")?,
+        },
+        "transition_favorite_changed" => EventPayload::TransitionFavoriteChanged {
+            slot: decode_favorite_slot(fields.required("slot")?, "slot")?,
+            favorite: decode_favorite(&fields.required("favorite")?, "favorite")?,
         },
         "edit_lock_changed" => EventPayload::EditLockChanged {
             scope: decode_edit_lock_scope(fields)?,

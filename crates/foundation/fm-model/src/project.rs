@@ -806,7 +806,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(34);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(35);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -844,6 +844,7 @@ pub struct Project {
     playlist: Playlist,
     grading: ProjectGrading,
     animation_presets: crate::AnimationPresetLibrary,
+    transition_favorites: crate::TransitionFavorites,
 }
 
 impl Project {
@@ -869,6 +870,7 @@ impl Project {
             playlist: Playlist::default(),
             grading: ProjectGrading::default(),
             animation_presets: crate::AnimationPresetLibrary::default(),
+            transition_favorites: crate::TransitionFavorites::default(),
         }
     }
 
@@ -1051,6 +1053,18 @@ impl Project {
     /// The animation preset library, to edit with its checked methods.
     pub const fn animation_presets_mut(&mut self) -> &mut crate::AnimationPresetLibrary {
         &mut self.animation_presets
+    }
+
+    /// The favourite transition buttons (SW-002, schema 35).
+    #[must_use]
+    pub const fn transition_favorites(&self) -> &crate::TransitionFavorites {
+        &self.transition_favorites
+    }
+
+    /// Replaces the favourite transition buttons; each favourite is valid by
+    /// construction.
+    pub const fn set_transition_favorites(&mut self, favorites: crate::TransitionFavorites) {
+        self.transition_favorites = favorites;
     }
 
     /// Adds a named grade to the end of the library.

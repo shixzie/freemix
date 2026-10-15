@@ -25,6 +25,7 @@ use fm_protocol::{
     StreamStatusMessage, TitlePreviewImage, TitlePreviewRequest, WireOverlayChannelId,
     WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
 };
+use fm_protocol::{AutoTransitionKind, OverlayTransitionKind, TransitionFavoriteStatus};
 use fm_types::{InputId, OutputId};
 use fm_ui_model::grade_editor::GradeCommand;
 use fm_ui_model::i18n::{Locale, Msg};
@@ -98,6 +99,7 @@ pub use stream_control::{StreamAction, stream_action, stream_command_pending};
 pub use studio_animation::{ANIMATION_SHORTCUT, TitleAnimationRefusal};
 pub use studio_color::{COLOR_SHORTCUT, GradeLutFile, GradeLutRequest, GradeRefusal};
 pub use titles::TitleUpdate;
+pub use transitions::next_overlay_transition;
 
 use panels::SideTab;
 use theme::{border_color, graphite_color, panel_color};
@@ -152,6 +154,17 @@ pub enum StudioIntent {
     Slide { duration_frames: u32 },
     /// Performs a centered Zoom transition with a duration in frames.
     Zoom { duration_frames: u32 },
+    /// Performs any automatic mix by kind with a duration in frames
+    /// (Protocol 2.36).
+    Transition {
+        kind: AutoTransitionKind,
+        duration_frames: u32,
+    },
+    /// Assigns one favourite transition button (slot 1 through 4).
+    AssignTransitionFavorite {
+        slot: u8,
+        favorite: TransitionFavoriteStatus,
+    },
     /// Fires one of eight configured Stinger slots.
     Stinger {
         slot: WireStingerSlotId,
@@ -169,9 +182,16 @@ pub enum StudioIntent {
     },
     /// Removes one overlay channel from Program.
     OverlayOff { channel: WireOverlayChannelId },
-    /// Toggles one overlay channel between Cut and Fade.
-    ToggleOverlayTransition {
+    /// Steps one overlay channel to the next kind of the transition family
+    /// (Cut, Fade, then each motion, then Cut again).
+    CycleOverlayTransition {
         channel: WireOverlayChannelId,
+        duration_frames: u32,
+    },
+    /// Sets one overlay channel's transition kind.
+    SetOverlayTransition {
+        channel: WireOverlayChannelId,
+        transition: OverlayTransitionKind,
         duration_frames: u32,
     },
     /// Cycles one overlay channel's position preset.
@@ -814,7 +834,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 18] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 19] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -832,6 +852,12 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 18] = [
         keys: "F",
         action: Msg::ShortcutFade.en(),
         key: Some(Key::F),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Transitions,
+        keys: "F5 – F8",
+        action: Msg::ShortcutFavorite.en(),
+        key: Some(Key::F5),
     },
     ShortcutEntry {
         group: ShortcutGroup::Transitions,
@@ -940,14 +966,34 @@ pub(crate) fn help_key(key: Key, modifiers: Modifiers) -> bool {
     }
 }
 
+/// The favourite key F5 through F8 names, as a zero-based slot index.
+const fn favorite_key_index(key: Key) -> Option<usize> {
+    match key {
+        Key::F5 => Some(0),
+        Key::F6 => Some(1),
+        Key::F7 => Some(2),
+        Key::F8 => Some(3),
+        _ => None,
+    }
+}
+
+/// The key that takes favourite `slot` (one-based), for tooltips.
+pub(crate) const fn favorite_key_name(slot: u8) -> &'static str {
+    match slot {
+        1 => "F5",
+        2 => "F6",
+        3 => "F7",
+        _ => "F8",
+    }
+}
+
 fn studio_shortcuts(
     ui: &mut Ui,
     gate: TransitionGate,
     can_select_preview: bool,
     manual_transition_active_controls: bool,
-    inputs: &[InputId],
-    transition_duration_frames: u32,
-    fade_to_black_duration_frames: u32,
+    (inputs, favorites): (&[InputId], &[TransitionFavoriteStatus]),
+    (transition_duration_frames, fade_to_black_duration_frames): (u32, u32),
 ) -> Vec<StudioIntent> {
     if ui.ctx().egui_wants_keyboard_input() {
         return Vec::new();
@@ -989,6 +1035,14 @@ fn studio_shortcuts(
                     intents.push(StudioIntent::Fade {
                         duration_frames: transition_duration_frames,
                     });
+                    false
+                }
+                _ if transition_available && favorite_key_index(*key).is_some() => {
+                    let Some(favorite) = favorite_key_index(*key).and_then(|i| favorites.get(i))
+                    else {
+                        return true;
+                    };
+                    intents.push(transitions::favorite_intent(*favorite));
                     false
                 }
                 _ if preview_available => {
@@ -1294,14 +1348,22 @@ impl StudioShell {
             .view
             .as_ref()
             .map_or(&[] as &[InputId], |view| view.inputs.as_slice());
+        let favorites = state
+            .view
+            .as_ref()
+            .map_or(&[] as &[TransitionFavoriteStatus], |view| {
+                view.transition_favorites.as_slice()
+            });
         let mut intents = studio_shortcuts(
             ui,
             TransitionGate::from_state(state),
             state.can_select_preview,
             manual_transition_controls.active_controls,
-            inputs,
-            self.transition_duration_frames,
-            self.fade_to_black_duration_frames,
+            (inputs, favorites),
+            (
+                self.transition_duration_frames,
+                self.fade_to_black_duration_frames,
+            ),
         );
         intents.extend(edit_history::history_shortcuts(
             ui,
@@ -1920,9 +1982,8 @@ mod tests {
                 gate,
                 can_select_preview,
                 manual_transition_active_controls,
-                &inputs,
-                duration,
-                fade_to_black_duration,
+                (&inputs, &TransitionFavoriteStatus::defaults()),
+                (duration, fade_to_black_duration),
             );
             let remaining = context.input(|input| input.events.clone());
             drop(ui);
@@ -2170,7 +2231,9 @@ mod tests {
                     .layer_id(egui::LayerId::background())
                     .max_rect(context.viewport_rect()),
             );
-            let intents = studio_shortcuts(&mut ui, gate, true, true, &inputs, 30, 30);
+            let favorites = TransitionFavoriteStatus::defaults();
+            let intents =
+                studio_shortcuts(&mut ui, gate, true, true, (&inputs, &favorites), (30, 30));
             drop(ui);
             let _ = context.end_pass();
             intents
@@ -2670,6 +2733,7 @@ mod tests {
             switcher: switcher((1, 1), (1, 1)),
             edit_locks: fm_ui_model::EditLocks::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+            transition_favorites: TransitionFavoriteStatus::defaults(),
         }
     }
 

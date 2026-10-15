@@ -485,6 +485,7 @@ mod tests {
             playlist_follows: false,
             grade_states: 0,
             animation_preset_states: 0,
+            transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         };
         snapshot.edit_locks.project = locks.project;
         snapshot.edit_locks.inputs = locks

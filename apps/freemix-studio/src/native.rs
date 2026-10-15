@@ -17,9 +17,9 @@ use fm_client::{
 };
 use fm_protocol::{
     CommandPayload, CommandResult, DurableGap, EditLockScope, MonitorTap, OverlayBorderPreset,
-    OverlayPositionPreset, OverlayTransitionKind, PlaylistOperation, PlaylistStart,
-    StingerAudioPolicy, StingerMissingMediaFallback, WireInputId, WireMessage, WireOutputId,
-    WireRecorderSlot, WireStreamTargetId,
+    OverlayPositionPreset, PlaylistOperation, PlaylistStart, StingerAudioPolicy,
+    StingerMissingMediaFallback, WireInputId, WireMessage, WireOutputId, WireRecorderSlot,
+    WireStreamTargetId,
 };
 use fm_types::OutputId;
 use fm_ui_egui::{
@@ -2167,6 +2167,16 @@ fn intent_payload(
         }
         StudioIntent::Slide { duration_frames } => CommandPayload::Slide { duration_frames },
         StudioIntent::Zoom { duration_frames } => CommandPayload::Zoom { duration_frames },
+        StudioIntent::Transition {
+            kind,
+            duration_frames,
+        } => CommandPayload::Transition {
+            kind,
+            duration_frames,
+        },
+        StudioIntent::AssignTransitionFavorite { slot, favorite } => {
+            CommandPayload::SetTransitionFavorite { slot, favorite }
+        }
         StudioIntent::Stinger {
             slot,
             duration_frames,
@@ -2183,17 +2193,26 @@ fn intent_payload(
             source: WireInputId::from_domain(source),
         },
         StudioIntent::OverlayOff { channel } => CommandPayload::OverlayOff { channel },
-        StudioIntent::ToggleOverlayTransition {
+        StudioIntent::CycleOverlayTransition {
             channel,
             duration_frames,
         } => {
             let overlay = desired_overlay(view, channel)?;
             CommandPayload::ConfigureOverlayTransition {
                 channel,
-                transition: match overlay.transition {
-                    OverlayTransitionKind::Cut => OverlayTransitionKind::Fade,
-                    OverlayTransitionKind::Fade => OverlayTransitionKind::Cut,
-                },
+                transition: fm_ui_egui::next_overlay_transition(overlay.transition),
+                duration_frames,
+            }
+        }
+        StudioIntent::SetOverlayTransition {
+            channel,
+            transition,
+            duration_frames,
+        } => {
+            desired_overlay(view, channel)?;
+            CommandPayload::ConfigureOverlayTransition {
+                channel,
+                transition,
                 duration_frames,
             }
         }
@@ -2664,10 +2683,10 @@ mod tests {
         EventMessage, EventPayload, FadeToBlackPosition, FadeToBlackState, HandshakeOutcome,
         HandshakeResponse, HeartbeatAcknowledgementMessage, InputAudioStripStatus, InputStatus,
         ManualTransitionPosition, ManualTransitionStatus, OutputStatus, OverlayBorderPreset,
-        OverlayPositionPreset, OverlayStatus, Role, RuntimeEventMessage, RuntimeLifecycleEvent,
-        ServerIdentity, SnapshotMessage, SnapshotReason, StreamRealizedState, StreamStatusMessage,
-        StreamStatusSample, WireMessage, WireOutputId, WireStreamTargetId, decode_line,
-        encode_line,
+        OverlayPositionPreset, OverlayStatus, OverlayTransitionKind, Role, RuntimeEventMessage,
+        RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason,
+        StreamRealizedState, StreamStatusMessage, StreamStatusSample, WireMessage, WireOutputId,
+        WireStingerSlotId, WireStreamTargetId, decode_line, encode_line,
     };
     use fm_types::ProjectId;
     use fm_ui_model::{ClientModel, DurableChange, DurableProjectEvent, ProjectSnapshot};
@@ -2930,6 +2949,7 @@ mod tests {
             playlist_follows: false,
             grade_states: 0,
             animation_preset_states: 0,
+            transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }
     }
 
@@ -5066,6 +5086,37 @@ mod tests {
     }
 
     #[test]
+    fn transitions_by_kind_and_favourite_assignments_map_to_their_commands() {
+        use fm_protocol::{AutoTransitionKind, TransitionFavoriteEffect, TransitionFavoriteStatus};
+        for kind in AutoTransitionKind::ALL {
+            assert_eq!(
+                intent_payload(
+                    StudioIntent::Transition {
+                        kind,
+                        duration_frames: 24,
+                    },
+                    None,
+                ),
+                Ok(CommandPayload::Transition {
+                    kind,
+                    duration_frames: 24,
+                })
+            );
+        }
+        let favorite = TransitionFavoriteStatus {
+            effect: TransitionFavoriteEffect::Stinger(WireStingerSlotId::new(2).unwrap()),
+            duration_frames: 45,
+        };
+        assert_eq!(
+            intent_payload(
+                StudioIntent::AssignTransitionFavorite { slot: 4, favorite },
+                None,
+            ),
+            Ok(CommandPayload::SetTransitionFavorite { slot: 4, favorite })
+        );
+    }
+
+    #[test]
     #[allow(clippy::too_many_lines)]
     fn osc_ingress_obeys_limits_gates_and_worker_order() {
         let address = UdpSocket::bind("127.0.0.1:0")
@@ -5420,7 +5471,7 @@ mod tests {
         );
         assert_overlay_payload(
             &confirmed,
-            StudioIntent::ToggleOverlayTransition {
+            StudioIntent::CycleOverlayTransition {
                 channel,
                 duration_frames: 42,
             },
@@ -5449,13 +5500,26 @@ mod tests {
         let confirmed = model.view().unwrap();
         assert_overlay_payload(
             &confirmed,
-            StudioIntent::ToggleOverlayTransition {
+            StudioIntent::CycleOverlayTransition {
                 channel,
                 duration_frames: 42,
             },
             CommandPayload::ConfigureOverlayTransition {
                 channel,
-                transition: OverlayTransitionKind::Cut,
+                transition: OverlayTransitionKind::Wipe,
+                duration_frames: 42,
+            },
+        );
+        assert_overlay_payload(
+            &confirmed,
+            StudioIntent::SetOverlayTransition {
+                channel,
+                transition: OverlayTransitionKind::Cube,
+                duration_frames: 42,
+            },
+            CommandPayload::ConfigureOverlayTransition {
+                channel,
+                transition: OverlayTransitionKind::Cube,
                 duration_frames: 42,
             },
         );
@@ -5987,6 +6051,7 @@ mod tests {
             peer.send(&WireMessage::HandshakeResponse(handshake));
             peer.send(&WireMessage::Snapshot(SnapshotMessage {
                 animation_preset_states: 1,
+                transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
                 ..title_snapshot()
             }));
             peer.send(&WireMessage::TitleState(title_state()));

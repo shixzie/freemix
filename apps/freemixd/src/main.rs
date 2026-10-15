@@ -81,9 +81,9 @@ use fm_server::{
 };
 use fm_switcher::{
     MissingMediaFallback, OverlayBorderPreset, OverlayChannelId, OverlayChannelState,
-    OverlayPositionPreset, OverlayTransitionKind, RecorderSlot, StingerAudioPolicy,
-    StingerDescriptor, StingerSlotId, StreamTargetId as SwitcherStreamTargetId, SwitcherState,
-    TBarPosition, TBarState, TransitionKind,
+    OverlayPositionPreset, RecorderSlot, StingerAudioPolicy, StingerDescriptor, StingerSlotId,
+    StreamTargetId as SwitcherStreamTargetId, SwitcherState, TBarPosition, TBarState,
+    TransitionKind,
 };
 use fm_types::{InputId, ProjectId};
 use freemixd::{ReadinessRecord, StatusReadinessRecord};
@@ -9371,6 +9371,7 @@ fn restore_engine_with_titles(
                 "project animation presets cannot be restored: {error}"
             ))
         })?;
+    show.restore_transition_favorites(*canonical.transition_favorites());
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -11000,6 +11001,9 @@ fn command_base_ticks(
         | CommandPayload::Slide { duration_frames }
         | CommandPayload::Zoom { duration_frames }
         | CommandPayload::Wipe { duration_frames }
+        | CommandPayload::Transition {
+            duration_frames, ..
+        }
         | CommandPayload::FadeToBlack {
             duration_frames, ..
         } => duration_frames,
@@ -11035,6 +11039,7 @@ fn command_base_ticks(
         | CommandPayload::Cut
         | CommandPayload::ConfigureStinger { .. }
         | CommandPayload::RemoveStinger { .. }
+        | CommandPayload::SetTransitionFavorite { .. }
         | CommandPayload::UpdateOverlay { .. }
         | CommandPayload::SetOverlayOutputInclusion { .. }
         | CommandPayload::ConfigureOverlayTransition { .. }
@@ -11209,6 +11214,7 @@ fn stored_project_with_receipts(
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
+    project.set_transition_favorites(*show.transition_favorites());
     StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {
@@ -11420,10 +11426,10 @@ fn persisted_overlay(channel: &OverlayChannelState) -> RuntimeOverlayChannel {
     RuntimeOverlayChannel {
         source: channel.source(),
         active: channel.is_active(),
-        transition: match channel.transition() {
-            OverlayTransitionKind::Cut => RuntimeOverlayTransition::Cut,
-            OverlayTransitionKind::Fade => RuntimeOverlayTransition::Fade,
-        },
+        transition: RuntimeOverlayTransition::from_token(
+            fm_control::wire_overlay_transition(channel.transition()).token(),
+        )
+        .expect("every overlay transition has a persisted token"),
         duration_frames: channel.duration_frames(),
         position: persisted_overlay_position(channel.position()),
         border: persisted_overlay_border(channel.border()),
@@ -11490,10 +11496,10 @@ fn restore_overlay(
 ) -> AppResult<()> {
     switcher.configure_overlay_transition(
         channel,
-        match state.transition {
-            RuntimeOverlayTransition::Cut => OverlayTransitionKind::Cut,
-            RuntimeOverlayTransition::Fade => OverlayTransitionKind::Fade,
-        },
+        fm_control::domain_overlay_transition(
+            fm_protocol::OverlayTransitionKind::from_token(state.transition.token())
+                .expect("every persisted overlay transition has a wire token"),
+        ),
         state.duration_frames,
     )?;
     let _ = switcher.configure_overlay_appearance(

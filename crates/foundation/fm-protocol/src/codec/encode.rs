@@ -42,6 +42,7 @@ use super::title::{
     encode_title_field_names, encode_title_fields, encode_title_phase, encode_title_summaries,
     title_air_requirement, validate_title_name, validate_title_phase,
 };
+use super::transition::{encode_favorite, encode_favorites, validate_favorite_slot};
 use super::value::{
     client_type, durable_events, escape_stream_failure, field_issues, input_ids, input_statuses,
     output_statuses, recording_statuses, role, runtime_domains, stream_realized_state,
@@ -287,6 +288,20 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         CommandPayload::Zoom { duration_frames } => {
             record.field("payload", "zoom")?;
             record.field("duration_frames", duration_frames)?;
+        }
+        CommandPayload::Transition {
+            kind,
+            duration_frames,
+        } => {
+            record.field("payload", "transition")?;
+            record.field("kind", kind.token())?;
+            record.field("duration_frames", duration_frames)?;
+        }
+        CommandPayload::SetTransitionFavorite { slot, favorite } => {
+            record.field("payload", "transition_favorite_set")?;
+            validate_favorite_slot(*slot, "slot")?;
+            record.field("slot", slot)?;
+            record.field_string("favorite", encode_favorite(*favorite, "favorite")?)?;
         }
         CommandPayload::Stinger {
             slot,
@@ -1059,13 +1074,7 @@ fn encode_overlay_command(record: &mut Record, payload: &CommandPayload) -> Resu
         } => {
             record.field("payload", "overlay_transition")?;
             record.field("channel", channel)?;
-            record.field(
-                "transition",
-                match transition {
-                    crate::OverlayTransitionKind::Cut => "cut",
-                    crate::OverlayTransitionKind::Fade => "fade",
-                },
-            )?;
+            record.field("transition", transition.token())?;
             validate_overlay_duration(*duration_frames, "duration_frames")?;
             record.field("duration_frames", duration_frames)
         }
@@ -1252,7 +1261,11 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
             value: message.animation_preset_states.to_string(),
         });
     }
-    record.field("animation_preset_states", message.animation_preset_states)
+    record.field("animation_preset_states", message.animation_preset_states)?;
+    record.field_string(
+        "transition_favorites",
+        encode_favorites(&message.transition_favorites)?,
+    )
 }
 
 /// Writes a grade source as `library=<id>` or `grade=<grade>`.
@@ -1555,10 +1568,7 @@ fn encode_overlays(
                     .map_or_else(|| "0".to_owned(), |source| source.to_string()),
                 u8::from(overlay.active),
                 overlay.opacity,
-                match overlay.transition {
-                    crate::OverlayTransitionKind::Cut => "cut",
-                    crate::OverlayTransitionKind::Fade => "fade",
-                },
+                overlay.transition.token(),
                 overlay.duration_frames,
                 overlay_position(overlay.position),
                 overlay_border(overlay.border),
@@ -1792,6 +1802,12 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         }
         payload @ EventPayload::SceneAnimationChanged { .. } => {
             encode_scene_animation_changed(record, payload)?;
+        }
+        EventPayload::TransitionFavoriteChanged { slot, favorite } => {
+            record.field("event", "transition_favorite_changed")?;
+            validate_favorite_slot(*slot, "slot")?;
+            record.field("slot", slot)?;
+            record.field_string("favorite", encode_favorite(*favorite, "favorite")?)?;
         }
         EventPayload::AnimationPresetChanged(change) => {
             encode_animation_preset_changed(record, change)?;

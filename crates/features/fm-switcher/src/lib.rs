@@ -31,8 +31,8 @@ pub use mix_bank::{
 };
 pub use overlay::{
     MAX_OVERLAY_QUEUE_DEPTH, MAX_OVERLAY_TRANSITION_DURATION_FRAMES, OVERLAY_CHANNEL_COUNT,
-    OverlayBorderPreset, OverlayChannelId, OverlayChannelState, OverlayPositionPreset,
-    OverlayTransitionAdvance, OverlayTransitionKind,
+    OverlayBorderPreset, OverlayChannelId, OverlayChannelState, OverlayMotion,
+    OverlayPositionPreset, OverlayTransitionAdvance, OverlayTransitionKind,
 };
 pub use recorder::{RECORDER_SLOT_COUNT, RecorderSlot};
 pub use state::{ProgramFrame, SwitcherState};

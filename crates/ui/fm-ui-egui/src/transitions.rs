@@ -2,7 +2,10 @@
 //! transitions, shared duration, the manual T-bar, and Fade-to-Black.
 
 use egui::{CornerRadius, DragValue, Rect, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, pos2};
-use fm_protocol::{ManualTransitionKind, ManualTransitionPosition};
+use fm_protocol::{
+    AutoTransitionKind, ManualTransitionKind, ManualTransitionPosition, OverlayTransitionKind,
+    TransitionFavoriteEffect, TransitionFavoriteStatus, WireStingerSlotId,
+};
 use fm_ui_model::ManualTransitionStatus;
 
 use crate::gating::{Capability, Hint, unavailable_reason};
@@ -20,6 +23,313 @@ use crate::{
 /// Fixed width of the transition column.
 pub(crate) const TRANSITION_COLUMN_WIDTH: f32 = 252.0;
 const BUTTON_SIZE: Vec2 = Vec2::new(94.0, 36.0);
+/// One favourite key: the four keys and their three 4-point gaps share
+/// the column width.
+const FAVORITE_SIZE: Vec2 = Vec2::new((TRANSITION_COLUMN_WIDTH - 3.0 * 4.0) / 4.0, 28.0);
+const _: () = assert!(fm_protocol::TRANSITION_FAVORITE_COUNT == 4);
+/// The automatic mixes behind the MORE key: every kind without a key of
+/// its own in the column.
+const MORE_KINDS: [AutoTransitionKind; 8] = [
+    AutoTransitionKind::VerticalWipe,
+    AutoTransitionKind::VerticalSlide,
+    AutoTransitionKind::Fly,
+    AutoTransitionKind::FlyRotate,
+    AutoTransitionKind::Cube,
+    AutoTransitionKind::CubeZoom,
+    AutoTransitionKind::CrossZoom,
+    AutoTransitionKind::Merge,
+];
+
+/// The console key label of an automatic mix.
+pub(crate) const fn mix_label(kind: AutoTransitionKind) -> Msg {
+    match kind {
+        AutoTransitionKind::Fade => Msg::FadeKey,
+        AutoTransitionKind::AlphaFade => Msg::AlphaKey,
+        AutoTransitionKind::Wipe => Msg::WipeKey,
+        AutoTransitionKind::VerticalWipe => Msg::VerticalWipeKey,
+        AutoTransitionKind::Slide => Msg::SlideKey,
+        AutoTransitionKind::VerticalSlide => Msg::VerticalSlideKey,
+        AutoTransitionKind::Zoom => Msg::ZoomKey,
+        AutoTransitionKind::Fly => Msg::FlyKey,
+        AutoTransitionKind::FlyRotate => Msg::FlyRotateKey,
+        AutoTransitionKind::Cube => Msg::CubeKey,
+        AutoTransitionKind::CubeZoom => Msg::CubeZoomKey,
+        AutoTransitionKind::CrossZoom => Msg::CrossZoomKey,
+        AutoTransitionKind::Merge => Msg::MergeKey,
+    }
+}
+
+/// The console key label of an overlay channel transition.
+pub(crate) const fn overlay_label(kind: OverlayTransitionKind) -> Msg {
+    match kind {
+        OverlayTransitionKind::Cut => Msg::CutKey,
+        OverlayTransitionKind::Fade => Msg::FadeKey,
+        OverlayTransitionKind::Wipe => Msg::WipeKey,
+        OverlayTransitionKind::VerticalWipe => Msg::VerticalWipeKey,
+        OverlayTransitionKind::Slide => Msg::SlideKey,
+        OverlayTransitionKind::VerticalSlide => Msg::VerticalSlideKey,
+        OverlayTransitionKind::Zoom => Msg::ZoomKey,
+        OverlayTransitionKind::Fly => Msg::FlyKey,
+        OverlayTransitionKind::FlyRotate => Msg::FlyRotateKey,
+        OverlayTransitionKind::Cube => Msg::CubeKey,
+        OverlayTransitionKind::CubeZoom => Msg::CubeZoomKey,
+        OverlayTransitionKind::CrossZoom => Msg::CrossZoomKey,
+        OverlayTransitionKind::Merge => Msg::MergeKey,
+    }
+}
+
+/// The overlay transition after `kind` in [`OverlayTransitionKind::ALL`],
+/// wrapping from the last motion back to Cut.
+#[must_use]
+pub fn next_overlay_transition(kind: OverlayTransitionKind) -> OverlayTransitionKind {
+    let all = OverlayTransitionKind::ALL;
+    let index = all
+        .iter()
+        .position(|candidate| *candidate == kind)
+        .unwrap_or(0);
+    all[(index + 1) % all.len()]
+}
+
+/// The key label of a favourite's effect.
+pub(crate) fn effect_label(l: Locale, effect: TransitionFavoriteEffect) -> String {
+    match effect {
+        TransitionFavoriteEffect::Cut => l.text(Msg::CutKey).to_owned(),
+        TransitionFavoriteEffect::Mix(kind) => l.text(mix_label(kind)).to_owned(),
+        TransitionFavoriteEffect::Stinger(slot) => l.format(
+            Msg::StingerFavoriteKey,
+            &[("slot", Arg::from(u32::from(slot.number())))],
+        ),
+    }
+}
+
+/// The intent a favourite key performs: Cut, an automatic mix at the
+/// favourite's duration, or its Stinger slot.
+pub(crate) const fn favorite_intent(favorite: TransitionFavoriteStatus) -> StudioIntent {
+    let duration_frames = favorite.duration_frames;
+    match favorite.effect {
+        TransitionFavoriteEffect::Cut => StudioIntent::Cut,
+        TransitionFavoriteEffect::Mix(kind) => StudioIntent::Transition {
+            kind,
+            duration_frames,
+        },
+        TransitionFavoriteEffect::Stinger(slot) => StudioIntent::Stinger {
+            slot,
+            duration_frames,
+        },
+    }
+}
+
+/// The four favourite keys: a click takes the favourite, F5 through F8
+/// take it from the keyboard, and right-click assigns it.
+fn draw_favorites(
+    ui: &mut Ui,
+    shell: &StudioShell,
+    state: &StudioUiState,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let availability = transition_availability(TransitionGate::from_state(state));
+    let reason = unavailable_reason(state, Capability::Transition);
+    let assign_enabled =
+        state.connection_status.controls_enabled() && state.view.is_some() && state.can_transition;
+    let favorites = state
+        .view
+        .as_ref()
+        .map_or_else(TransitionFavoriteStatus::defaults, |view| {
+            view.transition_favorites
+        });
+    let stingers: Vec<WireStingerSlotId> = state
+        .view
+        .as_ref()
+        .map(|view| {
+            view.stingers
+                .iter()
+                .filter_map(|stinger| WireStingerSlotId::new(stinger.slot))
+                .collect()
+        })
+        .unwrap_or_default();
+    let duration_frames = shell.transition_duration_frames;
+    ui.label(field_label(l.text(Msg::FavoritesLabel)));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (index, favorite) in favorites.into_iter().enumerate() {
+            let slot = u8::try_from(index + 1).expect("four favourites");
+            let enabled = match favorite.effect {
+                TransitionFavoriteEffect::Stinger(_) => availability.stinger(),
+                _ => availability.basic(),
+            };
+            let action = match favorite.effect {
+                TransitionFavoriteEffect::Cut => l.format(
+                    Msg::FavoriteCutHover,
+                    &[("slot", Arg::from(u32::from(slot)))],
+                ),
+                effect => l.format(
+                    Msg::FavoriteHover,
+                    &[
+                        ("slot", Arg::from(u32::from(slot))),
+                        ("effect", Arg::Str(&effect_label(l, effect))),
+                        (
+                            "frames",
+                            Arg::Str(&l10n::frames(l, favorite.duration_frames)),
+                        ),
+                    ],
+                ),
+            };
+            let response = ui
+                .add_enabled(
+                    enabled,
+                    console_button(
+                        &effect_label(l, favorite.effect),
+                        widget_color(),
+                        border_strong_color(),
+                        FAVORITE_SIZE,
+                    ),
+                )
+                .hint(
+                    &with_key(l, &action, crate::favorite_key_name(slot)),
+                    reason,
+                );
+            if response.clicked() {
+                intents.push(favorite_intent(favorite));
+            }
+            response.context_menu(|ui| {
+                draw_assign_menu(
+                    ui,
+                    (slot, duration_frames),
+                    &stingers,
+                    (assign_enabled, reason),
+                    intents,
+                );
+            });
+        }
+    });
+}
+
+/// The MORE key: a menu taking each automatic mix without a key of its own.
+fn draw_more_transitions(
+    ui: &mut Ui,
+    key: egui::Button<'static>,
+    (enabled, reason): (bool, &str),
+    duration_frames: u32,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    egui::containers::menu::MenuButton::from_button(
+        key.min_size(Vec2::new(2.0 * BUTTON_SIZE.x + 6.0, 24.0)),
+    )
+    .ui(ui, |ui| {
+        for kind in MORE_KINDS {
+            let label = l.text(mix_label(kind));
+            if ui
+                .add_enabled(enabled, egui::Button::new(label))
+                .hint(
+                    &l.format(Msg::AutoKindHover, &[("kind", Arg::Str(label))]),
+                    reason,
+                )
+                .clicked()
+            {
+                intents.push(StudioIntent::Transition {
+                    kind,
+                    duration_frames,
+                });
+                ui.close();
+            }
+        }
+    })
+    .0
+    .hint(l.text(Msg::MoreTransitionsHover), reason);
+}
+
+/// The right-click menu of an overlay channel's transition key: every
+/// kind of the family, the current one selected.
+pub(crate) fn draw_overlay_transition_menu(
+    ui: &mut Ui,
+    (channel, current, duration_frames): (
+        fm_protocol::WireOverlayChannelId,
+        OverlayTransitionKind,
+        u32,
+    ),
+    (enabled, reason): (bool, &str),
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    for kind in OverlayTransitionKind::ALL {
+        let label = l.text(overlay_label(kind));
+        if ui
+            .add_enabled(enabled, egui::Button::new(label).selected(kind == current))
+            .hint(
+                &l.format(
+                    Msg::OverlayTransitionPickHover,
+                    &[("kind", Arg::Str(label))],
+                ),
+                reason,
+            )
+            .clicked()
+        {
+            intents.push(StudioIntent::SetOverlayTransition {
+                channel,
+                transition: kind,
+                duration_frames,
+            });
+            ui.close();
+        }
+    }
+}
+
+/// The right-click menu of one favourite key: `Assign…` and every effect
+/// at the shared duration.
+pub(crate) fn draw_assign_menu(
+    ui: &mut Ui,
+    (slot, duration_frames): (u8, u32),
+    stingers: &[WireStingerSlotId],
+    (enabled, reason): (bool, &str),
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let slot_arg = || Arg::from(u32::from(slot));
+    ui.menu_button(l.text(Msg::AssignFavorite), |ui| {
+        let effects = core::iter::once(TransitionFavoriteEffect::Cut)
+            .chain(AutoTransitionKind::ALL.map(TransitionFavoriteEffect::Mix))
+            .chain(
+                stingers
+                    .iter()
+                    .copied()
+                    .map(TransitionFavoriteEffect::Stinger),
+            );
+        for effect in effects {
+            let label = effect_label(l, effect);
+            let hover = l.format(
+                Msg::AssignFavoriteItemHover,
+                &[("slot", slot_arg()), ("effect", Arg::Str(&label))],
+            );
+            if ui
+                .add_enabled(enabled, egui::Button::new(label.as_str()))
+                .hint(&hover, reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::AssignTransitionFavorite {
+                    slot,
+                    favorite: TransitionFavoriteStatus {
+                        effect,
+                        duration_frames,
+                    },
+                });
+                ui.close();
+            }
+        }
+    })
+    .response
+    .hint(
+        &l.format(
+            Msg::AssignFavoriteHover,
+            &[
+                ("slot", slot_arg()),
+                ("frames", Arg::Str(&l10n::frames(l, duration_frames))),
+            ],
+        ),
+        reason,
+    );
+}
 const T_BAR_HEIGHT: f32 = 148.0;
 
 pub(crate) fn draw_transition_column(
@@ -83,6 +393,7 @@ pub(crate) fn draw_transition_column(
             intents,
         );
     });
+    draw_favorites(ui, shell, state, intents);
     ui.separator();
     let session_reason = unavailable_reason(state, Capability::Transition);
     let manual_reason = if state.connection_status.controls_enabled()
@@ -196,6 +507,13 @@ fn draw_auto_transitions(
             intents.push(StudioIntent::Zoom { duration_frames });
         }
     });
+    draw_more_transitions(
+        ui,
+        secondary(l.text(Msg::MoreTransitionsKey)),
+        (availability.basic(), reason),
+        duration_frames,
+        intents,
+    );
     ui.horizontal(|ui| {
         ui.label(field_label(l.text(Msg::Duration)));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -806,6 +1124,68 @@ pub(crate) fn manual_transition_label(l: Locale, status: ManualTransitionStatus)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn favourites_take_their_effect_and_overlay_kinds_cycle_the_family() {
+        let defaults = TransitionFavoriteStatus::defaults();
+        assert_eq!(
+            defaults.map(favorite_intent),
+            [
+                AutoTransitionKind::Fade,
+                AutoTransitionKind::Wipe,
+                AutoTransitionKind::Fly,
+                AutoTransitionKind::Cube,
+            ]
+            .map(|kind| StudioIntent::Transition {
+                kind,
+                duration_frames: 30,
+            })
+        );
+        assert_eq!(
+            favorite_intent(TransitionFavoriteStatus {
+                effect: TransitionFavoriteEffect::Cut,
+                duration_frames: 1,
+            }),
+            StudioIntent::Cut
+        );
+        let slot = WireStingerSlotId::new(3).unwrap();
+        assert_eq!(
+            favorite_intent(TransitionFavoriteStatus {
+                effect: TransitionFavoriteEffect::Stinger(slot),
+                duration_frames: 45,
+            }),
+            StudioIntent::Stinger {
+                slot,
+                duration_frames: 45,
+            }
+        );
+        let mut kind = OverlayTransitionKind::Cut;
+        let mut seen = Vec::new();
+        for _ in 0..OverlayTransitionKind::ALL.len() {
+            kind = next_overlay_transition(kind);
+            seen.push(kind);
+        }
+        assert_eq!(seen.first(), Some(&OverlayTransitionKind::Fade));
+        assert_eq!(seen.last(), Some(&OverlayTransitionKind::Cut));
+        assert!(
+            OverlayTransitionKind::ALL
+                .iter()
+                .all(|kind| seen.contains(kind))
+        );
+        // Every key has a label, and every mix is reachable from the column.
+        for kind in AutoTransitionKind::ALL {
+            assert_ne!(mix_label(kind).en(), "");
+        }
+        assert!(MORE_KINDS.iter().all(|kind| !matches!(
+            kind,
+            AutoTransitionKind::Fade
+                | AutoTransitionKind::AlphaFade
+                | AutoTransitionKind::Wipe
+                | AutoTransitionKind::Slide
+                | AutoTransitionKind::Zoom
+        )));
+        assert_eq!(MORE_KINDS.len() + 5, AutoTransitionKind::ALL.len());
+    }
 
     #[test]
     fn t_bar_fraction_maps_to_clamped_basis_points() {

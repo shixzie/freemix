@@ -5,11 +5,66 @@ pub const OVERLAY_CHANNEL_COUNT: usize = 8;
 pub const MAX_OVERLAY_TRANSITION_DURATION_FRAMES: u32 = 3_600;
 pub const MAX_OVERLAY_QUEUE_DEPTH: usize = 64;
 
+/// How an overlay channel goes on and off air.
+///
+/// Cut and Fade change the channel's opacity. Every other kind is a motion
+/// transition: the channel stays fully opaque while the renderer moves its
+/// layer in from (or out to) transparency with the Program transition of the
+/// same name, at the progress [`OverlayChannelState::motion`] reports.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum OverlayTransitionKind {
     #[default]
     Cut,
     Fade,
+    Wipe,
+    VerticalWipe,
+    Slide,
+    VerticalSlide,
+    Zoom,
+    Fly,
+    FlyRotate,
+    Cube,
+    CubeZoom,
+    CrossZoom,
+    Merge,
+}
+
+impl OverlayTransitionKind {
+    /// Every overlay transition kind, in operator order.
+    pub const ALL: [Self; 13] = [
+        Self::Cut,
+        Self::Fade,
+        Self::Wipe,
+        Self::VerticalWipe,
+        Self::Slide,
+        Self::VerticalSlide,
+        Self::Zoom,
+        Self::Fly,
+        Self::FlyRotate,
+        Self::Cube,
+        Self::CubeZoom,
+        Self::CrossZoom,
+        Self::Merge,
+    ];
+
+    /// Whether this kind moves the layer rather than changing its opacity.
+    #[must_use]
+    pub const fn is_motion(self) -> bool {
+        !matches!(self, Self::Cut | Self::Fade)
+    }
+}
+
+/// The exact progress of an overlay motion transition in this frame.
+///
+/// Entering, the renderer draws the motion transition from transparency to
+/// the overlay layer at `numerator / denominator`; leaving, from the layer
+/// to transparency.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OverlayMotion {
+    pub kind: OverlayTransitionKind,
+    pub entering: bool,
+    pub numerator: u32,
+    pub denominator: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -40,11 +95,13 @@ struct AutomaticOverlayTransition {
     /// Keeps `start_opacity` for the whole duration and only then jumps to
     /// the target: a channel held on air while its source animates out.
     hold: bool,
+    /// The motion kind moving the layer, which also holds the opacity.
+    motion: Option<OverlayTransitionKind>,
 }
 
 impl AutomaticOverlayTransition {
     fn opacity_at(self, elapsed_frames: u32) -> u8 {
-        if self.hold {
+        if self.hold || self.motion.is_some() {
             return self.start_opacity;
         }
         let distance = self.start_opacity.abs_diff(self.target_opacity);
@@ -188,6 +245,24 @@ impl OverlayChannelState {
         self.automatic.is_some()
     }
 
+    /// The motion transition moving this channel's layer in this frame, or
+    /// `None` when it is not in a motion transition.
+    #[must_use]
+    pub const fn motion(&self) -> Option<OverlayMotion> {
+        let Some(automatic) = self.automatic else {
+            return None;
+        };
+        let Some(kind) = automatic.motion else {
+            return None;
+        };
+        Some(OverlayMotion {
+            kind,
+            entering: automatic.target_active,
+            numerator: automatic.elapsed_frames,
+            denominator: automatic.duration_frames,
+        })
+    }
+
     #[must_use]
     pub fn included_outputs(&self) -> &[OutputId] {
         &self.included_outputs
@@ -285,6 +360,19 @@ impl OverlayChannelState {
                     duration_frames: self.duration_frames,
                     elapsed_frames: 0,
                     hold: false,
+                    motion: None,
+                });
+            }
+            kind => {
+                self.opacity = u8::MAX;
+                self.automatic = Some(AutomaticOverlayTransition {
+                    start_opacity: u8::MAX,
+                    target_opacity: u8::MAX,
+                    target_active: true,
+                    duration_frames: self.duration_frames,
+                    elapsed_frames: 0,
+                    hold: false,
+                    motion: Some(kind),
                 });
             }
         }
@@ -300,9 +388,21 @@ impl OverlayChannelState {
                     duration_frames: self.duration_frames,
                     elapsed_frames: 0,
                     hold: false,
+                    motion: None,
                 });
             }
-            OverlayTransitionKind::Cut | OverlayTransitionKind::Fade => self.off(),
+            kind if kind.is_motion() && self.active => {
+                self.automatic = Some(AutomaticOverlayTransition {
+                    start_opacity: self.opacity,
+                    target_opacity: 0,
+                    target_active: false,
+                    duration_frames: self.duration_frames,
+                    elapsed_frames: 0,
+                    hold: false,
+                    motion: Some(kind),
+                });
+            }
+            _ => self.off(),
         }
     }
 
@@ -321,6 +421,7 @@ impl OverlayChannelState {
             duration_frames: frames,
             elapsed_frames: 0,
             hold: true,
+            motion: None,
         });
     }
 

@@ -281,6 +281,57 @@ fn zoom_renders_exact_endpoints_and_a_centered_preview() {
 }
 
 #[test]
+fn every_geometric_mix_renders_the_fm_video_reference_shape() {
+    use fm_video::{TransitionShape, render_transition, solid_color};
+    let red = Rgba8::new(255, 0, 0, 255);
+    let blue = Rgba8::new(0, 0, 255, 255);
+    let mut pipeline = SimulatedPipeline::new(16, 9).unwrap();
+    pipeline
+        .register(SimulatedSource::new(input(1), SourcePattern::Solid(red)))
+        .unwrap();
+    pipeline
+        .register(SimulatedSource::new(input(2), SourcePattern::Solid(blue)))
+        .unwrap();
+    let from = solid_color(16, 9, red).unwrap();
+    let to = solid_color(16, 9, blue).unwrap();
+    for (kind, shape) in [
+        (TransitionKind::VerticalWipe, TransitionShape::VerticalWipe),
+        (
+            TransitionKind::VerticalSlide,
+            TransitionShape::VerticalSlide,
+        ),
+        (TransitionKind::Fly, TransitionShape::Fly),
+        (TransitionKind::FlyRotate, TransitionShape::FlyRotate),
+        (TransitionKind::Cube, TransitionShape::Cube),
+        (TransitionKind::CubeZoom, TransitionShape::CubeZoom),
+        (TransitionKind::CrossZoom, TransitionShape::CrossZoom),
+        (TransitionKind::Merge, TransitionShape::Merge),
+    ] {
+        for numerator in 0..=3 {
+            let rendered = pipeline
+                .render(
+                    0,
+                    ProgramFrame {
+                        primary: input(1),
+                        secondary: Some(input(2)),
+                        transition_kind: Some(kind),
+                        mix_numerator: numerator,
+                        mix_denominator: 3,
+                        mix_start_numerator: numerator,
+                        mix_end_numerator: numerator,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                rendered,
+                render_transition(shape, &from, &to, numerator, 3).unwrap(),
+                "{kind:?} at {numerator}/3"
+            );
+        }
+    }
+}
+
+#[test]
 fn pipeline_rejects_missing_and_unsupported_transition_kinds() {
     let mut pipeline = SimulatedPipeline::new(1, 1).unwrap();
     for value in [1, 2] {

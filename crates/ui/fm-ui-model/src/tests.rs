@@ -126,6 +126,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         playlist_follows: false,
         grade_states: 0,
         animation_preset_states: 0,
+        transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     }
 }
 
@@ -1426,6 +1427,7 @@ mod titles {
             playlist_follows: false,
             grade_states: 0,
             animation_preset_states: 0,
+            transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }
     }
 
@@ -2211,4 +2213,68 @@ fn animation_preset_ids_wrap_past_the_highest_id() {
     }
     let presets = model.state().unwrap().animation_presets();
     assert_eq!(presets.next_id().map(core::num::NonZeroU32::get), Some(2));
+}
+
+#[test]
+fn transition_favourites_replicate_from_snapshot_and_change_events() {
+    use fm_protocol::{AutoTransitionKind, TransitionFavoriteEffect, WireStingerSlotId};
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    let mut announced = snapshot(project_id, 7);
+    announced.transition_favorites[2] = TransitionFavoriteStatus {
+        effect: TransitionFavoriteEffect::Cut,
+        duration_frames: 1,
+    };
+    model.install_snapshot(announced).unwrap();
+    let view = model.view().unwrap();
+    assert_eq!(
+        view.transition_favorites.map(|favorite| favorite.effect),
+        [
+            TransitionFavoriteEffect::Mix(AutoTransitionKind::Fade),
+            TransitionFavoriteEffect::Mix(AutoTransitionKind::Wipe),
+            TransitionFavoriteEffect::Cut,
+            TransitionFavoriteEffect::Mix(AutoTransitionKind::Cube),
+        ]
+    );
+
+    let engine = engine("engine-a", 1, "log-a");
+    let stinger = TransitionFavoriteStatus {
+        effect: TransitionFavoriteEffect::Stinger(WireStingerSlotId::new(3).unwrap()),
+        duration_frames: 45,
+    };
+    model
+        .apply_event(event(
+            project_id,
+            engine.clone(),
+            8,
+            DurableChange::TransitionFavoriteChanged {
+                slot: 4,
+                favorite: stinger,
+            },
+        ))
+        .unwrap();
+    assert_eq!(model.view().unwrap().transition_favorites[3], stinger);
+
+    // A slot outside 1 through 4 is refused and changes nothing.
+    for slot in [0, 5] {
+        assert_eq!(
+            model
+                .apply_event(event(
+                    project_id,
+                    engine.clone(),
+                    9,
+                    DurableChange::TransitionFavoriteChanged {
+                        slot,
+                        favorite: stinger,
+                    },
+                ))
+                .unwrap_err(),
+            ModelError::InvalidTransitionFavorite(slot)
+        );
+    }
+    assert_eq!(
+        ModelError::InvalidTransitionFavorite(5).to_string(),
+        "favourite transition change names slot 5, not 1 through 4"
+    );
+    assert_eq!(model.view().unwrap().transition_favorites[3], stinger);
 }

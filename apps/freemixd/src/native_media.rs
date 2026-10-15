@@ -903,6 +903,7 @@ impl NativeProjectPlan {
                     opacity: overlay.opacity(),
                     position: overlay.position(),
                     border: overlay.border(),
+                    motion: overlay.motion(),
                 })
             })
             .collect()
@@ -915,6 +916,29 @@ struct NativeProgramOverlay {
     opacity: u8,
     position: OverlayPositionPreset,
     border: OverlayBorderPreset,
+    /// A motion transition in flight (SW-005): the layer is drawn alone over
+    /// transparency, moved by the compositor transition, then composed.
+    motion: Option<fm_switcher::OverlayMotion>,
+}
+
+/// The compositor transition that moves an overlay layer; `None` for Cut
+/// and Fade, which are opacity changes rather than motion.
+const fn overlay_motion_kind(kind: fm_switcher::OverlayTransitionKind) -> Option<TransitionKind> {
+    use fm_switcher::OverlayTransitionKind as Overlay;
+    Some(match kind {
+        Overlay::Wipe => TransitionKind::Wipe,
+        Overlay::VerticalWipe => TransitionKind::VerticalWipe,
+        Overlay::Slide => TransitionKind::Slide,
+        Overlay::VerticalSlide => TransitionKind::VerticalSlide,
+        Overlay::Zoom => TransitionKind::Zoom,
+        Overlay::Fly => TransitionKind::Fly,
+        Overlay::FlyRotate => TransitionKind::FlyRotate,
+        Overlay::Cube => TransitionKind::Cube,
+        Overlay::CubeZoom => TransitionKind::CubeZoom,
+        Overlay::CrossZoom => TransitionKind::CrossZoom,
+        Overlay::Merge => TransitionKind::Merge,
+        Overlay::Cut | Overlay::Fade => return None,
+    })
 }
 
 /// One independently realized, GPU-resident project output.
@@ -5159,16 +5183,12 @@ fn native_audio_mix_plan(program: ProgramFrame) -> Result<NativeAudioMixPlan, Na
         });
     }
     match program.transition_kind {
-        Some(
-            SwitcherTransitionKind::Fade
-            | SwitcherTransitionKind::Wipe
-            | SwitcherTransitionKind::AlphaFade
-            | SwitcherTransitionKind::Slide
-            | SwitcherTransitionKind::Zoom,
-        ) => sample_linear_audio_mix_plan(program, secondary),
+        // Every mix crossfades audio linearly; only a Stinger has its own
+        // audio policy.
         Some(kind @ SwitcherTransitionKind::Stinger(_)) => {
             Err(NativeMasterError::UnsupportedAudioTransition(kind))
         }
+        Some(_) => sample_linear_audio_mix_plan(program, secondary),
         None => Err(NativeMasterError::MissingAudioTransitionKind),
     }
 }
@@ -5296,16 +5316,33 @@ enum NativeProjectMixPlan {
     Stinger(NativeStingerMixPlan),
 }
 
+/// The compositor kind that draws a switcher mix; `None` for a Stinger,
+/// which the native path composes from its own plan.
+const fn compositor_transition_kind(kind: SwitcherTransitionKind) -> Option<TransitionKind> {
+    Some(match kind {
+        SwitcherTransitionKind::Fade => TransitionKind::Fade,
+        SwitcherTransitionKind::AlphaFade => TransitionKind::AlphaFade,
+        SwitcherTransitionKind::Wipe => TransitionKind::Wipe,
+        SwitcherTransitionKind::VerticalWipe => TransitionKind::VerticalWipe,
+        SwitcherTransitionKind::Slide => TransitionKind::Slide,
+        SwitcherTransitionKind::VerticalSlide => TransitionKind::VerticalSlide,
+        SwitcherTransitionKind::Zoom => TransitionKind::Zoom,
+        SwitcherTransitionKind::Fly => TransitionKind::Fly,
+        SwitcherTransitionKind::FlyRotate => TransitionKind::FlyRotate,
+        SwitcherTransitionKind::Cube => TransitionKind::Cube,
+        SwitcherTransitionKind::CubeZoom => TransitionKind::CubeZoom,
+        SwitcherTransitionKind::CrossZoom => TransitionKind::CrossZoom,
+        SwitcherTransitionKind::Merge => TransitionKind::Merge,
+        SwitcherTransitionKind::Stinger(_) => return None,
+    })
+}
+
 fn native_mix_plan(program: ProgramFrame) -> Result<NativeMixPlan, NativeSourceRenderError> {
     let (secondary, transition) = match program.secondary {
         Some(secondary) if secondary != program.primary => {
             let kind = match program.transition_kind {
-                Some(SwitcherTransitionKind::Fade) => TransitionKind::Fade,
-                Some(SwitcherTransitionKind::AlphaFade) => TransitionKind::AlphaFade,
-                Some(SwitcherTransitionKind::Wipe) => TransitionKind::Wipe,
-                Some(SwitcherTransitionKind::Slide) => TransitionKind::Slide,
-                Some(SwitcherTransitionKind::Zoom) => TransitionKind::Zoom,
-                Some(kind) => return Err(NativeSourceRenderError::UnsupportedTransition(kind)),
+                Some(kind) => compositor_transition_kind(kind)
+                    .ok_or(NativeSourceRenderError::UnsupportedTransition(kind))?,
                 None => return Err(NativeSourceRenderError::MissingTransitionKind),
             };
             (
@@ -7480,6 +7517,11 @@ impl NativeMediaRuntime {
             );
             let z =
                 i32::try_from(index + 1).map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+            // A moving overlay arrives pre-composed at full frame.
+            if overlay.motion.is_some() {
+                scene.push_layer(SourceLayer::new(source, z, full_frame));
+                continue;
+            }
             let transform = overlay_transform(project.dimensions, overlay.position)
                 .ok_or(NativeSourceRenderError::ResourceBounds)?;
             let border_width = overlay_border_width(overlay.border, transform);
@@ -7491,6 +7533,28 @@ impl NativeMediaRuntime {
         }
         let (composition, _) = compile_scene(&scene, OutputTarget::Program)
             .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        // Moving overlays are drawn first, so every source texture outlives
+        // the composition that samples it.
+        let mut moved = Vec::with_capacity(overlays.len());
+        for overlay in overlays {
+            moved.push(match overlay.motion {
+                Some(motion) => {
+                    let texture = project_texture(
+                        registry,
+                        graded,
+                        project,
+                        scene_outputs,
+                        overlay.input,
+                        deadline,
+                    )?;
+                    Some(
+                        self.render_overlay_motion(project, overlay, motion, texture)
+                            .await?,
+                    )
+                }
+                None => None,
+            });
+        }
         let mut sources = Vec::with_capacity(overlays.len() + 1);
         sources.push(NativeSourceFrame::new(SourceId::new(0), program));
         for (index, overlay) in overlays.iter().enumerate() {
@@ -7505,12 +7569,72 @@ impl NativeMediaRuntime {
                 overlay.input,
                 deadline,
             )?;
+            let texture = match &moved[index] {
+                Some(moved) => moved,
+                None => texture,
+            };
             sources.push(NativeSourceFrame::new(source, texture));
         }
         self.composition_renderer
             .render(&self.context, &composition, &sources)
             .await
             .map_err(NativeSourceRenderError::SceneCompositor)
+    }
+
+    /// One overlay layer moved by its motion transition (SW-005): the layer
+    /// is placed alone over transparency at its position and border, and
+    /// the compositor transition runs from transparency to it (entering) or
+    /// from it to transparency (leaving) at the motion's exact progress.
+    async fn render_overlay_motion(
+        &self,
+        project: &NativeProjectPlan,
+        overlay: &NativeProgramOverlay,
+        motion: fm_switcher::OverlayMotion,
+        texture: &NativeTexture,
+    ) -> Result<NativeTexture, NativeSourceRenderError> {
+        let kind =
+            overlay_motion_kind(motion.kind).ok_or(NativeSourceRenderError::ResourceBounds)?;
+        let transform = overlay_transform(project.dimensions, overlay.position)
+            .ok_or(NativeSourceRenderError::ResourceBounds)?;
+        let border_width = overlay_border_width(overlay.border, transform);
+        let isolated = |opacity| -> Result<CompositionPlan, NativeSourceRenderError> {
+            let mut scene = CompositorScene::new(
+                project.dimensions.width(),
+                project.dimensions.height(),
+                CompositorRgba8::new(0, 0, 0, 0),
+            )
+            .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+            scene.push_layer(
+                SourceLayer::new(SourceId::new(1), 0, transform)
+                    .with_opacity(opacity)
+                    .with_inset_border(border_width),
+            );
+            compile_scene(&scene, OutputTarget::Program)
+                .map(|(composition, _)| composition)
+                .map_err(|_| NativeSourceRenderError::ResourceBounds)
+        };
+        let layer_source = [NativeSourceFrame::new(SourceId::new(1), texture)];
+        let layer = self
+            .composition_renderer
+            .render(&self.context, &isolated(u8::MAX)?, &layer_source)
+            .await
+            .map_err(NativeSourceRenderError::SceneCompositor)?;
+        let transparent = self
+            .composition_renderer
+            .render(&self.context, &isolated(0)?, &layer_source)
+            .await
+            .map_err(NativeSourceRenderError::SceneCompositor)?;
+        let plan = TransitionPlan::compile(kind, motion.numerator, motion.denominator)
+            .map_err(NativeSourceRenderError::InvalidMix)?;
+        let (from, to) = if motion.entering {
+            (&transparent, &layer)
+        } else {
+            (&layer, &transparent)
+        };
+        self.renderer
+            .render(&self.context, plan, from, to)
+            .await
+            .map_err(NativeSourceRenderError::Compositor)
     }
 
     /// Synchronous daemon wrapper for one authoritative program render.
@@ -8433,6 +8557,7 @@ mod tests {
                 opacity: u8::MAX,
                 position: OverlayPositionPreset::FullFrame,
                 border: OverlayBorderPreset::None,
+                motion: None,
             }]
         );
     }
@@ -12703,6 +12828,118 @@ mod tests {
             (graded[0] - graded[1]).abs() < 0.02 && (graded[1] - graded[2]).abs() < 0.02,
             "grey scene {graded:?}"
         );
+    }
+
+    /// SW-005: an overlay motion transition moves the layer over Program at
+    /// the switcher's exact progress, entering from transparency and leaving
+    /// to it, and settles to the plain overlay. Skips where no native
+    /// adapter exists unless `FM_REQUIRE_NATIVE_MEDIA=1`.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn native_project_overlay_motion_wipes_the_layer_in_and_out_over_program() {
+        #[cfg(target_os = "macos")]
+        const BACKEND: NativeBackend = NativeBackend::Metal;
+        #[cfg(target_os = "windows")]
+        const BACKEND: NativeBackend = NativeBackend::Dx12;
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        const BACKEND: NativeBackend = NativeBackend::Vulkan;
+        let runtime = match NativeMediaRuntime::new_blocking([BACKEND]) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                assert!(
+                    std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                    "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+                );
+                eprintln!("skipping: no native adapter ({error})");
+                return;
+            }
+        };
+        let clock_domain = ClockDomainId::new(NonZeroU128::new(81).unwrap());
+        let program = input(1);
+        let preview = input(2);
+        let overlay = input(3);
+        let playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                [
+                    NativeResolvedSource::RetainedFrame {
+                        input: program,
+                        frame: colored_retained_frame(clock_domain, [255, 0, 0, 255]),
+                    },
+                    NativeResolvedSource::RetainedFrame {
+                        input: preview,
+                        frame: colored_retained_frame(clock_domain, [0, 255, 0, 255]),
+                    },
+                    NativeResolvedSource::RetainedFrame {
+                        input: overlay,
+                        frame: colored_retained_frame(clock_domain, [0, 0, 255, 255]),
+                    },
+                ],
+                clock_domain,
+                StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let shown = output(10);
+        let mut project = native_plan_project(8, 2);
+        for source in [program, preview, overlay] {
+            add_leaf(&mut project, source);
+        }
+        add_output(&mut project, shown);
+        let project = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let channel = fm_switcher::OverlayChannelId::new(1).unwrap();
+        let mut switcher =
+            SwitcherState::new(vec![program, preview, overlay], program, preview).unwrap();
+        let _ = switcher
+            .configure_overlay_transition(channel, fm_switcher::OverlayTransitionKind::Wipe, 4)
+            .unwrap();
+        let _ = switcher.set_overlay_output_inclusion(channel, shown, true);
+        // Blue columns of the composed output's first row: red is Program,
+        // blue the overlay.
+        let blue_columns = |switcher: &SwitcherState| {
+            let mut frame = frame_result(0, program, None);
+            frame.overlays = switcher.overlays().clone();
+            let outputs = runtime
+                .render_project_outputs_with_stingers_blocking(
+                    playback.registry(),
+                    playback.registry(),
+                    &project,
+                    &frame,
+                )
+                .unwrap();
+            let readback = block_on(runtime.diagnostic_readback(outputs[0].texture())).unwrap();
+            (0..8)
+                .map(|x| {
+                    let pixel = rgba16f_components(&readback.bytes[x * 8..]);
+                    assert!((pixel[3] - 1.0).abs() < 1.0e-3, "opaque output {pixel:?}");
+                    if pixel[2] > 0.5 && pixel[0] < 0.5 {
+                        'B'
+                    } else {
+                        assert!(pixel[0] > 0.5 && pixel[2] < 0.5, "red or blue {pixel:?}");
+                        'R'
+                    }
+                })
+                .collect::<String>()
+        };
+        let _ = switcher.request_overlay_take(channel, overlay).unwrap();
+        let motion = switcher.overlay(channel).motion().unwrap();
+        assert!(motion.entering);
+        assert_eq!((motion.numerator, motion.denominator), (0, 4));
+        assert_eq!(blue_columns(&switcher), "RRRRRRRR");
+        let _ = switcher.advance_frame_events();
+        assert_eq!(blue_columns(&switcher), "BBRRRRRR");
+        let _ = switcher.advance_frame_events();
+        assert_eq!(blue_columns(&switcher), "BBBBRRRR");
+        let _ = switcher.advance_frame_events();
+        let _ = switcher.advance_frame_events();
+        assert_eq!(switcher.overlay(channel).motion(), None);
+        assert_eq!(blue_columns(&switcher), "BBBBBBBB");
+        // Leaving wipes Program back in from the left.
+        let _ = switcher.request_overlay_off(channel);
+        let _ = switcher.advance_frame_events();
+        let motion = switcher.overlay(channel).motion().unwrap();
+        assert!(!motion.entering);
+        assert_eq!(blue_columns(&switcher), "RRBBBBBB");
     }
 
     #[cfg(target_os = "macos")]

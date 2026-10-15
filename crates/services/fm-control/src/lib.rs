@@ -22,11 +22,16 @@ mod playlist;
 mod scene_animation;
 mod title_animation;
 mod title_layout;
+mod transition;
 pub use scene_animation::{
     scene_clip_fits_wire, scene_clip_from_wire, scene_clip_to_wire, scene_layout_to_wire,
 };
 pub use title_animation::{title_clip_fits_wire, title_clip_from_wire, title_clip_to_wire};
 pub use title_layout::title_layout_to_wire;
+pub use transition::{
+    domain_effect, domain_overlay_transition, domain_transition_kind, wire_favorite,
+    wire_overlay_transition,
+};
 
 pub use automation::{
     ArmTimeAuthority, AuthorityResolver, AutomationBinding, AutomationError, AutomationIdentity,
@@ -51,9 +56,8 @@ use fm_protocol::{
     FadeToBlackState, FieldIssue, GradeStateMessage, InputAudioStripStatus, InputStatus,
     LiveInputSource, ManualTransitionKind, ManualTransitionPosition, ManualTransitionState,
     ManualTransitionStatus, OutputStatus, OverlayBorderPreset as ProtocolOverlayBorder,
-    OverlayPositionPreset as ProtocolOverlayPosition, OverlayStatus,
-    OverlayTransitionKind as ProtocolOverlayTransition, PlaylistStateMessage, RecordingStatus,
-    RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
+    OverlayPositionPreset as ProtocolOverlayPosition, OverlayStatus, PlaylistStateMessage,
+    RecordingStatus, RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage,
     StingerAudioPolicy as ProtocolStingerAudioPolicy,
     StingerMissingMediaFallback as ProtocolStingerFallback, StingerReadiness, StingerStatus,
     StreamRealizedState, StreamStatus, TitleAirRequirement, TitleAnimationStateMessage,
@@ -389,7 +393,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
         let overlay = engine.show().desired_switcher().overlay(channel);
         match overlay.transition() {
             SwitcherOverlayTransition::Cut => 1,
-            SwitcherOverlayTransition::Fade => overlay.duration_frames(),
+            _ => overlay.duration_frames(),
         }
     }
 
@@ -1470,7 +1474,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
-        | EngineCommand::AnimationPreset(_) => "project",
+        | EngineCommand::AnimationPreset(_)
+        | EngineCommand::SetTransitionFavorite { .. } => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         _ => "switcher",
     }
@@ -1494,7 +1499,9 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
 /// Grade edits (input, program, and library grades and LUT imports) change
 /// the project's look like title content, so they are `EditProject` (the
 /// Graphics role), never switching. Title animation edits change a title
-/// template like a field save, so they are `EditProject` too.
+/// template like a field save, so they are `EditProject` too. Assigning a
+/// favourite transition button configures switching like a Stinger slot, so
+/// it is `Transition`.
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
         CommandPayload::SetTitleAnimation { .. }
@@ -1535,6 +1542,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::AlphaFade { .. }
         | CommandPayload::Slide { .. }
         | CommandPayload::Zoom { .. }
+        | CommandPayload::Transition { .. }
+        | CommandPayload::SetTransitionFavorite { .. }
         | CommandPayload::Stinger { .. }
         | CommandPayload::ConfigureStinger { .. }
         | CommandPayload::RemoveStinger { .. }
@@ -1625,6 +1634,16 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         CommandPayload::Zoom { duration_frames } => EngineCommand::Zoom {
             duration_frames: *duration_frames,
         },
+        CommandPayload::Transition {
+            kind,
+            duration_frames,
+        } => EngineCommand::Transition {
+            kind: transition::domain_transition_kind(*kind),
+            duration_frames: *duration_frames,
+        },
+        CommandPayload::SetTransitionFavorite { slot, favorite } => {
+            transition::set_favorite_command(*slot, *favorite)
+        }
         payload @ (CommandPayload::Stinger { .. }
         | CommandPayload::ConfigureStinger { .. }
         | CommandPayload::RemoveStinger { .. }) => stinger_engine_command(payload),
@@ -2013,10 +2032,7 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
             duration_frames,
         } => CommandPayload::ConfigureOverlayTransition {
             channel: wire_overlay_channel(*channel),
-            transition: match transition {
-                SwitcherOverlayTransition::Cut => ProtocolOverlayTransition::Cut,
-                SwitcherOverlayTransition::Fade => ProtocolOverlayTransition::Fade,
-            },
+            transition: transition::wire_overlay_transition(*transition),
             duration_frames: *duration_frames,
         },
         EngineCommand::ConfigureOverlayAppearance {
@@ -2038,6 +2054,12 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
             included: *included,
         },
         EngineCommand::Grade(edit) => grade::wire_grade_payload(edit),
+        EngineCommand::SetTransitionFavorite { slot, favorite } => {
+            CommandPayload::SetTransitionFavorite {
+                slot: *slot,
+                favorite: transition::wire_favorite(*favorite),
+            }
+        }
         EngineCommand::AnimationPreset(edit) => {
             animation_preset::wire_animation_preset_payload(edit)
         }
@@ -2176,10 +2198,7 @@ fn overlay_engine_command(payload: &CommandPayload) -> EngineCommand {
             duration_frames,
         } => EngineCommand::ConfigureOverlayTransition {
             channel: domain_overlay_channel(*channel),
-            transition: match transition {
-                ProtocolOverlayTransition::Cut => SwitcherOverlayTransition::Cut,
-                ProtocolOverlayTransition::Fade => SwitcherOverlayTransition::Fade,
-            },
+            transition: transition::domain_overlay_transition(*transition),
             duration_frames: *duration_frames,
         },
         CommandPayload::ConfigureOverlayAppearance {
@@ -2223,6 +2242,7 @@ const fn is_program_transition(command: &EngineCommand) -> bool {
             | EngineCommand::AlphaFade { .. }
             | EngineCommand::Slide { .. }
             | EngineCommand::Zoom { .. }
+            | EngineCommand::Transition { .. }
             | EngineCommand::Stinger { .. }
             | EngineCommand::Wipe { .. }
             // A playlist operation may take an entry to Program with a
@@ -2337,6 +2357,14 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
         Some(edit)
     }) {
         return grade::grade_changed(engine, edit);
+    }
+    if let Some(slot) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::TransitionFavoriteChanged { slot } = &event.payload else {
+            return None;
+        };
+        Some(*slot)
+    }) {
+        return transition::favorite_changed(engine, slot);
     }
     if let Some(edit) = outcome.events.iter().find_map(|event| {
         let EngineEvent::AnimationPresetsChanged(edit) = &event.payload else {
@@ -2548,6 +2576,7 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
         playlist_follows: playlist::playlist_follows(engine),
         grade_states: grade::grade_state_count(engine),
         animation_preset_states: animation_preset::animation_preset_state_count(engine),
+        transition_favorites: transition::wire_favorites(engine),
     };
     SnapshotRecord {
         cursor: EventCursor {
@@ -2587,10 +2616,7 @@ fn protocol_overlays(overlays: &[OverlayChannelState; 8]) -> Vec<OverlayStatus> 
             source: overlay.source().map(WireInputId::from_domain),
             active: overlay.is_active(),
             opacity: overlay.opacity(),
-            transition: match overlay.transition() {
-                SwitcherOverlayTransition::Cut => ProtocolOverlayTransition::Cut,
-                SwitcherOverlayTransition::Fade => ProtocolOverlayTransition::Fade,
-            },
+            transition: transition::wire_overlay_transition(overlay.transition()),
             duration_frames: overlay.duration_frames(),
             position: protocol_overlay_position(overlay.position()),
             border: protocol_overlay_border(overlay.border()),

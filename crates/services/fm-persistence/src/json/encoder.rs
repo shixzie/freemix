@@ -13,7 +13,7 @@ use fm_types::{
 use crate::{
     CURRENT_SCHEMA_VERSION, FadeToBlackState, IdempotencyReceipt, ManualTransitionKind,
     ManualTransitionState, ReceiptOutcome, RuntimeOverlayBorder, RuntimeOverlayChannel,
-    RuntimeOverlayPosition, RuntimeOverlayTransition, StoredProject,
+    RuntimeOverlayPosition, StoredProject,
 };
 
 pub(crate) fn encode(stored: &StoredProject) -> String {
@@ -113,6 +113,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     write_playlist(output, project.playlist());
     super::grade::write_grading(output, project.grading());
     super::animation_preset::write_animation_presets(output, project.animation_presets());
+    super::transition_favorite::write_transition_favorites(output, project.transition_favorites());
     output.push_str("\n  },");
 }
 
@@ -272,10 +273,7 @@ fn write_overlays(output: &mut String, overlays: &[RuntimeOverlayChannel; 8]) {
             output,
             ", \"active\": {}, \"transition\": \"{}\", \"duration_frames\": {}, \"position\": \"{}\", \"border\": \"{}\", \"queued_sources\": [",
             overlay.active,
-            match overlay.transition {
-                RuntimeOverlayTransition::Cut => "cut",
-                RuntimeOverlayTransition::Fade => "fade",
-            },
+            overlay.transition.token(),
             overlay.duration_frames,
             match overlay.position {
                 RuntimeOverlayPosition::FullFrame => "full_frame",

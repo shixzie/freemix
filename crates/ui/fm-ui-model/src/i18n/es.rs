@@ -666,6 +666,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::ShortcutFadeToBlack, t("Alternar el fundido a negro")),
     (
+        Msg::ShortcutFavorite,
+        t("Lanzar la transición favorita 1 a 4"),
+    ),
+    (
         Msg::ShortcutCancelManual,
         t("Cancelar la transición manual con T-bar activa"),
     ),
@@ -872,6 +876,42 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AutoZoomHover,
         t("Zoom de Previo a Programa con la duración compartida"),
+    ),
+    (Msg::VerticalWipeKey, t("CORTINA V")),
+    (Msg::VerticalSlideKey, t("DESLIZ V")),
+    (Msg::FlyKey, t("VUELO")),
+    (Msg::FlyRotateKey, t("VUELO GIRO")),
+    (Msg::CubeKey, t("CUBO")),
+    (Msg::CubeZoomKey, t("CUBO ZOOM")),
+    (Msg::CrossZoomKey, t("ZOOM CRUZ")),
+    (Msg::MergeKey, t("FUSIÓN")),
+    (Msg::StingerFavoriteKey, t("STING {slot}")),
+    (Msg::MoreTransitionsKey, t("MÁS")),
+    (
+        Msg::MoreTransitionsHover,
+        t("Lanzar otra transición automática con la duración compartida"),
+    ),
+    (
+        Msg::AutoKindHover,
+        t("Lanzar {kind} de Previo a Programa con la duración compartida"),
+    ),
+    (Msg::FavoritesLabel, t("FAVORITAS")),
+    (
+        Msg::FavoriteHover,
+        t("Favorita {slot}: lanzar {effect} ({frames}); clic derecho para asignar"),
+    ),
+    (
+        Msg::FavoriteCutHover,
+        t("Favorita {slot}: corte de Previo a Programa; clic derecho para asignar"),
+    ),
+    (Msg::AssignFavorite, t("Asignar…")),
+    (
+        Msg::AssignFavoriteHover,
+        t("Asignar la favorita {slot} a una transición con la duración compartida ({frames})"),
+    ),
+    (
+        Msg::AssignFavoriteItemHover,
+        t("Hacer que la favorita {slot} lance {effect}"),
     ),
     (
         Msg::DurationHover,
@@ -1169,7 +1209,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::OverlayTransitionHover,
-        t("Alternar este canal de overlay entre corte y fundido"),
+        t(
+            "Recorrer la transición de este canal de overlay (corte, fundido y cada movimiento); clic derecho para elegir",
+        ),
+    ),
+    (
+        Msg::OverlayTransitionPickHover,
+        t("Entrar y salir este canal de overlay con {kind}"),
     ),
     (
         Msg::OverlayPositionHover,

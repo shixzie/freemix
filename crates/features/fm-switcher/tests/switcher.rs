@@ -1176,3 +1176,91 @@ fn construction_rejects_preview_equal_to_program() {
         Err(SwitcherError::PreviewEqualsProgram(input(1)))
     );
 }
+
+#[test]
+fn every_mix_kind_runs_on_exact_frames_and_carries_its_kind() {
+    assert_eq!(TransitionKind::MIXES.len(), 13);
+    for kind in TransitionKind::MIXES {
+        let mut switcher = state();
+        assert!(matches!(
+            switcher
+                .apply(SwitcherCommand::Transition {
+                    kind,
+                    duration_frames: 3,
+                })
+                .unwrap()
+                .as_slice(),
+            [SwitcherEvent::TransitionStarted { kind: started, duration_frames: 3, .. }]
+                if *started == kind
+        ));
+        for (start, end) in [(0, 1), (1, 2), (2, 3)] {
+            let frame = switcher.program_frame();
+            assert_eq!(frame.transition_kind, Some(kind));
+            assert_eq!((frame.primary, frame.secondary), (input(1), Some(input(2))));
+            assert_eq!(
+                (frame.mix_start_numerator, frame.mix_end_numerator),
+                (start, end)
+            );
+            let _ = switcher.advance_frame_events();
+        }
+        let endpoint = switcher.program_frame();
+        assert_eq!((endpoint.primary, endpoint.secondary), (input(2), None));
+        assert_eq!(switcher.preview(), input(1), "{kind:?}");
+    }
+}
+
+#[test]
+fn overlay_motion_kinds_keep_the_layer_opaque_and_report_exact_progress() {
+    let channel = OverlayChannelId::new(1).unwrap();
+    let motions = OverlayTransitionKind::ALL
+        .into_iter()
+        .filter(|kind| kind.is_motion())
+        .collect::<Vec<_>>();
+    assert_eq!(motions.len(), 11);
+    for kind in motions {
+        let mut switcher = state();
+        let _ = switcher
+            .configure_overlay_transition(channel, kind, 4)
+            .unwrap();
+        let _ = switcher.request_overlay_take(channel, input(3)).unwrap();
+        for elapsed in 0..4 {
+            let overlay = switcher.overlay(channel);
+            assert!(overlay.is_active());
+            assert_eq!(overlay.opacity(), u8::MAX, "{kind:?} stays opaque");
+            assert_eq!(
+                overlay.motion(),
+                Some(fm_switcher::OverlayMotion {
+                    kind,
+                    entering: true,
+                    numerator: elapsed,
+                    denominator: 4,
+                })
+            );
+            assert!(switcher.overlays_in_motion());
+            let _ = switcher.advance_frame_events();
+        }
+        assert_eq!(switcher.overlay(channel).motion(), None);
+        assert!(switcher.overlay(channel).is_active());
+        assert!(!switcher.overlays_in_motion());
+
+        let _ = switcher.request_overlay_off(channel);
+        let mut leaving = Vec::new();
+        while let Some(motion) = switcher.overlay(channel).motion() {
+            assert!(!motion.entering);
+            assert!(switcher.overlay(channel).is_active());
+            assert_eq!(switcher.overlay(channel).opacity(), u8::MAX);
+            leaving.push(motion.numerator);
+            let _ = switcher.advance_frame_events();
+        }
+        assert_eq!(leaving, [0, 1, 2, 3], "{kind:?}");
+        assert!(!switcher.overlay(channel).is_active());
+    }
+    // Fade stays an opacity ramp, not a motion.
+    let mut switcher = state();
+    let _ = switcher
+        .configure_overlay_transition(channel, OverlayTransitionKind::Fade, 4)
+        .unwrap();
+    let _ = switcher.request_overlay_take(channel, input(3)).unwrap();
+    assert_eq!(switcher.overlay(channel).motion(), None);
+    assert!(switcher.overlay(channel).opacity() < u8::MAX);
+}

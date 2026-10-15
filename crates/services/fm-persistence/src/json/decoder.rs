@@ -72,6 +72,7 @@ struct ProjectDto {
     playlist: Playlist,
     grading: ProjectGrading,
     animation_presets: fm_model::AnimationPresetLibrary,
+    transition_favorites: fm_model::TransitionFavorites,
 }
 
 struct EditLocks {
@@ -112,6 +113,9 @@ impl ProjectDto {
             playlist: parse_playlist(object.take("playlist")?)?,
             grading: super::grade::parse_grading(&mut object)?,
             animation_presets: super::animation_preset::parse_animation_presets(&mut object)?,
+            transition_favorites: super::transition_favorite::parse_transition_favorites(
+                &mut object,
+            )?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -188,6 +192,7 @@ impl ProjectDto {
         // Preset ids, names, and the library bound are reported by project
         // validation.
         project.set_animation_presets(self.animation_presets);
+        project.set_transition_favorites(self.transition_favorites);
         project
     }
 }
@@ -983,11 +988,9 @@ fn parse_overlay_channels(value: Value) -> Result<[RuntimeOverlayChannel; 8], De
         let mut object = Object::new(value, "overlay channel")?;
         let source = object.optional_input_id("source")?;
         let active = object.boolean("active")?;
-        let transition = match object.string("transition")?.as_str() {
-            "cut" => RuntimeOverlayTransition::Cut,
-            "fade" => RuntimeOverlayTransition::Fade,
-            value => return Err(syntax(format!("unknown overlay transition `{value}`"))),
-        };
+        let transition = object.string("transition")?;
+        let transition = RuntimeOverlayTransition::from_token(&transition)
+            .ok_or_else(|| syntax(format!("unknown overlay transition `{transition}`")))?;
         let duration_frames = object.u32("duration_frames")?;
         let position = match object.string("position")?.as_str() {
             "full_frame" => RuntimeOverlayPosition::FullFrame,

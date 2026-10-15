@@ -113,6 +113,23 @@ impl FakeRemoteServer {
         Self { address, worker }
     }
 
+    fn start_cube() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            serve_automatic_transition(
+                &listener,
+                fm_protocol::CURRENT_PROTOCOL_VERSION,
+                &CommandPayload::Transition {
+                    kind: fm_protocol::AutoTransitionKind::Cube,
+                    duration_frames: 3,
+                },
+                "remote-cube",
+            );
+        });
+        Self { address, worker }
+    }
+
     fn start_audio_strip() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -742,6 +759,7 @@ fn serve_streams_snapshot_peer(
             playlist_follows: false,
             grade_states: 0,
             animation_preset_states: 0,
+            transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }),
     );
 }
@@ -1298,6 +1316,7 @@ fn write_handshake_version_with_manual(
             playlist_follows: false,
             grade_states: 0,
             animation_preset_states: 0,
+            transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }),
     );
 }
@@ -1380,6 +1399,7 @@ fn write_handshake_version_with_fade_to_black(
             playlist_follows: false,
             grade_states: 0,
             animation_preset_states: 0,
+            transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }),
     );
 }
@@ -1713,6 +1733,23 @@ fn remote_zoom_preserves_duration_and_protocol() {
 }
 
 #[test]
+fn remote_transition_sends_its_kind_and_duration() {
+    let server = FakeRemoteServer::start_cube();
+    let output = invoke(&[
+        "remote-transition",
+        &server.address(),
+        "cube",
+        "3",
+        "--key",
+        "remote-cube",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+}
+
+#[test]
 fn remote_audio_strip_preserves_controls_and_replicated_state() {
     let server = FakeRemoteServer::start_audio_strip();
     let output = invoke(&[
@@ -1989,6 +2026,289 @@ fn local_zoom_settles_and_preserves_idempotency_contract() {
     assert_eq!(stdout(&duplicate), zoom_status);
     assert_eq!(manifest(&context.project), zoom_manifest);
 
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// FNV-1a 64 of a file's bytes, the golden form of a rendered PPM.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+#[test]
+fn transition_kinds_list_every_mix_and_overlay_transition() {
+    let listed = invoke(&["transition-kinds"]);
+    assert_success(&listed);
+    let mixes = "fade alpha-fade wipe vertical-wipe slide vertical-slide zoom fly fly-rotate \
+                 cube cube-zoom cross-zoom merge";
+    let overlays = "cut fade wipe vertical-wipe slide vertical-slide zoom fly fly-rotate cube \
+                    cube-zoom cross-zoom merge";
+    let expected = mixes
+        .split_whitespace()
+        .map(|kind| format!("mix\t{kind}\n"))
+        .chain(
+            overlays
+                .split_whitespace()
+                .map(|kind| format!("overlay\t{kind}\n")),
+        )
+        .collect::<String>();
+    assert_eq!(stdout(&listed), expected.trim_end());
+}
+
+#[test]
+fn local_transition_by_kind_settles_and_preserves_idempotency_contract() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    for kind in [
+        "vertical-wipe",
+        "vertical-slide",
+        "fly",
+        "fly-rotate",
+        "cube",
+        "cube-zoom",
+        "cross-zoom",
+        "merge",
+    ] {
+        let taken = invoke(&["transition", context.project_path(), kind, "3"]);
+        assert_success(&taken);
+    }
+    // Eight takes swap Program and Preview back to where they started.
+    let cube = invoke(&[
+        "transition",
+        context.project_path(),
+        "cube",
+        "3",
+        "--key",
+        "cube-three",
+        "--expect",
+        "8",
+    ]);
+    assert_success(&cube);
+    let cube_status = stdout(&cube);
+    assert!(
+        cube_status.contains(
+            "revision=9 frame=27 Program(desired=2, realized=2) Preview(desired=1, realized=1)"
+        ),
+        "{cube_status}"
+    );
+    let manifest_after = manifest(&context.project);
+    let duplicate = invoke(&[
+        "transition",
+        context.project_path(),
+        "merge",
+        "99",
+        "--key",
+        "cube-three",
+        "--expect",
+        "8",
+    ]);
+    assert_success(&duplicate);
+    assert_eq!(stdout(&duplicate), cube_status);
+    assert_eq!(manifest(&context.project), manifest_after);
+    assert_failure_contains(
+        &invoke(&["transition", context.project_path(), "spin", "3"]),
+        "spin",
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+#[test]
+fn transition_render_frame_matches_the_golden_for_every_new_kind() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let golden: [(&str, u64); 8] = TRANSITION_FRAME_GOLDENS;
+    let mut measured = Vec::new();
+    for (kind, _) in golden {
+        let rendered = invoke(&[
+            "transition-render-frame",
+            context.project_path(),
+            kind,
+            "1",
+            "3",
+            context.final_image.to_str().unwrap(),
+            "--width",
+            "32",
+            "--height",
+            "18",
+        ]);
+        assert_success(&rendered);
+        assert_eq!(
+            stdout(&rendered),
+            format!(
+                "rendered 32x18 {kind} 1/3 from input 1 to input 2 to {}",
+                context.final_image.display()
+            )
+        );
+        measured.push((kind, fnv1a(&fs::read(&context.final_image).unwrap())));
+    }
+    assert_eq!(measured, golden, "{measured:#x?}");
+    // The endpoints are exactly Program and Preview.
+    for (numerator, image) in [("0", &context.first_image), ("3", &context.second_image)] {
+        assert_success(&invoke(&[
+            "transition-render-frame",
+            context.project_path(),
+            "cube",
+            numerator,
+            "3",
+            image.to_str().unwrap(),
+            "--width",
+            "32",
+            "--height",
+            "18",
+        ]));
+    }
+    assert_success(&invoke(&[
+        "render",
+        context.project_path(),
+        context.final_image.to_str().unwrap(),
+        "--width",
+        "32",
+        "--height",
+        "18",
+    ]));
+    assert_eq!(
+        fs::read(&context.first_image).unwrap(),
+        fs::read(&context.final_image).unwrap()
+    );
+    assert_ne!(
+        fs::read(&context.second_image).unwrap(),
+        fs::read(&context.final_image).unwrap()
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "transition-render-frame",
+            context.project_path(),
+            "cube",
+            "4",
+            "3",
+            context.final_image.to_str().unwrap(),
+        ]),
+        "4/3",
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// FNV-1a 64 of the 32x18 PPM of Program (bars) mixing to Preview at 1/3.
+const TRANSITION_FRAME_GOLDENS: [(&str, u64); 8] = [
+    ("vertical-wipe", 0x451e_8d41_018b_cd15),
+    ("vertical-slide", 0xae8a_e3b9_4802_4d15),
+    ("fly", 0xc5d4_e53f_c9fb_0015),
+    ("fly-rotate", 0x3936_e77b_9e22_eccc),
+    ("cube", 0x513a_fb16_b422_3bea),
+    ("cube-zoom", 0x5af7_242e_28ac_2353),
+    ("cross-zoom", 0x3c1e_fe3c_4b76_e255),
+    ("merge", 0xbc1c_b3ba_5f06_9b39),
+];
+
+#[test]
+fn transition_favourites_list_assign_persist_and_refuse_exactly() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let listed = invoke(&["transition-favorites", context.project_path()]);
+    assert_success(&listed);
+    assert_eq!(
+        stdout(&listed),
+        "1\tfade\t30\n2\twipe\t30\n3\tfly\t30\n4\tcube\t30"
+    );
+    assert_success(&invoke(&[
+        "transition-favorite-set",
+        context.project_path(),
+        "2",
+        "cross-zoom",
+        "12",
+        "--key",
+        "favourite-two",
+        "--expect",
+        "0",
+    ]));
+    assert_success(&invoke(&[
+        "transition-favorite-set",
+        context.project_path(),
+        "4",
+        "stinger-3",
+        "45",
+    ]));
+    assert_success(&invoke(&[
+        "transition-favorite-set",
+        context.project_path(),
+        "1",
+        "cut",
+        "1",
+    ]));
+    let listed = invoke(&["transition-favorites", context.project_path()]);
+    assert_eq!(
+        stdout(&listed),
+        "1\tcut\t1\n2\tcross-zoom\t12\n3\tfly\t30\n4\tstinger-3\t45"
+    );
+    let saved = fs::read_to_string(context.project.join("project.json")).unwrap();
+    assert!(saved.contains(
+        "\"transition_favorites\": [\n      {\"effect\": \"cut\", \"duration_frames\": 1},\n      \
+         {\"effect\": \"cross_zoom\", \"duration_frames\": 12},\n      \
+         {\"effect\": \"fly\", \"duration_frames\": 30},\n      \
+         {\"effect\": \"stinger\", \"slot\": 3, \"duration_frames\": 45}\n    ]"
+    ));
+    let manifest_before = manifest(&context.project);
+    for (slot, effect, frames, expected) in [
+        ("5", "fade", "30", "favourite slot"),
+        ("0", "fade", "30", "favourite slot"),
+        ("1", "spin", "30", "spin"),
+        ("1", "stinger-9", "30", "stinger-9"),
+        ("1", "fade", "0", "favourite transition duration"),
+        ("1", "fade", "3601", "favourite transition duration"),
+    ] {
+        assert_failure_contains(
+            &invoke(&[
+                "transition-favorite-set",
+                context.project_path(),
+                slot,
+                effect,
+                frames,
+            ]),
+            expected,
+        );
+    }
+    assert_eq!(manifest(&context.project), manifest_before);
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+#[test]
+fn overlay_transitions_accept_every_kind_and_show_it_in_status() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let configured = invoke(&[
+        "overlay-transition",
+        context.project_path(),
+        "1",
+        "fly-rotate",
+        "5",
+    ]);
+    assert_success(&configured);
+    assert!(stdout(&configured).contains("Overlays(desired=[1:none:off:opacity=0:fly-rotate@5:"));
+    let taken = invoke(&["overlay-take", context.project_path(), "1", "2"]);
+    assert_success(&taken);
+    // A motion transition keeps the channel opaque and settles over its
+    // duration.
+    assert!(
+        stdout(&taken).contains("Overlays(desired=[1:2:on:opacity=255:fly-rotate@5:"),
+        "{}",
+        stdout(&taken)
+    );
+    assert!(
+        stdout(&taken).contains("realized=[1:2:on:opacity=255:fly-rotate@5:"),
+        "{}",
+        stdout(&taken)
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "overlay-transition",
+            context.project_path(),
+            "1",
+            "spin",
+            "5",
+        ]),
+        "spin",
+    );
     fs::remove_dir_all(context.root).unwrap();
 }
 
@@ -2270,7 +2590,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 34,
+  "schema_version": 35,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -2477,7 +2797,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 34", "\"schema_version\": 33"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 35", "\"schema_version\": 34"),
     )
     .unwrap();
     assert_failure_contains(
@@ -2491,7 +2811,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 33 is unsupported; expected 34",
+        "title template schema 34 is unsupported; expected 35",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -2509,7 +2829,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 34,
+  "schema_version": 35,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -2772,7 +3092,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 34,
+  "schema_version": 35,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -3002,7 +3322,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 34,
+  "schema_version": 35,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -3099,7 +3419,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 34,
+  "schema_version": 35,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -4171,13 +4491,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        34
+        35
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 34);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 35);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -4190,7 +4510,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 34);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 35);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -4266,7 +4586,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        34
+        35
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -4274,7 +4594,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 34);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 35);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -4284,7 +4604,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 34);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 35);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -4292,7 +4612,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 34);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 35);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));

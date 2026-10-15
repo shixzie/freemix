@@ -1291,6 +1291,7 @@ mod tests {
             grade_states: u16::try_from(graded.len()).unwrap()
                 + u16::from(scene.is_some_and(|(graded, _)| graded)),
             animation_preset_states: 0,
+            transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         };
         let mut model = ClientModel::new(project);
         model

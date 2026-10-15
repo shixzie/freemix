@@ -1377,6 +1377,8 @@ impl Client {
             | CommandPayload::AlphaFade { .. }
             | CommandPayload::Slide { .. }
             | CommandPayload::Zoom { .. }
+            | CommandPayload::Transition { .. }
+            | CommandPayload::SetTransitionFavorite { .. }
             | CommandPayload::Stinger { .. }
             | CommandPayload::ConfigureStinger { .. }
             | CommandPayload::RemoveStinger { .. }

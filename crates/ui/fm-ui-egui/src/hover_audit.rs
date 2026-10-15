@@ -280,6 +280,7 @@ fn model(variant: Variant) -> ClientModel {
         playlist_follows: true,
         grade_states: 4,
         animation_preset_states: 0,
+        transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     };
     let mut model = ClientModel::new(project);
     model
@@ -777,11 +778,59 @@ fn scenes(language: Language) -> Vec<Scene> {
         scenes.push(Scene::console(name, shell(open), state));
     }
     scenes.extend(animation_scenes(locale));
+    scenes.extend(transition_menu_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
         shell(&|_| {}),
         StudioUiState::new(StudioConnectionStatus::Backoff),
     ));
+    scenes
+}
+
+/// The right-click menus of the transition column and overlay channels,
+/// which open at the pointer and so are drawn on their own: a favourite's
+/// `Assign…` menu (with Stinger slots) and an overlay channel's transition
+/// picker, each enabled and refused.
+fn transition_menu_scenes(locale: Locale) -> Vec<Scene> {
+    let stingers = [
+        WireStingerSlotId::new(1).unwrap(),
+        WireStingerSlotId::new(3).unwrap(),
+    ];
+    let mut scenes = Vec::new();
+    for (variant, enabled) in [("operator", true), ("viewer", false)] {
+        let reason = Msg::ReasonNoTransition.en();
+        scenes.push(Scene {
+            name: format!("{variant}/favourite-assign"),
+            draw: Box::new(move |ui| {
+                crate::l10n::set_locale(ui.ctx(), locale);
+                let mut intents = Vec::new();
+                crate::transitions::draw_assign_menu(
+                    ui,
+                    (2, 30),
+                    &stingers,
+                    (enabled, reason),
+                    &mut intents,
+                );
+            }),
+        });
+        scenes.push(Scene {
+            name: format!("{variant}/overlay-transition-menu"),
+            draw: Box::new(move |ui| {
+                crate::l10n::set_locale(ui.ctx(), locale);
+                let mut intents = Vec::new();
+                crate::transitions::draw_overlay_transition_menu(
+                    ui,
+                    (
+                        WireOverlayChannelId::new(1).unwrap(),
+                        OverlayTransitionKind::Cube,
+                        30,
+                    ),
+                    (enabled, reason),
+                    &mut intents,
+                );
+            }),
+        });
+    }
     scenes
 }
 

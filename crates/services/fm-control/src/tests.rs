@@ -4952,3 +4952,150 @@ fn animation_preset_library_edits_are_project_edits_with_state_records_and_undo(
     );
     assert_eq!(control.animation_preset_states()[0].entry, entry("Whoosh"));
 }
+
+/// SW-002, Protocol 2.36: every automatic mix is taken by kind with the
+/// Transition class, and the favourite transition buttons are assigned by
+/// an operator, replicated in the snapshot and a `transition_favorite_changed`
+/// event, and undone exactly.
+#[test]
+fn transitions_by_kind_and_favourites_propagate_exactly() {
+    use fm_protocol::{AutoTransitionKind, TransitionFavoriteEffect, TransitionFavoriteStatus};
+
+    let mut control = service(64, 64);
+    for (index, kind) in AutoTransitionKind::ALL.into_iter().enumerate() {
+        let payload = CommandPayload::Transition {
+            kind,
+            duration_frames: 2,
+        };
+        assert_eq!(
+            control.required_classes(&payload).primary(),
+            CommandClass::Transition
+        );
+        let key = format!("take-{index}");
+        let taken = control
+            .submit(&principal(Role::Operator), command(&key, &key, payload), 0)
+            .unwrap();
+        assert!(taken.is_accepted(), "{kind:?}: {:?}", taken.output.result);
+        assert_wire_exact(&control, &taken);
+        let tick = control.tick(&server_identity()).unwrap();
+        assert_eq!(
+            tick.frame.program.transition_kind,
+            Some(transition::domain_transition_kind(kind))
+        );
+        control.tick(&server_identity()).unwrap();
+        control.tick(&server_identity()).unwrap();
+    }
+
+    assert_eq!(
+        control.snapshot().snapshot.transition_favorites,
+        TransitionFavoriteStatus::defaults()
+    );
+    let favorite = TransitionFavoriteStatus {
+        effect: TransitionFavoriteEffect::Stinger(WireStingerSlotId::new(2).unwrap()),
+        duration_frames: 45,
+    };
+    let assign = CommandPayload::SetTransitionFavorite { slot: 2, favorite };
+    assert_eq!(
+        control.required_classes(&assign).primary(),
+        CommandClass::Transition
+    );
+    let denied = control
+        .submit(
+            &principal(Role::Viewer),
+            command("v", "v", assign.clone()),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    let assigned = control
+        .submit(&principal(Role::Operator), command("f", "f", assign), 0)
+        .unwrap();
+    assert!(assigned.is_accepted(), "{:?}", assigned.output.result);
+    assert_eq!(
+        assigned.output.events[0].payload,
+        EventPayload::TransitionFavoriteChanged { slot: 2, favorite }
+    );
+    assert_wire_exact(&control, &assigned);
+    assert_eq!(
+        control.snapshot().snapshot.transition_favorites[1],
+        favorite
+    );
+
+    // Undoing it needs both edit and switching rights.
+    let undone = control
+        .submit(
+            &principal(Role::Admin),
+            command(
+                "u",
+                "u",
+                CommandPayload::Undo {
+                    expected_edit: None,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    assert_eq!(
+        undone.output.events[0].payload,
+        EventPayload::TransitionFavoriteChanged {
+            slot: 2,
+            favorite: TransitionFavoriteStatus::defaults()[1],
+        }
+    );
+    assert_eq!(
+        control.snapshot().snapshot.transition_favorites,
+        TransitionFavoriteStatus::defaults()
+    );
+}
+
+/// SW-005, Protocol 2.36: an overlay channel configured with a motion
+/// transition replicates it and takes the configured frames to go on air.
+#[test]
+fn overlay_motion_transitions_replicate_and_take_their_duration() {
+    use fm_protocol::{OverlayTransitionKind, WireOverlayChannelId};
+
+    let mut control = service(64, 64);
+    let channel = WireOverlayChannelId::new(5).unwrap();
+    let configured = control
+        .submit(
+            &principal(Role::Operator),
+            command(
+                "c",
+                "c",
+                CommandPayload::ConfigureOverlayTransition {
+                    channel,
+                    transition: OverlayTransitionKind::CubeZoom,
+                    duration_frames: 7,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert!(configured.is_accepted(), "{:?}", configured.output.result);
+    assert_wire_exact(&control, &configured);
+    assert_eq!(
+        control.snapshot().snapshot.desired_overlays[4].transition,
+        OverlayTransitionKind::CubeZoom
+    );
+    let prepared = prepared(
+        control
+            .prepare_submit(
+                &principal(Role::Operator),
+                command(
+                    "t",
+                    "t",
+                    CommandPayload::TakeOverlay {
+                        channel,
+                        source: WireInputId::from_domain(input(3)),
+                    },
+                ),
+                0,
+            )
+            .unwrap(),
+    );
+    assert_eq!(
+        prepared.overlay_transition_ticks(fm_switcher::OverlayChannelId::new(5).unwrap()),
+        7
+    );
+}

@@ -6,6 +6,7 @@ mod layout;
 mod playlist;
 mod scene_layout;
 mod title;
+mod transition;
 mod value;
 
 pub use animation::{motion_wire_bytes, scene_clip_wire_bytes, title_clip_wire_bytes};

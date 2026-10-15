@@ -2,7 +2,8 @@ use crate::{PipelineConfigError, RegistryError, RenderError, SimulatedSource, So
 use fm_switcher::{ProgramFrame, TransitionKind};
 use fm_types::InputId;
 use fm_video::{
-    BlendError, FrameError, ImageFrame, crossfade, render_test_signal_rgba8, solid_color,
+    FrameError, ImageFrame, TransitionShape, crossfade, render_test_signal_rgba8,
+    render_transition, solid_color,
 };
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -143,25 +144,16 @@ impl SimulatedPipeline {
                 program.mix_numerator,
                 program.mix_denominator,
             )?),
-            Some(TransitionKind::Wipe) => Ok(horizontal_wipe(
-                &primary,
-                &secondary,
-                program.mix_numerator,
-                program.mix_denominator,
-            )?),
-            Some(TransitionKind::Slide) => Ok(horizontal_slide(
-                &primary,
-                &secondary,
-                program.mix_numerator,
-                program.mix_denominator,
-            )?),
-            Some(TransitionKind::Zoom) => Ok(centered_zoom(
-                &primary,
-                &secondary,
-                program.mix_numerator,
-                program.mix_denominator,
-            )?),
-            Some(kind) => Err(RenderError::UnsupportedTransition(kind)),
+            Some(kind) => match shape(kind) {
+                Some(shape) => Ok(render_transition(
+                    shape,
+                    &primary,
+                    &secondary,
+                    program.mix_numerator,
+                    program.mix_denominator,
+                )?),
+                None => Err(RenderError::UnsupportedTransition(kind)),
+            },
             None => Err(RenderError::MissingTransitionKind),
         }
     }
@@ -202,152 +194,23 @@ impl SimulatedPipeline {
     }
 }
 
-fn horizontal_wipe(
-    from: &ImageFrame,
-    to: &ImageFrame,
-    numerator: u32,
-    denominator: u32,
-) -> Result<ImageFrame, BlendError> {
-    if denominator == 0 {
-        return Err(BlendError::ZeroDenominator);
-    }
-    if numerator > denominator {
-        return Err(BlendError::NumeratorExceedsDenominator {
-            numerator,
-            denominator,
-        });
-    }
-    if numerator == 0 {
-        return Ok(from.clone());
-    }
-    if numerator == denominator {
-        return Ok(to.clone());
-    }
-
-    let boundary = u64::from(from.width()) * u64::from(numerator) / u64::from(denominator);
-    let boundary_bytes = usize::try_from(boundary)
-        .map_err(|_| BlendError::Frame(FrameError::LayoutOverflow))?
-        .checked_mul(4)
-        .ok_or(BlendError::Frame(FrameError::LayoutOverflow))?;
-    let mut pixels = from.pixels().to_vec();
-    for (output_row, to_row) in pixels
-        .chunks_exact_mut(from.stride())
-        .zip(to.pixels().chunks_exact(to.stride()))
-    {
-        output_row[..boundary_bytes].copy_from_slice(&to_row[..boundary_bytes]);
-    }
-    ImageFrame::new(from.width(), from.height(), from.stride(), pixels).map_err(BlendError::Frame)
-}
-
-fn horizontal_slide(
-    from: &ImageFrame,
-    to: &ImageFrame,
-    numerator: u32,
-    denominator: u32,
-) -> Result<ImageFrame, BlendError> {
-    if denominator == 0 {
-        return Err(BlendError::ZeroDenominator);
-    }
-    if numerator > denominator {
-        return Err(BlendError::NumeratorExceedsDenominator {
-            numerator,
-            denominator,
-        });
-    }
-    if numerator == 0 {
-        return Ok(from.clone());
-    }
-    if numerator == denominator {
-        return Ok(to.clone());
-    }
-
-    let offset = u64::from(from.width()) * u64::from(numerator) / u64::from(denominator);
-    let offset_bytes = usize::try_from(offset)
-        .map_err(|_| BlendError::Frame(FrameError::LayoutOverflow))?
-        .checked_mul(4)
-        .ok_or(BlendError::Frame(FrameError::LayoutOverflow))?;
-    let row_bytes = usize::try_from(from.width())
-        .map_err(|_| BlendError::Frame(FrameError::LayoutOverflow))?
-        .checked_mul(4)
-        .ok_or(BlendError::Frame(FrameError::LayoutOverflow))?;
-    let remaining_bytes = row_bytes - offset_bytes;
-    let mut pixels = from.pixels().to_vec();
-    for ((output_row, from_row), to_row) in pixels
-        .chunks_exact_mut(from.stride())
-        .zip(from.pixels().chunks_exact(from.stride()))
-        .zip(to.pixels().chunks_exact(to.stride()))
-    {
-        output_row[..remaining_bytes].copy_from_slice(&from_row[offset_bytes..row_bytes]);
-        output_row[remaining_bytes..row_bytes].copy_from_slice(&to_row[..offset_bytes]);
-    }
-    ImageFrame::new(from.width(), from.height(), from.stride(), pixels).map_err(BlendError::Frame)
-}
-
-fn centered_zoom(
-    from: &ImageFrame,
-    to: &ImageFrame,
-    numerator: u32,
-    denominator: u32,
-) -> Result<ImageFrame, BlendError> {
-    if denominator == 0 {
-        return Err(BlendError::ZeroDenominator);
-    }
-    if numerator > denominator {
-        return Err(BlendError::NumeratorExceedsDenominator {
-            numerator,
-            denominator,
-        });
-    }
-    if numerator == 0 {
-        return Ok(from.clone());
-    }
-    if numerator == denominator {
-        return Ok(to.clone());
-    }
-
-    let width = scaled_extent(from.width(), numerator, denominator);
-    let height = scaled_extent(from.height(), numerator, denominator);
-    if width == 0 || height == 0 {
-        return Ok(from.clone());
-    }
-    let left = (from.width() - width) / 2;
-    let top = (from.height() - height) / 2;
-    let mut pixels = from.pixels().to_vec();
-    for output_y in 0..height {
-        let source_y =
-            usize::try_from(u64::from(output_y) * u64::from(to.height()) / u64::from(height))
-                .map_err(|_| BlendError::Frame(FrameError::LayoutOverflow))?;
-        let output_y = usize::try_from(top + output_y)
-            .map_err(|_| BlendError::Frame(FrameError::LayoutOverflow))?;
-        let output_row = output_y
-            .checked_mul(from.stride())
-            .ok_or(BlendError::Frame(FrameError::LayoutOverflow))?;
-        let source_row = source_y
-            .checked_mul(to.stride())
-            .ok_or(BlendError::Frame(FrameError::LayoutOverflow))?;
-        for output_x in 0..width {
-            let source_x =
-                usize::try_from(u64::from(output_x) * u64::from(to.width()) / u64::from(width))
-                    .map_err(|_| BlendError::Frame(FrameError::LayoutOverflow))?
-                    .checked_mul(4)
-                    .ok_or(BlendError::Frame(FrameError::LayoutOverflow))?;
-            let output_x = usize::try_from(left + output_x)
-                .map_err(|_| BlendError::Frame(FrameError::LayoutOverflow))?
-                .checked_mul(4)
-                .ok_or(BlendError::Frame(FrameError::LayoutOverflow))?;
-            let output = output_row
-                .checked_add(output_x)
-                .ok_or(BlendError::Frame(FrameError::LayoutOverflow))?;
-            let source = source_row
-                .checked_add(source_x)
-                .ok_or(BlendError::Frame(FrameError::LayoutOverflow))?;
-            pixels[output..output + 4].copy_from_slice(&to.pixels()[source..source + 4]);
+/// The `fm-video` reference shape behind a geometric switcher mix; `None`
+/// for Fade, `AlphaFade`, and Stinger, which are not shapes.
+const fn shape(kind: TransitionKind) -> Option<TransitionShape> {
+    Some(match kind {
+        TransitionKind::Wipe => TransitionShape::Wipe,
+        TransitionKind::VerticalWipe => TransitionShape::VerticalWipe,
+        TransitionKind::Slide => TransitionShape::Slide,
+        TransitionKind::VerticalSlide => TransitionShape::VerticalSlide,
+        TransitionKind::Zoom => TransitionShape::Zoom,
+        TransitionKind::Fly => TransitionShape::Fly,
+        TransitionKind::FlyRotate => TransitionShape::FlyRotate,
+        TransitionKind::Cube => TransitionShape::Cube,
+        TransitionKind::CubeZoom => TransitionShape::CubeZoom,
+        TransitionKind::CrossZoom => TransitionShape::CrossZoom,
+        TransitionKind::Merge => TransitionShape::Merge,
+        TransitionKind::Fade | TransitionKind::AlphaFade | TransitionKind::Stinger(_) => {
+            return None;
         }
-    }
-    ImageFrame::new(from.width(), from.height(), from.stride(), pixels).map_err(BlendError::Frame)
-}
-
-fn scaled_extent(size: u32, numerator: u32, denominator: u32) -> u32 {
-    let extent = u64::from(size) * u64::from(numerator) / u64::from(denominator);
-    u32::try_from(extent).expect("scaled extent cannot exceed its source dimension")
+    })
 }

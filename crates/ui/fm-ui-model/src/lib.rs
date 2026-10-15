@@ -26,6 +26,7 @@ use fm_protocol::{
     StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
     TitleFieldUpdate, TitlePhase, TitleStateMessage, WireRecorderSlot,
 };
+pub use fm_protocol::{TRANSITION_FAVORITE_COUNT, TransitionFavoriteStatus};
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId, SceneId};
 
 pub use animation_presets::AnimationPresetsStatus;
@@ -424,6 +425,8 @@ pub struct ProjectSnapshot {
     /// How many `animation_preset_state` records complete this snapshot
     /// (Protocol 2.34).
     pub animation_preset_states: u16,
+    /// The favourite transition buttons, slot 1 first (Protocol 2.36).
+    pub transition_favorites: [TransitionFavoriteStatus; TRANSITION_FAVORITE_COUNT],
 }
 
 impl ProjectSnapshot {
@@ -504,6 +507,7 @@ impl ProjectSnapshot {
             playlist_follows: message.playlist_follows,
             grade_states: message.grade_states,
             animation_preset_states: message.animation_preset_states,
+            transition_favorites: message.transition_favorites,
         }
     }
 }
@@ -587,6 +591,12 @@ pub enum DurableChange {
     },
     /// One accepted animation preset library edit (Protocol 2.34).
     AnimationPresetChanged(AnimationPresetChange),
+    /// One favourite transition button after an assignment, undo, or redo
+    /// (Protocol 2.36).
+    TransitionFavoriteChanged {
+        slot: u8,
+        favorite: TransitionFavoriteStatus,
+    },
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -729,6 +739,9 @@ impl DurableProjectEvent {
                 },
             },
             EventPayload::GradeChanged(change) => DurableChange::GradeChanged(change),
+            EventPayload::TransitionFavoriteChanged { slot, favorite } => {
+                DurableChange::TransitionFavoriteChanged { slot, favorite }
+            }
             EventPayload::AnimationPresetChanged(change) => {
                 DurableChange::AnimationPresetChanged(change)
             }
@@ -826,6 +839,7 @@ pub struct ProjectState {
     /// `animation_preset_state` records the snapshot announced that have
     /// not arrived.
     animation_preset_states_pending: u16,
+    transition_favorites: [TransitionFavoriteStatus; TRANSITION_FAVORITE_COUNT],
 }
 
 impl ProjectState {
@@ -1071,6 +1085,8 @@ pub struct ClientView {
     pub switcher: SwitcherState,
     pub edit_locks: EditLocks,
     pub edit_history: EditHistoryStatus,
+    /// The favourite transition buttons, slot 1 first (Protocol 2.36).
+    pub transition_favorites: [TransitionFavoriteStatus; TRANSITION_FAVORITE_COUNT],
 }
 
 impl ClientView {
@@ -1317,6 +1333,8 @@ pub enum ModelError {
     /// An `animation_preset_changed` does not apply to the replicated
     /// library.
     InvalidAnimationPresetChange,
+    /// A `transition_favorite_changed` names no favourite slot.
+    InvalidTransitionFavorite(u8),
     /// A title change's fields are not the title's field set, or its field
     /// revision went backwards.
     InvalidTitleChange(InputId),
@@ -1440,6 +1458,11 @@ impl fmt::Display for ModelError {
             | Self::AnimationPresetStateMismatch
             | Self::InvalidAnimationPresetChange
             | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
+            Self::InvalidTransitionFavorite(slot) => write!(
+                formatter,
+                "favourite transition change names slot {slot}, not 1 through \
+                 {TRANSITION_FAVORITE_COUNT}"
+            ),
             Self::SceneStateMismatch(input) => write!(
                 formatter,
                 "scene state for input {input} does not match the snapshot it follows"
@@ -1633,6 +1656,7 @@ impl ClientModel {
             switcher,
             edit_locks: state.edit_locks.clone(),
             edit_history: state.edit_history,
+            transition_favorites: state.transition_favorites,
         })
     }
 
@@ -1831,6 +1855,7 @@ impl ClientModel {
             grade_states_pending: snapshot.grade_states,
             animation_presets: AnimationPresetsStatus::default(),
             animation_preset_states_pending: snapshot.animation_preset_states,
+            transition_favorites: snapshot.transition_favorites,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -2955,6 +2980,13 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             target: EditLockTarget::Project,
             ..
         } => return Ok(()),
+        DurableChange::TransitionFavoriteChanged { slot, .. } => {
+            return if (1..=TRANSITION_FAVORITE_COUNT).contains(&usize::from(*slot)) {
+                Ok(())
+            } else {
+                Err(ModelError::InvalidTransitionFavorite(*slot))
+            };
+        }
         DurableChange::EditLockChanged {
             target: EditLockTarget::Input(input),
             ..
@@ -3188,6 +3220,9 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         }
         DurableChange::GradeChanged(change) => state.grading.apply(change),
         DurableChange::AnimationPresetChanged(change) => state.animation_presets.apply(change),
+        DurableChange::TransitionFavoriteChanged { slot, favorite } => {
+            state.transition_favorites[usize::from(slot) - 1] = favorite;
+        }
         DurableChange::TitleAnimationChanged { inputs, animation } => {
             for title in &mut state.titles {
                 if inputs.contains(&title.input) {

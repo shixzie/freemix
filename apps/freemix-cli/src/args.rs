@@ -10,10 +10,34 @@ pub enum ManualTransitionKind {
     Slide,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OverlayTransition {
-    Cut,
-    Fade,
+/// An overlay channel transition: Cut, Fade, or a motion kind (SW-005).
+pub use fm_protocol::OverlayTransitionKind as OverlayTransition;
+/// An automatic Program mix taken by kind (SW-002).
+pub use fm_protocol::{AutoTransitionKind as TransitionKind, TransitionFavoriteEffect};
+
+/// The CLI spelling of a protocol token: words joined by `-`, as every
+/// other CLI choice is (`vertical-wipe`, `stinger-3`).
+#[must_use]
+pub fn cli_token(token: &str) -> String {
+    token.replace('_', "-")
+}
+
+/// The automatic mix a CLI token names.
+pub fn transition_kind(value: &str) -> Result<TransitionKind, ArgsError> {
+    TransitionKind::from_token(&value.replace('-', "_")).ok_or_else(|| ArgsError::InvalidChoice {
+        field: "transition kind",
+        value: value.to_owned(),
+    })
+}
+
+/// The favourite effect a CLI token names: `cut`, a mix, or `stinger-N`.
+pub fn transition_favorite_effect(value: &str) -> Result<TransitionFavoriteEffect, ArgsError> {
+    TransitionFavoriteEffect::from_token(&value.replace('-', "_")).ok_or_else(|| {
+        ArgsError::InvalidChoice {
+            field: "favourite transition",
+            value: value.to_owned(),
+        }
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -565,6 +589,54 @@ pub enum Command {
     },
     Inputs {
         path: PathBuf,
+    },
+    /// Lists the automatic mixes and overlay transitions by CLI token.
+    TransitionKinds,
+    /// Lists the project's favourite transition buttons.
+    TransitionFavorites {
+        path: PathBuf,
+    },
+    /// Takes an automatic mix by kind and settles it.
+    Transition {
+        path: PathBuf,
+        kind: TransitionKind,
+        frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Assigns one favourite transition button.
+    TransitionFavoriteSet {
+        path: PathBuf,
+        slot: u8,
+        effect: TransitionFavoriteEffect,
+        frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Renders Program (from) mixing to Preview (to) at an exact progress.
+    TransitionRenderFrame {
+        path: PathBuf,
+        kind: TransitionKind,
+        numerator: u32,
+        denominator: u32,
+        output: PathBuf,
+        width: u32,
+        height: u32,
+    },
+    RemoteTransition {
+        address: SocketAddr,
+        kind: TransitionKind,
+        frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteTransitionFavoriteSet {
+        address: SocketAddr,
+        slot: u8,
+        effect: TransitionFavoriteEffect,
+        frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
     },
     Outputs {
         path: PathBuf,
@@ -1223,6 +1295,68 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             reject_extra(&mut arguments)?;
             Ok(Command::Inputs { path })
         }
+        "transition-kinds" => {
+            reject_extra(&mut arguments)?;
+            Ok(Command::TransitionKinds)
+        }
+        "transition-favorites" => {
+            let path = required_path(&mut arguments, "project path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::TransitionFavorites { path })
+        }
+        "transition" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let kind = transition_kind(&required(&mut arguments, "transition kind")?)?;
+            let frames = number(&required(&mut arguments, "frames")?, "frames")?;
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::Transition {
+                path,
+                kind,
+                frames,
+                key,
+                expected_revision,
+            })
+        }
+        "remote-transition" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let kind = transition_kind(&required(&mut arguments, "transition kind")?)?;
+            let frames = number(&required(&mut arguments, "frames")?, "frames")?;
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::RemoteTransition {
+                address,
+                kind,
+                frames,
+                key,
+                expected_revision,
+            })
+        }
+        "transition-favorite-set" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let (slot, effect, frames) = favorite_fields(&mut arguments)?;
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::TransitionFavoriteSet {
+                path,
+                slot,
+                effect,
+                frames,
+                key,
+                expected_revision,
+            })
+        }
+        "remote-transition-favorite-set" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let (slot, effect, frames) = favorite_fields(&mut arguments)?;
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::RemoteTransitionFavoriteSet {
+                address,
+                slot,
+                effect,
+                frames,
+                key,
+                expected_revision,
+            })
+        }
+        "transition-render-frame" => parse_transition_render_frame(arguments),
         "outputs" => {
             let path = required_path(&mut arguments, "project path")?;
             reject_extra(&mut arguments)?;
@@ -3963,14 +4097,56 @@ fn manual_kind(value: &str) -> Result<ManualTransitionKind, ArgsError> {
 }
 
 fn overlay_transition(value: &str) -> Result<OverlayTransition, ArgsError> {
-    match value {
-        "cut" => Ok(OverlayTransition::Cut),
-        "fade" => Ok(OverlayTransition::Fade),
-        _ => Err(ArgsError::InvalidChoice {
+    OverlayTransition::from_token(&value.replace('-', "_")).ok_or_else(|| {
+        ArgsError::InvalidChoice {
             field: "overlay transition",
             value: value.to_owned(),
-        }),
+        }
+    })
+}
+
+/// `<slot:1..=4> <effect> <frames>` of a favourite assignment.
+fn favorite_fields(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<(u8, TransitionFavoriteEffect, u32), ArgsError> {
+    let slot: u8 = number(&required(arguments, "favourite slot")?, "favourite slot")?;
+    if !(1..=4).contains(&slot) {
+        return Err(ArgsError::InvalidChoice {
+            field: "favourite slot",
+            value: slot.to_string(),
+        });
     }
+    let effect = transition_favorite_effect(&required(arguments, "favourite transition")?)?;
+    let frames = number(&required(arguments, "frames")?, "frames")?;
+    Ok((slot, effect, frames))
+}
+
+fn parse_transition_render_frame(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let kind = transition_kind(&required(&mut arguments, "transition kind")?)?;
+    let numerator = number(&required(&mut arguments, "numerator")?, "numerator")?;
+    let denominator = number(&required(&mut arguments, "denominator")?, "denominator")?;
+    let output = required_path(&mut arguments, "output path")?;
+    let mut width = 640;
+    let mut height = 360;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--width" => width = number(&required(&mut arguments, "width")?, "width")?,
+            "--height" => height = number(&required(&mut arguments, "height")?, "height")?,
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::TransitionRenderFrame {
+        path,
+        kind,
+        numerator,
+        denominator,
+        output,
+        width,
+        height,
+    })
 }
 
 fn overlay_position(value: &str) -> Result<OverlayPosition, ArgsError> {

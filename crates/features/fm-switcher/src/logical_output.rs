@@ -504,6 +504,8 @@ pub struct OverlayLayer {
     pub opacity: u8,
     pub position: OverlayPositionPreset,
     pub border: OverlayBorderPreset,
+    /// The motion transition moving this layer in this frame, if any.
+    pub motion: Option<crate::OverlayMotion>,
 }
 
 /// Resolved audio for one logical output.
@@ -842,6 +844,7 @@ fn main_overlays(switcher: &SwitcherState) -> Vec<OverlayLayer> {
                 opacity: state.opacity(),
                 position: state.position(),
                 border: state.border(),
+                motion: state.motion(),
             })
         })
         .collect()
@@ -859,6 +862,7 @@ fn mix_overlays(frame: &MixFrame) -> Vec<OverlayLayer> {
                 opacity: u8::MAX,
                 position: OverlayPositionPreset::FullFrame,
                 border: OverlayBorderPreset::None,
+                motion: None,
             })
         })
         .collect()

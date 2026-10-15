@@ -712,6 +712,54 @@ Cut/Fade-duration, position/border, bounded FIFO queue, and simultaneous native
 output-realization slices. Profile-wide hardware acceptance evidence remains,
 so `SW-005` stays planned.
 
+Current implementation boundary for the transition family and favourite
+buttons (`SW-002`, with overlay motion for `SW-005`): `fm-video` owns one CPU
+reference per geometric shape (`render_transition`): left-to-right and
+top-to-bottom wipes, horizontal and vertical pushes, centred Zoom, Fly (Preview
+flies in from the right, growing), Fly-Rotate (Fly with a half turn), Cube (a
+perspective cube turn), Cube-Zoom (the turn pulls back mid-way), Cross-Zoom (a
+zoom-through crossfade), and Merge. Wipes, pushes, and Merge copy whole texels at
+floored integer extents; Zoom samples nearest-neighbour; the projective kinds
+sample bilinearly at 1/256-texel precision, and every shape returns exact
+endpoint clones. Two substitutions are deliberate: Merge is a deterministic
+split-converge (Preview's halves slide in from both sides and meet in the
+centre) rather than any particular vendor's pixel blend, and Cube splits the
+faces at a hard crease instead of drawing the nearer face over the farther, so
+no translucent seam appears at the edge. `fm-compositor` executes the same
+shapes on the CPU and in one native WGSL pass; the lavapipe parity test
+(`native_transitions`) measures at most 1.633/255 maximum and 0.311/255 mean
+absolute error per kind over several progress points (Fly-Rotate's maximum,
+Cross-Zoom's mean) and skips without an adapter unless
+`FM_REQUIRE_NATIVE_MEDIA=1`. `fm-sim` renders every geometric mix through the
+same reference, so the CLI `render` and `transition-render-frame` goldens and
+the simulated daemon match the native compositor's oracle. Protocol 2.36 takes
+any automatic mix by kind (`transition`), and the native daemon maps every mix
+to its compositor kind with a sample-linear audio crossfade. The manual T-bar
+still offers only Fade, Wipe, AlphaFade, and Slide, and playlist entries keep
+their existing kinds.
+
+Overlay channels accept the whole family in and out: Cut and Fade keep their
+opacity semantics, and every motion kind keeps the channel opaque while the
+switcher reports exact `OverlayMotion` progress, starting at zero on the take
+frame. The native daemon draws the layer alone over transparency at its
+position and border, runs the compositor transition from transparency to the
+layer (entering) or back (leaving), and composes the result source-over in
+channel order. Monitor taps and the simulated preview still draw a moving
+overlay at its settled geometry; they do not animate the motion.
+
+Schema 35 persists four operator-assignable favourite transition buttons
+(Cut, any mix, or a Stinger slot, each with a 1–3600 frame duration; Fade,
+Wipe, Fly, and Cube at 30 frames by default). Protocol 2.36 assigns one with
+`transition_favorite_set` (a transition-class, undoable project edit honouring
+the padlock), replicates all four inline in the snapshot, and announces each
+change with `transition_favorite_changed`. Studio shows the four keys under the
+automatic transitions (click or F5–F8 takes one; right-click opens `Assign…`
+at the shared duration), a MORE menu with the eight new mixes, and an overlay
+transition key that cycles the family with a right-click picker; the CLI lists
+kinds and favourites, takes and assigns them locally and remotely, and renders
+any mix at an exact progress. Profile-wide hardware acceptance evidence
+remains, so `SW-002` and `SW-005` stay planned.
+
 Current implementation boundary for item 3: `fm-audio` provides a bounded,
 deterministic planar-F32 sample-delay primitive with immutable channel count and
 exact nonnegative sample delay, transactional block validation, caller-owned
@@ -2422,7 +2470,7 @@ proxy frame, not from the full-resolution graded output; and native
 graded scene previews match the GPU only within the 8-bit CPU and 16-bit
 float GPU pipeline difference, so `SW-019` remains planned. Grades travel
 between
-projects as `.fmgrade` files (schema 34): strict JSON (`kind: "grade"`)
+projects as `.fmgrade` files (schema 35): strict JSON (`kind: "grade"`)
 holding the grade's name and values without its project LUT reference, and
 its LUT by name and strength with the `.cube` text embedded when it is at
 most 32 KiB, otherwise written to a sibling `.cube` file the document names

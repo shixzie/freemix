@@ -150,6 +150,13 @@ pub enum EngineCommand {
     Zoom {
         duration_frames: u32,
     },
+    /// Any automatic mix transition by kind (SW-002): the whole family,
+    /// including the kinds without their own command. A Stinger kind is
+    /// refused; Stingers take [`Self::Stinger`].
+    Transition {
+        kind: TransitionKind,
+        duration_frames: u32,
+    },
     Stinger {
         slot: StingerSlotId,
         duration_frames: u32,
@@ -300,6 +307,13 @@ pub enum EngineCommand {
     /// Edits the animation preset library (see
     /// [`crate::EngineAnimationPresetEdit`]). A project edit.
     AnimationPreset(crate::EngineAnimationPresetEdit),
+    /// Assigns one of the project's favourite transition buttons (SW-002).
+    /// A project edit, undone by restoring the previous favourite.
+    SetTransitionFavorite {
+        /// One-based slot, 1 through [`fm_model::TRANSITION_FAVORITE_COUNT`].
+        slot: u8,
+        favorite: fm_model::TransitionFavorite,
+    },
 }
 
 /// What an accepted title command does on air.
@@ -403,6 +417,12 @@ pub enum EngineEvent {
     /// An animation preset library edit (or its undo or redo) was accepted;
     /// the library afterwards is read from [`ShowState::animation_presets`].
     AnimationPresetsChanged(crate::EngineAnimationPresetEdit),
+    /// A favourite transition button was assigned (or the assignment undone
+    /// or redone); the favourites are read from
+    /// [`ShowState::transition_favorites`].
+    TransitionFavoriteChanged {
+        slot: u8,
+    },
 }
 
 /// Engine-level desired status of one stream target; realization is owned by
@@ -1070,6 +1090,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::TitleAnimation(_))
                 && !matches!(&command, EngineCommand::SceneAnimation(_))
                 && !matches!(&command, EngineCommand::AnimationPreset(_))
+                && !matches!(&command, EngineCommand::SetTransitionFavorite { .. })
                 && !matches!(
                     &command,
                     EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
@@ -1081,14 +1102,7 @@ impl Engine {
                 && !is_overlay_command(&command)
                 && !is_title_command(&command)
             {
-                let name = match kind {
-                    TransitionKind::Fade => "fade",
-                    TransitionKind::AlphaFade => "alpha fade",
-                    TransitionKind::Slide => "slide",
-                    TransitionKind::Zoom => "zoom",
-                    TransitionKind::Wipe => "wipe",
-                    TransitionKind::Stinger(_) => "stinger",
-                };
+                let name = transition_kind_name(kind);
                 return Err(Rejection::new(
                     RejectionCode::Conflict,
                     format!("a {name} transition is already in flight"),
@@ -1556,6 +1570,13 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetTransitionFavorite { slot, favorite } = self.command {
+            state.set_transition_favorite(slot, favorite)?;
+            events.push(EngineEvent::TransitionFavoriteChanged { slot });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::Grade(edit) = self.command {
             crate::grade_edit::apply_show_grade_edit(state, &edit)?;
             events.push(EngineEvent::GradingChanged(edit));
@@ -1706,6 +1727,19 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
                 validate_transition_duration("zoom", *duration_frames)?;
                 SwitcherCommand::Cut
             }
+            EngineCommand::Transition {
+                kind,
+                duration_frames,
+            } => {
+                if matches!(kind, TransitionKind::Stinger(_)) {
+                    return Err(Rejection::new(
+                        RejectionCode::InvalidCommand,
+                        "a Stinger is taken with the stinger command",
+                    ));
+                }
+                validate_transition_duration(transition_kind_name(*kind), *duration_frames)?;
+                SwitcherCommand::Cut
+            }
             EngineCommand::Stinger {
                 slot,
                 duration_frames,
@@ -1808,7 +1842,8 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::SceneAnimation(_)
-            | EngineCommand::AnimationPreset(_) => {
+            | EngineCommand::AnimationPreset(_)
+            | EngineCommand::SetTransitionFavorite { .. } => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
         };
@@ -2151,6 +2186,7 @@ fn apply_runtime(
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::SceneAnimation(_)
             | EngineCommand::AnimationPreset(_)
+            | EngineCommand::SetTransitionFavorite { .. }
     ) {
         return Ok(Vec::new());
     }
@@ -2225,6 +2261,13 @@ fn apply_runtime(
             kind: TransitionKind::Zoom,
             duration_frames,
         },
+        EngineCommand::Transition {
+            kind,
+            duration_frames,
+        } => SwitcherCommand::Transition {
+            kind,
+            duration_frames,
+        },
         EngineCommand::Stinger {
             slot,
             duration_frames,
@@ -2293,7 +2336,8 @@ fn apply_runtime(
         EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
-        | EngineCommand::AnimationPreset(_) => {
+        | EngineCommand::AnimationPreset(_)
+        | EngineCommand::SetTransitionFavorite { .. } => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
     })
@@ -2384,6 +2428,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::AlphaFade { .. } => Some(TransitionKind::AlphaFade),
         EngineCommand::Slide { .. } => Some(TransitionKind::Slide),
         EngineCommand::Zoom { .. } => Some(TransitionKind::Zoom),
+        EngineCommand::Transition { kind, .. } => Some(*kind),
         EngineCommand::Wipe { .. } => Some(TransitionKind::Wipe),
         EngineCommand::Stinger { slot, .. } => stinger_runtime_transition(show, *slot),
         EngineCommand::ConfigureStinger { .. }
@@ -2426,7 +2471,28 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
-        | EngineCommand::AnimationPreset(_) => None,
+        | EngineCommand::AnimationPreset(_)
+        | EngineCommand::SetTransitionFavorite { .. } => None,
+    }
+}
+
+/// The operator-facing lower-case name of a transition kind.
+const fn transition_kind_name(kind: TransitionKind) -> &'static str {
+    match kind {
+        TransitionKind::Fade => "fade",
+        TransitionKind::AlphaFade => "alpha fade",
+        TransitionKind::Slide => "slide",
+        TransitionKind::VerticalSlide => "vertical slide",
+        TransitionKind::Zoom => "zoom",
+        TransitionKind::Wipe => "wipe",
+        TransitionKind::VerticalWipe => "vertical wipe",
+        TransitionKind::Fly => "fly",
+        TransitionKind::FlyRotate => "fly-rotate",
+        TransitionKind::Cube => "cube",
+        TransitionKind::CubeZoom => "cube-zoom",
+        TransitionKind::CrossZoom => "cross-zoom",
+        TransitionKind::Merge => "merge",
+        TransitionKind::Stinger(_) => "stinger",
     }
 }
 

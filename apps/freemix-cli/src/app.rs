@@ -486,6 +486,93 @@ pub fn run(command: Command) -> AppResult<()> {
             let stored = inspect_stored_project(&path)?;
             print_inputs(stored.project());
         }
+        Command::TransitionKinds => print_transition_kinds(),
+        Command::TransitionFavorites { path } => {
+            let stored = inspect_stored_project(&path)?;
+            print_transition_favorites(stored.project());
+        }
+        Command::Transition {
+            path,
+            kind,
+            frames,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::Transition {
+                kind: fm_control::domain_transition_kind(kind),
+                duration_frames: frames,
+            },
+            frames,
+            key,
+            expected_revision,
+        )?,
+        Command::TransitionFavoriteSet {
+            path,
+            slot,
+            effect,
+            frames,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::SetTransitionFavorite {
+                slot,
+                favorite: model_favorite(effect, frames)?,
+            },
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::TransitionRenderFrame {
+            path,
+            kind,
+            numerator,
+            denominator,
+            output,
+            width,
+            height,
+        } => render_transition_frame(
+            &path,
+            kind,
+            (numerator, denominator),
+            &output,
+            (width, height),
+        )?,
+        Command::RemoteTransition {
+            address,
+            kind,
+            frames,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::Transition {
+                kind,
+                duration_frames: frames,
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteTransitionFavoriteSet {
+            address,
+            slot,
+            effect,
+            frames,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::SetTransitionFavorite {
+                slot,
+                favorite: fm_protocol::TransitionFavoriteStatus {
+                    effect,
+                    duration_frames: frames,
+                },
+            },
+            key,
+            expected_revision,
+        )?,
         Command::Outputs { path } => {
             let stored = inspect_stored_project(&path)?;
             print_outputs(stored.project());
@@ -1609,7 +1696,7 @@ fn mutate(
             let overlay = project.engine.show().desired_switcher().overlay(*channel);
             match overlay.transition() {
                 OverlayTransitionKind::Cut => 1,
-                OverlayTransitionKind::Fade => overlay.duration_frames(),
+                _ => overlay.duration_frames(),
             }
         }
         _ => ticks,
@@ -1810,6 +1897,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_input_audio_strips(&mut project, snapshot.show())?;
     sync_stream_running(&mut project, snapshot.show())?;
     sync_recording_desired(&mut project, snapshot.show());
+    project.set_transition_favorites(*snapshot.show().transition_favorites());
     let stored = StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {
@@ -2991,6 +3079,18 @@ fn inspect_engine(path: &Path) -> AppResult<ProjectEngine> {
     restore_project_engine(&inspect_stored_project(path)?)
 }
 
+/// The project-owned state the engine edits: the favourite transition
+/// buttons and the padlocks. The persisted padlock is engine state, so local
+/// engine commands honor it exactly as the daemon does.
+fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppResult<()> {
+    show.restore_transition_favorites(*project.transition_favorites());
+    show.set_project_locked(project.project_locked());
+    for &input in project.locked_inputs() {
+        show.set_input_locked(input, true)?;
+    }
+    Ok(())
+}
+
 fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
     let project = stored.project().clone();
     let inputs = project
@@ -3067,12 +3167,7 @@ fn restore_project_engine(stored: &StoredProject) -> AppResult<ProjectEngine> {
     show.restore_fade_to_black(fade_to_black.desired.target_active);
     realized.restore_settled_fade_to_black(fade_to_black.realized.target_active);
     restore_overlays(&mut show, &mut realized, stored.runtime_overlays())?;
-    // The persisted padlock is engine state, so local engine commands honor
-    // it exactly as the daemon does.
-    show.set_project_locked(project.project_locked());
-    for &input in project.locked_inputs() {
-        show.set_input_locked(input, true)?;
-    }
+    restore_project_edit_state(&mut show, &project)?;
     let position = stored.position();
     let engine = Engine::restore_persisted(
         show,
@@ -3171,10 +3266,10 @@ fn persisted_overlay(channel: &OverlayChannelState) -> RuntimeOverlayChannel {
     RuntimeOverlayChannel {
         source: channel.source(),
         active: channel.is_active(),
-        transition: match channel.transition() {
-            OverlayTransitionKind::Cut => RuntimeOverlayTransition::Cut,
-            OverlayTransitionKind::Fade => RuntimeOverlayTransition::Fade,
-        },
+        transition: RuntimeOverlayTransition::from_token(
+            fm_control::wire_overlay_transition(channel.transition()).token(),
+        )
+        .expect("every overlay transition has a persisted token"),
         duration_frames: channel.duration_frames(),
         position: persisted_overlay_position(channel.position()),
         border: persisted_overlay_border(channel.border()),
@@ -3241,10 +3336,10 @@ fn restore_overlay(
 ) -> AppResult<()> {
     switcher.configure_overlay_transition(
         channel,
-        match state.transition {
-            RuntimeOverlayTransition::Cut => OverlayTransitionKind::Cut,
-            RuntimeOverlayTransition::Fade => OverlayTransitionKind::Fade,
-        },
+        fm_control::domain_overlay_transition(
+            fm_protocol::OverlayTransitionKind::from_token(state.transition.token())
+                .expect("every persisted overlay transition has a wire token"),
+        ),
         state.duration_frames,
     )?;
     let _ = switcher.configure_overlay_appearance(
@@ -3951,10 +4046,9 @@ fn format_overlays(overlays: &[OverlayChannelState; 8]) -> String {
                     .map_or_else(|| "none".to_owned(), |source| source.to_string()),
                 if overlay.is_active() { "on" } else { "off" },
                 overlay.opacity(),
-                match overlay.transition() {
-                    OverlayTransitionKind::Cut => "cut",
-                    OverlayTransitionKind::Fade => "fade",
-                },
+                crate::args::cli_token(
+                    fm_control::wire_overlay_transition(overlay.transition()).token()
+                ),
                 overlay.duration_frames(),
                 overlay_position_name(overlay.position()),
                 overlay_border_name(overlay.border()),
@@ -4189,6 +4283,11 @@ Usage:
   freemix-cli alpha-fade <show.freemix> <frames> [--key <key>] [--expect <revision>]
   freemix-cli slide <show.freemix> <frames> [--key <key>] [--expect <revision>]
   freemix-cli zoom <show.freemix> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli transition-kinds
+  freemix-cli transition <show.freemix> <kind> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli transition-render-frame <show.freemix> <kind> <numerator> <denominator> <program.ppm> [--width <pixels>] [--height <pixels>]
+  freemix-cli transition-favorites <show.freemix>
+  freemix-cli transition-favorite-set <show.freemix> <slot:1..=4> <cut|kind|stinger-N> <frames> [--key <key>] [--expect <revision>]
   freemix-cli stinger <show.freemix> <slot:1..=8> <frames> [--key <key>] [--expect <revision>]
   freemix-cli stinger-configure <show.freemix> <slot:1..=8> <media-input> <true|false> <cut-point-frames> <muted|stinger-only|mix-with-program> <cut|fade|keep-program>
   freemix-cli stinger-remove <show.freemix> <slot:1..=8>
@@ -4196,7 +4295,7 @@ Usage:
   freemix-cli overlay-update <show.freemix> <channel:1..=8> <source-input> [--key <key>] [--expect <revision>]
   freemix-cli overlay-off <show.freemix> <channel:1..=8> [--key <key>] [--expect <revision>]
   freemix-cli overlay-output <show.freemix> <channel:1..=8> <output> <true|false> [--key <key>] [--expect <revision>]
-  freemix-cli overlay-transition <show.freemix> <channel:1..=8> <cut|fade> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli overlay-transition <show.freemix> <channel:1..=8> <cut|fade|kind> <frames> [--key <key>] [--expect <revision>]
   freemix-cli overlay-appearance <show.freemix> <channel:1..=8> <full-frame|top-left|top-right|bottom-left|bottom-right> <none|thin-white|thick-white> [--key <key>] [--expect <revision>]
   freemix-cli overlay-queue <show.freemix> <channel:1..=8> <source-input> [--key <key>] [--expect <revision>]
   freemix-cli overlay-next <show.freemix> <channel:1..=8> [--key <key>] [--expect <revision>]
@@ -4227,6 +4326,8 @@ Usage:
   freemix-cli remote-alpha-fade <127.0.0.1:port> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-slide <127.0.0.1:port> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-zoom <127.0.0.1:port> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli remote-transition <127.0.0.1:port> <kind> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli remote-transition-favorite-set <127.0.0.1:port> <slot:1..=4> <cut|kind|stinger-N> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger <127.0.0.1:port> <slot:1..=8> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger-configure <127.0.0.1:port> <slot:1..=8> <media-input> <true|false> <cut-point-frames> <muted|stinger-only|mix-with-program> <cut|fade|keep-program> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger-remove <127.0.0.1:port> <slot:1..=8> [--key <key>] [--expect <revision>]
@@ -4234,7 +4335,7 @@ Usage:
   freemix-cli remote-overlay-update <127.0.0.1:port> <channel:1..=8> <source-input> [--key <key>] [--expect <revision>]
   freemix-cli remote-overlay-off <127.0.0.1:port> <channel:1..=8> [--key <key>] [--expect <revision>]
   freemix-cli remote-overlay-output <127.0.0.1:port> <channel:1..=8> <output> <true|false> [--key <key>] [--expect <revision>]
-  freemix-cli remote-overlay-transition <127.0.0.1:port> <channel:1..=8> <cut|fade> <frames> [--key <key>] [--expect <revision>]
+  freemix-cli remote-overlay-transition <127.0.0.1:port> <channel:1..=8> <cut|fade|kind> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-overlay-appearance <127.0.0.1:port> <channel:1..=8> <full-frame|top-left|top-right|bottom-left|bottom-right> <none|thin-white|thick-white> [--key <key>] [--expect <revision>]
   freemix-cli remote-overlay-queue <127.0.0.1:port> <channel:1..=8> <source-input> [--key <key>] [--expect <revision>]
   freemix-cli remote-overlay-next <127.0.0.1:port> <channel:1..=8> [--key <key>] [--expect <revision>]
@@ -4280,19 +4381,98 @@ const fn engine_manual_kind(kind: ManualTransitionKind) -> EngineManualTransitio
 }
 
 const fn switcher_overlay_transition(kind: CliOverlayTransition) -> OverlayTransitionKind {
-    match kind {
-        CliOverlayTransition::Cut => OverlayTransitionKind::Cut,
-        CliOverlayTransition::Fade => OverlayTransitionKind::Fade,
-    }
+    fm_control::domain_overlay_transition(kind)
 }
 
 const fn protocol_overlay_transition(
     kind: CliOverlayTransition,
 ) -> fm_protocol::OverlayTransitionKind {
-    match kind {
-        CliOverlayTransition::Cut => fm_protocol::OverlayTransitionKind::Cut,
-        CliOverlayTransition::Fade => fm_protocol::OverlayTransitionKind::Fade,
+    kind
+}
+
+/// The project favourite a CLI assignment names.
+fn model_favorite(
+    effect: fm_protocol::TransitionFavoriteEffect,
+    frames: u32,
+) -> AppResult<fm_model::TransitionFavorite> {
+    fm_model::TransitionFavorite::new(fm_control::domain_effect(effect), frames)
+        .map_err(|error| AppFailure(error.to_string()).into())
+}
+
+/// Prints `transition-kinds`: one `mix` line per automatic mix and one
+/// `overlay` line per overlay channel transition, by CLI token.
+fn print_transition_kinds() {
+    for kind in fm_protocol::AutoTransitionKind::ALL {
+        println!("mix\t{}", crate::args::cli_token(kind.token()));
     }
+    for kind in fm_protocol::OverlayTransitionKind::ALL {
+        println!("overlay\t{}", crate::args::cli_token(kind.token()));
+    }
+}
+
+/// Prints `transition-favorites`: `slot\teffect\tframes` per favourite.
+fn print_transition_favorites(project: &Project) {
+    for (index, favorite) in project.transition_favorites().slots().iter().enumerate() {
+        let favorite = fm_control::wire_favorite(*favorite);
+        println!(
+            "{}\t{}\t{}",
+            index + 1,
+            crate::args::cli_token(&favorite.effect.token()),
+            favorite.duration_frames
+        );
+    }
+}
+
+/// Renders Program mixing to Preview with `kind` at exactly
+/// `numerator/denominator`, through the simulated pipeline's reference
+/// shapes (the same CPU reference the native compositor matches).
+fn render_transition_frame(
+    path: &Path,
+    kind: fm_protocol::AutoTransitionKind,
+    (numerator, denominator): (u32, u32),
+    output: &Path,
+    (width, height): (u32, u32),
+) -> AppResult<()> {
+    let project = inspect_engine(path)?;
+    let realized = project.engine.realized_switcher();
+    let (from, to) = (realized.program(), realized.preview());
+    if [from, to]
+        .into_iter()
+        .any(|input| is_scene_input(&project.project, input))
+    {
+        return Err(AppFailure(
+            "transition-render-frame does not support Scene input endpoints".into(),
+        )
+        .into());
+    }
+    if denominator == 0 || numerator > denominator {
+        return Err(AppFailure(format!(
+            "transition progress {numerator}/{denominator} must be within 0 through 1"
+        ))
+        .into());
+    }
+    let pipeline = simulated_pipeline(&project.project, width, height)?;
+    let frame = pipeline.render(
+        project.engine.frame_cursor().get(),
+        fm_switcher::ProgramFrame {
+            primary: from,
+            secondary: Some(to),
+            transition_kind: Some(fm_control::domain_transition_kind(kind)),
+            mix_numerator: numerator,
+            mix_denominator: denominator,
+            mix_start_numerator: numerator,
+            mix_end_numerator: numerator,
+        },
+    )?;
+    write_ppm_atomic(output, |file| write_ppm(&frame, file))?;
+    println!(
+        "rendered {}x{} {} {numerator}/{denominator} from input {from} to input {to} to {}",
+        width,
+        height,
+        crate::args::cli_token(kind.token()),
+        output.display()
+    );
+    Ok(())
 }
 
 const fn switcher_overlay_position(kind: CliOverlayPosition) -> OverlayPositionPreset {

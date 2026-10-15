@@ -128,7 +128,8 @@ impl EngineCommand {
             | Self::Grade(_)
             | Self::TitleAnimation(_)
             | Self::SceneAnimation(_)
-            | Self::AnimationPreset(_) => EngineCommandKind::ProjectEdit,
+            | Self::AnimationPreset(_)
+            | Self::SetTransitionFavorite { .. } => EngineCommandKind::ProjectEdit,
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }
@@ -138,6 +139,7 @@ impl EngineCommand {
             | Self::AlphaFade { .. }
             | Self::Slide { .. }
             | Self::Zoom { .. }
+            | Self::Transition { .. }
             | Self::Stinger { .. }
             | Self::TakeOverlay { .. }
             | Self::UpdateOverlay { .. }
@@ -661,6 +663,13 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::AnimationPreset(edit) => {
             crate::animation_preset::inverse(state, edit).map(EngineCommand::AnimationPreset)
         }
+        EngineCommand::SetTransitionFavorite { slot, .. } => state
+            .transition_favorites()
+            .get(*slot)
+            .map(|favorite| EngineCommand::SetTransitionFavorite {
+                slot: *slot,
+                favorite,
+            }),
         _ => None,
     }
 }

@@ -310,22 +310,26 @@ fn draw_overlay_details(
             intents.push(StudioIntent::TakeNextOverlay { channel });
         }
         let transition = desired.map_or(OverlayTransitionKind::Cut, |overlay| overlay.transition);
-        if ui
+        let response = ui
             .add_enabled(
                 enabled,
-                small_button(l.text(match transition {
-                    OverlayTransitionKind::Cut => Msg::CutKey,
-                    OverlayTransitionKind::Fade => Msg::FadeKey,
-                })),
+                small_button(l.text(crate::transitions::overlay_label(transition))),
             )
-            .hint(l.text(Msg::OverlayTransitionHover), reason)
-            .clicked()
-        {
-            intents.push(StudioIntent::ToggleOverlayTransition {
+            .hint(l.text(Msg::OverlayTransitionHover), reason);
+        if response.clicked() {
+            intents.push(StudioIntent::CycleOverlayTransition {
                 channel,
                 duration_frames,
             });
         }
+        response.context_menu(|ui| {
+            crate::transitions::draw_overlay_transition_menu(
+                ui,
+                (channel, transition, duration_frames),
+                (enabled, reason),
+                intents,
+            );
+        });
         let position = desired.map_or(OverlayPositionPreset::FullFrame, |overlay| overlay.position);
         let border = desired.map_or(OverlayBorderPreset::None, |overlay| overlay.border);
         if ui

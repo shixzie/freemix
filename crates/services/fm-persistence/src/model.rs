@@ -117,6 +117,64 @@ pub enum RuntimeOverlayTransition {
     #[default]
     Cut,
     Fade,
+    Wipe,
+    VerticalWipe,
+    Slide,
+    VerticalSlide,
+    Zoom,
+    Fly,
+    FlyRotate,
+    Cube,
+    CubeZoom,
+    CrossZoom,
+    Merge,
+}
+
+impl RuntimeOverlayTransition {
+    /// Every overlay transition, in operator order.
+    pub const ALL: [Self; 13] = [
+        Self::Cut,
+        Self::Fade,
+        Self::Wipe,
+        Self::VerticalWipe,
+        Self::Slide,
+        Self::VerticalSlide,
+        Self::Zoom,
+        Self::Fly,
+        Self::FlyRotate,
+        Self::Cube,
+        Self::CubeZoom,
+        Self::CrossZoom,
+        Self::Merge,
+    ];
+
+    /// The stable `project.json` token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Cut => "cut",
+            Self::Fade => "fade",
+            Self::Wipe => "wipe",
+            Self::VerticalWipe => "vertical_wipe",
+            Self::Slide => "slide",
+            Self::VerticalSlide => "vertical_slide",
+            Self::Zoom => "zoom",
+            Self::Fly => "fly",
+            Self::FlyRotate => "fly_rotate",
+            Self::Cube => "cube",
+            Self::CubeZoom => "cube_zoom",
+            Self::CrossZoom => "cross_zoom",
+            Self::Merge => "merge",
+        }
+    }
+
+    /// The transition named by `token`.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|transition| transition.token() == token)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

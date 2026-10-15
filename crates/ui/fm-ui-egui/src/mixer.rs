@@ -1230,6 +1230,13 @@ fn draw_meter(ui: &mut Ui, feed: MeterFeed<'_>, height: f32) -> bool {
     };
     let (outer, response) = ui.allocate_exact_size(Vec2::new(meter_width(bars), height), sense);
     if !ui.is_rect_visible(outer) {
+        // Scrolled out of view: nothing to paint, but a clickable meter
+        // still explains itself.
+        let _ = response.on_hover_text(l.text(if clipped {
+            Msg::MeterClickToClear
+        } else {
+            Msg::NoMeterSample
+        }));
         return false;
     }
     let rect = Rect::from_min_max(

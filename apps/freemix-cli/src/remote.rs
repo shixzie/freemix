@@ -109,6 +109,7 @@ pub fn execute(
         | CommandCompletion::Playlist { edit: true } => Role::Graphics,
         CommandCompletion::Audio => Role::Audio,
         CommandCompletion::Switcher
+        | CommandCompletion::Favorite
         | CommandCompletion::Playlist { edit: false }
         | CommandCompletion::TitleTake {
             edits_fields: false,
@@ -147,6 +148,10 @@ enum CommandCompletion {
     Playlist {
         edit: bool,
     },
+    /// A favourite transition assignment: a transition-class project edit
+    /// that completes on `transition_favorite_changed` and project
+    /// realization.
+    Favorite,
 }
 
 impl CommandCompletion {
@@ -164,6 +169,7 @@ impl CommandCompletion {
                 edits_fields: !fields.is_empty(),
             },
             CommandPayload::SetPlaylist { .. } => Self::Playlist { edit: true },
+            CommandPayload::SetTransitionFavorite { .. } => Self::Favorite,
             CommandPayload::PlaylistControl { .. } | CommandPayload::PlaylistAdvance { .. } => {
                 Self::Playlist { edit: false }
             }
@@ -173,7 +179,9 @@ impl CommandCompletion {
 
     fn realizes(self, domain: &str) -> bool {
         match self {
-            Self::Project | Self::Padlock | Self::Playlist { edit: true } => domain == "project",
+            Self::Project | Self::Padlock | Self::Favorite | Self::Playlist { edit: true } => {
+                domain == "project"
+            }
             Self::Audio => domain == "audio",
             Self::Switcher | Self::TitleTake { .. } | Self::Playlist { edit: false } => {
                 domain == "switcher"
@@ -422,6 +430,10 @@ impl Remote {
                         EventPayload::PlaylistChanged { .. } => {
                             matches!(completion, CommandCompletion::Playlist { .. })
                         }
+                        EventPayload::TransitionFavoriteChanged { .. } => matches!(
+                            completion,
+                            CommandCompletion::Favorite | CommandCompletion::History
+                        ),
                     };
                     if matches_revision && !expected_event {
                         return Err(RemoteFailure(
@@ -807,10 +819,7 @@ fn format_overlays(overlays: &[fm_ui_model::OverlayStatus]) -> String {
                     .map_or_else(|| "none".to_owned(), |source| source.to_string()),
                 if overlay.active { "on" } else { "off" },
                 overlay.opacity,
-                match overlay.transition {
-                    fm_protocol::OverlayTransitionKind::Cut => "cut",
-                    fm_protocol::OverlayTransitionKind::Fade => "fade",
-                },
+                crate::args::cli_token(overlay.transition.token()),
                 overlay.duration_frames,
                 match overlay.position {
                     fm_protocol::OverlayPositionPreset::FullFrame => "full-frame",

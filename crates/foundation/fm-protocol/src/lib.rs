@@ -42,6 +42,10 @@ pub use dto::{
     MAX_ANIMATION_PRESET_BYTES, MAX_ANIMATION_PRESET_NAME_BYTES, MAX_ANIMATION_PRESETS,
 };
 pub use dto::{
+    AutoTransitionKind, MAX_TRANSITION_FAVORITE_DURATION_FRAMES, TRANSITION_FAVORITE_COUNT,
+    TransitionFavoriteEffect, TransitionFavoriteStatus,
+};
+pub use dto::{
     GradeChange, GradeEntry, GradeStateMessage, MAX_GRADE_LAYERS, MAX_GRADE_LUT_IMPORT_BYTES,
     MAX_GRADE_NAME_BYTES, MAX_GRADE_STATES, WireGradeSource,
 };

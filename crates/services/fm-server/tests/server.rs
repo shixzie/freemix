@@ -114,6 +114,7 @@ fn control() -> FakeControl {
         playlist_follows: false,
         grade_states: 0,
         animation_preset_states: 0,
+        transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     };
     let events = [3, 4]
         .map(|revision| EventMessage {

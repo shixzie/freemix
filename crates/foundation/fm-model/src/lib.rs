@@ -7,6 +7,7 @@ mod resolve;
 mod scene_animation;
 mod stream;
 mod title;
+mod transition_favorite;
 mod validation;
 
 pub use animation_preset::{
@@ -64,5 +65,10 @@ pub use title::{
     MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELDS, MAX_TITLE_TEXT_CHARS, SetTitleFieldsError,
     TitleFieldEntry, TitleFieldId, TitleFieldValue, TitleFieldsError, TitleInput,
     validate_title_fields,
+};
+pub use transition_favorite::{
+    DEFAULT_TRANSITION_FAVORITE_DURATION_FRAMES, MAX_TRANSITION_FAVORITE_DURATION_FRAMES,
+    TRANSITION_FAVORITE_COUNT, TransitionEffect, TransitionFavorite,
+    TransitionFavoriteDurationError, TransitionFavorites,
 };
 pub use validation::{EntityRef, ValidationError, ValidationErrorKind};
