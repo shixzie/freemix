@@ -609,6 +609,7 @@ fn layer_engine() -> Engine {
                 geometry: LayerGeometry::new(0, 0, 16, 9, Rotation::Deg0),
                 crop: None,
                 mask: None,
+                key: None,
                 effects: Vec::new(),
                 opacity: u8::MAX,
                 z_order: 0,

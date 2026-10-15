@@ -196,7 +196,7 @@ fn grading_round_trips_exactly_and_is_strict_at_schema_34() {
     let expected = stored(graded_project());
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 40,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 41,\n"));
     let grading = format!(
         "\n    \"luts\": [{{\"id\": 3, \"name\": \"Film\", \"kind\": \"3d\", \"size\": 33}}],\
          \n    \"grades\": [{{\"id\": 9, \"name\": \"Night \\\"blue\\\"\", \"grade\": {FULL_GRADE_JSON}}}],\
@@ -289,18 +289,18 @@ fn grading_round_trips_exactly_and_is_strict_at_schema_34() {
 }
 
 #[test]
-fn schema_39_and_41_manifests_are_refused() {
-    let temp = TestDirectory::new("schema-39-41");
+fn schema_40_and_42_manifests_are_refused() {
+    let temp = TestDirectory::new("schema-40-42");
     let store = temp.store("show.freemix");
     store.save(&stored(graded_project())).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
 
     // The previous schema is refused outright; there is no migration path.
-    for found in [39, 41] {
+    for found in [40, 42] {
         fs::write(
             store.manifest_path(),
             encoded.replacen(
-                "\"schema_version\": 40",
+                "\"schema_version\": 41",
                 &format!("\"schema_version\": {found}"),
                 1,
             ),
@@ -311,7 +311,7 @@ fn schema_39_and_41_manifests_are_refused() {
             Err(StoreError::Validation(
                 ProjectValidationError::UnsupportedSchema {
                     found: f,
-                    supported: 40
+                    supported: 41
                 }
             )) if f == found
         ));
@@ -572,6 +572,7 @@ fn layer_graded_project() -> Project {
                     geometry: fm_model::LayerGeometry::new(0, 0, 8, 4, fm_model::Rotation::Deg0),
                     crop: None,
                     mask: None,
+                    key: None,
                     effects: Vec::new(),
                     opacity: u8::MAX,
                     z_order: 0,

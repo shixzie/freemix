@@ -65,6 +65,7 @@ fn layer(id: u32, width: u32, height: u32) -> Layer {
         geometry: LayerGeometry::new(10, 20, width, height, Rotation::Deg0),
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: 255,
         z_order: 0,

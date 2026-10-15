@@ -1,5 +1,5 @@
 //! Live scene layer edit codec (Protocol 2.39, SW-006; `gesture` since
-//! 2.41).
+//! 2.41; keys and effects since 2.43).
 //!
 //! Every `scene_layer_*` payload carries `scene` (canonical scene id),
 //! `layer` (canonical nonzero layer id), `continues` (whether it folds into
@@ -7,18 +7,22 @@
 //! token, `0` for none), then its operation's fields (see
 //! [`crate::SceneLayerOperation`]): canonical decimals (signed values with a
 //! leading `-` only when negative), booleans `true`/`false`, and the
-//! `scene_layer_add` `spec` in the binary layer encoding of the scene
-//! layout codec.
+//! `scene_layer_add` `spec` and the `scene_layer_effects_set` `effects` in
+//! the binary encodings of the scene layout codec. A `scene_layer_key_set`
+//! names its `kind` (`chroma` or `luma`) and that kind's byte fields.
 
 use core::num::NonZeroU32;
 
 use crate::{
-    CodecError, SceneLayerEdit, SceneLayerOperation, WireLayerCrop, WireLayerGeometry,
-    WireLayerMask, WireSceneLayerId,
+    CodecError, SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireLayerCrop,
+    WireLayerGeometry, WireLayerKey, WireLayerMask, WireLumaKey, WireSceneLayerId,
 };
 
 use super::media::{FieldSource, Push};
-use super::scene_layout::{decode_layer_spec, encode_layer_spec, parse_canonical_scene};
+use super::scene_layout::{
+    decode_effect_list, decode_layer_spec, encode_effect_list, encode_layer_spec,
+    parse_canonical_scene,
+};
 use super::value::parse_canonical_u64;
 
 fn invalid(field: &'static str, value: impl Into<String>) -> CodecError {
@@ -135,14 +139,39 @@ pub(super) fn encode_scene_layer_edit(
             push_rect(push, [mask.x, mask.y, mask.width, mask.height])?;
             push("invert", mask.invert.to_string())
         }
+        SceneLayerOperation::SetKey(Some(key)) => {
+            if !key.is_valid() {
+                return Err(invalid("key", format!("{key:?}")));
+            }
+            match key {
+                WireLayerKey::Chroma(chroma) => {
+                    push("kind", "chroma".to_owned())?;
+                    push("red", chroma.red.to_string())?;
+                    push("green", chroma.green.to_string())?;
+                    push("blue", chroma.blue.to_string())?;
+                    push("similarity", chroma.similarity.to_string())?;
+                    push("smoothness", chroma.smoothness.to_string())?;
+                    push("spill", chroma.spill.to_string())
+                }
+                WireLayerKey::Luma(luma) => {
+                    push("kind", "luma".to_owned())?;
+                    push("low", luma.low.to_string())?;
+                    push("high", luma.high.to_string())?;
+                    push("softness", luma.softness.to_string())?;
+                    push("invert", luma.invert.to_string())
+                }
+            }
+        }
+        SceneLayerOperation::SetEffects(effects) => push("effects", encode_effect_list(effects)?),
         SceneLayerOperation::SetCrop(None)
         | SceneLayerOperation::SetMask(None)
+        | SceneLayerOperation::SetKey(None)
         | SceneLayerOperation::Remove => Ok(()),
         SceneLayerOperation::SetZOrder { z_order } => push("z_order", z_order.to_string()),
         SceneLayerOperation::Move { index } => push("index", index.to_string()),
         SceneLayerOperation::Add { index, spec } => {
-            if spec.layer.id != edit.layer {
-                return Err(invalid("spec", format!("layer {}", spec.layer.id)));
+            if spec.id != edit.layer {
+                return Err(invalid("spec", format!("layer {}", spec.id)));
             }
             push("index", index.to_string())?;
             push("spec", encode_layer_spec(spec)?)
@@ -151,6 +180,33 @@ pub(super) fn encode_scene_layer_edit(
 }
 
 /// Decodes the edit named by `payload`, or `None` for another payload.
+/// The `kind` and that kind's fields of a `scene_layer_key_set`.
+fn key_fields(fields: &mut dyn FieldSource) -> Result<WireLayerKey, CodecError> {
+    let kind = fields.required("kind")?;
+    let byte = |fields: &mut dyn FieldSource, name| bounded(fields, name, u8::MAX);
+    let key = match kind.as_str() {
+        "chroma" => WireLayerKey::Chroma(WireChromaKey {
+            red: byte(fields, "red")?,
+            green: byte(fields, "green")?,
+            blue: byte(fields, "blue")?,
+            similarity: byte(fields, "similarity")?,
+            smoothness: byte(fields, "smoothness")?,
+            spill: byte(fields, "spill")?,
+        }),
+        "luma" => WireLayerKey::Luma(WireLumaKey {
+            low: byte(fields, "low")?,
+            high: byte(fields, "high")?,
+            softness: byte(fields, "softness")?,
+            invert: bool_field(fields, "invert")?,
+        }),
+        _ => return Err(invalid("kind", kind)),
+    };
+    if !key.is_valid() {
+        return Err(invalid("key", format!("{key:?}")));
+    }
+    Ok(key)
+}
+
 pub(super) fn decode_scene_layer_edit(
     payload: &str,
     fields: &mut dyn FieldSource,
@@ -208,6 +264,11 @@ pub(super) fn decode_scene_layer_edit(
             }))
         }
         "scene_layer_mask_clear" => SceneLayerOperation::SetMask(None),
+        "scene_layer_key_set" => SceneLayerOperation::SetKey(Some(key_fields(fields)?)),
+        "scene_layer_key_clear" => SceneLayerOperation::SetKey(None),
+        "scene_layer_effects_set" => {
+            SceneLayerOperation::SetEffects(decode_effect_list(&fields.required("effects")?)?)
+        }
         "scene_layer_z_order_set" => SceneLayerOperation::SetZOrder {
             z_order: i32_field(fields, "z_order")?,
         },
@@ -217,8 +278,8 @@ pub(super) fn decode_scene_layer_edit(
         "scene_layer_add" => {
             let index = index(fields)?;
             let spec = decode_layer_spec(&fields.required("spec")?)?;
-            if spec.layer.id != layer {
-                return Err(invalid("spec", format!("layer {}", spec.layer.id)));
+            if spec.id != layer {
+                return Err(invalid("spec", format!("layer {}", spec.id)));
             }
             SceneLayerOperation::Add {
                 index,

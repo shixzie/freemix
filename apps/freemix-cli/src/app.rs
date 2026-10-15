@@ -455,6 +455,53 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::SceneLayerEffectClear { path, scene, index } => {
             set_scene_layer_effects(&path, scene_id(scene)?, index, Vec::new())?;
         }
+        Command::SceneLayerKey {
+            path,
+            scene,
+            index,
+            layer_key,
+        } => {
+            let scene = scene_id(scene)?;
+            update_project(&path, |project| {
+                project
+                    .set_scene_layer_key(scene, index, layer_key)
+                    .map_err(Into::into)
+            })?;
+        }
+        Command::RemoteSceneLayerKey {
+            address,
+            scene,
+            layer,
+            layer_key,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            remote_scene_layer_edit(
+                scene,
+                layer,
+                fm_protocol::SceneLayerOperation::SetKey(layer_key.map(fm_control::wire_key)),
+            )?,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSceneLayerEffects {
+            address,
+            scene,
+            layer,
+            effects,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            remote_scene_layer_edit(
+                scene,
+                layer,
+                fm_protocol::SceneLayerOperation::SetEffects(fm_control::wire_effects(&effects)),
+            )?,
+            key,
+            expected_revision,
+        )?,
         Command::InputRemove { path, input } => remove_input(&path, input_id(input)?)?,
         Command::InputDuplicate {
             path,
@@ -2737,6 +2784,7 @@ fn add_scene_layer(
                     ),
                     crop: None,
                     mask: None,
+                    key: None,
                     effects: Vec::new(),
                     opacity: u8::MAX,
                     z_order,
@@ -4356,6 +4404,49 @@ fn print_audio_buses(project: &Project) {
     }
 }
 
+/// A standalone live scene layer edit (no gesture) of layer `layer` of
+/// scene `scene` (IN-020).
+fn remote_scene_layer_edit(
+    scene: u128,
+    layer: u32,
+    operation: fm_protocol::SceneLayerOperation,
+) -> AppResult<fm_protocol::CommandPayload> {
+    let layer = core::num::NonZeroU32::new(layer)
+        .ok_or_else(|| AppFailure("layer ID must be nonzero".into()))?;
+    Ok(fm_protocol::CommandPayload::SceneLayer(
+        fm_protocol::SceneLayerEdit {
+            scene: fm_protocol::WireSceneId::from_domain(scene_id(scene)?),
+            layer: fm_protocol::WireSceneLayerId::new(layer),
+            operation,
+            continues: false,
+            gesture: 0,
+        },
+    ))
+}
+
+/// Renders one layer's optional key, or `none` (IN-020).
+fn format_layer_key(key: Option<fm_model::LayerKey>) -> String {
+    match key {
+        None => "none".to_owned(),
+        Some(fm_model::LayerKey::Chroma(chroma)) => format!(
+            "chroma(rgb={},{},{} similarity={} smoothness={} spill={})",
+            chroma.red,
+            chroma.green,
+            chroma.blue,
+            chroma.similarity,
+            chroma.smoothness,
+            chroma.spill
+        ),
+        Some(fm_model::LayerKey::Luma(luma)) => format!(
+            "luma(low={} high={} softness={} invert={})",
+            luma.low,
+            luma.high,
+            luma.softness,
+            if luma.invert { "on" } else { "off" }
+        ),
+    }
+}
+
 fn print_scenes(project: &Project) {
     for scene in project.scenes() {
         let background = scene.background;
@@ -4371,9 +4462,11 @@ fn print_scenes(project: &Project) {
         );
         for (index, layer) in scene.layers.iter().enumerate() {
             println!(
-                "  layer index={index} name={:?} mask={} effects={}",
+                "  layer index={index} id={} name={:?} mask={} key={} effects={}",
+                layer.id,
                 layer.name,
                 format_layer_mask(layer.mask),
+                format_layer_key(layer.key),
                 format_layer_effects(&layer.effects),
             );
         }
@@ -4695,6 +4788,9 @@ Usage:
   freemix-cli scene-layer-effect-set <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index> <name> [<i32-parameter>...]
   freemix-cli scene-layer-effect-remove <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index>
   freemix-cli scene-layer-effect-clear <show.freemix> <scene-id> <zero-based-layer-index>
+  freemix-cli scene-layer-key <show.freemix> <scene-id> <zero-based-layer-index> none|chroma <red> <green> <blue> <similarity> <smoothness> <spill>|luma <low> <high> <softness> <invert:on|off>
+  freemix-cli remote-scene-layer-key <127.0.0.1:port> <scene-id> <layer-id> <key spec as above> [--key <key>] [--expect <revision>]
+  freemix-cli remote-scene-layer-effects <127.0.0.1:port> <scene-id> <layer-id> none|<name>[:<i32>,...]... [--key <key>] [--expect <revision>]
   freemix-cli project-rename <show.freemix> <name>
   freemix-cli input-remove <show.freemix> <input-id>
   freemix-cli input-duplicate <show.freemix> <source-input-id> <new-nonzero-input-id> <new-name>

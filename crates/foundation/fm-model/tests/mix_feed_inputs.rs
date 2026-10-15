@@ -79,6 +79,7 @@ fn layer(source: SourceRef, enabled: bool) -> Layer {
         geometry: LayerGeometry::new(0, 0, 960, 540, Rotation::Deg0),
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: u8::MAX,
         z_order: 0,

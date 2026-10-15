@@ -487,6 +487,12 @@ pub enum SceneLayerError {
         scene: SceneId,
         index: usize,
     },
+    /// The key breaks its bounds (IN-020).
+    InvalidKey {
+        scene: SceneId,
+        index: usize,
+        reason: crate::LayerKeyError,
+    },
     TooManyEffects {
         scene: SceneId,
         index: usize,
@@ -570,6 +576,14 @@ impl std::fmt::Display for SceneLayerError {
             Self::InvalidMask { scene, index } => {
                 write!(formatter, "invalid mask for layer {index} in scene {scene}")
             }
+            Self::InvalidKey {
+                scene,
+                index,
+                reason,
+            } => write!(
+                formatter,
+                "invalid key for layer {index} in scene {scene}: {reason}"
+            ),
             Self::TooManyEffects { scene, index } => write!(
                 formatter,
                 "layer {index} in scene {scene} cannot carry more than {} effects",
@@ -873,7 +887,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(40);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(41);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -2839,6 +2853,33 @@ impl Project {
         Ok(())
     }
 
+    /// Sets or clears one layer's chroma or luma key (IN-020).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SceneLayerError::UnknownScene`] when the scene does not
+    /// exist, [`SceneLayerError::LayerIndexOutOfRange`] when the index is
+    /// beyond the scene's layer count, and [`SceneLayerError::InvalidKey`]
+    /// when the key breaks its bounds; the layer is unchanged on error.
+    pub fn set_scene_layer_key(
+        &mut self,
+        scene: SceneId,
+        index: usize,
+        key: Option<crate::LayerKey>,
+    ) -> Result<(), SceneLayerError> {
+        let scene_index = self.scene_layer_position(scene, index)?;
+        if let Some(key) = key {
+            key.validate()
+                .map_err(|reason| SceneLayerError::InvalidKey {
+                    scene,
+                    index,
+                    reason,
+                })?;
+        }
+        self.scenes[scene_index].layers[index].key = key;
+        Ok(())
+    }
+
     fn scene_layer_position(&self, scene: SceneId, index: usize) -> Result<usize, SceneLayerError> {
         let scene_index = self
             .scenes
@@ -2880,8 +2921,7 @@ impl Project {
     /// Replaces one layer's ordered effect list.
     ///
     /// The new list is checked as a whole before the layer changes, so a
-    /// rejection leaves every effect exactly as it was. Unknown effect names
-    /// are accepted and preserved.
+    /// rejection leaves every effect exactly as it was.
     ///
     /// # Errors
     ///
@@ -2889,8 +2929,8 @@ impl Project {
     /// exist, [`SceneLayerError::LayerIndexOutOfRange`] when the index is
     /// beyond the scene's layer count, [`SceneLayerError::TooManyEffects`]
     /// when the list exceeds [`LayerEffect::MAX_EFFECTS_PER_LAYER`], and
-    /// [`SceneLayerError::InvalidEffect`] when one descriptor has an empty,
-    /// oversized, or control-character name or too many parameters.
+    /// [`SceneLayerError::InvalidEffect`] when one descriptor breaks the
+    /// [`LayerEffect`] table.
     pub fn set_scene_layer_effects(
         &mut self,
         scene: SceneId,
@@ -2906,8 +2946,7 @@ impl Project {
     /// Appends one effect to a layer, preserving the existing order.
     ///
     /// The layer is checked before it changes, so a rejection leaves every
-    /// effect exactly as it was. Unknown effect names are accepted and
-    /// preserved.
+    /// effect exactly as it was.
     ///
     /// # Errors
     ///
@@ -2916,8 +2955,7 @@ impl Project {
     /// beyond the scene's layer count, [`SceneLayerError::TooManyEffects`]
     /// when the layer already carries [`LayerEffect::MAX_EFFECTS_PER_LAYER`]
     /// effects, and [`SceneLayerError::InvalidEffect`] when the descriptor
-    /// has an empty, oversized, or control-character name or too many
-    /// parameters.
+    /// breaks the [`LayerEffect`] table.
     pub fn add_scene_layer_effect(
         &mut self,
         scene: SceneId,
@@ -4051,26 +4089,30 @@ pub struct Layer {
     pub geometry: LayerGeometry,
     pub crop: Option<CropRect>,
     pub mask: Option<RectMask>,
+    /// The layer's chroma or luma key (IN-020), applied after the crop
+    /// together with the mask and before the effects.
+    pub key: Option<crate::LayerKey>,
     pub effects: Vec<LayerEffect>,
     pub opacity: u8,
     pub z_order: i32,
 }
 
-/// One ordered, backend-neutral video effect persisted on a scene layer.
+/// One ordered video effect persisted on a scene layer (IN-020).
 ///
 /// An effect is a descriptor name plus exact integer parameters, mirroring the
-/// compositor's backend-neutral descriptor. The model preserves the authored
-/// name and parameter order verbatim and enforces the same descriptor bounds
-/// as the compositor plan: a layer carries at most
-/// [`LayerEffect::MAX_EFFECTS_PER_LAYER`] effects, a name is nonempty, at most
-/// [`LayerEffect::MAX_NAME_BYTES`] bytes, and free of control characters, and
-/// an effect carries at most [`LayerEffect::MAX_PARAMETERS`] parameters.
+/// compositor's backend-neutral descriptor, and is one of the reference
+/// effects every renderer executes ([`LayerEffect::KINDS`]):
 ///
-/// Effect names are intentionally not restricted to the reference effects the
-/// CPU executor understands (`levels`, `brightness_contrast`, `saturation`,
-/// `sharpen`, `flip`, and the parameterless `passthrough` no-op). Unknown
-/// names are preserved by validation and persistence instead of being
-/// rejected here; execution is where an unrecognized name fails.
+/// | Name | Parameters | Bounds |
+/// |---|---|---|
+/// | `levels` | `[black, white]` | each `0..=255`, `black < white` |
+/// | `brightness_contrast` | `[brightness, contrast]` | each `-100..=100` |
+/// | `saturation` | `[amount]` | `-100..=100` |
+/// | `sharpen` | `[amount]` | `0..=1000` (per mille) |
+/// | `flip` | `[horizontal, vertical]` | each `0` or `1` |
+///
+/// A layer carries at most [`LayerEffect::MAX_EFFECTS_PER_LAYER`] effects,
+/// applied in list order after its key and mask and before its grade.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayerEffect {
     pub name: String,
@@ -4078,19 +4120,23 @@ pub struct LayerEffect {
 }
 
 impl LayerEffect {
-    /// Maximum effects one layer may carry, matching the compositor plan.
-    pub const MAX_EFFECTS_PER_LAYER: usize = 16;
-    /// Maximum effect name length in bytes, matching the compositor plan.
-    pub const MAX_NAME_BYTES: usize = 64;
-    /// Maximum parameters one effect may carry, matching the compositor plan.
-    pub const MAX_PARAMETERS: usize = 32;
+    /// Maximum effects one layer may carry.
+    pub const MAX_EFFECTS_PER_LAYER: usize = 8;
+    /// Every effect name a layer may carry, in their stable wire order.
+    pub const KINDS: [&'static str; 5] = [
+        "levels",
+        "brightness_contrast",
+        "saturation",
+        "sharpen",
+        "flip",
+    ];
 
-    /// Creates one effect descriptor without checking the descriptor bounds.
+    /// Creates one effect descriptor without checking it.
     ///
-    /// The name and parameter bounds are enforced when the effect enters a
-    /// layer ([`Project::set_scene_layer_effects`],
-    /// [`Project::add_scene_layer_effect`]) and by [`Project::validate`]; see
-    /// the type-level documentation for the exact rules.
+    /// The descriptor is checked when the effect enters a layer
+    /// ([`Project::set_scene_layer_effects`],
+    /// [`Project::add_scene_layer_effect`], a live
+    /// [`crate::SceneLayerChange::Effects`]) and by [`Project::validate`].
     #[must_use]
     pub fn new(name: impl Into<String>, parameters: Vec<i32>) -> Self {
         Self {
@@ -4099,67 +4145,96 @@ impl LayerEffect {
         }
     }
 
-    /// Checks this descriptor against the bounded name and parameter rules.
+    /// The neutral effect of kind `name`: levels `0..255`, zero
+    /// brightness/contrast, saturation and sharpening, and no flip. `None`
+    /// for an unknown name.
+    #[must_use]
+    pub fn default_of(name: &str) -> Option<Self> {
+        let parameters = match name {
+            "levels" => vec![0, 255],
+            "brightness_contrast" | "flip" => vec![0, 0],
+            "saturation" | "sharpen" => vec![0],
+            _ => return None,
+        };
+        Some(Self::new(name, parameters))
+    }
+
+    /// The inclusive range of every parameter of effect kind `name`, in
+    /// order, or `None` for an unknown name.
+    #[must_use]
+    pub fn parameter_ranges(name: &str) -> Option<&'static [(i32, i32)]> {
+        Some(match name {
+            "levels" => &[(0, 255), (0, 255)],
+            "brightness_contrast" => &[(-100, 100), (-100, 100)],
+            "saturation" => &[(-100, 100)],
+            "sharpen" => &[(0, 1000)],
+            "flip" => &[(0, 1), (0, 1)],
+            _ => return None,
+        })
+    }
+
+    /// Checks this descriptor against the table in the type documentation.
     ///
     /// The per-layer effect count is enforced when effects enter a layer, not
     /// here.
     ///
     /// # Errors
     ///
-    /// Returns [`LayerEffectError::EmptyName`] for an empty name,
-    /// [`LayerEffectError::NameTooLong`] for a name beyond
-    /// [`LayerEffect::MAX_NAME_BYTES`] bytes,
-    /// [`LayerEffectError::NameContainsControlCharacter`] for a name that
-    /// contains a control character, and
-    /// [`LayerEffectError::TooManyParameters`] beyond
-    /// [`LayerEffect::MAX_PARAMETERS`] parameters.
+    /// [`LayerEffectError::UnknownEffect`] for a name outside
+    /// [`Self::KINDS`], [`LayerEffectError::WrongParameterCount`],
+    /// [`LayerEffectError::ParameterOutOfRange`], or
+    /// [`LayerEffectError::InvalidLevels`] (`black >= white`).
     pub fn validate(&self) -> Result<(), LayerEffectError> {
-        if self.name.is_empty() {
-            return Err(LayerEffectError::EmptyName);
+        let ranges = Self::parameter_ranges(&self.name).ok_or(LayerEffectError::UnknownEffect)?;
+        if self.parameters.len() != ranges.len() {
+            return Err(LayerEffectError::WrongParameterCount {
+                expected: ranges.len(),
+            });
         }
-        if self.name.len() > Self::MAX_NAME_BYTES {
-            return Err(LayerEffectError::NameTooLong);
+        for (parameter, (value, (minimum, maximum))) in
+            self.parameters.iter().zip(ranges).enumerate()
+        {
+            if !(*minimum..=*maximum).contains(value) {
+                return Err(LayerEffectError::ParameterOutOfRange { parameter });
+            }
         }
-        if self.name.chars().any(char::is_control) {
-            return Err(LayerEffectError::NameContainsControlCharacter);
-        }
-        if self.parameters.len() > Self::MAX_PARAMETERS {
-            return Err(LayerEffectError::TooManyParameters);
+        if self.name == "levels" && self.parameters[0] >= self.parameters[1] {
+            return Err(LayerEffectError::InvalidLevels);
         }
         Ok(())
     }
 }
 
-/// Failure of one [`LayerEffect`] descriptor to satisfy the compositor bounds.
+/// Failure of one [`LayerEffect`] descriptor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LayerEffectError {
-    /// The effect name is empty.
-    EmptyName,
-    /// The effect name exceeds [`LayerEffect::MAX_NAME_BYTES`] bytes.
-    NameTooLong,
-    /// The effect name contains a control character.
-    NameContainsControlCharacter,
-    /// The effect carries more than [`LayerEffect::MAX_PARAMETERS`] parameters.
-    TooManyParameters,
+    /// The name is not one of [`LayerEffect::KINDS`].
+    UnknownEffect,
+    /// The effect kind takes exactly `expected` parameters.
+    WrongParameterCount { expected: usize },
+    /// Parameter `parameter` (zero-based) is outside its range.
+    ParameterOutOfRange { parameter: usize },
+    /// A `levels` effect whose black point is not below its white point.
+    InvalidLevels,
 }
 
 impl std::fmt::Display for LayerEffectError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EmptyName => formatter.write_str("effect name must not be empty"),
-            Self::NameTooLong => write!(
+            Self::UnknownEffect => write!(
                 formatter,
-                "effect name must not exceed {} bytes",
-                LayerEffect::MAX_NAME_BYTES
+                "effect must be one of {}",
+                LayerEffect::KINDS.join(", ")
             ),
-            Self::NameContainsControlCharacter => {
-                formatter.write_str("effect name must not contain control characters")
+            Self::WrongParameterCount { expected } => {
+                write!(formatter, "effect takes exactly {expected} parameters")
             }
-            Self::TooManyParameters => write!(
-                formatter,
-                "effect must not carry more than {} parameters",
-                LayerEffect::MAX_PARAMETERS
-            ),
+            Self::ParameterOutOfRange { parameter } => {
+                write!(formatter, "effect parameter {parameter} is out of range")
+            }
+            Self::InvalidLevels => {
+                formatter.write_str("levels black point must be below its white point")
+            }
         }
     }
 }

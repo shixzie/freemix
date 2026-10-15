@@ -4289,6 +4289,208 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::DesignReadoutAngle, t("{free}°")),
     (Msg::DesignReadoutCrop, t("Recorte {edge} {pixels} px")),
     (Msg::DesignReadoutAnchor, t("Ancla {x}% · {y}%")),
+    // Layer keys and effects in the layer designer (IN-020).
+    (Msg::DesignGroupKey, t("Clave")),
+    (
+        Msg::DesignKeyHover,
+        t(
+            "Hacer transparente parte de la capa: una clave de croma quita un color (una pantalla verde o azul) y una clave de luma quita zonas oscuras o claras",
+        ),
+    ),
+    (
+        Msg::DesignKeyKindHover,
+        t("Elegir cómo se recorta la capa: sin clave, con clave de croma o con clave de luma"),
+    ),
+    (Msg::DesignKeyNone, t("Ninguna")),
+    (
+        Msg::DesignKeyNoneHover,
+        t("Sin clave: se dibuja la capa entera"),
+    ),
+    (Msg::DesignKeyChroma, t("Croma")),
+    (
+        Msg::DesignKeyChromaHover,
+        t("Quitar un color, como una pantalla verde o azul (empieza con verde puro)"),
+    ),
+    (Msg::DesignKeyLuma, t("Luma")),
+    (
+        Msg::DesignKeyLumaHover,
+        t("Quitar zonas según su brillo (empieza quitando el negro)"),
+    ),
+    (
+        Msg::DesignKeyColourHover,
+        t("El color que quita la clave. Haga clic para elegirlo en una rueda de color"),
+    ),
+    (
+        Msg::DesignKeyGreenHover,
+        t("Quitar el verde puro, para una pantalla verde"),
+    ),
+    (
+        Msg::DesignKeyBlueHover,
+        t("Quitar el azul puro, para una pantalla azul"),
+    ),
+    (
+        Msg::DesignKeyRedHover,
+        t("Componente roja del color de la clave, de 0 a 255"),
+    ),
+    (
+        Msg::DesignKeyGreenChannelHover,
+        t("Componente verde del color de la clave, de 0 a 255"),
+    ),
+    (
+        Msg::DesignKeyBlueChannelHover,
+        t("Componente azul del color de la clave, de 0 a 255"),
+    ),
+    (Msg::DesignKeySimilarity, t("Similitud")),
+    (
+        Msg::DesignKeySimilarityHover,
+        t(
+            "Cuánto puede alejarse un color del de la clave y aun así quitarse: más alto quita más tonos",
+        ),
+    ),
+    (Msg::DesignKeySmoothness, t("Suavidad")),
+    (
+        Msg::DesignKeySmoothnessHover,
+        t(
+            "Con qué gradualidad pasan los bordes de los colores quitados a los conservados: más alto da bordes más suaves",
+        ),
+    ),
+    (Msg::DesignKeySpill, t("Derrame")),
+    (
+        Msg::DesignKeySpillHover,
+        t(
+            "Cuánto del tinte del color de la clave se quita de los bordes conservados, como los reflejos verdes en el pelo",
+        ),
+    ),
+    (Msg::DesignLumaLow, t("Bajo")),
+    (
+        Msg::DesignLumaLowHover,
+        t(
+            "Brillo igual o inferior al que se quita la capa, de 0 a 254 (siempre por debajo de Alto)",
+        ),
+    ),
+    (Msg::DesignLumaHigh, t("Alto")),
+    (
+        Msg::DesignLumaHighHover,
+        t(
+            "Brillo igual o superior al que también se quita la capa, de 1 a 255 (siempre por encima de Bajo); 255 no quita nada claro",
+        ),
+    ),
+    (Msg::DesignLumaSoftness, t("Suavidad")),
+    (
+        Msg::DesignLumaSoftnessHover,
+        t("Con qué gradualidad pasa el brillo quitado al conservado"),
+    ),
+    (
+        Msg::DesignLumaInvertHover,
+        t("Conservar solo el brillo que la clave quitaría y quitar el resto"),
+    ),
+    (Msg::DesignGroupEffects, t("Efectos")),
+    (
+        Msg::DesignEffectsHover,
+        t(
+            "Efectos de vídeo de la capa, aplicados en el orden de la lista desde arriba, como mucho 8 por capa",
+        ),
+    ),
+    (Msg::DesignEffectsEmpty, t("Sin efectos.")),
+    (Msg::DesignEffectAdd, t("Añadir efecto")),
+    (
+        Msg::DesignEffectAddHover,
+        t(
+            "Añadir un efecto al final de la lista de la capa; empieza neutro y deja la imagen como está",
+        ),
+    ),
+    (Msg::DesignEffectLevels, t("Niveles")),
+    (
+        Msg::DesignEffectLevelsHover,
+        t(
+            "Niveles: estirar el rango de brillo para que el nivel Negro pase a negro y el nivel Blanco a blanco",
+        ),
+    ),
+    (Msg::DesignEffectBrightnessContrast, t("Brillo / contraste")),
+    (
+        Msg::DesignEffectBrightnessContrastHover,
+        t("Brillo / contraste: aclarar u oscurecer la imagen y subir o bajar su contraste"),
+    ),
+    (
+        Msg::DesignEffectSaturationHover,
+        t("Saturación: colores más vivos o más grises, hasta blanco y negro"),
+    ),
+    (Msg::DesignEffectSharpen, t("Enfoque")),
+    (
+        Msg::DesignEffectSharpenHover,
+        t("Enfoque: realzar los bordes y los detalles finos"),
+    ),
+    (Msg::DesignEffectFlip, t("Volteo")),
+    (
+        Msg::DesignEffectFlipHover,
+        t("Volteo: reflejar la imagen en horizontal, en vertical o en ambos sentidos"),
+    ),
+    (
+        Msg::DesignEffectBlackHover,
+        t("Nivel de entrada que pasa a negro, de 0 a 254 (siempre por debajo de Blanco)"),
+    ),
+    (
+        Msg::DesignEffectWhiteHover,
+        t("Nivel de entrada que pasa a blanco, de 1 a 255 (siempre por encima de Negro)"),
+    ),
+    (Msg::DesignEffectBrightness, t("Brillo")),
+    (
+        Msg::DesignEffectBrightnessHover,
+        t("Aclarar (positivo) u oscurecer (negativo) la imagen, de -100 a 100"),
+    ),
+    (
+        Msg::DesignEffectContrastHover,
+        t("Subir (positivo) o bajar (negativo) el contraste, de -100 a 100"),
+    ),
+    (Msg::DesignEffectAmount, t("Cantidad")),
+    (
+        Msg::DesignEffectSaturationAmountHover,
+        t("Colores más vivos (positivo) o más grises (negativo); -100 es blanco y negro"),
+    ),
+    (
+        Msg::DesignEffectSharpenAmountHover,
+        t("Intensidad del enfoque, en porcentaje"),
+    ),
+    (Msg::DesignEffectHorizontal, t("Horizontal")),
+    (
+        Msg::DesignEffectHorizontalHover,
+        t("Reflejar la imagen de izquierda a derecha"),
+    ),
+    (Msg::DesignEffectVertical, t("Vertical")),
+    (
+        Msg::DesignEffectVerticalHover,
+        t("Reflejar la imagen de arriba abajo"),
+    ),
+    (
+        Msg::DesignEffectUpHover,
+        t("Aplicar este efecto un puesto antes en la lista"),
+    ),
+    (
+        Msg::DesignEffectDownHover,
+        t("Aplicar este efecto un puesto después en la lista"),
+    ),
+    (
+        Msg::DesignEffectRemoveHover,
+        t("Quitar este efecto de la capa"),
+    ),
+    (
+        Msg::DesignReasonEffectsFull,
+        t("la capa ya tiene 8 efectos, el máximo posible"),
+    ),
+    (
+        Msg::DesignReasonEffectsDiffer,
+        t(
+            "las capas seleccionadas tienen efectos distintos; seleccione una sola capa para editarlos",
+        ),
+    ),
+    (
+        Msg::DesignReasonEffectFirst,
+        t("este efecto ya es el primero"),
+    ),
+    (
+        Msg::DesignReasonEffectLast,
+        t("este efecto ya es el último"),
+    ),
     // User animation presets and shared preset files (GX-011, SW-019).
     (Msg::AnimMyPresets, t("Mis preajustes")),
     (

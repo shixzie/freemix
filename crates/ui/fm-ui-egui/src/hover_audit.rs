@@ -776,7 +776,8 @@ fn scene_clip() -> fm_protocol::WireSceneClip {
     clip
 }
 
-/// Two side-by-side layers on a 1080p canvas.
+/// Two side-by-side layers on a 1080p canvas: the host chroma-keyed with
+/// one effect of every kind, the guest luma-keyed (IN-020).
 fn scene_layout() -> fm_protocol::WireSceneLayout {
     let outline = |id: u32, name: &str, x: i32| fm_protocol::WireSceneLayerOutline {
         id: scene_layer(id),
@@ -793,13 +794,27 @@ fn scene_layout() -> fm_protocol::WireSceneLayout {
         anchor_y: 5_000,
         z_order: 0,
         crop: None,
+        key: None,
+        effects: Vec::new(),
         mask: None,
         source: fm_protocol::WireSceneLayerSource::Input(wire(u128::from(id))),
     };
+    let mut host = outline(1, "Host", 0);
+    host.key = Some(fm_protocol::WireLayerKey::Chroma(
+        fm_ui_model::scene_designer::CHROMA_GREEN,
+    ));
+    host.effects = fm_protocol::SCENE_LAYER_EFFECT_KINDS
+        .iter()
+        .filter_map(|(name, _)| fm_ui_model::scene_designer::default_effect(name))
+        .collect();
+    let mut guest = outline(2, "Guest", 960);
+    guest.key = Some(fm_protocol::WireLayerKey::Luma(
+        fm_ui_model::scene_designer::LUMA_BLACK,
+    ));
     fm_protocol::WireSceneLayout {
         width: 1_920,
         height: 1_080,
-        layers: vec![outline(1, "Host", 0), outline(2, "Guest", 960)],
+        layers: vec![host, guest],
     }
 }
 
@@ -1163,8 +1178,9 @@ pub(crate) fn designer_fixture(operator: bool, locked: bool) -> (StudioUiState, 
 
 /// The layer designer (SW-006): nothing selected, one layer selected with
 /// a crop and an inverted mask in the draft (every field and the draft
-/// buttons enabled), two layers selected, the project padlock, and a
-/// viewer.
+/// buttons enabled, a chroma key, and one effect of every kind), the luma
+/// keyed layer with a full effect list (Add effect refused), two layers
+/// selected (their effects differ), the project padlock, and a viewer.
 fn designer_scenes(locale: Locale) -> Vec<Scene> {
     use fm_ui_model::scene_designer::Field;
     let prepare = |state: &StudioUiState, configure: &dyn Fn(&mut StudioShell)| {
@@ -1187,6 +1203,13 @@ fn designer_scenes(locale: Locale) -> Vec<Scene> {
         document.undo();
         document.set_field(Field::MaskInverted, 1.0);
     };
+    let luma = |shell: &mut StudioShell| {
+        let document = shell.scene_layout_draft_mut(scene_id()).unwrap();
+        document.select(scene_layer(2), false);
+        while document.can_add_effect() {
+            document.add_effect("flip");
+        }
+    };
     let both = |shell: &mut StudioShell| {
         let document = shell.scene_layout_draft_mut(scene_id()).unwrap();
         document.select(scene_layer(1), false);
@@ -1207,6 +1230,7 @@ fn designer_scenes(locale: Locale) -> Vec<Scene> {
     let scenes: Vec<(&str, Configure, StudioUiState)> = vec![
         ("operator/designer", &unchanged, operator()),
         ("operator/designer-edited", &edited, operator()),
+        ("operator/designer-luma", &luma, operator()),
         ("operator/designer-multi", &both, operator()),
         ("operator/designer-locked", &edited, locked),
         ("viewer/designer", &both, ready(false, Variant::default())),

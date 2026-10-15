@@ -6,8 +6,9 @@
 use std::num::NonZeroU128;
 
 use fm_model::{
-    CropRect, Layer, LayerAnchor, LayerEffect, LayerGeometry, LayerId, LayerPose, RectMask,
-    Rotation, Scene, SceneAnimation, SceneLayerChange, SceneLayerEditError, SourceRef, apply_pose,
+    ChromaLayerKey, CropRect, Layer, LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry,
+    LayerId, LayerKey, LayerKeyError, LayerPose, LumaLayerKey, RectMask, Rotation, Scene,
+    SceneAnimation, SceneLayerChange, SceneLayerEditError, SourceRef, apply_pose,
     check_scene_layer, fm_animation::ClipState, resolve_anchor,
 };
 use fm_types::{InputId, SceneId};
@@ -27,6 +28,7 @@ fn layer(id: u32, geometry: LayerGeometry) -> Layer {
         geometry,
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: 255,
         z_order: 0,
@@ -208,6 +210,34 @@ fn every_layer_change_applies_and_its_inverse_restores_the_scene() {
     };
     let after = round_trip(2, &SceneLayerChange::Mask(Some(mask)));
     assert_eq!(after.layers[1].mask, Some(mask));
+    // IN-020: keys and effect lists set, clear, and undo exactly.
+    let key = LayerKey::Chroma(ChromaLayerKey::GREEN);
+    let after = round_trip(2, &SceneLayerChange::Key(Some(key)));
+    assert_eq!(after.layers[1].key, Some(key));
+    let effects = vec![
+        LayerEffect::new("levels", vec![16, 235]),
+        LayerEffect::new("flip", vec![1, 0]),
+    ];
+    let after = round_trip(2, &SceneLayerChange::Effects(effects.clone()));
+    assert_eq!(after.layers[1].effects, effects);
+    let mut keyed = scene();
+    keyed.layers[1].key = Some(key);
+    keyed.layers[1].effects.clone_from(&effects);
+    for change in [
+        SceneLayerChange::Key(None),
+        SceneLayerChange::Effects(Vec::new()),
+    ] {
+        let inverse = keyed.layer_change_inverse(layer_id(2), &change).unwrap();
+        let mut edited = keyed.clone();
+        edited
+            .apply_layer_change(layer_id(2), &change, CANVAS.0, CANVAS.1)
+            .unwrap();
+        assert_ne!(edited, keyed);
+        edited
+            .apply_layer_change(layer_id(2), &inverse, CANVAS.0, CANVAS.1)
+            .unwrap();
+        assert_eq!(edited, keyed);
+    }
     let after = round_trip(2, &SceneLayerChange::ZOrder(-7));
     assert_eq!(after.layers[1].z_order, -7);
     let after = round_trip(1, &SceneLayerChange::Move { index: 2 });
@@ -217,7 +247,8 @@ fn every_layer_change_applies_and_its_inverse_restores_the_scene() {
         8,
         LayerGeometry::new(5, 6, 70, 80, Rotation::Deg180).with_tilt(1),
     );
-    added.effects = vec![LayerEffect::new("blur", vec![3])];
+    added.effects = vec![LayerEffect::new("sharpen", vec![300])];
+    added.key = Some(LayerKey::Luma(LumaLayerKey::BLACK));
     added.crop = Some(CropRect::new(0, 0, 960, 540));
     let after = round_trip(
         8,
@@ -229,7 +260,8 @@ fn every_layer_change_applies_and_its_inverse_restores_the_scene() {
     assert_eq!(after.layers[1], added);
     // A removal's inverse adds the whole layer back where it was.
     let mut removed = scene();
-    removed.layers[1].effects = vec![LayerEffect::new("sharpen", vec![1, -2])];
+    removed.layers[1].effects = vec![LayerEffect::new("saturation", vec![-100])];
+    removed.layers[1].key = Some(LayerKey::Chroma(ChromaLayerKey::GREEN));
     let inverse = removed
         .layer_change_inverse(layer_id(2), &SceneLayerChange::Remove)
         .unwrap();
@@ -251,6 +283,7 @@ fn every_layer_change_applies_and_its_inverse_restores_the_scene() {
     assert_eq!(removed, before);
 }
 
+#[allow(clippy::too_many_lines)] // one table of every refused change
 #[test]
 fn a_refused_change_leaves_the_scene_untouched() {
     let refusals = [
@@ -286,6 +319,32 @@ fn a_refused_change_leaves_the_scene_untouched() {
                 invert: false,
             })),
             SceneLayerEditError::InvalidMask,
+        ),
+        (
+            2,
+            SceneLayerChange::Key(Some(LayerKey::Luma(LumaLayerKey {
+                low: 100,
+                high: 50,
+                softness: 0,
+                invert: false,
+            }))),
+            SceneLayerEditError::InvalidKey(LayerKeyError::EmptyLumaBand),
+        ),
+        (
+            2,
+            SceneLayerChange::Effects(vec![LayerEffect::new("blur", vec![3])]),
+            SceneLayerEditError::InvalidEffect {
+                effect_index: 0,
+                reason: LayerEffectError::UnknownEffect,
+            },
+        ),
+        (
+            2,
+            SceneLayerChange::Effects(vec![
+                LayerEffect::new("flip", vec![0, 0]);
+                LayerEffect::MAX_EFFECTS_PER_LAYER + 1
+            ]),
+            SceneLayerEditError::TooManyEffects,
         ),
         (
             2,

@@ -45,7 +45,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.42\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.43\tid=a\tidempotency_key=k";
 
 fn round_trip(message: &WireMessage) -> String {
     let line = encode_line(message).unwrap();
@@ -107,7 +107,7 @@ fn clip_bytes() -> Vec<u8> {
 
 #[test]
 fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 42));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 43));
 }
 
 #[test]
@@ -309,11 +309,13 @@ fn cam() -> WireSceneLayerOutline {
         anchor_y: 5_000,
         z_order: 0,
         crop: None,
+        key: None,
+        effects: Vec::new(),
         mask: None,
     }
 }
 
-const CAM_BYTES: [u8; 21] = [
+const CAM_BYTES: [u8; 22] = [
     1, // id
     1, // flags: enabled
     1, // quarter turns
@@ -328,6 +330,7 @@ const CAM_BYTES: [u8; 21] = [
     0x88, 0x27, // anchor x 5000
     0x88, 0x27, // anchor y 5000
     0,    // z-order
+    0,    // no effects (Protocol 2.43)
 ];
 
 fn layout_state(layers: Vec<WireSceneLayerOutline>) -> WireMessage {
@@ -457,6 +460,24 @@ fn the_worst_case_layout_fits_one_line() {
                 width: 1_792,
                 height: 952,
             }),
+            // Protocol 2.43: the longest key and the longest effect list.
+            key: Some(fm_protocol::WireLayerKey::Chroma(
+                fm_protocol::WireChromaKey {
+                    red: 255,
+                    green: 255,
+                    blue: 255,
+                    similarity: 255,
+                    smoothness: 255,
+                    spill: 255,
+                },
+            )),
+            effects: vec![
+                fm_protocol::WireLayerEffect {
+                    name: "brightness_contrast".into(),
+                    parameters: vec![-100, 100],
+                };
+                fm_protocol::MAX_SCENE_LAYER_EFFECTS
+            ],
             mask: Some(fm_protocol::WireLayerMask {
                 x: 128,
                 y: 128,
@@ -501,7 +522,7 @@ fn scene_preview_requests_round_trip_and_are_bounded() {
     let line = round_trip(&preview_request(TitlePreviewSample::In { frame: 4 }, None));
     assert_eq!(
         line,
-        "scene_preview_request\tprotocol=2.42\trequest_id=anim-preview-3\tinput=12\tphase=in\t\
+        "scene_preview_request\tprotocol=2.43\trequest_id=anim-preview-3\tinput=12\tphase=in\t\
          frame=4\twidth=640\theight=360\n"
     );
     let with_clip = round_trip(&preview_request(TitlePreviewSample::Hold, Some(clip())));
@@ -521,7 +542,7 @@ fn scene_preview_requests_round_trip_and_are_bounded() {
         ("phase=in\tframe=0\twidth=641\theight=360", "width"),
         ("phase=in\tframe=0\twidth=64\theight=0", "height"),
     ] {
-        let line = format!("scene_preview_request\tprotocol=2.42\trequest_id=p\tinput=7\t{bad}\n");
+        let line = format!("scene_preview_request\tprotocol=2.43\trequest_id=p\tinput=7\t{bad}\n");
         match decode_line(&line) {
             Err(CodecError::InvalidField { field: actual, .. }) => {
                 assert_eq!(actual, field, "{bad}");

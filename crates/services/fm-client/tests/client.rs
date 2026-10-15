@@ -2406,6 +2406,8 @@ mod scene_animation {
                     anchor_y: 5_000,
                     z_order: 0,
                     crop: None,
+                    key: None,
+                    effects: Vec::new(),
                     mask: None,
                     source: fm_protocol::WireSceneLayerSource::Input(input(3)),
                 }],

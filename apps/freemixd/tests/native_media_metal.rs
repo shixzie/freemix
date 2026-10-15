@@ -1050,6 +1050,7 @@ fn metal_scene_layer(
         geometry,
         crop,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: u8::MAX,
         z_order,

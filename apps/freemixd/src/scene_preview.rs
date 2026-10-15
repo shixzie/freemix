@@ -426,6 +426,7 @@ mod tests {
             geometry: LayerGeometry::new(x, 0, width, HEIGHT, Rotation::Deg0),
             crop: None,
             mask: None,
+            key: None,
             effects: Vec::new(),
             opacity: 255,
             z_order: i32::try_from(id).unwrap(),

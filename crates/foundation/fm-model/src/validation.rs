@@ -904,16 +904,21 @@ fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// Records one out-of-range error when a layer's effect descriptors breach
-/// the compositor bounds.
-///
-/// Unknown effect names are deliberately accepted: the model preserves them
-/// and only execution rejects an unrecognized descriptor.
+/// Records one out-of-range error when a layer's effect descriptors break
+/// the [`LayerEffect`] table or count, and one when its key breaks its
+/// bounds.
 fn validate_layer_effects(
     layer: &Layer,
     entity: Option<EntityRef>,
     errors: &mut Vec<ValidationError>,
 ) {
+    if layer.key.is_some_and(|key| key.validate().is_err()) {
+        errors.push(ValidationError {
+            entity,
+            field: "layers.key",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
     if layer.effects.len() > LayerEffect::MAX_EFFECTS_PER_LAYER
         || layer
             .effects

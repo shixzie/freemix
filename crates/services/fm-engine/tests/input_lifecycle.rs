@@ -566,6 +566,7 @@ fn scene_of(id: u128, source: InputId) -> fm_model::Scene {
             geometry: fm_model::LayerGeometry::new(0, 0, 8, 8, fm_model::Rotation::Deg0),
             crop: None,
             mask: None,
+            key: None,
             effects: Vec::new(),
             opacity: u8::MAX,
             z_order: 0,

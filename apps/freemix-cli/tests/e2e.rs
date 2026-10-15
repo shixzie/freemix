@@ -1565,6 +1565,24 @@ fn write_handshake_version_with_manual(
     );
 }
 
+std::thread_local! {
+    /// Scene layouts the fake daemon's snapshot lists on this thread
+    /// (`layout_scenes` and one `scene_layout_state` each).
+    static SNAPSHOT_LAYOUTS: std::cell::RefCell<Vec<(fm_protocol::WireSceneId, fm_protocol::WireSceneLayout)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// [`serve_edit`] with scene layouts in the snapshot, so a
+/// `scene_layout_changed` event names a replicated scene.
+fn serve_layout_edit(
+    listener: &TcpListener,
+    edit: &RemoteEdit,
+    layouts: Vec<(fm_protocol::WireSceneId, fm_protocol::WireSceneLayout)>,
+) {
+    SNAPSHOT_LAYOUTS.with(|cell| *cell.borrow_mut() = layouts);
+    serve_edit(listener, edit);
+}
+
 fn write_handshake_snapshot(
     writer: &mut TcpStream,
     engine: &EngineIdentity,
@@ -1625,7 +1643,8 @@ fn write_handshake_snapshot(
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             titles: Vec::new(),
             scenes: Vec::new(),
-            layout_scenes: Vec::new(),
+            layout_scenes: SNAPSHOT_LAYOUTS
+                .with(|cell| cell.borrow().iter().map(|(scene, _)| *scene).collect()),
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,
@@ -1638,6 +1657,17 @@ fn write_handshake_snapshot(
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }),
     );
+    for (scene, layout) in SNAPSHOT_LAYOUTS.with(|cell| cell.borrow().clone()) {
+        write_message(
+            writer,
+            &WireMessage::SceneLayoutState(fm_protocol::SceneLayoutStateMessage {
+                revision,
+                scene,
+                name: "Studio".into(),
+                layout: Box::new(layout),
+            }),
+        );
+    }
 }
 
 fn handshake_permissions(role: Role) -> Vec<String> {
@@ -2603,6 +2633,135 @@ fn remote_mixer_and_fade_to_black_output_commands_replicate() {
     server.finish();
 }
 
+/// IN-020, Protocol 2.43: remote scene layer key and effect-list edits are
+/// live project edits sent as standalone (gesture-free) layer edits.
+#[allow(clippy::too_many_lines)]
+#[test]
+fn remote_scene_layer_key_and_effects_are_live_layer_edits() {
+    use fm_protocol::{
+        SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireLayerEffect, WireLayerKey,
+        WireSceneId, WireSceneLayerId, WireSceneLayout,
+    };
+    let edit = |operation| SceneLayerEdit {
+        scene: WireSceneId::new(core::num::NonZeroU128::new(11).unwrap()),
+        layer: WireSceneLayerId::new(core::num::NonZeroU32::new(3).unwrap()),
+        operation,
+        continues: false,
+        gesture: 0,
+    };
+    let scene = WireSceneId::new(core::num::NonZeroU128::new(11).unwrap());
+    let layout = || {
+        Box::new(WireSceneLayout {
+            width: 1_920,
+            height: 1_080,
+            layers: Vec::new(),
+        })
+    };
+    let start = |edit: RemoteEdit| {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            serve_layout_edit(&listener, &edit, vec![(scene, *layout())]);
+        });
+        FakeRemoteServer { address, worker }
+    };
+    let key = SceneLayerOperation::SetKey(Some(WireLayerKey::Chroma(WireChromaKey {
+        red: 0,
+        green: 255,
+        blue: 0,
+        similarity: 64,
+        smoothness: 32,
+        spill: 128,
+    })));
+    let server = start(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-layer-key",
+        payload: CommandPayload::SceneLayer(edit(key.clone())),
+        event: EventPayload::SceneLayoutChanged {
+            edit: edit(key),
+            layout: layout(),
+        },
+        domain: "project",
+    });
+    assert_success(&invoke(&[
+        "remote-scene-layer-key",
+        &server.address(),
+        "11",
+        "3",
+        "chroma",
+        "0",
+        "255",
+        "0",
+        "64",
+        "32",
+        "128",
+        "--key",
+        "remote-layer-key",
+        "--expect",
+        "0",
+    ]));
+    server.finish();
+
+    let effects = SceneLayerOperation::SetEffects(vec![
+        WireLayerEffect {
+            name: "levels".into(),
+            parameters: vec![16, 235],
+        },
+        WireLayerEffect {
+            name: "flip".into(),
+            parameters: vec![1, 0],
+        },
+    ]);
+    let server = start(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-layer-effects",
+        payload: CommandPayload::SceneLayer(edit(effects.clone())),
+        event: EventPayload::SceneLayoutChanged {
+            edit: edit(effects),
+            layout: layout(),
+        },
+        domain: "project",
+    });
+    assert_success(&invoke(&[
+        "remote-scene-layer-effects",
+        &server.address(),
+        "11",
+        "3",
+        "levels:16,235",
+        "flip:1,0",
+        "--key",
+        "remote-layer-effects",
+        "--expect",
+        "0",
+    ]));
+    server.finish();
+
+    // Bad specs are refused before connecting.
+    assert_failure_contains(
+        &invoke(&[
+            "remote-scene-layer-effects",
+            "127.0.0.1:9",
+            "11",
+            "3",
+            "none",
+            "flip:1,0",
+        ]),
+        "unexpected argument `flip:1,0`",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "remote-scene-layer-key",
+            "127.0.0.1:9",
+            "11",
+            "3",
+            "luma",
+            "1",
+            "2",
+        ]),
+        "softness",
+    );
+}
+
 /// OR-011, Protocol 2.42: remote display-output set/clear replicate as
 /// project edits, and the inventory query prints the daemon's displays.
 #[test]
@@ -3549,7 +3708,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 40,
+  "schema_version": 41,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -3756,7 +3915,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 40", "\"schema_version\": 39"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 41", "\"schema_version\": 40"),
     )
     .unwrap();
     assert_failure_contains(
@@ -3770,7 +3929,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 39 is unsupported; expected 40",
+        "title template schema 40 is unsupported; expected 41",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -3788,7 +3947,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 40,
+  "schema_version": 41,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -4051,7 +4210,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 40,
+  "schema_version": 41,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -4281,7 +4440,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 40,
+  "schema_version": 41,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -4378,7 +4537,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 40,
+  "schema_version": 41,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -5453,13 +5612,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        40
+        41
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 40);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 41);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -5472,7 +5631,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 40);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 41);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -5548,7 +5707,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        40
+        41
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -5556,7 +5715,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 40);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 41);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -5566,7 +5725,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 40);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 41);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -5574,7 +5733,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 40);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 41);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -7790,6 +7949,7 @@ fn local_scene_layer_rename_persists_exact_name_and_rejects_invalid_target() {
                 geometry: LayerGeometry::new(-12, 34, 640, 480, Rotation::Deg270),
                 crop: Some(fm_model::CropRect::new(10, 20, 640, 480)),
                 mask: Some(RectMask::new(10, 20, 600, 400).inverted(true)),
+                key: None,
                 effects: Vec::new(),
                 opacity: 96,
                 z_order: 9,
@@ -8930,48 +9090,158 @@ fn local_scene_layer_effects_author_render_and_clear_exactly() {
     ]);
     assert_solid_ppm(&cleared, 4, 4, [64, 64, 64]);
 
-    // Unknown-but-bounded names are preserved for a later executor, while a
-    // bounded rejection leaves the manifest byte-identical.
+    // IN-020: a luma key whose low bound reaches the gray removes it to the
+    // black scene background, a chroma key on another colour keeps it, and
+    // `none` restores the plain render exactly.
+    let keyed = root.join("keyed.ppm");
+    let render_keyed = || {
+        apply!(&[
+            "render",
+            path,
+            keyed.to_str().unwrap(),
+            "--width",
+            "4",
+            "--height",
+            "4",
+        ]);
+    };
     apply!(&[
-        "scene-layer-effect-add",
+        "scene-layer-key",
         path,
         "11",
         "0",
-        "future.effect",
-        "1",
-        "-2",
+        "luma",
+        "100",
+        "255",
+        "0",
+        "off"
     ]);
+    let scenes = invoke(&["scenes", path]);
+    assert!(
+        stdout(&scenes).contains("key=luma(low=100 high=255 softness=0 invert=off)"),
+        "{}",
+        stdout(&scenes)
+    );
+    render_keyed();
+    assert_solid_ppm(&keyed, 4, 4, [0, 0, 0]);
+    // Inverted, the same band is kept.
+    apply!(&[
+        "scene-layer-key",
+        path,
+        "11",
+        "0",
+        "luma",
+        "100",
+        "255",
+        "0",
+        "on"
+    ]);
+    render_keyed();
+    assert_solid_ppm(&keyed, 4, 4, [64, 64, 64]);
+    apply!(&[
+        "scene-layer-key",
+        path,
+        "11",
+        "0",
+        "chroma",
+        "0",
+        "255",
+        "0",
+        "64",
+        "0",
+        "0"
+    ]);
+    render_keyed();
+    assert_solid_ppm(&keyed, 4, 4, [64, 64, 64]);
+    apply!(&[
+        "scene-layer-key",
+        path,
+        "11",
+        "0",
+        "chroma",
+        "64",
+        "64",
+        "64",
+        "0",
+        "0",
+        "0"
+    ]);
+    let scenes = invoke(&["scenes", path]);
+    assert!(stdout(&scenes).contains("key=chroma(rgb=64,64,64 similarity=0 smoothness=0 spill=0)"));
+    render_keyed();
+    assert_solid_ppm(&keyed, 4, 4, [0, 0, 0]);
+    let before_key = fs::read(project.join("project.json")).unwrap();
+    assert_failure_contains(
+        &invoke(&[
+            "scene-layer-key",
+            path,
+            "11",
+            "0",
+            "luma",
+            "200",
+            "100",
+            "0",
+            "off",
+        ]),
+        "luma key low must be below its high",
+    );
+    assert_failure_contains(
+        &invoke(&["scene-layer-key", path, "11", "0", "alpha"]),
+        "invalid key kind value `alpha`",
+    );
+    assert_eq!(fs::read(project.join("project.json")).unwrap(), before_key);
+    apply!(&["scene-layer-key", path, "11", "0", "none"]);
+    render_keyed();
+    assert_solid_ppm(&keyed, 4, 4, [64, 64, 64]);
+
+    // Only the reference effects with their exact, in-range parameters
+    // enter a layer (IN-020); a rejection leaves the manifest byte-identical.
+    apply!(&["scene-layer-effect-add", path, "11", "0", "flip", "1", "0"]);
     let stored = ProjectStore::new(&project).unwrap().load().unwrap();
     assert_eq!(
         stored.project().scenes()[0].layers[0].effects,
-        vec![LayerEffect::new("future.effect", vec![1, -2])]
+        vec![LayerEffect::new("flip", vec![1, 0])]
     );
-    // The persisted unknown name reaches the executor, which rejects it
-    // without publishing a frame.
-    let unsupported = invoke(&[
-        "render",
-        path,
-        root.join("unsupported.ppm").to_str().unwrap(),
-        "--width",
-        "4",
-        "--height",
-        "4",
-    ]);
-    assert_failure_contains(&unsupported, "future.effect");
-    assert!(!root.join("unsupported.ppm").exists());
     let before = fs::read(project.join("project.json")).unwrap();
-    let too_many_parameters = (0..=LayerEffect::MAX_PARAMETERS)
-        .map(|parameter| parameter.to_string())
-        .collect::<Vec<_>>();
-    let mut arguments = vec!["scene-layer-effect-add", path, "11", "0", "levels"];
-    arguments.extend(too_many_parameters.iter().map(String::as_str));
     assert_failure_contains(
-        &invoke_bounded(&arguments),
-        "effect must not carry more than 32 parameters",
+        &invoke(&[
+            "scene-layer-effect-add",
+            path,
+            "11",
+            "0",
+            "future.effect",
+            "1",
+        ]),
+        "effect must be one of levels, brightness_contrast, saturation, sharpen, flip",
     );
     assert_failure_contains(
-        &invoke(&["scene-layer-effect-add", path, "11", "0", ""]),
-        "effect name must not be empty",
+        &invoke(&[
+            "scene-layer-effect-add",
+            path,
+            "11",
+            "0",
+            "levels",
+            "0",
+            "64",
+            "9",
+        ]),
+        "effect takes exactly 2 parameters",
+    );
+    assert_failure_contains(
+        &invoke(&["scene-layer-effect-add", path, "11", "0", "sharpen", "1001"]),
+        "effect parameter 0 is out of range",
+    );
+    assert_failure_contains(
+        &invoke(&[
+            "scene-layer-effect-add",
+            path,
+            "11",
+            "0",
+            "levels",
+            "64",
+            "64",
+        ]),
+        "levels black point must be below its white point",
     );
     assert_failure_contains(
         &invoke(&["scene-layer-effect-remove", path, "11", "0", "9"]),
@@ -10210,7 +10480,7 @@ fn edit_current_configuration(project: &Path) {
     replace_once(
         &mut source,
         r#""scenes": []"#,
-        r#""scenes": [{"id": 11, "name": "Edited scene", "background": {"red": 0, "green": 0, "blue": 0, "alpha": 255}, "layers": [{"id": 1, "name": "Source", "source": {"type": "input", "id": 1}, "enabled": true, "geometry": {"translation_x": 0, "translation_y": 0, "width": 1280, "height": 720, "rotation": "deg0", "tilt_millidegrees": 0, "anchor_x": 5000, "anchor_y": 5000}, "crop": null, "mask": null, "effects": [], "opacity": 255, "z_order": 0}], "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}}]"#,
+        r#""scenes": [{"id": 11, "name": "Edited scene", "background": {"red": 0, "green": 0, "blue": 0, "alpha": 255}, "layers": [{"id": 1, "name": "Source", "source": {"type": "input", "id": 1}, "enabled": true, "geometry": {"translation_x": 0, "translation_y": 0, "width": 1280, "height": 720, "rotation": "deg0", "tilt_millidegrees": 0, "anchor_x": 5000, "anchor_y": 5000}, "crop": null, "mask": null, "key": null, "effects": [], "opacity": 255, "z_order": 0}], "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}}]"#,
     );
     replace_once(
         &mut source,

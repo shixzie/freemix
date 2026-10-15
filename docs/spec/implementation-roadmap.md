@@ -734,6 +734,37 @@ lifecycle.
 9. Add shortcuts and initial MIDI/OSC/controller support.
 10. Certify Profile A without network contribution.
 
+Current implementation boundary for item 4 (`IN-020`): every scene layer has a
+crop, a transform (position, size, quarter turns, tilt, anchor), a mask, an
+optional key, and an ordered effect list. A key is a chroma key (key colour,
+similarity, smoothness, spill) or a luma key (`low < high` band, softness,
+invert); a layer holds at most eight effects, each one of the reference
+`levels`, `brightness_contrast`, `saturation`, `sharpen`, or `flip` with
+exactly its bounded parameters (schema 41: each layer's `key` and strict
+`effects`). The simulated CPU compositor and the native GPU compositor (a
+per-layer prep pass: crop, key times mask, effects on straight colour, before
+the grade passes) apply them identically per layer before the input and layer
+grades and the transform, within the 64-enabled-layer limit; the native path
+matches the CPU reference within a few codes. Protocol 2.43 carries keys and
+effects in every layout layer and adds the padlocked, undoable, gesture-folding
+`scene_layer_key_set`/`scene_layer_key_clear`/`scene_layer_effects_set` live
+edits. Studio's Layer designer inspector has KEY (None, Chroma, Luma) and
+EFFECTS (add, remove, reorder, per-effect parameters) sections with English
+and Spanish hover help covered by the hover audit, and `freemix-cli` provides
+`scene-layer-key` and the `scene-layer-effect-*` commands locally plus
+`remote-scene-layer-key` and `remote-scene-layer-effects`. The acceptance test
+(`cargo test -p freemix-cli --test scene_layers`) authors one background plus
+ten positioned foreground layers through the CLI, each with its own crop, 2x
+transform, chroma or luma key, and effect, renders them through the compositor,
+and checks every pixel outside the boundary columns against an analytic
+reference. Remaining gaps: key-fill (external matte) and key refinement remain
+CPU-only and are not authorable on scene layers; effects are limited to the
+five reference kinds (no blur, LUT-per-effect, or third-party effects); the
+chroma key colour is chosen with a colour button, presets, and RGB fields (no
+eyedropper, since the designer shows only the server's already-keyed preview);
+and no live-camera or Profile A performance evidence with ten keyed layers has been
+recorded. `IN-020` remains planned.
+
 Current implementation boundary for item 9: native Studio maps unmodified keys
 1–8 to Preview selection for the first eight replicated inputs, C/F to Cut/Fade
 with the current transition duration, B to toggle FTB with its dedicated duration,

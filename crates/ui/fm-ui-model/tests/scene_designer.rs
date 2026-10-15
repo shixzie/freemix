@@ -8,8 +8,9 @@
 use core::num::{NonZeroU32, NonZeroU128};
 
 use fm_protocol::{
-    SceneLayerOperation, WireInputId, WireLayerCrop, WireLayerMask, WireSceneId, WireSceneLayerId,
-    WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout,
+    SceneLayerOperation, WireChromaKey, WireInputId, WireLayerCrop, WireLayerEffect, WireLayerKey,
+    WireLayerMask, WireLumaKey, WireSceneId, WireSceneLayerId, WireSceneLayerOutline,
+    WireSceneLayerSource, WireSceneLayout,
 };
 use fm_types::InputId;
 use fm_ui_model::scene_designer::geometry::{
@@ -20,8 +21,9 @@ use fm_ui_model::scene_designer::snapping::{
     ACTION_SAFE, GuideKind, SnapSettings, TITLE_SAFE, safe_area,
 };
 use fm_ui_model::scene_designer::{
-    EditLabel, Field, LIVE_LAYER_EDITS, MAX_VISIBLE_LAYERS, SceneLayerEdit, SceneLayoutDocument,
-    layout_stamp, wire_geometry,
+    CHROMA_GREEN, EditLabel, Field, LIVE_LAYER_EDITS, LUMA_BLACK, MAX_SCENE_LAYER_EFFECTS,
+    MAX_VISIBLE_LAYERS, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit, SceneLayoutDocument,
+    default_effect, layout_stamp, wire_geometry,
 };
 
 const METRICS: CanvasMetrics = CanvasMetrics {
@@ -71,6 +73,8 @@ fn outline(id: u32, x: i32, y: i32, width: u32, height: u32) -> WireSceneLayerOu
         anchor_y: 5_000,
         z_order: 0,
         crop: None,
+        key: None,
+        effects: Vec::new(),
         mask: None,
     }
 }
@@ -637,4 +641,292 @@ fn a_full_scene_keeps_its_hidden_layers_hidden() {
     document.select(layer_id(65), false);
     assert!(document.set_field(Field::Enabled, 1.0));
     assert_eq!(document.visible_layer_count(), 64);
+}
+
+fn effect(name: &str, parameters: &[i32]) -> WireLayerEffect {
+    WireLayerEffect {
+        name: name.into(),
+        parameters: parameters.to_vec(),
+    }
+}
+
+/// IN-020: the designer starts from the replicated key and effects, and a
+/// change of either restarts the exact preview.
+#[test]
+fn the_designer_starts_from_the_replicated_key_and_effects() {
+    let mut keyed = layout();
+    keyed.layers[1].key = Some(WireLayerKey::Luma(WireLumaKey {
+        low: 20,
+        high: 200,
+        softness: 8,
+        invert: true,
+    }));
+    keyed.layers[1].effects = vec![effect("saturation", &[-40])];
+    assert_ne!(layout_stamp(&keyed), layout_stamp(&layout()));
+    let document = SceneLayoutDocument::new(scene(), &keyed);
+    let pip = document.layer(layer_id(2)).unwrap();
+    assert_eq!(pip.key, keyed.layers[1].key);
+    assert_eq!(pip.effects, keyed.layers[1].effects);
+    assert_eq!(
+        document.field_value(layer_id(2), Field::LumaHigh),
+        Some(200.0)
+    );
+    assert_eq!(
+        document.field_value(layer_id(2), Field::LumaInvert),
+        Some(1.0)
+    );
+    let saturation = Field::EffectParameter {
+        effect: 0,
+        parameter: 0,
+    };
+    assert_eq!(document.field_value(layer_id(2), saturation), Some(-40.0));
+    let missing = Field::EffectParameter {
+        effect: 1,
+        parameter: 0,
+    };
+    assert_eq!(document.field_value(layer_id(2), missing), None);
+}
+
+/// IN-020: choosing a key kind is one step and one live `SetKey`; a
+/// similarity scrub folds into one undo step under one gesture token, and
+/// the next edit opens a new one.
+#[test]
+fn key_edits_send_set_key_and_a_scrub_folds_into_one_gesture() {
+    let mut document = SceneLayoutDocument::new(scene(), &layout());
+    document.select(layer_id(2), false);
+    assert!(document.set_key_kind(Some(true)));
+    assert_eq!(document.undo_label(), Some(EditLabel::Key));
+    let sent = document.take_live_edits();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].layer, layer_id(2));
+    assert_eq!(
+        sent[0].operation,
+        SceneLayerOperation::SetKey(Some(WireLayerKey::Chroma(CHROMA_GREEN)))
+    );
+    assert!(!sent[0].continues);
+    let pick = sent[0].gesture;
+    assert_ne!(pick, 0);
+    // The same kind again keeps the key as it is.
+    assert!(!document.set_key_kind(Some(true)));
+
+    // A similarity scrub: paced sends continue one gesture.
+    document.begin(EditLabel::Field(Field::KeySimilarity));
+    assert!(document.set_field(Field::KeySimilarity, 80.0));
+    let first = document.take_live_edits();
+    assert_eq!(first.len(), 1);
+    assert!(!first[0].continues);
+    let scrub = first[0].gesture;
+    assert_ne!(scrub, 0);
+    assert_ne!(scrub, pick);
+    assert!(document.set_field(Field::KeySimilarity, 300.0));
+    assert!(document.set_field(Field::KeySpill, 12.0));
+    assert!(document.commit());
+    let last = document.take_live_edits();
+    assert_eq!(last.len(), 1);
+    assert!(last[0].continues);
+    assert_eq!(last[0].gesture, scrub);
+    assert_eq!(
+        last[0].operation,
+        SceneLayerOperation::SetKey(Some(WireLayerKey::Chroma(WireChromaKey {
+            similarity: 255,
+            spill: 12,
+            ..CHROMA_GREEN
+        })))
+    );
+    assert_eq!(
+        document.undo_label(),
+        Some(EditLabel::Field(Field::KeySimilarity))
+    );
+    // One undo takes back the whole scrub.
+    assert!(document.undo());
+    assert_eq!(
+        document.layer(layer_id(2)).unwrap().key,
+        Some(WireLayerKey::Chroma(CHROMA_GREEN))
+    );
+    assert_eq!(document.take_live_edits().len(), 1);
+
+    // A luma key: its thresholds never cross, and luma fields leave a
+    // layer without a luma key alone.
+    document.select(layer_id(3), false);
+    assert!(!document.set_field(Field::LumaLow, 40.0));
+    assert!(document.set_key_kind(Some(false)));
+    assert_eq!(
+        document.layer(layer_id(3)).unwrap().key,
+        Some(WireLayerKey::Luma(LUMA_BLACK))
+    );
+    assert!(document.set_field(Field::LumaHigh, 100.0));
+    assert!(document.set_field(Field::LumaLow, 150.0));
+    assert!(document.set_field(Field::LumaInvert, 1.0));
+    assert_eq!(
+        document.layer(layer_id(3)).unwrap().key,
+        Some(WireLayerKey::Luma(WireLumaKey {
+            low: 99,
+            high: 100,
+            softness: LUMA_BLACK.softness,
+            invert: true,
+        }))
+    );
+    assert!(!document.set_key(Some(WireLayerKey::Luma(WireLumaKey {
+        low: 9,
+        high: 9,
+        softness: 0,
+        invert: false,
+    }))));
+    // Removing the key is one step and one `SetKey(None)`.
+    document.take_live_edits();
+    assert!(document.set_key_kind(None));
+    let cleared = document.take_live_edits();
+    assert_eq!(cleared.len(), 1);
+    assert_eq!(cleared[0].operation, SceneLayerOperation::SetKey(None));
+    assert!(!cleared[0].continues);
+}
+
+/// IN-020: effect list edits send the whole list as `SetEffects`; a
+/// parameter scrub folds into one gesture; reorder, removal, the list
+/// limit, and mixed selections behave.
+#[test]
+fn effect_edits_send_set_effects_and_respect_the_limits() {
+    assert_eq!(MAX_SCENE_LAYER_EFFECTS, 8);
+    assert_eq!(default_effect("levels").unwrap().parameters, vec![0, 255]);
+    assert!(default_effect("blur").is_none());
+    for (name, ranges) in SCENE_LAYER_EFFECT_KINDS {
+        let neutral = default_effect(name).unwrap();
+        assert!(neutral.is_valid(), "{name}");
+        assert_eq!(neutral.parameters.len(), ranges.len());
+    }
+
+    let mut document = SceneLayoutDocument::new(scene(), &layout());
+    document.select(layer_id(2), false);
+    assert!(!document.add_effect("blur"));
+    assert!(document.add_effect("levels"));
+    assert_eq!(document.undo_label(), Some(EditLabel::Effects));
+    let sent = document.take_live_edits();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0].operation,
+        SceneLayerOperation::SetEffects(vec![effect("levels", &[0, 255])])
+    );
+    assert!(!sent[0].continues);
+    let added = sent[0].gesture;
+
+    // A black-level scrub stops below the white level and folds.
+    let black = Field::EffectParameter {
+        effect: 0,
+        parameter: 0,
+    };
+    let white = Field::EffectParameter {
+        effect: 0,
+        parameter: 1,
+    };
+    document.begin(EditLabel::Field(black));
+    assert!(document.set_field(black, 30.0));
+    let first = document.take_live_edits();
+    assert!(!first[0].continues);
+    assert_ne!(first[0].gesture, added);
+    assert!(document.set_field(black, 999.0));
+    assert!(document.commit());
+    let last = document.take_live_edits();
+    assert!(last[0].continues);
+    assert_eq!(last[0].gesture, first[0].gesture);
+    assert_eq!(
+        last[0].operation,
+        SceneLayerOperation::SetEffects(vec![effect("levels", &[254, 255])])
+    );
+    assert!(!document.set_field(white, 0.0));
+    assert_eq!(
+        document.layer(layer_id(2)).unwrap().effects,
+        vec![effect("levels", &[254, 255])]
+    );
+
+    // Reorder and remove are one step each.
+    assert!(document.add_effect("flip"));
+    let flip_vertical = Field::EffectParameter {
+        effect: 1,
+        parameter: 1,
+    };
+    assert!(document.set_field(flip_vertical, 1.0));
+    assert!(document.move_effect(1, 0));
+    assert_eq!(document.undo_label(), Some(EditLabel::Effects));
+    document.take_live_edits();
+    assert_eq!(
+        document.layer(layer_id(2)).unwrap().effects,
+        vec![effect("flip", &[0, 1]), effect("levels", &[254, 255])]
+    );
+    assert!(document.remove_effect(1));
+    let removed = document.take_live_edits();
+    assert_eq!(
+        removed[0].operation,
+        SceneLayerOperation::SetEffects(vec![effect("flip", &[0, 1])])
+    );
+
+    // At most eight effects.
+    while document.can_add_effect() {
+        assert!(document.add_effect("sharpen"));
+    }
+    assert_eq!(
+        document.layer(layer_id(2)).unwrap().effects.len(),
+        MAX_SCENE_LAYER_EFFECTS
+    );
+    assert!(!document.add_effect("saturation"));
+    document.take_live_edits();
+
+    // A selection whose effect kinds differ takes no effect edits.
+    document.select(layer_id(3), true);
+    assert!(!document.effects_shared());
+    assert!(!document.can_add_effect());
+    assert!(!document.remove_effect(0));
+    // Layers that share their (empty) list take an effect together.
+    document.select(layer_id(1), false);
+    document.select(layer_id(3), true);
+    assert!(document.effects_shared());
+    assert!(document.add_effect("saturation"));
+    let both = document.take_live_edits();
+    assert_eq!(both.len(), 2);
+    assert_eq!(both[0].gesture, both[1].gesture);
+}
+
+/// IN-020: the export reproduces keys and effect lists with the
+/// `scene-layer-key` and `scene-layer-effect-*` commands.
+#[test]
+fn keys_and_effects_export_as_freemix_cli_commands() {
+    let mut document = SceneLayoutDocument::new(scene(), &layout());
+    document.select(layer_id(2), false);
+    assert!(document.set_key_kind(Some(true)));
+    assert!(document.add_effect("brightness_contrast"));
+    let brightness = Field::EffectParameter {
+        effect: 0,
+        parameter: 0,
+    };
+    assert!(document.set_field(brightness, -20.0));
+    assert!(document.edits().contains(&SceneLayerEdit::Key {
+        index: 1,
+        key: Some(WireLayerKey::Chroma(CHROMA_GREEN)),
+    }));
+    let script = document.cli_script("show.freemix");
+    let lines: Vec<&str> = script.lines().collect();
+    assert!(
+        lines.contains(&"freemix-cli scene-layer-key show.freemix 100 1 chroma 0 255 0 64 32 0")
+    );
+    assert!(lines.contains(&"freemix-cli scene-layer-effect-clear show.freemix 100 1"));
+    assert!(lines.contains(
+        &"freemix-cli scene-layer-effect-add show.freemix 100 1 brightness_contrast -20 0"
+    ));
+    // The whole layout sets every other layer's key and effects too.
+    let layout_script = document.layout_script("show.freemix");
+    let lines: Vec<&str> = layout_script.lines().collect();
+    assert!(lines.contains(&"freemix-cli scene-layer-key show.freemix 100 0 none"));
+    assert!(lines.contains(&"freemix-cli scene-layer-effect-clear show.freemix 100 2"));
+    let luma = SceneLayerEdit::Key {
+        index: 3,
+        key: Some(WireLayerKey::Luma(WireLumaKey {
+            low: 10,
+            high: 240,
+            softness: 5,
+            invert: true,
+        })),
+    };
+    assert_eq!(
+        luma.cli_command("show.freemix", scene()),
+        "freemix-cli scene-layer-key show.freemix 100 3 luma 10 240 5 on"
+    );
 }

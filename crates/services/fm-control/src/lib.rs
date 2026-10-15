@@ -40,9 +40,9 @@ pub use scene_animation::{
     scene_clip_fits_wire, scene_clip_from_wire, scene_clip_to_wire, scene_layout_to_wire,
 };
 pub use scene_layer::{
-    domain_geometry, domain_layer, engine_scene_layer_edit, quarter_turns, wire_crop,
-    wire_geometry, wire_layer_outline, wire_layer_source, wire_layer_spec, wire_mask,
-    wire_scene_layer_edit,
+    domain_effects, domain_geometry, domain_key, domain_layer, engine_scene_layer_edit,
+    quarter_turns, wire_crop, wire_effects, wire_geometry, wire_key, wire_layer_outline,
+    wire_layer_source, wire_layer_spec, wire_mask, wire_scene_layer_edit,
 };
 pub use title_animation::{title_clip_fits_wire, title_clip_from_wire, title_clip_to_wire};
 pub use title_layout::title_layout_to_wire;

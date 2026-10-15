@@ -1228,6 +1228,7 @@ mod tests {
             geometry: LayerGeometry::new(x, y, width, height, Rotation::Deg0),
             crop: None,
             mask: None,
+            key: None,
             effects: Vec::new(),
             opacity: 255,
             z_order: 0,

@@ -9,7 +9,7 @@
 //!   input showing the scene.
 //! * **Undoable** with an exact inverse computed from the scene before it
 //!   ([`fm_model::Scene::layer_change_inverse`]): the previous geometry,
-//!   appearance, crop, mask, z-order, or position; removing an added layer;
+//!   appearance, crop, mask, key, effect list, z-order, or position; removing an added layer;
 //!   adding a removed layer back at its position with its whole design.
 //!   An edit that continues a gesture ([`EngineSceneLayerEdit::continues`])
 //!   folds into the latest undo entry when that entry edits the same
@@ -94,8 +94,8 @@ impl EngineSceneLayerEdit {
     /// Whether this continuing edit folds into the recorded `previous`
     /// edit, whose step gesture `previous_gesture` opened: the same nonzero
     /// gesture, same scene, same layer, and the same property (geometry,
-    /// appearance, crop, mask, or z-order; positions, adds, and removals
-    /// never fold).
+    /// appearance, crop, mask, key, effects, or z-order; positions, adds,
+    /// and removals never fold).
     #[must_use]
     pub fn folds_into(&self, previous: &Self, previous_gesture: u64) -> bool {
         use core::mem::discriminant;
@@ -110,6 +110,8 @@ impl EngineSceneLayerEdit {
                     | SceneLayerChange::Appearance { .. }
                     | SceneLayerChange::Crop(_)
                     | SceneLayerChange::Mask(_)
+                    | SceneLayerChange::Key(_)
+                    | SceneLayerChange::Effects(_)
                     | SceneLayerChange::ZOrder(_)
             )
             && discriminant(&self.change) == discriminant(&previous.change)
@@ -127,7 +129,7 @@ fn rejection(code: RejectionCode, field: &str, issue: &str, message: String) -> 
     Rejection::new(code, message.clone()).with_field(FieldIssue::new(field, issue, message))
 }
 
-fn edit_rejection(error: SceneLayerEditError) -> Rejection {
+fn edit_rejection(error: SceneLayerEditError, change: &SceneLayerChange) -> Rejection {
     let message = error.to_string();
     let (code, field) = match error {
         SceneLayerEditError::UnknownLayer(_) => (RejectionCode::NotFound, "layer"),
@@ -135,15 +137,23 @@ fn edit_rejection(error: SceneLayerEditError) -> Rejection {
         | SceneLayerEditError::LayerAnimated(_)
         | SceneLayerEditError::TooManyEnabledLayers => (RejectionCode::Conflict, "layer"),
         SceneLayerEditError::IndexOutOfRange { .. } => (RejectionCode::InvalidCommand, "index"),
-        SceneLayerEditError::EmptyName => (RejectionCode::InvalidCommand, "spec"),
         SceneLayerEditError::InvalidGeometry => (RejectionCode::InvalidCommand, "geometry"),
         SceneLayerEditError::InvalidCrop | SceneLayerEditError::CropWouldInvalidateMask => {
             (RejectionCode::InvalidCommand, "crop")
         }
         SceneLayerEditError::InvalidMask => (RejectionCode::InvalidCommand, "mask"),
-        SceneLayerEditError::TooManyEffects | SceneLayerEditError::InvalidEffect { .. } => {
-            (RejectionCode::InvalidCommand, "spec")
+        SceneLayerEditError::InvalidKey(_) if matches!(change, SceneLayerChange::Key(_)) => {
+            (RejectionCode::InvalidCommand, "key")
         }
+        SceneLayerEditError::TooManyEffects | SceneLayerEditError::InvalidEffect { .. }
+            if matches!(change, SceneLayerChange::Effects(_)) =>
+        {
+            (RejectionCode::InvalidCommand, "effects")
+        }
+        SceneLayerEditError::EmptyName
+        | SceneLayerEditError::InvalidKey(_)
+        | SceneLayerEditError::TooManyEffects
+        | SceneLayerEditError::InvalidEffect { .. } => (RejectionCode::InvalidCommand, "spec"),
     };
     rejection(code, field, error.code(), message)
 }
@@ -276,7 +286,7 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineSceneLayerEdit) -> Resul
     let (width, height) = (shown.canvas_width, shown.canvas_height);
     scene
         .apply_layer_change(edit.layer, &edit.change, width, height)
-        .map_err(edit_rejection)?;
+        .map_err(|error| edit_rejection(error, &edit.change))?;
     if let Some(shared) = state.scene_mut(edit.scene) {
         shared.scene = Arc::new(scene);
     }

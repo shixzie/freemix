@@ -4,6 +4,7 @@ mod cycles;
 mod display_output;
 mod grade;
 mod input_lifecycle;
+mod layer_key;
 mod media_playback;
 mod playlist;
 mod project;
@@ -42,6 +43,7 @@ pub use input_lifecycle::{
     unique_input_name, validate_input_categories, validate_input_category_name,
     validate_media_asset_uri,
 };
+pub use layer_key::{ChromaLayerKey, LayerKey, LayerKeyError, LumaLayerKey};
 pub use media_playback::{
     DEFAULT_MEDIA_LIVE_EDGE_OFFSET_FRAMES, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_FRAME,
     MAX_MEDIA_IDLE_COMPLETION_REFRESHES, MAX_MEDIA_LIVE_EDGE_OFFSET_FRAMES,

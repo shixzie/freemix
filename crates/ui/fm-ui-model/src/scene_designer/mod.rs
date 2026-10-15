@@ -19,7 +19,8 @@
 //!
 //! The replicated layout (`scene_layout_state`, `scene_layout_changed`)
 //! carries every layer's geometry (quarter turns, tilt, and anchor), crop,
-//! mask, and z-order, and a running server takes live `scene_layer_*`
+//! mask, key (chroma or luma), effect list (Protocol 2.43), and z-order,
+//! and a running server takes live `scene_layer_*`
 //! edits (Protocol 2.39, [`LIVE_LAYER_EDITS`]): the designer sends the
 //! draft while a gesture runs, paced by the window, and the server's undo
 //! takes back a whole gesture of one layer at once.
@@ -38,9 +39,11 @@ use core::hash::{Hash, Hasher};
 use fm_protocol::{WireSceneLayerSource, WireSceneLayout};
 
 pub use document::{
-    DesignLayer, EditLabel, Field, MAX_UNDO_STEPS, SceneLayoutDocument, wire_geometry,
+    CHROMA_GREEN, DesignLayer, EditLabel, Field, LUMA_BLACK, MAX_UNDO_STEPS, SceneLayoutDocument,
+    default_effect, effect_ranges, wire_geometry,
 };
 pub use edits::SceneLayerEdit;
+pub use fm_protocol::{MAX_SCENE_LAYER_EFFECTS, SCENE_LAYER_EFFECT_KINDS};
 
 /// Whether a running server accepts live scene layer edits (Protocol
 /// 2.39): the designer sends its draft as `scene_layer_*` commands
@@ -86,6 +89,7 @@ pub fn layout_stamp(layout: &WireSceneLayout) -> u64 {
                 .map(|mask| (mask.x, mask.y, mask.width, mask.height, mask.invert)),
         )
             .hash(&mut hasher);
+        (layer.key, &layer.effects).hash(&mut hasher);
     }
     hasher.finish()
 }

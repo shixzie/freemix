@@ -13,6 +13,7 @@ use fm_video::{
 };
 
 use crate::native_grade::{NativeGradeCache, NativeGradeError, NativeGradeRenderer};
+use crate::native_layer::{LayerPreparation, NativeLayerRenderer, native_effect};
 use crate::rotate::Tilt;
 use crate::{
     CompositionPlan, FadeToBlackPlan, RectMask, SourceId, StingerBase, StingerFramePlan,
@@ -540,6 +541,7 @@ pub enum NativeCompositionError {
         height: u32,
         maximum: u32,
     },
+    /// A key/fill pair or key refinement; chroma and luma keys are supported.
     UnsupportedKey {
         layer: usize,
     },
@@ -595,7 +597,8 @@ impl fmt::Display for NativeCompositionError {
             Self::UnsupportedKey { layer } => {
                 write!(
                     formatter,
-                    "layer {layer} keys are unsupported by native composition"
+                    "layer {layer} key/fill and key refinement are unsupported by native \
+                     composition"
                 )
             }
             Self::UnsupportedEffect {
@@ -647,10 +650,13 @@ fn grade_error(source: SourceId, error: NativeGradeError) -> NativeCompositionEr
 /// textures. `PlanLayer::alpha_mode` describes pre-normalization/CPU execution
 /// and does not cause additional premultiplication in this executor.
 ///
-/// Layers with a non-identity grade are first graded as whole source frames
-/// by [`NativeGradeRenderer`]; baked LUTs are cached across frames.
+/// Layers with a chroma/luma key or reference effects first run a layer
+/// preparation pass chain over their cropped source; layers with a
+/// non-identity grade are then graded by [`NativeGradeRenderer`] (baked LUTs
+/// are cached across frames).
 pub struct NativeCompositionRenderer {
     pipeline: NativeFullscreenPipeline,
+    layer: NativeLayerRenderer,
     grade: NativeGradeRenderer,
     grade_cache: NativeGradeCache,
 }
@@ -679,6 +685,7 @@ impl NativeCompositionRenderer {
                 },
             )
             .await?;
+        let layer = NativeLayerRenderer::new(context).await?;
         let grade = NativeGradeRenderer::new(context)
             .await
             .map_err(|error| match error {
@@ -689,6 +696,7 @@ impl NativeCompositionRenderer {
             })?;
         Ok(Self {
             pipeline,
+            layer,
             grade,
             grade_cache: NativeGradeCache::default(),
         })
@@ -700,11 +708,22 @@ impl NativeCompositionRenderer {
     /// premultiplied-alpha textures. Compositor-owned plan, source identifier,
     /// format, crop, and transform validation completes before output allocation;
     /// opaque GPU context ownership is validated by `fm-gpu` at submission.
-    /// Graded layers first run one grade pass per grade (the source grade,
-    /// then the layer grade) over their whole source
-    /// texture (grades precede crop, transform, mask, and opacity, as on the
-    /// CPU path). Layers are then submitted in plan order as one bounded,
-    /// premultiplied source-over render pass without readback.
+    ///
+    /// A layer with a chroma/luma key or a non-`passthrough` reference effect
+    /// is first prepared in the CPU reference order: one pass over the crop
+    /// computes the key alpha times the rect-mask alpha and chroma spill on
+    /// straight 8-bit sRGB codes, then one pass per effect runs its exact
+    /// integer formula (see [`crate::ReferenceEffect`]); the crop-sized result
+    /// replaces the source, with crop and mask already applied. Graded layers
+    /// then run one grade pass per grade (the source grade, then the layer
+    /// grade) over that prepared texture, or over the whole source texture
+    /// for unprepared layers (grades commute with crop and precede
+    /// transform, mask, and opacity, as on the CPU path). Layers are then
+    /// submitted in plan order as one bounded, premultiplied source-over
+    /// render pass without readback.
+    ///
+    /// Key/fill layers, key refinements, unparseable effect descriptors, and
+    /// safe-area guides are rejected before any GPU allocation.
     ///
     /// # Errors
     ///
@@ -718,7 +737,16 @@ impl NativeCompositionRenderer {
         let prepared = validate_composition(plan, sources)?;
         let mut graded = Vec::with_capacity(prepared.len());
         for layer in &prepared {
-            graded.push(self.grade_layer(context, layer).await?);
+            let keyed = match &layer.preparation {
+                Some(preparation) => Some(
+                    self.layer
+                        .prepare(context, layer.texture, preparation)
+                        .await?,
+                ),
+                None => None,
+            };
+            let source = keyed.as_ref().unwrap_or(layer.texture);
+            graded.push(self.grade_layer(context, layer, source).await?.or(keyed));
         }
         let output = context
             .create_rgba16_float_render_target(plan.width(), plan.height())
@@ -751,6 +779,7 @@ impl NativeCompositionRenderer {
         &self,
         context: &NativeContext,
         layer: &PreparedLayer<'_>,
+        source: &NativeTexture,
     ) -> Result<Option<NativeTexture>, NativeCompositionError> {
         let mut graded: Option<NativeTexture> = None;
         for grade in &layer.grades {
@@ -764,7 +793,7 @@ impl NativeCompositionRenderer {
             };
             let texture = self
                 .grade
-                .apply(context, &lut, graded.as_ref().unwrap_or(layer.texture))
+                .apply(context, &lut, graded.as_ref().unwrap_or(source))
                 .await
                 .map_err(|error| grade_error(layer.source, error))?;
             graded = Some(texture);
@@ -778,6 +807,8 @@ struct PreparedLayer<'a> {
     texture: &'a NativeTexture,
     /// Non-identity grades in order: the source grade, then the layer's own.
     grades: Vec<&'a Arc<CompiledGrade>>,
+    /// Key/mask/effect passes producing a crop-sized texture, if any.
+    preparation: Option<LayerPreparation>,
     uniform: [u8; COMPOSITION_UNIFORM_SIZE],
 }
 
@@ -813,6 +844,15 @@ fn validate_composition<'a>(
             || transform_is_visible(plan.width(), plan.height(), layer.transform()),
             |tilt| tilt.touches(plan.width(), plan.height()),
         );
+        let preparation = LayerPreparation::plan(layer_index, layer, crop)?;
+        // A prepared texture is the crop with its mask already applied.
+        let (crop, mask) = match &preparation {
+            Some(preparation) => {
+                let (width, height) = preparation.size();
+                (CropRect::new(0, 0, width, height), None)
+            }
+            None => (crop, layer.mask()),
+        };
         prepared.push(PreparedLayer {
             source: layer.source(),
             texture,
@@ -822,10 +862,11 @@ fn validate_composition<'a>(
                 .chain(layer.layer_grade())
                 .filter(|grade| !grade.is_identity())
                 .collect(),
+            preparation,
             uniform: encode_composition_uniform(
                 layer.transform(),
                 crop,
-                layer.mask(),
+                mask,
                 layer.opacity(),
                 visible,
                 layer.inset_border_width(),
@@ -857,17 +898,11 @@ fn validate_supported_work(plan: &CompositionPlan) -> Result<(), NativeCompositi
         });
     }
     for (layer_index, layer) in plan.layers().iter().enumerate() {
-        if layer.key().is_some() || layer.key_fill().is_some() {
+        if layer.key_fill().is_some() || layer.key_refinement().is_some() {
             return Err(NativeCompositionError::UnsupportedKey { layer: layer_index });
         }
         for (effect_index, effect) in layer.effects().iter().enumerate() {
-            if effect.name() != "passthrough" || !effect.parameters().is_empty() {
-                return Err(NativeCompositionError::UnsupportedEffect {
-                    layer: layer_index,
-                    effect: effect_index,
-                    name: effect.name().to_owned(),
-                });
-            }
+            native_effect(layer_index, effect_index, effect)?;
         }
     }
     Ok(())
@@ -1677,8 +1712,8 @@ mod tests {
     }
 
     #[test]
-    fn rect_masks_and_grades_are_supported_while_other_native_plan_features_return_indexed_errors()
-    {
+    fn masks_keys_effects_and_grades_are_supported_while_other_native_plan_features_return_indexed_errors()
+     {
         let source = SourceId::new(1);
         let base = transform(0, 0, 1, 1, Rotation::Deg0);
 
@@ -1687,25 +1722,44 @@ mod tests {
         );
         assert_eq!(validate_supported_work(&mask), Ok(()));
 
-        let key = composition_plan(
-            SourceLayer::new(source, 0, base).with_key(Key::Luma(LumaKey::new(1, 2, false))),
+        let keyed = composition_plan(
+            SourceLayer::new(source, 0, base)
+                .with_key(Key::Luma(LumaKey::new(1, 2, false).with_high(200)))
+                .with_effect(Effect::passthrough())
+                .with_effect(Effect::new("sharpen", vec![500]))
+                .with_effect(Effect::new("flip", vec![1, 1])),
+        );
+        assert_eq!(validate_supported_work(&keyed), Ok(()));
+
+        let refined = composition_plan(
+            SourceLayer::new(source, 0, base)
+                .with_key(Key::Luma(LumaKey::new(1, 2, false)))
+                .with_key_refinement(crate::KeyRefinement::default()),
         );
         assert_eq!(
-            validate_supported_work(&key),
+            validate_supported_work(&refined),
             Err(NativeCompositionError::UnsupportedKey { layer: 0 })
         );
 
-        let effect = composition_plan(
-            SourceLayer::new(source, 0, base).with_effect(Effect::new("blur", vec![1])),
-        );
-        assert_eq!(
-            validate_supported_work(&effect),
-            Err(NativeCompositionError::UnsupportedEffect {
-                layer: 0,
-                effect: 0,
-                name: "blur".to_owned(),
-            })
-        );
+        for (name, parameters) in [
+            ("blur", vec![1]),
+            ("levels", vec![10, 10]),
+            ("passthrough", vec![1]),
+        ] {
+            let effect = composition_plan(
+                SourceLayer::new(source, 0, base)
+                    .with_effect(Effect::passthrough())
+                    .with_effect(Effect::new(name, parameters)),
+            );
+            assert_eq!(
+                validate_supported_work(&effect),
+                Err(NativeCompositionError::UnsupportedEffect {
+                    layer: 0,
+                    effect: 1,
+                    name: name.to_owned(),
+                })
+            );
+        }
 
         let identity = composition_plan(
             SourceLayer::new(source, 0, base)

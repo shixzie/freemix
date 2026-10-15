@@ -53,6 +53,8 @@ fn outline(id: u32, x: i32, y: i32, width: u32, height: u32) -> WireSceneLayerOu
         anchor_y: 5_000,
         z_order: 0,
         crop: None,
+        key: None,
+        effects: Vec::new(),
         mask: None,
     }
 }

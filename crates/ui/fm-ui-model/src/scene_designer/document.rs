@@ -19,8 +19,10 @@
 use std::collections::BTreeSet;
 
 use fm_protocol::{
-    SceneLayerEdit as WireSceneLayerEdit, SceneLayerOperation, WireLayerCrop, WireLayerGeometry,
-    WireLayerMask, WireSceneId, WireSceneLayerId, WireSceneLayerSource, WireSceneLayout,
+    MAX_SCENE_LAYER_EFFECTS, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit as WireSceneLayerEdit,
+    SceneLayerOperation, WireChromaKey, WireLayerCrop, WireLayerEffect, WireLayerGeometry,
+    WireLayerKey, WireLayerMask, WireLumaKey, WireSceneId, WireSceneLayerId, WireSceneLayerSource,
+    WireSceneLayout,
 };
 
 use super::edits::SceneLayerEdit;
@@ -48,6 +50,57 @@ pub struct DesignLayer {
     /// Drawing order key: layers draw by ascending z-order, ties in list
     /// order.
     pub z_order: i32,
+    /// The chroma or luma key, if any (Protocol 2.43).
+    pub key: Option<WireLayerKey>,
+    /// The ordered video effects, at most [`MAX_SCENE_LAYER_EFFECTS`].
+    pub effects: Vec<WireLayerEffect>,
+}
+
+/// The key a layer gets when the operator picks a chroma key: pure green
+/// with moderate tolerances (the project model's `ChromaLayerKey::GREEN`).
+pub const CHROMA_GREEN: WireChromaKey = WireChromaKey {
+    red: 0,
+    green: 255,
+    blue: 0,
+    similarity: 64,
+    smoothness: 32,
+    spill: 0,
+};
+
+/// The key a layer gets when the operator picks a luma key: removes black
+/// (the project model's `LumaLayerKey::BLACK`).
+pub const LUMA_BLACK: WireLumaKey = WireLumaKey {
+    low: 16,
+    high: 255,
+    softness: 32,
+    invert: false,
+};
+
+/// The inclusive range of every parameter of effect kind `name`, in
+/// order, or `None` for a kind the protocol does not know.
+#[must_use]
+pub fn effect_ranges(name: &str) -> Option<&'static [(i32, i32)]> {
+    SCENE_LAYER_EFFECT_KINDS
+        .iter()
+        .find(|(kind, _)| *kind == name)
+        .map(|(_, ranges)| *ranges)
+}
+
+/// A new effect of kind `name` that leaves the picture as it is (levels
+/// spans the whole range, every other parameter is zero), or `None` for a
+/// kind the protocol does not know.
+#[must_use]
+pub fn default_effect(name: &str) -> Option<WireLayerEffect> {
+    let ranges = effect_ranges(name)?;
+    let parameters = if name == "levels" {
+        vec![0, 255]
+    } else {
+        vec![0; ranges.len()]
+    };
+    Some(WireLayerEffect {
+        name: name.to_owned(),
+        parameters,
+    })
 }
 
 /// What an undo step did, for the Undo and Redo tooltips.
@@ -61,6 +114,12 @@ pub enum EditLabel {
     Crop,
     Field(Field),
     Reorder,
+    /// The key was added, changed in kind, or removed.
+    Key,
+    /// The chroma key colour was picked.
+    KeyColour,
+    /// An effect was added, removed, or moved.
+    Effects,
 }
 
 /// A numeric or switch property the inspector edits.
@@ -103,6 +162,30 @@ pub enum Field {
     Masked,
     /// Whether the mask keeps the outside (1) or the inside (0).
     MaskInverted,
+    /// Chroma key colour, `0..=255` each (chroma keys only).
+    KeyRed,
+    KeyGreen,
+    KeyBlue,
+    /// Chroma key tolerance around the colour, `0..=255`.
+    KeySimilarity,
+    /// Chroma key alpha ramp width, `0..=255`.
+    KeySmoothness,
+    /// Chroma key spill suppression, `0..=255`.
+    KeySpill,
+    /// Luma key lower threshold, below the upper one (luma keys only).
+    LumaLow,
+    /// Luma key upper threshold, above the lower one.
+    LumaHigh,
+    /// Luma key ramp width, `0..=255`.
+    LumaSoftness,
+    /// Whether the luma key keeps the band (1) or removes it (0).
+    LumaInvert,
+    /// Parameter `parameter` of the effect at list position `effect`,
+    /// within its kind's range (a `levels` black stays below its white).
+    EffectParameter {
+        effect: u8,
+        parameter: u8,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -156,6 +239,8 @@ pub(super) enum LiveProperty {
     Appearance,
     Crop,
     Mask,
+    Key,
+    Effects,
     ZOrder,
 }
 
@@ -195,6 +280,8 @@ fn layers_of(layout: &WireSceneLayout) -> Vec<DesignLayer> {
                 inverted: mask.invert,
             }),
             z_order: outline.z_order,
+            key: outline.key,
+            effects: outline.effects.clone(),
         })
         .collect()
 }
@@ -342,6 +429,20 @@ fn live_operations(
         }
         if mask_changed && !mask_first {
             operations.push((id, Some(LiveProperty::Mask), wire_mask(after.mask)));
+        }
+        if before.key != after.key {
+            operations.push((
+                id,
+                Some(LiveProperty::Key),
+                SceneLayerOperation::SetKey(after.key),
+            ));
+        }
+        if before.effects != after.effects {
+            operations.push((
+                id,
+                Some(LiveProperty::Effects),
+                SceneLayerOperation::SetEffects(after.effects.clone()),
+            ));
         }
         if before.z_order != after.z_order {
             operations.push((
@@ -616,6 +717,14 @@ impl SceneLayoutDocument {
         }
     }
 
+    /// The label of the open edit, if one is open.
+    #[must_use]
+    pub fn editing_label(&self) -> Option<EditLabel> {
+        self.transaction
+            .as_ref()
+            .map(|transaction| transaction.label)
+    }
+
     /// Whether an edit (field scrub or gesture) is open.
     #[must_use]
     pub const fn editing(&self) -> bool {
@@ -728,6 +837,44 @@ impl SceneLayoutDocument {
             Field::Enabled => f64::from(u8::from(layer.enabled)),
             Field::Masked => f64::from(u8::from(mask.is_some())),
             Field::MaskInverted => f64::from(u8::from(mask.is_some_and(|mask| mask.inverted))),
+            Field::KeyRed
+            | Field::KeyGreen
+            | Field::KeyBlue
+            | Field::KeySimilarity
+            | Field::KeySmoothness
+            | Field::KeySpill => {
+                let chroma = match layer.key {
+                    Some(WireLayerKey::Chroma(chroma)) => chroma,
+                    _ => CHROMA_GREEN,
+                };
+                f64::from(match field {
+                    Field::KeyRed => chroma.red,
+                    Field::KeyGreen => chroma.green,
+                    Field::KeyBlue => chroma.blue,
+                    Field::KeySimilarity => chroma.similarity,
+                    Field::KeySmoothness => chroma.smoothness,
+                    _ => chroma.spill,
+                })
+            }
+            Field::LumaLow | Field::LumaHigh | Field::LumaSoftness | Field::LumaInvert => {
+                let luma = match layer.key {
+                    Some(WireLayerKey::Luma(luma)) => luma,
+                    _ => LUMA_BLACK,
+                };
+                f64::from(match field {
+                    Field::LumaLow => luma.low,
+                    Field::LumaHigh => luma.high,
+                    Field::LumaSoftness => luma.softness,
+                    _ => u8::from(luma.invert),
+                })
+            }
+            Field::EffectParameter { effect, parameter } => f64::from(
+                *layer
+                    .effects
+                    .get(usize::from(effect))?
+                    .parameters
+                    .get(usize::from(parameter))?,
+            ),
         })
     }
 
@@ -789,6 +936,146 @@ impl SceneLayoutDocument {
             }
         }
         self.commit()
+    }
+
+    // Key and effects.
+
+    /// Applies `edit` to every selected layer as one step labelled `label`
+    /// (joining the open step instead when one is open). Returns whether
+    /// anything changed.
+    fn edit_selected(&mut self, label: EditLabel, mut edit: impl FnMut(&mut DesignLayer)) -> bool {
+        let own_step = self.transaction.is_none();
+        if own_step {
+            self.begin(label);
+        }
+        let selection = self.selection.clone();
+        let mut changed = false;
+        for id in selection {
+            if let Some(layer) = self.layers.iter_mut().find(|layer| layer.id == id) {
+                let before = layer.clone();
+                edit(layer);
+                changed |= *layer != before;
+            }
+        }
+        if own_step {
+            self.commit();
+        }
+        changed
+    }
+
+    /// Sets (`Some`) or removes every selected layer's key as one step.
+    /// An invalid key (a luma key whose low is not below its high) changes
+    /// nothing.
+    pub fn set_key(&mut self, key: Option<WireLayerKey>) -> bool {
+        if key.is_some_and(|key| !key.is_valid()) || self.selection.is_empty() {
+            return false;
+        }
+        self.edit_selected(EditLabel::Key, |layer| layer.key = key)
+    }
+
+    /// Sets the key colour of every selected layer with a chroma key,
+    /// joining the open step (a colour picker drag) or making one of its
+    /// own ([`EditLabel::KeyColour`]).
+    pub fn set_key_colour(&mut self, [red, green, blue]: [u8; 3]) -> bool {
+        self.edit_selected(EditLabel::KeyColour, |layer| {
+            if let Some(WireLayerKey::Chroma(chroma)) = &mut layer.key {
+                (chroma.red, chroma.green, chroma.blue) = (red, green, blue);
+            }
+        })
+    }
+
+    /// Gives every selected layer no key (`None`), a chroma key
+    /// (`Some(true)`), or a luma key (`Some(false)`) as one step, keeping
+    /// a key already of the chosen kind and starting any other at
+    /// [`CHROMA_GREEN`] or [`LUMA_BLACK`].
+    pub fn set_key_kind(&mut self, chroma: Option<bool>) -> bool {
+        if self.selection.is_empty() {
+            return false;
+        }
+        self.edit_selected(EditLabel::Key, |layer| {
+            layer.key = match (chroma, layer.key) {
+                (None, _) => None,
+                (Some(true), Some(key @ WireLayerKey::Chroma(_)))
+                | (Some(false), Some(key @ WireLayerKey::Luma(_))) => Some(key),
+                (Some(true), _) => Some(WireLayerKey::Chroma(CHROMA_GREEN)),
+                (Some(false), _) => Some(WireLayerKey::Luma(LUMA_BLACK)),
+            };
+        })
+    }
+
+    /// Whether every selected layer carries the same effect kinds in the
+    /// same order, so effect edits address the same effect on each (true
+    /// with nothing selected).
+    #[must_use]
+    pub fn effects_shared(&self) -> bool {
+        let mut kinds = self.selection.iter().filter_map(|id| {
+            self.layer(*id).map(|layer| {
+                layer
+                    .effects
+                    .iter()
+                    .map(|effect| effect.name.as_str())
+                    .collect::<Vec<_>>()
+            })
+        });
+        let Some(first) = kinds.next() else {
+            return true;
+        };
+        kinds.all(|other| other == first)
+    }
+
+    /// Whether an effect can be added to the selection: a layer is
+    /// selected, the selected layers share their effects, and none holds
+    /// [`MAX_SCENE_LAYER_EFFECTS`] already.
+    #[must_use]
+    pub fn can_add_effect(&self) -> bool {
+        !self.selection.is_empty()
+            && self.effects_shared()
+            && self.selection.iter().all(|id| {
+                self.layer(*id)
+                    .is_some_and(|layer| layer.effects.len() < MAX_SCENE_LAYER_EFFECTS)
+            })
+    }
+
+    /// Appends a neutral effect of kind `name` ([`default_effect`]) to every
+    /// selected layer as one step; `false` for an unknown kind or when
+    /// [`Self::can_add_effect`] does not hold.
+    pub fn add_effect(&mut self, name: &str) -> bool {
+        let Some(effect) = default_effect(name) else {
+            return false;
+        };
+        if !self.can_add_effect() {
+            return false;
+        }
+        self.edit_selected(EditLabel::Effects, |layer| {
+            layer.effects.push(effect.clone());
+        })
+    }
+
+    /// Removes the effect at list position `index` from every selected
+    /// layer as one step (the selection must share its effects).
+    pub fn remove_effect(&mut self, index: usize) -> bool {
+        if !self.effects_shared() {
+            return false;
+        }
+        self.edit_selected(EditLabel::Effects, |layer| {
+            if index < layer.effects.len() {
+                layer.effects.remove(index);
+            }
+        })
+    }
+
+    /// Moves the effect at list position `from` to position `to` on every
+    /// selected layer as one step (effects apply in list order).
+    pub fn move_effect(&mut self, from: usize, to: usize) -> bool {
+        if from == to || !self.effects_shared() {
+            return false;
+        }
+        self.edit_selected(EditLabel::Effects, |layer| {
+            if from < layer.effects.len() && to < layer.effects.len() {
+                let effect = layer.effects.remove(from);
+                layer.effects.insert(to, effect);
+            }
+        })
     }
 
     // Stacking order.
@@ -880,7 +1167,7 @@ impl SceneLayoutDocument {
     /// The edits that turn the server's layout into the draft, in an order
     /// that applies cleanly: stacking moves first (by the server's layer
     /// indices as they shift), then each changed layer's geometry,
-    /// appearance, mask clear, crop, and mask, by final index.
+    /// appearance, mask clear, crop, mask, key, and effect list, by final index.
     #[must_use]
     pub fn edits(&self) -> Vec<SceneLayerEdit> {
         let mut edits = Vec::new();
@@ -945,6 +1232,15 @@ impl SceneLayoutDocument {
                     mask: Some(mask),
                 });
             }
+            if before.key != after.key {
+                edits.push(SceneLayerEdit::Key {
+                    index,
+                    key: after.key,
+                });
+            }
+            if before.effects != after.effects {
+                push_effects(&mut edits, index, &after.effects);
+            }
         }
         edits
     }
@@ -961,7 +1257,8 @@ impl SceneLayoutDocument {
     }
 
     /// Every layer's whole design as edit commands, by index: its
-    /// geometry, appearance, mask clear, crop, mask, and z-order. Applied
+    /// geometry, appearance, mask clear, crop, mask, key, effect list, and
+    /// z-order. Applied
     /// to a scene with the same layers in the same order, they reproduce
     /// the draft's layout.
     #[must_use]
@@ -988,6 +1285,11 @@ impl SceneLayoutDocument {
                     mask: layer.mask,
                 });
             }
+            edits.push(SceneLayerEdit::Key {
+                index,
+                key: layer.key,
+            });
+            push_effects(&mut edits, index, &layer.effects);
             edits.push(SceneLayerEdit::ZOrder {
                 index,
                 z_order: layer.z_order,
@@ -1012,6 +1314,16 @@ impl SceneLayoutDocument {
     pub fn centre(&self, id: WireSceneLayerId) -> Option<Point> {
         self.layer(id).map(|layer| layer.placement.frame().centre)
     }
+}
+
+/// The commands that make the layer at `index` carry exactly `effects`:
+/// a clear, then each effect appended in order.
+fn push_effects(edits: &mut Vec<SceneLayerEdit>, index: usize, effects: &[WireLayerEffect]) {
+    edits.push(SceneLayerEdit::ClearEffects { index });
+    edits.extend(effects.iter().map(|effect| SceneLayerEdit::AddEffect {
+        index,
+        effect: effect.clone(),
+    }));
 }
 
 /// Applies one field value to `layer` on a `canvas`.
@@ -1121,5 +1433,70 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
                 mask.inverted = value >= 0.5;
             }
         }
+        Field::KeyRed
+        | Field::KeyGreen
+        | Field::KeyBlue
+        | Field::KeySimilarity
+        | Field::KeySmoothness
+        | Field::KeySpill => {
+            if let Some(WireLayerKey::Chroma(chroma)) = &mut layer.key {
+                let value = to_u8(value, 0, u8::MAX);
+                match field {
+                    Field::KeyRed => chroma.red = value,
+                    Field::KeyGreen => chroma.green = value,
+                    Field::KeyBlue => chroma.blue = value,
+                    Field::KeySimilarity => chroma.similarity = value,
+                    Field::KeySmoothness => chroma.smoothness = value,
+                    _ => chroma.spill = value,
+                }
+            }
+        }
+        Field::LumaLow | Field::LumaHigh | Field::LumaSoftness | Field::LumaInvert => {
+            if let Some(WireLayerKey::Luma(luma)) = &mut layer.key {
+                match field {
+                    Field::LumaLow => luma.low = to_u8(value, 0, luma.high.saturating_sub(1)),
+                    Field::LumaHigh => {
+                        luma.high = to_u8(value, luma.low.saturating_add(1), u8::MAX);
+                    }
+                    Field::LumaSoftness => luma.softness = to_u8(value, 0, u8::MAX),
+                    _ => luma.invert = value >= 0.5,
+                }
+            }
+        }
+        Field::EffectParameter { effect, parameter } => {
+            set_effect_parameter(layer, usize::from(effect), usize::from(parameter), value);
+        }
     }
+}
+
+/// Sets parameter `parameter` of the layer's effect at `effect` within its
+/// kind's range; a `levels` black stays below its white.
+fn set_effect_parameter(layer: &mut DesignLayer, effect: usize, parameter: usize, value: f64) {
+    let Some(effect) = layer.effects.get_mut(effect) else {
+        return;
+    };
+    let Some(&(mut minimum, mut maximum)) =
+        effect_ranges(&effect.name).and_then(|ranges| ranges.get(parameter))
+    else {
+        return;
+    };
+    if parameter >= effect.parameters.len() {
+        return;
+    }
+    if effect.name == "levels" && effect.parameters.len() == 2 {
+        if parameter == 0 {
+            maximum = maximum.min(effect.parameters[1].saturating_sub(1));
+        } else {
+            minimum = minimum.max(effect.parameters[0].saturating_add(1));
+        }
+    }
+    effect.parameters[parameter] = to_i32(value).clamp(minimum, maximum.max(minimum));
+}
+
+/// `value` rounded into `minimum..=maximum` as a byte.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Clamped first.
+fn to_u8(value: f64, minimum: u8, maximum: u8) -> u8 {
+    value
+        .round()
+        .clamp(f64::from(minimum), f64::from(maximum.max(minimum))) as u8
 }

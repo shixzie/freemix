@@ -11,6 +11,8 @@ mod multiview;
 mod native;
 #[cfg(feature = "native-wgpu")]
 mod native_grade;
+#[cfg(feature = "native-wgpu")]
+mod native_layer;
 mod plan;
 mod rotate;
 mod safe_area;

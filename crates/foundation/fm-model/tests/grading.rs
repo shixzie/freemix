@@ -391,6 +391,7 @@ fn scene_project() -> Project {
                     geometry: fm_model::LayerGeometry::new(0, 0, 32, 18, fm_model::Rotation::Deg0),
                     crop: None,
                     mask: None,
+                    key: None,
                     effects: Vec::new(),
                     opacity: u8::MAX,
                     z_order: 0,

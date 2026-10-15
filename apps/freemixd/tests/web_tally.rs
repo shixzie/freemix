@@ -158,6 +158,7 @@ fn create_project(path: &Path) {
             geometry: LayerGeometry::new(0, 0, 1_280, 720, Rotation::Deg0),
             crop: None,
             mask: None,
+            key: None,
             effects: Vec::new(),
             opacity: u8::MAX,
             z_order: 0,

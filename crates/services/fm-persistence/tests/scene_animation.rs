@@ -73,6 +73,7 @@ fn layer(id: u32, name: &str, x: i32) -> Layer {
         geometry: LayerGeometry::new(x, 0, 8, 9, Rotation::Deg0),
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: u8::MAX,
         z_order: 0,
@@ -179,7 +180,7 @@ fn scene_animations_and_layer_ids_round_trip_exactly() {
     let expected = stored(project());
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 40,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 41,\n"));
     assert!(
         encoded.contains("{\n            \"id\": 9,\n            \"name\": \"Right\""),
         "{encoded}"

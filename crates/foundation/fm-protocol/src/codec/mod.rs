@@ -24,7 +24,7 @@ use core::fmt;
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
 pub const MAX_FIELDS_PER_MESSAGE: usize = 64;
 pub const MAX_FIELD_NAME_BYTES: usize = 64;
-pub const MAX_FIELD_VALUE_BYTES: usize = 48 * 1024;
+pub const MAX_FIELD_VALUE_BYTES: usize = 56 * 1024;
 pub const MAX_LIST_ITEMS: usize = 256;
 pub const MAX_BATCH_EVENTS: usize = 256;
 pub const MAX_MESSAGES_PER_PUSH: usize = 1024;

@@ -102,9 +102,9 @@ pub use monitor_image::{
     decode_qoi_rgba, encode_qoi_rgb, encode_qoi_rgba, monitor_frame_parts, title_preview_parts,
 };
 pub use scene_layer::{
-    MAX_SCENE_LAYER_EFFECT_NAME_BYTES, MAX_SCENE_LAYER_EFFECT_PARAMETERS, MAX_SCENE_LAYER_EFFECTS,
-    MAX_SCENE_LAYER_TILT_MILLIDEGREES, MIN_SCENE_LAYER_TILT_MILLIDEGREES,
-    SCENE_LAYER_ANCHOR_CENTER, SCENE_LAYER_ANCHOR_MAX, SceneLayerEdit, SceneLayerOperation,
-    WireLayerCrop, WireLayerEffect, WireLayerGeometry, WireLayerMask, WireSceneLayerSpec,
+    MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_TILT_MILLIDEGREES, MIN_SCENE_LAYER_TILT_MILLIDEGREES,
+    SCENE_LAYER_ANCHOR_CENTER, SCENE_LAYER_ANCHOR_MAX, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit,
+    SceneLayerOperation, WireChromaKey, WireLayerCrop, WireLayerEffect, WireLayerGeometry,
+    WireLayerKey, WireLayerMask, WireLumaKey,
 };
 pub use version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};

@@ -4314,6 +4314,7 @@ fn scene_control() -> (ControlService, fm_model::Scene) {
         geometry: LayerGeometry::new(100, 50, 640, 360, rotation),
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: 200,
         z_order: 0,
@@ -4436,6 +4437,8 @@ fn scene_animation_edits_are_checked_project_edits_with_state_records_and_undo()
             anchor_y: 5_000,
             z_order: 0,
             crop: None,
+            key: None,
+            effects: Vec::new(),
             mask: None,
         }
     );

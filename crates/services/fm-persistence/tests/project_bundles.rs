@@ -135,6 +135,7 @@ fn layer(name: &str, source: SourceRef) -> Layer {
         geometry: LayerGeometry::new(0, 0, 16, 9, Rotation::Deg0),
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: 255,
         z_order: 0,

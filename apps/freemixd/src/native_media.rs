@@ -230,6 +230,9 @@ fn native_scene_composition(
                     .inverted(mask.invert),
             );
         }
+        if let Some(key) = layer.key {
+            native_layer = native_layer.with_key(native_key(key));
+        }
         for effect in &layer.effects {
             native_layer = native_layer.with_effect(CompositorEffect::new(
                 effect.name.clone(),
@@ -251,6 +254,23 @@ fn native_scene_composition(
         }
     })?;
     Ok(composition)
+}
+
+/// `key` as the compositor's chroma or luma key (IN-020).
+fn native_key(key: fm_model::LayerKey) -> fm_compositor::Key {
+    match key {
+        fm_model::LayerKey::Chroma(chroma) => {
+            fm_compositor::Key::Chroma(fm_compositor::ChromaKey::new(
+                fm_compositor::Rgba8::new(chroma.red, chroma.green, chroma.blue, u8::MAX),
+                chroma.similarity,
+                chroma.smoothness,
+                chroma.spill,
+            ))
+        }
+        fm_model::LayerKey::Luma(luma) => fm_compositor::Key::Luma(
+            fm_compositor::LumaKey::new(luma.low, luma.softness, luma.invert).with_high(luma.high),
+        ),
+    }
 }
 
 /// The compiled grades a native scene composition attaches to its layers
@@ -8490,6 +8510,7 @@ mod tests {
             geometry: LayerGeometry::new(0, 0, 4, 2, Rotation::Deg0),
             crop: None,
             mask: None,
+            key: None,
             effects: Vec::new(),
             opacity: u8::MAX,
             z_order,
@@ -9615,9 +9636,15 @@ mod tests {
                 geometry: LayerGeometry::new(-7, 9, 3, 2, Rotation::Deg270),
                 crop: Some(fm_model::CropRect::new(1, 0, 2, 2)),
                 mask: Some(fm_model::RectMask::new(1, 0, 1, 2).inverted(true)),
+                key: Some(fm_model::LayerKey::Luma(fm_model::LumaLayerKey {
+                    low: 16,
+                    high: 235,
+                    softness: 8,
+                    invert: true,
+                })),
                 effects: vec![
                     fm_model::LayerEffect::new("levels", vec![0, 200]),
-                    fm_model::LayerEffect::new("future.effect", vec![-1, 7]),
+                    fm_model::LayerEffect::new("flip", vec![1, 0]),
                 ],
                 opacity: 123,
                 z_order: -4,
@@ -9648,9 +9675,15 @@ mod tests {
         );
         let expected_effects = vec![
             CompositorEffect::new("levels", vec![0, 200]),
-            CompositorEffect::new("future.effect", vec![-1, 7]),
+            CompositorEffect::new("flip", vec![1, 0]),
         ];
         assert_eq!(mapped.effects(), expected_effects.as_slice());
+        assert_eq!(
+            mapped.key(),
+            Some(fm_compositor::Key::Luma(
+                fm_compositor::LumaKey::new(16, 8, true).with_high(235)
+            ))
+        );
         assert_eq!(mapped.opacity(), 123);
     }
 
@@ -9672,6 +9705,7 @@ mod tests {
                     geometry: LayerGeometry::new(1, 0, 3, 2, Rotation::Deg180),
                     crop: Some(fm_model::CropRect::new(1, 0, 3, 2)),
                     mask,
+                    key: None,
                     effects: Vec::new(),
                     opacity: u8::MAX,
                     z_order: 0,

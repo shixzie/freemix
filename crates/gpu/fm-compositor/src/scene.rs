@@ -174,23 +174,40 @@ impl ChromaKey {
 /// `luma <= threshold`; otherwise it is `255` when `softness == 0` or
 /// `luma - threshold >= softness`, and otherwise
 /// `((luma - threshold) * 255 + softness / 2) / softness`, rounding to the
-/// nearest integer with exact halfway values rounded up. `invert` returns
-/// `255 - alpha` instead of `alpha`.
+/// nearest integer with exact halfway values rounded up.
+///
+/// An upper bound `high` below `255` also keys out bright pixels with the
+/// mirrored ramp: `0` while `luma >= high`; otherwise `255` when
+/// `softness == 0` or `high - luma >= softness`, and otherwise
+/// `((high - luma) * 255 + softness / 2) / softness`. The key alpha is the
+/// smaller of the two ramps. `high == 255` (the default) disables the upper
+/// bound. `invert` returns `255 - alpha` instead of `alpha`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LumaKey {
     pub threshold: u8,
     pub softness: u8,
     pub invert: bool,
+    pub high: u8,
 }
 
 impl LumaKey {
+    /// A key with no upper bound (`high == 255`).
     #[must_use]
     pub const fn new(threshold: u8, softness: u8, invert: bool) -> Self {
         Self {
             threshold,
             softness,
             invert,
+            high: u8::MAX,
         }
+    }
+
+    /// Keys out pixels whose luma reaches `high` as well (see the type
+    /// documentation); `255` disables the upper bound.
+    #[must_use]
+    pub const fn with_high(mut self, high: u8) -> Self {
+        self.high = high;
+        self
     }
 }
 
@@ -207,8 +224,10 @@ impl LumaKey {
 /// layers each channel is first un-premultiplied as
 /// `(channel * 255 + alpha / 2) / alpha` (`0` when `alpha == 0`), so a
 /// semi-transparent pixel is keyed on its true colour. Spill suppression and
-/// despill operate on the stored bytes. The native GPU path does not execute
-/// keys yet and rejects keyed layers with `UnsupportedKey`.
+/// despill operate on the stored bytes. The native GPU path executes chroma
+/// and luma keys in its layer preparation pass (see
+/// `NativeCompositionRenderer::render`) and rejects key/fill layers and key
+/// refinements with `UnsupportedKey`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Key {
     Chroma(ChromaKey),
@@ -218,8 +237,10 @@ pub enum Key {
 /// Backend-neutral effect descriptor. The CPU reference executor applies the
 /// parameterless `passthrough` effect as a no-op and executes the documented
 /// typed reference effects on straight color (a premultiplied layer is
-/// unpremultiplied around its effect chain); the native backend rejects every
-/// non-`passthrough` descriptor.
+/// unpremultiplied around its effect chain). The native GPU path executes the
+/// same reference effects with their exact integer formulas in its layer
+/// preparation pass (see `NativeCompositionRenderer::render`) and rejects any
+/// other descriptor with `UnsupportedEffect`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Effect {
     name: String,

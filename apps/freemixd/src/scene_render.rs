@@ -695,8 +695,28 @@ fn compositor_layer(token: SourceId, layer: &fm_model::Layer) -> SourceLayer {
             RectMask::new(mask.x, mask.y, mask.width, mask.height).inverted(mask.invert),
         );
     }
+    if let Some(key) = layer.key {
+        result = result.with_key(compositor_key(key));
+    }
     for effect in &layer.effects {
         result = result.with_effect(Effect::new(effect.name.clone(), effect.parameters.clone()));
     }
     result
+}
+
+/// `key` as the compositor's chroma or luma key (IN-020).
+fn compositor_key(key: fm_model::LayerKey) -> fm_compositor::Key {
+    match key {
+        fm_model::LayerKey::Chroma(chroma) => {
+            fm_compositor::Key::Chroma(fm_compositor::ChromaKey::new(
+                fm_compositor::Rgba8::new(chroma.red, chroma.green, chroma.blue, u8::MAX),
+                chroma.similarity,
+                chroma.smoothness,
+                chroma.spill,
+            ))
+        }
+        fm_model::LayerKey::Luma(luma) => fm_compositor::Key::Luma(
+            fm_compositor::LumaKey::new(luma.low, luma.softness, luma.invert).with_high(luma.high),
+        ),
+    }
 }

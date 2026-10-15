@@ -525,6 +525,8 @@ fn scene_bindings_design_from_layouts_and_save_scene_clips() {
         anchor_y: 5_000,
         z_order: 0,
         crop: None,
+        key: None,
+        effects: Vec::new(),
         mask: None,
         source: fm_protocol::WireSceneLayerSource::Input(fm_protocol::WireInputId::new(
             core::num::NonZeroU128::new(1).unwrap(),
@@ -634,6 +636,8 @@ fn scene_user_presets_measure_crop_in_the_layer_frame() {
         anchor_y: 5_000,
         z_order: 0,
         crop: None,
+        key: None,
+        effects: Vec::new(),
         mask: None,
     };
     let design = SceneDesign::from_layout(&WireSceneLayout {

@@ -1,11 +1,12 @@
 //! The Studio layer designer (SW-006): one scene's layers on its canvas,
-//! moved, scaled, turned, cropped, masked, and restacked by hand or by
-//! exact values.
+//! moved, scaled, turned, cropped, masked, keyed, given effects, and
+//! restacked by hand or by exact values.
 //!
 //! The window edits a [`SceneLayoutDocument`] per project scene, built from
 //! the replicated layout (`scene_layout_state`, followed by every
 //! `scene_layout_changed`, Protocol 2.39): geometry with free rotation and
-//! anchor, crop, mask, and z-order. The canvas shows the server's exact
+//! anchor, crop, mask, chroma or luma key, effect list (Protocol 2.43), and
+//! z-order. The canvas shows the server's exact
 //! composition of the scene ([`StudioIntent::ScenePreview`], paced by a
 //! [`PreviewPacer`] and held back while a drag runs) under the layer
 //! outlines, handles, the anchor mark, safe-area marks, and snap guides.
@@ -30,7 +31,7 @@ use egui::{
     FontId, Frame, Key, Layout, Margin, Modifiers, Pos2, Rect, RichText, Sense, Shape, Stroke,
     TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
 };
-use fm_protocol::{TitlePreviewImage, WireSceneLayerId, WireSceneLayerSource};
+use fm_protocol::{TitlePreviewImage, WireLayerKey, WireSceneLayerId, WireSceneLayerSource};
 use fm_types::{InputId, SceneId};
 use fm_ui_model::scene_designer::geometry::{Corner, Edge, Handle, HitTarget, Point};
 use fm_ui_model::scene_designer::gesture::{
@@ -41,7 +42,8 @@ use fm_ui_model::scene_designer::snapping::{
     ACTION_SAFE, Axis, SNAP_DISTANCE_POINTS, SnapSettings, TITLE_SAFE, safe_area,
 };
 use fm_ui_model::scene_designer::{
-    DesignLayer, EditLabel, Field, SceneLayoutDocument, layout_stamp,
+    DesignLayer, EditLabel, Field, MAX_SCENE_LAYER_EFFECTS, SCENE_LAYER_EFFECT_KINDS,
+    SceneLayoutDocument, effect_ranges, layout_stamp,
 };
 use fm_ui_model::title_animation::preview_size;
 
@@ -1949,6 +1951,8 @@ fn inspector(
                 }
             }
         });
+    key_section(ui, l, document, id, lock);
+    effects_section(ui, l, document, id, lock);
     group(ui, Msg::DesignGroupStack);
     let position = document.index_of(id).map_or(0, |index| index + 1);
     ui.label(
@@ -2031,6 +2035,420 @@ fn inspector(
         document.set_field(Field::AnchorX, 5_000.0);
         document.set_field(Field::AnchorY, 5_000.0);
         document.commit();
+    }
+}
+
+/// A byte-valued key field (`0..=255`).
+fn byte_scrub(field: Field, label: &'static str, hover: String) -> Scrub {
+    Scrub {
+        field,
+        label,
+        hover,
+        range: 0.0..=255.0,
+        speed: 0.5,
+        suffix: "",
+        shown_per_stored: 1.0,
+    }
+}
+
+/// The KEY section: no key, a chroma key (colour, similarity, smoothness,
+/// spill), or a luma key (low, high, softness, invert).
+#[allow(clippy::too_many_lines)] // one section: kind, then each kind's fields
+fn key_section(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    lock: Option<&'static str>,
+) {
+    ui.add_space(6.0);
+    ui.label(section_label(l.text(Msg::DesignGroupKey)))
+        .on_hover_text(l.text(Msg::DesignKeyHover));
+    let key = document.layer(id).and_then(|layer| layer.key);
+    let kinds = [
+        (None, Msg::DesignKeyNone, Msg::DesignKeyNoneHover),
+        (Some(true), Msg::DesignKeyChroma, Msg::DesignKeyChromaHover),
+        (Some(false), Msg::DesignKeyLuma, Msg::DesignKeyLumaHover),
+    ];
+    let current = key.map(|key| matches!(key, WireLayerKey::Chroma(_)));
+    let shown = kinds
+        .iter()
+        .find(|(kind, _, _)| *kind == current)
+        .map_or(Msg::DesignKeyNone, |(_, text, _)| *text);
+    let mut chosen = None;
+    ui.add_enabled_ui(lock.is_none(), |ui| {
+        ComboBox::from_id_salt("studio-designer-key-kind")
+            .selected_text(l.text(shown))
+            .width(INSPECTOR_WIDTH - 24.0)
+            .show_ui(ui, |ui| {
+                for (kind, text, hover) in kinds {
+                    if ui
+                        .selectable_label(kind == current, l.text(text))
+                        .on_hover_text(l.text(hover))
+                        .clicked()
+                    {
+                        chosen = Some(kind);
+                    }
+                }
+            })
+            .response
+            .hint(l.text(Msg::DesignKeyKindHover), lock.unwrap_or(""));
+    });
+    if let Some(kind) = chosen {
+        document.set_key_kind(kind);
+    }
+    match document.layer(id).and_then(|layer| layer.key) {
+        None => {}
+        Some(WireLayerKey::Chroma(chroma)) => {
+            ui.horizontal(|ui| {
+                let mut colour = [chroma.red, chroma.green, chroma.blue];
+                let response = ui
+                    .add_enabled_ui(lock.is_none(), |ui| {
+                        egui::color_picker::color_edit_button_srgb(ui, &mut colour)
+                    })
+                    .inner
+                    .hint(l.text(Msg::DesignKeyColourHover), lock.unwrap_or(""));
+                if response.changed() {
+                    // A picker drag is one step: it closes when the
+                    // pointer is released.
+                    document.begin(EditLabel::KeyColour);
+                    document.set_key_colour(colour);
+                }
+                for (rgb, text, hover) in [
+                    ([0, 255, 0], Msg::ColourGreen, Msg::DesignKeyGreenHover),
+                    ([0, 0, 255], Msg::ColourBlue, Msg::DesignKeyBlueHover),
+                ] {
+                    let on = colour == rgb;
+                    if ui
+                        .add_enabled(lock.is_none(), egui::Button::selectable(on, l.text(text)))
+                        .hint(l.text(hover), lock.unwrap_or(""))
+                        .clicked()
+                    {
+                        document.set_key_colour(rgb);
+                    }
+                }
+            });
+            if document.editing_label() == Some(EditLabel::KeyColour)
+                && !ui.ctx().input(|input| input.pointer.any_down())
+            {
+                document.commit();
+            }
+            egui::Grid::new("studio-designer-chroma-colour")
+                .num_columns(6)
+                .spacing(Vec2::new(6.0, 4.0))
+                .show(ui, |ui| {
+                    for (field, label, hover) in [
+                        (Field::KeyRed, "R", Msg::DesignKeyRedHover),
+                        (Field::KeyGreen, "G", Msg::DesignKeyGreenChannelHover),
+                        (Field::KeyBlue, "B", Msg::DesignKeyBlueChannelHover),
+                    ] {
+                        scrub(
+                            ui,
+                            l,
+                            document,
+                            id,
+                            byte_scrub(field, label, l.text(hover).to_owned()),
+                            lock,
+                        );
+                    }
+                    ui.end_row();
+                });
+            egui::Grid::new("studio-designer-chroma")
+                .num_columns(2)
+                .spacing(Vec2::new(6.0, 4.0))
+                .show(ui, |ui| {
+                    for (field, label, hover) in [
+                        (
+                            Field::KeySimilarity,
+                            Msg::DesignKeySimilarity,
+                            Msg::DesignKeySimilarityHover,
+                        ),
+                        (
+                            Field::KeySmoothness,
+                            Msg::DesignKeySmoothness,
+                            Msg::DesignKeySmoothnessHover,
+                        ),
+                        (
+                            Field::KeySpill,
+                            Msg::DesignKeySpill,
+                            Msg::DesignKeySpillHover,
+                        ),
+                    ] {
+                        scrub(
+                            ui,
+                            l,
+                            document,
+                            id,
+                            byte_scrub(field, l.text(label), l.text(hover).to_owned()),
+                            lock,
+                        );
+                        ui.end_row();
+                    }
+                });
+        }
+        Some(WireLayerKey::Luma(luma)) => {
+            egui::Grid::new("studio-designer-luma")
+                .num_columns(2)
+                .spacing(Vec2::new(6.0, 4.0))
+                .show(ui, |ui| {
+                    for (field, label, hover) in [
+                        (Field::LumaLow, Msg::DesignLumaLow, Msg::DesignLumaLowHover),
+                        (
+                            Field::LumaHigh,
+                            Msg::DesignLumaHigh,
+                            Msg::DesignLumaHighHover,
+                        ),
+                        (
+                            Field::LumaSoftness,
+                            Msg::DesignLumaSoftness,
+                            Msg::DesignLumaSoftnessHover,
+                        ),
+                    ] {
+                        scrub(
+                            ui,
+                            l,
+                            document,
+                            id,
+                            byte_scrub(field, l.text(label), l.text(hover).to_owned()),
+                            lock,
+                        );
+                        ui.end_row();
+                    }
+                });
+            let mut invert = luma.invert;
+            if ui
+                .add_enabled(
+                    lock.is_none(),
+                    egui::Checkbox::new(&mut invert, l.text(Msg::DesignMaskInvert)),
+                )
+                .hint(l.text(Msg::DesignLumaInvertHover), lock.unwrap_or(""))
+                .changed()
+            {
+                document.set_field(Field::LumaInvert, f64::from(u8::from(invert)));
+            }
+        }
+    }
+}
+
+/// An effect kind's name and what it does.
+fn effect_text(name: &str) -> (Msg, Msg) {
+    match name {
+        "levels" => (Msg::DesignEffectLevels, Msg::DesignEffectLevelsHover),
+        "brightness_contrast" => (
+            Msg::DesignEffectBrightnessContrast,
+            Msg::DesignEffectBrightnessContrastHover,
+        ),
+        "saturation" => (Msg::GradeSaturation, Msg::DesignEffectSaturationHover),
+        "sharpen" => (Msg::DesignEffectSharpen, Msg::DesignEffectSharpenHover),
+        _ => (Msg::DesignEffectFlip, Msg::DesignEffectFlipHover),
+    }
+}
+
+/// An effect parameter's label, help, and shown value per stored value
+/// (sharpen's per mille shows as percent).
+fn parameter_text(name: &str, parameter: usize) -> (Msg, Msg, f64) {
+    match (name, parameter) {
+        ("levels", 0) => (Msg::ColourBlack, Msg::DesignEffectBlackHover, 1.0),
+        ("levels", _) => (Msg::ColourWhite, Msg::DesignEffectWhiteHover, 1.0),
+        ("brightness_contrast", 0) => (
+            Msg::DesignEffectBrightness,
+            Msg::DesignEffectBrightnessHover,
+            1.0,
+        ),
+        ("brightness_contrast", _) => (Msg::GradeContrast, Msg::DesignEffectContrastHover, 1.0),
+        ("saturation", _) => (
+            Msg::DesignEffectAmount,
+            Msg::DesignEffectSaturationAmountHover,
+            1.0,
+        ),
+        ("sharpen", _) => (
+            Msg::DesignEffectAmount,
+            Msg::DesignEffectSharpenAmountHover,
+            0.1,
+        ),
+        (_, 0) => (
+            Msg::DesignEffectHorizontal,
+            Msg::DesignEffectHorizontalHover,
+            1.0,
+        ),
+        _ => (
+            Msg::DesignEffectVertical,
+            Msg::DesignEffectVerticalHover,
+            1.0,
+        ),
+    }
+}
+
+/// The EFFECTS section: the layer's effects in order, each with its
+/// parameters, reorder and remove buttons, and an add menu.
+#[allow(clippy::too_many_lines)] // one section: the list, then the add menu
+fn effects_section(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    lock: Option<&'static str>,
+) {
+    ui.add_space(6.0);
+    ui.label(section_label(l.text(Msg::DesignGroupEffects)))
+        .on_hover_text(l.text(Msg::DesignEffectsHover));
+    let reason = lock
+        .or_else(|| (!document.effects_shared()).then_some(Msg::DesignReasonEffectsDiffer.en()));
+    if lock.is_none()
+        && let Some(reason) = reason
+    {
+        ui.add(egui::Label::new(caption(l.tr(reason)).color(AMBER)).wrap());
+    }
+    let effects = document
+        .layer(id)
+        .map(|layer| layer.effects.clone())
+        .unwrap_or_default();
+    if effects.is_empty() {
+        ui.label(caption(l.text(Msg::DesignEffectsEmpty)).color(muted_color()));
+    }
+    let count = effects.len();
+    let mut action: Option<(usize, Option<usize>)> = None;
+    for (index, effect) in effects.iter().enumerate() {
+        let (name, hover) = effect_text(&effect.name);
+        ui.push_id(("studio-designer-effect", index), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{}. {}", index + 1, l.text(name))).color(text_color()),
+                )
+                .on_hover_text(l.text(hover));
+                ui.with_layout(l10n::trailing_layout(l), |ui| {
+                    if ui
+                        .add_enabled(reason.is_none(), small_button("✕"))
+                        .hint(l.text(Msg::DesignEffectRemoveHover), reason.unwrap_or(""))
+                        .clicked()
+                    {
+                        action = Some((index, None));
+                    }
+                    let last = index + 1 == count;
+                    if ui
+                        .add_enabled(reason.is_none() && !last, small_button("▼"))
+                        .hint(
+                            l.text(Msg::DesignEffectDownHover),
+                            reason.unwrap_or(Msg::DesignReasonEffectLast.en()),
+                        )
+                        .clicked()
+                    {
+                        action = Some((index, Some(index + 1)));
+                    }
+                    if ui
+                        .add_enabled(reason.is_none() && index > 0, small_button("▲"))
+                        .hint(
+                            l.text(Msg::DesignEffectUpHover),
+                            reason.unwrap_or(Msg::DesignReasonEffectFirst.en()),
+                        )
+                        .clicked()
+                    {
+                        action = Some((index, Some(index.saturating_sub(1))));
+                    }
+                });
+            });
+            let Ok(effect_index) = u8::try_from(index) else {
+                return;
+            };
+            if effect.name == "flip" {
+                ui.horizontal(|ui| {
+                    for parameter in 0..effect.parameters.len() {
+                        let Ok(parameter_index) = u8::try_from(parameter) else {
+                            continue;
+                        };
+                        let (label, help, _) = parameter_text(&effect.name, parameter);
+                        let mut on = effect.parameters[parameter] != 0;
+                        if ui
+                            .add_enabled(
+                                reason.is_none(),
+                                egui::Checkbox::new(&mut on, l.text(label)),
+                            )
+                            .hint(l.text(help), reason.unwrap_or(""))
+                            .changed()
+                        {
+                            document.set_field(
+                                Field::EffectParameter {
+                                    effect: effect_index,
+                                    parameter: parameter_index,
+                                },
+                                f64::from(u8::from(on)),
+                            );
+                        }
+                    }
+                });
+                return;
+            }
+            let ranges = effect_ranges(&effect.name).unwrap_or(&[]);
+            egui::Grid::new("studio-designer-effect-parameters")
+                .num_columns(2)
+                .spacing(Vec2::new(6.0, 4.0))
+                .show(ui, |ui| {
+                    for (parameter, (minimum, maximum)) in ranges.iter().enumerate() {
+                        let Ok(parameter_index) = u8::try_from(parameter) else {
+                            continue;
+                        };
+                        let (label, help, shown_per_stored) =
+                            parameter_text(&effect.name, parameter);
+                        scrub(
+                            ui,
+                            l,
+                            document,
+                            id,
+                            Scrub {
+                                field: Field::EffectParameter {
+                                    effect: effect_index,
+                                    parameter: parameter_index,
+                                },
+                                label: l.text(label),
+                                hover: l.text(help).to_owned(),
+                                range: f64::from(*minimum) * shown_per_stored
+                                    ..=f64::from(*maximum) * shown_per_stored,
+                                speed: if shown_per_stored < 1.0 { 0.25 } else { 0.5 },
+                                suffix: if shown_per_stored < 1.0 { " %" } else { "" },
+                                shown_per_stored,
+                            },
+                            reason,
+                        );
+                        ui.end_row();
+                    }
+                });
+        });
+    }
+    match action {
+        Some((index, None)) => {
+            document.remove_effect(index);
+        }
+        Some((from, Some(to))) => {
+            document.move_effect(from, to);
+        }
+        None => {}
+    }
+    let full = document
+        .layer(id)
+        .is_some_and(|layer| layer.effects.len() >= MAX_SCENE_LAYER_EFFECTS);
+    let add_reason = reason.or_else(|| {
+        (full || !document.can_add_effect()).then_some(Msg::DesignReasonEffectsFull.en())
+    });
+    let mut added = None;
+    ui.add_enabled_ui(add_reason.is_none(), |ui| {
+        ui.menu_button(l.text(Msg::DesignEffectAdd), |ui| {
+            for (name, _) in SCENE_LAYER_EFFECT_KINDS {
+                let (text, hover) = effect_text(name);
+                if ui
+                    .button(l.text(text))
+                    .hint(l.text(hover), add_reason.unwrap_or(""))
+                    .clicked()
+                {
+                    added = Some(name);
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .hint(l.text(Msg::DesignEffectAddHover), add_reason.unwrap_or(""));
+    });
+    if let Some(name) = added {
+        document.add_effect(name);
     }
 }
 

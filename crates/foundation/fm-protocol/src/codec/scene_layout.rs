@@ -1,5 +1,5 @@
 //! Scene layouts (Protocol 2.31; layer sources 2.35; full layer design
-//! 2.39).
+//! 2.39; keys and effects 2.43).
 //!
 //! A layout's canvas travels as the plain `width` and `height` fields; its
 //! layer list travels as one unpadded base64url `layers` field holding a
@@ -9,14 +9,19 @@
 //! ```text
 //! layers = count layer*
 //! layer  = id(varint, nonzero u32) flags(byte: bit 0 enabled, bit 1 crop,
-//!          bit 2 mask, bit 3 mask inverted (only with bit 2), other bits
-//!          zero) quarter_turns(byte, 0..=3) name_len(varint)
+//!          bit 2 mask, bit 3 mask inverted (only with bit 2), bit 4 key,
+//!          other bits zero) quarter_turns(byte, 0..=3) name_len(varint)
 //!          name(UTF-8 bytes) source x(zigzag) y(zigzag) width(varint)
 //!          height(varint) opacity(byte) tilt(zigzag) anchor_x(varint)
-//!          anchor_y(varint) z_order(zigzag) crop? mask?
+//!          anchor_y(varint) z_order(zigzag) crop? mask? key?
+//!          effect_count(varint, at most MAX_SCENE_LAYER_EFFECTS) effect*
 //! source = kind(byte: 0 input, 1 scene) id(varint, nonzero u128)
 //! crop   = x(varint) y(varint) width(varint) height(varint)
 //! mask   = x(varint) y(varint) width(varint) height(varint)
+//! key    = 0(byte) red green blue similarity smoothness spill (bytes)
+//!        | 1(byte) low high softness (bytes) invert(byte 0 or 1)
+//! effect = kind(byte, index into SCENE_LAYER_EFFECT_KINDS)
+//!          value(zigzag)* (exactly the kind's parameter count)
 //! ```
 //!
 //! Layers keep scene order, so every layout has exactly one encoding. Both
@@ -25,28 +30,27 @@
 //! [`MAX_SCENE_LAYER_NAME_BYTES`] bytes of UTF-8 without control characters;
 //! tilts in `MIN_SCENE_LAYER_TILT_MILLIDEGREES..MAX_SCENE_LAYER_TILT_MILLIDEGREES`;
 //! anchors within `0..=SCENE_LAYER_ANCHOR_MAX`; crops nonempty and inside
-//! the canvas and masks nonempty and inside the cropped source; and the
-//! encoding at most [`MAX_SCENE_LAYOUT_BYTES`].
+//! the canvas and masks nonempty and inside the cropped source; luma keys
+//! with `low < high`; every effect valid
+//! ([`crate::WireLayerEffect::kind_index`]); and the encoding at most
+//! [`MAX_SCENE_LAYOUT_BYTES`].
 //!
 //! A `scene_layer_add` carries one complete layer as its `spec` field: the
-//! same `layer` encoding followed by its effects (base64url, unpadded):
-//!
-//! ```text
-//! spec   = layer effect_count(varint) effect*
-//! effect = name_len(varint) name(UTF-8 bytes) count(varint) value(zigzag)*
-//! ```
+//! same `layer` encoding (base64url, unpadded). A `scene_layer_effects_set`
+//! carries its list as its `effects` field: `effect_count effect*`
+//! (base64url, unpadded; the empty list is `AA`).
 
 use core::num::NonZeroU32;
 use std::collections::BTreeSet;
 
 use super::animation::{Reader, push_varint, zigzag};
 use crate::{
-    CodecError, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_LAYER_EFFECT_NAME_BYTES,
-    MAX_SCENE_LAYER_EFFECT_PARAMETERS, MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_NAME_BYTES,
+    CodecError, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_NAME_BYTES,
     MAX_SCENE_LAYER_TILT_MILLIDEGREES, MAX_SCENE_LAYOUT_BYTES, MAX_SCENE_LAYOUT_LAYERS,
-    MIN_SCENE_LAYER_TILT_MILLIDEGREES, SCENE_LAYER_ANCHOR_MAX, WireInputId, WireLayerCrop,
-    WireLayerEffect, WireLayerMask, WireSceneClip, WireSceneId, WireSceneLayerId,
-    WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayerSpec, WireSceneLayout,
+    MIN_SCENE_LAYER_TILT_MILLIDEGREES, SCENE_LAYER_ANCHOR_MAX, SCENE_LAYER_EFFECT_KINDS,
+    WireChromaKey, WireInputId, WireLayerCrop, WireLayerEffect, WireLayerKey, WireLayerMask,
+    WireLumaKey, WireSceneClip, WireSceneId, WireSceneLayerId, WireSceneLayerOutline,
+    WireSceneLayerSource, WireSceneLayout,
 };
 
 const LAYERS: &str = "layers";
@@ -55,6 +59,10 @@ const ENABLED: u8 = 1;
 const CROPPED: u8 = 2;
 const MASKED: u8 = 4;
 const MASK_INVERTED: u8 = 8;
+const KEYED: u8 = 16;
+const KEY_CHROMA: u8 = 0;
+const KEY_LUMA: u8 = 1;
+const EFFECTS: &str = "effects";
 const SOURCE_INPUT: u8 = 0;
 const SOURCE_SCENE: u8 = 1;
 
@@ -147,7 +155,96 @@ fn validate_design(
             return refuse("masked outside its cropped source");
         }
     }
+    if layer.key.is_some_and(|key| !key.is_valid()) {
+        return refuse("keyed with an empty luma band");
+    }
+    if layer.effects.len() > MAX_SCENE_LAYER_EFFECTS {
+        return refuse(&format!("carrying {} effects", layer.effects.len()));
+    }
+    if let Some(effect) = layer.effects.iter().find(|effect| !effect.is_valid()) {
+        return refuse(&format!("with effect {:?}", effect.name));
+    }
     Ok(())
+}
+
+/// Validates an effect list for `scene_layer_effects_set`.
+fn validate_effect_list(effects: &[WireLayerEffect]) -> Result<(), CodecError> {
+    if effects.len() > MAX_SCENE_LAYER_EFFECTS {
+        return Err(invalid(EFFECTS, format!("{} effects", effects.len())));
+    }
+    if let Some(effect) = effects.iter().find(|effect| !effect.is_valid()) {
+        return Err(invalid(EFFECTS, format!("effect {:?}", effect.name)));
+    }
+    Ok(())
+}
+
+fn push_effects(out: &mut Vec<u8>, effects: &[WireLayerEffect]) {
+    push_varint(out, effects.len() as u128);
+    for effect in effects {
+        out.push(effect.kind_index().unwrap_or(u8::MAX));
+        for value in &effect.parameters {
+            push_varint(out, u128::from(zigzag(i64::from(*value))));
+        }
+    }
+}
+
+fn push_key(out: &mut Vec<u8>, key: WireLayerKey) {
+    match key {
+        WireLayerKey::Chroma(chroma) => out.extend_from_slice(&[
+            KEY_CHROMA,
+            chroma.red,
+            chroma.green,
+            chroma.blue,
+            chroma.similarity,
+            chroma.smoothness,
+            chroma.spill,
+        ]),
+        WireLayerKey::Luma(luma) => out.extend_from_slice(&[
+            KEY_LUMA,
+            luma.low,
+            luma.high,
+            luma.softness,
+            u8::from(luma.invert),
+        ]),
+    }
+}
+
+/// Validates and encodes a `scene_layer_effects_set` list.
+///
+/// # Errors
+///
+/// [`CodecError::InvalidField`] naming `effects` for a list outside the
+/// bounds of the module documentation.
+pub(super) fn encode_effect_list(effects: &[WireLayerEffect]) -> Result<String, CodecError> {
+    validate_effect_list(effects)?;
+    let mut out = Vec::new();
+    push_effects(&mut out, effects);
+    Ok(crate::monitor_image::base64url_encode(&out))
+}
+
+/// Strictly decodes a `scene_layer_effects_set` list.
+///
+/// # Errors
+///
+/// [`CodecError::InvalidField`] naming `effects` for non-canonical
+/// base64url, a truncated or trailing encoding, or any effect bound.
+pub(super) fn decode_effect_list(value: &str) -> Result<Vec<WireLayerEffect>, CodecError> {
+    // At most 8 effects of a kind byte and two 5-byte values each.
+    if value.len() > 128 {
+        return Err(invalid(EFFECTS, format!("{} characters", value.len())));
+    }
+    let bytes = crate::monitor_image::base64url_decode(value)
+        .ok_or_else(|| invalid(EFFECTS, format!("{} characters", value.len())))?;
+    let mut reader = Reader {
+        bytes: &bytes,
+        position: 0,
+    };
+    let effects = reader
+        .effects()
+        .filter(|_| reader.position == reader.bytes.len())
+        .ok_or_else(|| invalid(EFFECTS, format!("{} bytes", bytes.len())))?;
+    validate_effect_list(&effects)?;
+    Ok(effects)
 }
 
 fn push_layer(out: &mut Vec<u8>, layer: &WireSceneLayerOutline) {
@@ -155,6 +252,9 @@ fn push_layer(out: &mut Vec<u8>, layer: &WireSceneLayerOutline) {
     let mut flags = if layer.enabled { ENABLED } else { 0 };
     if layer.crop.is_some() {
         flags |= CROPPED;
+    }
+    if layer.key.is_some() {
+        flags |= KEYED;
     }
     if let Some(mask) = layer.mask {
         flags |= MASKED;
@@ -191,6 +291,10 @@ fn push_layer(out: &mut Vec<u8>, layer: &WireSceneLayerOutline) {
             push_varint(out, u128::from(value));
         }
     }
+    if let Some(key) = layer.key {
+        push_key(out, key);
+    }
+    push_effects(out, &layer.effects);
 }
 
 fn layers_bytes(layout: &WireSceneLayout) -> Vec<u8> {
@@ -209,26 +313,9 @@ pub fn scene_layout_wire_bytes(layout: &WireSceneLayout) -> usize {
     layers_bytes(layout).len()
 }
 
-fn validate_effects(effects: &[WireLayerEffect]) -> Result<(), CodecError> {
-    if effects.len() > MAX_SCENE_LAYER_EFFECTS {
-        return Err(invalid(SPEC, format!("{} effects", effects.len())));
-    }
-    for effect in effects {
-        if effect.name.is_empty()
-            || effect.name.len() > MAX_SCENE_LAYER_EFFECT_NAME_BYTES
-            || effect.name.chars().any(char::is_control)
-            || effect.parameters.len() > MAX_SCENE_LAYER_EFFECT_PARAMETERS
-        {
-            return Err(invalid(SPEC, format!("effect {:?}", effect.name)));
-        }
-    }
-    Ok(())
-}
-
-/// Enforces a spec: the layer's design bounds, a nonblank name, nonzero
-/// sides, and the effect bounds.
-fn validate_spec(spec: &WireSceneLayerSpec) -> Result<(), CodecError> {
-    let layer = &spec.layer;
+/// Enforces a spec: the layer's design bounds (keys and effects included),
+/// a nonblank name, and nonzero sides.
+fn validate_spec(layer: &WireSceneLayerOutline) -> Result<(), CodecError> {
     if layer.name.trim().is_empty()
         || layer.name.len() > MAX_SCENE_LAYER_NAME_BYTES
         || layer.name.chars().any(char::is_control)
@@ -238,8 +325,7 @@ fn validate_spec(spec: &WireSceneLayerSpec) -> Result<(), CodecError> {
     if layer.width == 0 || layer.height == 0 {
         return Err(invalid(SPEC, format!("layer {} is empty", layer.id)));
     }
-    validate_design(SPEC, layer, None)?;
-    validate_effects(&spec.effects)
+    validate_design(SPEC, layer, None)
 }
 
 /// Validates and encodes a `scene_layer_add` spec.
@@ -248,19 +334,10 @@ fn validate_spec(spec: &WireSceneLayerSpec) -> Result<(), CodecError> {
 ///
 /// [`CodecError::InvalidField`] naming `spec` for a spec outside the bounds
 /// of the module documentation.
-pub(super) fn encode_layer_spec(spec: &WireSceneLayerSpec) -> Result<String, CodecError> {
+pub(super) fn encode_layer_spec(spec: &WireSceneLayerOutline) -> Result<String, CodecError> {
     validate_spec(spec)?;
     let mut out = Vec::new();
-    push_layer(&mut out, &spec.layer);
-    push_varint(&mut out, spec.effects.len() as u128);
-    for effect in &spec.effects {
-        push_varint(&mut out, effect.name.len() as u128);
-        out.extend_from_slice(effect.name.as_bytes());
-        push_varint(&mut out, effect.parameters.len() as u128);
-        for value in &effect.parameters {
-            push_varint(&mut out, u128::from(zigzag(i64::from(*value))));
-        }
-    }
+    push_layer(&mut out, spec);
     Ok(crate::monitor_image::base64url_encode(&out))
 }
 
@@ -271,7 +348,7 @@ pub(super) fn encode_layer_spec(spec: &WireSceneLayerSpec) -> Result<String, Cod
 /// [`CodecError::InvalidField`] naming `spec` for non-canonical base64url,
 /// a truncated or trailing encoding, or any bound of the module
 /// documentation.
-pub(super) fn decode_layer_spec(value: &str) -> Result<WireSceneLayerSpec, CodecError> {
+pub(super) fn decode_layer_spec(value: &str) -> Result<WireSceneLayerOutline, CodecError> {
     let encoded_limit = (MAX_SCENE_LAYOUT_BYTES * 4).div_ceil(3);
     if value.len() > encoded_limit {
         return Err(invalid(SPEC, format!("{} characters", value.len())));
@@ -283,7 +360,7 @@ pub(super) fn decode_layer_spec(value: &str) -> Result<WireSceneLayerSpec, Codec
         position: 0,
     };
     let spec = reader
-        .layer_spec()
+        .scene_layer()
         .filter(|_| reader.position == reader.bytes.len())
         .ok_or_else(|| invalid(SPEC, format!("{} bytes", bytes.len())))?;
     validate_spec(&spec)?;
@@ -324,31 +401,54 @@ impl Reader<'_> {
         Some([self.u32()?, self.u32()?, self.u32()?, self.u32()?])
     }
 
-    fn layer_spec(&mut self) -> Option<WireSceneLayerSpec> {
-        let layer = self.scene_layer()?;
+    fn effects(&mut self) -> Option<Vec<WireLayerEffect>> {
         let count = usize::try_from(self.varint(32)?).ok()?;
         if count > MAX_SCENE_LAYER_EFFECTS {
             return None;
         }
         let mut effects = Vec::with_capacity(count);
         for _ in 0..count {
-            let name = self.text(MAX_SCENE_LAYER_EFFECT_NAME_BYTES)?;
-            let parameters = usize::try_from(self.varint(32)?).ok()?;
-            if parameters > MAX_SCENE_LAYER_EFFECT_PARAMETERS {
-                return None;
-            }
-            let parameters = (0..parameters)
+            let (name, ranges) = SCENE_LAYER_EFFECT_KINDS.get(usize::from(self.byte()?))?;
+            let parameters = ranges
+                .iter()
                 .map(|_| self.i32())
                 .collect::<Option<Vec<_>>>()?;
-            effects.push(WireLayerEffect { name, parameters });
+            effects.push(WireLayerEffect {
+                name: (*name).to_owned(),
+                parameters,
+            });
         }
-        Some(WireSceneLayerSpec { layer, effects })
+        Some(effects)
+    }
+
+    fn key(&mut self) -> Option<WireLayerKey> {
+        Some(match self.byte()? {
+            KEY_CHROMA => WireLayerKey::Chroma(WireChromaKey {
+                red: self.byte()?,
+                green: self.byte()?,
+                blue: self.byte()?,
+                similarity: self.byte()?,
+                smoothness: self.byte()?,
+                spill: self.byte()?,
+            }),
+            KEY_LUMA => WireLayerKey::Luma(WireLumaKey {
+                low: self.byte()?,
+                high: self.byte()?,
+                softness: self.byte()?,
+                invert: match self.byte()? {
+                    0 => false,
+                    1 => true,
+                    _ => return None,
+                },
+            }),
+            _ => return None,
+        })
     }
 
     fn scene_layer(&mut self) -> Option<WireSceneLayerOutline> {
         let id = WireSceneLayerId::new(NonZeroU32::new(self.u32()?)?);
         let flags = self.byte()?;
-        if flags & !(ENABLED | CROPPED | MASKED | MASK_INVERTED) != 0
+        if flags & !(ENABLED | CROPPED | MASKED | MASK_INVERTED | KEYED) != 0
             || (flags & MASK_INVERTED != 0 && flags & MASKED == 0)
         {
             return None;
@@ -395,6 +495,12 @@ impl Reader<'_> {
                 invert: flags & MASK_INVERTED != 0,
             })
         };
+        let key = if flags & KEYED == 0 {
+            None
+        } else {
+            Some(self.key()?)
+        };
+        let effects = self.effects()?;
         Some(WireSceneLayerOutline {
             id,
             name,
@@ -412,6 +518,8 @@ impl Reader<'_> {
             z_order,
             crop,
             mask,
+            key,
+            effects,
         })
     }
 

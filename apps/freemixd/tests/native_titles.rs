@@ -305,6 +305,7 @@ fn add_title_scenes(path: &Path) {
         geometry: LayerGeometry::new(0, 0, 320, 180, Rotation::Deg0),
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: u8::MAX,
         z_order: i32::try_from(id).unwrap(),

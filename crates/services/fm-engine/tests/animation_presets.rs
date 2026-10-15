@@ -99,6 +99,7 @@ fn scene() -> Scene {
             geometry: LayerGeometry::new(4, 4, 16, 8, Rotation::Deg0),
             crop: None,
             mask: None,
+            key: None,
             effects: Vec::new(),
             opacity: u8::MAX,
             z_order: 0,

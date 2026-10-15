@@ -224,6 +224,7 @@ fn hls_ladder() -> StreamLadder {
     .unwrap()
 }
 
+#[allow(clippy::too_many_lines)] // one literal of every current field
 fn rich_project() -> Project {
     let high = u128::from(u64::MAX) + 101;
     let mut project = Project::new(
@@ -265,6 +266,7 @@ fn rich_project() -> Project {
             geometry: LayerGeometry::new(-20, 30, 1920, 1080, Rotation::Deg90),
             crop: Some(CropRect::new(10, 20, 1000, 700)),
             mask: Some(RectMask::new(11, 12, 500, 300).inverted(true)),
+            key: None,
             effects: Vec::new(),
             opacity: 200,
             z_order: -7,
@@ -284,6 +286,7 @@ fn rich_project() -> Project {
                 geometry: LayerGeometry::new(0, 0, 3840, 2160, Rotation::Deg0),
                 crop: None,
                 mask: None,
+                key: None,
                 effects: Vec::new(),
                 opacity: u8::MAX,
                 z_order: 3,
@@ -296,6 +299,7 @@ fn rich_project() -> Project {
                 geometry: LayerGeometry::new(100, -200, 640, 360, Rotation::Deg270),
                 crop: Some(CropRect::new(1, 2, 3, 4)),
                 mask: Some(RectMask::new(1, 1, 2, 3)),
+                key: None,
                 effects: Vec::new(),
                 opacity: 127,
                 z_order: 3,
@@ -617,7 +621,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 40"));
+    assert!(encoded.contains("\"schema_version\": 41"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -687,7 +691,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 40"));
+    assert!(encoded.contains("\"schema_version\": 41"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -843,7 +847,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 40"));
+    assert!(valid.contains("\"schema_version\": 41"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -859,7 +863,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 40", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 41", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1239,6 +1243,7 @@ fn effected_project() -> Project {
                 geometry: LayerGeometry::new(0, 0, 1920, 1080, Rotation::Deg0),
                 crop: None,
                 mask: None,
+                key: None,
                 effects: Vec::new(),
                 opacity: u8::MAX,
                 z_order: 0,
@@ -1251,9 +1256,17 @@ fn effected_project() -> Project {
                 geometry: LayerGeometry::new(0, 0, 1920, 1080, Rotation::Deg0),
                 crop: None,
                 mask: None,
+                key: Some(fm_model::LayerKey::Chroma(fm_model::ChromaLayerKey {
+                    red: 0,
+                    green: 255,
+                    blue: 0,
+                    similarity: 64,
+                    smoothness: 32,
+                    spill: 128,
+                })),
                 effects: vec![
                     LayerEffect::new("levels", vec![0, 128]),
-                    LayerEffect::new("future.effect", vec![i32::MIN, -1, 0, 7]),
+                    LayerEffect::new("sharpen", vec![1000]),
                 ],
                 opacity: 255,
                 z_order: 1,
@@ -1278,7 +1291,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 40"));
+    assert!(encoded.contains("\"schema_version\": 41"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1288,7 +1301,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
     );
     assert!(encoded.contains(
         "\"effects\": [{\"name\": \"levels\", \"parameters\": [0, 128]}, {\"name\": \
-         \"future.effect\", \"parameters\": [-2147483648, -1, 0, 7]}]"
+         \"sharpen\", \"parameters\": [1000]}]"
     ));
 
     let loaded = store.load().unwrap();
@@ -1302,7 +1315,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
         loaded.project().scenes()[0].layers[1].effects,
         vec![
             LayerEffect::new("levels", vec![0, 128]),
-            LayerEffect::new("future.effect", vec![i32::MIN, -1, 0, 7]),
+            LayerEffect::new("sharpen", vec![1000]),
         ]
     );
 }
@@ -1330,9 +1343,8 @@ fn stored_effected_manifest(name: &str) -> (TestDirectory, ProjectStore, String)
 fn strict_layer_effect_parser_rejects_missing_mistyped_unknown_and_duplicate_fields() {
     let (_temp, store, valid) = stored_effected_manifest("strict-effects-fields");
     let descriptor = "{\"name\": \"levels\", \"parameters\": [0, 128]}";
-    let effects_array = format!(
-        "[{descriptor}, {{\"name\": \"future.effect\", \"parameters\": [-2147483648, -1, 0, 7]}}]"
-    );
+    let effects_array =
+        format!("[{descriptor}, {{\"name\": \"sharpen\", \"parameters\": [1000]}}]");
 
     for (index, malformed) in [
         // Missing and mistyped fields: the current contract carries `effects`
@@ -1406,27 +1418,31 @@ fn strict_layer_effect_parser_rejects_missing_mistyped_unknown_and_duplicate_fie
 fn layer_effect_bounds_are_rejected_at_the_current_schema() {
     let (_temp, store, valid) = stored_effected_manifest("strict-effects-bounds");
     let descriptor = "{\"name\": \"levels\", \"parameters\": [0, 128]}";
-    let effects_array = format!(
-        "[{descriptor}, {{\"name\": \"future.effect\", \"parameters\": [-2147483648, -1, 0, 7]}}]"
-    );
-    let high_parameters = (0..=LayerEffect::MAX_PARAMETERS)
-        .map(|parameter| parameter.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
+    let effects_array =
+        format!("[{descriptor}, {{\"name\": \"sharpen\", \"parameters\": [1000]}}]");
     let many_effects = (0..=LayerEffect::MAX_EFFECTS_PER_LAYER)
         .map(|_| descriptor)
         .collect::<Vec<_>>()
         .join(", ");
 
-    // The compositor descriptor bounds are part of the current contract.
+    let key = "\"key\": {\"type\": \"chroma\", \"red\": 0, \"green\": 255, \"blue\": 0, \
+               \"similarity\": 64, \"smoothness\": 32, \"spill\": 128}";
+    assert!(valid.contains(key));
+    assert!(valid.contains("\"key\": null"));
+
+    // The effect table and the key bounds are part of the current contract.
     for (index, malformed) in [
         valid.replacen(descriptor, "{\"name\": \"\", \"parameters\": [0, 128]}", 1),
+        valid.replacen(descriptor, "{\"name\": \"blur\", \"parameters\": [3]}", 1),
+        valid.replacen(descriptor, "{\"name\": \"levels\", \"parameters\": [0]}", 1),
         valid.replacen(
             descriptor,
-            &format!(
-                "{{\"name\": \"{}\", \"parameters\": [0, 128]}}",
-                "x".repeat(65)
-            ),
+            "{\"name\": \"levels\", \"parameters\": [128, 0]}",
+            1,
+        ),
+        valid.replacen(
+            descriptor,
+            "{\"name\": \"levels\", \"parameters\": [0, 256]}",
             1,
         ),
         valid.replacen(
@@ -1434,11 +1450,16 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
             "{\"name\": \"levels\\u0007\", \"parameters\": [0, 128]}",
             1,
         ),
+        valid.replacen(key, "\"key\": {\"type\": \"alpha\"}", 1),
+        valid.replacen(key, &key.replace("\"spill\": 128", "\"spill\": 256"), 1),
+        valid.replacen(key, &key.replace(", \"spill\": 128", ""), 1),
         valid.replacen(
-            descriptor,
-            &format!("{{\"name\": \"levels\", \"parameters\": [{high_parameters}]}}"),
+            key,
+            "\"key\": {\"type\": \"luma\", \"low\": 40, \"high\": 40, \"softness\": 0, \
+             \"invert\": false}",
             1,
         ),
+        valid.replacen("\"key\": null,\n", "", 1),
         valid.replacen(
             &format!("\"effects\": {effects_array}"),
             &format!("\"effects\": [{many_effects}]"),
@@ -1615,7 +1636,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 40"));
+    assert!(encoded.contains("\"schema_version\": 41"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -1708,7 +1729,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 40"));
+    assert!(encoded.contains("\"schema_version\": 41"));
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
@@ -1849,7 +1870,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 40,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 41,\n"));
     let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
          \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
          \"Jane \\\"JD\\\" Doe\"}, {\"id\": 2, \"type\": \"number\", \"value\": -4}, {\"id\": 3, \
@@ -1938,7 +1959,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        encoded.replacen("\"schema_version\": 40", "\"schema_version\": 26", 1),
+        encoded.replacen("\"schema_version\": 41", "\"schema_version\": 26", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -2069,7 +2090,7 @@ fn playlist_round_trips_every_state_exactly_and_is_strict_at_the_current_schema(
     });
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 40"));
+    assert!(encoded.contains("\"schema_version\": 41"));
     let playlist = "\"playlist\": {\"loop\": \"all\", \"entries\": [{\"id\": 7, \"input\": 18446744073709551716, \"duration_frames\": 90, \"transition\": {\"kind\": \"cut\", \"duration_frames\": 0}, \"enabled\": true}, {\"id\": 18446744073709551615, \"input\": 18446744073709551719, \"duration_frames\": 45, \"transition\": {\"kind\": \"alpha_fade\", \"duration_frames\": 12}, \"enabled\": false}], \"state\": {\"type\": \"playing\", \"entry\": 7, \"take\": 3, \"cycle\": 1, \"started_frame\": 300}, \"next_take\": 4, \"observed_frame\": 321}";
     assert!(
         encoded.contains(&format!("    {playlist},\n    \"luts\": [],")),

@@ -351,7 +351,8 @@ impl CommandCompletion {
             | CommandPayload::InputLifecycle(_)
             | CommandPayload::SetTitleFields { .. }
             | CommandPayload::SetDisplayOutput { .. }
-            | CommandPayload::ClearDisplayOutput { .. } => Self::Project,
+            | CommandPayload::ClearDisplayOutput { .. }
+            | CommandPayload::SceneLayer(_) => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
                 live: operation.is_live(),

@@ -2,9 +2,10 @@ use std::num::NonZeroU128;
 
 use fm_model::{
     AddInputError, AddSceneInputError, AddSceneLayerError, AddStreamTargetError, AudioBus, BusSend,
-    CURRENT_SCHEMA_VERSION, CropRect, DEFAULT_VIDEO_BITRATE_KBPS, DuplicateSceneInputError,
-    EntityRef, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
-    InputGainMilliDb, InputKind, Layer, LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry,
+    CURRENT_SCHEMA_VERSION, ChromaLayerKey, CropRect, DEFAULT_VIDEO_BITRATE_KBPS,
+    DuplicateSceneInputError, EntityRef, Input, InputAudioStripState, InputBalanceBasisPoints,
+    InputDelaySamples, InputGainMilliDb, InputKind, Layer, LayerAnchor, LayerEffect,
+    LayerEffectError, LayerGeometry, LayerKey, LayerKeyError, LumaLayerKey,
     MAX_STREAM_ENDPOINT_BYTES, MAX_STREAM_LADDER_HEIGHT, MAX_STREAM_LADDER_RUNGS,
     MAX_STREAM_LADDER_WIDTH, MAX_VIDEO_BITRATE_KBPS, MIN_STREAM_LADDER_DIMENSION,
     MIN_STREAM_LADDER_RUNGS, MIN_VIDEO_BITRATE_KBPS, MainMix, Output, OutputFormat, Project,
@@ -76,6 +77,7 @@ fn layer(name: &str, source: SourceRef) -> Layer {
         geometry: identity_geometry(),
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: u8::MAX,
         z_order: 0,
@@ -2057,8 +2059,7 @@ fn layer_effects_persist_ordered_bounded_descriptors() {
     layered.effects = vec![
         LayerEffect::new("levels", vec![0, 128]),
         LayerEffect::new("brightness_contrast", vec![-20, 35]),
-        // Unknown names are preserved by validation, not rejected here.
-        LayerEffect::new("future.effect", vec![-1, 0, 7]),
+        LayerEffect::new("sharpen", vec![1000]),
     ];
     project.add_scene(Scene {
         id: scene_id(99),
@@ -2074,13 +2075,13 @@ fn layer_effects_persist_ordered_bounded_descriptors() {
         vec![
             LayerEffect::new("levels", vec![0, 128]),
             LayerEffect::new("brightness_contrast", vec![-20, 35]),
-            LayerEffect::new("future.effect", vec![-1, 0, 7]),
+            LayerEffect::new("sharpen", vec![1000]),
         ]
     );
 }
 
 #[test]
-fn layer_effects_are_bounded_and_names_stay_unrestricted() {
+fn layer_effects_are_bounded_reference_effects() {
     let project_with_effects = |effects| {
         let mut project = Project::new(project_id(99), "Effect bounds", settings());
         project.add_input(Input {
@@ -2115,43 +2116,134 @@ fn layer_effects_are_bounded_and_names_stay_unrestricted() {
             .map(|_| LayerEffect::new("levels", vec![0, 128]))
             .collect::<Vec<_>>(),
     );
-    for effect in [
-        LayerEffect::new("", vec![0, 128]),
-        LayerEffect::new("x".repeat(LayerEffect::MAX_NAME_BYTES + 1), Vec::new()),
-        LayerEffect::new("levels\u{7}", vec![0, 128]),
-        LayerEffect::new("levels", vec![0; LayerEffect::MAX_PARAMETERS + 1]),
+    for (effect, error) in [
+        (
+            LayerEffect::new("", vec![0, 128]),
+            LayerEffectError::UnknownEffect,
+        ),
+        (
+            LayerEffect::new("blur", vec![3]),
+            LayerEffectError::UnknownEffect,
+        ),
+        (
+            LayerEffect::new("levels", vec![0, 128, 7]),
+            LayerEffectError::WrongParameterCount { expected: 2 },
+        ),
+        (
+            LayerEffect::new("levels", vec![0, 256]),
+            LayerEffectError::ParameterOutOfRange { parameter: 1 },
+        ),
+        (
+            LayerEffect::new("levels", vec![128, 128]),
+            LayerEffectError::InvalidLevels,
+        ),
+        (
+            LayerEffect::new("brightness_contrast", vec![-101, 0]),
+            LayerEffectError::ParameterOutOfRange { parameter: 0 },
+        ),
+        (
+            LayerEffect::new("saturation", vec![101]),
+            LayerEffectError::ParameterOutOfRange { parameter: 0 },
+        ),
+        (
+            LayerEffect::new("sharpen", vec![-1]),
+            LayerEffectError::ParameterOutOfRange { parameter: 0 },
+        ),
+        (
+            LayerEffect::new("flip", vec![0, 2]),
+            LayerEffectError::ParameterOutOfRange { parameter: 1 },
+        ),
     ] {
-        assert!(effect.validate().is_err(), "{effect:?} was accepted");
+        assert_eq!(effect.validate(), Err(error), "{effect:?}");
         assert_effects_rejected(vec![effect]);
     }
 
-    assert_eq!(
-        LayerEffect::new("", Vec::new()).validate(),
-        Err(LayerEffectError::EmptyName)
-    );
-    assert_eq!(
-        LayerEffect::new("x".repeat(LayerEffect::MAX_NAME_BYTES + 1), Vec::new()).validate(),
-        Err(LayerEffectError::NameTooLong)
-    );
-    assert_eq!(
-        LayerEffect::new("levels\u{1f}", Vec::new()).validate(),
-        Err(LayerEffectError::NameContainsControlCharacter)
-    );
-    assert_eq!(
-        LayerEffect::new("levels", vec![0; LayerEffect::MAX_PARAMETERS + 1]).validate(),
-        Err(LayerEffectError::TooManyParameters)
-    );
-
-    // Exactly the bounds are accepted, unknown names included.
-    let boundary = (0..LayerEffect::MAX_EFFECTS_PER_LAYER)
-        .map(|_| {
-            LayerEffect::new(
-                "x".repeat(LayerEffect::MAX_NAME_BYTES),
-                vec![0; LayerEffect::MAX_PARAMETERS],
-            )
-        })
-        .collect::<Vec<_>>();
+    // Every kind's neutral default and range edges are accepted, up to the
+    // per-layer bound.
+    for name in LayerEffect::KINDS {
+        let neutral = LayerEffect::default_of(name).unwrap();
+        assert_eq!(neutral.validate(), Ok(()));
+        let ranges = LayerEffect::parameter_ranges(name).unwrap();
+        assert_eq!(ranges.len(), neutral.parameters.len());
+    }
+    assert_eq!(LayerEffect::default_of("blur"), None);
+    let boundary = vec![
+        LayerEffect::new("levels", vec![254, 255]),
+        LayerEffect::new("brightness_contrast", vec![-100, 100]),
+        LayerEffect::new("saturation", vec![-100]),
+        LayerEffect::new("sharpen", vec![1000]),
+        LayerEffect::new("flip", vec![1, 1]),
+        LayerEffect::new("levels", vec![0, 1]),
+        LayerEffect::new("saturation", vec![100]),
+        LayerEffect::new("sharpen", vec![0]),
+    ];
+    assert_eq!(boundary.len(), LayerEffect::MAX_EFFECTS_PER_LAYER);
     assert_eq!(project_with_effects(boundary).validate(), Ok(()));
+}
+
+#[test]
+fn layer_keys_are_bounded_and_set_atomically() {
+    let mut project = Project::new(project_id(99), "Keys", settings());
+    project.add_input(Input {
+        id: input_id(99),
+        name: "Source".into(),
+        kind: InputKind::Color,
+        required_capabilities: Vec::new(),
+    });
+    project.add_scene(Scene {
+        id: scene_id(99),
+        name: "Keys scene".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![layer("Keyed", SourceRef::Input(input_id(99)))],
+        animation: fm_model::SceneAnimation::default(),
+    });
+    let scene = scene_id(99);
+    let chroma = LayerKey::Chroma(ChromaLayerKey::GREEN);
+    project.set_scene_layer_key(scene, 0, Some(chroma)).unwrap();
+    assert_eq!(project.scenes()[0].layers[0].key, Some(chroma));
+    assert_eq!(project.validate(), Ok(()));
+
+    let empty_band = LayerKey::Luma(LumaLayerKey {
+        low: 200,
+        high: 200,
+        softness: 0,
+        invert: false,
+    });
+    assert_eq!(
+        project.set_scene_layer_key(scene, 0, Some(empty_band)),
+        Err(SceneLayerError::InvalidKey {
+            scene,
+            index: 0,
+            reason: LayerKeyError::EmptyLumaBand,
+        })
+    );
+    assert_eq!(project.scenes()[0].layers[0].key, Some(chroma));
+    assert!(project.set_scene_layer_key(scene, 1, None).is_err());
+    assert!(project.set_scene_layer_key(scene_id(1), 0, None).is_err());
+
+    let luma = LayerKey::Luma(LumaLayerKey {
+        high: 235,
+        invert: true,
+        ..LumaLayerKey::BLACK
+    });
+    project.set_scene_layer_key(scene, 0, Some(luma)).unwrap();
+    assert_eq!(project.scenes()[0].layers[0].key, Some(luma));
+    project.set_scene_layer_key(scene, 0, None).unwrap();
+    assert_eq!(project.scenes()[0].layers[0].key, None);
+
+    // Validation reports a stored invalid key.
+    let mut broken = project.scenes()[0].clone();
+    broken.layers[0].key = Some(empty_band);
+    let mut invalid = Project::new(project_id(98), "Broken key", settings());
+    invalid.add_input(project.inputs()[0].clone());
+    invalid.add_scene(broken);
+    let errors = invalid.validate().unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.field == "layers.key"
+                && error.kind == ValidationErrorKind::OutOfRange)
+    );
 }
 
 #[test]
@@ -2186,15 +2278,11 @@ fn scene_layer_effect_mutations_are_bounded_and_atomic() {
         ]
     );
     project
-        .set_scene_layer_effects(
-            scene,
-            0,
-            vec![LayerEffect::new("future.effect", vec![-1, 7])],
-        )
+        .set_scene_layer_effects(scene, 0, vec![LayerEffect::new("flip", vec![0, 1])])
         .unwrap();
     assert_eq!(
         effects(&project),
-        vec![LayerEffect::new("future.effect", vec![-1, 7])]
+        vec![LayerEffect::new("flip", vec![0, 1])]
     );
     project.remove_scene_layer_effect(scene, 0, 0).unwrap();
     assert_eq!(effects(&project), [] as [fm_model::LayerEffect; 0]);
@@ -2218,10 +2306,7 @@ fn scene_layer_effect_mutations_are_bounded_and_atomic() {
         project.set_scene_layer_effects(
             scene,
             0,
-            vec![LayerEffect::new(
-                "levels",
-                vec![0; LayerEffect::MAX_PARAMETERS + 1],
-            )],
+            vec![LayerEffect::new("levels", vec![0, 128, 255])],
         ),
         project.remove_scene_layer_effect(scene, 0, LayerEffect::MAX_EFFECTS_PER_LAYER),
         project.set_scene_layer_effects(scene_id(1), 0, Vec::new()),

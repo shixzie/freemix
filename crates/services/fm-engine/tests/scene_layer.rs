@@ -17,8 +17,8 @@ use fm_engine::{
     EngineCommandOutcome, EngineEvent, EngineSceneLayerEdit, ShowState, scene_inputs_showing,
 };
 use fm_model::{
-    CropRect, Layer, LayerAnchor, LayerGeometry, LayerId, RectMask, Rgba8, Rotation, Scene,
-    SceneAnimation, SceneLayerChange, SourceRef,
+    ChromaLayerKey, CropRect, Layer, LayerAnchor, LayerEffect, LayerGeometry, LayerId, LayerKey,
+    LumaLayerKey, RectMask, Rgba8, Rotation, Scene, SceneAnimation, SceneLayerChange, SourceRef,
     fm_animation::{Easing, Keyframe, Phase, Property, Track, TrackKey, Value},
 };
 use fm_types::{FrameRate, InputId, SceneId};
@@ -54,6 +54,7 @@ fn layer(id: u32, source: u128, geometry: LayerGeometry) -> Layer {
         geometry,
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: u8::MAX,
         z_order: 0,
@@ -179,6 +180,7 @@ fn redo(engine: &mut Engine, key: &str) {
     );
 }
 
+#[allow(clippy::too_many_lines)] // one walk over every edit kind
 #[test]
 fn every_live_edit_is_an_undoable_project_edit_of_the_shared_scene() {
     let mut engine = engine();
@@ -218,6 +220,17 @@ fn every_live_edit_is_an_undoable_project_edit_of_the_shared_scene() {
                 invert: true,
             })),
         ),
+        (
+            2,
+            SceneLayerChange::Key(Some(LayerKey::Chroma(ChromaLayerKey::GREEN))),
+        ),
+        (
+            2,
+            SceneLayerChange::Effects(vec![
+                LayerEffect::new("saturation", vec![-100]),
+                LayerEffect::new("sharpen", vec![250]),
+            ]),
+        ),
         (2, SceneLayerChange::ZOrder(5)),
         (2, SceneLayerChange::Move { index: 0 }),
         (
@@ -256,6 +269,8 @@ fn every_live_edit_is_an_undoable_project_edit_of_the_shared_scene() {
     assert_eq!((pip.enabled, pip.opacity, pip.z_order), (false, 64, 5));
     assert_eq!(pip.crop, Some(CropRect::new(100, 50, 1_600, 900)));
     assert!(pip.mask.is_some_and(|mask| mask.invert));
+    assert_eq!(pip.key, Some(LayerKey::Chroma(ChromaLayerKey::GREEN)));
+    assert_eq!(pip.effects.len(), 2);
     assert_eq!(last.layers[1], added);
     // Both Scene inputs show the one scene.
     assert_eq!(
@@ -344,6 +359,101 @@ fn a_gesture_folds_into_one_undo_step_per_layer_property() {
     redo(&mut engine, "redo-a");
     redo(&mut engine, "redo-b");
     assert_eq!(shown(&engine, 1), moved);
+}
+
+/// IN-020: scrubbing a key or effect parameter is one gesture: its sends fold
+/// into one undo step per layer property, and a key and an effect list are
+/// separate properties.
+#[test]
+fn key_and_effect_scrubs_fold_into_one_step_each() {
+    let mut engine = engine();
+    let original = shown(&engine, 1);
+    let luma = |low: u8| {
+        SceneLayerChange::Key(Some(LayerKey::Luma(LumaLayerKey {
+            low,
+            ..LumaLayerKey::BLACK
+        })))
+    };
+    let sharpen = |amount: i32| {
+        SceneLayerChange::Effects(vec![
+            LayerEffect::new("flip", vec![1, 0]),
+            LayerEffect::new("sharpen", vec![amount]),
+        ])
+    };
+    accept(&mut engine, "k0", starting(1, 2, luma(10), 11));
+    for (step, low) in [20, 30, 40].into_iter().enumerate() {
+        accept(
+            &mut engine,
+            &format!("k{}", step + 1),
+            continuing(1, 2, luma(low), 11),
+        );
+    }
+    accept(&mut engine, "e0", starting(1, 2, sharpen(100), 12));
+    for (step, amount) in [200, 300].into_iter().enumerate() {
+        accept(
+            &mut engine,
+            &format!("e{}", step + 1),
+            continuing(1, 2, sharpen(amount), 12),
+        );
+    }
+    assert_eq!(engine.undo_entries().len(), 2);
+    let scrubbed = shown(&engine, 1);
+    assert_eq!(
+        scrubbed.layers[1].key,
+        Some(LayerKey::Luma(LumaLayerKey {
+            low: 40,
+            ..LumaLayerKey::BLACK
+        }))
+    );
+    assert_eq!(scrubbed.layers[1].effects[1].parameters, vec![300]);
+    undo(&mut engine, "undo-effects");
+    assert_eq!(shown(&engine, 1).layers[1].effects, Vec::new());
+    undo(&mut engine, "undo-key");
+    assert_eq!(shown(&engine, 1), original);
+    redo(&mut engine, "redo-key");
+    redo(&mut engine, "redo-effects");
+    assert_eq!(shown(&engine, 1), scrubbed);
+    // Invalid keys and effects are refused without touching the scene.
+    for (index, (change, field, issue)) in [
+        (
+            SceneLayerChange::Key(Some(LayerKey::Luma(LumaLayerKey {
+                low: 200,
+                high: 100,
+                softness: 0,
+                invert: false,
+            }))),
+            "key",
+            "invalid_key",
+        ),
+        (
+            SceneLayerChange::Effects(vec![LayerEffect::new("blur", vec![3])]),
+            "effects",
+            "invalid_effect",
+        ),
+        (
+            SceneLayerChange::Effects(vec![
+                LayerEffect::new("flip", vec![0, 0]);
+                LayerEffect::MAX_EFFECTS_PER_LAYER + 1
+            ]),
+            "effects",
+            "invalid_effect",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let outcome = execute(&mut engine, &format!("bad-{index}"), edit(1, 2, change));
+        let refused = rejection(&outcome);
+        assert_eq!(refused.code, RejectionCode::InvalidCommand);
+        assert_eq!(
+            (
+                refused.fields[0].field.as_str(),
+                refused.fields[0].code.as_str()
+            ),
+            (field, issue)
+        );
+        assert_eq!(shown(&engine, 1), scrubbed);
+    }
 }
 
 /// A gesture's later sends fold only into the step its own accepted first

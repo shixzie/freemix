@@ -4,6 +4,7 @@
 //! operations (`fm_model::Project::move_scene_layer`,
 //! `set_scene_layer_geometry`, `set_scene_layer_appearance`,
 //! `set_scene_layer_crop`, `set_scene_layer_mask`,
+//! `set_scene_layer_key`, the effect list edits,
 //! `set_scene_layer_z_order`), addressed by zero-based layer index as
 //! those operations and their `freemix-cli scene-layer-*` commands are. A
 //! running server takes the designer's edits live (by layer id); these
@@ -11,12 +12,12 @@
 //! ([`SceneLayerEdit::cli_command`]) that reproduces a layout in a project
 //! bundle.
 
-use fm_protocol::WireSceneId;
+use fm_protocol::{WireLayerEffect, WireLayerKey, WireSceneId};
 
 use super::geometry::{LayerPlacement, MaskRect};
 
 /// One scene layer edit command.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SceneLayerEdit {
     /// Moves the layer at `from` to stacking position `to` (`scene-layer-move`).
     Move { from: usize, to: usize },
@@ -44,6 +45,18 @@ pub enum SceneLayerEdit {
     },
     /// Sets the layer's drawing order key (`scene-layer-z-order`).
     ZOrder { index: usize, z_order: i32 },
+    /// Sets or clears the chroma or luma key (`scene-layer-key`).
+    Key {
+        index: usize,
+        key: Option<WireLayerKey>,
+    },
+    /// Removes every effect of the layer (`scene-layer-effect-clear`).
+    ClearEffects { index: usize },
+    /// Appends one effect to the layer's list (`scene-layer-effect-add`).
+    AddEffect {
+        index: usize,
+        effect: WireLayerEffect,
+    },
 }
 
 /// A clockwise angle in millidegrees as degrees with at most three
@@ -73,12 +86,39 @@ fn shell_word(value: &str) -> String {
     }
 }
 
+/// The `scene-layer-key` arguments after the scene: the layer index, then
+/// `none`, `chroma <r> <g> <b> <similarity> <smoothness> <spill>`, or
+/// `luma <low> <high> <softness> on|off`.
+fn key_arguments(index: usize, key: Option<WireLayerKey>) -> Vec<String> {
+    let mut arguments = vec![index.to_string()];
+    match key {
+        None => arguments.push("none".to_owned()),
+        Some(WireLayerKey::Chroma(chroma)) => arguments.extend([
+            "chroma".to_owned(),
+            chroma.red.to_string(),
+            chroma.green.to_string(),
+            chroma.blue.to_string(),
+            chroma.similarity.to_string(),
+            chroma.smoothness.to_string(),
+            chroma.spill.to_string(),
+        ]),
+        Some(WireLayerKey::Luma(luma)) => arguments.extend([
+            "luma".to_owned(),
+            luma.low.to_string(),
+            luma.high.to_string(),
+            luma.softness.to_string(),
+            if luma.invert { "on" } else { "off" }.to_owned(),
+        ]),
+    }
+    arguments
+}
+
 impl SceneLayerEdit {
     /// The `freemix-cli` subcommand and its arguments after the project
     /// path and scene id.
     #[must_use]
     pub fn cli_arguments(&self) -> (&'static str, Vec<String>) {
-        match *self {
+        match self.clone() {
             Self::Move { from, to } => ("scene-layer-move", vec![from.to_string(), to.to_string()]),
             Self::Geometry { index, placement } => ("scene-layer-geometry", {
                 let mut arguments = vec![
@@ -148,6 +188,13 @@ impl SceneLayerEdit {
                 "scene-layer-z-order",
                 vec![index.to_string(), z_order.to_string()],
             ),
+            Self::Key { index, key } => ("scene-layer-key", key_arguments(index, key)),
+            Self::ClearEffects { index } => ("scene-layer-effect-clear", vec![index.to_string()]),
+            Self::AddEffect { index, effect } => ("scene-layer-effect-add", {
+                let mut arguments = vec![index.to_string(), shell_word(&effect.name)];
+                arguments.extend(effect.parameters.iter().map(ToString::to_string));
+                arguments
+            }),
         }
     }
 

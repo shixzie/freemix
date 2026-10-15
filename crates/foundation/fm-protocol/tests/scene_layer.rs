@@ -2,19 +2,22 @@
 //! 2.41): the `scene_layer_*`
 //! commands, the `scene_layout_changed` durable event carrying the edit and
 //! the scene's whole new layout, and the layout record's crop, mask,
-//! z-order, tilt, and anchor — exactly, and strictly.
+//! z-order, tilt, and anchor — exactly, and strictly. Protocol 2.43
+//! (IN-020) adds each layer's key and effects to the layout record and
+//! `scene_layer_key_set`/`_clear` and `scene_layer_effects_set`.
 
 use core::num::{NonZeroU32, NonZeroU128};
 
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload, EditHistoryStatus,
     EngineIdentity, EventCursor, EventMessage, EventPayload, ProtocolVersion, SceneLayerEdit,
-    SceneLayerOperation, WireInputId, WireLayerCrop, WireLayerEffect, WireLayerGeometry,
-    WireLayerMask, WireMessage, WireSceneId, WireSceneLayerId, WireSceneLayerOutline,
-    WireSceneLayerSource, WireSceneLayerSpec, WireSceneLayout, decode_line, encode_line,
+    SceneLayerOperation, WireChromaKey, WireInputId, WireLayerCrop, WireLayerEffect,
+    WireLayerGeometry, WireLayerKey, WireLayerMask, WireLumaKey, WireMessage, WireSceneId,
+    WireSceneLayerId, WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout, decode_line,
+    encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.42\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.43\tid=a\tidempotency_key=k";
 
 fn scene(value: u128) -> WireSceneId {
     WireSceneId::new(NonZeroU128::new(value).unwrap())
@@ -93,9 +96,47 @@ fn outline(id: u32) -> WireSceneLayerOutline {
             height: 200,
             invert: true,
         }),
+        key: Some(chroma()),
+        effects: effects(),
     };
     outline.set_geometry(geometry());
     outline
+}
+
+fn chroma() -> WireLayerKey {
+    WireLayerKey::Chroma(WireChromaKey {
+        red: 0,
+        green: 255,
+        blue: 7,
+        similarity: 64,
+        smoothness: 32,
+        spill: 128,
+    })
+}
+
+fn luma() -> WireLayerKey {
+    WireLayerKey::Luma(WireLumaKey {
+        low: 16,
+        high: 235,
+        softness: 8,
+        invert: true,
+    })
+}
+
+fn effects() -> Vec<WireLayerEffect> {
+    [
+        ("levels", vec![16, 235]),
+        ("brightness_contrast", vec![-100, 100]),
+        ("saturation", vec![-50]),
+        ("sharpen", vec![1_000]),
+        ("flip", vec![1, 0]),
+    ]
+    .into_iter()
+    .map(|(name, parameters)| WireLayerEffect {
+        name: name.into(),
+        parameters,
+    })
+    .collect()
 }
 
 fn operations() -> Vec<SceneLayerOperation> {
@@ -120,31 +161,22 @@ fn operations() -> Vec<SceneLayerOperation> {
             invert: false,
         })),
         SceneLayerOperation::SetMask(None),
+        SceneLayerOperation::SetKey(Some(chroma())),
+        SceneLayerOperation::SetKey(None),
+        SceneLayerOperation::SetEffects(effects()),
         SceneLayerOperation::SetZOrder { z_order: i32::MIN },
         SceneLayerOperation::Move { index: 4 },
         SceneLayerOperation::Add {
             index: 1,
-            spec: Box::new(WireSceneLayerSpec {
-                layer: outline(2),
-                effects: vec![
-                    WireLayerEffect {
-                        name: "blur".into(),
-                        parameters: vec![3, -4],
-                    },
-                    WireLayerEffect {
-                        name: "sharpen".into(),
-                        parameters: Vec::new(),
-                    },
-                ],
-            }),
+            spec: Box::new(outline(2)),
         },
         SceneLayerOperation::Remove,
     ]
 }
 
 #[test]
-fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 42));
+fn protocol_is_2_43() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 43));
 }
 
 #[test]
@@ -217,6 +249,31 @@ fn scene_layer_commands_have_an_exact_wire_form() {
             SceneLayerOperation::Remove,
             "payload=scene_layer_remove\tscene=3\tlayer=2\tcontinues=false\tgesture=0\n",
         ),
+        (
+            SceneLayerOperation::SetKey(Some(chroma())),
+            "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=chroma\t\
+             red=0\tgreen=255\tblue=7\tsimilarity=64\tsmoothness=32\tspill=128\n",
+        ),
+        (
+            SceneLayerOperation::SetKey(Some(luma())),
+            "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=luma\t\
+             low=16\thigh=235\tsoftness=8\tinvert=true\n",
+        ),
+        (
+            SceneLayerOperation::SetKey(None),
+            "payload=scene_layer_key_clear\tscene=3\tlayer=2\tcontinues=false\tgesture=0\n",
+        ),
+        (
+            SceneLayerOperation::SetEffects(Vec::new()),
+            "payload=scene_layer_effects_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\t\
+             effects=AA\n",
+        ),
+        (
+            // levels 16..235 is kind 0 then zigzag 32 and 470 (0xD6 0x03).
+            SceneLayerOperation::SetEffects(effects()[..1].to_vec()),
+            "payload=scene_layer_effects_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\t\
+             effects=AQAg1gM\n",
+        ),
     ];
     for (operation, tail) in cases {
         let line = round_trip(&command(edit(operation)));
@@ -230,7 +287,11 @@ fn scene_layer_commands_are_strict() {
     let z_line = round_trip(&command(edit(SceneLayerOperation::SetZOrder {
         z_order: -5,
     })));
-    let add_line = round_trip(&command(edit(operations()[8].clone())));
+    let add_line = round_trip(&command(edit(operations()[11].clone())));
+    let key_line = round_trip(&command(edit(SceneLayerOperation::SetKey(Some(luma())))));
+    let effects_line = round_trip(&command(edit(SceneLayerOperation::SetEffects(
+        effects()[..1].to_vec(),
+    ))));
     for bad in [
         // Ids are canonical and nonzero.
         geometry_line.replace("\tscene=3", "\tscene=03"),
@@ -258,6 +319,17 @@ fn scene_layer_commands_are_strict() {
         geometry_line.replace('\n', "\textra=1\n"),
         // An added layer's spec names the edited layer.
         add_line.replace("\tlayer=2", "\tlayer=5"),
+        // Keys name a known kind, bounded bytes, and a nonempty luma band.
+        key_line.replace("kind=luma", "kind=alpha"),
+        key_line.replace("low=16", "low=256"),
+        key_line.replace("low=16", "low=235"),
+        key_line.replace("invert=true", "invert=1"),
+        key_line.replace("\tsoftness=8", ""),
+        // Effects are a known kind with in-range values, no trailing bytes.
+        effects_line.replace("effects=AQAg1gM", "effects=AQUg1gM"),
+        effects_line.replace("effects=AQAg1gM", "effects=AQDWAyA"),
+        effects_line.replace("effects=AQAg1gM", "effects=AQAg1gMA"),
+        effects_line.replace("effects=AQAg1gM", "effects=CQ"),
     ] {
         assert_ne!(bad, geometry_line);
         assert!(decode_line(&bad).is_err(), "{bad}");
@@ -269,11 +341,36 @@ fn scene_layer_commands_are_strict() {
         encode_line(&command(edit(SceneLayerOperation::SetGeometry(tilted)))),
         Err(CodecError::InvalidField { .. })
     ));
-    let SceneLayerOperation::Add { index, mut spec } = operations()[8].clone() else {
+    let SceneLayerOperation::Add { index, mut spec } = operations()[11].clone() else {
         unreachable!()
     };
-    spec.layer.id = layer(9);
+    spec.id = layer(9);
     assert!(encode_line(&command(edit(SceneLayerOperation::Add { index, spec }))).is_err());
+    let bad_effect = WireLayerEffect {
+        name: "blur".into(),
+        parameters: vec![3],
+    };
+    assert!(!bad_effect.is_valid());
+    assert!(
+        encode_line(&command(edit(SceneLayerOperation::SetEffects(vec![
+            bad_effect
+        ]))))
+        .is_err()
+    );
+    let too_many = vec![effects()[0].clone(); fm_protocol::MAX_SCENE_LAYER_EFFECTS + 1];
+    assert!(encode_line(&command(edit(SceneLayerOperation::SetEffects(too_many)))).is_err());
+    let empty_band = WireLayerKey::Luma(WireLumaKey {
+        low: 9,
+        high: 9,
+        softness: 0,
+        invert: false,
+    });
+    assert!(
+        encode_line(&command(edit(SceneLayerOperation::SetKey(Some(
+            empty_band
+        )))))
+        .is_err()
+    );
 }
 
 fn layout() -> WireSceneLayout {
@@ -343,9 +440,16 @@ fn layout_records_carry_crop_mask_z_order_tilt_and_anchor() {
         id: layer(3),
         crop: None,
         mask: None,
+        key: None,
+        effects: Vec::new(),
         ..full.clone()
     };
     layout.layers.push(plain);
+    layout.layers.push(WireSceneLayerOutline {
+        id: layer(4),
+        key: Some(luma()),
+        ..full.clone()
+    });
     let line = round_trip(&WireMessage::SceneLayoutState(
         fm_protocol::SceneLayoutStateMessage {
             revision: 4,
@@ -364,6 +468,9 @@ fn layout_records_carry_crop_mask_z_order_tilt_and_anchor() {
         (guest.z_order, guest.crop, guest.mask),
         (-3, full.crop, full.mask)
     );
+    assert_eq!(decoded.layout, Box::new(layout.clone()));
+    assert_eq!((guest.key, &guest.effects), (Some(chroma()), &effects()));
+    assert_eq!(decoded.layout.layers[2].key, Some(luma()));
     // A crop beyond the canvas, a mask beyond the cropped source, or an
     // anchor outside the box is refused.
     for broken in [
@@ -392,6 +499,26 @@ fn layout_records_carry_crop_mask_z_order_tilt_and_anchor() {
         },
         WireSceneLayerOutline {
             tilt_millidegrees: 45_000,
+            ..full.clone()
+        },
+        WireSceneLayerOutline {
+            key: Some(WireLayerKey::Luma(WireLumaKey {
+                low: 200,
+                high: 100,
+                softness: 0,
+                invert: false,
+            })),
+            ..full.clone()
+        },
+        WireSceneLayerOutline {
+            effects: vec![WireLayerEffect {
+                name: "levels".into(),
+                parameters: vec![200, 100],
+            }],
+            ..full.clone()
+        },
+        WireSceneLayerOutline {
+            effects: vec![effects()[0].clone(); fm_protocol::MAX_SCENE_LAYER_EFFECTS + 1],
             ..full.clone()
         },
     ] {

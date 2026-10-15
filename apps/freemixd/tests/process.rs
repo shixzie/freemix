@@ -3353,6 +3353,7 @@ fn create_rename_project(path: &Path) {
     ProjectStore::new(path).unwrap().save(&stored).unwrap();
 }
 
+#[allow(clippy::too_many_lines)] // one literal stream project
 fn create_stream_project(path: &Path) {
     const STREAM_ID_BASE: u128 = U64_MAX_ID + 500;
     let frame_rate = FrameRate::new(25, 1).unwrap();
@@ -3400,6 +3401,7 @@ fn create_stream_project(path: &Path) {
             geometry: LayerGeometry::new(0, 0, 16, 16, Rotation::Deg0),
             crop: None,
             mask: None,
+            key: None,
             effects: Vec::new(),
             opacity: u8::MAX,
             z_order: 0,
@@ -3521,6 +3523,7 @@ fn canonical_project_at(width: u32, height: u32) -> Project {
             geometry: LayerGeometry::new(0, 0, 1_280, 720, Rotation::Deg0),
             crop: None,
             mask: Some(RectMask::new(100, 50, 1_000, 600).inverted(true)),
+            key: None,
             effects: Vec::new(),
             opacity: u8::MAX,
             z_order: 0,
@@ -4384,7 +4387,7 @@ fn scene_layer_edits_change_the_monitor_and_survive_restart() {
 fn a_live_layer_drawing_an_alias_of_its_own_scene_is_a_refused_cycle() {
     use fm_protocol::{
         SceneLayerEdit, SceneLayerOperation, WireSceneId, WireSceneLayerId, WireSceneLayerOutline,
-        WireSceneLayerSource, WireSceneLayerSpec,
+        WireSceneLayerSource,
     };
 
     let directory = TestDirectory::new("layer-alias-cycle");
@@ -4422,28 +4425,27 @@ fn a_live_layer_drawing_an_alias_of_its_own_scene_is_a_refused_cycle() {
             layer,
             operation: SceneLayerOperation::Add {
                 index: 0,
-                spec: Box::new(WireSceneLayerSpec {
-                    layer: WireSceneLayerOutline {
-                        id: layer,
-                        name: format!("Layer {id}"),
-                        source: WireSceneLayerSource::Input(WireInputId::from_domain(
-                            domain_input(source),
-                        )),
-                        x: 0,
-                        y: 0,
-                        width: 640,
-                        height: 360,
-                        quarter_turns: 0,
-                        opacity: 255,
-                        enabled: true,
-                        tilt_millidegrees: 0,
-                        anchor_x: 5_000,
-                        anchor_y: 5_000,
-                        z_order: 0,
-                        crop: None,
-                        mask: None,
-                    },
+                spec: Box::new(WireSceneLayerOutline {
+                    id: layer,
+                    name: format!("Layer {id}"),
+                    source: WireSceneLayerSource::Input(WireInputId::from_domain(domain_input(
+                        source,
+                    ))),
+                    x: 0,
+                    y: 0,
+                    width: 640,
+                    height: 360,
+                    quarter_turns: 0,
+                    opacity: 255,
+                    enabled: true,
+                    tilt_millidegrees: 0,
+                    anchor_x: 5_000,
+                    anchor_y: 5_000,
+                    z_order: 0,
+                    crop: None,
+                    key: None,
                     effects: Vec::new(),
+                    mask: None,
                 }),
             },
             continues: false,
@@ -5760,11 +5762,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.42.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 42));
+    // The previous protocol is refused; the current one is 2.43.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 43));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 41),
+        protocol: ProtocolVersion::new(2, 42),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5780,7 +5782,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 42)
+        ProtocolVersion::new(2, 43)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

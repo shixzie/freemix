@@ -80,8 +80,8 @@ state = "planned"
 [[tests]]
 id = "accept-in-020"
 state = "present"
-paths = ["crates/gpu/fm-compositor/tests/golden.rs", "crates/gpu/fm-compositor/tests/keys.rs", "crates/gpu/fm-compositor/tests/effects.rs", "crates/foundation/fm-model/tests/project_validation.rs", "apps/freemix-cli/tests/e2e.rs"]
-commands = ["cargo test -p fm-compositor --test golden", "cargo test -p fm-compositor --test keys", "cargo test -p fm-compositor --test effects", "cargo test -p fm-model --test project_validation", "cargo test -p freemix-cli --test e2e"]
+paths = ["apps/freemix-cli/tests/scene_layers.rs", "crates/gpu/fm-compositor/tests/golden.rs", "crates/gpu/fm-compositor/tests/keys.rs", "crates/gpu/fm-compositor/tests/effects.rs", "crates/gpu/fm-compositor/tests/native_layer_effects.rs", "crates/foundation/fm-model/tests/project_validation.rs", "crates/foundation/fm-model/tests/scene_layer_edit.rs", "crates/services/fm-persistence/tests/current_model.rs", "crates/foundation/fm-protocol/tests/scene_layer.rs", "crates/services/fm-engine/tests/scene_layer.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p freemix-cli --test scene_layers", "cargo test -p fm-compositor --test golden", "cargo test -p fm-compositor --test keys", "cargo test -p fm-compositor --test effects", "cargo test -p fm-compositor --test native_layer_effects", "cargo test -p fm-model --test project_validation", "cargo test -p fm-model --test scene_layer_edit", "cargo test -p fm-persistence --test current_model", "cargo test -p fm-protocol --test scene_layer", "cargo test -p fm-engine --test scene_layer", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-in-021"
 state = "present"

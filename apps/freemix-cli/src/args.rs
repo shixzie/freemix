@@ -582,6 +582,32 @@ pub enum Command {
         scene: u128,
         index: usize,
     },
+    /// Sets or clears one layer's chroma or luma key (IN-020).
+    SceneLayerKey {
+        path: PathBuf,
+        scene: u128,
+        index: usize,
+        layer_key: Option<fm_model::LayerKey>,
+    },
+    /// Live-edits one layer's key on a daemon (IN-020, Protocol 2.43).
+    RemoteSceneLayerKey {
+        address: SocketAddr,
+        scene: u128,
+        layer: u32,
+        layer_key: Option<fm_model::LayerKey>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Live-replaces one layer's effect list on a daemon (IN-020, Protocol
+    /// 2.43).
+    RemoteSceneLayerEffects {
+        address: SocketAddr,
+        scene: u128,
+        layer: u32,
+        effects: Vec<fm_model::LayerEffect>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     InputRemove {
         path: PathBuf,
         input: u128,
@@ -1409,6 +1435,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "scene-layer-effect-set" => parse_scene_layer_effect(arguments, EffectEdit::Set),
         "scene-layer-effect-remove" => parse_scene_layer_effect_remove(arguments),
         "scene-layer-effect-clear" => parse_scene_layer_effect_clear(arguments),
+        "scene-layer-key" => parse_scene_layer_key(arguments),
+        "remote-scene-layer-key" => parse_remote_scene_layer_key(arguments),
+        "remote-scene-layer-effects" => parse_remote_scene_layer_effects(arguments),
         "input-remove" => parse_input_remove(arguments),
         "input-duplicate" => parse_input_duplicate(arguments),
         "input-replace-simulated" => parse_input_replace_simulated(arguments),
@@ -3665,6 +3694,133 @@ fn parse_scene_layer_effect_clear(
     let index = number(&required(&mut arguments, "layer index")?, "layer index")?;
     reject_extra(&mut arguments)?;
     Ok(Command::SceneLayerEffectClear { path, scene, index })
+}
+
+/// Reads a key spec: `none`, `chroma <red> <green> <blue> <similarity>
+/// <smoothness> <spill>`, or `luma <low> <high> <softness> <invert:on|off>`
+/// (IN-020). The model checks the luma band.
+fn layer_key_spec(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<Option<fm_model::LayerKey>, ArgsError> {
+    let kind = required(arguments, "key kind")?;
+    let mut byte = |field: &'static str| -> Result<u8, ArgsError> {
+        number(&required(arguments, field)?, field)
+    };
+    Ok(match kind.as_str() {
+        "none" => None,
+        "chroma" => Some(fm_model::LayerKey::Chroma(fm_model::ChromaLayerKey {
+            red: byte("red")?,
+            green: byte("green")?,
+            blue: byte("blue")?,
+            similarity: byte("similarity")?,
+            smoothness: byte("smoothness")?,
+            spill: byte("spill")?,
+        })),
+        "luma" => {
+            let low = byte("low")?;
+            let high = byte("high")?;
+            let softness = byte("softness")?;
+            let invert = boolean_choice(&required(arguments, "invert")?, "invert")?;
+            Some(fm_model::LayerKey::Luma(fm_model::LumaLayerKey {
+                low,
+                high,
+                softness,
+                invert,
+            }))
+        }
+        _ => {
+            return Err(ArgsError::InvalidChoice {
+                field: "key kind",
+                value: kind,
+            });
+        }
+    })
+}
+
+/// `scene-layer-key <show> <scene> <layer-index> <key spec>` (IN-020).
+fn parse_scene_layer_key(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let index = number(&required(&mut arguments, "layer index")?, "layer index")?;
+    let layer_key = layer_key_spec(&mut arguments)?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::SceneLayerKey {
+        path,
+        scene,
+        index,
+        layer_key,
+    })
+}
+
+/// `remote-scene-layer-key <address> <scene> <layer-id> <key spec>
+/// [--key <key>] [--expect <revision>]` (IN-020, Protocol 2.43).
+fn parse_remote_scene_layer_key(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let layer = number(&required(&mut arguments, "layer id")?, "layer id")?;
+    let layer_key = layer_key_spec(&mut arguments)?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(Command::RemoteSceneLayerKey {
+        address,
+        scene,
+        layer,
+        layer_key,
+        key,
+        expected_revision,
+    })
+}
+
+/// One `<name>[:<i32>,<i32>...]` effect token of
+/// `remote-scene-layer-effects`.
+fn effect_token(value: &str) -> Result<fm_model::LayerEffect, ArgsError> {
+    let (name, parameters) = value.split_once(':').unwrap_or((value, ""));
+    let parameters = if parameters.is_empty() {
+        Vec::new()
+    } else {
+        parameters
+            .split(',')
+            .map(|parameter| number::<i32>(parameter, "effect parameter"))
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    Ok(fm_model::LayerEffect::new(name, parameters))
+}
+
+/// `remote-scene-layer-effects <address> <scene> <layer-id> none|<name>[:<p>,...]...
+/// [--key <key>] [--expect <revision>]` (IN-020, Protocol 2.43): replaces
+/// the whole ordered list.
+fn parse_remote_scene_layer_effects(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let layer = number(&required(&mut arguments, "layer id")?, "layer id")?;
+    let first = required(&mut arguments, "effects")?;
+    let mut effects = Vec::new();
+    let mut options = Vec::new();
+    if first != "none" {
+        effects.push(effect_token(&first)?);
+    }
+    let mut rest = arguments.peekable();
+    while let Some(value) = rest.next_if(|value| !value.starts_with("--")) {
+        if first == "none" {
+            return Err(ArgsError::UnexpectedArgument(value));
+        }
+        effects.push(effect_token(&value)?);
+    }
+    options.extend(rest);
+    let (key, expected_revision) = command_options(options.into_iter())?;
+    Ok(Command::RemoteSceneLayerEffects {
+        address,
+        scene,
+        layer,
+        effects,
+        key,
+        expected_revision,
+    })
 }
 
 fn parse_input_remove(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {

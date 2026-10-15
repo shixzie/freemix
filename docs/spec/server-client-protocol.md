@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.42 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.43 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -419,7 +419,7 @@ Protocol 2.28 edits and replicates project colour grading (`SW-019`):
 - LUT import size limit: there is no chunked client-to-server upload, so
   `data` carries the whole `.cube` text in one command field as unpadded
   base64url (canonical trailing bits, valid UTF-8) and is capped at
-  **32 KiB of `.cube` text** (about 43 KiB encoded, inside the 48 KiB field
+  **32 KiB of `.cube` text** (about 43 KiB encoded, inside the 56 KiB field
   and 64 KiB line limits). That covers 1D LUTs and 3D LUTs up to roughly
   edge 17. Larger LUTs (up to the 16 MiB project limit) are imported offline
   with `freemix-cli grade-import-lut`. The engine parses and validates the
@@ -482,8 +482,8 @@ Protocol 2.29 edits, replicates, and previews title animations (`GX-011`):
   every `title_animation_changed` and `title_animation_state` stays
   encodable; a daemon refuses to start on a stored template beyond it.
 - `clip` is one unpadded base64url field of a compact binary encoding, at
-  most **36 KiB raw** (`MAX_TITLE_ANIMATION_BYTES`, 48 KiB encoded, the field
-  limit). Integers are minimal LEB128 varints, signed values zigzag-mapped:
+  most **36 KiB raw** (`MAX_TITLE_ANIMATION_BYTES`, 48 KiB encoded, inside the
+  56 KiB field limit). Integers are minimal LEB128 varints, signed values zigzag-mapped:
   `clip = rate_num rate_den in_frames out_frames track_count track*`;
   `track = element(nonzero) phase(byte 0 in, 1 out) property(byte, index in
   fm_animation::Property::ALL) key_count key*`; `key = frame value easing`
@@ -1151,6 +1151,54 @@ Protocol 2.42 makes fullscreen display outputs project configuration
   in `project.json`). `freemixd serve --display-output <spec>` (up to two)
   replaces the project's slots when the project loads.
 - 2.41 is refused.
+
+Protocol 2.43 gives every scene layer a key and a bounded effect list
+(`IN-020`): one background plus ten or more positioned foreground layers,
+each crop, transform, key, and effect capable.
+
+- A layer key is a chroma key (`red`, `green`, `blue` key colour,
+  `similarity`, `smoothness`, `spill`; every field `0..=255`) or a luma key
+  (`low`, `high`, `softness` in `0..=255` with `low < high`, and `invert`).
+  A chroma key keeps pixels whose largest channel distance from the key
+  colour exceeds `similarity`, ramping over `smoothness`, and pulls `spill`
+  of the key colour out of what it keeps; a luma key (BT.709 luma) keeps
+  `low < luma < high` (`high = 255` keeps everything above `low`), ramping
+  over `softness`, and `invert` swaps kept and removed.
+- A layer holds at most **8** effects, applied in order. Each effect is one
+  of `levels` (`black`, `white`: `0..=255`, `black < white`),
+  `brightness_contrast` (`brightness`, `contrast`: `-100..=100`),
+  `saturation` (`amount`: `-100..=100`), `sharpen` (`amount`: `0..=1000`),
+  or `flip` (`horizontal`, `vertical`: `0|1`) with exactly its parameters.
+- Every renderer (the simulated CPU compositor and the native GPU
+  compositor) applies, per layer: crop, then the key times the mask, then
+  the effects on straight colour, then the input and layer grades, then
+  the transform and composition. The 64-enabled-layer limit is unchanged.
+- Each layout layer gains flag bit 4 (key) and, after the crop and the
+  mask, the key when flagged (`0` then the six chroma bytes, or `1` then
+  `low`, `high`, `softness`, and `invert` as bytes) and then
+  `effect_count` (at most 8) and the effects, each a kind byte (index into
+  `levels`, `brightness_contrast`, `saturation`, `sharpen`, `flip`) and its
+  parameters as zigzag varints. `scene_layer_add`'s `spec` is now exactly
+  one layout layer (the effects are inside it). `MAX_SCENE_LAYOUT_BYTES`
+  is now **42 KiB** raw, and a command or event field holds at most
+  **56 KiB** encoded so the worst-case layout still fits one 64 KiB line.
+- New layer edits (same envelope, permission, padlocks, undo, and
+  `scene_layout_changed` event as every `scene_layer_*` edit):
+  `scene_layer_key_set` (`kind=chroma` with `red`, `green`, `blue`,
+  `similarity`, `smoothness`, `spill`, or `kind=luma` with `low`, `high`,
+  `softness`, `invert`), `scene_layer_key_clear`, and
+  `scene_layer_effects_set` (`effects`: unpadded base64url of
+  `effect_count effect*` in the layout encoding; the empty list is `AA`),
+  which replaces the whole ordered list (adding, removing, reordering, and
+  changing parameters are all one edit). A key or an effect list is a
+  gesture property like geometry: `continues=true` with the same nonzero
+  `gesture` folds a scrub into one undo step. An invalid key is refused
+  with field `key` code `invalid_key`; an invalid list with field
+  `effects` code `invalid_effect`.
+- Durability: keys are project state (schema 41, each layer's `key`:
+  `null`, `{"type": "chroma", ...}` or `{"type": "luma", ...}`), and stored
+  effects must be one of the five kinds above.
+- 2.42 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

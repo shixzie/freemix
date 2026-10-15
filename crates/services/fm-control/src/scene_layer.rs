@@ -1,5 +1,6 @@
 //! Wire mapping of the live scene layer edits (`scene_layer_*`) and the
-//! `scene_layout_changed` event (Protocol 2.39, SW-006).
+//! `scene_layout_changed` event (Protocol 2.39, SW-006; keys and effects
+//! 2.43, IN-020).
 //!
 //! A wire edit names its scene and stable layer id; the engine edit is the
 //! same edit on domain types. Every accepted edit, undo and redo included,
@@ -8,13 +9,13 @@
 
 use fm_engine::{Engine, EngineCommand, EngineSceneLayerEdit};
 use fm_model::{
-    CropRect, Layer, LayerAnchor, LayerEffect, LayerGeometry, LayerId, RectMask, Rotation,
-    SceneLayerChange, SourceRef,
+    ChromaLayerKey, CropRect, Layer, LayerAnchor, LayerEffect, LayerGeometry, LayerId, LayerKey,
+    LumaLayerKey, RectMask, Rotation, SceneLayerChange, SourceRef,
 };
 use fm_protocol::{
-    EventPayload, SceneLayerEdit, SceneLayerOperation, WireInputId, WireLayerCrop, WireLayerEffect,
-    WireLayerGeometry, WireLayerMask, WireSceneId, WireSceneLayerId, WireSceneLayerOutline,
-    WireSceneLayerSource, WireSceneLayerSpec,
+    EventPayload, SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireInputId, WireLayerCrop,
+    WireLayerEffect, WireLayerGeometry, WireLayerKey, WireLayerMask, WireLumaKey, WireSceneId,
+    WireSceneLayerId, WireSceneLayerOutline, WireSceneLayerSource,
 };
 
 // The wire carries exactly what the model stores and the engine accepts.
@@ -22,8 +23,7 @@ const _: () = {
     assert!(fm_protocol::MAX_SCENE_LAYOUT_LAYERS == fm_engine::MAX_SCENE_LAYERS);
     assert!(fm_protocol::MAX_SCENE_LAYER_NAME_BYTES == fm_engine::MAX_SCENE_LAYER_NAME_BYTES);
     assert!(fm_protocol::MAX_SCENE_LAYER_EFFECTS == LayerEffect::MAX_EFFECTS_PER_LAYER);
-    assert!(fm_protocol::MAX_SCENE_LAYER_EFFECT_NAME_BYTES == LayerEffect::MAX_NAME_BYTES);
-    assert!(fm_protocol::MAX_SCENE_LAYER_EFFECT_PARAMETERS == LayerEffect::MAX_PARAMETERS);
+    assert!(fm_protocol::SCENE_LAYER_EFFECT_KINDS.len() == LayerEffect::KINDS.len());
     assert!(fm_protocol::SCENE_LAYER_ANCHOR_MAX == LayerAnchor::MAX);
     assert!(fm_protocol::SCENE_LAYER_ANCHOR_CENTER == LayerAnchor::CENTER.x);
     assert!(fm_protocol::SCENE_LAYER_ANCHOR_CENTER == LayerAnchor::CENTER.y);
@@ -111,6 +111,69 @@ pub const fn wire_mask(mask: RectMask) -> WireLayerMask {
     }
 }
 
+/// The domain key a wire key names.
+#[must_use]
+pub const fn domain_key(key: WireLayerKey) -> LayerKey {
+    match key {
+        WireLayerKey::Chroma(chroma) => LayerKey::Chroma(ChromaLayerKey {
+            red: chroma.red,
+            green: chroma.green,
+            blue: chroma.blue,
+            similarity: chroma.similarity,
+            smoothness: chroma.smoothness,
+            spill: chroma.spill,
+        }),
+        WireLayerKey::Luma(luma) => LayerKey::Luma(LumaLayerKey {
+            low: luma.low,
+            high: luma.high,
+            softness: luma.softness,
+            invert: luma.invert,
+        }),
+    }
+}
+
+/// `key` on the wire.
+#[must_use]
+pub const fn wire_key(key: LayerKey) -> WireLayerKey {
+    match key {
+        LayerKey::Chroma(chroma) => WireLayerKey::Chroma(WireChromaKey {
+            red: chroma.red,
+            green: chroma.green,
+            blue: chroma.blue,
+            similarity: chroma.similarity,
+            smoothness: chroma.smoothness,
+            spill: chroma.spill,
+        }),
+        LayerKey::Luma(luma) => WireLayerKey::Luma(WireLumaKey {
+            low: luma.low,
+            high: luma.high,
+            softness: luma.softness,
+            invert: luma.invert,
+        }),
+    }
+}
+
+/// The domain effects a wire list names.
+#[must_use]
+pub fn domain_effects(effects: &[WireLayerEffect]) -> Vec<LayerEffect> {
+    effects
+        .iter()
+        .map(|effect| LayerEffect::new(effect.name.clone(), effect.parameters.clone()))
+        .collect()
+}
+
+/// `effects` on the wire.
+#[must_use]
+pub fn wire_effects(effects: &[LayerEffect]) -> Vec<WireLayerEffect> {
+    effects
+        .iter()
+        .map(|effect| WireLayerEffect {
+            name: effect.name.clone(),
+            parameters: effect.parameters.clone(),
+        })
+        .collect()
+}
+
 /// `source` on the wire.
 #[must_use]
 pub fn wire_layer_source(source: SourceRef) -> WireSceneLayerSource {
@@ -148,13 +211,14 @@ pub fn wire_layer_outline(layer: &Layer, name: String) -> WireSceneLayerOutline 
         z_order: layer.z_order,
         crop: layer.crop.map(wire_crop),
         mask: layer.mask.map(wire_mask),
+        key: layer.key.map(wire_key),
+        effects: wire_effects(&layer.effects),
     }
 }
 
 /// The complete domain layer a wire spec carries.
 #[must_use]
-pub fn domain_layer(spec: &WireSceneLayerSpec) -> Layer {
-    let outline = &spec.layer;
+pub fn domain_layer(outline: &WireSceneLayerOutline) -> Layer {
     Layer {
         id: LayerId::from_non_zero(outline.id.get()),
         name: outline.name.clone(),
@@ -163,11 +227,8 @@ pub fn domain_layer(spec: &WireSceneLayerSpec) -> Layer {
         geometry: domain_geometry(&outline.geometry()),
         crop: outline.crop.map(domain_crop),
         mask: outline.mask.map(domain_mask),
-        effects: spec
-            .effects
-            .iter()
-            .map(|effect| LayerEffect::new(effect.name.clone(), effect.parameters.clone()))
-            .collect(),
+        key: outline.key.map(domain_key),
+        effects: domain_effects(&outline.effects),
         opacity: outline.opacity,
         z_order: outline.z_order,
     }
@@ -175,18 +236,8 @@ pub fn domain_layer(spec: &WireSceneLayerSpec) -> Layer {
 
 /// `layer` exactly, as a wire spec.
 #[must_use]
-pub fn wire_layer_spec(layer: &Layer) -> WireSceneLayerSpec {
-    WireSceneLayerSpec {
-        layer: wire_layer_outline(layer, layer.name.clone()),
-        effects: layer
-            .effects
-            .iter()
-            .map(|effect| WireLayerEffect {
-                name: effect.name.clone(),
-                parameters: effect.parameters.clone(),
-            })
-            .collect(),
-    }
+pub fn wire_layer_spec(layer: &Layer) -> WireSceneLayerOutline {
+    wire_layer_outline(layer, layer.name.clone())
 }
 
 // The wire's enabled-layer limit is the compositor's.
@@ -211,6 +262,10 @@ pub fn engine_scene_layer_edit(edit: &SceneLayerEdit) -> EngineSceneLayerEdit {
             }
             SceneLayerOperation::SetCrop(crop) => SceneLayerChange::Crop(crop.map(domain_crop)),
             SceneLayerOperation::SetMask(mask) => SceneLayerChange::Mask(mask.map(domain_mask)),
+            SceneLayerOperation::SetKey(key) => SceneLayerChange::Key(key.map(domain_key)),
+            SceneLayerOperation::SetEffects(effects) => {
+                SceneLayerChange::Effects(domain_effects(effects))
+            }
             SceneLayerOperation::SetZOrder { z_order } => SceneLayerChange::ZOrder(*z_order),
             SceneLayerOperation::Move { index } => SceneLayerChange::Move {
                 index: usize::from(*index),
@@ -252,6 +307,10 @@ pub fn wire_scene_layer_edit(edit: &EngineSceneLayerEdit) -> SceneLayerEdit {
             }
             SceneLayerChange::Crop(crop) => SceneLayerOperation::SetCrop(crop.map(wire_crop)),
             SceneLayerChange::Mask(mask) => SceneLayerOperation::SetMask(mask.map(wire_mask)),
+            SceneLayerChange::Key(key) => SceneLayerOperation::SetKey(key.map(wire_key)),
+            SceneLayerChange::Effects(effects) => {
+                SceneLayerOperation::SetEffects(wire_effects(effects))
+            }
             SceneLayerChange::ZOrder(z_order) => {
                 SceneLayerOperation::SetZOrder { z_order: *z_order }
             }

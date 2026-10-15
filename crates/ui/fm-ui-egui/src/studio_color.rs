@@ -1428,6 +1428,8 @@ mod tests {
                 anchor_y: 5_000,
                 z_order: 0,
                 crop: None,
+                key: None,
+                effects: Vec::new(),
                 mask: None,
                 source,
             };

@@ -110,6 +110,7 @@ fn save_streaming_project(path: &Path) {
             geometry: LayerGeometry::new(0, 0, 64, 48, Rotation::Deg0),
             crop: None,
             mask: None,
+            key: None,
             effects: Vec::new(),
             opacity: u8::MAX,
             z_order: 0,

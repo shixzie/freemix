@@ -21,7 +21,8 @@
 use core::fmt;
 
 use crate::{
-    CropRect, Layer, LayerEffect, LayerEffectError, LayerGeometry, LayerId, RectMask, Scene,
+    CropRect, Layer, LayerEffect, LayerEffectError, LayerGeometry, LayerId, LayerKey,
+    LayerKeyError, RectMask, Scene,
 };
 
 /// One change to one scene layer.
@@ -37,6 +38,10 @@ pub enum SceneLayerChange {
     Mask(Option<RectMask>),
     /// Sets the compositor z-order.
     ZOrder(i32),
+    /// Sets (`Some`) or clears the chroma or luma key (IN-020).
+    Key(Option<LayerKey>),
+    /// Replaces the ordered effect list (IN-020).
+    Effects(Vec<LayerEffect>),
     /// Moves the layer to stacking (list) position `index`.
     Move { index: usize },
     /// Inserts `layer` (whose id is the edited id) at list position `index`.
@@ -65,10 +70,13 @@ pub enum SceneLayerEditError {
     CropWouldInvalidateMask,
     /// An empty mask or one beyond the cropped source.
     InvalidMask,
-    /// An added layer carries more than [`LayerEffect::MAX_EFFECTS_PER_LAYER`]
-    /// effects.
+    /// A key that breaks its bounds.
+    InvalidKey(LayerKeyError),
+    /// An added layer or effect list carries more than
+    /// [`LayerEffect::MAX_EFFECTS_PER_LAYER`] effects.
     TooManyEffects,
-    /// One effect of an added layer breaks the descriptor bounds.
+    /// One effect of an added layer or effect list breaks the descriptor
+    /// table.
     InvalidEffect {
         effect_index: usize,
         reason: LayerEffectError,
@@ -94,6 +102,7 @@ impl SceneLayerEditError {
             Self::InvalidCrop => "invalid_crop",
             Self::CropWouldInvalidateMask => "crop_invalidates_mask",
             Self::InvalidMask => "invalid_mask",
+            Self::InvalidKey(_) => "invalid_key",
             Self::TooManyEffects | Self::InvalidEffect { .. } => "invalid_effect",
             Self::LayerAnimated(_) => "layer_animated",
             Self::TooManyEnabledLayers => "too_many_enabled_layers",
@@ -124,6 +133,7 @@ impl fmt::Display for SceneLayerEditError {
             Self::InvalidMask => {
                 formatter.write_str("mask must be nonempty and inside the cropped source")
             }
+            Self::InvalidKey(reason) => write!(formatter, "invalid key: {reason}"),
             Self::TooManyEffects => write!(
                 formatter,
                 "a layer carries at most {} effects",
@@ -183,6 +193,7 @@ fn check_mask(mask: RectMask, source: (u32, u32)) -> Result<(), SceneLayerEditEr
 ///
 /// [`SceneLayerEditError::EmptyName`], [`SceneLayerEditError::InvalidGeometry`],
 /// [`SceneLayerEditError::InvalidCrop`], [`SceneLayerEditError::InvalidMask`],
+/// [`SceneLayerEditError::InvalidKey`],
 /// [`SceneLayerEditError::TooManyEffects`], or
 /// [`SceneLayerEditError::InvalidEffect`].
 pub fn check_scene_layer(layer: &Layer, canvas: (u32, u32)) -> Result<(), SceneLayerEditError> {
@@ -198,10 +209,18 @@ pub fn check_scene_layer(layer: &Layer, canvas: (u32, u32)) -> Result<(), SceneL
     if let Some(mask) = layer.mask {
         check_mask(mask, cropped_size(layer.crop, canvas))?;
     }
-    if layer.effects.len() > LayerEffect::MAX_EFFECTS_PER_LAYER {
+    if let Some(key) = layer.key {
+        key.validate().map_err(SceneLayerEditError::InvalidKey)?;
+    }
+    check_effects(&layer.effects)
+}
+
+/// Checks an ordered effect list: its count and every descriptor.
+fn check_effects(effects: &[LayerEffect]) -> Result<(), SceneLayerEditError> {
+    if effects.len() > LayerEffect::MAX_EFFECTS_PER_LAYER {
         return Err(SceneLayerEditError::TooManyEffects);
     }
-    for (effect_index, effect) in layer.effects.iter().enumerate() {
+    for (effect_index, effect) in effects.iter().enumerate() {
         effect
             .validate()
             .map_err(|reason| SceneLayerEditError::InvalidEffect {
@@ -290,6 +309,16 @@ impl Scene {
                 }
                 layer.mask = *mask;
             }
+            SceneLayerChange::Key(key) => {
+                if let Some(key) = key {
+                    key.validate().map_err(SceneLayerEditError::InvalidKey)?;
+                }
+                layer.key = *key;
+            }
+            SceneLayerChange::Effects(effects) => {
+                check_effects(effects)?;
+                layer.effects.clone_from(effects);
+            }
             SceneLayerChange::ZOrder(z_order) => layer.z_order = *z_order,
             SceneLayerChange::Move { index } => {
                 if *index >= length {
@@ -343,6 +372,8 @@ impl Scene {
             },
             SceneLayerChange::Crop(_) => SceneLayerChange::Crop(layer.crop),
             SceneLayerChange::Mask(_) => SceneLayerChange::Mask(layer.mask),
+            SceneLayerChange::Key(_) => SceneLayerChange::Key(layer.key),
+            SceneLayerChange::Effects(_) => SceneLayerChange::Effects(layer.effects.clone()),
             SceneLayerChange::ZOrder(_) => SceneLayerChange::ZOrder(layer.z_order),
             SceneLayerChange::Move { .. } => SceneLayerChange::Move { index },
             SceneLayerChange::Remove => SceneLayerChange::Add {

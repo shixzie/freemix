@@ -25,6 +25,7 @@ fn layer(id: u32, geometry: LayerGeometry) -> Layer {
         geometry,
         crop: None,
         mask: None,
+        key: None,
         effects: Vec::new(),
         opacity: 200,
         z_order: 0,

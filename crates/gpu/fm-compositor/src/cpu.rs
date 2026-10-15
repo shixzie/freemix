@@ -602,7 +602,10 @@ pub(crate) fn key_factor(pixel: Rgba8, key: Key) -> u8 {
                     / 256,
             )
             .unwrap_or(u8::MAX);
-            let factor = ramp(luma, parameters.threshold, parameters.softness);
+            let mut factor = ramp(luma, parameters.threshold, parameters.softness);
+            if parameters.high < u8::MAX {
+                factor = factor.min(upper_ramp(luma, parameters.high, parameters.softness));
+            }
             if parameters.invert {
                 u8::MAX - factor
             } else {
@@ -620,6 +623,24 @@ fn ramp(value: u8, threshold: u8, softness: u8) -> u8 {
         return u8::MAX;
     }
     let distance = value - threshold;
+    if distance >= softness {
+        u8::MAX
+    } else {
+        u8::try_from((u16::from(distance) * 255 + u16::from(softness) / 2) / u16::from(softness))
+            .unwrap_or(u8::MAX)
+    }
+}
+
+/// The mirrored ramp of a luma key's upper bound: `0` while
+/// `value >= high`, rising to `255` over `softness` codes below it.
+fn upper_ramp(value: u8, high: u8, softness: u8) -> u8 {
+    if value >= high {
+        return 0;
+    }
+    if softness == 0 {
+        return u8::MAX;
+    }
+    let distance = high - value;
     if distance >= softness {
         u8::MAX
     } else {

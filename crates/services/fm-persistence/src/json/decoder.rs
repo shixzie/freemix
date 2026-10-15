@@ -606,6 +606,7 @@ fn parse_layer(value: Value) -> Result<Layer, DecodeError> {
     let geometry = parse_geometry(object.take("geometry")?)?;
     let crop = parse_optional(object.take("crop")?, parse_crop)?;
     let mask = parse_optional(object.take("mask")?, parse_mask)?;
+    let key = parse_optional(object.take("key")?, parse_layer_key)?;
     let effects = parse_layer_effects(object.take("effects")?)?;
     let opacity = object.u8("opacity")?;
     let z_order = object.i32("z_order")?;
@@ -617,6 +618,7 @@ fn parse_layer(value: Value) -> Result<Layer, DecodeError> {
         geometry,
         crop,
         mask,
+        key,
         effects,
         opacity,
         z_order,
@@ -625,12 +627,40 @@ fn parse_layer(value: Value) -> Result<Layer, DecodeError> {
     Ok(layer)
 }
 
+/// Parses one layer's key (schema 41, IN-020): `{"type": "chroma", "red",
+/// "green", "blue", "similarity", "smoothness", "spill"}` or `{"type":
+/// "luma", "low", "high", "softness", "invert"}` with `low < high`.
+fn parse_layer_key(value: Value) -> Result<fm_model::LayerKey, DecodeError> {
+    let mut object = Object::new(value, "layer key")?;
+    let key = match object.string("type")?.as_str() {
+        "chroma" => fm_model::LayerKey::Chroma(fm_model::ChromaLayerKey {
+            red: object.u8("red")?,
+            green: object.u8("green")?,
+            blue: object.u8("blue")?,
+            similarity: object.u8("similarity")?,
+            smoothness: object.u8("smoothness")?,
+            spill: object.u8("spill")?,
+        }),
+        "luma" => fm_model::LayerKey::Luma(fm_model::LumaLayerKey {
+            low: object.u8("low")?,
+            high: object.u8("high")?,
+            softness: object.u8("softness")?,
+            invert: object.boolean("invert")?,
+        }),
+        value => return Err(unknown_enum("layer key", value)),
+    };
+    object.finish()?;
+    key.validate()
+        .map_err(|error| syntax(format!("layer key is invalid: {error}")))?;
+    Ok(key)
+}
+
 /// Parses one layer's ordered effect array.
 ///
 /// `effects` is part of the current contract: the field is required, must be
 /// an array of `{"name": <string>, "parameters": [<i32>, ...]}` objects in
-/// layer order, and must satisfy the compositor descriptor bounds. Unknown
-/// effect names are preserved: only execution rejects them.
+/// layer order, at most [`LayerEffect::MAX_EFFECTS_PER_LAYER`], each one of
+/// the [`LayerEffect`] kinds with its exact, in-range parameters.
 fn parse_layer_effects(value: Value) -> Result<Vec<LayerEffect>, DecodeError> {
     let effects = parse_array(value, "layer effects", parse_layer_effect)?;
     if effects.len() > LayerEffect::MAX_EFFECTS_PER_LAYER {

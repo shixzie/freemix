@@ -14,6 +14,8 @@
 //! | [`SceneLayerOperation::SetAppearance`] | `scene_layer_appearance_set` | `enabled`, `opacity` |
 //! | [`SceneLayerOperation::SetCrop`] | `scene_layer_crop_set` / `scene_layer_crop_clear` | `x`, `y`, `width`, `height` (set only) |
 //! | [`SceneLayerOperation::SetMask`] | `scene_layer_mask_set` / `scene_layer_mask_clear` | `x`, `y`, `width`, `height`, `invert` (set only) |
+//! | [`SceneLayerOperation::SetKey`] | `scene_layer_key_set` / `scene_layer_key_clear` | `kind` (`chroma`: `red`, `green`, `blue`, `similarity`, `smoothness`, `spill`; `luma`: `low`, `high`, `softness`, `invert`) (set only) |
+//! | [`SceneLayerOperation::SetEffects`] | `scene_layer_effects_set` | `effects` |
 //! | [`SceneLayerOperation::SetZOrder`] | `scene_layer_z_order_set` | `z_order` |
 //! | [`SceneLayerOperation::Move`] | `scene_layer_move` | `index` |
 //! | [`SceneLayerOperation::Add`] | `scene_layer_add` | `index`, `spec` |
@@ -29,12 +31,18 @@ pub const SCENE_LAYER_ANCHOR_CENTER: u16 = 5_000;
 pub const MIN_SCENE_LAYER_TILT_MILLIDEGREES: i32 = -45_000;
 /// Largest stored layer tilt, exclusive.
 pub const MAX_SCENE_LAYER_TILT_MILLIDEGREES: i32 = 45_000;
-/// Most effects an added layer carries.
-pub const MAX_SCENE_LAYER_EFFECTS: usize = 16;
-/// Longest effect name, in UTF-8 bytes.
-pub const MAX_SCENE_LAYER_EFFECT_NAME_BYTES: usize = 64;
-/// Most parameters one effect carries.
-pub const MAX_SCENE_LAYER_EFFECT_PARAMETERS: usize = 32;
+/// Most effects one layer carries (Protocol 2.43: 8).
+pub const MAX_SCENE_LAYER_EFFECTS: usize = 8;
+/// Every effect kind a layer carries (Protocol 2.43), in wire order (the
+/// layout encoding's kind byte is the index), with the inclusive range of
+/// each of its parameters. A `levels` effect also needs `black < white`.
+pub const SCENE_LAYER_EFFECT_KINDS: [(&str, &[(i32, i32)]); 5] = [
+    ("levels", &[(0, 255), (0, 255)]),
+    ("brightness_contrast", &[(-100, 100), (-100, 100)]),
+    ("saturation", &[(-100, 100)]),
+    ("sharpen", &[(0, 1_000)]),
+    ("flip", &[(0, 1), (0, 1)]),
+];
 
 /// A layer's source crop in canvas pixels: nonempty and inside the canvas.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -128,23 +136,80 @@ impl WireSceneLayerOutline {
     }
 }
 
-/// One ordered video effect of an added layer: a nonempty name of at most
-/// [`MAX_SCENE_LAYER_EFFECT_NAME_BYTES`] bytes without control characters
-/// and at most [`MAX_SCENE_LAYER_EFFECT_PARAMETERS`] parameters.
+/// One ordered video effect of a layer: a kind of
+/// [`SCENE_LAYER_EFFECT_KINDS`] with exactly its parameters, each in range.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct WireLayerEffect {
     pub name: String,
     pub parameters: Vec<i32>,
 }
 
-/// A complete layer as `scene_layer_add` carries it: the full design (its
-/// name nonblank) and its ordered effects (at most
-/// [`MAX_SCENE_LAYER_EFFECTS`]). The undo of a removal carries the removed
-/// layer exactly.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WireSceneLayerSpec {
-    pub layer: WireSceneLayerOutline,
-    pub effects: Vec<WireLayerEffect>,
+impl WireLayerEffect {
+    /// The effect's kind index in [`SCENE_LAYER_EFFECT_KINDS`] when it is
+    /// valid (known kind, exact parameter count, every parameter in range,
+    /// and `black < white` for `levels`).
+    #[must_use]
+    pub fn kind_index(&self) -> Option<u8> {
+        let (index, (_, ranges)) = SCENE_LAYER_EFFECT_KINDS
+            .iter()
+            .enumerate()
+            .find(|(_, (name, _))| *name == self.name)?;
+        let valid = self.parameters.len() == ranges.len()
+            && self
+                .parameters
+                .iter()
+                .zip(ranges.iter())
+                .all(|(value, (minimum, maximum))| (*minimum..=*maximum).contains(value))
+            && (self.name != "levels" || self.parameters[0] < self.parameters[1]);
+        valid.then(|| u8::try_from(index).ok()).flatten()
+    }
+
+    /// Whether every bound of [`Self::kind_index`] holds.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.kind_index().is_some()
+    }
+}
+
+/// A chroma key (Protocol 2.43): removes pixels within `similarity` of the
+/// key colour, ramps alpha over `smoothness`, and suppresses `spill`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct WireChromaKey {
+    pub red: u8,
+    pub green: u8,
+    pub blue: u8,
+    pub similarity: u8,
+    pub smoothness: u8,
+    pub spill: u8,
+}
+
+/// A luma key (Protocol 2.43): removes luma at most `low` and (when `high`
+/// is below 255) at least `high`, ramping over `softness`; `invert` keeps
+/// the band instead. `low < high`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct WireLumaKey {
+    pub low: u8,
+    pub high: u8,
+    pub softness: u8,
+    pub invert: bool,
+}
+
+/// A layer's key (Protocol 2.43).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum WireLayerKey {
+    Chroma(WireChromaKey),
+    Luma(WireLumaKey),
+}
+
+impl WireLayerKey {
+    /// Whether the key's bounds hold (a luma key's `low < high`).
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        match self {
+            Self::Chroma(_) => true,
+            Self::Luma(luma) => luma.low < luma.high,
+        }
+    }
 }
 
 /// What one live scene layer edit changes.
@@ -160,6 +225,11 @@ pub enum SceneLayerOperation {
     SetCrop(Option<WireLayerCrop>),
     /// Sets (`Some`) or clears the mask.
     SetMask(Option<WireLayerMask>),
+    /// Sets (`Some`) or clears the chroma or luma key (Protocol 2.43).
+    SetKey(Option<WireLayerKey>),
+    /// Replaces the ordered effect list, at most
+    /// [`MAX_SCENE_LAYER_EFFECTS`] (Protocol 2.43).
+    SetEffects(Vec<WireLayerEffect>),
     SetZOrder {
         z_order: i32,
     },
@@ -168,11 +238,12 @@ pub enum SceneLayerOperation {
     Move {
         index: u16,
     },
-    /// Inserts a new layer (`spec.layer.id` is the edit's layer) at list
-    /// position `index` (at most the layer count).
+    /// Inserts a new layer (`spec.id` is the edit's layer, its name
+    /// nonblank) at list position `index` (at most the layer count). The
+    /// undo of a removal carries the removed layer exactly.
     Add {
         index: u16,
-        spec: Box<WireSceneLayerSpec>,
+        spec: Box<WireSceneLayerOutline>,
     },
     /// Removes a layer no animation track or grade names.
     Remove,
@@ -189,6 +260,9 @@ impl SceneLayerOperation {
             Self::SetCrop(None) => "scene_layer_crop_clear",
             Self::SetMask(Some(_)) => "scene_layer_mask_set",
             Self::SetMask(None) => "scene_layer_mask_clear",
+            Self::SetKey(Some(_)) => "scene_layer_key_set",
+            Self::SetKey(None) => "scene_layer_key_clear",
+            Self::SetEffects(_) => "scene_layer_effects_set",
             Self::SetZOrder { .. } => "scene_layer_z_order_set",
             Self::Move { .. } => "scene_layer_move",
             Self::Add { .. } => "scene_layer_add",
@@ -197,13 +271,16 @@ impl SceneLayerOperation {
     }
 
     /// Every payload name, for routing.
-    pub const PAYLOADS: [&'static str; 10] = [
+    pub const PAYLOADS: [&'static str; 13] = [
         "scene_layer_geometry_set",
         "scene_layer_appearance_set",
         "scene_layer_crop_set",
         "scene_layer_crop_clear",
         "scene_layer_mask_set",
         "scene_layer_mask_clear",
+        "scene_layer_key_set",
+        "scene_layer_key_clear",
+        "scene_layer_effects_set",
         "scene_layer_z_order_set",
         "scene_layer_move",
         "scene_layer_add",

@@ -875,7 +875,7 @@ pub type WireTitleClip = Clip<WireTitleElementId>;
 
 /// Largest binary encoding of one [`WireTitleClip`], in bytes. The clip
 /// travels as unpadded base64url in one field, so this keeps the field
-/// within [`crate::MAX_FIELD_VALUE_BYTES`] (exactly 48 KiB encoded).
+/// within [`crate::MAX_FIELD_VALUE_BYTES`] (48 KiB encoded).
 pub const MAX_TITLE_ANIMATION_BYTES: usize = 36 * 1024;
 
 /// One title template's animation at a snapshot's `revision` (Protocol
@@ -1093,8 +1093,9 @@ pub const MAX_SCENE_NAME_BYTES: usize = 128;
 pub const MAX_SCENE_CANVAS_SIDE: u32 = 8_192;
 /// Largest binary encoding of one [`WireSceneLayout`]'s layer list, in
 /// bytes; with the bounds above every layout fits (worst case about 30
-/// KiB).
-pub const MAX_SCENE_LAYOUT_BYTES: usize = 36 * 1024;
+/// KiB of design plus, since Protocol 2.43, about 9 KiB of keys and
+/// effects).
+pub const MAX_SCENE_LAYOUT_BYTES: usize = 42 * 1024;
 
 /// What one scene layer draws (Protocol 2.35): an input (a Scene input
 /// draws its scene) or a scene directly.
@@ -1145,6 +1146,11 @@ pub struct WireSceneLayerOutline {
     /// Rectangular mask in post-crop source pixels (Protocol 2.39), inside
     /// the cropped source.
     pub mask: Option<crate::WireLayerMask>,
+    /// Chroma or luma key (Protocol 2.43).
+    pub key: Option<crate::WireLayerKey>,
+    /// Ordered effects, at most [`crate::MAX_SCENE_LAYER_EFFECTS`]
+    /// (Protocol 2.43).
+    pub effects: Vec<crate::WireLayerEffect>,
 }
 
 /// A scene's static layout (Protocol 2.31): the project canvas and the
