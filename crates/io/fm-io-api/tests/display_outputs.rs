@@ -346,3 +346,63 @@ fn source_can_change_without_rebinding() {
     assert_eq!(outputs.reconcile(&[display("a", "A", 0)]), Vec::new());
     assert!(!outputs.set_source(5, DisplayOutputSource::Program));
 }
+
+#[test]
+fn unplugging_one_of_two_identical_displays_never_moves_its_output_onto_the_other() {
+    // Two identical monitors share a model name; each output is bound to
+    // its own by id.
+    let provider = FakeDisplays::new(vec![
+        display("a", "DELL U2720Q", 0),
+        display("b", "DELL U2720Q", 1920),
+    ]);
+    let mut enumerate = provider.clone();
+    let mut outputs = tracker(&["display=0", "display=1"]);
+    outputs.reconcile(&enumerate.displays().unwrap());
+    assert_eq!(active_id(&outputs, 0).as_deref(), Some("a"));
+    assert_eq!(active_id(&outputs, 1).as_deref(), Some("b"));
+
+    // Unplugging `a` must not let output 0 follow the name onto `b`, which
+    // output 1 is showing.
+    let removed = provider.disconnect(&id("a")).unwrap();
+    let changes = outputs.reconcile(&enumerate.displays().unwrap());
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].output, 0);
+    assert_eq!(waiting(&outputs, 0), Some(WaitReason::DisplayAbsent));
+    assert_eq!(active_id(&outputs, 1).as_deref(), Some("b"));
+
+    // Both return to their own displays when `a` comes back.
+    provider.connect(removed);
+    outputs.reconcile(&enumerate.displays().unwrap());
+    assert_eq!(active_id(&outputs, 0).as_deref(), Some("a"));
+    assert_eq!(active_id(&outputs, 1).as_deref(), Some("b"));
+
+    // A re-numbered `a` is still found by name: `b` belongs to output 1.
+    let mut renumbered = provider.disconnect(&id("a")).unwrap();
+    outputs.reconcile(&enumerate.displays().unwrap());
+    renumbered.id = id("a2");
+    provider.connect(renumbered);
+    outputs.reconcile(&enumerate.displays().unwrap());
+    assert_eq!(active_id(&outputs, 0).as_deref(), Some("a2"));
+    assert_eq!(active_id(&outputs, 1).as_deref(), Some("b"));
+}
+
+#[test]
+fn a_hot_plugged_display_never_takes_a_bound_output_away_by_index() {
+    // Output 0 wants the second display, output 1 the first; only one is
+    // connected, so output 1 binds it and output 0 waits.
+    let provider = FakeDisplays::new(vec![display("a", "A", 0)]);
+    let mut enumerate = provider.clone();
+    let mut outputs = tracker(&["display=1", "display=0"]);
+    outputs.reconcile(&enumerate.displays().unwrap());
+    assert_eq!(waiting(&outputs, 0), Some(WaitReason::DisplayAbsent));
+    assert_eq!(active_id(&outputs, 1).as_deref(), Some("a"));
+
+    // A display plugged in to the left of `a` makes `a` index 1. Output 1
+    // keeps showing `a`; output 0 must not claim it from under it.
+    provider.connect(display("left", "Left", -1920));
+    let changes = outputs.reconcile(&enumerate.displays().unwrap());
+    assert_eq!(active_id(&outputs, 1).as_deref(), Some("a"));
+    assert!(changes.iter().all(|change| change.output != 1));
+    assert_eq!(waiting(&outputs, 0), Some(WaitReason::DisplayInUse));
+    assert!(!outputs.is_bound(0));
+}

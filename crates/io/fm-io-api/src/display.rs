@@ -786,14 +786,34 @@ impl DisplayOutputTracker {
         changes
     }
 
-    /// Applies one inventory snapshot and returns every changed output.
+    /// Applies one inventory snapshot and returns every changed output, in
+    /// output order.
+    ///
+    /// Outputs already bound to a display claim first, so a hot-plugged
+    /// display that shifts the index order never lets a waiting output take
+    /// the display another output is showing; among bound (and among
+    /// unbound) outputs, earlier outputs claim first.
     pub fn reconcile(&mut self, displays: &[DisplayInfo]) -> Vec<DisplayOutputChange> {
         let mut inventory = displays.to_vec();
         sort_displays(&mut inventory);
         let mut claimed = vec![false; inventory.len()];
         let mut changes = Vec::new();
-        for (index, tracked) in self.outputs.iter_mut().enumerate() {
-            let next = match find_display(tracked, &inventory) {
+        let bindings: Vec<Option<DisplayId>> = self
+            .outputs
+            .iter()
+            .map(|tracked| tracked.binding.as_ref().map(|binding| binding.id.clone()))
+            .collect();
+        let mut order: Vec<usize> = (0..self.outputs.len()).collect();
+        order.sort_by_key(|&index| bindings[index].is_none());
+        for index in order {
+            let reserved: Vec<&DisplayId> = bindings
+                .iter()
+                .enumerate()
+                .filter(|&(other, _)| other != index)
+                .filter_map(|(_, binding)| binding.as_ref())
+                .collect();
+            let tracked = &mut self.outputs[index];
+            let next = match find_display(tracked, &inventory, &reserved) {
                 Match::Absent => DisplayOutputState::Waiting(WaitReason::DisplayAbsent),
                 Match::Ambiguous => DisplayOutputState::Waiting(WaitReason::AmbiguousName),
                 Match::Found(position) if claimed[position] => {
@@ -835,17 +855,26 @@ impl DisplayOutputTracker {
                 });
             }
         }
+        changes.sort_by_key(|change| change.output);
         changes
     }
 }
 
-fn find_display(tracked: &TrackedOutput, inventory: &[DisplayInfo]) -> Match {
+/// The display `tracked` shows in `inventory`. A bound output follows its
+/// display by id, then by unique name among the displays no other output is
+/// bound to (`reserved`): an identical monitor showing another output is
+/// never mistaken for this output's re-numbered display.
+fn find_display(
+    tracked: &TrackedOutput,
+    inventory: &[DisplayInfo],
+    reserved: &[&DisplayId],
+) -> Match {
     let by_id = |id: &DisplayId| inventory.iter().position(|display| &display.id == id);
-    let by_name = |name: &str| {
+    let by_name = |name: &str, reserved: &[&DisplayId]| {
         let mut found = inventory
             .iter()
             .enumerate()
-            .filter(|(_, display)| display.name == name);
+            .filter(|(_, display)| display.name == name && !reserved.contains(&&display.id));
         match (found.next(), found.next()) {
             (None, _) => Match::Absent,
             (Some((position, _)), None) => Match::Found(position),
@@ -853,11 +882,11 @@ fn find_display(tracked: &TrackedOutput, inventory: &[DisplayInfo]) -> Match {
         }
     };
     if let Some(binding) = &tracked.binding {
-        return by_id(&binding.id).map_or_else(|| by_name(&binding.name), Match::Found);
+        return by_id(&binding.id).map_or_else(|| by_name(&binding.name, reserved), Match::Found);
     }
     match &tracked.config.display {
         DisplaySelector::Id(id) => by_id(id).map_or(Match::Absent, Match::Found),
-        DisplaySelector::Name(name) => by_name(name),
+        DisplaySelector::Name(name) => by_name(name, &[]),
         DisplaySelector::Index(index) => {
             if *index < inventory.len() {
                 Match::Found(*index)
