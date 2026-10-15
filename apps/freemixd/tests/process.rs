@@ -3103,6 +3103,8 @@ fn help_documents_program_output_and_fullscreen_selection() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("--fullscreen-program"));
     assert!(stdout.contains("--fullscreen-display 0"));
+    assert!(stdout.contains("--display-output <spec>"));
+    assert!(stdout.contains("scaling=fit|fill|stretch|1:1"));
     assert!(stdout.contains("--record-program output.mp4"));
     assert!(stdout.contains("--camera-helper PATH"));
     assert!(stdout.contains("never requests permission"));

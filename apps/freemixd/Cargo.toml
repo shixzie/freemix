@@ -7,7 +7,10 @@ rust-version.workspace = true
 
 [features]
 default = []
-macos-program-surface = ["native-media", "dep:winit"]
+# Borderless fullscreen display outputs (OR-011) through winit windows on
+# every platform; `macos-program-surface` is the historical name.
+display-surface = ["native-media", "dep:winit"]
+macos-program-surface = ["display-surface"]
 native-media = [
     "dep:fm-audio",
     "dep:fm-codec-ffmpeg",
@@ -15,7 +18,6 @@ native-media = [
     "dep:fm-color",
     "dep:fm-frame",
     "dep:fm-gpu",
-    "dep:fm-io-api",
     "dep:fm-io-macos",
     "dep:fm-io-network",
     "dep:fm-record",
@@ -39,6 +41,7 @@ fm-control = { path = "../../crates/services/fm-control" }
 fm-engine = { path = "../../crates/services/fm-engine" }
 fm-frame = { path = "../../crates/media/fm-frame", optional = true }
 fm-gpu = { path = "../../crates/gpu/fm-gpu", optional = true }
+fm-io-api = { path = "../../crates/io/fm-io-api" }
 fm-io-network = { path = "../../crates/io/fm-io-network", optional = true }
 fm-observability = { path = "../../crates/services/fm-observability" }
 fm-scheduler = { path = "../../crates/media/fm-scheduler", optional = true }
@@ -54,12 +57,11 @@ fm-title-render = { path = "../../crates/services/fm-title-render" }
 fm-types = { path = "../../crates/foundation/fm-types" }
 fm-video = { path = "../../crates/media/fm-video" }
 fs4 = "0.13"
+winit = { version = "0.30.13", optional = true, features = ["rwh_06"] }
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-fm-io-api = { path = "../../crates/io/fm-io-api", optional = true }
 fm-io-macos = { path = "../../crates/io/fm-io-macos", optional = true }
-winit = { version = "0.30.13", optional = true, features = ["rwh_06"] }
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.3.18"

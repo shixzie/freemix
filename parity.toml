@@ -369,7 +369,9 @@ id = "accept-or-010"
 state = "planned"
 [[tests]]
 id = "accept-or-011"
-state = "planned"
+state = "present"
+paths = ["crates/io/fm-io-api/tests/display_outputs.rs", "apps/freemixd/tests/native_display_outputs.rs"]
+commands = ["cargo test -p fm-io-api --test display_outputs", "cargo test -p freemixd --test native_display_outputs"]
 [[tests]]
 id = "accept-or-012"
 state = "present"

@@ -13,6 +13,8 @@ use fm_gpu::{
     ShaderDescriptor, ShaderLanguage, ShaderSource, ShaderStage, TextureFormat,
 };
 
+use fm_types::{OutputScaling, ScaledViewport};
+
 use crate::working_video_frame_metadata;
 
 const IMPORT_FRAGMENT_SHADER: &str = r"
@@ -103,8 +105,8 @@ fn import_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<
 
 const SDR_OUTPUT_FRAGMENT_SHADER: &str = r"
 struct OutputViewport {
-    x: u32,
-    y: u32,
+    x: i32,
+    y: i32,
     width: u32,
     height: u32,
 };
@@ -129,15 +131,16 @@ fn center_nearest(coordinate: u32, source_size: u32, destination_size: u32) -> u
 
 @fragment
 fn output_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let target_pixel = vec2<u32>(position.xy);
-    let viewport_end = vec2<u32>(viewport.x + viewport.width, viewport.y + viewport.height);
-    if target_pixel.x < viewport.x || target_pixel.y < viewport.y ||
-        target_pixel.x >= viewport_end.x || target_pixel.y >= viewport_end.y {
+    // The viewport may start before the target (Fill and oversized 1:1
+    // crop) or end past it; target pixels outside it are black.
+    let signed_local = vec2<i32>(position.xy) - vec2<i32>(viewport.x, viewport.y);
+    if signed_local.x < 0 || signed_local.y < 0 ||
+        u32(signed_local.x) >= viewport.width || u32(signed_local.y) >= viewport.height {
         return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
 
     let source_size = textureDimensions(working_texture);
-    let local = target_pixel - vec2<u32>(viewport.x, viewport.y);
+    let local = vec2<u32>(signed_local);
     let source_pixel = vec2<u32>(
         center_nearest(local.x, source_size.x, viewport.width),
         center_nearest(local.y, source_size.y, viewport.height),
@@ -158,15 +161,10 @@ fn output_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<
 }
 ";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct OutputViewport {
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-}
+type OutputViewport = ScaledViewport;
 
-fn aspect_fit_viewport(
+fn scaled_viewport(
+    scaling: OutputScaling,
     source_width: u32,
     source_height: u32,
     target_width: u32,
@@ -174,34 +172,32 @@ fn aspect_fit_viewport(
 ) -> OutputViewport {
     debug_assert!(source_width > 0 && source_height > 0);
     debug_assert!(target_width > 0 && target_height > 0);
+    // Native textures are nonzero and bounded by adapter limits, so every
+    // policy yields a viewport; a degenerate input falls back to the target.
+    scaling
+        .viewport(source_width, source_height, target_width, target_height)
+        .unwrap_or(ScaledViewport {
+            x: 0,
+            y: 0,
+            width: target_width.max(1),
+            height: target_height.max(1),
+        })
+}
 
-    let target_is_narrower = u64::from(target_width) * u64::from(source_height)
-        <= u64::from(target_height) * u64::from(source_width);
-    let (width, height) = if target_is_narrower {
-        (
-            target_width,
-            u32::try_from(
-                ((u64::from(target_width) * u64::from(source_height)) / u64::from(source_width))
-                    .max(1),
-            )
-            .expect("fitted height cannot exceed target height"),
-        )
-    } else {
-        (
-            u32::try_from(
-                ((u64::from(target_height) * u64::from(source_width)) / u64::from(source_height))
-                    .max(1),
-            )
-            .expect("fitted width cannot exceed target width"),
-            target_height,
-        )
-    };
-    OutputViewport {
-        x: (target_width - width) / 2,
-        y: (target_height - height) / 2,
-        width,
-        height,
-    }
+#[cfg(test)]
+fn aspect_fit_viewport(
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> OutputViewport {
+    scaled_viewport(
+        OutputScaling::Fit,
+        source_width,
+        source_height,
+        target_width,
+        target_height,
+    )
 }
 
 fn encode_viewport(viewport: OutputViewport) -> [u8; 16] {
@@ -210,9 +206,14 @@ fn encode_viewport(viewport: OutputViewport) -> [u8; 16] {
         .as_chunks_mut::<{ size_of::<u32>() }>()
         .0
         .iter_mut()
-        .zip([viewport.x, viewport.y, viewport.width, viewport.height])
+        .zip([
+            viewport.x.to_le_bytes(),
+            viewport.y.to_le_bytes(),
+            viewport.width.to_le_bytes(),
+            viewport.height.to_le_bytes(),
+        ])
     {
-        chunk.copy_from_slice(&value.to_le_bytes());
+        chunk.copy_from_slice(&value);
     }
     bytes
 }
@@ -507,8 +508,28 @@ impl NativeSdrOutputTransform {
         working: &NativeTexture,
         target: &NativeTexture,
     ) -> Result<(), NativeGpuError> {
+        self.transform_scaled(context, working, target, OutputScaling::Fit)
+            .await
+    }
+
+    /// Writes one canonical working texture into its configured RGBA8 or
+    /// BGRA8 target with an explicit [`OutputScaling`] placement; target
+    /// pixels outside the placed picture are opaque black.
+    ///
+    /// # Errors
+    ///
+    /// Returns a format mismatch for a source other than `Rgba16Float`, or a
+    /// mapped `fm-gpu` validation or submission error.
+    pub async fn transform_scaled(
+        &self,
+        context: &NativeContext,
+        working: &NativeTexture,
+        target: &NativeTexture,
+        scaling: OutputScaling,
+    ) -> Result<(), NativeGpuError> {
         validate_sdr_working_format(working.format())?;
-        let viewport = aspect_fit_viewport(
+        let viewport = scaled_viewport(
+            scaling,
             working.width(),
             working.height(),
             target.width(),
@@ -542,8 +563,28 @@ impl NativeSdrOutputTransform {
         working: &NativeTexture,
         frame: NativeSurfaceFrame<'surface>,
     ) -> Result<NativeSubmittedSurfaceFrame<'surface>, NativeGpuError> {
+        self.transform_to_surface_scaled(context, working, frame, OutputScaling::Fit)
+            .await
+    }
+
+    /// Writes one canonical working texture into an acquired surface frame
+    /// with an explicit [`OutputScaling`] placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns a format mismatch for a source other than `Rgba16Float`, or a
+    /// mapped `fm-gpu` surface submission error. On error, the consumed surface
+    /// frame is discarded.
+    pub async fn transform_to_surface_scaled<'surface>(
+        &self,
+        context: &NativeContext,
+        working: &NativeTexture,
+        frame: NativeSurfaceFrame<'surface>,
+        scaling: OutputScaling,
+    ) -> Result<NativeSubmittedSurfaceFrame<'surface>, NativeGpuError> {
         validate_sdr_working_format(working.format())?;
-        let viewport = aspect_fit_viewport(
+        let viewport = scaled_viewport(
+            scaling,
             working.width(),
             working.height(),
             frame.width(),
@@ -724,36 +765,7 @@ mod tests {
         target_x: u32,
         target_y: u32,
     ) -> Option<(u32, u32)> {
-        let viewport_end_x = viewport.x.checked_add(viewport.width)?;
-        let viewport_end_y = viewport.y.checked_add(viewport.height)?;
-        if target_x < viewport.x
-            || target_y < viewport.y
-            || target_x >= viewport_end_x
-            || target_y >= viewport_end_y
-        {
-            return None;
-        }
-        Some((
-            center_nearest(target_x - viewport.x, source_width, viewport.width),
-            center_nearest(target_y - viewport.y, source_height, viewport.height),
-        ))
-    }
-
-    fn center_nearest(coordinate: u32, source_size: u32, destination_size: u32) -> u32 {
-        assert!(source_size > 0);
-        assert!(destination_size > 0);
-        assert!(coordinate < destination_size);
-
-        let numerator = u128::from(coordinate)
-            .checked_mul(2)
-            .and_then(|value| value.checked_add(1))
-            .and_then(|value| value.checked_mul(u128::from(source_size)))
-            .expect("u32 center-nearest numerator fits u128");
-        let denominator = u128::from(destination_size)
-            .checked_mul(2)
-            .expect("u32 center-nearest denominator fits u128");
-        let bounded = (numerator / denominator).min(u128::from(source_size - 1));
-        u32::try_from(bounded).expect("source coordinate is bounded to u32")
+        viewport.source_pixel(source_width, source_height, target_x, target_y)
     }
 
     fn timing() -> MediaTiming {

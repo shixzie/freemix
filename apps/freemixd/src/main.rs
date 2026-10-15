@@ -46,6 +46,7 @@ use fm_engine::{
     Engine, EngineAcceptance, EngineInputAudioStripState, EngineRestoreState, EngineSnapshot,
     EngineTitle, ShowState,
 };
+use fm_io_api::display::{DisplayOutputConfig, DisplayOutputSet, DisplaySelector};
 use fm_model::{
     InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, MainMix,
     RecorderSlot as ModelRecorderSlot, StingerAudioPolicy as ModelStingerAudioPolicy,
@@ -102,13 +103,17 @@ mod monitor_tap;
 mod native_files;
 #[cfg(feature = "native-media")]
 mod native_titles;
+// The inventory host and status records are wired into native daemons only;
+// the parser and validation compile (and are unit-tested) in every build.
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+mod display_outputs;
 mod non_native_sessions;
 mod playlist_clock;
 // The network preflight is wired only into the native daemon; every helper
 // still compiles (and is unit-tested) in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod preflight;
-#[cfg(feature = "macos-program-surface")]
+#[cfg(feature = "display-surface")]
 mod program_surface;
 #[cfg(feature = "native-media")]
 mod recording_session;
@@ -145,8 +150,6 @@ use fm_frame::{
     AudioBlock, ClockDomainId as MediaClockDomainId, CodecId, MediaTimestamp, MediaTiming,
     NormalizedDuration, NormalizedTimestamp, OriginalTimestamp, SequenceNumber, TimeBase,
 };
-#[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
-use fm_gpu::NativeSurface;
 #[cfg(feature = "native-media")]
 use fm_gpu::{NativeBackend, NativeContext, NativeTexture};
 #[cfg(all(feature = "native-media", target_os = "macos"))]
@@ -254,9 +257,7 @@ const OPERATOR_STATE_PUBLISH_INTERVAL: Duration = Duration::from_secs(1);
 /// bounded suffix, so a long show neither grows the project file without
 /// bound nor rewrites an ever-larger receipt list on every command.
 const MAX_PERSISTED_RECEIPTS: usize = 1_024;
-#[cfg(all(feature = "native-media", feature = "macos-program-surface"))]
-// Referenced by macos-program-surface code paths that are themselves inert off macOS.
-#[allow(dead_code)]
+#[cfg(feature = "display-surface")]
 const PROGRAM_CHECKPOINT_MARGIN: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
@@ -681,8 +682,11 @@ struct NativeDaemon {
     cameras: NativeCameraInputs,
     #[cfg(target_os = "macos")]
     camera_telemetry_frozen: bool,
-    #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
-    program: Option<program_surface::ProgramPresentation>,
+    /// Borderless fullscreen display outputs, one presentation per window.
+    #[cfg(feature = "display-surface")]
+    displays: Vec<program_surface::ProgramPresentation>,
+    /// Display outputs presented to the diagnostic inventory host.
+    display_inventory: Option<display_outputs::InventoryDisplayHost>,
 }
 
 #[cfg(feature = "native-media")]
@@ -3611,6 +3615,27 @@ fn resolve_project_output_texture<'a>(
     )
 }
 
+/// Resolves a display output's source to the realized texture for the
+/// current frame. Program is the first realized project output (or the
+/// unbound output); Preview is not composited by the native daemon and is
+/// refused when display outputs are configured.
+#[cfg(feature = "native-media")]
+fn resolve_display_source_texture<'a>(
+    source: fm_io_api::display::DisplayOutputSource,
+    project_outputs: &'a [NativeOutputFrame],
+    unbound_output: Option<&'a NativeTexture>,
+) -> Option<&'a NativeTexture> {
+    match source {
+        fm_io_api::display::DisplayOutputSource::Program => {
+            resolve_project_output_texture(None, project_outputs, unbound_output)
+        }
+        fm_io_api::display::DisplayOutputSource::Output(output) => {
+            resolve_project_output_texture(Some(output), project_outputs, unbound_output)
+        }
+        fm_io_api::display::DisplayOutputSource::Preview => None,
+    }
+}
+
 #[cfg(feature = "native-media")]
 impl NativeProgramStream {
     /// Compiles one runtime per configured project destination in project
@@ -4525,24 +4550,71 @@ impl NativeDaemon {
             cameras: resolution.cameras,
             #[cfg(target_os = "macos")]
             camera_telemetry_frozen: false,
-            #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
-            program: None,
+            #[cfg(feature = "display-surface")]
+            displays: Vec::new(),
+            display_inventory: None,
         })
     }
 
-    #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+    #[cfg(feature = "display-surface")]
     fn start_with_program(
         store: &ProjectStore,
         stored: &StoredProject,
         context: NativeContext,
-        surface: NativeSurface,
-        channels: program_surface::ProgramWorkerChannels,
+        outputs: Vec<program_surface::DisplayPresentationSetup>,
         camera_helper: Option<&Path>,
     ) -> AppResult<Self> {
+        let set = DisplayOutputSet::new(
+            outputs
+                .iter()
+                .map(program_surface::DisplayPresentationSetup::config)
+                .cloned()
+                .collect(),
+        )
+        .map_err(|error| AppFailure(format!("invalid display outputs: {error}")))?;
         let mut native =
             Self::start_with_optional_context(store, stored, Some(context), camera_helper)?;
-        native.program = Some(program_surface::ProgramPresentation::new(surface, channels));
+        display_outputs::validate_sources(&set, native.project_plan.output_ids())
+            .map_err(AppFailure)?;
+        native.displays = outputs
+            .into_iter()
+            .map(program_surface::ProgramPresentation::new)
+            .collect();
         Ok(native)
+    }
+
+    /// Presents `set` to the diagnostic display inventory read from
+    /// `inventory` instead of real windows.
+    fn attach_display_inventory(
+        &mut self,
+        set: DisplayOutputSet,
+        inventory: PathBuf,
+    ) -> AppResult<()> {
+        display_outputs::validate_sources(&set, self.project_plan.output_ids())
+            .map_err(AppFailure)?;
+        self.display_inventory = Some(display_outputs::InventoryDisplayHost::new(
+            set,
+            display_outputs::InventoryFile::new(inventory),
+        ));
+        Ok(())
+    }
+
+    /// Frames presented by every display output and failed display GPU
+    /// operations, or `None` without display outputs.
+    fn display_output_totals(&self) -> Option<(u64, u64)> {
+        #[cfg(feature = "display-surface")]
+        if !self.displays.is_empty() {
+            return Some((
+                self.displays
+                    .iter()
+                    .map(|display| display.telemetry().frames_presented)
+                    .fold(0, u64::saturating_add),
+                0,
+            ));
+        }
+        self.display_inventory
+            .as_ref()
+            .map(display_outputs::InventoryDisplayHost::totals)
     }
 
     /// Opens one slot's next segment for a configured output.
@@ -5574,9 +5646,9 @@ impl NativeDaemon {
         control: &mut ControlService<Policy>,
         server: &ServerIdentity,
     ) -> AppResult<Option<Vec<RuntimeEventMessage>>> {
-        #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
-        if let Some(program) = &mut self.program {
-            program
+        #[cfg(feature = "display-surface")]
+        for display in &mut self.displays {
+            display
                 .service_control(self.runtime.context())
                 .map_err(|error| -> Box<dyn Error> { Box::new(AppFailure(error)) })?;
         }
@@ -5872,18 +5944,26 @@ impl NativeDaemon {
         self.install_stinger_mutation()?;
         self.projected_frame = None;
         self.pacer.advance()?;
-        #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
-        if let (Some(program), Some(output)) = (
-            &mut self.program,
-            resolve_project_output_texture(
-                None,
+        #[cfg(feature = "display-surface")]
+        for display in &mut self.displays {
+            let Some(texture) = resolve_display_source_texture(
+                display.source(),
                 &self.latest_project_outputs,
                 self.latest_output.as_ref(),
-            ),
-        ) {
-            program
-                .present_latest(self.runtime.context(), output)
+            ) else {
+                continue;
+            };
+            display
+                .present_latest(self.runtime.context(), texture)
                 .map_err(|error| -> Box<dyn Error> { Box::new(AppFailure(error)) })?;
+        }
+        if let Some(host) = &mut self.display_inventory {
+            host.poll(&self.runtime, Instant::now());
+            let project_outputs = &self.latest_project_outputs;
+            let unbound = self.latest_output.as_ref();
+            host.present(&self.runtime, |source| {
+                resolve_display_source_texture(source, project_outputs, unbound)
+            });
         }
         let stream_audio = if self.streams.is_empty() {
             None
@@ -5944,9 +6024,9 @@ impl NativeDaemon {
 
     #[allow(clippy::unused_self)]
     fn shutdown_requested(&self) -> bool {
-        #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
-        if let Some(program) = &self.program {
-            return program.shutdown_requested();
+        #[cfg(feature = "display-surface")]
+        if let Some(display) = self.displays.first() {
+            return display.shutdown_requested();
         }
         false
     }
@@ -6017,10 +6097,10 @@ impl NativeDaemon {
         }
     }
 
-    #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+    #[cfg(feature = "display-surface")]
     fn program_telemetry(&self) -> Option<fm_gpu::PresentationTelemetry> {
-        self.program
-            .as_ref()
+        self.displays
+            .first()
             .map(program_surface::ProgramPresentation::telemetry)
     }
 
@@ -6067,12 +6147,16 @@ impl NativeDaemon {
                 self.files.late_frames()
             );
         }
-        #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+        #[cfg(feature = "display-surface")]
         let presentation = self
-            .program
-            .as_mut()
+            .displays
+            .first_mut()
             .map(program_surface::ProgramPresentation::telemetry_for_shutdown);
-        #[cfg(not(all(feature = "macos-program-surface", target_os = "macos")))]
+        #[cfg(feature = "display-surface")]
+        for display in self.displays.iter_mut().skip(1) {
+            let _ = display.telemetry_for_shutdown();
+        }
+        #[cfg(not(feature = "display-surface"))]
         let presentation = None;
         self.telemetry.emit(presentation);
         self.telemetry_emitted = true;
@@ -6547,6 +6631,15 @@ impl NativeDaemon {
         _stored: &StoredProject,
         _camera_helper: Option<&Path>,
     ) -> AppResult<Self> {
+        Err(AppFailure("native-media support was not compiled in".into()).into())
+    }
+
+    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    fn attach_display_inventory(
+        &mut self,
+        _set: DisplayOutputSet,
+        _inventory: PathBuf,
+    ) -> AppResult<()> {
         Err(AppFailure("native-media support was not compiled in".into()).into())
     }
 
@@ -7329,8 +7422,13 @@ enum Command {
         hls_listen: Option<SocketAddr>,
         once: bool,
         native_media: bool,
+        /// True when display outputs open real borderless windows.
         fullscreen_program: bool,
-        fullscreen_display: usize,
+        /// One or two display outputs, from `--display-output` or the
+        /// `--fullscreen-program [--fullscreen-display N]` shorthand.
+        display_outputs: Vec<DisplayOutputConfig>,
+        /// Diagnostic inventory file presenting display outputs headlessly.
+        display_inventory: Option<PathBuf>,
         camera_helper: Option<PathBuf>,
         record_program: Option<PathBuf>,
         record_output: Option<fm_types::OutputId>,
@@ -7366,6 +7464,56 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Resolves `--display-output`, the `--fullscreen-program
+/// [--fullscreen-display N]` shorthand, and `--diagnostic-display-inventory`
+/// into a validated list of at most two display outputs.
+fn resolve_display_outputs(
+    native_media: bool,
+    fullscreen_program: bool,
+    fullscreen_display: Option<usize>,
+    mut display_outputs: Vec<DisplayOutputConfig>,
+    display_inventory: Option<&Path>,
+) -> AppResult<Vec<DisplayOutputConfig>> {
+    if !display_outputs.is_empty() && !native_media {
+        return Err(AppFailure("--display-output requires --native-media".into()).into());
+    }
+    if !display_outputs.is_empty() && (fullscreen_program || fullscreen_display.is_some()) {
+        return Err(AppFailure(
+            "--display-output replaces --fullscreen-program and --fullscreen-display; \
+             use display=index:<n> instead"
+                .into(),
+        )
+        .into());
+    }
+    if fullscreen_program {
+        display_outputs.push(DisplayOutputConfig::program_on(DisplaySelector::Index(
+            fullscreen_display.unwrap_or(0),
+        )));
+    }
+    if display_inventory.is_some() {
+        if fullscreen_program {
+            return Err(AppFailure(
+                "--diagnostic-display-inventory presents headlessly and cannot be combined \
+                 with --fullscreen-program"
+                    .into(),
+            )
+            .into());
+        }
+        if display_outputs.is_empty() {
+            return Err(AppFailure(
+                "--diagnostic-display-inventory requires --display-output".into(),
+            )
+            .into());
+        }
+    }
+    if display_outputs.is_empty() {
+        return Ok(display_outputs);
+    }
+    DisplayOutputSet::new(display_outputs)
+        .map(|set| set.outputs().to_vec())
+        .map_err(|error| AppFailure(format!("invalid display outputs: {error}")).into())
+}
+
 #[allow(clippy::too_many_lines)]
 fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command> {
     let mut arguments = arguments.into_iter();
@@ -7387,6 +7535,8 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
             let mut native_media = false;
             let mut fullscreen_program = false;
             let mut fullscreen_display = None;
+            let mut display_outputs: Vec<DisplayOutputConfig> = Vec::new();
+            let mut display_inventory: Option<PathBuf> = None;
             let mut camera_helper = None;
             let mut record_program = None;
             let mut record_output = None;
@@ -7909,6 +8059,31 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                             MAX_RECORD_AUDIO_BITRATE_KBPS,
                         )?);
                     }
+                    "--display-output" => {
+                        let value = arguments.next().ok_or_else(|| {
+                            AppFailure("missing value for --display-output".into())
+                        })?;
+                        display_outputs.push(value.parse::<DisplayOutputConfig>().map_err(
+                            |error| AppFailure(format!("invalid --display-output: {error}")),
+                        )?);
+                    }
+                    "--diagnostic-display-inventory" if display_inventory.is_some() => {
+                        return Err(AppFailure(
+                            "duplicate option `--diagnostic-display-inventory`".into(),
+                        )
+                        .into());
+                    }
+                    "--diagnostic-display-inventory" => {
+                        let value = arguments
+                            .next()
+                            .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                            .ok_or_else(|| {
+                                AppFailure(
+                                    "missing value for --diagnostic-display-inventory".into(),
+                                )
+                            })?;
+                        display_inventory = Some(PathBuf::from(value));
+                    }
                     "--diagnostic-stop-after" if diagnostic_stop_after.is_some() => {
                         return Err(AppFailure(
                             "duplicate option `--diagnostic-stop-after`".into(),
@@ -7935,6 +8110,16 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 )
                 .into());
             }
+            let display_outputs = resolve_display_outputs(
+                native_media,
+                fullscreen_program,
+                fullscreen_display,
+                display_outputs,
+                display_inventory.as_deref(),
+            )?;
+            // Real borderless windows open unless the outputs are presented
+            // to the diagnostic inventory host.
+            let fullscreen_program = !display_outputs.is_empty() && display_inventory.is_none();
             if record_program.is_some() && !native_media {
                 return Err(AppFailure("--record-program requires --native-media".into()).into());
             }
@@ -8084,7 +8269,8 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> AppResult<Command>
                 once,
                 native_media,
                 fullscreen_program,
-                fullscreen_display: fullscreen_display.unwrap_or(0),
+                display_outputs,
+                display_inventory,
                 camera_helper,
                 record_program,
                 record_output,
@@ -8235,7 +8421,8 @@ fn run(command: Command) -> AppResult<()> {
             once,
             native_media,
             fullscreen_program,
-            fullscreen_display,
+            display_outputs,
+            display_inventory,
             camera_helper,
             record_program,
             record_output,
@@ -8251,12 +8438,19 @@ fn run(command: Command) -> AppResult<()> {
             diagnostic_stop_after,
             recover_to_checkpoint,
         } => {
+            let display_set = (!display_outputs.is_empty())
+                .then(|| DisplayOutputSet::new(display_outputs))
+                .transpose()
+                .map_err(|error| AppFailure(format!("invalid display outputs: {error}")))?;
             if fullscreen_program {
+                let display_set = display_set.ok_or_else(|| {
+                    AppFailure("--fullscreen-program requires a display output".into())
+                })?;
                 run_fullscreen_program(
                     project,
                     listen,
                     once,
-                    fullscreen_display,
+                    display_set,
                     camera_helper,
                     record_program,
                     record_output,
@@ -8280,7 +8474,10 @@ fn run(command: Command) -> AppResult<()> {
                     },
                     once,
                     if native_media {
-                        NativeServeMode::Headless { camera_helper }
+                        NativeServeMode::Headless {
+                            camera_helper,
+                            displays: display_set.zip(display_inventory),
+                        }
                     } else {
                         NativeServeMode::Disabled
                     },
@@ -8311,13 +8508,13 @@ fn run(command: Command) -> AppResult<()> {
     }
 }
 
-#[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+#[cfg(feature = "display-surface")]
 #[allow(clippy::too_many_arguments)]
 fn run_fullscreen_program(
     project: PathBuf,
     listen: SocketAddr,
     once: bool,
-    fullscreen_display: usize,
+    displays: DisplayOutputSet,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
     record_output: Option<fm_types::OutputId>,
@@ -8331,31 +8528,33 @@ fn run_fullscreen_program(
     record_audio_bitrate_kbps_2: Option<u32>,
 ) -> AppResult<()> {
     program_surface::run(
-        project,
-        listen,
-        once,
-        fullscreen_display,
-        camera_helper,
-        record_program,
-        record_output,
-        record_program_2,
-        record_output_2,
-        record_wav,
-        record_segment_seconds,
-        record_bitrate_kbps,
-        record_bitrate_kbps_2,
-        record_audio_bitrate_kbps,
-        record_audio_bitrate_kbps_2,
+        program_surface::ProgramWorkerOptions {
+            project,
+            listen,
+            once,
+            camera_helper,
+            record_program,
+            record_output,
+            record_program_2,
+            record_output_2,
+            record_wav,
+            record_segment_seconds,
+            record_bitrate_kbps,
+            record_bitrate_kbps_2,
+            record_audio_bitrate_kbps,
+            record_audio_bitrate_kbps_2,
+        },
+        displays,
     )
 }
 
-#[cfg(not(all(feature = "macos-program-surface", target_os = "macos")))]
+#[cfg(not(feature = "display-surface"))]
 #[allow(clippy::too_many_arguments)]
 fn run_fullscreen_program(
     _project: PathBuf,
     _listen: SocketAddr,
     _once: bool,
-    _fullscreen_display: usize,
+    _displays: DisplayOutputSet,
     _camera_helper: Option<PathBuf>,
     _record_program: Option<PathBuf>,
     _record_output: Option<fm_types::OutputId>,
@@ -8369,7 +8568,8 @@ fn run_fullscreen_program(
     _record_audio_bitrate_kbps_2: Option<u32>,
 ) -> AppResult<()> {
     Err(AppFailure(
-        "--fullscreen-program requires a macOS build with feature `macos-program-surface`".into(),
+        "--fullscreen-program and --display-output require a build with feature `display-surface`"
+            .into(),
     )
     .into())
 }
@@ -8378,16 +8578,17 @@ enum NativeServeMode {
     Disabled,
     Headless {
         camera_helper: Option<PathBuf>,
+        /// Display outputs presented to a diagnostic inventory host.
+        displays: Option<(DisplayOutputSet, PathBuf)>,
     },
-    #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+    #[cfg(feature = "display-surface")]
     Program(Box<ProgramServeSetup>),
 }
 
-#[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+#[cfg(feature = "display-surface")]
 struct ProgramServeSetup {
     context: NativeContext,
-    surface: NativeSurface,
-    channels: program_surface::ProgramWorkerChannels,
+    outputs: Vec<program_surface::DisplayPresentationSetup>,
     camera_helper: Option<PathBuf>,
 }
 
@@ -8401,15 +8602,14 @@ struct ServeListeners {
     hls_listen: Option<SocketAddr>,
 }
 
-#[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+#[cfg(feature = "display-surface")]
 #[allow(clippy::too_many_arguments)]
 fn serve_program_worker(
     path: &Path,
     listen: SocketAddr,
     once: bool,
     context: NativeContext,
-    surface: NativeSurface,
-    channels: program_surface::ProgramWorkerChannels,
+    outputs: Vec<program_surface::DisplayPresentationSetup>,
     camera_helper: Option<PathBuf>,
     record_program: Option<PathBuf>,
     record_output: Option<fm_types::OutputId>,
@@ -8433,8 +8633,7 @@ fn serve_program_worker(
         once,
         NativeServeMode::Program(Box::new(ProgramServeSetup {
             context,
-            surface,
-            channels,
+            outputs,
             camera_helper,
         })),
         record_program,
@@ -8654,29 +8853,32 @@ fn serve_inner(
     if matches!(&mode, NativeServeMode::Disabled) {
         attach_synthetic_media(&mut control.borrow_mut(), project.project())?;
     }
-    #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+    #[cfg(feature = "display-surface")]
     let fullscreen_active = matches!(&mode, NativeServeMode::Program(_));
     let mut native = match mode {
         NativeServeMode::Disabled => None,
-        NativeServeMode::Headless { camera_helper } => Some(NativeDaemon::start(
-            &store,
-            &project,
-            camera_helper.as_deref(),
-        )?),
-        #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+        NativeServeMode::Headless {
+            camera_helper,
+            displays,
+        } => {
+            let mut native = NativeDaemon::start(&store, &project, camera_helper.as_deref())?;
+            if let Some((set, inventory)) = displays {
+                native.attach_display_inventory(set, inventory)?;
+            }
+            Some(native)
+        }
+        #[cfg(feature = "display-surface")]
         NativeServeMode::Program(setup) => {
             let ProgramServeSetup {
                 context,
-                surface,
-                channels,
+                outputs,
                 camera_helper,
             } = *setup;
             Some(NativeDaemon::start_with_program(
                 &store,
                 &project,
                 context,
-                surface,
-                channels,
+                outputs,
                 camera_helper.as_deref(),
             )?)
         }
@@ -8812,7 +9014,7 @@ fn serve_inner(
             eprintln!("{record}");
         }
     }
-    #[cfg(not(all(feature = "macos-program-surface", target_os = "macos")))]
+    #[cfg(not(feature = "display-surface"))]
     let fullscreen_active = false;
     // Reconciled stream targets start here, after all preflight succeeded and
     // before readiness is advertised. A refusing destination latches its own
@@ -8965,7 +9167,7 @@ fn serve_inner(
         // recorded and the next start has nothing to replay.
         journal.settle(&durable)?;
     }
-    #[cfg(all(feature = "macos-program-surface", target_os = "macos"))]
+    #[cfg(feature = "display-surface")]
     if fullscreen_active {
         let frames_presented = native
             .as_ref()
@@ -8973,6 +9175,15 @@ fn serve_inner(
             .map(|telemetry| telemetry.frames_presented)
             .unwrap_or_default();
         eprintln!("FREEMIXD_PROGRAM\tv=1\tframes_presented={frames_presented}");
+    }
+    #[cfg(feature = "native-media")]
+    if let Some((frames_presented, failures)) = native
+        .as_ref()
+        .and_then(NativeDaemon::display_output_totals)
+    {
+        eprintln!(
+            "FREEMIXD_DISPLAY_OUTPUTS\tv=1\tframes_presented={frames_presented}\tfailures={failures}"
+        );
     }
     if let Some(native) = &mut native {
         // Streams stop before the recorder so the final records reflect the
@@ -12821,7 +13032,7 @@ fn now_millis() -> AppResult<u64> {
 fn print_help() {
     println!(
         "FreeMix headless production daemon\n\n\
-Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]]\n  freemixd help\n  freemixd --version\n\n\
+Usage:\n  freemixd serve <show.freemix> [--listen 127.0.0.1:0] [--web-listen 127.0.0.1:0] [--status-listen 127.0.0.1:0] [--hls-listen 127.0.0.1:0] [--once] [--native-media [--camera-helper PATH]] [--record-program output.mp4 [--record-output <output-id>]] [--record-program-2 output-2.mp4 [--record-output-2 <output-id>]] [--record-wav] [--record-segment-seconds <1..=86400>] [--record-segment-seconds-2 <1..=86400>] [--record-bitrate-kbps <1000..=100000>] [--record-bitrate-kbps-2 <1000..=100000>] [--record-audio-bitrate-kbps <8..=1024>] [--record-audio-bitrate-kbps-2 <8..=1024>] [--record-fallback-dir DIR] [--diagnostic-stop-after 10m] [--recover-to-checkpoint] [--fullscreen-program [--fullscreen-display 0]] [--display-output <spec> [--display-output <spec>] [--diagnostic-display-inventory FILE]]\n  freemixd help\n  freemixd --version\n\n\
 Native media is opt-in; without it the daemon uses simulated frame realization.\n\
 --camera-helper overrides the developer AVFoundation helper path for exact macOS Device inputs; it never requests permission.\n\
 Program recording requires native media and an existing output parent; segments are created exclusively, never overwritten. The first segment uses the configured path itself and later record-start segments use <stem>-<NNN>.mp4 names through 999. Both --record-program and --record-program-2 follow the engine's recording desired flag, and each slot derives its own segment names, latches its own failures, and emits its own slot-annotated FREEMIXD_RECORDER report. --record-output and --record-output-2 select which project output each slot records.\n\
@@ -12831,7 +13042,9 @@ Program recording requires native media and an existing output parent; segments 
 Every program segment is a crash-safe recording session with a <stem>.fmsession manifest beside it, so output stems must be 1 to 60 ASCII letters, digits, `-`, `_`, or `.`. A write or sync failure re-homes the fragment in flight into <stem>-<NNNN>.mp4 on the same directory, or, when that directory is full, read-only, missing, or forbidden, on --record-fallback-dir (accepts <option> <value> or <option>=<value>, applies to every slot, must differ from each output directory, and is unavailable with --fullscreen-program); the recording continues instead of failing. Startup recovers every session of the configured slots that a crash left open, cutting torn segments back to their last complete fragment, before anything records. FREEMIXD_RECORDER_SPACE reports each segment's free-space preflight (a start is refused only when every measured directory is exhausted), FREEMIXD_RECORDER_FAILOVER each failover, FREEMIXD_RECORDER_SESSION each finished session, and FREEMIXD_RECORDING_RECOVERY what each recovery kept and lost.\n\
 Configured network stream endpoints are probed once at startup and reported as FREEMIXD_PREFLIGHT; the probe is bounded and never blocks or refuses startup, and it is a reachability check rather than a bandwidth or health guarantee.\n\
 Use --record-program=<path> or --record-program-2=<path> when the output name begins with --. Recorder capability digests describe configured startup support; FREEMIXD_RECORDER reports runtime health.\n\
-macOS fullscreen display selection is a zero-based index ordered by physical position, then stable descriptive fields.\n\
+Fullscreen display selection is a zero-based index ordered by desktop position, then name, then platform display id; --fullscreen-program --fullscreen-display N is shorthand for --display-output display=index:N.\n\
+--display-output opens one borderless, cursor-hidden fullscreen output per occurrence (at most two, each on a distinct display) and requires --native-media plus a build with feature `display-surface`. A spec is comma-separated key=value fields: display=index:<n>|name:<name>|id:<platform-id> (required), source=program|output:<output-id> (default program), mode=current|WIDTHxHEIGHT[@HZ] (default current; an unsupported mode falls back to the current one and is reported), scaling=fit|fill|stretch|1:1 (default fit), and hdr=off|auto (default off; outputs present SDR and report why). A missing display leaves its output waiting; it reattaches when the display returns, matched by platform id and then by name. Each state change emits FREEMIXD_DISPLAY_OUTPUT and shutdown emits FREEMIXD_DISPLAY_OUTPUTS.\n\
+--diagnostic-display-inventory FILE presents every --display-output headlessly to off-screen rasters sized to a tab-separated display inventory re-read from FILE (one display per line: id=, mode=, optional name=, x=, y=, modes=, hdr=; a missing file means no display is connected) and emits sampled FREEMIXD_DISPLAY_FRAME probes. It is a test and diagnostic aid, not an operator output.\n\
 --diagnostic-stop-after schedules cooperative simulated or headless native shutdown after readiness; accepted units are ms, s, m, and h up to 24h.\n\
 --recover-to-checkpoint opens the project at its last checkpoint and permanently discards every acknowledged command the journal recorded after it, printing each abandoned sequence, revision and command id first. It loses work; use it only when a replay is refused and the show must go on. It is unavailable with --fullscreen-program.\n\
 --web-listen enables the loopback-only `/v1/control` WebSocket listener and requires FREEMIXD_WEB_TOKEN.\n\
@@ -13446,7 +13659,8 @@ mod tests {
                 once: true,
                 native_media: false,
                 fullscreen_program: false,
-                fullscreen_display: 0,
+                display_outputs: Vec::new(),
+                display_inventory: None,
                 camera_helper: None,
                 record_program: None,
                 record_output: None,
@@ -16562,9 +16776,10 @@ mod tests {
             Command::Serve {
                 native_media: true,
                 fullscreen_program: true,
-                fullscreen_display: 2,
+                display_outputs,
+                display_inventory: None,
                 ..
-            }
+            } if display_outputs == [DisplayOutputConfig::program_on(DisplaySelector::Index(2))]
         ));
     }
 
@@ -16580,10 +16795,142 @@ mod tests {
             .unwrap(),
             Command::Serve {
                 fullscreen_program: true,
-                fullscreen_display: 0,
+                display_outputs,
                 ..
-            }
+            } if display_outputs == [DisplayOutputConfig::program_on(DisplaySelector::Index(0))]
         ));
+    }
+
+    #[test]
+    fn parses_two_independent_display_outputs() {
+        let Command::Serve {
+            fullscreen_program,
+            display_outputs,
+            display_inventory,
+            ..
+        } = parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--native-media",
+            "--display-output",
+            "display=name:Left,source=program,scaling=fit",
+            "--display-output",
+            "display=id:x:66,source=output:2,mode=1920x1080@60,scaling=1:1,hdr=auto",
+        ]))
+        .unwrap()
+        else {
+            panic!("expected serve");
+        };
+        assert!(fullscreen_program);
+        assert_eq!(display_inventory, None);
+        assert_eq!(display_outputs.len(), 2);
+        assert_eq!(
+            display_outputs[1].source,
+            fm_io_api::display::DisplayOutputSource::Output(fm_types::OutputId::new(
+                NonZeroU128::new(2).unwrap()
+            ))
+        );
+        assert_eq!(
+            display_outputs[1].scaling,
+            fm_types::OutputScaling::OneToOne
+        );
+
+        let Command::Serve {
+            fullscreen_program,
+            display_inventory,
+            ..
+        } = parse_args(strings(&[
+            "serve",
+            "show.freemix",
+            "--native-media",
+            "--display-output",
+            "display=0",
+            "--diagnostic-display-inventory",
+            "displays.tsv",
+        ]))
+        .unwrap()
+        else {
+            panic!("expected serve");
+        };
+        assert!(!fullscreen_program, "the inventory host is headless");
+        assert_eq!(display_inventory, Some(PathBuf::from("displays.tsv")));
+    }
+
+    #[test]
+    fn rejects_invalid_display_output_combinations() {
+        for (arguments, expected) in [
+            (
+                vec!["--display-output", "display=0"],
+                "--display-output requires --native-media",
+            ),
+            (
+                vec![
+                    "--native-media",
+                    "--display-output",
+                    "display=0,scaling=zoom",
+                ],
+                "invalid --display-output",
+            ),
+            (
+                vec![
+                    "--native-media",
+                    "--display-output",
+                    "display=0",
+                    "--display-output",
+                    "display=1",
+                    "--display-output",
+                    "display=2",
+                ],
+                "at most 2",
+            ),
+            (
+                vec![
+                    "--native-media",
+                    "--display-output",
+                    "display=0",
+                    "--display-output",
+                    "display=index:0,source=output:2",
+                ],
+                "same display",
+            ),
+            (
+                vec![
+                    "--native-media",
+                    "--fullscreen-program",
+                    "--display-output",
+                    "display=1",
+                ],
+                "--display-output replaces --fullscreen-program",
+            ),
+            (
+                vec!["--native-media", "--diagnostic-display-inventory", "d.tsv"],
+                "--diagnostic-display-inventory requires --display-output",
+            ),
+            (
+                vec![
+                    "--native-media",
+                    "--fullscreen-program",
+                    "--diagnostic-display-inventory",
+                    "d.tsv",
+                ],
+                "cannot be combined with --fullscreen-program",
+            ),
+            (
+                vec![
+                    "--native-media",
+                    "--display-output",
+                    "display=0",
+                    "--status-listen",
+                    "127.0.0.1:0",
+                ],
+                "--status-listen cannot be combined with --fullscreen-program",
+            ),
+        ] {
+            let mut full = strings(&["serve", "show.freemix"]);
+            full.extend(arguments.iter().map(|value| (*value).to_owned()));
+            let error = parse_args(full).unwrap_err().to_string();
+            assert!(error.contains(expected), "{arguments:?}: {error}");
+        }
     }
 
     #[test]

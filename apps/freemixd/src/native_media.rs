@@ -8261,6 +8261,43 @@ impl NativeMediaRuntime {
         block_on(self.readback_program(owner, program))
     }
 
+    /// Places canonical Program light into the owner's reusable `Rgba8Unorm`
+    /// target with an explicit [`fm_types::OutputScaling`] policy, exactly as
+    /// a display output places it on its surface. This submits GPU work only.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed GPU ownership, format, or submission failure.
+    pub fn present_program_scaled_blocking(
+        &self,
+        owner: &NativeProgramReadback,
+        program: &NativeTexture,
+        scaling: fm_types::OutputScaling,
+    ) -> Result<(), NativeMediaError> {
+        block_on(
+            owner
+                .transform
+                .transform_scaled(&self.context, program, &owner.target, scaling),
+        )
+        .map_err(Into::into)
+    }
+
+    /// Reads back the owner's target as last written by
+    /// [`Self::present_program_scaled_blocking`].
+    ///
+    /// This blocking correctness path may wait for up to the native readback
+    /// timeout and exists for diagnostics and tests.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed GPU polling, mapping, timeout, or layout failure.
+    pub fn readback_presented_blocking(
+        &self,
+        owner: &NativeProgramReadback,
+    ) -> Result<DiagnosticReadback, NativeMediaError> {
+        block_on(self.context.readback_rgba8(&owner.target)).map_err(Into::into)
+    }
+
     /// Returns portable adapter identification for diagnostics and tests.
     #[must_use]
     pub const fn diagnostic_adapter_info(&self) -> &NativeAdapterInfo {

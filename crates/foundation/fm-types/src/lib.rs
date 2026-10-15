@@ -4,6 +4,7 @@ mod audio;
 mod color;
 mod id;
 mod memory;
+mod scaling;
 mod time;
 mod video;
 
@@ -14,6 +15,7 @@ pub use color::{
 };
 pub use id::{BusId, InputId, OutputId, ProjectId, SceneId};
 pub use memory::MemoryDomain;
+pub use scaling::{OutputScaling, ParseOutputScalingError, ScaledViewport};
 pub use time::{
     FrameRate, MediaDuration, MediaTimestamp, RateError, TimeBase, Timecode, TimecodeError,
 };

@@ -2,9 +2,11 @@
 //!
 //! This crate deliberately contains no platform APIs. Native adapters expose
 //! their capabilities through these contracts; tests can use the deterministic
-//! fake adapters in [`fake`].
+//! fake adapters in [`fake`]. Display enumeration, fullscreen display-output
+//! configuration, and the display hot-plug state machine live in [`display`].
 
 mod contract;
+pub mod display;
 pub mod fake;
 
 pub use contract::{

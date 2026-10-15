@@ -659,6 +659,45 @@ OS. Cameras and persisted scenes are scheduled for Phase 3, streaming for Phase
 evidence exists. Item 10 is therefore incomplete and is structurally blocked by
 capabilities scheduled after Phase 2.
 
+Current implementation boundary for fullscreen display outputs (`OR-011`):
+`fm-io-api::display` defines portable display enumeration (`DisplayProvider`,
+`DisplayInfo` with a platform display id, name, desktop origin, current and
+advertised modes, and `HdrCapability`), a validated `DisplayOutputSet` of one or
+two outputs (display selector by id, name, or index; source Program, Preview,
+or a project output; `current` or exact mode; Fit, Fill, Stretch, or 1:1
+scaling; `off`/`auto` HDR), and the `DisplayOutputTracker` hot-plug state
+machine. Outputs bind by selector once, then follow their display by id and
+then by unique name (rebinding a renumbered display), never jump by index, wait
+with an explicit reason (absent, in use by the other output, ambiguous name,
+enumeration failed), and reattach when the display returns; an unsupported
+exact mode falls back to the current mode and is reported. `fm-types` owns the
+four scaling placements as signed viewports and `fm-color` applies them in the
+SDR output transform for surfaces and off-screen targets. `freemixd
+--native-media --display-output <spec>` (repeatable, at most two;
+`--fullscreen-program [--fullscreen-display N]` is shorthand for one Program
+output) opens one borderless, cursor-hidden winit window per output under the
+`display-surface` feature on every platform (`macos-program-surface` remains an
+alias); each window has its own surface and presentation lifecycle on one GPU
+context, presents its own source with its own scaling, uses exclusive
+fullscreen only when an exact supported mode differs from the current one, and
+emits `FREEMIXD_DISPLAY_OUTPUT` on every state change plus
+`FREEMIXD_DISPLAY_OUTPUTS` at shutdown. Display ids come from
+`CGDirectDisplayID` (macOS), the GDI device name (Windows), and the
+`RandR`/Wayland output id (Linux). `--diagnostic-display-inventory FILE` presents
+the same outputs headlessly into off-screen rasters sized to a file-described
+inventory, which the native daemon test uses to prove two independent sources
+(Program with an overlay, and a clean-feed project output) and unplug, replug,
+and renumbered-display recovery on a software Vulkan adapter; a real Xvfb
+window test covers the windowed path where a window system exists. Remaining
+gaps: presentation is SDR-only and winit exposes no HDR capability, so `hdr=auto`
+reports `sdr-capability-unknown` or `sdr-presenter-limited` rather than driving
+HDR; the native daemon does not composite Preview, so `source=preview` is refused
+there; display outputs cannot be configured or retargeted through the protocol
+or project file; window placement happens on one event-loop thread polled every
+500 ms rather than on platform hot-plug notifications; and no multi-monitor
+hardware, Windows, or macOS evidence has been recorded. `OR-011` remains
+planned.
+
 Exit: a useful offline/file-based switcher, with no engine dependency on UI
 lifecycle.
 

@@ -91,7 +91,7 @@ Total: 106 features. Status: planned=99, blocked=7. Priority: P0=24, P1=73, P2=9
 | OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
 | OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
-| OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (planned) |
+| OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (present) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
 | OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (present) |
 | OR-014 | P1 | 7 | planned | replay-guests | accept-or-014 (present) |
@@ -202,7 +202,7 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
 | OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
-| OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (planned) |
+| OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (present) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
 | OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (present) |
 | OR-014 | P1 | 7 | planned | replay-guests | accept-or-014 (present) |
@@ -313,7 +313,7 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
 | OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
-| OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (planned) |
+| OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (present) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
 | OR-013 | P1 | 7 | planned | replay-guests | accept-or-013 (present) |
 | OR-014 | P1 | 7 | planned | replay-guests | accept-or-014 (present) |
@@ -385,7 +385,7 @@ Total: 24 features. Status: planned=24. Priority: P0=23, P1=1.
 | AU-005 | P0 | 3 | planned | audio-dsp | accept-au-005 (present) |
 | OR-001 | P0 | 2 | planned | codecs-network-recording | accept-or-001 (present) |
 | OR-005 | P1 | 4 | planned | codecs-network-recording | accept-or-005 (present) |
-| OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (planned) |
+| OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (present) |
 | RC-004 | P0 | 3 | planned | graphics-data-automation-plugins | accept-rc-004 (present) |
 
 ## profile-b-uhd

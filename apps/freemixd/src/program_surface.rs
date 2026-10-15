@@ -1,181 +1,47 @@
-//! Opt-in macOS Program surface and its platform-neutral policies.
+//! Borderless fullscreen display outputs (OR-011) and their platform-neutral
+//! presentation policies.
+//!
+//! One winit event loop owns up to two borderless, cursor-hidden windows,
+//! one per configured display output. A shared
+//! [`DisplayOutputTracker`] matches each output to its display (stable id,
+//! then name), parks the window while its display is absent, and reattaches
+//! it when the display returns. Each window's surface is presented by its own
+//! [`ProgramPresentation`] on the daemon worker with the output's own source
+//! and [`fm_types::OutputScaling`].
 
-#[cfg(any(target_os = "macos", test))]
-use std::{
-    cmp::Ordering,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering as AtomicOrdering},
-        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
-    },
-    time::Duration,
-};
-
-#[cfg(target_os = "macos")]
 use std::{
     future::Future,
     net::SocketAddr,
     num::NonZeroU32,
     path::PathBuf,
     pin::pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+        mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
+    },
     task::{Context, Poll, Wake, Waker},
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-#[cfg(target_os = "macos")]
-use super::RECORDER_SLOTS;
-#[cfg(target_os = "macos")]
+use super::{RECORDER_SLOTS, display_outputs::status_record};
 use fm_color::NativeSdrOutputTransform;
-#[cfg(any(target_os = "macos", test))]
-use fm_gpu::{FrameDecision, FrameGeneration, PresentationFrame};
-#[cfg(target_os = "macos")]
 use fm_gpu::{
-    NativeBackend, NativeContext, NativeGpuError, NativeSurface, NativeSurfaceAcquire,
-    NativeSurfaceFactory, NativeTexture,
-};
-#[cfg(any(target_os = "macos", test))]
-use fm_gpu::{
-    PresentationAction, PresentationLifecycle, PresentationState, ResizeGeneration,
+    FrameDecision, FrameGeneration, NativeContext, NativeGpuError, NativeSurface,
+    NativeSurfaceAcquire, NativeSurfaceFactory, NativeTexture, PresentationAction,
+    PresentationFrame, PresentationLifecycle, PresentationState, ResizeGeneration,
     SurfaceAcquisition,
 };
+use fm_io_api::display::{
+    DisplayId, DisplayInfo, DisplayMode, DisplayOutputConfig, DisplayOutputSet,
+    DisplayOutputSource, DisplayOutputTracker,
+};
+use fm_types::OutputScaling;
 
-#[cfg(any(target_os = "macos", test))]
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct MonitorDescriptor {
-    x: i32,
-    y: i32,
-    name: String,
-    width: u32,
-    height: u32,
-    refresh_millihertz: u32,
-    scale_bits: u64,
-}
-
-#[cfg(any(target_os = "macos", test))]
-impl Ord for MonitorDescriptor {
-    fn cmp(&self, other: &Self) -> Ordering {
-        (
-            self.x,
-            self.y,
-            &self.name,
-            self.width,
-            self.height,
-            self.refresh_millihertz,
-            self.scale_bits,
-        )
-            .cmp(&(
-                other.x,
-                other.y,
-                &other.name,
-                other.width,
-                other.height,
-                other.refresh_millihertz,
-                other.scale_bits,
-            ))
-    }
-}
-
-#[cfg(any(target_os = "macos", test))]
-impl PartialOrd for MonitorDescriptor {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-#[cfg(any(target_os = "macos", test))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MonitorChange {
-    Unchanged,
-    Disconnected,
-    Reconnected(usize),
-}
-
-#[cfg(any(target_os = "macos", test))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum MonitorSelectionError {
-    Unavailable,
-    AmbiguousDescriptors,
-}
-
-#[cfg(any(target_os = "macos", test))]
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct MonitorEntry<I> {
-    descriptor: MonitorDescriptor,
-    identity: I,
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn sort_monitor_entries<I>(inventory: &mut [MonitorEntry<I>]) {
-    inventory.sort_by(|left, right| left.descriptor.cmp(&right.descriptor));
-}
-
-#[cfg(any(target_os = "macos", test))]
-struct MonitorPolicy<I> {
-    selected: I,
-    connected: bool,
-}
-
-#[cfg(any(target_os = "macos", test))]
-impl<I: Clone + Eq> MonitorPolicy<I> {
-    fn select(
-        inventory: &mut [MonitorEntry<I>],
-        index: usize,
-    ) -> Result<(Self, usize), MonitorSelectionError> {
-        sort_monitor_entries(inventory);
-        if inventory
-            .windows(2)
-            .any(|pair| pair[0].descriptor == pair[1].descriptor)
-        {
-            return Err(MonitorSelectionError::AmbiguousDescriptors);
-        }
-        let selected = inventory
-            .get(index)
-            .ok_or(MonitorSelectionError::Unavailable)?;
-        Ok((
-            Self {
-                selected: selected.identity.clone(),
-                connected: true,
-            },
-            index,
-        ))
-    }
-
-    fn update(&mut self, inventory: &mut [MonitorEntry<I>]) -> MonitorChange {
-        sort_monitor_entries(inventory);
-        let selected = inventory
-            .iter()
-            .position(|monitor| monitor.identity == self.selected);
-        match (self.connected, selected) {
-            (true, None) => {
-                self.connected = false;
-                MonitorChange::Disconnected
-            }
-            (false, Some(index)) => {
-                self.connected = true;
-                MonitorChange::Reconnected(index)
-            }
-            _ => MonitorChange::Unchanged,
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    fn selected_index(&self, inventory: &[MonitorEntry<I>]) -> Option<usize> {
-        inventory
-            .iter()
-            .position(|monitor| monitor.identity == self.selected)
-    }
-
-    fn accepts_resize(&self, current: Option<&I>) -> bool {
-        self.connected && current == Some(&self.selected)
-    }
-}
-
-#[cfg(any(target_os = "macos", test))]
 #[derive(Clone)]
 pub(super) struct ShutdownSignal(Arc<AtomicBool>);
 
-#[cfg(any(target_os = "macos", test))]
 impl ShutdownSignal {
     fn new() -> Self {
         Self(Arc::new(AtomicBool::new(false)))
@@ -190,7 +56,6 @@ impl ShutdownSignal {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn begin_shutdown<T>(signal: &ShutdownSignal, deadline: &mut Option<T>, value: T) -> bool {
     if !signal.request() {
         return false;
@@ -199,7 +64,6 @@ fn begin_shutdown<T>(signal: &ShutdownSignal, deadline: &mut Option<T>, value: T
     true
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn program_shutdown_timeout(recorder: bool) -> Duration {
     if recorder {
         super::PROGRAM_RECORDER_STOP_TIMEOUT
@@ -210,24 +74,20 @@ fn program_shutdown_timeout(recorder: bool) -> Duration {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 const fn accepts_escape_press(pressed: bool, repeat: bool, escape: bool) -> bool {
     pressed && !repeat && escape
 }
 
-#[cfg(any(target_os = "macos", test))]
 struct CoalescingSender<T> {
     slot: Arc<Mutex<Option<T>>>,
     wake: SyncSender<()>,
 }
 
-#[cfg(any(target_os = "macos", test))]
 pub(super) struct CoalescingReceiver<T> {
     slot: Arc<Mutex<Option<T>>>,
     wake: Receiver<()>,
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn coalescing_channel<T>() -> (CoalescingSender<T>, CoalescingReceiver<T>) {
     let slot = Arc::new(Mutex::new(None));
     let (wake, receiver) = mpsc::sync_channel(1);
@@ -243,7 +103,6 @@ fn coalescing_channel<T>() -> (CoalescingSender<T>, CoalescingReceiver<T>) {
     )
 }
 
-#[cfg(any(target_os = "macos", test))]
 impl<T> CoalescingSender<T> {
     fn send(&self, value: T) -> Result<(), ()> {
         *self.slot.lock().expect("coalescing slot poisoned") = Some(value);
@@ -254,21 +113,17 @@ impl<T> CoalescingSender<T> {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 #[derive(Debug)]
 struct Correlated<T> {
     generation: ResizeGeneration,
-    #[allow(dead_code)] // consumed only by the macOS presentation service loop
     value: T,
 }
 
-#[cfg(any(target_os = "macos", test))]
 struct RecreationCoordinator<T> {
     pending: Option<ResizeGeneration>,
     ready: Option<Correlated<T>>,
 }
 
-#[cfg(any(target_os = "macos", test))]
 impl<T> RecreationCoordinator<T> {
     const fn new() -> Self {
         Self {
@@ -322,7 +177,6 @@ impl<T> RecreationCoordinator<T> {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 impl<T> CoalescingReceiver<T> {
     pub(super) fn take_latest(&self) -> Option<T> {
         match self.wake.try_recv() {
@@ -332,7 +186,6 @@ impl<T> CoalescingReceiver<T> {
     }
 }
 
-#[cfg(target_os = "macos")]
 pub(super) struct ProgramWorkerChannels {
     sizes: CoalescingReceiver<(u32, u32)>,
     replacements: Receiver<Correlated<Result<NativeSurface, String>>>,
@@ -341,7 +194,6 @@ pub(super) struct ProgramWorkerChannels {
     shutdown: ShutdownSignal,
 }
 
-#[cfg(target_os = "macos")]
 impl ProgramWorkerChannels {
     fn request_recreation(&self, generation: ResizeGeneration) -> Result<(), String> {
         self.recreate
@@ -353,7 +205,6 @@ impl ProgramWorkerChannels {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReplacementDisposition {
     Install,
@@ -361,7 +212,6 @@ enum ReplacementDisposition {
     DiscardAndRetry(ResizeGeneration),
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn replacement_disposition(
     state: PresentationState,
     response: ResizeGeneration,
@@ -379,25 +229,45 @@ fn replacement_disposition(
     }
 }
 
-#[cfg(target_os = "macos")]
+/// One display output's worker-side surface, channels, and configuration.
+pub(super) struct DisplayPresentationSetup {
+    config: DisplayOutputConfig,
+    surface: NativeSurface,
+    channels: ProgramWorkerChannels,
+}
+
+impl DisplayPresentationSetup {
+    pub(super) const fn config(&self) -> &DisplayOutputConfig {
+        &self.config
+    }
+}
+
 pub(super) struct ProgramPresentation {
     surface: Option<NativeSurface>,
     transform: Option<NativeSdrOutputTransform>,
     lifecycle: PresentationLifecycle,
     frame_generation: u64,
     channels: ProgramWorkerChannels,
+    source: DisplayOutputSource,
+    scaling: OutputScaling,
 }
 
-#[cfg(target_os = "macos")]
 impl ProgramPresentation {
-    pub(super) fn new(surface: NativeSurface, channels: ProgramWorkerChannels) -> Self {
+    pub(super) fn new(setup: DisplayPresentationSetup) -> Self {
         Self {
-            surface: Some(surface),
+            surface: Some(setup.surface),
             transform: None,
             lifecycle: PresentationLifecycle::new(),
             frame_generation: 0,
-            channels,
+            channels: setup.channels,
+            source: setup.config.source,
+            scaling: setup.config.scaling,
         }
+    }
+
+    /// The picture this output shows.
+    pub(super) const fn source(&self) -> DisplayOutputSource {
+        self.source
     }
 
     pub(super) fn shutdown_requested(&self) -> bool {
@@ -476,6 +346,7 @@ impl ProgramPresentation {
                         &mut self.lifecycle,
                         self.transform.as_ref(),
                         texture,
+                        self.scaling,
                         surface_frame,
                         action,
                     )?;
@@ -490,6 +361,7 @@ impl ProgramPresentation {
                         &mut self.lifecycle,
                         self.transform.as_ref(),
                         texture,
+                        self.scaling,
                         surface_frame,
                         action,
                     )?;
@@ -592,12 +464,12 @@ impl ProgramPresentation {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn submit_acquired(
     context: &NativeContext,
     lifecycle: &mut PresentationLifecycle,
     transform: Option<&NativeSdrOutputTransform>,
     texture: &NativeTexture,
+    scaling: OutputScaling,
     surface_frame: fm_gpu::NativeSurfaceFrame<'_>,
     action: PresentationAction,
 ) -> Result<(), String> {
@@ -610,8 +482,12 @@ fn submit_acquired(
     };
     let transform =
         transform.ok_or_else(|| "Program output transform is not configured".to_owned())?;
-    let submitted = match block_on(transform.transform_to_surface(context, texture, surface_frame))
-    {
+    let submitted = match block_on(transform.transform_to_surface_scaled(
+        context,
+        texture,
+        surface_frame,
+        scaling,
+    )) {
         Ok(submitted) => submitted,
         Err(error) => {
             let _ = lifecycle.finish_present(presented, false);
@@ -626,17 +502,14 @@ fn submit_acquired(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 fn surface_error(error: &NativeGpuError) -> String {
     format!("Program surface GPU failure: {error}")
 }
 
-#[cfg(any(target_os = "macos", test))]
 fn surface_validation_error(detail: &str) -> String {
     format!("fatal Program surface validation failure: {detail}")
 }
 
-#[cfg(target_os = "macos")]
 fn block_on<F: Future>(future: F) -> F::Output {
     struct ThreadWaker(thread::Thread);
     impl Wake for ThreadWaker {
@@ -655,109 +528,200 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-#[cfg(target_os = "macos")]
 #[derive(Debug)]
 enum UserEvent {
     Wake,
     Finished(Result<(), String>),
 }
 
-#[cfg(target_os = "macos")]
-#[allow(clippy::struct_excessive_bools)] // each bool is a distinct persisted output or recorder option
-struct ProgramApp {
-    project: PathBuf,
-    listen: SocketAddr,
-    once: bool,
-    display_index: usize,
-    record_program: Option<PathBuf>,
-    record_output: Option<fm_types::OutputId>,
-    record_program_2: Option<PathBuf>,
-    record_output_2: Option<fm_types::OutputId>,
-    record_wav: bool,
-    record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
-    record_bitrate_kbps: Option<u32>,
-    record_bitrate_kbps_2: Option<u32>,
-    record_audio_bitrate_kbps: Option<u32>,
-    record_audio_bitrate_kbps_2: Option<u32>,
-    camera_helper: Option<PathBuf>,
+type SurfaceReplacement = Correlated<Result<NativeSurface, String>>;
+
+/// The event-loop side of one display output: its borderless window, the
+/// monitor it is attached to, and the channels to its worker presentation.
+struct OutputWindow {
     window: Option<Arc<winit::window::Window>>,
-    factory: Option<NativeSurfaceFactory>,
-    monitor_policy: Option<MonitorPolicy<winit::monitor::MonitorHandle>>,
+    /// The attached monitor, or `None` while the output waits for a display.
+    target: Option<winit::monitor::MonitorHandle>,
+    /// The exact video mode to drive, when it differs from the current mode.
+    exclusive: Option<winit::monitor::VideoModeHandle>,
     size_sender: CoalescingSender<(u32, u32)>,
     size_receiver: Option<CoalescingReceiver<(u32, u32)>>,
-    replacement_sender: SyncSender<Correlated<Result<NativeSurface, String>>>,
-    replacement_receiver: Option<Receiver<Correlated<Result<NativeSurface, String>>>>,
+    replacement_sender: SyncSender<SurfaceReplacement>,
+    replacement_receiver: Option<Receiver<SurfaceReplacement>>,
     recreate_sender: Option<CoalescingSender<ResizeGeneration>>,
     recreate_receiver: CoalescingReceiver<ResizeGeneration>,
-    shutdown: ShutdownSignal,
-    shutdown_timeout: Duration,
-    recorder_requested: bool,
-    shutdown_deadline: Option<Instant>,
-    worker: Option<thread::JoinHandle<()>>,
-    result: Option<Result<(), String>>,
     recreations: RecreationCoordinator<Result<NativeSurface, String>>,
-    shutdown_timed_out: bool,
-    proxy: winit::event_loop::EventLoopProxy<UserEvent>,
 }
 
-#[cfg(target_os = "macos")]
-impl ProgramApp {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        project: PathBuf,
-        listen: SocketAddr,
-        once: bool,
-        display_index: usize,
-        record_program: Option<PathBuf>,
-        record_output: Option<fm_types::OutputId>,
-        record_program_2: Option<PathBuf>,
-        record_output_2: Option<fm_types::OutputId>,
-        record_wav: bool,
-        record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
-        record_bitrate_kbps: Option<u32>,
-        record_bitrate_kbps_2: Option<u32>,
-        record_audio_bitrate_kbps: Option<u32>,
-        record_audio_bitrate_kbps_2: Option<u32>,
-        camera_helper: Option<PathBuf>,
-        proxy: winit::event_loop::EventLoopProxy<UserEvent>,
-    ) -> Self {
+impl OutputWindow {
+    fn new() -> Self {
         let (size_sender, size_receiver) = coalescing_channel();
         let (replacement_sender, replacement_receiver) = mpsc::sync_channel(1);
         let (recreate_sender, recreate_receiver) = coalescing_channel();
-        let recorder_requested = record_program.is_some() || record_program_2.is_some();
-        let shutdown_timeout = program_shutdown_timeout(recorder_requested);
         Self {
-            project,
-            listen,
-            once,
-            display_index,
-            record_program,
-            record_output,
-            record_program_2,
-            record_output_2,
-            record_wav,
-            record_segment_seconds,
-            record_bitrate_kbps,
-            record_bitrate_kbps_2,
-            record_audio_bitrate_kbps,
-            record_audio_bitrate_kbps_2,
-            camera_helper,
             window: None,
-            factory: None,
-            monitor_policy: None,
+            target: None,
+            exclusive: None,
             size_sender,
             size_receiver: Some(size_receiver),
             replacement_sender,
             replacement_receiver: Some(replacement_receiver),
             recreate_sender: Some(recreate_sender),
             recreate_receiver,
+            recreations: RecreationCoordinator::new(),
+        }
+    }
+
+    fn fullscreen(&self) -> Option<winit::window::Fullscreen> {
+        let target = self.target.as_ref()?;
+        Some(self.exclusive.as_ref().map_or_else(
+            || winit::window::Fullscreen::Borderless(Some(target.clone())),
+            |mode| winit::window::Fullscreen::Exclusive(mode.clone()),
+        ))
+    }
+
+    fn suspend(&self) {
+        if let Some(window) = &self.window {
+            window.set_visible(false);
+        }
+        let _ = self.size_sender.send((0, 0));
+    }
+
+    /// Shows the window only once it is fullscreen on its attached monitor;
+    /// otherwise hides it and (re)requests fullscreen on that monitor.
+    fn synchronize(&self) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        if self.target.is_none() {
+            self.suspend();
+            return;
+        }
+        if !accepts_resize(self.target.as_ref(), window.current_monitor().as_ref()) {
+            window.set_visible(false);
+            let _ = self.size_sender.send((0, 0));
+            window.set_fullscreen(self.fullscreen());
+            return;
+        }
+        window.set_visible(true);
+        window.set_cursor_visible(false);
+        let size = window.inner_size();
+        let _ = self.size_sender.send((size.width, size.height));
+    }
+
+    fn handle_resize(&self, size: winit::dpi::PhysicalSize<u32>) {
+        let Some(window) = &self.window else {
+            return;
+        };
+        if accepts_resize(self.target.as_ref(), window.current_monitor().as_ref()) {
+            window.set_visible(true);
+            let _ = self.size_sender.send((size.width, size.height));
+        } else {
+            self.suspend();
+        }
+    }
+
+    fn receive_recreation_request(&mut self) {
+        if let Some(generation) = self.recreate_receiver.take_latest() {
+            self.recreations.request(generation);
+        }
+    }
+
+    fn recreate_if_pending(&mut self, factory: &NativeSurfaceFactory) -> Result<(), String> {
+        let Some(window) = &self.window else {
+            return Ok(());
+        };
+        if self.target.is_none() || self.recreations.pending().is_none() {
+            return Ok(());
+        }
+        self.recreations.prepare(|_| {
+            factory
+                .create_surface(Arc::clone(window))
+                .map_err(|error| format!("Program surface recreation failed: {error}"))
+        });
+        let Some(response) = self.recreations.take_ready() else {
+            return Ok(());
+        };
+        let generation = response.generation;
+        match self.replacement_sender.try_send(response) {
+            Ok(()) => self.recreations.sent(generation),
+            Err(TrySendError::Full(response)) => self.recreations.pressure(response),
+            Err(TrySendError::Disconnected(_)) => {
+                return Err("Program surface worker disconnected".to_owned());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A window accepts its size only while attached and fullscreen on the
+/// attached monitor; a window the platform re-homed elsewhere is suspended.
+fn accepts_resize<M: PartialEq>(target: Option<&M>, current: Option<&M>) -> bool {
+    target.is_some() && target == current
+}
+
+/// Daemon options handed to the worker unchanged.
+pub(super) struct ProgramWorkerOptions {
+    pub(super) project: PathBuf,
+    pub(super) listen: SocketAddr,
+    pub(super) once: bool,
+    pub(super) camera_helper: Option<PathBuf>,
+    pub(super) record_program: Option<PathBuf>,
+    pub(super) record_output: Option<fm_types::OutputId>,
+    pub(super) record_program_2: Option<PathBuf>,
+    pub(super) record_output_2: Option<fm_types::OutputId>,
+    pub(super) record_wav: bool,
+    pub(super) record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
+    pub(super) record_bitrate_kbps: Option<u32>,
+    pub(super) record_bitrate_kbps_2: Option<u32>,
+    pub(super) record_audio_bitrate_kbps: Option<u32>,
+    pub(super) record_audio_bitrate_kbps_2: Option<u32>,
+}
+
+struct ProgramApp {
+    options: Option<ProgramWorkerOptions>,
+    tracker: DisplayOutputTracker,
+    outputs: Vec<OutputWindow>,
+    factory: Option<NativeSurfaceFactory>,
+    started: bool,
+    shutdown: ShutdownSignal,
+    shutdown_timeout: Duration,
+    recorder_requested: bool,
+    shutdown_deadline: Option<Instant>,
+    worker: Option<thread::JoinHandle<()>>,
+    result: Option<Result<(), String>>,
+    shutdown_timed_out: bool,
+    proxy: winit::event_loop::EventLoopProxy<UserEvent>,
+}
+
+impl ProgramApp {
+    fn new(
+        options: ProgramWorkerOptions,
+        displays: DisplayOutputSet,
+        proxy: winit::event_loop::EventLoopProxy<UserEvent>,
+    ) -> Self {
+        let recorder_requested =
+            options.record_program.is_some() || options.record_program_2.is_some();
+        let shutdown_timeout = program_shutdown_timeout(recorder_requested);
+        let outputs = displays
+            .outputs()
+            .iter()
+            .map(|_| OutputWindow::new())
+            .collect();
+        Self {
+            options: Some(options),
+            // The presenter is SDR-only, so an HDR request reports why it
+            // presents SDR instead of claiming HDR.
+            tracker: DisplayOutputTracker::new(displays, false),
+            outputs,
+            factory: None,
+            started: false,
             shutdown: ShutdownSignal::new(),
             shutdown_timeout,
             recorder_requested,
             shutdown_deadline: None,
             worker: None,
             result: None,
-            recreations: RecreationCoordinator::new(),
             shutdown_timed_out: false,
             proxy,
         }
@@ -777,8 +741,10 @@ impl ProgramApp {
         ) {
             return;
         }
-        if let Some(window) = &self.window {
-            window.set_visible(false);
+        for output in &self.outputs {
+            if let Some(window) = &output.window {
+                window.set_visible(false);
+            }
         }
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(20),
@@ -786,210 +752,171 @@ impl ProgramApp {
     }
 
     fn poll_monitors(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        let mut monitors = ordered_monitors(event_loop);
-        let Some(policy) = self.monitor_policy.as_mut() else {
-            return;
-        };
-        match policy.update(&mut monitors) {
-            MonitorChange::Disconnected => self.suspend_output(),
-            MonitorChange::Reconnected(_) | MonitorChange::Unchanged => {
-                self.synchronize_window_target(&monitors);
+        let monitors = enumerate_monitors(event_loop);
+        let inventory = monitors
+            .iter()
+            .map(|(info, _)| info.clone())
+            .collect::<Vec<_>>();
+        for change in self.tracker.reconcile(&inventory) {
+            if let Some(config) = self.tracker.config(change.output) {
+                eprintln!("{}", status_record(change.output, config, &change.current));
             }
+            let output = &mut self.outputs[change.output];
+            let attached = change.current.active().and_then(|active| {
+                monitors
+                    .iter()
+                    .find(|(info, _)| info.id == active.id)
+                    .map(|(info, handle)| (active, info, handle))
+            });
+            let Some((active, info, handle)) = attached else {
+                output.target = None;
+                output.exclusive = None;
+                output.suspend();
+                continue;
+            };
+            output.target = Some(handle.clone());
+            output.exclusive = if active.mode == info.current_mode {
+                None
+            } else {
+                exclusive_mode(handle, active.mode)
+            };
+            if let Some(window) = &output.window {
+                window.set_visible(false);
+                let _ = output.size_sender.send((0, 0));
+                window.set_fullscreen(output.fullscreen());
+            }
+        }
+        for output in &self.outputs {
+            output.synchronize();
         }
         self.recreate_if_pending();
     }
 
-    fn synchronize_window_target(&self, monitors: &[MonitorEntry<winit::monitor::MonitorHandle>]) {
-        let (Some(window), Some(policy)) = (&self.window, &self.monitor_policy) else {
-            return;
-        };
-        let Some(index) = policy.selected_index(monitors) else {
-            self.suspend_output();
-            return;
-        };
-        if !policy.accepts_resize(window.current_monitor().as_ref()) {
-            window.set_visible(false);
-            let _ = self.size_sender.send((0, 0));
-            window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
-                monitors[index].identity.clone(),
-            ))));
-            return;
-        }
-        window.set_visible(true);
-        let size = window.inner_size();
-        let _ = self.size_sender.send((size.width, size.height));
-    }
-
-    fn suspend_output(&self) {
-        if let Some(window) = &self.window {
-            window.set_visible(false);
-        }
-        let _ = self.size_sender.send((0, 0));
-    }
-
-    fn handle_resize(&self, size: winit::dpi::PhysicalSize<u32>) {
-        let (Some(window), Some(policy)) = (&self.window, &self.monitor_policy) else {
-            return;
-        };
-        if policy.accepts_resize(window.current_monitor().as_ref()) {
-            window.set_visible(true);
-            let _ = self.size_sender.send((size.width, size.height));
-        } else {
-            self.suspend_output();
-        }
-    }
-
-    fn receive_recreation_request(&mut self) {
-        if let Some(generation) = self.recreate_receiver.take_latest() {
-            self.recreations.request(generation);
+    fn receive_recreation_requests(&mut self) {
+        for output in &mut self.outputs {
+            output.receive_recreation_request();
         }
     }
 
     fn recreate_if_pending(&mut self) {
-        let (Some(factory), Some(window), Some(policy)) =
-            (&self.factory, &self.window, &self.monitor_policy)
-        else {
+        let Some(factory) = &self.factory else {
             return;
         };
-        if !policy.connected || self.recreations.pending().is_none() {
-            return;
-        }
-        self.recreations.prepare(|_| {
-            factory
-                .create_surface(Arc::clone(window))
-                .map_err(|error| format!("Program surface recreation failed: {error}"))
-        });
-        let Some(response) = self.recreations.take_ready() else {
-            return;
-        };
-        let generation = response.generation;
-        match self.replacement_sender.try_send(response) {
-            Ok(()) => self.recreations.sent(generation),
-            Err(TrySendError::Full(response)) => self.recreations.pressure(response),
-            Err(TrySendError::Disconnected(_)) => {
-                self.result = Some(Err("Program surface worker disconnected".to_owned()));
+        for output in &mut self.outputs {
+            if let Err(error) = output.recreate_if_pending(factory) {
+                self.result = Some(Err(error));
             }
         }
     }
-}
 
-#[cfg(target_os = "macos")]
-impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
-    #[allow(clippy::too_many_lines)]
-    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
-        if self.window.is_some() {
-            return;
+    fn start(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) -> Result<(), String> {
+        let mut windows = Vec::with_capacity(self.outputs.len());
+        for index in 0..self.outputs.len() {
+            let attributes = winit::window::Window::default_attributes()
+                .with_title(format!("FreeMix Display Output {}", index + 1))
+                .with_decorations(false)
+                .with_visible(false);
+            let window = event_loop
+                .create_window(attributes)
+                .map_err(|error| format!("Program window creation failed: {error}"))?;
+            window.set_cursor_visible(false);
+            windows.push(Arc::new(window));
         }
-        let mut monitors = ordered_monitors(event_loop);
-        let (policy, selected_index) =
-            match MonitorPolicy::select(&mut monitors, self.display_index) {
-                Ok(selected) => selected,
-                Err(MonitorSelectionError::Unavailable) => {
-                    self.fail(
-                        event_loop,
-                        format!(
-                            "fullscreen display index {} is unavailable; {} display(s) detected",
-                            self.display_index,
-                            monitors.len()
-                        ),
-                    );
-                    return;
-                }
-                Err(MonitorSelectionError::AmbiguousDescriptors) => {
-                    self.fail(
-                    event_loop,
-                    "fullscreen display inventory has indistinguishable deterministic descriptors",
-                );
-                    return;
-                }
-            };
-        let monitor = monitors[selected_index].identity.clone();
-        let attributes = winit::window::Window::default_attributes()
-            .with_title("FreeMix Program")
-            .with_decorations(false)
-            .with_visible(false)
-            .with_fullscreen(Some(winit::window::Fullscreen::Borderless(Some(
-                monitor.clone(),
-            ))));
-        let window = match event_loop.create_window(attributes) {
-            Ok(window) => Arc::new(window),
-            Err(error) => {
-                self.fail(
-                    event_loop,
-                    format!("Program window creation failed: {error}"),
-                );
-                return;
-            }
-        };
-        let (context, surface) = match block_on(NativeContext::new_with_surface(
-            [NativeBackend::Metal],
-            Arc::clone(&window),
-        )) {
-            Ok(pair) => pair,
-            Err(error) => {
-                self.fail(event_loop, format!("Program GPU setup failed: {error}"));
-                return;
-            }
-        };
+        let first = windows
+            .first()
+            .ok_or_else(|| "no display outputs are configured".to_owned())?;
+        let (context, first_surface) = block_on(NativeContext::new_with_surface(
+            [super::platform_native_backend()],
+            Arc::clone(first),
+        ))
+        .map_err(|error| format!("Program GPU setup failed: {error}"))?;
         let factory = context.surface_factory();
-        self.monitor_policy = Some(policy);
+        let mut surfaces = vec![first_surface];
+        for window in windows.iter().skip(1) {
+            surfaces.push(
+                factory
+                    .create_surface(Arc::clone(window))
+                    .map_err(|error| format!("Program surface creation failed: {error}"))?,
+            );
+        }
+        for (output, window) in self.outputs.iter_mut().zip(windows) {
+            output.window = Some(window);
+        }
         self.factory = Some(factory);
-        self.window = Some(window);
-        self.synchronize_window_target(&monitors);
+        for index in 0..self.tracker.len() {
+            if let (Some(config), Some(state)) =
+                (self.tracker.config(index), self.tracker.state(index))
+            {
+                eprintln!("{}", status_record(index, config, state));
+            }
+        }
+        self.poll_monitors(event_loop);
 
-        let channels = ProgramWorkerChannels {
-            sizes: self.size_receiver.take().expect("worker starts once"),
-            replacements: self
-                .replacement_receiver
-                .take()
-                .expect("worker starts once"),
-            recreate: self.recreate_sender.take().expect("worker starts once"),
-            wake: self.proxy.clone(),
-            shutdown: self.shutdown.clone(),
-        };
-        let project = self.project.clone();
-        let listen = self.listen;
-        let once = self.once;
-        let record_program = self.record_program.clone();
-        let record_output = self.record_output;
-        let record_program_2 = self.record_program_2.clone();
-        let record_output_2 = self.record_output_2;
-        let record_wav = self.record_wav;
-        let record_segment_seconds = self.record_segment_seconds;
-        let record_bitrate_kbps = self.record_bitrate_kbps;
-        let record_bitrate_kbps_2 = self.record_bitrate_kbps_2;
-        let record_audio_bitrate_kbps = self.record_audio_bitrate_kbps;
-        let record_audio_bitrate_kbps_2 = self.record_audio_bitrate_kbps_2;
-        let camera_helper = self.camera_helper.clone();
+        let mut setups = Vec::with_capacity(self.outputs.len());
+        for (index, (output, surface)) in self.outputs.iter_mut().zip(surfaces).enumerate() {
+            let config = self
+                .tracker
+                .config(index)
+                .cloned()
+                .ok_or_else(|| "display output configuration is missing".to_owned())?;
+            setups.push(DisplayPresentationSetup {
+                config,
+                surface,
+                channels: ProgramWorkerChannels {
+                    sizes: output.size_receiver.take().expect("worker starts once"),
+                    replacements: output
+                        .replacement_receiver
+                        .take()
+                        .expect("worker starts once"),
+                    recreate: output.recreate_sender.take().expect("worker starts once"),
+                    wake: self.proxy.clone(),
+                    shutdown: self.shutdown.clone(),
+                },
+            });
+        }
+        let options = self.options.take().expect("worker starts once");
         let proxy = self.proxy.clone();
         self.worker = Some(
             thread::Builder::new()
                 .name("freemixd-program-worker".to_owned())
                 .spawn(move || {
                     let result = super::serve_program_worker(
-                        &project,
-                        listen,
-                        once,
+                        &options.project,
+                        options.listen,
+                        options.once,
                         context,
-                        surface,
-                        channels,
-                        camera_helper,
-                        record_program,
-                        record_output,
-                        record_program_2,
-                        record_output_2,
-                        record_wav,
-                        record_segment_seconds,
-                        record_bitrate_kbps,
-                        record_bitrate_kbps_2,
-                        record_audio_bitrate_kbps,
-                        record_audio_bitrate_kbps_2,
+                        setups,
+                        options.camera_helper,
+                        options.record_program,
+                        options.record_output,
+                        options.record_program_2,
+                        options.record_output_2,
+                        options.record_wav,
+                        options.record_segment_seconds,
+                        options.record_bitrate_kbps,
+                        options.record_bitrate_kbps_2,
+                        options.record_audio_bitrate_kbps,
+                        options.record_audio_bitrate_kbps_2,
                     )
                     .map_err(|error| error.to_string());
                     let _ = proxy.send_event(UserEvent::Finished(result));
                 })
-                .expect("Program worker thread creation failed"),
+                .map_err(|error| format!("Program worker thread creation failed: {error}"))?,
         );
+        Ok(())
+    }
+}
+
+impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
+    fn resumed(&mut self, event_loop: &winit::event_loop::ActiveEventLoop) {
+        if self.started {
+            return;
+        }
+        self.started = true;
+        if let Err(error) = self.start(event_loop) {
+            self.fail(event_loop, error);
+            return;
+        }
         event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(500),
         ));
@@ -998,7 +925,7 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
     fn user_event(&mut self, event_loop: &winit::event_loop::ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Wake => {
-                self.receive_recreation_request();
+                self.receive_recreation_requests();
                 self.poll_monitors(event_loop);
             }
             UserEvent::Finished(result) => {
@@ -1014,13 +941,14 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
         window_id: winit::window::WindowId,
         event: winit::event::WindowEvent,
     ) {
-        if self
-            .window
-            .as_ref()
-            .is_none_or(|window| window.id() != window_id)
-        {
+        let Some(index) = self.outputs.iter().position(|output| {
+            output
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+        }) else {
             return;
-        }
+        };
         match event {
             winit::event::WindowEvent::CloseRequested => self.request_shutdown(event_loop),
             winit::event::WindowEvent::KeyboardInput { event, .. }
@@ -1035,7 +963,7 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
             }
             winit::event::WindowEvent::Resized(size) => {
                 self.poll_monitors(event_loop);
-                self.handle_resize(size);
+                self.outputs[index].handle_resize(size);
             }
             _ => {}
         }
@@ -1065,7 +993,7 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
             ));
             return;
         }
-        self.receive_recreation_request();
+        self.receive_recreation_requests();
         self.poll_monitors(event_loop);
         if self.result.is_some() {
             event_loop.exit();
@@ -1077,73 +1005,123 @@ impl winit::application::ApplicationHandler<UserEvent> for ProgramApp {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn ordered_monitors(
-    event_loop: &winit::event_loop::ActiveEventLoop,
-) -> Vec<MonitorEntry<winit::monitor::MonitorHandle>> {
-    let mut monitors = event_loop
-        .available_monitors()
-        .map(|monitor| {
-            let position = monitor.position();
-            let size = monitor.size();
-            let descriptor = MonitorDescriptor {
-                x: position.x,
-                y: position.y,
-                name: monitor.name().unwrap_or_default(),
-                width: size.width,
-                height: size.height,
-                refresh_millihertz: monitor.refresh_rate_millihertz().unwrap_or_default(),
-                scale_bits: monitor.scale_factor().to_bits(),
-            };
-            MonitorEntry {
-                descriptor,
-                identity: monitor,
-            }
-        })
-        .collect::<Vec<_>>();
-    sort_monitor_entries(&mut monitors);
-    monitors
+/// Finds the monitor video mode matching `mode`, for exclusive fullscreen.
+fn exclusive_mode(
+    monitor: &winit::monitor::MonitorHandle,
+    mode: DisplayMode,
+) -> Option<winit::monitor::VideoModeHandle> {
+    monitor
+        .video_modes()
+        .find(|video| video_display_mode(video).matches(mode))
 }
 
+fn video_display_mode(video: &winit::monitor::VideoModeHandle) -> DisplayMode {
+    let size = video.size();
+    DisplayMode::new(size.width, size.height, video.refresh_rate_millihertz())
+}
+
+/// Enumerates every connected monitor as a portable [`DisplayInfo`] with a
+/// platform display id. winit does not expose HDR capability, so every
+/// display reports [`fm_io_api::display::HdrCapability::Unknown`].
+fn enumerate_monitors(
+    event_loop: &winit::event_loop::ActiveEventLoop,
+) -> Vec<(DisplayInfo, winit::monitor::MonitorHandle)> {
+    event_loop
+        .available_monitors()
+        .filter_map(|monitor| {
+            let size = monitor.size();
+            let position = monitor.position();
+            let current = DisplayMode::new(
+                size.width,
+                size.height,
+                monitor.refresh_rate_millihertz().unwrap_or_default(),
+            );
+            let name = monitor.name().unwrap_or_default();
+            let id = DisplayId::new(sanitize_display_text(&platform_display_id(
+                &monitor, &name, position.x, position.y,
+            )))
+            .ok()?;
+            let name = if name.is_empty() {
+                id.to_string()
+            } else {
+                name
+            };
+            let mut info = DisplayInfo::new(id, name, current);
+            info.x = position.x;
+            info.y = position.y;
+            let mut modes = monitor
+                .video_modes()
+                .map(|video| video_display_mode(&video))
+                .collect::<Vec<_>>();
+            modes.push(current);
+            modes.sort_unstable();
+            modes.dedup();
+            info.modes = modes;
+            Some((info, monitor))
+        })
+        .collect()
+}
+
+fn sanitize_display_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_control() || c == ',' { '_' } else { c })
+        .collect()
+}
+
+/// The most stable identity the platform exposes for a monitor:
+/// `CGDirectDisplayID` on macOS, the GDI device name on Windows, the `RandR`
+/// output or Wayland output id on Linux, and the desktop placement elsewhere.
 #[cfg(target_os = "macos")]
-#[allow(clippy::too_many_arguments)]
+fn platform_display_id(
+    monitor: &winit::monitor::MonitorHandle,
+    _name: &str,
+    _x: i32,
+    _y: i32,
+) -> String {
+    use winit::platform::macos::MonitorHandleExtMacOS;
+    format!("cg:{}", monitor.native_id())
+}
+
+#[cfg(target_os = "windows")]
+fn platform_display_id(
+    monitor: &winit::monitor::MonitorHandle,
+    _name: &str,
+    _x: i32,
+    _y: i32,
+) -> String {
+    use winit::platform::windows::MonitorHandleExtWindows;
+    format!("win:{}", monitor.native_id())
+}
+
+#[cfg(target_os = "linux")]
+fn platform_display_id(
+    monitor: &winit::monitor::MonitorHandle,
+    _name: &str,
+    _x: i32,
+    _y: i32,
+) -> String {
+    use winit::platform::x11::MonitorHandleExtX11;
+    format!("output:{}", monitor.native_id())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn platform_display_id(
+    _monitor: &winit::monitor::MonitorHandle,
+    name: &str,
+    x: i32,
+    y: i32,
+) -> String {
+    format!("desktop:{name}@{x}x{y}")
+}
+
 pub(super) fn run(
-    project: PathBuf,
-    listen: SocketAddr,
-    once: bool,
-    display_index: usize,
-    camera_helper: Option<PathBuf>,
-    record_program: Option<PathBuf>,
-    record_output: Option<fm_types::OutputId>,
-    record_program_2: Option<PathBuf>,
-    record_output_2: Option<fm_types::OutputId>,
-    record_wav: bool,
-    record_segment_seconds: [Option<NonZeroU32>; RECORDER_SLOTS],
-    record_bitrate_kbps: Option<u32>,
-    record_bitrate_kbps_2: Option<u32>,
-    record_audio_bitrate_kbps: Option<u32>,
-    record_audio_bitrate_kbps_2: Option<u32>,
+    options: ProgramWorkerOptions,
+    displays: DisplayOutputSet,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let mut app = ProgramApp::new(
-        project,
-        listen,
-        once,
-        display_index,
-        record_program,
-        record_output,
-        record_program_2,
-        record_output_2,
-        record_wav,
-        record_segment_seconds,
-        record_bitrate_kbps,
-        record_bitrate_kbps_2,
-        record_audio_bitrate_kbps,
-        record_audio_bitrate_kbps_2,
-        camera_helper,
-        proxy,
-    );
+    let mut app = ProgramApp::new(options, displays, proxy);
     event_loop.run_app(&mut app)?;
     if !app.shutdown_timed_out
         && let Some(worker) = app.worker.take()
@@ -1160,64 +1138,6 @@ pub(super) fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn monitor(id: u32, x: i32, name: &str) -> MonitorEntry<u32> {
-        MonitorEntry {
-            descriptor: MonitorDescriptor {
-                x,
-                y: 0,
-                name: name.to_owned(),
-                width: 1920,
-                height: 1080,
-                refresh_millihertz: 60_000,
-                scale_bits: 1.0_f64.to_bits(),
-            },
-            identity: id,
-        }
-    }
-
-    #[test]
-    fn monitor_inventory_uses_position_then_stable_descriptive_fields() {
-        let mut inventory = [
-            monitor(3, 0, "B"),
-            monitor(2, -1920, "C"),
-            monitor(1, 0, "A"),
-        ];
-        sort_monitor_entries(&mut inventory);
-        assert_eq!(
-            inventory
-                .iter()
-                .map(|item| item.identity)
-                .collect::<Vec<_>>(),
-            vec![2, 1, 3]
-        );
-    }
-
-    #[test]
-    fn ambiguous_descriptors_are_rejected_instead_of_using_identity_as_a_sort_key() {
-        let mut inventory = [monitor(1, 0, "same"), monitor(2, 0, "same")];
-        assert!(matches!(
-            MonitorPolicy::select(&mut inventory, 0),
-            Err(MonitorSelectionError::AmbiguousDescriptors)
-        ));
-    }
-
-    #[test]
-    fn selected_display_disconnect_does_not_jump_and_reconnects_by_identity() {
-        let mut initial = vec![monitor(10, 0, "A"), monitor(20, 1920, "B")];
-        let (mut policy, _) = MonitorPolicy::select(&mut initial, 1).unwrap();
-        let mut disconnected = vec![monitor(10, 0, "A"), monitor(30, 1920, "C")];
-        assert_eq!(
-            policy.update(&mut disconnected),
-            MonitorChange::Disconnected
-        );
-        assert_eq!(policy.update(&mut disconnected), MonitorChange::Unchanged);
-        let mut reconnected = vec![monitor(20, -1920, "B"), monitor(10, 0, "A")];
-        assert_eq!(
-            policy.update(&mut reconnected),
-            MonitorChange::Reconnected(0)
-        );
-    }
 
     #[test]
     fn coalescing_channel_keeps_only_latest_value() {
@@ -1272,18 +1192,18 @@ mod tests {
     }
 
     #[test]
-    fn resize_is_rejected_when_selected_identity_is_absent_or_window_is_rehomed() {
-        let mut inventory = vec![monitor(10, 0, "A"), monitor(20, 1920, "B")];
-        let (mut policy, _) = MonitorPolicy::select(&mut inventory, 1).unwrap();
-        assert!(policy.accepts_resize(Some(&20)));
-        assert!(!policy.accepts_resize(Some(&10)));
-        assert!(!policy.accepts_resize(None));
-        let mut disconnected = vec![monitor(10, 0, "A")];
-        assert_eq!(
-            policy.update(&mut disconnected),
-            MonitorChange::Disconnected
-        );
-        assert!(!policy.accepts_resize(Some(&20)));
+    fn resize_is_rejected_when_detached_or_window_is_rehomed() {
+        assert!(accepts_resize(Some(&20), Some(&20)));
+        assert!(!accepts_resize(Some(&20), Some(&10)));
+        assert!(!accepts_resize(Some(&20), None));
+        assert!(!accepts_resize::<u32>(None, None));
+        assert!(!accepts_resize(None, Some(&20)));
+    }
+
+    #[test]
+    fn display_ids_are_sanitized_for_records_and_selectors() {
+        assert_eq!(sanitize_display_text("a,b\tc"), "a_b_c");
+        assert!(DisplayId::new(sanitize_display_text("\\\\.\\DISPLAY1")).is_ok());
     }
 
     #[test]
