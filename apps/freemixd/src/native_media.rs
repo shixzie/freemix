@@ -7677,6 +7677,7 @@ mod tests {
             fade_to_black: fm_switcher::FadeToBlackFrame::LIVE,
             overlays: std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty()),
             input_audio_strip_updates: Vec::new(),
+            titles: Vec::new(),
             frame: FrameNumber::new(frame),
             deadline: ClockTime::ZERO,
             program: ProgramFrame {

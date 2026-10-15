@@ -23,9 +23,15 @@
 //! persisted field values, rendering at the template size with the
 //! `fm_titles` reference renderer, and scaling nearest-neighbor onto the
 //! fitted monitor grid. The scene time of a title is the frame cursor times
-//! the project frame duration, a documented approximation: the simulated
-//! daemon has no title playback state, so every title is treated as having
-//! started at frame zero.
+//! the project frame duration, a documented approximation: scene clocks and
+//! tickers treat every title as having started at frame zero.
+//!
+//! Keyframe animation is drawn in the pose the engine reports for the
+//! rendered frame ([`fm_engine::EngineTitleAir`]): the In phase from a title
+//! take, the Hold pose while on air, the Out phase from an off-air. A title
+//! the engine does not track (off air, on Program, or on a plain overlay
+//! take) draws its Hold pose. The pose is part of [`TitleKey`], so a title
+//! mid-phase renders anew on every frame it advances.
 //!
 //! Production clock elements read the clocks their template defines (see
 //! [`fm_titles::TitleClock`]) through a registry built for each render from
@@ -68,8 +74,8 @@ pub(crate) struct LoadedTitleTemplate {
     images: Mutex<TitleImages>,
     /// Whether a rendered picture depends on scene time (a clock or ticker
     /// element), so the frame cursor belongs in its cache key. Keyframe
-    /// animation does not count: titles render in the Hold pose until take
-    /// and off-air phases are driven by frame.
+    /// animation does not count: its pose comes from the engine's title
+    /// phases and is keyed on its own ([`TitleKey`]).
     time_dependent: bool,
     /// The production clocks the template defines for its elements.
     clocks: Vec<TitleClock>,
@@ -331,7 +337,7 @@ pub(crate) fn title_of_input(project: &Project, input: InputId) -> Option<&Title
 
 /// Everything one rendered title picture depends on. The frame is present
 /// only for a time-dependent template, the take frame only for a template
-/// with a since-take clock.
+/// with a since-take clock; the animation pose always.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TitleKey {
     template_uri: String,
@@ -339,15 +345,17 @@ pub(crate) struct TitleKey {
     fields: Vec<TitleFieldEntry>,
     frame: Option<u64>,
     taken_frame: Option<u64>,
+    pose: AnimSample,
 }
 
-/// The cache key of `title` rendered at `frame` after going on air at
-/// `taken_frame`, or `None` when its template was not loaded.
+/// The cache key of `title` rendered in `pose` at `frame` after going on
+/// air at `taken_frame`, or `None` when its template was not loaded.
 pub(crate) fn title_key(
     assets: &TitleAssets,
     title: &TitleInput,
     frame: u64,
     taken_frame: Option<u64>,
+    pose: AnimSample,
 ) -> Option<TitleKey> {
     let loaded = assets.template(&title.template_uri)?;
     Some(TitleKey {
@@ -356,6 +364,7 @@ pub(crate) fn title_key(
         fields: title.fields.clone(),
         frame: loaded.time_dependent().then_some(frame),
         taken_frame: taken_frame.filter(|_| loaded.uses_take),
+        pose,
     })
 }
 
@@ -370,17 +379,25 @@ pub(crate) struct TitleTime {
     pub(crate) utc: UtcInstant,
     /// The frame the title went on air at, while it is on air.
     pub(crate) taken_frame: Option<u64>,
+    /// The keyframe animation pose the engine reports for `frame`.
+    pub(crate) pose: AnimSample,
 }
 
 impl TitleTime {
-    /// `frame` of a title on air since `taken_frame`, read against the
-    /// system wall clock now.
-    pub(crate) fn now(frame: u64, rate: FrameRate, taken_frame: Option<u64>) -> Self {
+    /// `frame` of a title on air since `taken_frame` in `pose`, read
+    /// against the system wall clock now.
+    pub(crate) fn now(
+        frame: u64,
+        rate: FrameRate,
+        taken_frame: Option<u64>,
+        pose: AnimSample,
+    ) -> Self {
         Self {
             frame,
             rate,
             utc: utc_now(),
             taken_frame,
+            pose,
         }
     }
 
@@ -426,8 +443,7 @@ pub(crate) fn utc_now() -> UtcInstant {
 /// the template was not loaded or does not instantiate, a persisted field
 /// does not match the template, or rendering fails. Production clock
 /// elements read the template's clocks at `time`. Keyframe animation is drawn
-/// in its Hold pose (the In phase at its last frame): take and off-air
-/// phases are not driven yet.
+/// in `time.pose`.
 pub(crate) fn render_title_at(
     assets: &TitleAssets,
     input: InputId,
@@ -449,7 +465,7 @@ pub(crate) fn render_title_at(
         .collect::<Vec<_>>();
     scene.update_fields(scene.revision(), &updates).ok()?;
     let output = if loaded.clocks.is_empty() {
-        ReferenceRenderer.render_sampled(&scene, time.scene_time_ms(), &catalog, AnimSample::Hold)
+        ReferenceRenderer.render_sampled(&scene, time.scene_time_ms(), &catalog, time.pose)
     } else {
         let clock_time = time.clock_time();
         let registry = title_clock_registry(&loaded.clocks, clock_time).ok()?;
@@ -457,7 +473,7 @@ pub(crate) fn render_title_at(
             &scene,
             time.scene_time_ms(),
             &catalog,
-            AnimSample::Hold,
+            time.pose,
             ClockSource::new(&registry, clock_time.at),
         )
     }
@@ -589,6 +605,7 @@ mod tests {
             rate: fm_types::FrameRate::new(25, 1).unwrap(),
             utc: UtcInstant::UNIX_EPOCH,
             taken_frame: None,
+            pose: AnimSample::Hold,
         }
     }
 
@@ -598,8 +615,10 @@ mod tests {
     }
 
     #[test]
-    fn animated_titles_render_the_hold_pose_and_are_not_time_dependent() {
-        use fm_titles::fm_animation::{Easing, Keyframe, Phase, Property, Track, TrackKey, Value};
+    fn animated_titles_render_the_engine_pose_and_are_not_time_dependent() {
+        use fm_titles::fm_animation::{
+            ClipPosition, ClipState, Easing, Keyframe, Phase, Property, Track, TrackKey, Value,
+        };
 
         let mut animated = template();
         animated.elements[0].kind = ElementKind::Rectangle;
@@ -612,8 +631,8 @@ mod tests {
         };
         animated
             .edit_animation(|clip| {
-                // Hold shows the In phase's end (+4); the Out phase (+40) is
-                // never sampled until off-air is driven by frame.
+                // Hold shows the In phase's end (+4); the Out pose (+40)
+                // only while the engine reports the Out phase.
                 clip.set_track(track(Phase::In, 4))?;
                 clip.set_track(track(Phase::Out, 40))
             })
@@ -642,6 +661,32 @@ mod tests {
             }
             assert_eq!(pixel(&rendered, 28, 8), [0; 4]);
         }
+        // The Out pose moves the bar 40 pixels right instead of 4, and the
+        // pose is part of the cache key.
+        let out = ClipState::Out(ClipPosition::frame(0));
+        let rendered = render_title_at(
+            &assets,
+            input,
+            &title("asset://images/absent.png"),
+            TitleTime {
+                pose: out,
+                ..frame_zero()
+            },
+            64,
+            36,
+        )
+        .unwrap();
+        for (x, y) in [(12, 8), (47, 8)] {
+            assert_eq!(pixel(&rendered, x, y), [0; 4], "({x}, {y})");
+        }
+        for (x, y) in [(48, 8), (63, 15)] {
+            assert_eq!(pixel(&rendered, x, y), [255; 4], "({x}, {y})");
+        }
+        let absent = title("asset://images/absent.png");
+        assert_ne!(
+            title_key(&assets, &absent, 0, None, AnimSample::Hold),
+            title_key(&assets, &absent, 0, None, out)
+        );
     }
 
     #[test]
@@ -846,6 +891,7 @@ mod clock_tests {
             rate: rate(),
             utc,
             taken_frame,
+            pose: AnimSample::Hold,
         }
     }
 
@@ -875,14 +921,16 @@ mod clock_tests {
         let assets = assets(&AssetCatalog::new());
         let since = title("on-air");
         let doors = title("doors");
-        let key = |title: &TitleInput, taken| title_key(&assets, title, 10, taken).unwrap();
+        let key = |title: &TitleInput, taken| {
+            title_key(&assets, title, 10, taken, AnimSample::Hold).unwrap()
+        };
         assert_ne!(key(&since, None), key(&since, Some(3)));
         assert_ne!(key(&since, Some(3)), key(&since, Some(4)));
         assert_eq!(key(&doors, None), key(&doors, Some(3)));
         // Every production clock template is time-dependent.
         assert_ne!(
-            title_key(&assets, &doors, 10, None),
-            title_key(&assets, &doors, 11, None)
+            title_key(&assets, &doors, 10, None, AnimSample::Hold),
+            title_key(&assets, &doors, 11, None, AnimSample::Hold)
         );
     }
 

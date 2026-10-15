@@ -36,6 +36,22 @@ impl Timebase {
         ClipPosition::new(numerator, denominator)
     }
 
+    /// How many frames a project running at `project_rate` takes to play
+    /// `clip_frames` frames of this timebase from its project frame zero:
+    /// the first project frame whose [`Self::position_at`] is at or past
+    /// `clip_frames`, `ceil(clip_frames * project_rate / clip_rate)`, exact.
+    /// Zero clip frames take zero project frames.
+    #[must_use]
+    pub fn project_frames(self, clip_frames: u32, project_rate: FrameRate) -> u64 {
+        // position_at(k) >= n  <=>  k >= n * cd * pn / (cn * pd)
+        let numerator = u128::from(clip_frames)
+            * u128::from(self.0.denominator())
+            * u128::from(project_rate.numerator());
+        let denominator =
+            (u128::from(self.0.numerator()) * u128::from(project_rate.denominator())).max(1);
+        u64::try_from(numerator.div_ceil(denominator)).unwrap_or(u64::MAX)
+    }
+
     /// The first clip frame at or after `seconds` whole seconds:
     /// `ceil(seconds * rate)`.
     #[must_use]

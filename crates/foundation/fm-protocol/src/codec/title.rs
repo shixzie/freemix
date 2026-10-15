@@ -23,7 +23,7 @@ use core::num::NonZeroU128;
 use crate::{
     CodecError, MAX_LIST_ITEMS, MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELD_NAMES_BYTES,
     MAX_TITLE_FIELDS, MAX_TITLE_NAME_BYTES, MAX_TITLE_TEXT_CHARS, TitleAirRequirement,
-    TitleFieldUpdate, TitleFieldValue, TitleSummary, WireInputId, WireTitleFieldId,
+    TitleFieldUpdate, TitleFieldValue, TitlePhase, TitleSummary, WireInputId, WireTitleFieldId,
 };
 
 use super::value::{parse_canonical_input, parse_canonical_u64};
@@ -176,6 +176,51 @@ pub(super) fn validate_title_name(name: &str) -> Result<(), CodecError> {
         })
     } else {
         Ok(())
+    }
+}
+
+/// The wire token of a title animation phase.
+pub(super) const fn encode_title_phase(phase: TitlePhase) -> &'static str {
+    match phase {
+        TitlePhase::Idle => "idle",
+        TitlePhase::In => "in",
+        TitlePhase::Hold => "hold",
+        TitlePhase::Out => "out",
+    }
+}
+
+/// Strictly decodes a title animation phase token.
+pub(super) fn decode_title_phase(value: &str) -> Result<TitlePhase, CodecError> {
+    match value {
+        "idle" => Ok(TitlePhase::Idle),
+        "in" => Ok(TitlePhase::In),
+        "hold" => Ok(TitlePhase::Hold),
+        "out" => Ok(TitlePhase::Out),
+        _ => Err(CodecError::InvalidField {
+            field: "phase",
+            value: value.to_owned(),
+        }),
+    }
+}
+
+/// Enforces the phase progress invariants: zero progress while idle or
+/// holding, `phase_frame < phase_frames` while In or Out plays.
+pub(super) fn validate_title_phase(
+    phase: TitlePhase,
+    phase_frame: u64,
+    phase_frames: u64,
+) -> Result<(), CodecError> {
+    let valid = match phase {
+        TitlePhase::Idle | TitlePhase::Hold => phase_frame == 0 && phase_frames == 0,
+        TitlePhase::In | TitlePhase::Out => phase_frame < phase_frames,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(CodecError::InvalidField {
+            field: "phase_frame",
+            value: format!("{phase_frame}/{phase_frames}"),
+        })
     }
 }
 

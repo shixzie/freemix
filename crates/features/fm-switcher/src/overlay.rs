@@ -37,10 +37,16 @@ struct AutomaticOverlayTransition {
     target_active: bool,
     duration_frames: u32,
     elapsed_frames: u32,
+    /// Keeps `start_opacity` for the whole duration and only then jumps to
+    /// the target: a channel held on air while its source animates out.
+    hold: bool,
 }
 
 impl AutomaticOverlayTransition {
     fn opacity_at(self, elapsed_frames: u32) -> u8 {
+        if self.hold {
+            return self.start_opacity;
+        }
         let distance = self.start_opacity.abs_diff(self.target_opacity);
         let offset = u32::from(distance) * elapsed_frames / self.duration_frames;
         let offset = u8::try_from(offset).expect("overlay opacity stays within its endpoints");
@@ -278,6 +284,7 @@ impl OverlayChannelState {
                     target_active: true,
                     duration_frames: self.duration_frames,
                     elapsed_frames: 0,
+                    hold: false,
                 });
             }
         }
@@ -292,10 +299,29 @@ impl OverlayChannelState {
                     target_active: false,
                     duration_frames: self.duration_frames,
                     elapsed_frames: 0,
+                    hold: false,
                 });
             }
             OverlayTransitionKind::Cut | OverlayTransitionKind::Fade => self.off(),
         }
+    }
+
+    /// Keeps an active channel on air at its current opacity for exactly
+    /// `frames` frames, then turns it off; zero frames, or an inactive
+    /// channel, turns it off at once.
+    pub(crate) fn request_off_after(&mut self, frames: u32) {
+        if frames == 0 || !self.active {
+            self.off();
+            return;
+        }
+        self.automatic = Some(AutomaticOverlayTransition {
+            start_opacity: self.opacity,
+            target_opacity: 0,
+            target_active: false,
+            duration_frames: frames,
+            elapsed_frames: 0,
+            hold: true,
+        });
     }
 
     pub(crate) fn advance(&mut self) -> OverlayTransitionAdvance {

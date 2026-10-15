@@ -4652,6 +4652,9 @@ fn assert_title_state(
             input: input(4),
             name: "Process title".into(),
             field_revision,
+            phase: fm_protocol::TitlePhase::Idle,
+            phase_frame: 0,
+            phase_frames: 0,
             fields: vec![fm_protocol::TitleFieldStatus {
                 field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 name: "Bar".into(),
@@ -4695,11 +4698,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.26.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 26));
+    // The previous protocol is refused; the current one is 2.27.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 27));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 25),
+        protocol: ProtocolVersion::new(2, 26),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -4715,7 +4718,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 26)
+        ProtocolVersion::new(2, 27)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

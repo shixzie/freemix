@@ -2096,9 +2096,22 @@ schema 30 stores the clip strictly in `.fmtitle` (`timebase`, `revision`,
 phase lengths, canonical track order, preset or `cubic_bezier` easing, every
 clip limit). `freemix-cli title-animation-preset`, `title-animation-stretch`,
 and `title-render-frame` apply presets, retime a phase proportionally, and
-render exact frames. The daemon draws titles in the Hold pose and refreshes
-only clock and ticker titles on time. Remaining gaps: take and off-air phases
-are not played on air, scene layers are not animated, there is no visual
+render exact frames. Takes and off-airs play the clip on air (stage 3):
+`fm-titles::TitleAir` maps engine frames to In/Hold/Out samples with exact
+rational resampling between the clip timebase and the engine rate; the
+engine realizes `take_title` as an overlay cut held at full opacity while In
+plays from the take frame, and `title_off_air` as an overlay held for exactly
+the Out length before it is removed. Off-air during In starts Out at frame 0
+on the off-air frame; a re-take on the same channel during Out restarts In at
+frame 0 (the pose jumps, as in title playback); zero-length phases keep the
+channel transition; overlay commands and Program show the Hold pose. Poses are
+a pure function of the frame since the phase start, so cuts and dropped frames
+land on the exact pose. Snapshots report work in flight while a title
+animates, the simulated daemon realizes a whole phase inside its command, and
+native freemixd renders every projected pose and holds a frame until its pose
+is ingested (bounded wait, late poses counted). Protocol 2.27 reports the
+phase in `title_state`. The daemon refreshes only clock and ticker titles on
+time otherwise. Remaining gaps: scene layers are not animated, there is no visual
 timeline, curve editor, scrubbed preview, or Studio/protocol surface, and
 production clocks and images are not drawn by the CLI frame render, so
 `GX-011` remains planned.

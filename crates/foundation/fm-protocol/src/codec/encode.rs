@@ -20,8 +20,8 @@ use super::playlist::{
     encode_playlist_state, playlist_loop,
 };
 use super::title::{
-    encode_title_field_names, encode_title_fields, encode_title_summaries, title_air_requirement,
-    validate_title_name,
+    encode_title_field_names, encode_title_fields, encode_title_phase, encode_title_summaries,
+    title_air_requirement, validate_title_name, validate_title_phase,
 };
 use super::value::{
     client_type, durable_events, escape_stream_failure, field_issues, input_ids, input_statuses,
@@ -382,6 +382,7 @@ fn encode_playlist_command(
 /// values in `fields` and their names positionally in `field_names`.
 fn encode_title_state(record: &mut Record, message: &TitleStateMessage) -> Result<(), CodecError> {
     validate_title_name(&message.name)?;
+    validate_title_phase(message.phase, message.phase_frame, message.phase_frames)?;
     let updates = message
         .fields
         .iter()
@@ -397,6 +398,9 @@ fn encode_title_state(record: &mut Record, message: &TitleStateMessage) -> Resul
     record.field("input", message.input)?;
     record.field_str("name", &message.name)?;
     record.field("field_revision", message.field_revision)?;
+    record.field("phase", encode_title_phase(message.phase))?;
+    record.field("phase_frame", message.phase_frame)?;
+    record.field("phase_frames", message.phase_frames)?;
     record.field_string("fields", fields)?;
     record.field_string("field_names", names)
 }

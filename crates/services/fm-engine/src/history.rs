@@ -148,7 +148,8 @@ impl EngineCommand {
             | Self::TitleOffAir { .. }
             | Self::PlaylistControl(_)
             | Self::PlaylistAdvance { .. }
-            | Self::RealizePlaylistCue(_) => EngineCommandKind::LiveOperation,
+            | Self::RealizePlaylistCue(_)
+            | Self::RealizeTitle(_) => EngineCommandKind::LiveOperation,
         }
     }
 }

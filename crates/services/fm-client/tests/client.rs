@@ -1533,6 +1533,9 @@ mod titles {
             input: input(2),
             name: "Lower third".into(),
             field_revision,
+            phase: fm_protocol::TitlePhase::Idle,
+            phase_frame: 0,
+            phase_frames: 0,
             fields: vec![TitleFieldStatus {
                 field: field(1),
                 name: "Name".into(),
@@ -1740,6 +1743,9 @@ mod playlists {
             input: input(2),
             name: "Lower third".into(),
             field_revision: 0,
+            phase: fm_protocol::TitlePhase::Idle,
+            phase_frame: 0,
+            phase_frames: 0,
             fields: vec![TitleFieldStatus {
                 field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 name: "Name".into(),

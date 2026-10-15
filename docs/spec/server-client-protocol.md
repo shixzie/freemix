@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.26 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.27 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -239,7 +239,8 @@ Protocol 2.24 adds live title field state:
   with exactly one `kind=title_state` record per announced title in that
   order, carrying `revision` (the snapshot revision), `input`, `name` (the
   template name, non-blank, at most 256 bytes), `field_revision`, the
-  complete `fields`, and `field_names=<byte-len>:<name>,...` positionally
+  on-air animation `phase=idle|in|hold|out` with `phase_frame` and
+  `phase_frames` (Protocol 2.27, below), the complete `fields`, and `field_names=<byte-len>:<name>,...` positionally
   naming each field (non-blank, together at most 4096 bytes). A client stays
   synchronizing until every announced title is complete; a `title_state`
   that does not complete an announced title at the snapshot revision, one
@@ -253,6 +254,32 @@ Protocol 2.24 adds live title field state:
   names exceed the `title_state` bounds, or whose persisted values do not
   match it stops the daemon at startup naming the input.
 - Clients apply no optimistic change for title commands.
+
+Protocol 2.27 reports where each title's on-air animation is (`GX-011`
+stage 3):
+
+- `title_state` carries `phase`, `phase_frame`, and `phase_frames` right
+  after `field_revision`, sampled at the engine's frame cursor when the
+  record is written. `idle` (not on air through a title command) and `hold`
+  (resting pose) carry `0/0`; `in` and `out` carry the engine frame inside
+  the phase and the phase length in engine frames, with
+  `phase_frame < phase_frames`. Anything else is refused as
+  `invalid_field` naming `phase` or `phase_frame`.
+- Phase lengths are the template clip's In/Out frames resampled exactly to
+  the engine rate (`ceil(frames * clip period / engine period)`); engine
+  frame `k` of a phase samples the clip at the exact rational position
+  `k * engine period / clip period`.
+- `take_title` with a nonzero In phase cuts the overlay in at full opacity
+  on the take frame and plays In from frame 0, then holds; a zero In phase
+  keeps the channel transition. `title_off_air` with a nonzero Out phase
+  plays Out from the off-air frame (abandoning any unfinished In) and
+  removes the overlay after exactly `phase_frames`; a zero Out phase keeps
+  the channel transition over the Hold pose. A take on the same channel
+  during Out restarts In at frame 0 (the pose jumps, it does not blend);
+  a take on another channel during Out is refused as on air. The pose is a
+  pure function of the frame since the phase start, so dropped frames land
+  on the exact pose. A title command's execution spans its whole phase.
+- Generic overlay commands and Program cuts show titles in the Hold pose.
 
 Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
 

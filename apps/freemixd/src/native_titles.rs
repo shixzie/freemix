@@ -29,8 +29,18 @@
 //! Scene time is the most recent frame cursor the loop published times the
 //! project frame duration, the same approximation the simulated monitor tap
 //! documents: every title is treated as having started at frame zero.
-//! Keyframe animation is drawn in its Hold pose and never forces a refresh:
-//! take and off-air phases are not driven by frame yet.
+//!
+//! Keyframe animation is frame-accurate. Before each frame is realized the
+//! loop hands the worker the pose the engine projects for it
+//! ([`fm_engine::FrameResult::titles`]; the Hold pose for any title it does
+//! not track) with [`NativeTitleSources::observe_frame`]: a title whose pose
+//! changed (every frame of its In or Out phase, and once when it settles)
+//! renders that pose at that frame. [`NativeTitleSources::covered`] then
+//! holds the frame until every title the engine tracks on an overlay has
+//! ingested the pose of exactly that frame, so the first In frame, each
+//! phase frame, and the last Out frame go to air as projected. A render
+//! slower than [`MAX_TITLE_POSE_WAIT`] stops holding the frame, which then
+//! shows the previous pose; such frames are counted.
 //!
 //! Production clock elements read their template's clocks in the daemon's
 //! clock domain (see [`title_render::TitleTime`]): the monotonic clock is the
@@ -59,13 +69,27 @@ use fm_frame::{
     SignalRange, TimeBase, TransferFunction, VideoDimensions, VideoFrameMetadata,
 };
 use fm_model::{InputKind, Project, TitleInput};
+use fm_titles::AnimSample;
 use fm_types::{FrameRate, InputId};
 use fm_video::ImageFrame;
 
 use crate::title_render::{self, TitleAssets};
 
+/// The pose the engine projects for each title it tracks on `projected`.
+fn projected_poses(projected: &FrameResult) -> Vec<(InputId, AnimSample)> {
+    projected
+        .titles
+        .iter()
+        .map(|title| (title.input, title.frame.sample))
+        .collect()
+}
+
 /// Shortest interval between two renders of a time-dependent title.
 pub(crate) const MIN_ANIMATED_TITLE_REFRESH: Duration = Duration::from_millis(40);
+
+/// Longest a projected frame waits for an animating title's pose to be
+/// rendered and ingested before it is realized with the previous pose.
+pub(crate) const MAX_TITLE_POSE_WAIT: Duration = Duration::from_millis(100);
 
 /// How a native title frame is sized and timed.
 #[derive(Clone, Copy)]
@@ -101,21 +125,21 @@ impl TitleFrameFormat {
         .ok()
     }
 
-    /// Renders `title` at `frame`, on air since `taken_frame`, into a
-    /// native source frame.
+    /// Renders `title` in `pose` at `frame`, on air since `taken_frame`,
+    /// into a native source frame.
     fn render(
         self,
         assets: &TitleAssets,
         input: InputId,
         title: &TitleInput,
-        (frame, taken_frame): (u64, Option<u64>),
+        (frame, taken_frame, pose): (u64, Option<u64>, AnimSample),
         sequence: u64,
     ) -> Option<CpuVideoFrame> {
         let image = title_render::render_title_at(
             assets,
             input,
             title,
-            title_render::TitleTime::now(frame, self.frame_rate, taken_frame),
+            title_render::TitleTime::now(frame, self.frame_rate, taken_frame, pose),
             self.width,
             self.height,
         )?;
@@ -187,12 +211,23 @@ struct WorkerState {
     desired: BTreeMap<InputId, TitleInput>,
     /// Titles whose state changed since the worker last rendered them.
     dirty: BTreeSet<InputId>,
-    /// Finished frames not yet ingested, latest-wins per input.
-    completed: BTreeMap<InputId, CpuVideoFrame>,
+    /// Finished frames not yet ingested, latest-wins per input, with the
+    /// pose each was rendered in.
+    completed: BTreeMap<InputId, (AnimSample, CpuVideoFrame)>,
     /// The frame each title input on air was first projected there.
     taken: BTreeMap<InputId, u64>,
+    /// The pose, and the projected frame it is for, each title renders in
+    /// next; a title absent renders its Hold pose at the published frame.
+    poses: BTreeMap<InputId, (AnimSample, u64)>,
+    /// The pose of the frame each title last ingested.
+    ingested: BTreeMap<InputId, AnimSample>,
+    /// The projected frame the loop is holding for title poses, and since
+    /// when.
+    waiting: Option<(u64, Instant)>,
     renders: u64,
     failed_renders: u64,
+    /// Frames realized before an animating title's pose was ingested.
+    late_poses: u64,
     shutdown: bool,
 }
 
@@ -247,7 +282,7 @@ impl NativeTitleSources {
                 animated.insert(input.id);
             }
             let frame = format
-                .render(&assets, input.id, title, (0, None), 0)
+                .render(&assets, input.id, title, (0, None, AnimSample::Hold), 0)
                 .ok_or_else(|| format!("native title input {} did not render", input.id))?;
             seeds.push((input.id, frame));
             submitted.insert(input.id, title.clone());
@@ -328,7 +363,8 @@ impl NativeTitleSources {
     /// Dates every title input this projected frame puts on air (either
     /// Program endpoint or an active overlay channel's source) to its frame,
     /// keeping the date of a title already on air, and forgets every title
-    /// it does not show. Never renders.
+    /// it does not show; hands the worker every title whose animation pose
+    /// for this frame differs from the one it last rendered. Never renders.
     pub(crate) fn observe_frame(&self, projected: &FrameResult) {
         let program = &projected.program;
         let overlays = projected
@@ -342,6 +378,79 @@ impl NativeTitleSources {
                 .chain(program.secondary)
                 .chain(overlays),
         );
+        self.observe_poses(projected.frame.get(), &projected_poses(projected));
+    }
+
+    /// Requests `poses` (every other title holds) for `frame`.
+    fn observe_poses(&self, frame: u64, poses: &[(InputId, AnimSample)]) {
+        if self.worker.is_none() {
+            return;
+        }
+        let pose_of = |input: &InputId| {
+            poses
+                .iter()
+                .find(|(title, _)| title == input)
+                .map_or(AnimSample::Hold, |(_, pose)| *pose)
+        };
+        let mut state = self.shared.lock();
+        let mut changed = false;
+        for input in self.submitted.keys() {
+            let pose = pose_of(input);
+            let requested = state
+                .poses
+                .get(input)
+                .map_or(AnimSample::Hold, |(pose, _)| *pose);
+            if requested != pose {
+                state.poses.insert(*input, (pose, frame));
+                state.dirty.insert(*input);
+                changed = true;
+            }
+        }
+        drop(state);
+        if changed {
+            self.shared.wake.notify_one();
+        }
+    }
+
+    /// Whether `projected` may be realized: every title the engine tracks
+    /// on an overlay has ingested the pose of exactly this frame, or the
+    /// frame has waited [`MAX_TITLE_POSE_WAIT`] for it.
+    pub(crate) fn covered(&self, projected: &FrameResult) -> bool {
+        self.covered_at(projected.frame.get(), &projected_poses(projected))
+    }
+
+    fn covered_at(&self, frame: u64, poses: &[(InputId, AnimSample)]) -> bool {
+        if self.worker.is_none() {
+            return true;
+        }
+        let mut state = self.shared.lock();
+        let pending = poses.iter().any(|(input, pose)| {
+            self.submitted.contains_key(input)
+                && state
+                    .ingested
+                    .get(input)
+                    .map_or(AnimSample::Hold, |ingested| *ingested)
+                    != *pose
+        });
+        if !pending {
+            state.waiting = None;
+            return true;
+        }
+        let since = match state.waiting {
+            Some((waiting, since)) if waiting == frame => since,
+            _ => {
+                let now = Instant::now();
+                state.waiting = Some((frame, now));
+                now
+            }
+        };
+        if since.elapsed() < MAX_TITLE_POSE_WAIT {
+            return false;
+        }
+        state.late_poses = state.late_poses.saturating_add(1);
+        // Realize this frame late once; the next frame waits afresh.
+        state.waiting = Some((frame.saturating_add(1), Instant::now()));
+        true
     }
 
     fn observe_on_air(&self, frame: u64, on_air: impl Iterator<Item = InputId>) {
@@ -358,14 +467,33 @@ impl NativeTitleSources {
         }
     }
 
-    /// Takes every finished frame not yet ingested, in input order.
+    /// Takes every finished frame not yet ingested, in input order, noting
+    /// the pose each shows.
     pub(crate) fn take_completed(&self) -> Vec<(InputId, CpuVideoFrame)> {
         if self.worker.is_none() {
             return Vec::new();
         }
-        std::mem::take(&mut self.shared.lock().completed)
+        let mut state = self.shared.lock();
+        let completed = std::mem::take(&mut state.completed);
+        completed
             .into_iter()
+            .map(|(input, (pose, frame))| {
+                state.ingested.insert(input, pose);
+                (input, frame)
+            })
             .collect()
+    }
+
+    /// Frames realized before an animating title's pose was ingested.
+    #[cfg(test)]
+    pub(crate) fn late_poses(&self) -> u64 {
+        self.shared.lock().late_poses
+    }
+
+    /// The pose of the frame `input` last ingested.
+    #[cfg(test)]
+    pub(crate) fn ingested_pose(&self, input: InputId) -> Option<AnimSample> {
+        self.shared.lock().ingested.get(&input).copied()
     }
 
     /// Worker renders so far, successful and failed.
@@ -440,25 +568,35 @@ fn run_worker(
                 inputs.extend(animated.iter().copied());
                 next_refresh = Instant::now() + refresh;
             }
+            let published = shared.frame.load(Ordering::Relaxed);
             inputs
                 .into_iter()
                 .filter_map(|input| {
                     let title = state.desired.get(&input)?.clone();
-                    Some((input, title, state.taken.get(&input).copied()))
+                    // A pose mid-phase renders at the frame it is for; a
+                    // holding title at the published frame.
+                    let (pose, frame) = match state.poses.get(&input) {
+                        Some((pose, frame)) if *pose != AnimSample::Hold => (*pose, *frame),
+                        _ => (AnimSample::Hold, published),
+                    };
+                    Some((
+                        input,
+                        title,
+                        (frame, state.taken.get(&input).copied(), pose),
+                    ))
                 })
                 .collect::<Vec<_>>()
         };
-        let frame = shared.frame.load(Ordering::Relaxed);
-        for (input, title, taken_frame) in work {
+        for (input, title, at) in work {
             let Some(sequence) = sequences.get_mut(&input) else {
                 continue;
             };
             *sequence = sequence.saturating_add(1);
-            let rendered = format.render(assets, input, &title, (frame, taken_frame), *sequence);
+            let rendered = format.render(assets, input, &title, at, *sequence);
             let mut state = shared.lock();
             state.renders = state.renders.saturating_add(1);
             if let Some(rendered) = rendered {
-                state.completed.insert(input, rendered);
+                state.completed.insert(input, (at.2, rendered));
                 failing.remove(&input);
             } else {
                 state.failed_renders = state.failed_renders.saturating_add(1);
@@ -493,6 +631,7 @@ mod tests {
 
     const BAR_URI: &str = "asset://titles/bar.fmtitle";
     const CLOCK_URI: &str = "asset://titles/clock.fmtitle";
+    const FADE_URI: &str = "asset://titles/fade.fmtitle";
     const WAIT: Duration = Duration::from_secs(10);
 
     fn field(value: u128) -> FieldId {
@@ -572,7 +711,38 @@ mod tests {
             CLOCK_URI,
             LoadedTitleTemplate::new(template(true), AssetCatalog::new()),
         );
+        assets.insert(
+            FADE_URI,
+            LoadedTitleTemplate::new(fade_template(), AssetCatalog::new()),
+        );
         Arc::new(assets)
+    }
+
+    /// The bar fading in: opacity 0 -> 255 over a ten-frame In phase.
+    fn fade_template() -> TitleTemplate {
+        use fm_titles::fm_animation::{Easing, Keyframe, Phase, Property, Track, TrackKey, Value};
+
+        let mut template = template(false);
+        let bar = template.elements[0].id;
+        template
+            .edit_animation(|clip| {
+                clip.set_phase_frames_keeping_keys(Phase::In, 10)?;
+                clip.set_track(Track::new(
+                    TrackKey::new(bar, Phase::In, Property::Opacity),
+                    vec![
+                        Keyframe::new(0, Value::Scalar(0), Easing::Linear),
+                        Keyframe::new(10, Value::Scalar(255), Easing::Linear),
+                    ],
+                ))
+            })
+            .unwrap();
+        template
+    }
+
+    /// The alpha of the 320x180 frame inside the scaled bar.
+    fn bar_alpha(frame: &CpuVideoFrame) -> u8 {
+        let plane = frame.payload().plane(0).unwrap();
+        plane.bytes()[20 * plane.stride() + 40 * 4 + 3]
     }
 
     fn title(uri: &str, revision: u64, bar: [u8; 4]) -> TitleInput {
@@ -768,6 +938,46 @@ mod tests {
     }
 
     #[test]
+    fn animating_titles_render_each_projected_pose_and_hold_the_frame_until_ingested() {
+        use fm_titles::fm_animation::{ClipPosition, ClipState};
+
+        let project = project(&[(20, title(FADE_URI, 0, [200, 100, 50, 255]))]);
+        let (sources, seeds) = NativeTitleSources::start(assets(), &project, domain()).unwrap();
+        // Off air the title is seeded in its Hold pose: fully faded in.
+        assert_eq!(bar_alpha(&seeds[0].1), 255);
+        let first = [(input_id(20), ClipState::In(ClipPosition::frame(0)))];
+        // The take frame is held until its pose is ingested.
+        assert!(!sources.covered_at(5, &first));
+        sources.observe_poses(5, &first);
+        let rendered = wait_for_frame(&sources);
+        assert_eq!(bar_alpha(&rendered[0].1), 0);
+        assert!(sources.covered_at(5, &first));
+
+        // Half way through the In phase.
+        let half = [(input_id(20), ClipState::In(ClipPosition::frame(5)))];
+        sources.observe_poses(10, &half);
+        assert_eq!(bar_alpha(&wait_for_frame(&sources)[0].1), 127);
+        assert!(sources.covered_at(10, &half));
+
+        // Settled: the Hold pose renders once, then nothing while it holds.
+        sources.observe_poses(15, &[(input_id(20), ClipState::Hold)]);
+        assert_eq!(bar_alpha(&wait_for_frame(&sources)[0].1), 255);
+        let renders = sources.render_counts();
+        sources.observe_poses(16, &[]);
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(sources.take_completed().len(), 0);
+        assert_eq!(sources.render_counts(), renders);
+
+        // A pose never rendered stops holding the frame after the bound and
+        // is counted late.
+        let stalled = [(input_id(20), ClipState::In(ClipPosition::frame(9)))];
+        assert!(!sources.covered_at(20, &stalled));
+        thread::sleep(MAX_TITLE_POSE_WAIT);
+        assert!(sources.covered_at(20, &stalled));
+        assert_eq!(sources.late_poses(), 1);
+    }
+
+    #[test]
     fn a_title_without_a_loaded_template_refuses_to_start() {
         let project = project(&[(
             20,
@@ -838,6 +1048,11 @@ mod daemon_tests {
     /// Writes a 160x90 transparent template whose rectangle at (16, 8)
     /// sized 32x16 is tinted by color field 1.
     fn write_template(store: &ProjectStore) {
+        write_template_animated(store, fm_titles::TitleAnimation::default());
+    }
+
+    /// [`write_template`] with `animation`.
+    fn write_template_animated(store: &ProjectStore, animation: fm_titles::TitleAnimation) {
         let field = FieldId::new(NonZeroU128::MIN);
         let template = TitleTemplate {
             id: TemplateId::new(NonZeroU128::MIN),
@@ -865,7 +1080,7 @@ mod daemon_tests {
                 color_field: Some(field),
                 kind: ElementKind::Rectangle,
             }],
-            animation: fm_titles::TitleAnimation::default(),
+            animation,
         };
         let document = fm_persistence::encode_title_template(&StoredTitleTemplate {
             template,
@@ -1117,5 +1332,214 @@ mod daemon_tests {
             [255, 0, 0, 255],
             "Program around the title",
         );
+    }
+
+    /// The bar fades in over a 10-frame In phase and out over a 5-frame Out
+    /// phase of its default 30/1 timebase: 9 and 5 frames of the 25/1
+    /// project.
+    fn fading_animation() -> fm_titles::TitleAnimation {
+        use fm_titles::fm_animation::{Easing, Keyframe, Phase, Property, Track, TrackKey, Value};
+
+        let mut template = TitleTemplate {
+            id: TemplateId::new(NonZeroU128::MIN),
+            name: "Bar".into(),
+            width: 160,
+            height: 90,
+            background: Color::TRANSPARENT,
+            fields: Vec::new(),
+            elements: vec![Element {
+                id: ElementId::new(NonZeroU128::MIN),
+                name: "Bar".into(),
+                bounds: Bounds {
+                    x: 16,
+                    y: 8,
+                    width: 32,
+                    height: 16,
+                },
+                z_index: 0,
+                visible: true,
+                style: Style::default(),
+                color_field: None,
+                kind: ElementKind::Rectangle,
+            }],
+            animation: fm_titles::TitleAnimation::default(),
+        };
+        let key = |frame, value| Keyframe::new(frame, Value::Scalar(value), Easing::Linear);
+        let bar = ElementId::new(NonZeroU128::MIN);
+        template
+            .edit_animation(|clip| {
+                clip.set_phase_frames_keeping_keys(Phase::In, 10)?;
+                clip.set_phase_frames_keeping_keys(Phase::Out, 5)?;
+                clip.set_track(Track::new(
+                    TrackKey::new(bar, Phase::In, Property::Opacity),
+                    vec![key(0, 0), key(10, 255)],
+                ))?;
+                clip.set_track(Track::new(
+                    TrackKey::new(bar, Phase::Out, Property::Opacity),
+                    vec![key(0, 255), key(5, 0)],
+                ))
+            })
+            .unwrap();
+        template.animation
+    }
+
+    /// Takes an animated title onto an overlay through the engine and
+    /// realizes every frame the way the session loop does: observe the
+    /// projected frame, hold it until its pose is ingested, render, then
+    /// tick. Reads back the bar on each frame of the In phase, the hold,
+    /// and the Out phase. Skips (passing) where no native adapter exists.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn a_title_overlay_plays_its_in_and_out_phases_frame_accurately() {
+        use fm_engine::EngineCommand;
+        use fm_titles::TitleAirPhase;
+
+        let Ok(runtime) = NativeMediaRuntime::new_blocking([crate::platform_native_backend()])
+        else {
+            eprintln!("skipping: no native adapter");
+            return;
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+        write_template_animated(&store, fading_animation());
+        let stored = stored_project([0, 0, 255, 255]);
+        let (sources, titles) = resolve(&store, &stored);
+        let mut playback = runtime
+            .preflight_resolved_source_playback_mixed_blocking(
+                None,
+                sources,
+                crate::native_clock_domain(),
+                fm_codec_ffmpeg::StreamSelector::Best,
+                NativeSourceLimits::default(),
+            )
+            .unwrap();
+        let mut planned = stored.project().clone();
+        planned.add_output(Output {
+            id: output(),
+            name: "Program".into(),
+            video_source: fm_types::SceneId::new(NonZeroU128::new(99).unwrap()),
+            audio_source: BusId::new(NonZeroU128::new(99).unwrap()),
+            startup: StartupPolicy::Stopped,
+            required_capabilities: Vec::new(),
+        });
+        let plan = NativeProjectPlan::compile(&planned, NativeProjectLimits::default()).unwrap();
+        let templates = crate::load_title_templates(&store, stored.project()).unwrap();
+        let mut engine = crate::restore_engine_with_titles(&stored, &templates).unwrap();
+        let channel = OverlayChannelId::new(1).unwrap();
+        // The engine's show has no outputs, so the overlay is mirrored onto a
+        // switcher that includes it in the plan's output.
+        let mut mirror = SwitcherState::new(vec![id(1), id(2)], id(1), id(2)).unwrap();
+        let _ = mirror.set_overlay_output_inclusion(channel, output(), true);
+        let mut readback = runtime
+            .create_program_readback_blocking(
+                NonZeroU32::new(320).unwrap(),
+                NonZeroU32::new(180).unwrap(),
+            )
+            .unwrap();
+        let command = |engine: &mut fm_engine::Engine, key: &str, command| {
+            let outcome = engine
+                .execute(
+                    fm_command::CommandEnvelope::new(
+                        format!("command-{key}"),
+                        fm_command::IdempotencyKey::new(key),
+                        command,
+                    ),
+                    0,
+                )
+                .unwrap();
+            assert!(outcome.receipt.accepted().is_some(), "{key}");
+        };
+        // Realizes one frame; returns its phase and the bar's blue channel
+        // over the red Program.
+        let mut realize = |engine: &mut fm_engine::Engine,
+                           playback: &mut freemixd::native_media::NativeSourcePlayback|
+         -> (Option<TitleAirPhase>, u8) {
+            let mut frame = engine.clone().tick().unwrap();
+            titles.observe_frame(&frame);
+            let pose = frame.titles.first().map(|title| title.frame.sample);
+            let deadline = Instant::now() + WAIT;
+            loop {
+                for (input, picture) in titles.take_completed() {
+                    runtime
+                        .ingest_live_video_frame_blocking(playback, input, picture)
+                        .unwrap();
+                }
+                if pose.is_none_or(|pose| titles.ingested_pose(id(2)) == Some(pose)) {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "the pose was never rendered");
+                thread::sleep(Duration::from_millis(2));
+            }
+            assert!(titles.covered(&frame));
+            if frame.overlays[channel.index()].is_active() {
+                mirror.take_overlay(channel, id(2)).unwrap();
+            } else {
+                let _ = mirror.apply(fm_switcher::SwitcherCommand::OverlayOff(channel));
+            }
+            frame.overlays = mirror.overlays().clone();
+            let outputs = runtime
+                .render_project_outputs_with_stingers_blocking(
+                    playback.registry(),
+                    playback.registry(),
+                    &plan,
+                    &frame,
+                )
+                .unwrap();
+            let picture = runtime
+                .readback_program_blocking(&mut readback, outputs[0].texture())
+                .unwrap();
+            assert_close(pixel(&picture, 5, 5), [255, 0, 0, 255], "Program around");
+            engine.tick().unwrap();
+            (
+                frame.titles.first().map(|title| title.frame.phase),
+                pixel(&picture, 40, 20)[2],
+            )
+        };
+
+        command(
+            &mut engine,
+            "take",
+            EngineCommand::TakeTitle {
+                input: id(2),
+                channel,
+                base_revision: 0,
+                fields: Vec::new(),
+            },
+        );
+        let entering = (0..11)
+            .map(|_| realize(&mut engine, &mut playback))
+            .collect::<Vec<_>>();
+        // The take frame shows In clip frame 0: the bar is invisible.
+        assert_eq!(entering[0], (Some(TitleAirPhase::In), 0));
+        // Blue rises strictly through the nine In frames, then holds full.
+        for pair in entering[..9].windows(2) {
+            assert_eq!(pair[1].0, Some(TitleAirPhase::In));
+            assert!(pair[1].1 > pair[0].1, "{entering:?}");
+        }
+        assert!(entering[8].1 < 254, "{entering:?}");
+        for held in &entering[9..] {
+            assert_eq!(held.0, Some(TitleAirPhase::Hold));
+            assert!(held.1 >= 254, "{entering:?}");
+        }
+
+        command(
+            &mut engine,
+            "off",
+            EngineCommand::TitleOffAir { input: id(2) },
+        );
+        let leaving = (0..6)
+            .map(|_| realize(&mut engine, &mut playback))
+            .collect::<Vec<_>>();
+        // Out frame 0 is fully opaque, then blue falls strictly through the
+        // five Out frames; the next frame has no overlay at all.
+        assert_eq!(leaving[0].0, Some(TitleAirPhase::Out));
+        assert!(leaving[0].1 >= 254, "{leaving:?}");
+        for pair in leaving[..5].windows(2) {
+            assert_eq!(pair[1].0, Some(TitleAirPhase::Out));
+            assert!(pair[1].1 < pair[0].1, "{leaving:?}");
+        }
+        assert_eq!(leaving[5], (None, 0));
+        assert_eq!(titles.late_poses(), 0);
+        drop(directory);
     }
 }

@@ -18,7 +18,7 @@ use fm_protocol::{
     PlaylistRunState, PlaylistStateMessage, RecordingStatus, ResumeCursor, ServerHello,
     ServerIdentity, SnapshotMessage, StingerAudioPolicy, StingerMissingMediaFallback,
     StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
-    TitleFieldUpdate, TitleStateMessage, WireRecorderSlot,
+    TitleFieldUpdate, TitlePhase, TitleStateMessage, WireRecorderSlot,
 };
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
@@ -178,13 +178,18 @@ pub struct OutputStatus {
 /// is `false` and `name` and `fields` are empty until the session's
 /// `title_state` record for it is applied
 /// ([`ClientModel::apply_title_state`]). `fields` is then the complete value
-/// set in strictly ascending field order.
+/// set in strictly ascending field order, and `phase`, `phase_frame`, and
+/// `phase_frames` the title's animation progress at the snapshot's frame
+/// cursor (idle and zero until then).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TitleStatus {
     pub input: InputId,
     pub name: String,
     pub field_revision: u64,
     pub fields: Vec<TitleFieldStatus>,
+    pub phase: TitlePhase,
+    pub phase_frame: u64,
+    pub phase_frames: u64,
     pub complete: bool,
 }
 
@@ -197,6 +202,9 @@ impl TitleStatus {
             name: String::new(),
             field_revision,
             fields: Vec::new(),
+            phase: TitlePhase::Idle,
+            phase_frame: 0,
+            phase_frames: 0,
             complete: false,
         }
     }
@@ -1676,6 +1684,9 @@ impl ClientModel {
         }
         title.name = message.name;
         title.fields = message.fields;
+        title.phase = message.phase;
+        title.phase_frame = message.phase_frame;
+        title.phase_frames = message.phase_frames;
         title.complete = true;
         Ok(())
     }

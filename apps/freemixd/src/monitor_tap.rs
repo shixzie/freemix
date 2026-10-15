@@ -14,8 +14,11 @@
 //! revision, frame cursor, and input so the steady cadence never recomposes
 //! an unchanged picture. Title inputs render their persisted field values
 //! through the `fm_titles` reference renderer over black (see
-//! [`title_render`]), cached per title state and, only for clock, ticker, or
-//! animated templates, frame cursor.
+//! [`title_render`]) in the animation pose the engine reports for the frame
+//! cursor, cached per title state and pose and, only for clock or ticker
+//! templates, frame cursor. A simulated title take realizes its whole In
+//! phase and an off-air its whole Out phase within the command, so between
+//! commands a simulated title holds or is gone.
 //!
 //! The Program tap then composites every realized active overlay over the
 //! Program picture with its opacity, position, and border preset, using the
@@ -48,6 +51,7 @@ use fm_protocol::{
 };
 use fm_sim::{ImageFrame, Rgba8, SimulatedPipeline, SimulatedSource, SourcePattern};
 use fm_switcher::{OverlayBorderPreset, OverlayPositionPreset};
+use fm_titles::AnimSample;
 use fm_types::{InputId, VideoDimensions};
 use freemixd::overlay_layout::{overlay_border_width, overlay_transform};
 
@@ -200,10 +204,19 @@ pub(crate) struct RealizedMonitorState {
     /// Every realized active overlay, in channel order (lowest channel
     /// composites first, so the highest channel is on top).
     pub(crate) overlays: Vec<RealizedOverlay>,
+    /// The animation pose of every title a title take put on air, ascending
+    /// by input; any other title renders its Hold pose.
+    pub(crate) titles: Vec<(InputId, AnimSample)>,
 }
 
 /// The realized fields whose change publishes a frame immediately.
-type ChangeKey = (u64, InputId, InputId, Vec<RealizedOverlay>);
+type ChangeKey = (
+    u64,
+    InputId,
+    InputId,
+    Vec<RealizedOverlay>,
+    Vec<(InputId, AnimSample)>,
+);
 
 impl RealizedMonitorState {
     pub(crate) fn from_control(control: &ControlService<Policy>) -> Self {
@@ -218,7 +231,20 @@ impl RealizedMonitorState {
                 .iter()
                 .filter_map(RealizedOverlay::from_status)
                 .collect(),
+            titles: control
+                .titles_on_air()
+                .into_iter()
+                .map(|title| (title.input, title.frame.sample))
+                .collect(),
         }
+    }
+
+    /// The animation pose `input` renders in.
+    fn pose(&self, input: InputId) -> AnimSample {
+        self.titles
+            .iter()
+            .find(|(title, _)| *title == input)
+            .map_or(AnimSample::Hold, |(_, pose)| *pose)
     }
 
     const fn input(&self, tap: MonitorTap) -> InputId {
@@ -236,6 +262,7 @@ impl RealizedMonitorState {
             self.program,
             self.preview,
             self.overlays.clone(),
+            self.titles.clone(),
         )
     }
 }
@@ -448,7 +475,7 @@ impl SimulatedMonitorTap {
         }
         if title_render::title_of_input(project, input).is_some() {
             return self
-                .title_frame(input, state.frame, project)
+                .title_frame(input, state, project)
                 .and_then(|rendered| rendered.flat.clone());
         }
         // Other non-simulated inputs are never registered, so they render
@@ -498,17 +525,18 @@ impl SimulatedMonitorTap {
     }
 
     /// Returns the title picture of `input` at the fitted size, rendering it
-    /// only when its template, field revision, field values, or (for a
-    /// time-dependent template) frame changed.
+    /// only when its template, field revision, field values, animation pose,
+    /// or (for a time-dependent template) frame changed.
     fn title_frame(
         &mut self,
         input: InputId,
-        frame: u64,
+        state: &RealizedMonitorState,
         project: &Project,
     ) -> Option<&RenderedTitle> {
         let title = title_render::title_of_input(project, input)?;
+        let (frame, pose) = (state.frame, state.pose(input));
         let taken_frame = self.taken_frame(input);
-        let key = title_render::title_key(&self.titles, title, frame, taken_frame)?;
+        let key = title_render::title_key(&self.titles, title, frame, taken_frame, pose)?;
         let cached = self
             .rendered_titles
             .get(&input)
@@ -523,7 +551,12 @@ impl SimulatedMonitorTap {
                 &self.titles,
                 input,
                 title,
-                title_render::TitleTime::now(frame, project.settings().frame_rate, taken_frame),
+                title_render::TitleTime::now(
+                    frame,
+                    project.settings().frame_rate,
+                    taken_frame,
+                    pose,
+                ),
                 pipeline.width(),
                 pipeline.height(),
             );
@@ -553,10 +586,7 @@ impl SimulatedMonitorTap {
         used_scenes: &mut Vec<ComposeKey>,
     ) -> Option<OverlaySource> {
         if title_render::title_of_input(project, input).is_some() {
-            let image = self
-                .title_frame(input, state.frame, project)?
-                .keyed
-                .clone()?;
+            let image = self.title_frame(input, state, project)?.keyed.clone()?;
             return Some(OverlaySource {
                 image,
                 alpha: AlphaMode::Premultiplied,
@@ -594,6 +624,7 @@ impl SimulatedMonitorTap {
                             title,
                             state.frame,
                             self.taken_frame(input),
+                            state.pose(input),
                         )
                     })
                 })
@@ -1047,6 +1078,7 @@ mod tests {
             program: input_id(program),
             preview: input_id(preview),
             overlays: Vec::new(),
+            titles: Vec::new(),
         }
     }
 
@@ -1368,6 +1400,7 @@ mod tests {
 
     const TITLE_URI: &str = "asset://titles/lower-third.fmtitle";
     const CLOCK_TITLE_URI: &str = "asset://titles/clock.fmtitle";
+    const FADE_TITLE_URI: &str = "asset://titles/fade.fmtitle";
 
     fn field(value: u128) -> fm_titles::FieldId {
         fm_titles::FieldId::new(NonZeroU128::new(value).unwrap())
@@ -1449,6 +1482,26 @@ mod tests {
                 title_template(true),
                 fm_titles::AssetCatalog::new(),
             ),
+        );
+        let mut fade = title_template(false);
+        let bar = fade.elements[0].id;
+        fade.edit_animation(|clip| {
+            use fm_titles::fm_animation::{
+                Easing, Keyframe, Phase, Property, Track, TrackKey, Value,
+            };
+            clip.set_phase_frames_keeping_keys(Phase::In, 10)?;
+            clip.set_track(Track::new(
+                TrackKey::new(bar, Phase::In, Property::Opacity),
+                vec![
+                    Keyframe::new(0, Value::Scalar(0), Easing::Linear),
+                    Keyframe::new(10, Value::Scalar(255), Easing::Linear),
+                ],
+            ))
+        })
+        .unwrap();
+        assets.insert(
+            FADE_TITLE_URI,
+            title_render::LoadedTitleTemplate::new(fade, fm_titles::AssetCatalog::new()),
         );
         Arc::new(assets)
     }
@@ -1575,6 +1628,46 @@ mod tests {
         }
         // Frames 4, 5, and 6 each render once; the repeated frame 4 hits.
         assert_eq!(tap.title_renders, 3);
+    }
+
+    #[test]
+    fn titles_render_the_engine_pose_and_rerender_only_when_it_changes() {
+        use fm_titles::fm_animation::{ClipPosition, ClipState};
+
+        let mut project = project(1_920, 1_080);
+        add_title(&mut project, 20, FADE_TITLE_URI, (200, 40, 10));
+        let server = server();
+        let start = Instant::now();
+        let mut tap = SimulatedMonitorTap::with_titles(title_assets());
+        let mut program_at = |step: u64, pose: Option<AnimSample>| {
+            let mut realized = state(1, 20, 1);
+            realized.frame = 4 + step;
+            realized.titles = pose.map(|pose| (input_id(20), pose)).into_iter().collect();
+            let frames = tap.poll_state(
+                realized,
+                &project,
+                &server,
+                start + Duration::from_millis(step * 200),
+                true,
+            );
+            let program = decode(&frames.last().unwrap().1);
+            (pixel(&program, 200, 100), tap.title_renders)
+        };
+        // In frame 0: fully transparent, so only the black backdrop shows.
+        assert_eq!(
+            program_at(0, Some(ClipState::In(ClipPosition::frame(0)))),
+            ([0, 0, 0, 255], 1)
+        );
+        // Half way through the In phase.
+        let (half, renders) = program_at(1, Some(ClipState::In(ClipPosition::frame(5))));
+        assert!((90..=110).contains(&half[0]), "{half:?}");
+        assert_eq!(renders, 2);
+        // Hold, and an untracked title, are the same pose: one render.
+        assert_eq!(
+            program_at(2, Some(ClipState::Hold)),
+            ([200, 40, 10, 255], 3)
+        );
+        assert_eq!(program_at(3, None), ([200, 40, 10, 255], 3));
     }
 
     #[test]

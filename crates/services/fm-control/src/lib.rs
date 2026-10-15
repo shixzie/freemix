@@ -47,8 +47,8 @@ use fm_protocol::{
     StingerAudioPolicy as ProtocolStingerAudioPolicy,
     StingerMissingMediaFallback as ProtocolStingerFallback, StingerReadiness, StingerStatus,
     StreamRealizedState, StreamStatus, TitleAirRequirement, TitleFieldStatus, TitleFieldUpdate,
-    TitleFieldValue, TitleStateMessage, TitleSummary, WireInputId, WireMessage, WireOutputId,
-    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    TitleFieldValue, TitlePhase, TitleStateMessage, TitleSummary, WireInputId, WireMessage,
+    WireOutputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
     WireTitleFieldId,
 };
 use fm_switcher::{
@@ -57,7 +57,8 @@ use fm_switcher::{
     OverlayTransitionKind as SwitcherOverlayTransition, RecorderSlot, StingerAudioPolicy,
     StingerDescriptor, StingerPreloadState, StingerSlotId, StreamTargetId,
 };
-use fm_titles::{Color as TitleColor, FieldId, FieldValue, ImageSource};
+use fm_titles::fm_animation::Phase;
+use fm_titles::{Color as TitleColor, FieldId, FieldValue, ImageSource, TitleAirPhase};
 use fm_types::InputId;
 
 // The wire carries exactly the title values the engine holds, so the
@@ -352,9 +353,11 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
         }
     }
 
-    /// Returns the number of frames needed to take title `input` off air: the
-    /// staged transition of the overlay channel that showed it before this
-    /// command, or one frame when no channel showed it (a refusal).
+    /// Returns the number of frames needed to take title `input` off air:
+    /// its Out phase when it has one (the channel is held that long, then
+    /// cut), otherwise the staged transition of the overlay channel that
+    /// showed it before this command, or one frame when no channel showed it
+    /// (a refusal).
     #[must_use]
     pub fn title_off_air_ticks(&self, input: InputId) -> u32 {
         let channel = self
@@ -364,7 +367,25 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
             .desired_switcher()
             .overlay_channels_showing(input)
             .next();
-        channel.map_or(1, |channel| self.overlay_transition_ticks(channel))
+        let Some(channel) = channel else {
+            return 1;
+        };
+        match self.control.engine.title_phase_frames(input, Phase::Out) {
+            0 => self.overlay_transition_ticks(channel),
+            frames => u32::try_from(frames).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// Returns the number of frames needed to take title `input` to air on
+    /// `channel` and settle: its In phase when it has one (the channel cuts
+    /// in and the title animates), otherwise the staged transition of
+    /// `channel`.
+    #[must_use]
+    pub fn title_take_ticks(&self, input: InputId, channel: OverlayChannelId) -> u32 {
+        match self.control.engine.title_phase_frames(input, Phase::In) {
+            0 => self.overlay_transition_ticks(channel),
+            frames => u32::try_from(frames).unwrap_or(u32::MAX),
+        }
     }
 
     /// Returns the number of frames needed to realize a playlist command:
@@ -749,6 +770,13 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn playlist_state(&self) -> Option<PlaylistStateMessage> {
         playlist::playlist_state(&self.engine)
+    }
+
+    /// Every title a title take put on an overlay channel, as the frame
+    /// cursor shows it absent new commands: its channel, phase, and pose.
+    #[must_use]
+    pub fn titles_on_air(&self) -> Vec<fm_engine::EngineTitleAir> {
+        self.engine.titles_on_air()
     }
 
     /// Returns the engine's next unrendered frame number (its frame cursor).
@@ -1570,31 +1598,45 @@ fn title_changed(engine: &Engine, input: InputId) -> EventPayload {
 /// current revision.
 fn title_states(engine: &Engine) -> Vec<TitleStateMessage> {
     let revision = engine.revision().get();
+    let on_air = engine.titles_on_air();
     engine
         .show()
         .titles()
         .iter()
-        .map(|(input, title)| TitleStateMessage {
-            revision,
-            input: WireInputId::from_domain(*input),
-            name: title.name.clone(),
-            field_revision: title.fields.revision(),
-            fields: title
-                .fields
-                .values()
+        .map(|(input, title)| {
+            let air = on_air
                 .iter()
-                .map(|(field, value)| TitleFieldStatus {
-                    field: WireTitleFieldId::new(field.get()),
-                    name: title
-                        .fields
-                        .definitions()
-                        .iter()
-                        .find(|definition| definition.id == *field)
-                        .map(|definition| definition.name.clone())
-                        .expect("every title value has a definition"),
-                    value: wire_title_value(value),
-                })
-                .collect(),
+                .find(|air| air.input == *input)
+                .map(|air| air.frame);
+            TitleStateMessage {
+                revision,
+                input: WireInputId::from_domain(*input),
+                name: title.name.clone(),
+                field_revision: title.fields.revision(),
+                phase: air.map_or(TitlePhase::Idle, |air| match air.phase {
+                    TitleAirPhase::In => TitlePhase::In,
+                    TitleAirPhase::Hold => TitlePhase::Hold,
+                    TitleAirPhase::Out => TitlePhase::Out,
+                }),
+                phase_frame: air.map_or(0, |air| air.phase_frame),
+                phase_frames: air.map_or(0, |air| air.phase_frames),
+                fields: title
+                    .fields
+                    .values()
+                    .iter()
+                    .map(|(field, value)| TitleFieldStatus {
+                        field: WireTitleFieldId::new(field.get()),
+                        name: title
+                            .fields
+                            .definitions()
+                            .iter()
+                            .find(|definition| definition.id == *field)
+                            .map(|definition| definition.name.clone())
+                            .expect("every title value has a definition"),
+                        value: wire_title_value(value),
+                    })
+                    .collect(),
+            }
         })
         .collect()
 }

@@ -256,3 +256,31 @@ fn values_layer_onto_static_values() {
         }
     }
 }
+
+#[test]
+fn project_frames_is_the_first_frame_whose_position_reaches_the_phase_end() {
+    let cases = [
+        // (clip rate, project rate, clip frames, project frames)
+        ((30, 1), (30, 1), 12, 12),
+        ((30, 1), (60, 1), 10, 20),
+        ((60, 1), (30, 1), 9, 5),
+        ((25, 1), (30_000, 1_001), 25, 30),
+        ((30, 1), (30_000, 1_001), 30, 30),
+        ((30_000, 1_001), (30, 1), 1_000, 1_001),
+        ((30, 1), (24, 1), 0, 0),
+    ];
+    for ((cn, cd), (pn, pd), clip_frames, expected) in cases {
+        let timebase = Timebase::new(rate(cn, cd));
+        let project = rate(pn, pd);
+        let frames = timebase.project_frames(clip_frames, project);
+        assert_eq!(frames, expected, "{cn}/{cd} on {pn}/{pd}");
+        assert!(!timebase.position_at(frames, project).before(clip_frames));
+        if frames > 0 {
+            assert!(
+                timebase
+                    .position_at(frames - 1, project)
+                    .before(clip_frames)
+            );
+        }
+    }
+}

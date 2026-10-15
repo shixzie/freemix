@@ -23,8 +23,8 @@ use super::playlist::{
     decode_playlist_state, parse_playlist_loop,
 };
 use super::title::{
-    decode_title_field_names, decode_title_fields, decode_title_summaries,
-    parse_title_air_requirement, validate_title_name,
+    decode_title_field_names, decode_title_fields, decode_title_phase, decode_title_summaries,
+    parse_title_air_requirement, validate_title_name, validate_title_phase,
 };
 use super::value::{
     parse_canonical_input, parse_canonical_u64, parse_client_type, parse_durable_events,
@@ -489,11 +489,18 @@ fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecErr
     validate_title_name(&name)?;
     let values = decode_title_fields(&fields.required("fields")?)?;
     let names = decode_title_field_names(&fields.required("field_names")?, values.len())?;
+    let phase = decode_title_phase(&fields.required("phase")?)?;
+    let phase_frame = fields.canonical_required("phase_frame")?;
+    let phase_frames = fields.canonical_required("phase_frames")?;
+    validate_title_phase(phase, phase_frame, phase_frames)?;
     Ok(TitleStateMessage {
         revision: fields.canonical_required("revision")?,
         input: fields.canonical_input("input")?,
         name,
         field_revision: fields.canonical_required("field_revision")?,
+        phase,
+        phase_frame,
+        phase_frames,
         fields: values
             .into_iter()
             .zip(names)

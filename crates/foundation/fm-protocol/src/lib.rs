@@ -32,9 +32,10 @@ pub use dto::{
     ServerHello, ServerIdentity, SnapshotMessage, SnapshotReason, StingerAudioPolicy,
     StingerMissingMediaFallback, StingerReadiness, StingerStatus, StreamLocalStatus,
     StreamRealizedState, StreamStatus, StreamStatusMessage, StreamStatusSample, StructuredError,
-    TitleAirRequirement, TitleFieldStatus, TitleFieldUpdate, TitleFieldValue, TitleStateMessage,
-    TitleSummary, WireInputId, WireMessage, WireOutputId, WireOverlayChannelId, WireRecorderSlot,
-    WireStingerSlotId, WireStreamTargetId, WireTitleFieldId, choose_handshake_outcome,
+    TitleAirRequirement, TitleFieldStatus, TitleFieldUpdate, TitleFieldValue, TitlePhase,
+    TitleStateMessage, TitleSummary, WireInputId, WireMessage, WireOutputId, WireOverlayChannelId,
+    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId,
+    choose_handshake_outcome,
 };
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, decode_qoi_rgb, encode_qoi_rgb, monitor_frame_parts,

@@ -1292,6 +1292,9 @@ mod titles {
             input: WireInputId::from_domain(input(TITLE)),
             name: "Lower third".into(),
             field_revision,
+            phase: fm_protocol::TitlePhase::In,
+            phase_frame: 3,
+            phase_frames: 20,
             fields: vec![
                 TitleFieldStatus {
                     field: field(1),
@@ -1363,6 +1366,11 @@ mod titles {
         assert_eq!(title.name, "Lower third");
         assert_eq!(title.field_revision, 2);
         assert_eq!(title.fields, title_state(10, 2).fields);
+        // Animation progress at the snapshot's frame cursor (Protocol 2.27).
+        assert_eq!(
+            (title.phase, title.phase_frame, title.phase_frames),
+            (fm_protocol::TitlePhase::In, 3, 20)
+        );
 
         // The protocol snapshot DTO announces the same incomplete summaries.
         let protocol = fm_protocol::SnapshotMessage {

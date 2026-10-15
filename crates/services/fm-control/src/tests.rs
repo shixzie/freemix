@@ -2988,6 +2988,110 @@ mod titles {
         )
     }
 
+    /// [`title_service`] whose template has a 10-frame In and a 5-frame Out
+    /// phase at 30/1: 20 and 10 frames of the 60/1 engine.
+    fn animated_title_service() -> ControlService {
+        use fm_titles::fm_animation::Phase;
+
+        let mut template = template();
+        template
+            .edit_animation(|clip| {
+                clip.set_phase_frames_keeping_keys(Phase::In, 10)?;
+                clip.set_phase_frames_keeping_keys(Phase::Out, 5)
+            })
+            .unwrap();
+        let mut show = ShowState::new(
+            "show",
+            named_inputs([input(1), input(2), input(TITLE)]),
+            input(1),
+            input(2),
+        )
+        .unwrap();
+        show.set_title(
+            input(TITLE),
+            EngineTitle::new(
+                "Lower third",
+                TitleFieldSet::from_template(&template).unwrap(),
+            )
+            .with_timing(fm_titles::TitleAirTiming::of(&template.animation)),
+        )
+        .unwrap();
+        let engine = Engine::new(
+            show,
+            FrameRate::new(60, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        );
+        ControlService::new(
+            engine,
+            Policy::production(),
+            "engine-a",
+            "log-a",
+            ControlLimits {
+                retained_events: 8,
+                max_subscribers: 4,
+                subscriber_queue: 8,
+            },
+        )
+    }
+
+    fn phase_of(control: &ControlService) -> (fm_protocol::TitlePhase, u64, u64) {
+        let states = control.title_states();
+        (
+            states[0].phase,
+            states[0].phase_frame,
+            states[0].phase_frames,
+        )
+    }
+
+    #[test]
+    fn animated_titles_report_their_phase_and_settle_within_their_command_ticks() {
+        use fm_protocol::TitlePhase;
+
+        let mut control = animated_title_service();
+        let admin = principal(Role::Admin);
+        let server = server_identity();
+        let channel = OverlayChannelId::new(2).unwrap();
+
+        let staged = prepared(
+            control
+                .prepare_submit(&admin, command("take", "take-key", take(0, Vec::new())), 0)
+                .unwrap(),
+        );
+        // A take realizes its whole In phase: an idle boundary only after it.
+        assert_eq!(staged.title_take_ticks(input(TITLE), channel), 20);
+        assert!(staged.project(19).is_err());
+        assert!(staged.project(20).is_ok());
+        assert!(staged.commit().unwrap().is_accepted());
+        assert_eq!(phase_of(&control), (TitlePhase::Idle, 0, 0));
+        for _ in 0..5 {
+            control.tick(&server).unwrap();
+        }
+        assert_eq!(phase_of(&control), (TitlePhase::In, 5, 20));
+        for _ in 5..20 {
+            control.tick(&server).unwrap();
+        }
+        assert_eq!(phase_of(&control), (TitlePhase::Hold, 0, 0));
+
+        let staged = prepared(
+            control
+                .prepare_submit(&admin, command("off", "off-key", off_air()), 0)
+                .unwrap(),
+        );
+        assert_eq!(staged.title_off_air_ticks(input(TITLE)), 10);
+        assert!(staged.project(9).is_err());
+        assert!(staged.project(10).is_ok());
+        assert!(staged.commit().unwrap().is_accepted());
+        for _ in 0..3 {
+            control.tick(&server).unwrap();
+        }
+        assert_eq!(phase_of(&control), (TitlePhase::Out, 3, 10));
+        for _ in 3..10 {
+            control.tick(&server).unwrap();
+        }
+        assert_eq!(phase_of(&control), (TitlePhase::Idle, 0, 0));
+        assert_eq!(control.titles_on_air(), Vec::new());
+    }
+
     fn score(value: i64) -> Vec<TitleFieldUpdate> {
         vec![TitleFieldUpdate {
             field: field(SCORE),
@@ -3192,6 +3296,9 @@ mod titles {
                 input: WireInputId::from_domain(input(TITLE)),
                 name: "Lower third".into(),
                 field_revision: 2,
+                phase: fm_protocol::TitlePhase::Idle,
+                phase_frame: 0,
+                phase_frames: 0,
                 fields: vec![
                     TitleFieldStatus {
                         field: field(NAME),

@@ -11,6 +11,10 @@
 //!   [`AnimSample`] with per-element position, scale about the box centre,
 //!   rotation (offscreen, fixed-point bilinear), crop, color, and opacity.
 //!   The plain render methods draw the Hold pose.
+//! * On-air animation: [`TitleAir`] plays a template's In phase from the
+//!   take frame, holds, and plays its Out phase from the off-air frame,
+//!   against output frame indices at any output rate, resampled exactly
+//!   (see [`TitleAirTiming`]).
 //! * [`TitleFieldSet`]: a title's typed, revisioned field values separated
 //!   from layout, with compare-and-set updates bounded by
 //!   [`MAX_TITLE_FIELDS`], [`MAX_TITLE_TEXT_CHARS`], and
@@ -80,6 +84,7 @@ mod font;
 mod id;
 mod image;
 mod model;
+mod on_air;
 mod playback;
 pub mod production_clock;
 mod render;
@@ -116,6 +121,7 @@ pub use model::{
     InstantiationError, MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELDS, MAX_TITLE_TEXT_CHARS, Style,
     TitleFieldSet, TitleScene, TitleTemplate, UpdateError, VerticalAlignment,
 };
+pub use on_air::{TitleAir, TitleAirFrame, TitleAirPhase, TitleAirTiming};
 pub use playback::{PlaybackError, PlaybackOutcome, PlaybackPhase, TitlePlayback};
 pub use production_clock::{
     ClockSource, ClockUnresolved, ProductionClockSpec, TitleClock, TitleClockError, TitleClockKind,

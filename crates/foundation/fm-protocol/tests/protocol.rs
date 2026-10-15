@@ -2493,7 +2493,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.26\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.27\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2502,7 +2502,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.26\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.27\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -2827,7 +2827,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.26\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.27\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2837,7 +2837,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.26\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.27\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3011,10 +3011,11 @@ mod titles {
     use fm_protocol::{
         MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELD_NAMES_BYTES, MAX_TITLE_FIELDS,
         MAX_TITLE_NAME_BYTES, MAX_TITLE_TEXT_CHARS, TitleAirRequirement, TitleFieldStatus,
-        TitleFieldUpdate, TitleFieldValue, TitleStateMessage, TitleSummary, WireTitleFieldId,
+        TitleFieldUpdate, TitleFieldValue, TitlePhase, TitleStateMessage, TitleSummary,
+        WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.26\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.27\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3062,7 +3063,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 26));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 27));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3116,7 +3117,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.26\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.27\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3527,6 +3528,9 @@ mod titles {
             input: input(2),
             name: "Lower third".to_owned(),
             field_revision: 4,
+            phase: TitlePhase::In,
+            phase_frame: 3,
+            phase_frames: 20,
             fields,
         })
     }
@@ -3548,7 +3552,7 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert_eq!(
             encoded,
-            "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\n"
+            "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tphase=in\tphase_frame=3\tphase_frames=20\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\n"
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
         let empty = state(Vec::new());
@@ -3579,6 +3583,18 @@ mod titles {
             ("name=Lower%20third", "name=%20", invalid("name", " ")),
             ("revision=9", "revision=09", invalid("revision", "09")),
             ("input=2", "input=0", invalid("input", "0")),
+            ("phase=in", "phase=In", invalid("phase", "In")),
+            (
+                "phase_frame=3",
+                "phase_frame=03",
+                invalid("phase_frame", "03"),
+            ),
+            (
+                "phase_frame=3",
+                "phase_frame=20",
+                invalid("phase_frame", "20/20"),
+            ),
+            ("phase=in", "phase=hold", invalid("phase_frame", "3/20")),
         ] {
             assert_eq!(
                 decode_line(&encoded.replace(from, to)),
@@ -3589,6 +3605,14 @@ mod titles {
         assert_eq!(
             decode_line(&encoded.replace("\tfield_names=11%3AName%2C%20first%2C5%3AScore", "")),
             Err(CodecError::MissingField("field_names"))
+        );
+        assert_eq!(
+            decode_line(&encoded.replace("\tphase=in", "")),
+            Err(CodecError::MissingField("phase"))
+        );
+        assert_eq!(
+            decode_line(&encoded.replace("\tphase_frames=20", "")),
+            Err(CodecError::MissingField("phase_frames"))
         );
 
         // The encoder refuses names the decoder refuses.
@@ -3631,6 +3655,59 @@ mod titles {
         ));
     }
 
+    #[test]
+    fn title_state_phase_progress_is_exact_and_strict() {
+        // Every phase round-trips; idle and hold carry no progress.
+        for (phase, token, frame, frames) in [
+            (TitlePhase::Idle, "idle", 0, 0),
+            (TitlePhase::In, "in", 0, 1),
+            (TitlePhase::Hold, "hold", 0, 0),
+            (TitlePhase::Out, "out", 11, 12),
+        ] {
+            let message = WireMessage::TitleState(TitleStateMessage {
+                phase,
+                phase_frame: frame,
+                phase_frames: frames,
+                ..match state(Vec::new()) {
+                    WireMessage::TitleState(message) => message,
+                    _ => unreachable!(),
+                }
+            });
+            let line = encode_line(&message).unwrap();
+            assert!(
+                line.contains(&format!(
+                    "\tphase={token}\tphase_frame={frame}\tphase_frames={frames}\t"
+                )),
+                "{line}"
+            );
+            assert_eq!(decode_line(&line).unwrap(), message);
+        }
+        // Progress outside its phase is refused both ways.
+        for (phase, frame, frames) in [
+            (TitlePhase::Idle, 0, 1),
+            (TitlePhase::Hold, 1, 0),
+            (TitlePhase::In, 0, 0),
+            (TitlePhase::Out, 12, 12),
+        ] {
+            let message = WireMessage::TitleState(TitleStateMessage {
+                phase,
+                phase_frame: frame,
+                phase_frames: frames,
+                ..match state(Vec::new()) {
+                    WireMessage::TitleState(message) => message,
+                    _ => unreachable!(),
+                }
+            });
+            assert!(matches!(
+                encode_line(&message),
+                Err(CodecError::InvalidField {
+                    field: "phase_frame",
+                    ..
+                })
+            ));
+        }
+    }
+
     /// The largest title the bounds admit, with the costliest bytes the
     /// record layer escapes, still fits one field value and one record in
     /// every message that carries it.
@@ -3649,6 +3726,9 @@ mod titles {
             input: input(u128::MAX),
             name: "%".repeat(MAX_TITLE_NAME_BYTES),
             field_revision: u64::MAX,
+            phase: TitlePhase::Out,
+            phase_frame: u64::MAX - 1,
+            phase_frames: u64::MAX,
             fields: ids
                 .map(|id| {
                     status(
@@ -3711,7 +3791,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.26\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.27\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -3751,7 +3831,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 26));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 27));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -3823,7 +3903,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.26\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.27\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4122,7 +4202,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 26));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 27));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {

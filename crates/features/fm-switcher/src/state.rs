@@ -873,6 +873,37 @@ impl SwitcherState {
         }])
     }
 
+    /// Takes `source` onto one overlay channel at full opacity on this frame,
+    /// whatever its configured transition: the source animates its own
+    /// entrance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an unknown-input error when `source` is not part of this show.
+    pub fn request_overlay_cut_take(
+        &mut self,
+        channel: OverlayChannelId,
+        source: InputId,
+    ) -> Result<Vec<SwitcherEvent>, SwitcherError> {
+        self.require_input(source)?;
+        self.overlays[channel.index()].take(source);
+        Ok(vec![SwitcherEvent::OverlayTaken { channel, source }])
+    }
+
+    /// Holds one overlay channel on air at its current opacity for exactly
+    /// `frames` frames (this one included), then turns it off, whatever its
+    /// configured transition: the source animates its own exit. While held
+    /// the channel is transitioning, so its source stays on air.
+    #[must_use]
+    pub fn request_overlay_off_after(
+        &mut self,
+        channel: OverlayChannelId,
+        frames: u32,
+    ) -> Vec<SwitcherEvent> {
+        self.overlays[channel.index()].request_off_after(frames);
+        vec![SwitcherEvent::OverlayTurnedOff { channel }]
+    }
+
     /// Starts the configured realized Off motion for one overlay channel.
     #[must_use]
     pub fn request_overlay_off(&mut self, channel: OverlayChannelId) -> Vec<SwitcherEvent> {

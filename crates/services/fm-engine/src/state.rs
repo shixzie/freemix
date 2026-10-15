@@ -6,7 +6,7 @@ use fm_switcher::{
     DesiredStream, InputUsage, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherEvent,
     SwitcherState, TBarState,
 };
-use fm_titles::TitleFieldSet;
+use fm_titles::{TitleAirTiming, TitleFieldSet};
 use fm_types::{
     InputId, InputOrderError, MAX_INPUT_NAME_BYTES, OutputId, RenameInputError, validate_input_name,
 };
@@ -61,21 +61,33 @@ impl Default for EngineInputAudioStripState {
 /// The live field state of one title input.
 ///
 /// `name` is the title template's display name; `fields` holds the typed,
-/// revisioned values that title commands edit. Layout and rendering stay with
-/// the media plane.
+/// revisioned values that title commands edit; `timing` is the template
+/// animation's In and Out phase lengths, which [`crate::EngineCommand::TakeTitle`]
+/// and [`crate::EngineCommand::TitleOffAir`] play on air. Layout and
+/// rendering stay with the media plane.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineTitle {
     pub name: String,
     pub fields: TitleFieldSet,
+    pub timing: TitleAirTiming,
 }
 
 impl EngineTitle {
+    /// A title with no animation (zero-length In and Out phases).
     #[must_use]
     pub fn new(name: impl Into<String>, fields: TitleFieldSet) -> Self {
         Self {
             name: name.into(),
             fields,
+            timing: TitleAirTiming::default(),
         }
+    }
+
+    /// The title with its template animation's phase lengths.
+    #[must_use]
+    pub const fn with_timing(mut self, timing: TitleAirTiming) -> Self {
+        self.timing = timing;
+        self
     }
 }
 

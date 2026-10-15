@@ -5530,6 +5530,9 @@ impl NativeDaemon {
             .as_ref()
             .expect("next frame projection was initialized");
         self.titles.observe_frame(projected);
+        // An animating title holds the frame until its projected pose is
+        // ingested (bounded), so each In and Out frame airs as projected.
+        let titles_covered = self.titles.covered(projected);
         let audio_covered = self
             .master
             .service_project_next_frame(projected, &self.project_plan)?;
@@ -5544,7 +5547,7 @@ impl NativeDaemon {
                 .map_err(Box::<dyn Error>::from)?,
             None => true,
         };
-        Ok(audio_covered && video_covered && stinger_covered)
+        Ok(audio_covered && video_covered && stinger_covered && titles_covered)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -9157,7 +9160,11 @@ fn restore_titles(
                 input.id, title.template_uri
             ))
         })?;
-        show.set_title(input.id, EngineTitle::new(template.name.clone(), fields))?;
+        show.set_title(
+            input.id,
+            EngineTitle::new(template.name.clone(), fields)
+                .with_timing(fm_titles::TitleAirTiming::of(&template.animation)),
+        )?;
     }
     Ok(())
 }
@@ -10718,11 +10725,17 @@ fn command_ticks(
         }
         CommandPayload::TakeOverlay { channel, .. }
         | CommandPayload::OverlayOff { channel }
-        | CommandPayload::TakeNextOverlay { channel }
-        | CommandPayload::TakeTitle { channel, .. } => {
+        | CommandPayload::TakeNextOverlay { channel } => {
             let channel =
                 OverlayChannelId::new(channel.number()).expect("wire overlay channels are bounded");
             prepared.overlay_transition_ticks(channel)
+        }
+        // A title take realizes its whole In phase, as a fade realizes its
+        // whole duration.
+        CommandPayload::TakeTitle { input, channel, .. } => {
+            let channel =
+                OverlayChannelId::new(channel.number()).expect("wire overlay channels are bounded");
+            prepared.title_take_ticks(input.to_domain(), channel)
         }
         CommandPayload::TitleOffAir { input } => prepared.title_off_air_ticks(input.to_domain()),
         CommandPayload::RenameInput { .. }

@@ -256,6 +256,9 @@ fn model(variant: Variant) -> ClientModel {
             input: wire(TITLE_INPUT),
             name: "Lower third".into(),
             field_revision: 2,
+            phase: fm_protocol::TitlePhase::Idle,
+            phase_frame: 0,
+            phase_frames: 0,
             fields: vec![
                 TitleFieldStatus {
                     field: field(1),

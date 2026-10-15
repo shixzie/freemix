@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -13,7 +14,8 @@ use fm_switcher::{
     ProgramFrame, RecorderSlot, StingerDescriptor, StingerSlotId, StreamTargetId, SwitcherCommand,
     SwitcherError, SwitcherEvent, SwitcherState, TBarPosition, TransitionKind,
 };
-use fm_titles::{FieldId, FieldValue};
+use fm_titles::fm_animation::Phase;
+use fm_titles::{FieldId, FieldValue, TitleAir, TitleAirFrame, TitleAirPhase, TitleAirTiming};
 use fm_types::{FrameRate, InputId, InputOrderError, OutputId, RenameInputError};
 
 use crate::history::{EditHistory, HistoryStep, ResolvedCommand, check_edit_locks};
@@ -284,6 +286,37 @@ pub enum EngineCommand {
     /// The runtime action of an accepted playlist command. Never accepted
     /// as a command.
     RealizePlaylistCue(Option<PlaylistCue>),
+    /// The runtime action of an accepted [`Self::TakeTitle`] or
+    /// [`Self::TitleOffAir`]. Never accepted as a command.
+    RealizeTitle(TitleCue),
+}
+
+/// What an accepted title command does on air.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TitleCueAction {
+    /// Take the title onto its overlay channel and play its In phase.
+    Take,
+    /// Play the title's Out phase, then take its overlay channel off.
+    OffAir,
+}
+
+/// The runtime action of an accepted title take or off-air: the overlay
+/// channel it acts on and the animation phase lengths it plays.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TitleCue {
+    pub input: InputId,
+    pub channel: OverlayChannelId,
+    pub action: TitleCueAction,
+    pub timing: TitleAirTiming,
+}
+
+/// A title on air through [`EngineCommand::TakeTitle`] at one realized
+/// frame: its overlay channel and where it is in its In/Hold/Out life.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EngineTitleAir {
+    pub input: InputId,
+    pub channel: OverlayChannelId,
+    pub frame: TitleAirFrame,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -450,6 +483,11 @@ pub struct FrameResult {
     pub overlays: [OverlayChannelState; OVERLAY_CHANNEL_COUNT],
     pub events: Vec<SwitcherEvent>,
     pub input_audio_strip_updates: Vec<(InputId, EngineInputAudioStripState)>,
+    /// Every title taken with [`EngineCommand::TakeTitle`] that this frame
+    /// shows on an overlay channel, ascending by input, with the pose to
+    /// render it in. A title on air any other way (Program, a transition, a
+    /// plain overlay take) is absent and shows its Hold pose.
+    pub titles: Vec<EngineTitleAir>,
     pub revision: Revision,
     pub runtime_generation: RuntimeGeneration,
 }
@@ -567,6 +605,11 @@ pub struct Engine {
     /// The future frame an accepted playlist advance is realized on. No
     /// other command is accepted before it.
     playlist_hold: Option<FrameNumber>,
+    /// Realized title animations: every title a realized
+    /// [`EngineCommand::TakeTitle`] or [`EngineCommand::TitleOffAir`] put
+    /// in motion, while its overlay channel still shows it. Runtime state:
+    /// never snapshotted, so a restored title holds.
+    title_air: BTreeMap<InputId, (OverlayChannelId, TitleAir)>,
 }
 
 impl Engine {
@@ -585,6 +628,7 @@ impl Engine {
             transition_in_flight: None,
             history: EditHistory::default(),
             playlist_hold: None,
+            title_air: BTreeMap::new(),
         }
     }
 
@@ -697,6 +741,23 @@ impl Engine {
     pub fn playlist_advance_frame(&self) -> Option<u64> {
         playlist_due_frame(self.show().playlist())
             .map(|due| due.max(self.scheduler.pacer().next_frame().get()))
+    }
+
+    /// Every title [`EngineCommand::TakeTitle`] put on an overlay channel,
+    /// as the next frame (the frame cursor) shows it absent new commands,
+    /// ascending by input.
+    #[must_use]
+    pub fn titles_on_air(&self) -> Vec<EngineTitleAir> {
+        title_air_frames(&self.title_air, self.frame_cursor().get())
+    }
+
+    /// The length of `phase` of title `input`'s animation in frames of this
+    /// engine, or zero when `input` is not a title.
+    #[must_use]
+    pub fn title_phase_frames(&self, input: InputId, phase: Phase) -> u64 {
+        self.show().title(input).map_or(0, |title| {
+            title.timing.output_frames(phase, self.frame_rate)
+        })
     }
 
     fn playlist_step(
@@ -867,7 +928,14 @@ impl Engine {
         };
         // Title air checks span both switchers for the same reason: a title
         // fading out of an overlay is still on air.
+        // A title playing its Out phase may be taken again on the channel it
+        // is leaving: that restarts its In phase.
         let realized_on_air = match resolution.as_ref().map(|resolved| &resolved.command) {
+            Ok(EngineCommand::TakeTitle { input, channel, .. })
+                if self.title_leaving_only(*input, *channel) =>
+            {
+                None
+            }
             Ok(
                 EngineCommand::SetTitleFields { input, .. }
                 | EngineCommand::TakeTitle { input, .. }
@@ -956,6 +1024,19 @@ impl Engine {
         Ok(outcome)
     }
 
+    /// Whether the only realized on-air use of title `input` is `channel`
+    /// holding it while its Out phase plays.
+    fn title_leaving_only(&self, input: InputId, channel: OverlayChannelId) -> bool {
+        self.title_air
+            .get(&input)
+            .is_some_and(|(shown_on, air)| *shown_on == channel && air.is_leaving())
+            && self.realized_switcher.on_air_usage(input) == Some(InputUsage::Overlay(channel))
+            && self
+                .realized_switcher
+                .overlay_channels_showing(input)
+                .eq([channel])
+    }
+
     fn preparation_base(&self) -> EnginePreparationBase {
         EnginePreparationBase {
             state_epoch: self.commands.state_epoch(),
@@ -992,11 +1073,22 @@ impl Engine {
 
         let mut events = Vec::new();
         let mut input_audio_strip_updates = Vec::new();
+        let frame = tick.deadline.frame.get();
         for scheduled in tick.actions {
             if let EngineCommand::SetInputAudioStrip { input, state } = scheduled.action {
                 input_audio_strip_updates.push((input, state));
             }
-            let command_events = apply_runtime(&mut self.realized_switcher, scheduled.action)?;
+            let command_events = if let EngineCommand::RealizeTitle(cue) = scheduled.action {
+                realize_title(
+                    &mut self.realized_switcher,
+                    &mut self.title_air,
+                    cue,
+                    frame,
+                    self.frame_rate,
+                )?
+            } else {
+                apply_runtime(&mut self.realized_switcher, scheduled.action)?
+            };
             events.extend(command_events);
             self.runtime_generation = self.runtime_generation.checked_next()?;
         }
@@ -1004,12 +1096,23 @@ impl Engine {
         let program = self.realized_switcher.program_frame();
         let fade_to_black = self.realized_switcher.fade_to_black_frame();
         let overlays = self.realized_switcher.overlays().clone();
+        // A plain overlay command that replaced or removed a title's source
+        // ends its animation.
+        let realized = &self.realized_switcher;
+        self.title_air.retain(|input, (channel, _)| {
+            realized
+                .overlay_channels_showing(*input)
+                .any(|shown_on| shown_on == *channel)
+        });
+        let titles = title_air_frames(&self.title_air, frame);
         for event in self.realized_switcher.advance_frame_events() {
             if matches!(event, SwitcherEvent::ProgramChanged { .. }) {
                 self.transition_in_flight = None;
             }
             events.push(event);
         }
+        let next = frame.saturating_add(1);
+        self.title_air.retain(|_, (_, air)| air.at(next).is_some());
 
         Ok(FrameResult {
             frame: tick.deadline.frame,
@@ -1019,6 +1122,7 @@ impl Engine {
             overlays,
             events,
             input_audio_strip_updates,
+            titles,
             revision: self.commands.revision(),
             runtime_generation: self.runtime_generation,
         })
@@ -1041,6 +1145,10 @@ impl Engine {
                 .fade_to_black_is_automatic()
             || self.realized_switcher.fade_to_black_is_automatic()
             || self.realized_switcher.overlays_in_motion()
+            || self
+                .titles_on_air()
+                .iter()
+                .any(|title| title.frame.phase != TitleAirPhase::Hold)
         {
             return Err(SnapshotError::WorkInFlight);
         }
@@ -1131,6 +1239,7 @@ impl Engine {
             transition_in_flight: None,
             history: EditHistory::default(),
             playlist_hold: None,
+            title_air: BTreeMap::new(),
         })
     }
 }
@@ -1267,6 +1376,12 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             || matches!(&self.command, EngineCommand::RealizePlaylistCue(_))
         {
             return apply_playlist_mutation(state, events, self);
+        }
+        if matches!(&self.command, EngineCommand::RealizeTitle(_)) {
+            return Err(Rejection::new(
+                RejectionCode::InvalidCommand,
+                "title cues are realized by the engine and are not commands",
+            ));
         }
         if is_title_command(&self.command) {
             return apply_title_mutation(state, events, self);
@@ -1503,7 +1618,8 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             }
             EngineCommand::SetTitleFields { .. }
             | EngineCommand::TakeTitle { .. }
-            | EngineCommand::TitleOffAir { .. } => {
+            | EngineCommand::TitleOffAir { .. }
+            | EngineCommand::RealizeTitle(_) => {
                 unreachable!("title mutations return before switcher command mapping")
             }
             EngineCommand::SetPlaylist { .. }
@@ -1977,8 +2093,9 @@ fn apply_runtime(
         }
         EngineCommand::SetTitleFields { .. }
         | EngineCommand::TakeTitle { .. }
-        | EngineCommand::TitleOffAir { .. } => {
-            unreachable!("title commands are scheduled as overlay commands or ignored")
+        | EngineCommand::TitleOffAir { .. }
+        | EngineCommand::RealizeTitle(_) => {
+            unreachable!("title commands are realized as title cues or ignored")
         }
         EngineCommand::SetPlaylist { .. }
         | EngineCommand::PlaylistControl(_)
@@ -2111,7 +2228,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetPlaylist { .. }
         | EngineCommand::PlaylistControl(_)
         | EngineCommand::PlaylistAdvance { .. }
-        | EngineCommand::RealizePlaylistCue(_) => None,
+        | EngineCommand::RealizePlaylistCue(_)
+        | EngineCommand::RealizeTitle(_) => None,
     }
 }
 
@@ -2140,23 +2258,112 @@ const fn is_title_command(command: &EngineCommand) -> bool {
 
 /// Returns the runtime action that realizes an accepted `command`.
 ///
-/// Title takes and off-airs realize as the overlay commands they resolve to
-/// against the pre-command desired state, which is the state the mutation
-/// validates; a refused command's action is cancelled before it runs.
+/// Title takes and off-airs realize as [`TitleCue`]s on the overlay channel
+/// they resolve to against the pre-command desired state, which is the
+/// state the mutation validates, carrying the title's animation timing; a
+/// refused command's action is cancelled before it runs.
 fn runtime_action(state: &ShowState, command: &EngineCommand) -> EngineCommand {
+    let timing = |input: InputId| {
+        state
+            .title(input)
+            .map_or_else(TitleAirTiming::default, |title| title.timing)
+    };
     match command {
-        EngineCommand::TakeTitle { input, channel, .. } => EngineCommand::TakeOverlay {
+        EngineCommand::TakeTitle { input, channel, .. } => EngineCommand::RealizeTitle(TitleCue {
+            input: *input,
             channel: *channel,
-            source: *input,
-        },
+            action: TitleCueAction::Take,
+            timing: timing(*input),
+        }),
         EngineCommand::TitleOffAir { input } => {
             match title_off_air_channel(state.desired_switcher(), None, *input) {
-                Ok(channel) => EngineCommand::OverlayOff { channel },
+                Ok(channel) => EngineCommand::RealizeTitle(TitleCue {
+                    input: *input,
+                    channel,
+                    action: TitleCueAction::OffAir,
+                    timing: timing(*input),
+                }),
                 Err(_) => command.clone(),
             }
         }
         _ => command.clone(),
     }
+}
+
+/// Realizes one title cue on the realized switcher at `frame`.
+///
+/// A take with a nonzero In phase cuts the channel to full opacity (the
+/// animation is the entrance) and starts the In phase on `frame`; with no
+/// In phase the channel's configured transition plays and the title holds.
+/// An off-air with a nonzero Out phase holds the channel at its opacity for
+/// exactly the Out phase's frames, then cuts it off; with no Out phase the
+/// channel's configured transition plays over the Hold pose. A re-take
+/// while the Out phase plays restarts the In phase at its first frame.
+fn realize_title(
+    switcher: &mut SwitcherState,
+    title_air: &mut BTreeMap<InputId, (OverlayChannelId, TitleAir)>,
+    cue: TitleCue,
+    frame: u64,
+    rate: FrameRate,
+) -> Result<Vec<SwitcherEvent>, SwitcherError> {
+    let TitleCue {
+        input,
+        channel,
+        action,
+        timing,
+    } = cue;
+    match action {
+        TitleCueAction::Take => {
+            let events = if timing.in_frames == 0 {
+                switcher.request_overlay_take(channel, input)?
+            } else {
+                switcher.request_overlay_cut_take(channel, input)?
+            };
+            let air = match title_air.get(&input) {
+                Some((shown_on, air)) if *shown_on == channel => air.retake(frame),
+                _ => TitleAir::take(timing, rate, frame),
+            };
+            title_air.insert(input, (channel, air));
+            Ok(events)
+        }
+        TitleCueAction::OffAir => {
+            // A title put on air without a title take (a plain overlay take,
+            // or one restored from a snapshot) holds; it leaves the same way.
+            let air = title_air
+                .get(&input)
+                .filter(|(shown_on, _)| *shown_on == channel)
+                .map_or_else(|| TitleAir::take(timing, rate, frame), |(_, air)| *air)
+                .off_air(frame);
+            let out_frames = air.phase_frames();
+            if out_frames == 0 {
+                title_air.remove(&input);
+                Ok(switcher.request_overlay_off(channel))
+            } else {
+                title_air.insert(input, (channel, air));
+                Ok(switcher.request_overlay_off_after(
+                    channel,
+                    u32::try_from(out_frames).unwrap_or(u32::MAX),
+                ))
+            }
+        }
+    }
+}
+
+/// Every tracked title at `frame`, ascending by input.
+fn title_air_frames(
+    title_air: &BTreeMap<InputId, (OverlayChannelId, TitleAir)>,
+    frame: u64,
+) -> Vec<EngineTitleAir> {
+    title_air
+        .iter()
+        .filter_map(|(input, (channel, air))| {
+            air.at(frame).map(|frame| EngineTitleAir {
+                input: *input,
+                channel: *channel,
+                frame,
+            })
+        })
+        .collect()
 }
 
 /// Resolves the one desired overlay channel that takes a title off air.

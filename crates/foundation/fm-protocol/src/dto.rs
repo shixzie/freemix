@@ -712,17 +712,40 @@ pub struct TitleFieldStatus {
     pub value: TitleFieldValue,
 }
 
-/// The complete field state of one title input at durable `revision`.
+/// Where a title is in its on-air animation (Protocol 2.27). Wire encoding:
+/// `phase=idle|in|hold|out`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TitlePhase {
+    /// Not taken to air with a title take (it may still be on air another
+    /// way, for example on Program, where it shows its Hold pose).
+    Idle,
+    /// Playing its In phase.
+    In,
+    /// On air, holding the In phase's last frame.
+    Hold,
+    /// Playing its Out phase; its overlay channel goes off when it ends.
+    Out,
+}
+
+/// The complete field state of one title input at durable `revision`, and
+/// its animation phase at the snapshot's frame cursor.
 ///
 /// A session writes exactly one `title_state` per [`TitleSummary`] of a
 /// snapshot, in summary order, immediately after that snapshot and before any
 /// event. `fields` is complete and strictly ascending by field id.
+///
+/// `phase_frame` and `phase_frames` give In/Out progress in project frames:
+/// `phase_frame < phase_frames` while In or Out plays, and both are zero
+/// while idle or holding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TitleStateMessage {
     pub revision: u64,
     pub input: WireInputId,
     pub name: String,
     pub field_revision: u64,
+    pub phase: TitlePhase,
+    pub phase_frame: u64,
+    pub phase_frames: u64,
     pub fields: Vec<TitleFieldStatus>,
 }
 

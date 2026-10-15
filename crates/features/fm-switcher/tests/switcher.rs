@@ -780,6 +780,50 @@ fn overlay_fade_take_and_off_advance_to_exact_opacity_endpoints() {
 }
 
 #[test]
+fn animated_sources_cut_in_and_hold_full_opacity_for_their_exit() {
+    let mut switcher = state();
+    let channel = OverlayChannelId::new(2).unwrap();
+    switcher
+        .configure_overlay_transition(channel, OverlayTransitionKind::Fade, 4)
+        .unwrap();
+    // The configured fade is bypassed: the source animates its entrance.
+    switcher
+        .request_overlay_cut_take(channel, input(3))
+        .unwrap();
+    assert!(switcher.overlay(channel).is_active());
+    assert_eq!(switcher.overlay(channel).opacity(), u8::MAX);
+    assert!(!switcher.overlay(channel).is_transitioning());
+
+    // Three held frames at full opacity, then off with no fade.
+    let _ = switcher.request_overlay_off_after(channel, 3);
+    for _ in 0..2 {
+        assert!(switcher.overlay(channel).is_transitioning());
+        assert_eq!(
+            switcher.on_air_usage(input(3)),
+            Some(fm_switcher::InputUsage::Overlay(channel))
+        );
+        let _ = switcher.advance_frame_events();
+        assert_eq!(switcher.overlay(channel).opacity(), u8::MAX);
+    }
+    let events = switcher.advance_frame_events();
+    assert!(events.contains(&SwitcherEvent::OverlayTransitionCompleted {
+        channel,
+        active: false,
+    }));
+    assert!(!switcher.overlay(channel).is_active());
+    assert_eq!(switcher.overlay(channel).opacity(), 0);
+    assert_eq!(switcher.on_air_usage(input(3)), None);
+
+    // A zero-frame hold is an immediate off.
+    switcher
+        .request_overlay_cut_take(channel, input(3))
+        .unwrap();
+    let _ = switcher.request_overlay_off_after(channel, 0);
+    assert!(!switcher.overlay(channel).is_active());
+    assert!(!switcher.overlay(channel).is_transitioning());
+}
+
+#[test]
 fn all_eight_stinger_slots_retain_independent_configuration() {
     let mut switcher = state();
     assert_eq!(switcher.stingers().len(), STINGER_SLOT_COUNT);
