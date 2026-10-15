@@ -555,7 +555,7 @@ fn native_daemon_hot_configures_fires_replaces_removes_and_restarts_stinger() {
     let after = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(after.position().revision, 5);
     assert_eq!(after.idempotency_receipts().len(), 5);
-    assert!(after.project().stingers().is_empty());
+    assert_eq!(after.project().stingers(), []);
     assert_eq!(after.project(), before.project());
 
     let Some(restarted) = require_native(NativeDaemonProcess::start(&project_path, true)) else {
@@ -564,7 +564,7 @@ fn native_daemon_hot_configures_fires_replaces_removes_and_restarts_stinger() {
     let mut restarted_client = StudioClient::connect(restarted.address);
     let snapshot = restarted_client.handshake();
     assert_eq!(snapshot.revision, 5);
-    assert!(snapshot.stingers.is_empty());
+    assert_eq!(snapshot.stingers, [] as [fm_protocol::StingerStatus; 0]);
     drop(restarted_client);
     let output = restarted.wait();
     assert!(
@@ -769,13 +769,13 @@ fn native_stinger_preflight_failure_rolls_back_and_keeps_show_cursor_live() {
     assert_eq!(fs::read(&manifest_path).unwrap(), before_bytes);
     let rolled_back = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(rolled_back, before);
-    assert!(rolled_back.idempotency_receipts().is_empty());
+    assert_eq!(rolled_back.idempotency_receipts(), []);
 
     drop(client);
     let mut resumed = StudioClient::connect(daemon.address);
     let snapshot = resumed.handshake();
     assert_eq!(snapshot.revision, 0);
-    assert!(snapshot.stingers.is_empty());
+    assert_eq!(snapshot.stingers, [] as [fm_protocol::StingerStatus; 0]);
     let cut = resumed.command(
         "post-rollback-cut",
         "post-rollback-cut-key",
@@ -794,7 +794,7 @@ fn native_stinger_preflight_failure_rolls_back_and_keeps_show_cursor_live() {
     let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(persisted.position().revision, 1);
     assert_eq!(persisted.idempotency_receipts().len(), 1);
-    assert!(persisted.project().stingers().is_empty());
+    assert_eq!(persisted.project().stingers(), []);
 }
 
 #[cfg(target_os = "macos")]
@@ -2687,11 +2687,11 @@ fn recording_half_luma(path: &Path) -> Result<Vec<[u8; 2]>, String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    let chunks = output.stdout.chunks_exact(2);
-    if !chunks.remainder().is_empty() {
+    let (chunks, remainder) = output.stdout.as_chunks::<2>();
+    if !remainder.is_empty() {
         return Err("recording half-luma output ended mid-frame".to_owned());
     }
-    Ok(chunks.map(|frame| [frame[0], frame[1]]).collect())
+    Ok(chunks.to_vec())
 }
 
 #[cfg(target_os = "macos")]
@@ -2722,17 +2722,11 @@ fn recording_grid_luma(path: &Path) -> Result<Vec<[u8; 9]>, String> {
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    let chunks = output.stdout.chunks_exact(9);
-    if !chunks.remainder().is_empty() {
+    let (chunks, remainder) = output.stdout.as_chunks::<9>();
+    if !remainder.is_empty() {
         return Err("recording grid-luma output ended mid-frame".to_owned());
     }
-    Ok(chunks
-        .map(|frame| {
-            frame
-                .try_into()
-                .expect("grid-luma frames contain nine bytes")
-        })
-        .collect())
+    Ok(chunks.to_vec())
 }
 
 #[cfg(target_os = "macos")]
@@ -3136,16 +3130,18 @@ fn recording_audio_signatures(path: &Path) -> Result<Vec<AudioSignature>, String
         ));
     }
     let bytes = fs::read(&pcm).map_err(|error| format!("cannot read decoded PCM: {error}"))?;
-    let mut chunks = bytes.chunks_exact(std::mem::size_of::<f32>());
+    let (chunks, remainder) = bytes.as_chunks::<{ std::mem::size_of::<f32>() }>();
     let samples = chunks
-        .by_ref()
-        .map(|bytes| f32::from_le_bytes(bytes.try_into().expect("f32 chunk is exact")))
+        .iter()
+        .map(|bytes| f32::from_le_bytes(*bytes))
         .collect::<Vec<_>>();
-    if !chunks.remainder().is_empty() {
+    if !remainder.is_empty() {
         return Err("decoded PCM has a partial f32 sample".to_owned());
     }
     Ok(samples
-        .chunks_exact(SAMPLES_PER_FRAME)
+        .as_chunks::<SAMPLES_PER_FRAME>()
+        .0
+        .iter()
         .map(|frame| {
             let frame = &frame[EDGE_SAMPLES..SAMPLES_PER_FRAME - EDGE_SAMPLES];
             AudioSignature {

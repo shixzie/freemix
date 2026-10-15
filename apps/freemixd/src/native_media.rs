@@ -13352,8 +13352,10 @@ mod tests {
         assert!(
             first
                 .rgba
-                .chunks_exact(4)
-                .all(|pixel| pixel == [0, 0, 0, 255])
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [0, 0, 0, 255])
         );
         assert_eq!(second, first);
     }

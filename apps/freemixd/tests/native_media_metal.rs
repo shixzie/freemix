@@ -207,7 +207,7 @@ fn generate_asset(path: &Path) -> Result<(), String> {
 
 fn assert_decoded(decoded: &DecodedSequence, clock_domain: ClockDomainId) {
     assert_eq!(decoded.video.len(), 3);
-    assert!(decoded.audio.is_empty());
+    assert_eq!(decoded.audio, [] as [fm_frame::AudioBlock; 0]);
     for (sequence, frame) in decoded.video.iter().enumerate() {
         assert_eq!(frame.metadata(), Some(expected_metadata()));
         assert_eq!(frame.timing().clock_domain(), clock_domain);
@@ -259,7 +259,7 @@ async fn exercise_gpu_slice(
         .await
         .expect("blocking decode and async GPU normalization");
     assert_eq!(preroll.video().len(), 3);
-    assert!(preroll.audio().is_empty());
+    assert_eq!(preroll.audio(), []);
     for (working, source) in preroll.video().iter().zip(&decoded.video) {
         assert_eq!(working.timing(), source.timing());
         assert_eq!(working.texture().format(), TextureFormat::Rgba16Float);
@@ -569,6 +569,10 @@ async fn assert_deadline_frame(
         overlays: std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty()),
         input_audio_strip_updates: Vec::new(),
         titles: Vec::new(),
+        audio_mixer_updates: Vec::new(),
+        fade_to_black_excluded_outputs: Vec::new(),
+        scenes: Vec::new(),
+        media: Vec::new(),
         frame: FrameNumber::new(10),
         deadline,
         program: ProgramFrame {
@@ -788,6 +792,10 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
                 overlays: std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty()),
                 input_audio_strip_updates: Vec::new(),
                 titles: Vec::new(),
+                audio_mixer_updates: Vec::new(),
+                fade_to_black_excluded_outputs: Vec::new(),
+                scenes: Vec::new(),
+                media: Vec::new(),
                 frame: FrameNumber::new(u64::try_from(sequence).unwrap()),
                 deadline: ClockTime::from_nanos(deadline),
                 program: ProgramFrame {
@@ -837,6 +845,10 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
         overlays: std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty()),
         input_audio_strip_updates: Vec::new(),
         titles: Vec::new(),
+        audio_mixer_updates: Vec::new(),
+        fade_to_black_excluded_outputs: Vec::new(),
+        scenes: Vec::new(),
+        media: Vec::new(),
         frame: FrameNumber::new(3),
         deadline: ClockTime::ZERO,
         program: ProgramFrame {
@@ -870,6 +882,7 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn native_metal_project_frames_use_one_completed_in_flight_slot_without_readback() {
     const FRAMES: u64 = 96;
 
@@ -933,6 +946,10 @@ fn native_metal_project_frames_use_one_completed_in_flight_slot_without_readback
             overlays: std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty()),
             input_audio_strip_updates: Vec::new(),
             titles: Vec::new(),
+            audio_mixer_updates: Vec::new(),
+            fade_to_black_excluded_outputs: Vec::new(),
+            scenes: Vec::new(),
+            media: Vec::new(),
             frame: FrameNumber::new(frame_number),
             deadline: ClockTime::from_nanos(frame_number * 33_333_333),
             program: ProgramFrame {
@@ -983,6 +1000,10 @@ fn native_leaf_rgba16f(
         overlays: std::array::from_fn(|_| fm_switcher::OverlayChannelState::empty()),
         input_audio_strip_updates: Vec::new(),
         titles: Vec::new(),
+        audio_mixer_updates: Vec::new(),
+        fade_to_black_excluded_outputs: Vec::new(),
+        scenes: Vec::new(),
+        media: Vec::new(),
         frame: FrameNumber::new(0),
         deadline: ClockTime::from_nanos(0),
         program: ProgramFrame {
