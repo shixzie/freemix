@@ -602,7 +602,7 @@ fn scene_bindings_design_from_layouts_and_save_scene_clips() {
 /// the authority measures it.
 #[test]
 fn scene_user_presets_measure_crop_in_the_layer_frame() {
-    use core::num::NonZeroU32;
+    use core::num::{NonZeroU32, NonZeroU128};
 
     use fm_animation::PhaseMotion;
     use fm_protocol::{WireSceneClip, WireSceneLayerId, WireSceneLayerOutline, WireSceneLayout};
@@ -613,6 +613,9 @@ fn scene_user_presets_measure_crop_in_the_layer_frame() {
     let outline = |id: u32, quarter_turns: u8| WireSceneLayerOutline {
         id: layer(id),
         name: format!("Layer {id}"),
+        source: fm_protocol::WireSceneLayerSource::Input(fm_protocol::WireInputId::new(
+            NonZeroU128::new(1).unwrap(),
+        )),
         x: 0,
         y: 0,
         width: 640,
