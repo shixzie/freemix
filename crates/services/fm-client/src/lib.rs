@@ -15,13 +15,13 @@ use std::fmt;
 
 use fm_command::{CommandId, Revision};
 use fm_protocol::{
-    CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    DurableGap, EngineIdentity, EventMessage, GradeStateMessage, HandshakeOutcome,
-    HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage,
-    PlaylistStateMessage, ProtocolVersion, ResumeCursor, Role, RuntimeEventMessage,
-    RuntimeLifecycleEvent, SceneAnimationStateMessage, SceneLayoutStateMessage, ServerHello,
-    ServerIdentity, SnapshotMessage, StructuredError, TitleAnimationStateMessage,
-    TitleLayoutStateMessage, TitleStateMessage, WireMessage,
+    AnimationPresetStateMessage, CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage,
+    CommandPayload, CommandResult, DurableGap, EngineIdentity, EventMessage, GradeStateMessage,
+    HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
+    HeartbeatMessage, PlaylistStateMessage, ProtocolVersion, ResumeCursor, Role,
+    RuntimeEventMessage, RuntimeLifecycleEvent, SceneAnimationStateMessage,
+    SceneLayoutStateMessage, ServerHello, ServerIdentity, SnapshotMessage, StructuredError,
+    TitleAnimationStateMessage, TitleLayoutStateMessage, TitleStateMessage, WireMessage,
 };
 use fm_types::ProjectId;
 use fm_ui_model::{
@@ -183,6 +183,9 @@ pub enum Intake {
     /// A `scene_layout_state` completed one Scene input's layout the
     /// snapshot announced (Protocol 2.31).
     SceneLayoutStateApplied,
+    /// An `animation_preset_state` completed one library preset the
+    /// snapshot announced (Protocol 2.34).
+    AnimationPresetStateApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -596,6 +599,10 @@ impl Client {
             WireMessage::SceneLayoutState(state) => {
                 self.apply_scene_layout_state(state)?;
                 Ok(Intake::SceneLayoutStateApplied)
+            }
+            WireMessage::AnimationPresetState(state) => {
+                self.apply_animation_preset_state(state)?;
+                Ok(Intake::AnimationPresetStateApplied)
             }
             WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
@@ -1071,6 +1078,59 @@ impl Client {
         Ok(())
     }
 
+    /// Completes one library preset the snapshot announced with its
+    /// `animation_preset_state` (Protocol 2.34).
+    ///
+    /// Animation preset states arrive only while synchronizing from a
+    /// snapshot, in library order after every other follow-on record and
+    /// before any event.
+    ///
+    /// # Errors
+    ///
+    /// An animation preset state in any other state, at another revision,
+    /// beyond the announced count, duplicating a preset, or before the
+    /// earlier follow-on records forces a fresh-snapshot reconnect
+    /// ([`ClientError::ResyncRequired`]).
+    pub fn apply_animation_preset_state(
+        &mut self,
+        state: AnimationPresetStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_animation_preset_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
@@ -1078,8 +1138,8 @@ impl Client {
     }
 
     /// Whether the installed snapshot has every title, playlist, grade,
-    /// title animation, title layout, scene animation, and scene layout
-    /// state it announced.
+    /// title animation, title layout, scene animation, scene layout, and
+    /// animation preset state it announced.
     fn snapshot_complete(&self) -> bool {
         self.model.state().is_none_or(|state| {
             state.titles_complete()
@@ -1089,6 +1149,7 @@ impl Client {
                 && state.title_layouts_complete()
                 && state.scene_animations_complete()
                 && state.scene_layouts_complete()
+                && state.animation_presets_complete()
         })
     }
 
@@ -1352,6 +1413,11 @@ impl Client {
             | CommandPayload::UpdateLibraryGrade { .. }
             | CommandPayload::RemoveLibraryGrade { .. }
             | CommandPayload::ImportGradeLut { .. }
+            | CommandPayload::AddAnimationPreset { .. }
+            | CommandPayload::RenameAnimationPreset { .. }
+            | CommandPayload::RemoveAnimationPreset { .. }
+            | CommandPayload::ApplyTitleAnimationUserPreset { .. }
+            | CommandPayload::ApplySceneAnimationUserPreset { .. }
             | CommandPayload::RemoveGradeLut { .. }
             | CommandPayload::SetTitleAnimation { .. }
             | CommandPayload::ApplyTitleAnimationPreset { .. }

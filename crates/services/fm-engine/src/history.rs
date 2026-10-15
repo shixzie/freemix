@@ -7,7 +7,8 @@
 //! - **Project edits** change durable show configuration: the input
 //!   catalogue (adding and removing inputs), input names and order, Stinger
 //!   slots, overlay transition, appearance, and output inclusion, and the
-//!   project grading ([`crate::EngineGradeEdit`]). They are rejected while
+//!   project grading ([`crate::EngineGradeEdit`]), and the animation preset
+//!   library ([`crate::EngineAnimationPresetEdit`]). They are rejected while
 //!   the edit padlock covers them (an input's padlock also covers its
 //!   grade), and all but input and LUT removal are recorded in the undo
 //!   history.
@@ -126,7 +127,8 @@ impl EngineCommand {
             | Self::SetPlaylist { .. }
             | Self::Grade(_)
             | Self::TitleAnimation(_)
-            | Self::SceneAnimation(_) => EngineCommandKind::ProjectEdit,
+            | Self::SceneAnimation(_)
+            | Self::AnimationPreset(_) => EngineCommandKind::ProjectEdit,
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }
@@ -574,6 +576,9 @@ fn normalized(state: &ShowState, command: &EngineCommand) -> EngineCommand {
         EngineCommand::SceneAnimation(edit) => {
             EngineCommand::SceneAnimation(crate::scene_animation::normalized(state, edit))
         }
+        EngineCommand::AnimationPreset(edit) => {
+            EngineCommand::AnimationPreset(crate::animation_preset::normalized(state, edit))
+        }
         command => command.clone(),
     }
 }
@@ -652,6 +657,9 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         }
         EngineCommand::SceneAnimation(edit) => {
             crate::scene_animation::inverse(state, edit).map(EngineCommand::SceneAnimation)
+        }
+        EngineCommand::AnimationPreset(edit) => {
+            crate::animation_preset::inverse(state, edit).map(EngineCommand::AnimationPreset)
         }
         _ => None,
     }

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.33 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.34 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -727,6 +727,48 @@ Protocol 2.33 grades scene layers (`SW-019`):
   program record forces a fresh snapshot.
 - Durability: layer grades are project state (schema 33, `layer_grades`).
 - 2.32 is refused.
+
+Protocol 2.34 adds the project animation preset library (`GX-011`):
+
+- A preset is one phase of one target's animation relative to its resting
+  pose: `preset_id` (nonzero 32-bit), `name` (1 to 128 UTF-8 bytes, not
+  blank, no control characters, unique in the library), `phase` (`in` or
+  `out`, the phase it was saved from), and `motion`, one base64url field
+  holding the reference box (`width`, `height` as varints, both nonzero)
+  followed by the title clip encoding with the single target `1`, tracks in
+  the In phase only and an empty Out phase (at most 1 024 keys and 36 KiB).
+  A library holds at most 64 presets.
+- `animation_preset_add` (`preset_id`, `name`, `phase`, `motion`, optional
+  `index` below 64, the end when absent), `animation_preset_rename`
+  (`preset_id`, `name`), and `animation_preset_remove` (`preset_id`) are
+  `EditProject` project edits on the shared undo history, refused while the
+  project is padlocked. A taken id or name, or a full library, is a
+  `conflict` (`duplicate_preset`, `duplicate_name`, `too_many_presets`); an
+  unknown preset is `not_found` (`unknown_preset`); an index past the end
+  is `invalid_command` (`out_of_range`). They carry no base revision.
+- `title_animation_user_preset` (`input`, `base_revision`, `element`,
+  `phase`, `preset_id`, `frames`) and `scene_animation_user_preset`
+  (`input`, `base_revision`, `layer`, `phase`, `preset_id`, `frames`) apply
+  a library preset like `title_animation_preset` and
+  `scene_animation_preset` apply a built-in one: the preset's tracks replace
+  the target's tracks of the same properties in `phase`, retimed
+  proportionally to `frames` (the phase grows to fit), positions kept in
+  pixels and crop keys scaled from the reference box to the target's box;
+  a scene layer skips colour tracks. They are revision-checked like the
+  other animation edits and publish `title_animation_changed` or
+  `scene_animation_changed`.
+- `event=animation_preset_changed` carries `change=set` (`index`, then the
+  whole preset: an addition at `index`, or a rename that keeps its index)
+  or `change=removed` (`preset_id`). Undo and redo publish the same event.
+- The snapshot gains `animation_preset_states` (at most 64, encoded last),
+  the count of `animation_preset_state` records (`revision` and the whole
+  preset, in library order) that follow after every other follow-on record
+  (after the last `scene_layout_state`) and before any event. A record at
+  another revision, beyond the count, before the earlier records, or
+  repeating an id or name forces a fresh snapshot.
+- Durability: the library is project state (schema 34,
+  `animation_presets`).
+- 2.33 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

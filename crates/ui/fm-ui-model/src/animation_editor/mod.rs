@@ -34,8 +34,8 @@ pub use document::{
     TargetOutline, TimelineView, Transport, UNDO_LIMIT,
 };
 pub use interaction::{
-    BoxMode, DragKind, DragOutcome, DragSession, DragStart, Modifiers, Pointer, RetimeHandle,
-    phase_state,
+    BoxMode, DragKind, DragOutcome, DragSession, DragStart, Modifiers, Pointer, PresetSource,
+    RetimeHandle, phase_state,
 };
 pub use preview::{
     AnimSample, DEFAULT_PREVIEW_DEBOUNCE, ExactPreviewRequest, MAX_ONION_SKINS, OnionSkin,

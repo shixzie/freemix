@@ -46,6 +46,7 @@ pub(super) fn draw<T: Copy + Ord>(
     });
     curve_editor::draw_editor(ui, l, document, state);
     curve(ui, l, document, state, geometry);
+    super::library::draw(ui, l, document, state);
 }
 
 /// The easing shared by every selected key, `None` when mixed or empty.

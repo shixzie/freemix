@@ -84,6 +84,14 @@ pub enum TitleAnimationChange {
     /// Scales every key of `phase` to `frames` frames (see
     /// [`TitleTemplate::stretch_animation`]).
     Stretch { phase: Phase, frames: u32 },
+    /// Applies library preset `preset` to one element over `frames` frames
+    /// of `phase` (see [`TitleTemplate::apply_animation_motion`]).
+    Motion {
+        element: ElementId,
+        phase: Phase,
+        preset: fm_model::AnimationPresetId,
+        frames: u32,
+    },
 }
 
 /// One edit of the animation of `input`'s template. A project edit.
@@ -197,6 +205,15 @@ pub(crate) fn edited_template(
         } => template.apply_animation_preset(*element, *phase, *preset, *frames),
         TitleAnimationChange::Stretch { phase, frames } => {
             template.stretch_animation(*phase, *frames)
+        }
+        TitleAnimationChange::Motion {
+            element,
+            phase,
+            preset,
+            frames,
+        } => {
+            let motion = crate::animation_preset::motion_of(state, *preset)?;
+            template.apply_animation_motion(*element, *phase, motion, *frames)
         }
     };
     result.map_err(|error| edit_rejection(&error))?;

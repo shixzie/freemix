@@ -1,5 +1,6 @@
 //! Deterministic composition root for the simulated `FreeMix` engine.
 
+mod animation_preset;
 mod engine;
 mod error;
 mod grade;
@@ -10,6 +11,7 @@ mod scene_animation;
 mod state;
 mod title_animation;
 
+pub use animation_preset::EngineAnimationPresetEdit;
 pub use engine::{
     Engine, EngineAcceptance, EngineCommand, EngineCommandOutcome, EngineEvent,
     EngineFadeToBlackState, EngineManualTransitionKind, EngineManualTransitionPosition,

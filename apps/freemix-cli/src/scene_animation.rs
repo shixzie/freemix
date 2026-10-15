@@ -100,14 +100,20 @@ pub fn preset(
     preset: &str,
     frames: u32,
 ) -> AppResult<()> {
+    let layer = LayerId::new(layer).ok_or_else(|| AppFailure("layer id must be nonzero".into()))?;
+    // `user:<id>` names one of the project's own presets (GX-011).
+    if let Some(motion) = crate::presets::user_motion(path, preset)? {
+        return edit("scene-animation-preset", path, scene, |target, _, _| {
+            target.apply_animation_motion(layer, phase(title_phase), &motion, frames)
+        });
+    }
     let Some(preset) = AnimationPreset::from_id(preset) else {
         let known = AnimationPreset::ALL.map(AnimationPreset::id).join(", ");
         return Err(AppFailure(format!(
-            "unknown animation preset `{preset}` (one of {known})"
+            "unknown animation preset `{preset}` (one of {known}, or user:<id>)"
         ))
         .into());
     };
-    let layer = LayerId::new(layer).ok_or_else(|| AppFailure("layer id must be nonzero".into()))?;
     edit(
         "scene-animation-preset",
         path,

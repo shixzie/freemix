@@ -33,7 +33,7 @@ use core::time::Duration;
 use std::sync::Arc;
 
 use fm_animation::Clip;
-use fm_animation::{AnimationPreset, Phase};
+use fm_animation::Phase;
 use fm_protocol::{
     CommandPayload, MAX_TITLE_PREVIEW_HEIGHT, MAX_TITLE_PREVIEW_WIDTH, WireSceneLayerId,
     WireSceneLayout, WireTitleElementId, WireTitleElementKind, WireTitleLayout,
@@ -45,8 +45,8 @@ use super::{
     preview_wire_id, save_payload, sync_document,
 };
 use crate::animation_editor::{
-    AnimDocument, PreviewCompletion, PreviewKey, PreviewScheduler, TargetBounds, TargetKind,
-    TargetOutline,
+    AnimDocument, PresetSource, PreviewCompletion, PreviewKey, PreviewScheduler, TargetBounds,
+    TargetKind, TargetOutline,
 };
 
 /// Shortest gap between two exact preview requests: the server refuses
@@ -168,11 +168,12 @@ pub fn preview_size(canvas: (u32, u32)) -> (u16, u16) {
 
 /// A preset the operator rests on in the Simple-mode picker: previewed,
 /// not applied.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PresetHover<T = WireTitleElementId> {
     pub target: T,
     pub phase: Phase,
-    pub preset: AnimationPreset,
+    /// A built-in preset or a saved user preset (Protocol 2.34).
+    pub preset: PresetSource,
     /// The preset's length in frames.
     pub frames: u32,
 }
@@ -511,8 +512,8 @@ impl<T: AnimationTarget> AnimationBinding<T> {
         if self
             .hover
             .as_ref()
-            .map(|preview| (preview.hover, preview.source))
-            == hover.map(|hover| (hover, generation))
+            .map(|preview| (&preview.hover, preview.source))
+            == hover.as_ref().map(|hover| (hover, generation))
         {
             return;
         }
@@ -526,7 +527,13 @@ impl<T: AnimationTarget> AnimationBinding<T> {
             AnimDocument::new(source.clip().clone(), source.base_revision(), width, height);
         document.set_targets(source.targets().iter().cloned());
         if document
-            .apply_preset(hover.target, hover.phase, hover.preset, hover.frames)
+            .apply_preset_source(
+                hover.target,
+                hover.phase,
+                &hover.preset,
+                hover.frames,
+                T::PROPERTIES,
+            )
             .is_err()
         {
             return;
@@ -553,7 +560,7 @@ impl<T: AnimationTarget> AnimationBinding<T> {
     /// The preset being previewed, if any.
     #[must_use]
     pub fn preset_hover(&self) -> Option<PresetHover<T>> {
-        self.hover.as_ref().map(|preview| preview.hover)
+        self.hover.as_ref().map(|preview| preview.hover.clone())
     }
 
     /// The draft with the hovered preset applied (for the fast proxy).

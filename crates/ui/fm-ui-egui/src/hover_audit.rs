@@ -261,6 +261,7 @@ fn model(variant: Variant) -> ClientModel {
         frame_rate: FrameRate::new(25, 1).unwrap(),
         playlist_follows: true,
         grade_states: 4,
+        animation_preset_states: 0,
     };
     let mut model = ClientModel::new(project);
     model
@@ -905,6 +906,7 @@ fn animation_document() -> AnimDocument<u32> {
 }
 
 /// The animation timeline drawn standalone, in `language`.
+#[allow(clippy::too_many_lines)] // one block per audited variant
 fn timeline_scenes(language: Language) -> Vec<Scene> {
     let locale = Locale::new(language);
     let opacity = TrackKey::new(1_u32, Phase::In, Property::Opacity);
@@ -976,6 +978,51 @@ fn timeline_scenes(language: Language) -> Vec<Scene> {
         state.lock_reason = lock;
         scenes.push(Scene {
             name: format!("timeline/advanced-{variant}"),
+            draw: Box::new(move |ui| {
+                let _output = AnimationTimelineWidget::new(&mut document, &mut state)
+                    .locale(locale)
+                    .show(ui);
+            }),
+        });
+    }
+    // The preset library: two saved presets (one picked, with a name and a
+    // path typed) in both modes, so the "My presets" row and the Simple
+    // picker's user section show; then the same under a library lock.
+    for (variant, mode, lock) in [
+        ("simple-presets", EditorMode::Simple, None),
+        ("advanced-presets", EditorMode::Advanced, None),
+        (
+            "advanced-presets-locked",
+            EditorMode::Advanced,
+            Some(Msg::AnimReasonPresetsPending.en()),
+        ),
+    ] {
+        use crate::animation_timeline::library::UserPresetItem;
+        let mut document = animation_document();
+        document.set_mode(mode);
+        document.set_selection(&KeySelection::from_iter([KeyRef {
+            track: opacity,
+            frame: 20,
+        }]));
+        let motion = std::sync::Arc::new(document.capture_motion(1, Phase::In).unwrap());
+        let mut state = AnimationTimelineState::default();
+        state.active_row = Some(opacity);
+        state.user_presets = ["Swoosh", "Drift"]
+            .into_iter()
+            .zip(1_u32..)
+            .map(|(name, id)| UserPresetItem {
+                preset: core::num::NonZeroU32::new(id).unwrap(),
+                name: name.to_owned(),
+                phase: Phase::In,
+                motion: motion.clone(),
+            })
+            .collect();
+        state.library.name = "Bounce".into();
+        state.library.pick = core::num::NonZeroU32::new(1);
+        state.library.path = "/presets/swoosh.fmpreset".into();
+        state.library_reason = lock;
+        scenes.push(Scene {
+            name: format!("timeline/{variant}"),
             draw: Box::new(move |ui| {
                 let _output = AnimationTimelineWidget::new(&mut document, &mut state)
                     .locale(locale)

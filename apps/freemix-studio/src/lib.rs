@@ -7,6 +7,7 @@ mod capture_signal;
 mod native;
 mod osc;
 mod prefs;
+mod preset_files;
 mod runtime;
 mod supervisor;
 mod titles;

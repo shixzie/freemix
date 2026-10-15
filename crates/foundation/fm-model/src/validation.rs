@@ -19,6 +19,7 @@ pub enum EntityRef {
     StreamTarget(StreamTargetId),
     Grade(crate::GradeId),
     Lut(crate::LutId),
+    AnimationPreset(crate::AnimationPresetId),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,6 +56,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_input_locks(project, &mut errors);
     validate_playlist(project, &mut errors);
     validate_grading(project, &mut errors);
+    validate_animation_presets(project, &mut errors);
     validate_main_mix(project, &mut errors);
     validate_stingers(project, &mut errors);
     validate_scenes(project, &mut errors);
@@ -250,6 +252,29 @@ fn validate_grading(project: &Project, errors: &mut Vec<ValidationError>) {
     validate_layer_grades(project, errors);
     if let Some(source) = &grading.program {
         validate_grade_source(errors, grading, source, None, "program_grade");
+    }
+}
+
+/// Validates the animation preset library: its bound, unique ids and
+/// names, and every name. Each preset's motion is valid by construction.
+fn validate_animation_presets(project: &Project, errors: &mut Vec<ValidationError>) {
+    use crate::AnimationPresetError as Error;
+    for (id, error) in project.animation_presets().violations() {
+        let (field, kind) = match error {
+            Error::TooManyPresets { .. } => ("animation_presets", ValidationErrorKind::OutOfRange),
+            Error::DuplicateId(_) => ("animation_presets.id", ValidationErrorKind::DuplicateId),
+            Error::DuplicateName(_) => {
+                ("animation_presets.name", ValidationErrorKind::DuplicateName)
+            }
+            Error::EmptyName => ("animation_presets.name", ValidationErrorKind::Empty),
+            Error::NameTooLong { .. }
+            | Error::NameControlCharacter
+            | Error::UnknownPreset(_)
+            | Error::IndexOutOfRange { .. } => {
+                ("animation_presets.name", ValidationErrorKind::OutOfRange)
+            }
+        };
+        push_error(errors, Some(EntityRef::AnimationPreset(id)), field, kind);
     }
 }
 

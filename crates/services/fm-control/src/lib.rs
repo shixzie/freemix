@@ -15,6 +15,7 @@ use std::{
     },
 };
 
+mod animation_preset;
 mod automation;
 mod grade;
 mod playlist;
@@ -826,6 +827,15 @@ impl<A: AuthorizationHook> ControlService<A> {
         grade::grade_states(&self.engine)
     }
 
+    /// Returns the `animation_preset_state` records a session writes after
+    /// [`Self::scene_layout_states`], last of a snapshot's follow-on
+    /// records: exactly as many as the snapshot announces, in library order
+    /// (Protocol 2.34).
+    #[must_use]
+    pub fn animation_preset_states(&self) -> Vec<fm_protocol::AnimationPresetStateMessage> {
+        animation_preset::animation_preset_states(&self.engine)
+    }
+
     /// The template of title input `input`, when it was restored with one.
     #[must_use]
     pub fn title_template(&self, input: InputId) -> Option<&fm_engine::EngineTitleTemplate> {
@@ -1458,7 +1468,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetPlaylist { .. }
         | EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
-        | EngineCommand::SceneAnimation(_) => "project",
+        | EngineCommand::SceneAnimation(_)
+        | EngineCommand::AnimationPreset(_) => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         _ => "switcher",
     }
@@ -1487,6 +1498,11 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
         CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
+        | CommandPayload::ApplyTitleAnimationUserPreset { .. }
+        | CommandPayload::ApplySceneAnimationUserPreset { .. }
+        | CommandPayload::AddAnimationPreset { .. }
+        | CommandPayload::RenameAnimationPreset { .. }
+        | CommandPayload::RemoveAnimationPreset { .. }
         | CommandPayload::StretchTitleAnimation { .. }
         | CommandPayload::SetSceneAnimation { .. }
         | CommandPayload::ApplySceneAnimationPreset { .. }
@@ -1584,6 +1600,7 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one arm per payload family
 fn engine_command(payload: &CommandPayload) -> EngineCommand {
     match payload {
         payload @ (CommandPayload::ReorderInputs { .. }
@@ -1674,13 +1691,20 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::RemoveGradeLut { .. }) => grade::grade_engine_command(payload),
         payload @ (CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
-        | CommandPayload::StretchTitleAnimation { .. }) => {
+        | CommandPayload::StretchTitleAnimation { .. }
+        | CommandPayload::ApplyTitleAnimationUserPreset { .. }) => {
             title_animation::title_animation_engine_command(payload)
         }
         payload @ (CommandPayload::SetSceneAnimation { .. }
         | CommandPayload::ApplySceneAnimationPreset { .. }
-        | CommandPayload::StretchSceneAnimation { .. }) => {
+        | CommandPayload::StretchSceneAnimation { .. }
+        | CommandPayload::ApplySceneAnimationUserPreset { .. }) => {
             scene_animation::scene_animation_engine_command(payload)
+        }
+        payload @ (CommandPayload::AddAnimationPreset { .. }
+        | CommandPayload::RenameAnimationPreset { .. }
+        | CommandPayload::RemoveAnimationPreset { .. }) => {
+            animation_preset::animation_preset_engine_command(payload)
         }
     }
 }
@@ -2013,6 +2037,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
             included: *included,
         },
         EngineCommand::Grade(edit) => grade::wire_grade_payload(edit),
+        EngineCommand::AnimationPreset(edit) => {
+            animation_preset::wire_animation_preset_payload(edit)
+        }
         EngineCommand::TitleAnimation(edit) => {
             return title_animation::wire_title_animation_payload(edit);
         }
@@ -2310,6 +2337,14 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     }) {
         return grade::grade_changed(engine, edit);
     }
+    if let Some(edit) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::AnimationPresetsChanged(edit) = &event.payload else {
+            return None;
+        };
+        Some(edit)
+    }) {
+        return animation_preset::animation_preset_changed(engine, edit);
+    }
     if let Some(input) = outcome.events.iter().find_map(|event| {
         let EngineEvent::TitleAnimationChanged { input } = &event.payload else {
             return None;
@@ -2510,6 +2545,7 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
         frame_rate: engine.frame_rate(),
         playlist_follows: playlist::playlist_follows(engine),
         grade_states: grade::grade_state_count(engine),
+        animation_preset_states: animation_preset::animation_preset_state_count(engine),
     };
     SnapshotRecord {
         cursor: EventCursor {

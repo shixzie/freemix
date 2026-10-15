@@ -1,6 +1,7 @@
 mod app;
 mod args;
 mod grading;
+mod presets;
 mod project_bundle;
 mod remote;
 mod scene_animation;

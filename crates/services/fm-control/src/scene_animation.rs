@@ -116,6 +116,23 @@ pub fn scene_animation_engine_command(payload: &CommandPayload) -> EngineCommand
                 frames: *frames,
             },
         ),
+        CommandPayload::ApplySceneAnimationUserPreset {
+            input,
+            base_revision,
+            layer,
+            phase,
+            preset,
+            frames,
+        } => (
+            input,
+            base_revision,
+            SceneAnimationChange::Motion {
+                layer: LayerId::from_non_zero(layer.get()),
+                phase: *phase,
+                preset: fm_model::AnimationPresetId::new(*preset),
+                frames: *frames,
+            },
+        ),
         _ => unreachable!("only scene animation commands are delegated"),
     };
     EngineCommand::SceneAnimation(EngineSceneAnimationEdit {
@@ -171,6 +188,19 @@ pub fn wire_scene_animation_payload(edit: &EngineSceneAnimationEdit) -> Option<C
             input,
             base_revision,
             phase: *phase,
+            frames: *frames,
+        },
+        SceneAnimationChange::Motion {
+            layer,
+            phase,
+            preset,
+            frames,
+        } => CommandPayload::ApplySceneAnimationUserPreset {
+            input,
+            base_revision,
+            layer: WireSceneLayerId::new(layer.non_zero()),
+            phase: *phase,
+            preset: preset.get(),
             frames: *frames,
         },
     })

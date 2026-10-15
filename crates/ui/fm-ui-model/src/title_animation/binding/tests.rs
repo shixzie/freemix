@@ -8,7 +8,8 @@ use fm_types::FrameRate;
 
 use super::*;
 use crate::animation_editor::{
-    DragStart, Modifiers, Pointer, PreviewCompletion, RetimeHandle, TargetBounds, TargetKind,
+    DragStart, Modifiers, Pointer, PresetSource, PreviewCompletion, RetimeHandle, TargetBounds,
+    TargetKind,
 };
 use crate::title_animation::TitleAnimationStatus;
 
@@ -368,11 +369,11 @@ fn hovered_presets_preview_without_applying_and_apply_as_one_step() {
     let hover = PresetHover {
         target: element(2),
         phase: Phase::In,
-        preset: AnimationPreset::SlideFromLeft,
+        preset: PresetSource::BuiltIn(AnimationPreset::SlideFromLeft),
         frames: 20,
     };
-    binding.set_preset_hover(Some(hover), MS(1_000));
-    assert_eq!(binding.preset_hover(), Some(hover));
+    binding.set_preset_hover(Some(hover.clone()), MS(1_000));
+    assert_eq!(binding.preset_hover(), Some(hover.clone()));
     // The draft is untouched; the hovered draft moves the unanimated name.
     assert!(!binding.document().is_dirty());
     assert_eq!(binding.document().clip(), &clip(20));
@@ -407,7 +408,7 @@ fn hovered_presets_preview_without_applying_and_apply_as_one_step() {
     assert!(binding.shown_preview_is_hover());
     assert!(!binding.exact_preview_current(), "not the draft's frame");
     // Repeating the hover keeps it; nothing is saved meanwhile.
-    binding.set_preset_hover(Some(hover), MS(1_600));
+    binding.set_preset_hover(Some(hover.clone()), MS(1_600));
     assert!(binding.hover_preview_current());
     assert_eq!(binding.poll_save(true), None);
 
@@ -435,6 +436,65 @@ fn hovered_presets_preview_without_applying_and_apply_as_one_step() {
     let mut unoutlined = TitleAnimationBinding::new(input(), &status(4, clip(20)));
     unoutlined.set_preset_hover(Some(hover), MS(0));
     assert_eq!(unoutlined.preset_hover(), None);
+}
+
+/// GX-011 user presets (Protocol 2.34): an element's In phase saved as a
+/// motion previews and applies on another element like a built-in, retimed
+/// to the requested length; the hover never touches the draft.
+#[test]
+fn user_presets_capture_preview_and_apply_retimed() {
+    let mut binding = TitleAnimationBinding::new(input(), &status(4, clip(20)));
+    binding.set_design(&design());
+    let motion = binding
+        .document()
+        .capture_motion(element(1), Phase::In)
+        .expect("element 1 fades in");
+    assert_eq!(motion.frames(), 20);
+    assert!(motion.properties().eq([Property::Opacity]));
+    // Nothing to save on an element that does not move.
+    assert!(
+        binding
+            .document()
+            .capture_motion(element(2), Phase::In)
+            .is_err()
+    );
+
+    let source = PresetSource::User {
+        preset: core::num::NonZeroU32::new(1).unwrap(),
+        name: "Fade up".to_owned(),
+        motion: std::sync::Arc::new(motion),
+    };
+    let hover = PresetHover {
+        target: element(2),
+        phase: Phase::In,
+        preset: source.clone(),
+        frames: 10,
+    };
+    binding.set_preset_hover(Some(hover.clone()), MS(0));
+    assert_eq!(binding.preset_hover(), Some(hover));
+    assert!(!binding.document().is_dirty());
+    let hovered = binding.preset_hover_document().unwrap().clip().clone();
+    let track = hovered
+        .track(TrackKey::new(element(2), Phase::In, Property::Opacity))
+        .expect("the hovered draft fades element 2 in");
+    assert_eq!(track.keys.last().unwrap().frame, 10, "retimed to 10 frames");
+
+    binding.set_preset_hover(None, MS(10));
+    binding
+        .document_mut()
+        .apply_preset_source(element(2), Phase::In, &source, 10, &Property::ALL)
+        .unwrap();
+    assert_eq!(binding.document().undo_depth(), 1);
+    assert_eq!(binding.document().clip(), &hovered);
+    // The phase keeps its length; element 1's own fade is untouched.
+    assert_eq!(binding.document().clip().phase_frames(Phase::In), 20);
+    assert_eq!(
+        binding
+            .document()
+            .clip()
+            .track(TrackKey::new(element(1), Phase::In, Property::Opacity)),
+        clip(20).track(TrackKey::new(element(1), Phase::In, Property::Opacity))
+    );
 }
 
 /// GX-011 stage 5: a scene editor is the same binding keyed by layer: its

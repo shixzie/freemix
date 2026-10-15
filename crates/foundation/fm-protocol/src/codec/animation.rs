@@ -35,15 +35,16 @@ use core::num::NonZeroU128;
 
 use fm_animation::{
     AnimationPreset, Clip, CubicBezier, Easing, Keyframe, MAX_CLIP_KEYS, MAX_CLIP_TRACKS,
-    MAX_PHASE_FRAMES, MAX_TRACK_KEYS, Phase, Property, Rgba, Timebase, Track, TrackKey, Value,
+    MAX_PHASE_FRAMES, MAX_TRACK_KEYS, MotionTarget, Phase, PhaseMotion, Property, Rgba, Timebase,
+    Track, TrackKey, Value,
 };
 use fm_types::FrameRate;
 
 use crate::{
-    CodecError, MAX_SCENE_ANIMATION_BYTES, MAX_TITLE_ANIMATION_BYTES, MAX_TITLE_PREVIEW_HEIGHT,
-    MAX_TITLE_PREVIEW_PART_BYTES, MAX_TITLE_PREVIEW_PARTS, MAX_TITLE_PREVIEW_WIDTH,
-    TitlePreviewSample, WireInputId, WireSceneClip, WireSceneLayerId, WireTitleClip,
-    WireTitleElementId,
+    CodecError, MAX_ANIMATION_PRESET_BYTES, MAX_SCENE_ANIMATION_BYTES, MAX_TITLE_ANIMATION_BYTES,
+    MAX_TITLE_PREVIEW_HEIGHT, MAX_TITLE_PREVIEW_PART_BYTES, MAX_TITLE_PREVIEW_PARTS,
+    MAX_TITLE_PREVIEW_WIDTH, TitlePreviewSample, WireInputId, WireSceneClip, WireSceneLayerId,
+    WireTitleClip, WireTitleElementId,
 };
 
 /// What a wire clip animates: its target id's width and the clip's size
@@ -65,6 +66,18 @@ impl ClipTarget for WireTitleElementId {
     }
     fn from_wire(value: u128) -> Option<Self> {
         NonZeroU128::new(value).map(Self::new)
+    }
+}
+
+/// A saved motion's single target (Protocol 2.34 animation presets).
+impl ClipTarget for MotionTarget {
+    const BITS: u32 = 1;
+    const MAX_BYTES: usize = MAX_ANIMATION_PRESET_BYTES;
+    fn to_wire(self) -> u128 {
+        1
+    }
+    fn from_wire(value: u128) -> Option<Self> {
+        (value == 1).then_some(Self)
     }
 }
 
@@ -363,6 +376,70 @@ pub(super) fn decode_clip<T: ClipTarget>(value: &str) -> Result<Clip<T>, CodecEr
     }
     .clip()
     .ok_or_else(|| invalid_clip(format!("{} bytes", bytes.len())))
+}
+
+/// Encodes a saved motion (Protocol 2.34) as one base64url field:
+/// `width height clip`, the reference box as varints followed by the
+/// motion's clip (target `1`, In phase only, empty Out phase).
+///
+/// # Errors
+///
+/// [`CodecError::InvalidField`] naming `motion` when the encoding exceeds
+/// [`MAX_ANIMATION_PRESET_BYTES`].
+pub(super) fn encode_motion(motion: &PhaseMotion) -> Result<String, CodecError> {
+    let mut bytes = Vec::new();
+    push_varint(&mut bytes, u128::from(motion.width()));
+    push_varint(&mut bytes, u128::from(motion.height()));
+    bytes.extend(clip_bytes(motion.clip()));
+    if bytes.len() > MAX_ANIMATION_PRESET_BYTES {
+        return Err(CodecError::InvalidField {
+            field: "motion",
+            value: format!("{} bytes", bytes.len()),
+        });
+    }
+    Ok(crate::monitor_image::base64url_encode(&bytes))
+}
+
+/// The size of a motion's binary encoding, in bytes.
+#[must_use]
+pub fn motion_wire_bytes(motion: &PhaseMotion) -> usize {
+    let mut bytes = Vec::new();
+    push_varint(&mut bytes, u128::from(motion.width()));
+    push_varint(&mut bytes, u128::from(motion.height()));
+    bytes.len() + clip_bytes(motion.clip()).len()
+}
+
+/// Strictly decodes one base64url motion field.
+///
+/// # Errors
+///
+/// [`CodecError::InvalidField`] naming `motion` for a non-canonical,
+/// oversized, truncated, or trailing encoding, or a motion
+/// [`PhaseMotion::new`] refuses.
+pub(super) fn decode_motion(value: &str) -> Result<PhaseMotion, CodecError> {
+    let invalid = |detail: String| CodecError::InvalidField {
+        field: "motion",
+        value: detail,
+    };
+    let encoded_limit = (MAX_ANIMATION_PRESET_BYTES * 4).div_ceil(3);
+    if value.len() > encoded_limit {
+        return Err(invalid(format!("{} characters", value.len())));
+    }
+    let bytes = crate::monitor_image::base64url_decode(value)
+        .ok_or_else(|| invalid(format!("{} characters", value.len())))?;
+    let mut reader = Reader {
+        bytes: &bytes,
+        position: 0,
+    };
+    let width = reader.u32();
+    let height = reader.u32();
+    let clip = reader.clip::<MotionTarget>();
+    match (width, height, clip) {
+        (Some(width), Some(height), Some(clip)) => {
+            PhaseMotion::new(clip, width, height).map_err(|error| invalid(error.to_string()))
+        }
+        _ => Err(invalid(format!("{} bytes", bytes.len()))),
+    }
 }
 
 /// The wire token of an animation phase.

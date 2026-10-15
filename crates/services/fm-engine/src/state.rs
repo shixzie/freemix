@@ -141,6 +141,7 @@ pub struct ShowState {
     playlist: Playlist,
     grading: ProjectGrading,
     luts: BTreeMap<LutId, EngineLut>,
+    animation_presets: fm_model::AnimationPresetLibrary,
 }
 
 impl ShowState {
@@ -207,6 +208,7 @@ impl ShowState {
                 .expect("an empty playlist is valid"),
             grading: ProjectGrading::default(),
             luts: BTreeMap::new(),
+            animation_presets: fm_model::AnimationPresetLibrary::default(),
         })
     }
 
@@ -732,6 +734,33 @@ impl ShowState {
             .map(|(id, lut)| (*id, std::sync::Arc::clone(lut.cube())))
             .collect();
         CompiledProjectGrades::compile_grading(&self.grading, &luts)
+    }
+
+    /// The project's animation preset library (GX-011).
+    #[must_use]
+    pub const fn animation_presets(&self) -> &fm_model::AnimationPresetLibrary {
+        &self.animation_presets
+    }
+
+    /// Installs a restored animation preset library.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`fm_model::AnimationPresetError`] inserting the
+    /// presets in order reports. The show is unchanged on error.
+    pub fn restore_animation_presets(
+        &mut self,
+        library: fm_model::AnimationPresetLibrary,
+    ) -> Result<(), fm_model::AnimationPresetError> {
+        if let Some((_, error)) = library.violations().into_iter().next() {
+            return Err(error);
+        }
+        self.animation_presets = library;
+        Ok(())
+    }
+
+    pub(crate) const fn animation_presets_mut(&mut self) -> &mut fm_model::AnimationPresetLibrary {
+        &mut self.animation_presets
     }
 
     pub(crate) fn grading_parts_mut(

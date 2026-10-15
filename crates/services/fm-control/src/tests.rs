@@ -4711,3 +4711,165 @@ fn scene_layer_grades_replicate_to_every_scene_input_sharing_the_scene() {
     );
     assert_eq!(control.snapshot().snapshot.grade_states, 0);
 }
+
+/// GX-011, Protocol 2.34: the animation preset library is edited by
+/// `EditProject` commands that publish `animation_preset_changed`, follow
+/// snapshots as `animation_preset_state` records, and undo through the
+/// shared history; a library preset applies to a scene layer by id.
+#[test]
+#[allow(clippy::too_many_lines)] // one golden: add, apply, rename, remove, undo
+fn animation_preset_library_edits_are_project_edits_with_state_records_and_undo() {
+    use fm_model::fm_animation::{
+        Easing, Keyframe, MotionClip, MotionTarget, Phase, PhaseMotion, Property, Timebase, Track,
+        TrackKey, Value,
+    };
+    use fm_protocol::{AnimationPresetChange, AnimationPresetEntry, WireSceneLayerId};
+
+    let (mut control, scene) = scene_control();
+    let scene_input = control.snapshot().snapshot.scenes[0];
+    let id = |value| core::num::NonZeroU32::new(value).unwrap();
+    let clip = MotionClip::from_tracks(
+        Timebase::new(fm_types::FrameRate::new(30, 1).unwrap()),
+        10,
+        0,
+        vec![Track::new(
+            TrackKey::new(MotionTarget, Phase::In, Property::PositionX),
+            vec![
+                Keyframe::new(0, Value::Scalar(-200), Easing::CubicOut),
+                Keyframe::new(10, Value::Scalar(0), Easing::Linear),
+            ],
+        )],
+    )
+    .unwrap();
+    let motion = PhaseMotion::new(clip, 640, 360).unwrap();
+    let entry = |name: &str| AnimationPresetEntry {
+        preset: id(1),
+        name: name.into(),
+        phase: Phase::In,
+        motion: Box::new(motion.clone()),
+    };
+    let add = CommandPayload::AddAnimationPreset {
+        preset: id(1),
+        name: "Swoosh".into(),
+        phase: Phase::In,
+        motion: Box::new(motion.clone()),
+        index: None,
+    };
+    let rename = CommandPayload::RenameAnimationPreset {
+        preset: id(1),
+        name: "Whoosh".into(),
+    };
+    let remove = CommandPayload::RemoveAnimationPreset { preset: id(1) };
+    for payload in [&add, &rename, &remove] {
+        assert_eq!(
+            control.required_classes(payload).primary(),
+            CommandClass::EditProject
+        );
+    }
+    let denied = control
+        .submit(
+            &principal(Role::Operator),
+            command("o", "o", add.clone()),
+            0,
+        )
+        .unwrap();
+    assert_eq!(rejection_code(&denied), Some("permission_denied"));
+    assert_eq!(control.snapshot().snapshot.animation_preset_states, 0);
+
+    let added = control
+        .submit(
+            &principal(Role::Graphics),
+            command("a", "a", add.clone()),
+            0,
+        )
+        .unwrap();
+    assert!(added.is_accepted(), "{:?}", added.output.result);
+    assert_eq!(
+        added.output.events[0].payload,
+        EventPayload::AnimationPresetChanged(AnimationPresetChange::Set {
+            index: 0,
+            entry: entry("Swoosh"),
+        })
+    );
+    assert_wire_exact(&control, &added);
+    assert_eq!(control.snapshot().snapshot.animation_preset_states, 1);
+    let states = control.animation_preset_states();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].entry, entry("Swoosh"));
+    assert_eq!(states[0].revision, control.snapshot().snapshot.revision);
+
+    // The same id again is refused; so is an unknown preset applied.
+    let again = control
+        .submit(&principal(Role::Graphics), command("b", "b", add), 0)
+        .unwrap();
+    assert!(!again.is_accepted());
+    let apply = |preset| CommandPayload::ApplySceneAnimationUserPreset {
+        input: scene_input,
+        base_revision: 0,
+        layer: WireSceneLayerId::new(id(9)),
+        phase: Phase::In,
+        preset: id(preset),
+        frames: 20,
+    };
+    let unknown = control
+        .submit(&principal(Role::Graphics), command("u", "u", apply(7)), 0)
+        .unwrap();
+    assert!(!unknown.is_accepted());
+
+    // Applied to layer 9: the scene's clip is the model's application.
+    let applied = control
+        .submit(&principal(Role::Graphics), command("p", "p", apply(1)), 0)
+        .unwrap();
+    assert!(applied.is_accepted(), "{:?}", applied.output.result);
+    let mut expected = scene.clone();
+    expected
+        .apply_animation_motion(fm_model::LayerId::new(9).unwrap(), Phase::In, &motion, 20)
+        .unwrap();
+    assert_eq!(
+        control.scene_animation_states()[0].clip,
+        Box::new(scene_clip_to_wire(&expected.animation.clip))
+    );
+    assert_wire_exact(&control, &applied);
+
+    let renamed = control
+        .submit(&principal(Role::Graphics), command("r", "r", rename), 0)
+        .unwrap();
+    assert!(renamed.is_accepted(), "{:?}", renamed.output.result);
+    assert_eq!(
+        renamed.output.events[0].payload,
+        EventPayload::AnimationPresetChanged(AnimationPresetChange::Set {
+            index: 0,
+            entry: entry("Whoosh"),
+        })
+    );
+    let removed = control
+        .submit(&principal(Role::Graphics), command("d", "d", remove), 0)
+        .unwrap();
+    assert!(removed.is_accepted(), "{:?}", removed.output.result);
+    assert_eq!(
+        removed.output.events[0].payload,
+        EventPayload::AnimationPresetChanged(AnimationPresetChange::Removed { preset: id(1) })
+    );
+    assert_eq!(control.snapshot().snapshot.animation_preset_states, 0);
+
+    // Undo brings the renamed preset back at its index.
+    let undo = CommandPayload::Undo {
+        expected_edit: None,
+    };
+    assert_eq!(
+        control.required_classes(&undo).additional(),
+        Some(CommandClass::EditProject)
+    );
+    let undone = control
+        .submit(&principal(Role::Graphics), command("z", "z", undo), 0)
+        .unwrap();
+    assert!(undone.is_accepted(), "{:?}", undone.output.result);
+    assert_eq!(
+        undone.output.events[0].payload,
+        EventPayload::AnimationPresetChanged(AnimationPresetChange::Set {
+            index: 0,
+            entry: entry("Whoosh"),
+        })
+    );
+    assert_eq!(control.animation_preset_states()[0].entry, entry("Whoosh"));
+}

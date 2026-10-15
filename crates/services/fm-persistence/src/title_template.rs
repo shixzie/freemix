@@ -6,7 +6,7 @@
 //! family the template draws with to a font file in the same bundle:
 //!
 //! ```json
-//! {"schema_version": 33,
+//! {"schema_version": 34,
 //!  "template": {"id": 1, "name": "Lower third", "width": 1920, "height": 1080,
 //!               "background": "#00000000", "fields": [...], "elements": [...],
 //!               "animation": {"timebase": "30/1", "revision": 3,
@@ -69,8 +69,8 @@ use fm_model::{
     TitleFieldsError, validate_title_fields,
 };
 use fm_titles::fm_animation::{
-    Clip, ClipError, CubicBezier, Easing, EasingPreset, Keyframe, Phase, Property, Rgba, Timebase,
-    Track, TrackKey, Value as AnimationValue,
+    Clip, ClipError, Easing, EasingPreset, Keyframe, Phase, Property, Rgba, Timebase, Track,
+    TrackKey, Value as AnimationValue,
 };
 use fm_titles::{
     Alignment, Bounds, ClockDirection, ClockFormat, ClockSpec, Color, Element, ElementId,
@@ -1401,26 +1401,11 @@ pub(crate) fn write_easing(output: &mut String, easing: Easing) -> Result<(), Ti
 }
 
 pub(crate) const fn phase_name(phase: Phase) -> &'static str {
-    match phase {
-        Phase::In => "in",
-        Phase::Out => "out",
-    }
+    fm_preset_file::motion::phase_name(phase)
 }
 
 pub(crate) const fn property_name(property: Property) -> &'static str {
-    match property {
-        Property::PositionX => "position_x",
-        Property::PositionY => "position_y",
-        Property::ScaleX => "scale_x",
-        Property::ScaleY => "scale_y",
-        Property::Rotation => "rotation",
-        Property::Opacity => "opacity",
-        Property::CropLeft => "crop_left",
-        Property::CropTop => "crop_top",
-        Property::CropRight => "crop_right",
-        Property::CropBottom => "crop_bottom",
-        Property::Color => "color",
-    }
+    fm_preset_file::motion::property_name(property)
 }
 
 fn write_clock(output: &mut String, clock: &TitleClock) {
@@ -1606,7 +1591,9 @@ fn decode_document(
         });
     }
     let mut root = Object::new(
-        json::Reader::new(source).document()?,
+        json::Reader::new(source)
+            .document()
+            .map_err(DecodeError::from)?,
         "title template document",
     )?;
     let schema = root.u32("schema_version")?;
@@ -1993,27 +1980,7 @@ fn parse_animation(value: Value) -> Result<TitleAnimation, TitleTemplateError> {
 
 /// Parses exactly `numerator/denominator` in lowest terms.
 pub(crate) fn parse_timebase(text: &str) -> Result<Timebase, DecodeError> {
-    let invalid = || {
-        syntax(format!(
-            "timebase `{text}` is not a lowest-terms `N/D` rate"
-        ))
-    };
-    let (numerator, denominator) = text.split_once('/').ok_or_else(invalid)?;
-    let number = |digits: &str| -> Result<u32, DecodeError> {
-        if digits.is_empty()
-            || !digits.bytes().all(|byte| byte.is_ascii_digit())
-            || (digits.len() > 1 && digits.starts_with('0'))
-        {
-            return Err(invalid());
-        }
-        digits.parse().map_err(|_| invalid())
-    };
-    let (numerator, denominator) = (number(numerator)?, number(denominator)?);
-    let rate = FrameRate::new(numerator, denominator).map_err(|_| invalid())?;
-    if rate.numerator() != numerator || rate.denominator() != denominator {
-        return Err(invalid());
-    }
-    Ok(Timebase::new(rate))
+    Ok(fm_preset_file::motion::parse_timebase(text)?)
 }
 
 fn parse_track(value: Value) -> Result<Track<ElementId>, DecodeError> {
@@ -2053,39 +2020,7 @@ fn parse_key(value: Value, property: Property) -> Result<Keyframe, DecodeError> 
 }
 
 pub(crate) fn parse_easing(value: Value) -> Result<Easing, DecodeError> {
-    match value {
-        Value::String(id) => EasingPreset::from_id(&id)
-            .map(EasingPreset::easing)
-            .ok_or_else(|| unknown_enum("easing", &id)),
-        value => {
-            let mut object = Object::new(value, "easing")?;
-            let Value::Array(points) = object.take("cubic_bezier")? else {
-                return Err(syntax("cubic_bezier must be an array of four integers"));
-            };
-            object.finish()?;
-            let [x1, y1, x2, y2] = <[Value; 4]>::try_from(points)
-                .map_err(|_| syntax("cubic_bezier must hold exactly four integers"))?;
-            let unsigned = |value: Value| match value {
-                Value::Number(number) => {
-                    u32::try_from(number).map_err(|_| syntax("cubic_bezier x is out of range"))
-                }
-                _ => Err(syntax("cubic_bezier x must be an unsigned integer")),
-            };
-            let signed = |value: Value| match value {
-                Value::Number(number) => {
-                    i32::try_from(number).map_err(|_| syntax("cubic_bezier y is out of range"))
-                }
-                Value::NegativeNumber(number) => i128::try_from(number)
-                    .ok()
-                    .and_then(|number| i32::try_from(-number).ok())
-                    .ok_or_else(|| syntax("cubic_bezier y is out of range")),
-                _ => Err(syntax("cubic_bezier y must be an integer")),
-            };
-            CubicBezier::new(unsigned(x1)?, signed(y1)?, unsigned(x2)?, signed(y2)?)
-                .map(Easing::CubicBezier)
-                .map_err(|error| syntax(error.to_string()))
-        }
-    }
+    Ok(fm_preset_file::motion::parse_easing(value)?)
 }
 
 /// The audit issue for a title template that does not load.

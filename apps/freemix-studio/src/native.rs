@@ -246,6 +246,9 @@ struct StudioApp {
     preferences: PreferenceStore,
     /// Why the preferences could not be read or saved, shown as a notice.
     preferences_notice: Option<String>,
+    /// The supervised project bundle, whose LUT files a grade export reads;
+    /// `None` when connected to an independent daemon.
+    project_bundle: Option<std::path::PathBuf>,
 }
 
 impl StudioApp {
@@ -254,6 +257,12 @@ impl StudioApp {
         creation_context: &eframe::CreationContext<'_>,
     ) -> Result<Self, std::io::Error> {
         let osc = config.osc_listen.map(OscReceiver::bind).transpose()?;
+        let project_bundle = match &config.connection {
+            crate::ConnectionConfig::Supervised(supervised) => {
+                Some(supervised.project_bundle.clone())
+            }
+            crate::ConnectionConfig::Existing(_) => None,
+        };
         let mut shell = StudioShell::default();
         let env = |name: &str| std::env::var(name).ok();
         let path = preferences_path(env);
@@ -304,6 +313,7 @@ impl StudioApp {
             osc_notice: None,
             preferences,
             preferences_notice,
+            project_bundle,
         })
     }
 
@@ -467,6 +477,15 @@ impl eframe::App for StudioApp {
         for request in self.shell.take_grade_lut_requests() {
             let file = read_grade_lut(&request.path);
             if let Some(intent) = self.shell.receive_grade_lut_file(request, file) {
+                self.enqueue_intent(intent);
+            }
+        }
+        for request in self.shell.take_preset_file_requests() {
+            let answer = crate::preset_files::carry_out(&request, self.project_bundle.as_deref());
+            for intent in self
+                .shell
+                .receive_preset_file(&self.state, &request, answer)
+            {
                 self.enqueue_intent(intent);
             }
         }
@@ -1537,9 +1556,14 @@ fn begin_intent(
         StudioIntent::Title(command) => Some(command.clone()),
         _ => None,
     };
+    // Preset library edits name their preset by id and are checked
+    // against the current library, like a base revision.
     let carries_base_revision = matches!(
         intent,
-        StudioIntent::Title(_) | StudioIntent::TitleAnimation(_) | StudioIntent::SceneAnimation(_)
+        StudioIntent::Title(_)
+            | StudioIntent::TitleAnimation(_)
+            | StudioIntent::SceneAnimation(_)
+            | StudioIntent::AnimationPreset(_)
     );
     let payload = intent_payload(intent, view.as_ref())?;
     let expected_revision = view
@@ -2291,7 +2315,9 @@ fn intent_payload(
             .map_err(|error| format!("Cannot send title command: {error}"))?,
         StudioIntent::Playlist(intent) => playlist_payload(intent),
         StudioIntent::Grade(command) => command.payload(),
-        StudioIntent::TitleAnimation(payload) | StudioIntent::SceneAnimation(payload) => payload,
+        StudioIntent::TitleAnimation(payload)
+        | StudioIntent::SceneAnimation(payload)
+        | StudioIntent::AnimationPreset(payload) => payload,
         StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_) => {
             return Err("An exact preview request is not a command".to_owned());
         }
@@ -2902,6 +2928,7 @@ mod tests {
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,
+            animation_preset_states: 0,
         }
     }
 
@@ -3269,6 +3296,7 @@ mod tests {
                 fm_ui_egui::Appearance::default(),
             ),
             preferences_notice: None,
+            project_bundle: None,
         };
 
         app.check_worker_health();
@@ -5226,6 +5254,7 @@ mod tests {
                 fm_ui_egui::Appearance::default(),
             ),
             preferences_notice: None,
+            project_bundle: None,
         };
         app.shell.set_transition_duration_frames(42);
         app.shell.set_fade_to_black_duration_frames(84);
@@ -5910,6 +5939,158 @@ mod tests {
             assert_eq!(lost.title_updates, [TitleUpdate::Abandoned { request: 42 }]);
             assert_ne!(lost.connection_status, StudioConnectionStatus::Ready);
             assert!(!lost.title_access.is_ready());
+
+            request_sender.send(WorkerRequest::Shutdown).unwrap();
+            worker.join().unwrap();
+            server.join().unwrap();
+        }
+
+        /// One user preset fading an element in over 12 frames.
+        fn user_preset_entry(name: &str) -> fm_protocol::AnimationPresetEntry {
+            use fm_animation::{
+                Clip, Easing, Keyframe, MotionTarget, Phase, PhaseMotion, Property, Timebase,
+                Track, TrackKey, Value,
+            };
+            let clip = Clip::from_tracks(
+                Timebase::new(fm_types::FrameRate::new(30, 1).unwrap()),
+                12,
+                0,
+                vec![Track::new(
+                    TrackKey::new(MotionTarget, Phase::In, Property::Opacity),
+                    vec![
+                        Keyframe::new(0, Value::Scalar(0), Easing::CubicOut),
+                        Keyframe::new(12, Value::Scalar(255), Easing::Linear),
+                    ],
+                )],
+            )
+            .unwrap();
+            fm_protocol::AnimationPresetEntry {
+                preset: core::num::NonZeroU32::new(1).unwrap(),
+                name: name.to_owned(),
+                phase: Phase::In,
+                motion: Box::new(PhaseMotion::new(clip, 200, 50).unwrap()),
+            }
+        }
+
+        /// Serves the title show with one user preset (Protocol 2.34) and
+        /// accepts one library command, announcing the renamed preset.
+        fn serve_worker_presets(
+            listener: &TcpListener,
+            command_seen: &SyncSender<(Option<u64>, CommandPayload)>,
+        ) {
+            let mut peer = HeartbeatPeer::accept(listener);
+            peer.handshake_request();
+            let handshake = heartbeat_handshake(HandshakeOutcome::Snapshot {
+                reason: SnapshotReason::NoCursor,
+            });
+            peer.send(&WireMessage::HandshakeResponse(handshake));
+            peer.send(&WireMessage::Snapshot(SnapshotMessage {
+                animation_preset_states: 1,
+                ..title_snapshot()
+            }));
+            peer.send(&WireMessage::TitleState(title_state()));
+            peer.send(&WireMessage::TitleAnimationState(title_animation_state()));
+            peer.send(&WireMessage::TitleLayoutState(title_layout_state()));
+            peer.send(&WireMessage::AnimationPresetState(
+                fm_protocol::AnimationPresetStateMessage {
+                    revision: title_snapshot().revision,
+                    entry: user_preset_entry("Fade up"),
+                },
+            ));
+            loop {
+                let Some(line) = peer.next_line() else {
+                    return;
+                };
+                match decode_line(&line).unwrap() {
+                    WireMessage::Heartbeat(heartbeat) => {
+                        if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
+                            HeartbeatAcknowledgementMessage {
+                                server: heartbeat.server,
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        )) {
+                            return;
+                        }
+                    }
+                    WireMessage::Command(command) => {
+                        command_seen
+                            .send((command.expected_revision, command.payload.clone()))
+                            .unwrap();
+                        let CommandPayload::RenameAnimationPreset { name, .. } = command.payload
+                        else {
+                            panic!("expected animation_preset_rename");
+                        };
+                        let revision = title_snapshot().revision + 1;
+                        peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                            id: command.id,
+                            revision,
+                            scheduled_frame: None,
+                        }));
+                        peer.send(&WireMessage::Event(EventMessage {
+                            payload: EventPayload::AnimationPresetChanged(
+                                fm_protocol::AnimationPresetChange::Set {
+                                    index: 0,
+                                    entry: user_preset_entry(&name),
+                                },
+                            ),
+                            ..command_event(revision)
+                        }));
+                        peer.send(&WireMessage::RuntimeEvent(command_runtime_event(revision)));
+                    }
+                    other => panic!("unexpected peer message: {other:?}"),
+                }
+            }
+        }
+
+        /// GX-011, Protocol 2.34: the worker replicates the project's user
+        /// presets from the snapshot's `animation_preset_state` records,
+        /// sends library edits without a project revision precondition (the
+        /// server checks them against the library), and follows
+        /// `animation_preset_changed`.
+        #[test]
+        fn worker_replicates_user_presets_and_sends_library_edits() {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            let (command_seen, commands) = sync_channel(4);
+            let server = thread::spawn(move || serve_worker_presets(&listener, &command_seen));
+            let (request_sender, updates, worker) =
+                spawn_existing_worker(address, "user-presets-test");
+            let names = |state: &StudioUiState| -> Vec<String> {
+                state
+                    .project_state
+                    .as_ref()
+                    .map(|project| {
+                        project
+                            .animation_presets()
+                            .entries()
+                            .iter()
+                            .map(|entry| entry.name.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let ready = receive_state_where(&updates, |state| {
+                state.connection_status == StudioConnectionStatus::Ready
+                    && state
+                        .project_state
+                        .as_ref()
+                        .is_some_and(fm_ui_model::ProjectState::animation_presets_complete)
+            });
+            assert_eq!(names(&ready), ["Fade up"]);
+
+            request_sender
+                .send(WorkerRequest::Intent(StudioIntent::AnimationPreset(
+                    CommandPayload::RenameAnimationPreset {
+                        preset: core::num::NonZeroU32::new(1).unwrap(),
+                        name: "Fade in".to_owned(),
+                    },
+                )))
+                .unwrap();
+            let (expected, _) = commands.recv_timeout(HEARTBEAT_TEST_TIMEOUT).unwrap();
+            assert_eq!(expected, None);
+            let renamed = receive_state_where(&updates, |state| names(state) == ["Fade in"]);
+            assert!(renamed.error.is_none(), "{:?}", renamed.error);
 
             request_sender.send(WorkerRequest::Shutdown).unwrap();
             worker.join().unwrap();

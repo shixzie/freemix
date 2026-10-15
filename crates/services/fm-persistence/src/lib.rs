@@ -26,6 +26,14 @@ pub use autosave::{
     DEFAULT_AUTOSAVE_GENERATIONS, MAX_AUTOSAVE_GENERATIONS,
 };
 pub use bundle::{BundleExport, BundledAsset};
+pub use fm_preset_file::{
+    ANIMATION_PRESET_EXTENSION, AnimationPresetFile, ExportedGradeLut, GRADE_PRESET_EXTENSION,
+    GradeExportLut, GradeFileLut, GradeLutSource, GradePresetFile, LoadedGradeLut,
+    LoadedGradePreset, MAX_EMBEDDED_LUT_BYTES, MAX_PRESET_FILE_BYTES, PresetFileError,
+    decode_animation_preset_file, decode_grade_preset_file, encode_animation_preset_file,
+    encode_grade_preset_file, is_sibling_lut_name, read_animation_preset_file,
+    read_grade_preset_file, sibling_lut_name, write_animation_preset_file, write_grade_preset_file,
+};
 pub use journal::{
     AbandonedJournal, CompactionReport, JournalError, JournalObservation, JournalProgress,
     JournalScan, JournalWriter, MAX_JOURNAL_PROGRESS_BYTES, MAX_JOURNAL_RECORD_BYTES,
@@ -43,6 +51,19 @@ pub use model::{
     RuntimeFadeToBlack, RuntimeManualTransitions, RuntimeOverlayBorder, RuntimeOverlayChannel,
     RuntimeOverlayPosition, RuntimeOverlayTransition, RuntimeOverlays, RuntimeRouting,
     StoredProject,
+};
+
+// Preset files are versioned by the project schema and bounded like the
+// project's own libraries.
+const _: () = {
+    assert!(fm_preset_file::SCHEMA_VERSION == CURRENT_SCHEMA_VERSION);
+    assert!(fm_preset_file::MAX_GRADE_NAME_BYTES == fm_model::MAX_GRADE_NAME_BYTES);
+    assert!(fm_preset_file::MAX_LUT_NAME_BYTES == fm_model::MAX_LUT_NAME_BYTES);
+    assert!(fm_preset_file::MAX_LUT_FILE_BYTES == fm_model::MAX_LUT_FILE_BYTES);
+    assert!(
+        fm_preset_file::MAX_ANIMATION_PRESET_NAME_BYTES
+            == fm_model::MAX_ANIMATION_PRESET_NAME_BYTES
+    );
 };
 pub use recent::{
     DEFAULT_RECENT_PROJECTS, MAX_RECENT_PROJECTS, MAX_RECENT_PROJECTS_BYTES,

@@ -16,11 +16,14 @@
 //! * [`AnimationEdit`]: atomic stretch, retime, move, easing, and copy/paste.
 //! * [`SnapTargets`]: nearest landmark within a threshold.
 //! * [`AnimationPreset`]: Fade, Slide, Pop, Wipe, and Drop.
+//! * [`PhaseMotion`]: one phase of one target saved for reuse on any
+//!   target (user presets).
 //! * [`sin_cos_q30`]: the fixed-point rotation every renderer shares.
 
 mod clip;
 pub mod easing;
 mod edit;
+mod motion;
 mod preset;
 mod property;
 mod snap;
@@ -40,6 +43,7 @@ pub use edit::{
     AnimationEdit, ClipboardKey, KeyClipboard, KeyRef, KeySelection, retime_frame, round_half_up,
     stretch_frame,
 };
+pub use motion::{MAX_MOTION_KEYS, MotionClip, MotionError, MotionTarget, PhaseMotion};
 pub use preset::{AnimationPreset, PresetGeometry};
 pub use property::{Layering, MAX_SCALE_BP, OPACITY_IDENTITY, Property, SCALE_IDENTITY_BP};
 pub use snap::{Snap, SnapKind, SnapTargets};

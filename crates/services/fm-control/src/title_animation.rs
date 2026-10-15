@@ -116,6 +116,23 @@ pub fn title_animation_engine_command(payload: &CommandPayload) -> EngineCommand
                 frames: *frames,
             },
         ),
+        CommandPayload::ApplyTitleAnimationUserPreset {
+            input,
+            base_revision,
+            element,
+            phase,
+            preset,
+            frames,
+        } => (
+            input,
+            base_revision,
+            TitleAnimationChange::Motion {
+                element: ElementId::new(element.get()),
+                phase: *phase,
+                preset: fm_model::AnimationPresetId::new(*preset),
+                frames: *frames,
+            },
+        ),
         _ => unreachable!("only title animation commands are delegated"),
     };
     EngineCommand::TitleAnimation(EngineTitleAnimationEdit {
@@ -173,6 +190,19 @@ pub fn wire_title_animation_payload(edit: &EngineTitleAnimationEdit) -> Option<C
             input,
             base_revision,
             phase: *phase,
+            frames: *frames,
+        },
+        TitleAnimationChange::Motion {
+            element,
+            phase,
+            preset,
+            frames,
+        } => CommandPayload::ApplyTitleAnimationUserPreset {
+            input,
+            base_revision,
+            element: WireTitleElementId::new(element.get()),
+            phase: *phase,
+            preset: preset.get(),
             frames: *frames,
         },
     })

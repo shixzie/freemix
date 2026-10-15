@@ -4,13 +4,14 @@ use std::collections::BTreeSet;
 use fm_grade::{CubeKind, Grade};
 
 use crate::{
-    AudioMeterChannel, AudioMetersMessage, CapabilityReportMessage, CapabilityReportSummary,
-    CommandMessage, CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse,
-    DurableEventBatch, DurableGap, EditHistoryStatus, EditLockScope, EditLockStatus,
-    EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload, FadeToBlackState,
-    GradeChange, GradeEntry, GradeStateMessage, HandshakeOutcome, HandshakeRequest,
-    HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioStripStatus,
-    LiveInputSource, MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind,
+    AnimationPresetChange, AnimationPresetEntry, AnimationPresetStateMessage, AudioMeterChannel,
+    AudioMetersMessage, CapabilityReportMessage, CapabilityReportSummary, CommandMessage,
+    CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse, DurableEventBatch,
+    DurableGap, EditHistoryStatus, EditLockScope, EditLockStatus, EngineIdentity, ErrorMessage,
+    EventCursor, EventMessage, EventPayload, FadeToBlackState, GradeChange, GradeEntry,
+    GradeStateMessage, HandshakeOutcome, HandshakeRequest, HandshakeResponse,
+    HeartbeatAcknowledgementMessage, HeartbeatMessage, InputAudioStripStatus, LiveInputSource,
+    MAX_ANIMATION_PRESETS, MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind,
     ManualTransitionStatus, MonitorFrameMessage, OverlayStatus, PlaylistOperation,
     PlaylistStateMessage, ResumeCursor, RuntimeEventMessage, RuntimeFailureDisposition,
     RuntimeLifecycleEvent, SceneAnimationStateMessage, SceneLayoutStateMessage,
@@ -21,11 +22,13 @@ use crate::{
 };
 
 use super::animation::{
-    encode_animation_phase, encode_clip, encode_preview_sample, validate_animation_inputs,
-    validate_phase_frames, validate_preview_part, validate_preview_sample, validate_preview_size,
+    encode_animation_phase, encode_clip, encode_motion, encode_preview_sample,
+    validate_animation_inputs, validate_phase_frames, validate_preview_part,
+    validate_preview_sample, validate_preview_size,
 };
 use super::grade::{
     encode_cube_kind, encode_grade, encode_lut_data, validate_grade_name, validate_lut_size,
+    validate_preset_name,
 };
 use super::layout::encode_layout_elements;
 use super::playlist::{
@@ -112,6 +115,9 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         }
         WireMessage::ScenePreviewFrame(message) => {
             encode_preview_frame(&mut record, "scene_preview_frame", message)?;
+        }
+        WireMessage::AnimationPresetState(message) => {
+            encode_animation_preset_state(&mut record, message)?;
         }
     }
     record.finish()
@@ -248,6 +254,13 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
         | CommandPayload::ApplySceneAnimationPreset { .. }
         | CommandPayload::StretchSceneAnimation { .. }) => {
             encode_scene_animation_command(record, payload)?;
+        }
+        payload @ (CommandPayload::AddAnimationPreset { .. }
+        | CommandPayload::RenameAnimationPreset { .. }
+        | CommandPayload::RemoveAnimationPreset { .. }
+        | CommandPayload::ApplyTitleAnimationUserPreset { .. }
+        | CommandPayload::ApplySceneAnimationUserPreset { .. }) => {
+            encode_animation_preset_command(record, payload)?;
         }
         payload @ CommandPayload::SetInputAudioStrip { .. } => {
             encode_input_audio_strip_command(record, payload)?;
@@ -499,6 +512,134 @@ fn encode_scene_animation_command(
             record.field("frames", frames)
         }
         _ => unreachable!("only scene animation commands are delegated"),
+    }
+}
+
+/// Encodes the animation preset library commands and the user preset
+/// applications (Protocol 2.34).
+fn encode_animation_preset_command(
+    record: &mut Record,
+    payload: &CommandPayload,
+) -> Result<(), CodecError> {
+    match payload {
+        CommandPayload::AddAnimationPreset {
+            preset,
+            name,
+            phase,
+            motion,
+            index,
+        } => {
+            if index.is_some_and(|index| index >= MAX_ANIMATION_PRESETS) {
+                return Err(CodecError::InvalidField {
+                    field: "index",
+                    value: index.unwrap_or_default().to_string(),
+                });
+            }
+            record.field("payload", "animation_preset_add")?;
+            encode_animation_preset_entry(
+                record,
+                &AnimationPresetEntry {
+                    preset: *preset,
+                    name: name.clone(),
+                    phase: *phase,
+                    motion: motion.clone(),
+                },
+            )?;
+            record.optional("index", *index)
+        }
+        CommandPayload::RenameAnimationPreset { preset, name } => {
+            validate_preset_name(name)?;
+            record.field("payload", "animation_preset_rename")?;
+            record.field("preset_id", preset)?;
+            record.field_str("name", name)
+        }
+        CommandPayload::RemoveAnimationPreset { preset } => {
+            record.field("payload", "animation_preset_remove")?;
+            record.field("preset_id", preset)
+        }
+        CommandPayload::ApplyTitleAnimationUserPreset {
+            input,
+            base_revision,
+            element,
+            phase,
+            preset,
+            frames,
+        } => {
+            validate_phase_frames(*frames)?;
+            record.field("payload", "title_animation_user_preset")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field("element", element)?;
+            record.field("phase", encode_animation_phase(*phase))?;
+            record.field("preset_id", preset)?;
+            record.field("frames", frames)
+        }
+        CommandPayload::ApplySceneAnimationUserPreset {
+            input,
+            base_revision,
+            layer,
+            phase,
+            preset,
+            frames,
+        } => {
+            validate_phase_frames(*frames)?;
+            record.field("payload", "scene_animation_user_preset")?;
+            record.field("input", input)?;
+            record.field("base_revision", base_revision)?;
+            record.field("layer", layer)?;
+            record.field("phase", encode_animation_phase(*phase))?;
+            record.field("preset_id", preset)?;
+            record.field("frames", frames)
+        }
+        _ => unreachable!("only animation preset commands are delegated"),
+    }
+}
+
+/// Writes `preset_id`, `name`, `phase`, and `motion` of one library preset.
+fn encode_animation_preset_entry(
+    record: &mut Record,
+    entry: &AnimationPresetEntry,
+) -> Result<(), CodecError> {
+    validate_preset_name(&entry.name)?;
+    let motion = encode_motion(&entry.motion)?;
+    record.field("preset_id", entry.preset)?;
+    record.field_str("name", &entry.name)?;
+    record.field("phase", encode_animation_phase(entry.phase))?;
+    record.field_string("motion", motion)
+}
+
+/// Encodes one `animation_preset_state` record (Protocol 2.34).
+fn encode_animation_preset_state(
+    record: &mut Record,
+    message: &AnimationPresetStateMessage,
+) -> Result<(), CodecError> {
+    record.kind("animation_preset_state");
+    record.field("revision", message.revision)?;
+    encode_animation_preset_entry(record, &message.entry)
+}
+
+/// Encodes the fields of one `animation_preset_changed` event.
+fn encode_animation_preset_changed(
+    record: &mut Record,
+    change: &AnimationPresetChange,
+) -> Result<(), CodecError> {
+    record.field("event", "animation_preset_changed")?;
+    match change {
+        AnimationPresetChange::Set { index, entry } => {
+            if *index >= MAX_ANIMATION_PRESETS {
+                return Err(CodecError::InvalidField {
+                    field: "index",
+                    value: index.to_string(),
+                });
+            }
+            record.field("change", "set")?;
+            record.field("index", index)?;
+            encode_animation_preset_entry(record, entry)
+        }
+        AnimationPresetChange::Removed { preset } => {
+            record.field("change", "removed")?;
+            record.field("preset_id", preset)
+        }
     }
 }
 
@@ -1088,7 +1229,14 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
             value: message.grade_states.to_string(),
         });
     }
-    record.field("grade_states", message.grade_states)
+    record.field("grade_states", message.grade_states)?;
+    if message.animation_preset_states > MAX_ANIMATION_PRESETS {
+        return Err(CodecError::InvalidField {
+            field: "animation_preset_states",
+            value: message.animation_preset_states.to_string(),
+        });
+    }
+    record.field("animation_preset_states", message.animation_preset_states)
 }
 
 /// Writes a grade source as `library=<id>` or `grade=<grade>`.
@@ -1630,6 +1778,9 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         }
         payload @ EventPayload::SceneAnimationChanged { .. } => {
             encode_scene_animation_changed(record, payload)?;
+        }
+        EventPayload::AnimationPresetChanged(change) => {
+            encode_animation_preset_changed(record, change)?;
         }
     }
     encode_edit_history(record, &message.edit_history, message.cursor.revision)

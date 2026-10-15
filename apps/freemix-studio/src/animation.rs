@@ -21,9 +21,11 @@ pub(crate) fn animation_refusal(
     let input = match &client.command(command_id)?.command.payload {
         CommandPayload::SetTitleAnimation { input, .. }
         | CommandPayload::ApplyTitleAnimationPreset { input, .. }
+        | CommandPayload::ApplyTitleAnimationUserPreset { input, .. }
         | CommandPayload::StretchTitleAnimation { input, .. }
         | CommandPayload::SetSceneAnimation { input, .. }
         | CommandPayload::ApplySceneAnimationPreset { input, .. }
+        | CommandPayload::ApplySceneAnimationUserPreset { input, .. }
         | CommandPayload::StretchSceneAnimation { input, .. } => input.to_domain(),
         _ => return None,
     };

@@ -2,13 +2,14 @@ use core::{num::NonZeroU128, str::FromStr};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    AudioMeterChannel, AudioMetersMessage, CapabilityReportMessage, CapabilityReportSummary,
-    CodecError, CommandMessage, CommandPayload, CommandResult, DiagnosticsRequest,
-    DiagnosticsResponse, DurableEventBatch, DurableGap, EditHistoryStatus, EditLockScope,
-    EditLockStatus, EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload,
-    FadeToBlackPosition, FadeToBlackState, GradeChange, GradeEntry, GradeStateMessage,
-    HandshakeOutcome, HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage,
-    HeartbeatMessage, InputAudioMeters, InputAudioStripStatus, LiveInputSource,
+    AnimationPresetChange, AnimationPresetEntry, AnimationPresetStateMessage, AudioMeterChannel,
+    AudioMetersMessage, CapabilityReportMessage, CapabilityReportSummary, CodecError,
+    CommandMessage, CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse,
+    DurableEventBatch, DurableGap, EditHistoryStatus, EditLockScope, EditLockStatus,
+    EngineIdentity, ErrorMessage, EventCursor, EventMessage, EventPayload, FadeToBlackPosition,
+    FadeToBlackState, GradeChange, GradeEntry, GradeStateMessage, HandshakeOutcome,
+    HandshakeRequest, HandshakeResponse, HeartbeatAcknowledgementMessage, HeartbeatMessage,
+    InputAudioMeters, InputAudioStripStatus, LiveInputSource, MAX_ANIMATION_PRESETS,
     MAX_AUDIO_METER_CHANNELS, MAX_GRADE_STATES, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionState, ManualTransitionStatus, MonitorFrameMessage, MonitorFrameOrigin,
     MonitorTap, OverlayStatus, PlaylistOperation, PlaylistStateMessage, ResumeCursor,
@@ -23,12 +24,13 @@ use crate::{
 };
 
 use super::animation::{
-    decode_animation_phase, decode_animation_preset, decode_clip, decode_preview_sample,
-    validate_animation_inputs, validate_phase_frames, validate_preview_part, validate_preview_size,
+    decode_animation_phase, decode_animation_preset, decode_clip, decode_motion,
+    decode_preview_sample, validate_animation_inputs, validate_phase_frames, validate_preview_part,
+    validate_preview_size,
 };
 use super::grade::{
     decode_cube_kind, decode_grade, decode_lut_data, parse_grade_id, validate_grade_name,
-    validate_lut_size,
+    validate_lut_size, validate_preset_name,
 };
 use super::layout::decode_layout;
 use super::playlist::{
@@ -135,6 +137,9 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         }
         "scene_preview_frame" => {
             WireMessage::ScenePreviewFrame(decode_title_preview_frame(&mut fields)?)
+        }
+        "animation_preset_state" => {
+            WireMessage::AnimationPresetState(decode_animation_preset_state(&mut fields)?)
         }
         _ => return Err(CodecError::UnknownMessage(kind.to_owned())),
     };
@@ -435,6 +440,9 @@ fn decode_command_payload(
         }
         name if name.starts_with("playlist_") => decode_playlist_command(fields, name)?,
         name if name.starts_with("grade_") => decode_grade_command(fields, name)?,
+        name if name.starts_with("animation_preset_") => {
+            decode_animation_preset_command(fields, name)?
+        }
         _ => {
             return Err(CodecError::InvalidField {
                 field: "payload",
@@ -567,6 +575,26 @@ fn decode_title_animation_command(
                 frames,
             }
         }
+        "title_animation_user_preset" => {
+            let element = {
+                let value = fields.required("element")?;
+                parse_canonical_u128(&value)
+                    .and_then(NonZeroU128::new)
+                    .map(WireTitleElementId::new)
+                    .ok_or(CodecError::InvalidField {
+                        field: "element",
+                        value,
+                    })?
+            };
+            CommandPayload::ApplyTitleAnimationUserPreset {
+                input,
+                base_revision,
+                element,
+                phase: decode_animation_phase(fields.required("phase")?)?,
+                preset: parse_grade_id("preset_id", &fields.required("preset_id")?)?,
+                frames: decode_phase_frames(fields)?,
+            }
+        }
         "title_animation_stretch" => CommandPayload::StretchTitleAnimation {
             input,
             base_revision,
@@ -618,6 +646,27 @@ fn decode_scene_animation_command(
                 frames,
             }
         }
+        "scene_animation_user_preset" => {
+            let layer = {
+                let value = fields.required("layer")?;
+                parse_canonical_u128(&value)
+                    .and_then(|layer| u32::try_from(layer).ok())
+                    .and_then(core::num::NonZeroU32::new)
+                    .map(WireSceneLayerId::new)
+                    .ok_or(CodecError::InvalidField {
+                        field: "layer",
+                        value,
+                    })?
+            };
+            CommandPayload::ApplySceneAnimationUserPreset {
+                input,
+                base_revision,
+                layer,
+                phase: decode_animation_phase(fields.required("phase")?)?,
+                preset: parse_grade_id("preset_id", &fields.required("preset_id")?)?,
+                frames: decode_phase_frames(fields)?,
+            }
+        }
         "scene_animation_stretch" => CommandPayload::StretchSceneAnimation {
             input,
             base_revision,
@@ -628,6 +677,97 @@ fn decode_scene_animation_command(
             return Err(CodecError::InvalidField {
                 field: "payload",
                 value: name.to_owned(),
+            });
+        }
+    })
+}
+
+/// Decodes the animation preset library commands (Protocol 2.34).
+fn decode_animation_preset_command(
+    fields: &mut Fields,
+    name: &str,
+) -> Result<CommandPayload, CodecError> {
+    Ok(match name {
+        "animation_preset_add" => {
+            let entry = decode_animation_preset_entry(fields)?;
+            CommandPayload::AddAnimationPreset {
+                preset: entry.preset,
+                name: entry.name,
+                phase: entry.phase,
+                motion: entry.motion,
+                index: fields
+                    .optional("index")
+                    .map(decode_preset_index)
+                    .transpose()?,
+            }
+        }
+        "animation_preset_rename" => CommandPayload::RenameAnimationPreset {
+            preset: parse_grade_id("preset_id", &fields.required("preset_id")?)?,
+            name: decode_preset_name(fields)?,
+        },
+        "animation_preset_remove" => CommandPayload::RemoveAnimationPreset {
+            preset: parse_grade_id("preset_id", &fields.required("preset_id")?)?,
+        },
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "payload",
+                value: name.to_owned(),
+            });
+        }
+    })
+}
+
+fn decode_preset_name(fields: &mut Fields) -> Result<String, CodecError> {
+    let name = fields.required("name")?;
+    validate_preset_name(&name)?;
+    Ok(name)
+}
+
+fn decode_preset_index(value: String) -> Result<u16, CodecError> {
+    parse_canonical_u64(&value)
+        .and_then(|index| u16::try_from(index).ok())
+        .filter(|index| *index < MAX_ANIMATION_PRESETS)
+        .ok_or(CodecError::InvalidField {
+            field: "index",
+            value,
+        })
+}
+
+/// Decodes `preset_id`, `name`, `phase`, and `motion`.
+fn decode_animation_preset_entry(fields: &mut Fields) -> Result<AnimationPresetEntry, CodecError> {
+    Ok(AnimationPresetEntry {
+        preset: parse_grade_id("preset_id", &fields.required("preset_id")?)?,
+        name: decode_preset_name(fields)?,
+        phase: decode_animation_phase(fields.required("phase")?)?,
+        motion: Box::new(decode_motion(&fields.required("motion")?)?),
+    })
+}
+
+fn decode_animation_preset_state(
+    fields: &mut Fields,
+) -> Result<AnimationPresetStateMessage, CodecError> {
+    Ok(AnimationPresetStateMessage {
+        revision: fields.canonical_required("revision")?,
+        entry: decode_animation_preset_entry(fields)?,
+    })
+}
+
+fn decode_animation_preset_change(
+    fields: &mut Fields,
+) -> Result<AnimationPresetChange, CodecError> {
+    let change = fields.required("change")?;
+    Ok(match change.as_str() {
+        "set" => AnimationPresetChange::Set {
+            index: decode_preset_index(fields.required("index")?)?,
+            entry: decode_animation_preset_entry(fields)?,
+        },
+        "removed" => AnimationPresetChange::Removed {
+            preset: parse_grade_id("preset_id", &fields.required("preset_id")?)?,
+        },
+        _ => {
+            return Err(CodecError::InvalidField {
+                field: "change",
+                value: change,
             });
         }
     })
@@ -1211,6 +1351,16 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
                 value,
             })?
     };
+    let animation_preset_states = {
+        let value = fields.required("animation_preset_states")?;
+        parse_canonical_u64(&value)
+            .and_then(|count| u16::try_from(count).ok())
+            .filter(|count| *count <= MAX_ANIMATION_PRESETS)
+            .ok_or(CodecError::InvalidField {
+                field: "animation_preset_states",
+                value,
+            })?
+    };
     Ok(SnapshotMessage {
         engine: decode_identity(fields)?,
         revision,
@@ -1241,6 +1391,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         frame_rate,
         playlist_follows,
         grade_states,
+        animation_preset_states,
     })
 }
 
@@ -1830,6 +1981,9 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             preview: fields.canonical_input("preview")?,
         },
         "grade_changed" => EventPayload::GradeChanged(decode_grade_change(fields)?),
+        "animation_preset_changed" => {
+            EventPayload::AnimationPresetChanged(decode_animation_preset_change(fields)?)
+        }
         "title_animation_changed" => {
             let inputs = parse_input_ids(&fields.required("inputs")?)?;
             validate_animation_inputs(&inputs)?;

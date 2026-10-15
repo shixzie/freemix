@@ -124,6 +124,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         frame_rate: fm_types::FrameRate::new(25, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,
+        animation_preset_states: 0,
     }
 }
 
@@ -1422,6 +1423,7 @@ mod titles {
             frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,
+            animation_preset_states: 0,
         }
     }
 
@@ -2028,4 +2030,162 @@ fn an_announced_playlist_state_completes_the_snapshot() {
         ModelError::PlaylistStateMismatch.to_string(),
         "playlist state does not match the snapshot it follows"
     );
+}
+
+fn preset_entry(preset: u32, name: &str) -> fm_protocol::AnimationPresetEntry {
+    use fm_animation::{
+        Easing, Keyframe, MotionClip, MotionTarget, Phase, PhaseMotion, Property, Timebase, Track,
+        TrackKey, Value,
+    };
+    let clip = MotionClip::from_tracks(
+        Timebase::new(fm_types::FrameRate::new(25, 1).unwrap()),
+        10,
+        0,
+        vec![Track::new(
+            TrackKey::new(MotionTarget, Phase::In, Property::Opacity),
+            vec![
+                Keyframe::new(0, Value::Scalar(0), Easing::Linear),
+                Keyframe::new(10, Value::Scalar(255), Easing::Linear),
+            ],
+        )],
+    )
+    .unwrap();
+    fm_protocol::AnimationPresetEntry {
+        preset: core::num::NonZeroU32::new(preset).unwrap(),
+        name: name.into(),
+        phase: Phase::In,
+        motion: Box::new(PhaseMotion::new(clip, 100, 100).unwrap()),
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one golden: records, then events
+fn animation_preset_states_and_changes_replicate_the_library() {
+    use fm_protocol::{AnimationPresetChange, AnimationPresetStateMessage};
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    let mut announced = snapshot(project_id, 7);
+    announced.animation_preset_states = 2;
+    model.install_snapshot(announced).unwrap();
+    assert!(!model.state().unwrap().animation_presets_complete());
+    let record = |revision, preset, name| AnimationPresetStateMessage {
+        revision,
+        entry: preset_entry(preset, name),
+    };
+
+    // Records at another revision, or repeating an id or name, are refused.
+    for refused in [record(6, 1, "Fade"), record(8, 1, "Fade")] {
+        assert_eq!(
+            model.apply_animation_preset_state(refused).unwrap_err(),
+            ModelError::AnimationPresetStateMismatch
+        );
+    }
+    model
+        .apply_animation_preset_state(record(7, 4, "Fade"))
+        .unwrap();
+    for refused in [record(7, 4, "Other"), record(7, 5, "Fade")] {
+        assert_eq!(
+            model.apply_animation_preset_state(refused).unwrap_err(),
+            ModelError::AnimationPresetStateMismatch
+        );
+    }
+    model
+        .apply_animation_preset_state(record(7, 2, "Swoosh"))
+        .unwrap();
+    assert!(model.state().unwrap().animation_presets_complete());
+    assert_eq!(
+        model
+            .apply_animation_preset_state(record(7, 9, "Extra"))
+            .unwrap_err(),
+        ModelError::AnimationPresetStateMismatch
+    );
+    let presets = model.state().unwrap().animation_presets();
+    assert_eq!(
+        presets
+            .entries()
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Fade", "Swoosh"]
+    );
+    assert_eq!(presets.next_id().unwrap().get(), 5);
+
+    // An addition at index 1, a rename in place, and a removal apply.
+    let engine = engine("engine-a", 1, "log-a");
+    let change = |revision, change| {
+        event(
+            project_id,
+            engine.clone(),
+            revision,
+            DurableChange::AnimationPresetChanged(change),
+        )
+    };
+    model
+        .apply_event(change(
+            8,
+            AnimationPresetChange::Set {
+                index: 1,
+                entry: preset_entry(5, "Pop"),
+            },
+        ))
+        .unwrap();
+    model
+        .apply_event(change(
+            9,
+            AnimationPresetChange::Set {
+                index: 0,
+                entry: preset_entry(4, "Soft fade"),
+            },
+        ))
+        .unwrap();
+    model
+        .apply_event(change(
+            10,
+            AnimationPresetChange::Removed {
+                preset: core::num::NonZeroU32::new(2).unwrap(),
+            },
+        ))
+        .unwrap();
+    let names = |model: &ClientModel| {
+        model
+            .state()
+            .unwrap()
+            .animation_presets()
+            .entries()
+            .iter()
+            .map(|entry| (entry.preset.get(), entry.name.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(&model),
+        [(4, "Soft fade".to_owned()), (5, "Pop".to_owned())]
+    );
+
+    // Changes that contradict the library are refused and leave it intact:
+    // a rename that moves a preset, a duplicate name, an index past the
+    // end, a missing removal.
+    for refused in [
+        AnimationPresetChange::Set {
+            index: 1,
+            entry: preset_entry(4, "Moved"),
+        },
+        AnimationPresetChange::Set {
+            index: 2,
+            entry: preset_entry(6, "Pop"),
+        },
+        AnimationPresetChange::Set {
+            index: 3,
+            entry: preset_entry(6, "Late"),
+        },
+        AnimationPresetChange::Removed {
+            preset: core::num::NonZeroU32::new(2).unwrap(),
+        },
+    ] {
+        let mut copy = model.clone();
+        assert!(
+            copy.apply_event(change(11, refused.clone())).is_err(),
+            "{refused:?}"
+        );
+        assert_eq!(names(&copy), names(&model));
+    }
 }

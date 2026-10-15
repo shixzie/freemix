@@ -9,7 +9,7 @@ pub use codec::{
     CodecError, LineDecoder, MAX_BATCH_EVENTS, MAX_FIELD_NAME_BYTES, MAX_FIELD_VALUE_BYTES,
     MAX_FIELDS_PER_MESSAGE, MAX_LINE_BYTES, MAX_LIST_ITEMS, MAX_MESSAGES_PER_PUSH,
     MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES,
-    decode_line, encode_line, scene_clip_wire_bytes, title_clip_wire_bytes,
+    decode_line, encode_line, motion_wire_bytes, scene_clip_wire_bytes, title_clip_wire_bytes,
 };
 pub use dto::{
     AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, AudioMetersMessage, CapabilityReportMessage,
@@ -36,6 +36,10 @@ pub use dto::{
     TitleStateMessage, TitleSummary, WireInputId, WireMessage, WireOutputId, WireOverlayChannelId,
     WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId,
     choose_handshake_outcome,
+};
+pub use dto::{
+    AnimationPresetChange, AnimationPresetEntry, AnimationPresetStateMessage,
+    MAX_ANIMATION_PRESET_BYTES, MAX_ANIMATION_PRESET_NAME_BYTES, MAX_ANIMATION_PRESETS,
 };
 pub use dto::{
     GradeChange, GradeEntry, GradeStateMessage, MAX_GRADE_LAYERS, MAX_GRADE_LUT_IMPORT_BYTES,

@@ -43,8 +43,11 @@
 //! along the bottom of the console with a draggable height; the choice and
 //! sizes live in [`crate::ConsoleLayout`], which the host persists.
 
+use core::num::NonZeroU32;
 use core::time::Duration;
 use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use egui::{
     Align2, Color32, ColorImage, ComboBox, CornerRadius, FontId, Frame, Key, Margin, Modifiers,
@@ -52,9 +55,12 @@ use egui::{
 };
 use fm_animation::Phase;
 use fm_protocol::{
-    CommandPayload, TitlePreviewImage, WireInputId, WireSceneLayerId, WireTitleElementId,
+    AnimationPresetEntry, CommandPayload, TitlePreviewImage, WireInputId, WireSceneLayerId,
+    WireTitleElementId,
 };
 use fm_types::InputId;
+use fm_ui_model::AnimationPresetsStatus;
+use fm_ui_model::animation_editor::PresetSource;
 use fm_ui_model::title_animation::{
     AnimationBinding, AnimationRefusal, AnimationSaveStatus, AnimationTarget, PresetHover,
     SCENE_LAYER_PROPERTIES, SceneAnimationBinding, SceneDesign, TitleAnimationBinding, TitleDesign,
@@ -62,11 +68,13 @@ use fm_ui_model::title_animation::{
 
 use crate::animation_timeline::text::preset_name;
 use crate::animation_timeline::{
-    AnimationTimelineState, AnimationTimelineWidget, OverlayOptions, paint_document_overlay,
+    AnimationTimelineState, AnimationTimelineWidget, LibraryRequest, OverlayOptions,
+    UserPresetItem, paint_document_overlay,
 };
 use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
+use crate::preset_files::PresetFileRequest;
 use crate::theme::{
     AMBER, MONITOR_BLACK, Tone, border_strong_color, caption, close_key, muted_color, raised_color,
     section_label, small_button, status_chip, status_chip_painted, text_dim_color,
@@ -144,6 +152,13 @@ pub(crate) struct AnimationWindow {
     scene_bindings: BTreeMap<InputId, SceneAnimationBinding>,
     /// The scene timeline: every property but colour.
     pub(crate) scene_timeline: AnimationTimelineState<WireSceneLayerId>,
+    /// The replicated preset library the timelines list (Protocol 2.34).
+    presets_seen: Vec<AnimationPresetEntry>,
+    /// The last preset id this console asked to add; the next add goes
+    /// past it, so two quick saves never share an id.
+    preset_issued: Option<NonZeroU32>,
+    /// Preset files to export or import, for the host.
+    pub(crate) file_requests: Vec<PresetFileRequest>,
 }
 
 impl Default for AnimationWindow {
@@ -171,6 +186,9 @@ impl Default for AnimationWindow {
                 timeline.properties = &SCENE_LAYER_PROPERTIES;
                 timeline
             },
+            presets_seen: Vec::new(),
+            preset_issued: None,
+            file_requests: Vec::new(),
         }
     }
 }
@@ -237,6 +255,31 @@ pub(crate) fn animation_lock_reason(state: &StudioUiState, input: InputId) -> Op
         Some(PROJECT_LOCKED_REASON)
     } else if locks.is_input_locked(input) {
         Some(INPUT_LOCKED_REASON)
+    } else {
+        None
+    }
+}
+
+/// Why the project's animation preset library cannot be edited now
+/// (catalog English): the session gates, a library still synchronizing,
+/// then the project padlock. Library edits are project edits; an input
+/// padlock does not cover them.
+pub(crate) fn library_lock_reason(state: &StudioUiState) -> Option<&'static str> {
+    if !state.connection_status.controls_enabled()
+        || state.view.is_none()
+        || !state.can_edit_project
+    {
+        return Some(unavailable_reason(state, Capability::EditProject));
+    }
+    if !state
+        .project_state
+        .as_ref()
+        .is_some_and(fm_ui_model::ProjectState::animation_presets_complete)
+    {
+        return Some(Msg::AnimReasonPresetsPending.en());
+    }
+    if state.view.as_ref()?.edit_locks.project {
+        Some(PROJECT_LOCKED_REASON)
     } else {
         None
     }
@@ -377,6 +420,107 @@ fn paint_checker(painter: &egui::Painter, rect: Rect) {
 }
 
 impl AnimationWindow {
+    /// Lists the replicated preset library in both timelines and gates its
+    /// edits.
+    fn sync_presets(&mut self, state: &StudioUiState, library: &AnimationPresetsStatus) {
+        let reason = library_lock_reason(state);
+        self.timeline.library_reason = reason;
+        self.scene_timeline.library_reason = reason;
+        if self.presets_seen.as_slice() == library.entries() {
+            return;
+        }
+        self.presets_seen = library.entries().to_vec();
+        let items: Vec<UserPresetItem> = library
+            .entries()
+            .iter()
+            .map(|entry| UserPresetItem {
+                preset: entry.preset,
+                name: entry.name.clone(),
+                phase: entry.phase,
+                motion: Arc::new((*entry.motion).clone()),
+            })
+            .collect();
+        self.scene_timeline.user_presets.clone_from(&items);
+        self.timeline.user_presets = items;
+    }
+
+    /// The id for the next preset this console adds: past every library
+    /// preset and the last one it asked for.
+    pub(crate) fn next_preset_id(
+        &mut self,
+        library: &AnimationPresetsStatus,
+    ) -> Option<NonZeroU32> {
+        let after_issued = self.preset_issued.and_then(|issued| issued.checked_add(1));
+        let id = match (library.next_id(), after_issued) {
+            (Some(next), Some(issued)) => Some(next.max(issued)),
+            (next, issued) => next.or(issued),
+        }?;
+        self.preset_issued = Some(id);
+        Some(id)
+    }
+
+    /// Turns one "My presets" action into a library command or a file
+    /// request for the host.
+    fn library_request(
+        &mut self,
+        request: LibraryRequest,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let payload = match request {
+            LibraryRequest::Save {
+                name,
+                phase,
+                motion,
+            } => {
+                let Some(library) = state
+                    .project_state
+                    .as_ref()
+                    .map(fm_ui_model::ProjectState::animation_presets)
+                else {
+                    return;
+                };
+                let Some(preset) = self.next_preset_id(library) else {
+                    return;
+                };
+                CommandPayload::AddAnimationPreset {
+                    preset,
+                    name,
+                    phase,
+                    motion: Box::new(motion),
+                    index: None,
+                }
+            }
+            LibraryRequest::Rename { preset, name } => {
+                CommandPayload::RenameAnimationPreset { preset, name }
+            }
+            LibraryRequest::Delete { preset } => CommandPayload::RemoveAnimationPreset { preset },
+            LibraryRequest::Export { preset, path } => {
+                if let Some(item) = self
+                    .timeline
+                    .user_presets
+                    .iter()
+                    .find(|item| item.preset == preset)
+                {
+                    self.file_requests.push(PresetFileRequest::ExportAnimation {
+                        path: PathBuf::from(path),
+                        name: item.name.clone(),
+                        phase: item.phase,
+                        motion: Arc::clone(&item.motion),
+                    });
+                }
+                return;
+            }
+            LibraryRequest::Import { path } => {
+                self.file_requests.push(PresetFileRequest::ImportAnimation {
+                    path: PathBuf::from(path),
+                });
+                return;
+            }
+        };
+        intents.push(StudioIntent::AnimationPreset(payload));
+    }
+
     /// Follows the authority for every draft, acts on a newly published
     /// refusal, preview failure, or preview image, and makes sure the shown
     /// title has a draft.
@@ -423,6 +567,7 @@ impl AnimationWindow {
             }
         }
         self.sync_scenes(project);
+        self.sync_presets(state, project.animation_presets());
         // A server-side preset is answered by the next animation revision.
         if let Some((input, revision)) = self.preset_pending
             && self
@@ -885,16 +1030,36 @@ impl StudioShell {
         {
             let base_revision = binding.authority().revision;
             self.animation.preset_pending = Some((input, base_revision));
-            intents.push(StudioIntent::TitleAnimation(
-                CommandPayload::ApplyTitleAnimationPreset {
-                    input: WireInputId::from_domain(input),
+            let input = WireInputId::from_domain(input);
+            intents.push(StudioIntent::TitleAnimation(match &preset.preset {
+                PresetSource::BuiltIn(builtin) => CommandPayload::ApplyTitleAnimationPreset {
+                    input,
                     base_revision,
                     element: preset.target,
                     phase: preset.phase,
-                    preset: preset.preset,
+                    preset: *builtin,
                     frames: preset.frames,
                 },
-            ));
+                PresetSource::User { preset: id, .. } => {
+                    CommandPayload::ApplyTitleAnimationUserPreset {
+                        input,
+                        base_revision,
+                        element: preset.target,
+                        phase: preset.phase,
+                        preset: *id,
+                        frames: preset.frames,
+                    }
+                }
+            }));
+        }
+        let library = std::mem::take(&mut self.animation.timeline.library_requests)
+            .into_iter()
+            .chain(std::mem::take(
+                &mut self.animation.scene_timeline.library_requests,
+            ))
+            .collect::<Vec<_>>();
+        for request in library {
+            self.animation.library_request(request, state, intents);
         }
         for (input, binding) in &mut self.animation.bindings {
             let lock = animation_lock_reason(state, *input);
@@ -1388,11 +1553,12 @@ fn draft_body<T: AnimationTarget>(
     // locally); leaving the picker ends the preview.
     let hover = timeline
         .preset_hover
+        .as_ref()
         .filter(|hover| binding.document().target(hover.target).is_some())
         .map(|hover| PresetHover {
             target: hover.target,
             phase: hover.phase,
-            preset: hover.preset,
+            preset: hover.preset.clone(),
             frames: hover.frames,
         });
     binding.set_preset_hover(hover, now);
@@ -1519,7 +1685,13 @@ fn draw_canvas<T: AnimationTarget>(
             l.format(
                 Msg::AnimBadgePresetHover,
                 &[
-                    ("preset", Arg::Str(preset_name(l, hover.preset))),
+                    (
+                        "preset",
+                        Arg::Str(match &hover.preset {
+                            PresetSource::BuiltIn(preset) => preset_name(l, *preset),
+                            PresetSource::User { name, .. } => name,
+                        }),
+                    ),
                     ("name", Arg::Str(&name)),
                 ],
             )

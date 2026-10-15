@@ -17,7 +17,9 @@
 //!   for the selected keys, the active row's value at the playhead, an
 //!   "animate property" menu, the custom curve editor ([`curve_editor`])
 //!   when the selection shares a custom bezier, and a value graph whose
-//!   selected segments show draggable bezier handles;
+//!   selected segments show draggable bezier handles, and the "My presets"
+//!   row ([`library`]) that saves, renames, deletes, exports, and imports
+//!   the project's user presets;
 //! * an inline notice for refused edits, worded from
 //!   [`AnimEditorError::msg_key`] ([`text`]).
 //!
@@ -38,6 +40,7 @@ use egui::{CornerRadius, DragValue, Frame, Margin, Rect, Response, RichText, Str
 use fm_animation::{MAX_PHASE_FRAMES, Phase, Property, TrackKey};
 use fm_ui_model::animation_editor::{
     AnimDocument, AnimEditorError, EditorMode, MAX_FRAMES_PER_PIXEL, MIN_FRAMES_PER_PIXEL,
+    PresetSource,
 };
 use fm_ui_model::i18n::{Arg, Locale, Msg};
 
@@ -50,6 +53,7 @@ use crate::theme::{
 
 pub mod curve_editor;
 pub mod inspector;
+pub mod library;
 pub mod overlay;
 pub mod text;
 pub mod tracks;
@@ -59,6 +63,7 @@ pub mod transport;
 mod tests;
 
 pub use curve_editor::{CURVE_EDITOR_SIZE, CurveFrame, CurveLayout};
+pub use library::{LibraryEdit, LibraryRequest, UserPresetItem};
 pub use overlay::{OverlayOptions, paint_canvas_overlay, paint_document_overlay};
 pub use tracks::TrackGeometry;
 pub use transport::{ActionSpec, TimelineAction, action_spec, perform};
@@ -101,12 +106,14 @@ impl Notice {
     }
 }
 
-/// A preset chosen for an element the document has no outline for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A preset chosen for an element the document has no outline for, or
+/// rested on in the picker.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PresetRequest<T> {
     pub target: T,
     pub phase: fm_animation::Phase,
-    pub preset: fm_animation::AnimationPreset,
+    /// A built-in or (Protocol 2.34) user preset.
+    pub preset: PresetSource,
     /// The preset's length; a shorter phase is lengthened to it.
     pub frames: u32,
 }
@@ -141,6 +148,19 @@ pub struct AnimationTimelineState<T> {
     /// display order: every property for title elements, all but colour for
     /// scene layers (GX-011 stage 5).
     pub properties: &'static [Property],
+    /// The project's user presets (Protocol 2.34), in library order: the
+    /// Simple picker offers those saved from the shown phase under "My
+    /// presets", and the inspector's "My presets" row manages them.
+    pub user_presets: Vec<UserPresetItem>,
+    /// Why the preset library may not be edited now (catalog English, for
+    /// example the project padlock); `None` allows saves, renames,
+    /// deletes, and imports. Exports and applying presets do not edit the
+    /// library.
+    pub library_reason: Option<&'static str>,
+    /// "My presets" actions, oldest first; the caller takes them.
+    pub library_requests: Vec<LibraryRequest>,
+    /// What the "My presets" row holds between frames.
+    pub library: LibraryEdit,
     pub(crate) notice: Option<Notice>,
     last_time: Option<f64>,
     length_edit: Option<u32>,
@@ -170,6 +190,10 @@ impl<T> Default for AnimationTimelineState<T> {
             preset_requests: Vec::new(),
             preset_hover: None,
             properties: &Property::ALL,
+            user_presets: Vec::new(),
+            library_reason: None,
+            library_requests: Vec::new(),
+            library: LibraryEdit::default(),
             notice: None,
             last_time: None,
             length_edit: None,

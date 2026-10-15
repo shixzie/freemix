@@ -31,7 +31,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.33\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.34\tid=a\tidempotency_key=k";
 
 fn cursor() -> EventCursor {
     EventCursor {
@@ -94,8 +94,8 @@ fn base64url(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn protocol_version_is_2_33() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 33));
+fn protocol_version_is_2_34() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 34));
 }
 
 #[test]
@@ -436,13 +436,16 @@ fn snapshot_grade_state_count_is_bounded() {
     assert!(fits(MAX_GRADE_STATES + 1).is_err());
 
     let line = encode_line(&sample_snapshot()).unwrap();
-    assert!(line.ends_with("\tgrade_states=0\n"), "{line}");
+    assert!(
+        line.ends_with("\tgrade_states=0\tanimation_preset_states=0\n"),
+        "{line}"
+    );
     let over = line.replace(
-        "\tgrade_states=0\n",
-        &format!("\tgrade_states={}\n", MAX_GRADE_STATES + 1),
+        "\tgrade_states=0\t",
+        &format!("\tgrade_states={}\t", MAX_GRADE_STATES + 1),
     );
     assert!(decode_line(&over).is_err());
-    let missing = line.replace("\tgrade_states=0\n", "\n");
+    let missing = line.replace("\tgrade_states=0\t", "\t");
     assert!(decode_line(&missing).is_err());
 }
 
@@ -500,6 +503,7 @@ fn sample_snapshot() -> WireMessage {
         frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,
+        animation_preset_states: 0,
     })
 }
 

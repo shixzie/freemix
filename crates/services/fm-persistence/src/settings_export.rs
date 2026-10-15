@@ -18,7 +18,7 @@ use std::{
 
 use fm_model::{Project, RestartPolicy, StartupPolicy, StreamProtocol};
 
-use crate::json::{DecodeError, Reader, Value, escape_string};
+use crate::json::{Reader, SyntaxError, Value, escape_string};
 
 /// The exact `contract` tag every settings export document carries.
 pub const SETTINGS_EXPORT_CONTRACT: &str = "freemix.settings-export";
@@ -691,17 +691,15 @@ impl SettingsSnapshot {
                 max: MAX_SETTINGS_EXPORT_BYTES,
             });
         }
-        let document = Reader::new(source)
-            .document()
-            .map_err(|error| match error {
-                DecodeError::Syntax { offset, message } => {
-                    SettingsExportError::Syntax { offset, message }
-                }
-                DecodeError::Validation(error) => SettingsExportError::Syntax {
-                    offset: 0,
-                    message: error.to_string(),
-                },
-            })?;
+        let document =
+            Reader::new(source)
+                .document()
+                .map_err(
+                    |SyntaxError { offset, message }| SettingsExportError::Syntax {
+                        offset,
+                        message,
+                    },
+                )?;
         let Value::Object(mut root) = document else {
             return Err(shape("settings export must be an object"));
         };

@@ -9274,6 +9274,7 @@ fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
     restore_engine_with_titles(project, &BundleAssets::default())
 }
 
+#[allow(clippy::too_many_lines)] // one restore step per project part
 fn restore_engine_with_titles(
     project: &StoredProject,
     bundle_assets: &BundleAssets,
@@ -9364,6 +9365,12 @@ fn restore_engine_with_titles(
     show.set_playlist(fm_engine::playlist_from_model(canonical.playlist())?)?;
     show.restore_grading(canonical.grading().clone(), bundle_assets.luts.clone())
         .map_err(|error| AppFailure(format!("project grading cannot be restored: {error}")))?;
+    show.restore_animation_presets(canonical.animation_presets().clone())
+        .map_err(|error| {
+            AppFailure(format!(
+                "project animation presets cannot be restored: {error}"
+            ))
+        })?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -9645,6 +9652,13 @@ fn handle_client(
                     &mut writer,
                     &mut session,
                     &WireMessage::SceneLayoutState(state),
+                )?;
+            }
+            for state in control.borrow().animation_preset_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::AnimationPresetState(state),
                 )?;
             }
         }
@@ -11050,7 +11064,12 @@ fn command_base_ticks(
         | CommandPayload::UpdateLibraryGrade { .. }
         | CommandPayload::RemoveLibraryGrade { .. }
         | CommandPayload::ImportGradeLut { .. }
-        | CommandPayload::RemoveGradeLut { .. } => 1,
+        | CommandPayload::RemoveGradeLut { .. }
+        | CommandPayload::AddAnimationPreset { .. }
+        | CommandPayload::RenameAnimationPreset { .. }
+        | CommandPayload::RemoveAnimationPreset { .. }
+        | CommandPayload::ApplyTitleAnimationUserPreset { .. }
+        | CommandPayload::ApplySceneAnimationUserPreset { .. } => 1,
     })
 }
 
@@ -11184,6 +11203,7 @@ fn stored_project_with_receipts(
     sync_project_scenes(&mut project, show)?;
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     project.set_grading(show.grading().clone());
+    project.set_animation_presets(show.animation_presets().clone());
     StoredProject::from_project_with_complete_runtime_state(
         project,
         RuntimeRouting {

@@ -1252,7 +1252,8 @@ impl TcpSession {
             }
             WireMessage::Error(error) => Ok(SessionEvent::ServerError(error)),
             // Title, playlist, grade, title animation, title layout, scene
-            // animation, and scene layout states complete a snapshot while
+            // animation, scene layout, and animation preset states complete a
+            // snapshot while
             // connecting; one arriving afterwards is out of order and forces a
             // fresh snapshot.
             message @ (WireMessage::TitleState(_)
@@ -1261,7 +1262,8 @@ impl TcpSession {
             | WireMessage::TitleAnimationState(_)
             | WireMessage::TitleLayoutState(_)
             | WireMessage::SceneAnimationState(_)
-            | WireMessage::SceneLayoutState(_)) => {
+            | WireMessage::SceneLayoutState(_)
+            | WireMessage::AnimationPresetState(_)) => {
                 self.intake(message)?;
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)

@@ -3,7 +3,7 @@ use core::{
     num::{NonZeroU32, NonZeroU128},
 };
 
-use fm_animation::{AnimationPreset, Clip, Phase};
+use fm_animation::{AnimationPreset, Clip, Phase, PhaseMotion};
 use fm_command::{CommandEnvelope, Deadline, Revision, StateEpoch};
 use fm_grade::{CubeKind, Grade};
 use fm_types::{FrameRate, InputId, OutputId};
@@ -1386,6 +1386,90 @@ pub enum CommandPayload {
         phase: Phase,
         frames: u32,
     },
+    /// Saves a motion to the animation preset library at `index` (the end
+    /// when absent) (Protocol 2.34). Wire payload `animation_preset_add`.
+    AddAnimationPreset {
+        preset: NonZeroU32,
+        name: String,
+        phase: Phase,
+        motion: Box<PhaseMotion>,
+        index: Option<u16>,
+    },
+    /// Renames a library preset. Wire payload `animation_preset_rename`.
+    RenameAnimationPreset {
+        preset: NonZeroU32,
+        name: String,
+    },
+    /// Deletes a library preset. Wire payload `animation_preset_remove`.
+    RemoveAnimationPreset {
+        preset: NonZeroU32,
+    },
+    /// Applies library preset `preset` to one element of a title template's
+    /// animation over `frames` frames of `phase` (Protocol 2.34). Wire
+    /// payload `title_animation_user_preset`.
+    ApplyTitleAnimationUserPreset {
+        input: WireInputId,
+        base_revision: u64,
+        element: WireTitleElementId,
+        phase: Phase,
+        preset: NonZeroU32,
+        frames: u32,
+    },
+    /// Applies library preset `preset` to one layer of a scene's animation
+    /// over `frames` frames of `phase` (Protocol 2.34). Wire payload
+    /// `scene_animation_user_preset`.
+    ApplySceneAnimationUserPreset {
+        input: WireInputId,
+        base_revision: u64,
+        layer: WireSceneLayerId,
+        phase: Phase,
+        preset: NonZeroU32,
+        frames: u32,
+    },
+}
+
+/// Most presets one animation preset library holds (Protocol 2.34).
+pub const MAX_ANIMATION_PRESETS: u16 = 64;
+/// Longest animation preset name, in UTF-8 bytes.
+pub const MAX_ANIMATION_PRESET_NAME_BYTES: usize = 128;
+/// Largest binary encoding of one preset motion, in bytes (the clip bound,
+/// so the field stays within [`crate::MAX_FIELD_VALUE_BYTES`]).
+pub const MAX_ANIMATION_PRESET_BYTES: usize = 36 * 1024;
+
+/// One library animation preset on the wire (Protocol 2.34).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationPresetEntry {
+    pub preset: NonZeroU32,
+    pub name: String,
+    /// The phase it was saved from.
+    pub phase: Phase,
+    pub motion: Box<PhaseMotion>,
+}
+
+/// One library preset at a snapshot's `revision` (Protocol 2.34).
+///
+/// A session writes exactly [`SnapshotMessage::animation_preset_states`] of
+/// these, in library order, after every other follow-on record of the
+/// snapshot (its last `scene_layout_state`) and before any event.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AnimationPresetStateMessage {
+    pub revision: u64,
+    pub entry: AnimationPresetEntry,
+}
+
+/// What one accepted animation preset library edit changed
+/// (`animation_preset_changed`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AnimationPresetChange {
+    /// A preset was added at `index`, or (keeping its index) renamed: the
+    /// whole entry afterwards and its position in the library.
+    Set {
+        index: u16,
+        entry: AnimationPresetEntry,
+    },
+    Removed {
+        preset: NonZeroU32,
+    },
 }
 
 /// Largest `.cube` text one `grade_lut_import` carries, in bytes. The text
@@ -1720,6 +1804,10 @@ pub struct SnapshotMessage {
     /// How many [`GradeStateMessage`] records follow this snapshot (after
     /// its title states and playlist state), at most [`MAX_GRADE_STATES`].
     pub grade_states: u16,
+    /// How many [`AnimationPresetStateMessage`] records follow this
+    /// snapshot (after every other follow-on record), at most
+    /// [`MAX_ANIMATION_PRESETS`] (Protocol 2.34).
+    pub animation_preset_states: u16,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -1829,6 +1917,9 @@ pub enum EventPayload {
         animation_revision: u64,
         clip: Box<WireSceneClip>,
     },
+    /// An animation preset library edit (or its undo or redo) was accepted
+    /// (Protocol 2.34).
+    AnimationPresetChanged(AnimationPresetChange),
 }
 
 /// One durable revision.
@@ -2181,4 +2272,5 @@ pub enum WireMessage {
     TitlePreviewFrame(TitlePreviewFrameMessage),
     ScenePreviewRequest(ScenePreviewRequest),
     ScenePreviewFrame(ScenePreviewFrameMessage),
+    AnimationPresetState(AnimationPresetStateMessage),
 }

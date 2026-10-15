@@ -1,3 +1,4 @@
+mod animation_preset;
 mod cycles;
 mod grade;
 mod playlist;
@@ -8,6 +9,10 @@ mod stream;
 mod title;
 mod validation;
 
+pub use animation_preset::{
+    AnimationPresetError, AnimationPresetId, AnimationPresetLibrary,
+    MAX_ANIMATION_PRESET_NAME_BYTES, MAX_PROJECT_ANIMATION_PRESETS, UserAnimationPreset,
+};
 pub use fm_animation;
 pub use grade::{
     GradeEditError, GradeId, GradeSource, LutId, MAX_GRADE_NAME_BYTES, MAX_LUT_FILE_BYTES,

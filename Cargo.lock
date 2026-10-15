@@ -1437,6 +1437,7 @@ dependencies = [
  "fm-clock",
  "fm-grade",
  "fm-model",
+ "fm-preset-file",
  "fm-titles",
  "fm-types",
  "turso",
@@ -1474,6 +1475,15 @@ dependencies = [
 name = "fm-presentations"
 version = "0.1.0"
 dependencies = [
+ "fm-types",
+]
+
+[[package]]
+name = "fm-preset-file"
+version = "0.1.0"
+dependencies = [
+ "fm-animation",
+ "fm-grade",
  "fm-types",
 ]
 
@@ -1763,6 +1773,8 @@ dependencies = [
  "eframe",
  "fm-animation",
  "fm-client",
+ "fm-grade",
+ "fm-preset-file",
  "fm-protocol",
  "fm-types",
  "fm-ui-egui",

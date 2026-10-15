@@ -116,6 +116,14 @@ pub enum SceneAnimationChange {
     /// Scales every key of `phase` to `frames` frames (see
     /// [`Scene::stretch_animation`]).
     Stretch { phase: Phase, frames: u32 },
+    /// Applies library preset `preset` to one layer over `frames` frames of
+    /// `phase` (see [`Scene::apply_animation_motion`]).
+    Motion {
+        layer: LayerId,
+        phase: Phase,
+        preset: fm_model::AnimationPresetId,
+        frames: u32,
+    },
 }
 
 /// One edit of the animation of Scene input `input`'s scene. A project
@@ -231,6 +239,15 @@ pub(crate) fn edited_scene(
             current.canvas_height,
         ),
         SceneAnimationChange::Stretch { phase, frames } => scene.stretch_animation(*phase, *frames),
+        SceneAnimationChange::Motion {
+            layer,
+            phase,
+            preset,
+            frames,
+        } => {
+            let motion = crate::animation_preset::motion_of(state, *preset)?;
+            scene.apply_animation_motion(*layer, *phase, motion, *frames)
+        }
     };
     result.map_err(|error| edit_rejection(&error))?;
     Ok(scene)

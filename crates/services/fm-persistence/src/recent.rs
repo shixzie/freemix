@@ -16,7 +16,7 @@ use std::{
 
 use crate::{
     ProjectStore, fsutil,
-    json::{DecodeError, Reader, Value, escape_string},
+    json::{Reader, SyntaxError, Value, escape_string},
 };
 
 /// Contract identifier written into every recent-projects document.
@@ -391,12 +391,9 @@ fn parse(source: &str) -> Result<Vec<RecentProject>, RecentProjectsError> {
     let shape = |message: &str| RecentProjectsError::Shape(message.to_owned());
     let document = Reader::new(source)
         .document()
-        .map_err(|error| match error {
-            DecodeError::Syntax { offset, message } => {
-                RecentProjectsError::Syntax { offset, message }
-            }
-            DecodeError::Validation(error) => RecentProjectsError::Shape(error.to_string()),
-        })?;
+        .map_err(
+            |SyntaxError { offset, message }| RecentProjectsError::Syntax { offset, message },
+        )?;
     let Value::Object(mut root) = document else {
         return Err(shape("document must be an object"));
     };

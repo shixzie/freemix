@@ -506,7 +506,7 @@ fn resting_on_a_preset_previews_it_and_a_click_applies_it_as_one_step() {
         let at = Pos2::new(picker.x, picker.y + 4.0 * f32::from(step));
         harness.move_to(at);
         harness.idle();
-        if let Some(hover) = harness.state.preset_hover {
+        if let Some(hover) = harness.state.preset_hover.clone() {
             hovered = Some((at, hover));
             break;
         }
@@ -533,7 +533,11 @@ fn resting_on_a_preset_previews_it_and_a_click_applies_it_as_one_step() {
         "{:?} applied to the logo",
         hover.preset
     );
-    assert!(AnimationPreset::ALL.contains(&hover.preset));
+    assert!(matches!(
+        hover.preset,
+        fm_ui_model::animation_editor::PresetSource::BuiltIn(preset)
+            if AnimationPreset::ALL.contains(&preset)
+    ));
     assert_eq!(harness.state.preset_hover, None);
     harness.document.undo().unwrap();
     assert!(

@@ -112,6 +112,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     output.push_str("]}");
     write_playlist(output, project.playlist());
     super::grade::write_grading(output, project.grading());
+    super::animation_preset::write_animation_presets(output, project.animation_presets());
     output.push_str("\n  },");
 }
 

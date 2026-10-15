@@ -196,6 +196,38 @@ pub enum Command {
     GradeList {
         path: PathBuf,
     },
+    /// Writes one library grade (and its LUT) to a `.fmgrade` file.
+    GradeExport {
+        path: PathBuf,
+        grade: u32,
+        file: PathBuf,
+    },
+    /// Adds the grade (and its LUT) in a `.fmgrade` file to the library.
+    GradeImport {
+        path: PathBuf,
+        file: PathBuf,
+        name: Option<String>,
+    },
+    /// Writes one user animation preset to a `.fmpreset` file.
+    PresetExport {
+        path: PathBuf,
+        preset: u32,
+        file: PathBuf,
+    },
+    /// Adds one title element's keys in one phase to the preset library.
+    PresetSave {
+        path: PathBuf,
+        template_uri: String,
+        element: u128,
+        phase: TitlePhase,
+        name: String,
+    },
+    /// Adds the animation preset in a `.fmpreset` file to the library.
+    PresetImport {
+        path: PathBuf,
+        file: PathBuf,
+        name: Option<String>,
+    },
     /// Applies a built-in animation preset to one layer of a scene.
     SceneAnimationPreset {
         path: PathBuf,
@@ -1110,6 +1142,19 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "grade-clear" => parse_grade_clear(arguments),
         "grade-import-lut" => parse_grade_import_lut(arguments),
         "grade-list" => parse_grade_list(arguments),
+        "grade-export" => parse_shared_export(arguments, "grade", |path, grade, file| {
+            Command::GradeExport { path, grade, file }
+        }),
+        "grade-import" => parse_shared_import(arguments, "grade", |path, file, name| {
+            Command::GradeImport { path, file, name }
+        }),
+        "preset-export" => parse_shared_export(arguments, "preset", |path, preset, file| {
+            Command::PresetExport { path, preset, file }
+        }),
+        "preset-save" => parse_preset_save(arguments),
+        "preset-import" => parse_shared_import(arguments, "preset", |path, file, name| {
+            Command::PresetImport { path, file, name }
+        }),
         "audio-bus-add" => parse_audio_bus_add(arguments),
         "audio-bus-rename" => parse_audio_bus_rename(arguments),
         "audio-bus-remove" => parse_audio_bus_remove(arguments),
@@ -2407,6 +2452,61 @@ fn parse_grade_import_lut(
         }
     }
     Ok(Command::GradeImportLut { path, file, name })
+}
+
+/// `<show.freemix> <id> <file>`: an export of one library entry.
+fn parse_shared_export(
+    mut arguments: impl Iterator<Item = String>,
+    what: &'static str,
+    command: impl FnOnce(PathBuf, u32, PathBuf) -> Command,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let id = required(&mut arguments, what)?;
+    let id = number(&id, what)?;
+    let file = required_path(&mut arguments, "file")?;
+    reject_extra(&mut arguments)?;
+    Ok(command(path, id, file))
+}
+
+/// `<show.freemix> <template-uri> <element> --phase in|out --name <name>`.
+fn parse_preset_save(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let template_uri = nonblank(&mut arguments, "template URI")?;
+    let element = number(&required(&mut arguments, "element")?, "element")?;
+    let mut phase = None;
+    let mut name = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--phase" if phase.is_none() => phase = Some(title_phase(&mut arguments)?),
+            "--name" if name.is_none() => name = Some(nonblank(&mut arguments, "preset name")?),
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(Command::PresetSave {
+        path,
+        template_uri,
+        element,
+        phase: phase.ok_or(ArgsError::MissingValue("--phase"))?,
+        name: name.ok_or(ArgsError::MissingValue("--name"))?,
+    })
+}
+
+/// `<show.freemix> <file> [--name <name>]`: an import into the library.
+fn parse_shared_import(
+    mut arguments: impl Iterator<Item = String>,
+    what: &'static str,
+    command: impl FnOnce(PathBuf, PathBuf, Option<String>) -> Command,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let file = required_path(&mut arguments, "file")?;
+    let mut name = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--name" if name.is_none() => name = Some(nonblank(&mut arguments, what)?),
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(command(path, file, name))
 }
 
 fn parse_grade_list(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
@@ -4643,6 +4743,74 @@ mod tests {
             parse(strings(&["grade-list", "s", "x"])),
             Err(ArgsError::UnexpectedArgument("x".into()))
         );
+    }
+
+    #[test]
+    fn parses_preset_sharing_commands() {
+        assert_eq!(
+            parse(strings(&["grade-export", "s", "2", "w.fmgrade"])),
+            Ok(Command::GradeExport {
+                path: "s".into(),
+                grade: 2,
+                file: "w.fmgrade".into(),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["grade-import", "s", "w.fmgrade", "--name", "W"])),
+            Ok(Command::GradeImport {
+                path: "s".into(),
+                file: "w.fmgrade".into(),
+                name: Some("W".into()),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["preset-export", "s", "3", "p.fmpreset"])),
+            Ok(Command::PresetExport {
+                path: "s".into(),
+                preset: 3,
+                file: "p.fmpreset".into(),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["preset-import", "s", "p.fmpreset"])),
+            Ok(Command::PresetImport {
+                path: "s".into(),
+                file: "p.fmpreset".into(),
+                name: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "preset-save",
+                "s",
+                "asset://titles/a.fmtitle",
+                "5",
+                "--name",
+                "Rise",
+                "--phase",
+                "out",
+            ])),
+            Ok(Command::PresetSave {
+                path: "s".into(),
+                template_uri: "asset://titles/a.fmtitle".into(),
+                element: 5,
+                phase: TitlePhase::Out,
+                name: "Rise".into(),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["preset-export", "s", "3", "p.fmpreset", "x"])),
+            Err(ArgsError::UnexpectedArgument("x".into()))
+        );
+        assert_eq!(
+            parse(strings(&["preset-import", "s", "p.fmpreset", "--wat"])),
+            Err(ArgsError::UnknownOption("--wat".into()))
+        );
+        assert_eq!(
+            parse(strings(&["preset-save", "s", "u", "5", "--phase", "in"])),
+            Err(ArgsError::MissingValue("--name"))
+        );
+        assert!(parse(strings(&["grade-export", "s", "two", "w.fmgrade"])).is_err());
     }
 
     #[test]

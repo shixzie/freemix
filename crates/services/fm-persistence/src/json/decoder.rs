@@ -25,10 +25,7 @@ use crate::{
     RuntimeOverlayTransition, RuntimeOverlays, RuntimeRouting, StoredProject,
 };
 
-use super::{
-    DecodeError,
-    reader::{Reader, Value},
-};
+use super::{DecodeError, Reader, Value};
 
 pub(crate) fn decode(source: &str) -> Result<StoredProject, DecodeError> {
     let mut root = Object::new(Reader::new(source).document()?, "manifest")?;
@@ -74,6 +71,7 @@ struct ProjectDto {
     edit_locks: EditLocks,
     playlist: Playlist,
     grading: ProjectGrading,
+    animation_presets: fm_model::AnimationPresetLibrary,
 }
 
 struct EditLocks {
@@ -113,6 +111,7 @@ impl ProjectDto {
             edit_locks: parse_edit_locks(object.take("edit_locks")?)?,
             playlist: parse_playlist(object.take("playlist")?)?,
             grading: super::grade::parse_grading(&mut object)?,
+            animation_presets: super::animation_preset::parse_animation_presets(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -186,6 +185,9 @@ impl ProjectDto {
         // Grade bounds, names, and library and LUT references are reported
         // by project validation.
         project.set_grading(self.grading);
+        // Preset ids, names, and the library bound are reported by project
+        // validation.
+        project.set_animation_presets(self.animation_presets);
         project
     }
 }

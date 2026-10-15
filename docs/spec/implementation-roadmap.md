@@ -2213,6 +2213,40 @@ load or validate, title inputs are added only through the bundle (runtime
 bundle-local `asset://` paths, so the layout-less fallback (only already
 animated elements, presets applied on the server) is reached only by an
 `fm-control` host without templates, never by freemixd.
+Reusable user presets (project schema 34, Protocol 2.34): a preset is one
+phase of one target's animation captured relative to its resting pose
+(`fm_animation::PhaseMotion`: positions, scale, rotation, and opacity as
+offsets, crop measured against the target's box, colour kept), so it
+applies to any title element or scene layer. Applying one replaces the
+target's tracks of the preset's properties in that phase, retimed
+proportionally to the requested length, with crop keys scaled to the new
+target's box (scene layers skip colour). The project keeps an ordered
+library (`animation_presets` in `project.json`: at most 64, unique ids and
+names of at most 128 bytes, strict like the title clip), edited by undoable
+`EngineAnimationPresetEdit` add/rename/remove project edits and applied by
+the title and scene animation `UserPreset` edits. Protocol 2.34 carries
+`animation_preset_add|rename|remove`, `title_animation_user_preset`,
+`scene_animation_user_preset`, `event=animation_preset_changed`, and the
+`animation_preset_state` records that follow a snapshot last; freemixd
+journals, saves, and restores the library, and `fm-client`/`fm-ui-model`
+replicate it. In Studio's Animation window the Simple picker lists the
+presets saved from the shown phase under "My presets" with the same hover
+preview as the built-ins (the preset's motion played on the outlines, then
+the exact preview), and the Advanced inspector's "My presets" row saves the
+selected target's phase as a preset ("Save as preset…"), renames, deletes,
+and exports or imports a `.fmpreset` file by path. `.fmpreset` files are
+strict JSON versioned by the project schema (`fm-preset-file`, a pure
+foundation crate holding the shared JSON reader and the motion and grade
+encodings, so the project store and Studio read and write them identically
+while Studio links no server crates) (`kind: "animation_preset"`;
+any other schema, kind, or key is refused); an imported preset whose name is
+taken becomes `Name (2)`. `freemix-cli preset-save`, `preset-export`, and
+`preset-import` do the same offline, and `title-animation-preset` and
+`scene-animation-preset` accept `--preset user:<id>`. The timeline ruler
+labels steps that divide the frame rate (at 30 fps: 0:00, 0:10, 0:20,
+1:00), never a frame count that drifts across seconds. Remaining
+limitations: Studio imports and exports by typed path (there is no file
+dialog), and a preset applies to one target at a time.
 
 Current implementation boundary for the color grading suite (`SW-019`):
 `fm-grade` is the pure, all-integer grade model (white balance, exposure,
@@ -2266,7 +2300,7 @@ revision. Project append keeps appended inputs' grades, appending the
 library grades they use and copying the LUTs they reference under fresh
 ids (renamed on a clash). Project schema 33 adds per-scene-layer grades
 (`layer_grades`: `scene`, `layer`, and a library or inline `grade`; at most
-256, between `input_grades` and `program_grade`; schemas 32 and 34 are
+256, between `input_grades` and `program_grade`; schema 32 is
 refused). Validation requires the scene and its layer to exist; removing a
 layer or a scene drops its grades, duplicating a scene input copies them to
 the new scene, and appending a project carries them to the fresh scene ids.
@@ -2295,9 +2329,20 @@ through a Scene input) its own layer grade over the nested scene's graded
 layers. Remaining gaps: a Scene input's own input grade is not
 applied by either renderer (grade its layers instead); layer grades of a
 scene no Scene input shows are saved and restored but cannot be edited or
-replicated over the protocol; the Colour window previews a layer target on a test still,
-not its live picture; and presets cannot be exported between projects
-except through project append, so `SW-019` remains planned.
+replicated over the protocol; and the Colour window previews a layer target on a test still,
+not its live picture, so `SW-019` remains planned. Grades travel between
+projects as `.fmgrade` files (schema 34): strict JSON (`kind: "grade"`)
+holding the grade's name and values without its project LUT reference, and
+its LUT by name and strength with the `.cube` text embedded when it is at
+most 32 KiB, otherwise written to a sibling `.cube` file the document names
+(a plain file name; an exporter that cannot read the LUT names the sibling
+for the operator to supply). Importing registers the LUT under a fresh id
+(`assets/luts/<id>.cube`, renamed on a name clash) and adds the grade to
+the library (`Name (2)` on a clash). `freemix-cli grade-export` and
+`grade-import` work offline on any LUT size; Studio's Colour window exports
+the edited grade and imports a file by typed path through the protocol's
+`grade_lut_import` and `grade_library_add`, so it refuses LUTs over the
+32 KiB wire cap with a pointer to `grade-import`.
 
 Current implementation boundary for item 2 browser title control (`GX-006`):
 `freemix-web` provides a transport-free title editor model over a narrow server

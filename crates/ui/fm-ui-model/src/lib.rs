@@ -13,6 +13,11 @@ use std::sync::Arc;
 use fm_command::{CommandId, Revision};
 pub use fm_protocol::EditHistoryStatus;
 use fm_protocol::{
+    AnimationPresetChange, AnimationPresetStateMessage, GradeChange, GradeStateMessage,
+    SceneAnimationStateMessage, SceneLayoutStateMessage, TitleAnimationStateMessage,
+    TitleLayoutStateMessage, WireSceneLayout, WireTitleLayout,
+};
+use fm_protocol::{
     CommandResult, EditLockScope, EngineIdentity, EventCursor, EventMessage, EventPayload,
     FadeToBlackState, FieldIssue, ManualTransitionKind, ManualTransitionPosition,
     ManualTransitionStatus as ProtocolManualTransitionStatus, PlaylistEntrySpec, PlaylistLoopMode,
@@ -21,16 +26,14 @@ use fm_protocol::{
     StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
     TitleFieldUpdate, TitlePhase, TitleStateMessage, WireRecorderSlot,
 };
-use fm_protocol::{
-    GradeChange, GradeStateMessage, SceneAnimationStateMessage, SceneLayoutStateMessage,
-    TitleAnimationStateMessage, TitleLayoutStateMessage, WireSceneLayout, WireTitleLayout,
-};
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId};
 
+pub use animation_presets::AnimationPresetsStatus;
 pub use grading::{GradeLutStatus, GradingStatus, LibraryGradeStatus};
 pub use title_animation::{SceneAnimationStatus, TitleAnimationStatus};
 
 pub mod animation_editor;
+mod animation_presets;
 pub mod grade_editor;
 mod grading;
 pub mod i18n;
@@ -386,6 +389,9 @@ pub struct ProjectSnapshot {
     pub playlist_follows: bool,
     /// How many `grade_state` records complete this snapshot.
     pub grade_states: u16,
+    /// How many `animation_preset_state` records complete this snapshot
+    /// (Protocol 2.34).
+    pub animation_preset_states: u16,
 }
 
 impl ProjectSnapshot {
@@ -460,6 +466,7 @@ impl ProjectSnapshot {
             frame_rate: message.frame_rate,
             playlist_follows: message.playlist_follows,
             grade_states: message.grade_states,
+            animation_preset_states: message.animation_preset_states,
         }
     }
 }
@@ -541,6 +548,8 @@ pub enum DurableChange {
         inputs: Vec<InputId>,
         animation: SceneAnimationStatus,
     },
+    /// One accepted animation preset library edit (Protocol 2.34).
+    AnimationPresetChanged(AnimationPresetChange),
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -683,6 +692,9 @@ impl DurableProjectEvent {
                 },
             },
             EventPayload::GradeChanged(change) => DurableChange::GradeChanged(change),
+            EventPayload::AnimationPresetChanged(change) => {
+                DurableChange::AnimationPresetChanged(change)
+            }
             payload @ EventPayload::TitleAnimationChanged { .. } => title_animation_change(payload),
             EventPayload::SceneAnimationChanged {
                 inputs,
@@ -772,6 +784,10 @@ pub struct ProjectState {
     grading: GradingStatus,
     /// `grade_state` records the snapshot announced that have not arrived.
     grade_states_pending: u16,
+    animation_presets: AnimationPresetsStatus,
+    /// `animation_preset_state` records the snapshot announced that have
+    /// not arrived.
+    animation_preset_states_pending: u16,
 }
 
 impl ProjectState {
@@ -786,6 +802,20 @@ impl ProjectState {
     #[must_use]
     pub const fn grading_complete(&self) -> bool {
         self.grade_states_pending == 0
+    }
+
+    /// Returns the replicated animation preset library. Complete only once
+    /// [`Self::animation_presets_complete`].
+    #[must_use]
+    pub const fn animation_presets(&self) -> &AnimationPresetsStatus {
+        &self.animation_presets
+    }
+
+    /// Returns whether every `animation_preset_state` the snapshot
+    /// announced arrived.
+    #[must_use]
+    pub const fn animation_presets_complete(&self) -> bool {
+        self.animation_preset_states_pending == 0
     }
 
     /// Returns the replicated playlist: the snapshot's (its `playlist_state`,
@@ -1226,6 +1256,12 @@ pub enum ModelError {
     GradeStateMismatch,
     /// A `grade_changed` does not apply to the replicated grading.
     InvalidGradeChange,
+    /// An `animation_preset_state` arrived that the applied snapshot did
+    /// not announce, at another revision, or duplicating a preset.
+    AnimationPresetStateMismatch,
+    /// An `animation_preset_changed` does not apply to the replicated
+    /// library.
+    InvalidAnimationPresetChange,
     /// A title change's fields are not the title's field set, or its field
     /// revision went backwards.
     InvalidTitleChange(InputId),
@@ -1342,6 +1378,8 @@ impl fmt::Display for ModelError {
             | Self::PlaylistStateMismatch
             | Self::GradeStateMismatch
             | Self::InvalidGradeChange
+            | Self::AnimationPresetStateMismatch
+            | Self::InvalidAnimationPresetChange
             | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
             Self::SceneStateMismatch(input) => write!(
                 formatter,
@@ -1389,6 +1427,11 @@ fn write_catalogue_message(error: &ModelError, formatter: &mut fmt::Formatter<'_
         ModelError::InvalidGradeChange => {
             formatter.write_str("grade change does not match the replicated grading")
         }
+        ModelError::AnimationPresetStateMismatch => {
+            formatter.write_str("animation preset state does not match the snapshot it follows")
+        }
+        ModelError::InvalidAnimationPresetChange => formatter
+            .write_str("animation preset change does not match the replicated preset library"),
         _ => Ok(()),
     }
 }
@@ -1722,6 +1765,8 @@ impl ClientModel {
             playlist: (!snapshot.playlist_follows).then(PlaylistStatus::empty),
             grading: GradingStatus::default(),
             grade_states_pending: snapshot.grade_states,
+            animation_presets: AnimationPresetsStatus::default(),
+            animation_preset_states_pending: snapshot.animation_preset_states,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -1935,6 +1980,36 @@ impl ClientModel {
         }
         state.grading = grading;
         state.grade_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Adds one of the `animation_preset_state` records the installed
+    /// snapshot announced (Protocol 2.34), in library order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::AnimationPresetStateMismatch`] when the record is at
+    /// another revision, unannounced, or duplicates a preset id or name; the
+    /// model is then unchanged and the caller must resynchronize.
+    pub fn apply_animation_preset_state(
+        &mut self,
+        message: AnimationPresetStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if Revision::new(message.revision) != revision || state.animation_preset_states_pending == 0
+        {
+            return Err(ModelError::AnimationPresetStateMismatch);
+        }
+        if !state.animation_presets.push_entry(message.entry) {
+            return Err(ModelError::AnimationPresetStateMismatch);
+        }
+        state.animation_preset_states_pending -= 1;
         Ok(())
     }
 
@@ -2750,6 +2825,14 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         }
         DurableChange::TitleChanged { .. } => return validate_title_change(change, state),
         DurableChange::GradeChanged(change) => return validate_grade_change(change, state),
+        DurableChange::AnimationPresetChanged(change) => {
+            return if state.animation_presets_complete() && state.animation_presets.accepts(change)
+            {
+                Ok(())
+            } else {
+                Err(ModelError::InvalidAnimationPresetChange)
+            };
+        }
         DurableChange::TitleAnimationChanged { .. } => {
             return validate_animation_change(change, state);
         }
@@ -3028,6 +3111,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.playlist = Some(playlist);
         }
         DurableChange::GradeChanged(change) => state.grading.apply(change),
+        DurableChange::AnimationPresetChanged(change) => state.animation_presets.apply(change),
         DurableChange::TitleAnimationChanged { inputs, animation } => {
             for title in &mut state.titles {
                 if inputs.contains(&title.input) {

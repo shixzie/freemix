@@ -1159,8 +1159,9 @@ impl Runtime<'_> {
     /// Completes a queued snapshot with one `title_state` per title input,
     /// in input order, then the `playlist_state` and the `grade_state`
     /// records it announced, then one `title_animation_state` and then one
-    /// `title_layout_state` per title input, before
-    /// anything else reaches the peer. The playlist state's frame is the
+    /// `title_layout_state` per title input, the scene animation and layout
+    /// states, and the `animation_preset_state` records, before anything
+    /// else reaches the peer. The playlist state's frame is the
     /// clock's wall-clock frame: the simulated engine renders only while it
     /// executes commands, so its cursor lags wall time mid-entry. The native
     /// pacer realizes every frame, so there it is the engine cursor itself.
@@ -1212,6 +1213,12 @@ impl Runtime<'_> {
                     .scene_layout_states()
                     .into_iter()
                     .map(WireMessage::SceneLayoutState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .animation_preset_states()
+                    .into_iter()
+                    .map(WireMessage::AnimationPresetState),
             );
         }
     }

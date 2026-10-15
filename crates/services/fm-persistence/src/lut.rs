@@ -158,7 +158,28 @@ impl ProjectStore {
         name: &str,
     ) -> Result<ImportedLut, LutError> {
         let text = read_bounded(source)?;
-        let (parsed, warnings) = parse_cube(&text).map_err(LutError::Parse)?;
+        self.import_lut_text(project, &text, name)
+    }
+
+    /// Like [`Self::import_lut`], from `.cube` text already in memory (for
+    /// example a LUT a `.fmgrade` file embeds), at most
+    /// [`MAX_LUT_FILE_BYTES`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LutError`] exactly like [`Self::import_lut`].
+    pub fn import_lut_text(
+        &self,
+        project: &mut Project,
+        text: &str,
+        name: &str,
+    ) -> Result<ImportedLut, LutError> {
+        if u64::try_from(text.len()).unwrap_or(u64::MAX) > MAX_LUT_FILE_BYTES {
+            return Err(LutError::TooLarge {
+                maximum: MAX_LUT_FILE_BYTES,
+            });
+        }
+        let (parsed, warnings) = parse_cube(text).map_err(LutError::Parse)?;
         let size = recorded_size(&parsed)?;
         let assets_root = self.assets_root();
         let id = self

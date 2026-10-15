@@ -3659,4 +3659,179 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::AnimKindVideo, t("Vídeo")),
     (Msg::AnimKindGroup, t("Grupo")),
     (Msg::AnimKindOther, t("Otro elemento")),
+    // User animation presets and shared preset files (GX-011, SW-019).
+    (Msg::AnimMyPresets, t("Mis preajustes")),
+    (
+        Msg::AnimMyPresetsHover,
+        t(
+            "Preajustes guardados en este proyecto a partir de sus propias animaciones. Guarde las claves del elemento seleccionado en esta fase y elíjalas luego en el menú de preajustes de cualquier elemento",
+        ),
+    ),
+    (Msg::AnimPresetNameHint, t("Nombre del preajuste")),
+    (
+        Msg::AnimPresetNameHover,
+        t(
+            "Nombre de un preajuste nuevo, o el nuevo nombre del elegido: único en el proyecto, como máximo 128 bytes",
+        ),
+    ),
+    (Msg::AnimPresetSave, t("Guardar como preajuste…")),
+    (
+        Msg::AnimPresetSaveHover,
+        t(
+            "Guardar las claves de {phase} de {name} como un preajuste reutilizable en este proyecto. Posición, escala, rotación, opacidad y recorte quedan relativos a la pose de reposo del elemento, así que el preajuste sirve para cualquier elemento (una edición del proyecto que se puede deshacer)",
+        ),
+    ),
+    (Msg::AnimPresetLibraryPick, t("Elegir un preajuste")),
+    (
+        Msg::AnimPresetLibraryPickHover,
+        t("Elija uno de los preajustes del proyecto para renombrarlo, eliminarlo o exportarlo"),
+    ),
+    (Msg::AnimPresetLibraryItem, t("{name} · {phase}")),
+    (
+        Msg::AnimUserPresetHover,
+        t(
+            "{name}: su preajuste, guardado de la fase {phase} en {frames}. Se ajusta a la duración de esta fase conservando las proporciones de su ritmo",
+        ),
+    ),
+    (Msg::AnimPresetRename, t("Renombrar")),
+    (
+        Msg::AnimPresetRenameHover,
+        t(
+            "Renombrar el preajuste elegido con el nombre escrito a la izquierda (las animaciones a las que se aplicó no cambian)",
+        ),
+    ),
+    (Msg::AnimPresetDelete, t("Eliminar preajuste")),
+    (
+        Msg::AnimPresetDeleteHover,
+        t(
+            "Quitar el preajuste elegido del proyecto. Las animaciones a las que se aplicó conservan sus claves; Deshacer lo recupera",
+        ),
+    ),
+    (Msg::AnimPresetPathHint, t("Ruta a un archivo .fmpreset")),
+    (
+        Msg::AnimPresetPathHover,
+        t(
+            "Ruta de un archivo .fmpreset en este equipo, para exportar el preajuste elegido o importar uno",
+        ),
+    ),
+    (Msg::AnimPresetExport, t("Exportar preajuste")),
+    (
+        Msg::AnimPresetExportHover,
+        t(
+            "Escribir el preajuste elegido en el archivo .fmpreset de la ruta, para compartirlo con otros proyectos",
+        ),
+    ),
+    (Msg::AnimPresetImport, t("Importar preajuste")),
+    (
+        Msg::AnimPresetImportHover,
+        t(
+            "Leer el archivo .fmpreset de la ruta y añadir su preajuste a este proyecto (con otro nombre si el suyo está ocupado)",
+        ),
+    ),
+    (
+        Msg::AnimReasonPresetName,
+        t("escriba un nombre para el preajuste"),
+    ),
+    (
+        Msg::AnimReasonPresetNameInvalid,
+        t("el nombre supera los 128 bytes o tiene caracteres de control"),
+    ),
+    (
+        Msg::AnimReasonPresetNameTaken,
+        t("otro preajuste ya tiene este nombre"),
+    ),
+    (
+        Msg::AnimReasonNoSaveTarget,
+        t("seleccione una clave o una fila de propiedad del elemento que quiere guardar"),
+    ),
+    (
+        Msg::AnimReasonNothingToSave,
+        t("este elemento no tiene claves en esta fase"),
+    ),
+    (
+        Msg::AnimReasonLibraryFull,
+        t("el proyecto ya tiene 64 preajustes"),
+    ),
+    (
+        Msg::AnimReasonNoPresetPicked,
+        t("elija primero un preajuste"),
+    ),
+    (
+        Msg::AnimReasonNoUserPresets,
+        t("este proyecto aún no tiene preajustes propios"),
+    ),
+    (
+        Msg::AnimReasonNoPath,
+        t("escriba primero la ruta de un archivo"),
+    ),
+    (
+        Msg::AnimReasonPresetsPending,
+        t("la biblioteca de preajustes aún se está sincronizando"),
+    ),
+    (
+        Msg::AnimPresetExported,
+        t("Preajuste {name} exportado a {file}"),
+    ),
+    (
+        Msg::AnimPresetImporting,
+        t("Importando el preajuste {name} desde {file}"),
+    ),
+    (
+        Msg::AnimPresetFileFailed,
+        t("Archivo de preajuste {file}: {error}"),
+    ),
+    (Msg::ColorGradeFile, t("Archivo de corrección")),
+    (
+        Msg::ColorGradeFileHover,
+        t(
+            "Comparta correcciones entre proyectos como archivos .fmgrade: exporte la corrección que edita o importe una a la biblioteca de este proyecto",
+        ),
+    ),
+    (Msg::ColorGradePathHint, t("Ruta a un archivo .fmgrade")),
+    (
+        Msg::ColorGradePathHover,
+        t("Ruta de un archivo .fmgrade en este equipo, para exportar la corrección o importar una"),
+    ),
+    (Msg::ColorGradeExport, t("Exportar corrección")),
+    (
+        Msg::ColorGradeExportHover,
+        t(
+            "Escribir la corrección que edita en el archivo .fmgrade de la ruta, con su LUT dentro (o al lado como archivo .cube si la LUT es grande)",
+        ),
+    ),
+    (Msg::ColorGradeImport, t("Importar corrección")),
+    (
+        Msg::ColorGradeImportHover,
+        t(
+            "Leer el archivo .fmgrade de la ruta y añadir su corrección, y su LUT, a la biblioteca de este proyecto (con otro nombre si alguno está ocupado)",
+        ),
+    ),
+    (
+        Msg::ColorGradeExported,
+        t("Corrección {name} exportada a {file}"),
+    ),
+    (
+        Msg::ColorGradeExportedLut,
+        t("Corrección {name} exportada a {file}; su LUT está en {lut}"),
+    ),
+    (
+        Msg::ColorGradeExportedLutMissing,
+        t(
+            "Corrección {name} exportada a {file}, pero su LUT no se pudo leer aquí: copie el archivo LUT del proyecto a {lut}",
+        ),
+    ),
+    (
+        Msg::ColorGradeImporting,
+        t("Importando la corrección {name} desde {file}"),
+    ),
+    (
+        Msg::ColorGradeFileFailed,
+        t("Archivo de corrección {file}: {error}"),
+    ),
+    (
+        Msg::ColorGradeLutTooLarge,
+        t(
+            "La LUT de {name} es demasiado grande para importarla por la conexión; importe la corrección con la línea de órdenes (freemix-cli grade-import)",
+        ),
+    ),
 ];

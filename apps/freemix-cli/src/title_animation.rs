@@ -92,23 +92,53 @@ pub fn preset(
     preset: &str,
     frames: u32,
 ) -> AppResult<()> {
-    let Some(preset) = AnimationPreset::from_id(preset) else {
-        let known = AnimationPreset::ALL.map(AnimationPreset::id).join(", ");
-        return Err(AppFailure(format!(
-            "unknown animation preset `{preset}` (one of {known})"
-        ))
-        .into());
-    };
     let element = ElementId::new(
         core::num::NonZeroU128::new(element)
             .ok_or_else(|| AppFailure("element id must be nonzero".into()))?,
     );
+    // `user:<id>` names one of the project's own presets (GX-011).
+    if let Some(motion) = crate::presets::user_motion(path, preset)? {
+        let (store, mut stored) = editable_template(path, uri)?;
+        stored
+            .template
+            .apply_animation_motion(element, phase(title_phase), &motion, frames)
+            .map_err(|error| AppFailure(error.to_string()))?;
+        return save("title-animation-preset", &store, uri, &stored);
+    }
+    let Some(preset) = AnimationPreset::from_id(preset) else {
+        let known = AnimationPreset::ALL.map(AnimationPreset::id).join(", ");
+        return Err(AppFailure(format!(
+            "unknown animation preset `{preset}` (one of {known}, or user:<id>)"
+        ))
+        .into());
+    };
     let (store, mut stored) = editable_template(path, uri)?;
     stored
         .template
         .apply_animation_preset(element, phase(title_phase), preset, frames)
         .map_err(|error| AppFailure(error.to_string()))?;
     save("title-animation-preset", &store, uri, &stored)
+}
+
+/// `preset-save`: adds `element`'s keys in one phase of the template at
+/// `uri` to the project's preset library as `name`.
+pub fn save_preset(
+    path: &Path,
+    uri: &str,
+    element: u128,
+    title_phase: TitlePhase,
+    name: &str,
+) -> AppResult<()> {
+    let element = ElementId::new(
+        core::num::NonZeroU128::new(element)
+            .ok_or_else(|| AppFailure("element id must be nonzero".into()))?,
+    );
+    let (_, stored) = editable_template(path, uri)?;
+    let motion = stored
+        .template
+        .capture_animation_motion(element, phase(title_phase))
+        .map_err(|error| AppFailure(format!("element {element}: {error}")))?;
+    crate::presets::add_animation(path, name, phase(title_phase), &motion, "preset-save")
 }
 
 pub fn stretch(path: &Path, uri: &str, title_phase: TitlePhase, frames: u32) -> AppResult<()> {

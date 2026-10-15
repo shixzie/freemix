@@ -56,6 +56,7 @@ mod overlays;
 mod panels;
 mod playlist;
 mod preferences;
+mod preset_files;
 mod stinger_config;
 mod stream_control;
 mod studio_animation;
@@ -88,6 +89,7 @@ pub use playlist::{
     transport_availability as playlist_transport_availability,
 };
 pub use preferences::Appearance;
+pub use preset_files::{ExportLut, ExportedLut, ImportedLut, PresetFileAnswer, PresetFileRequest};
 pub use stinger_config::{
     default_stinger_cut_point_frames, stinger_assign_intent, stinger_configuration_available,
     stinger_remove_intent, stinger_setup_block_reason,
@@ -251,6 +253,11 @@ pub enum StudioIntent {
     /// stage 5): a `scene_animation_set` payload that carries its own base
     /// revision.
     SceneAnimation(CommandPayload),
+    /// Edits the project's animation preset library (Protocol 2.34): an
+    /// `animation_preset_add`, `_rename`, or `_remove` payload. Each names
+    /// its preset by id, so the server checks it against the current
+    /// library rather than a base revision.
+    AnimationPreset(CommandPayload),
     /// Asks for an exact title preview. Not a command: the worker sends it
     /// as a `title_preview_request` (latest wins) and the answer arrives as
     /// [`StudioUiState::title_preview`] or

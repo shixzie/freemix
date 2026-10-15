@@ -5061,11 +5061,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.33.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 33));
+    // The previous protocol is refused; the current one is 2.34.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 34));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 32),
+        protocol: ProtocolVersion::new(2, 33),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -5081,7 +5081,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 33)
+        ProtocolVersion::new(2, 34)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -6444,4 +6444,149 @@ fn scene_previews_compose_nested_scenes() {
     assert_eq!(nesting.rgba, direct.rgba);
     drop(graphics);
     daemon.stop();
+}
+
+/// GX-011, Protocol 2.34 end to end: a user preset saved to the library is
+/// replicated as `animation_preset_changed`, applies to a scene layer by
+/// id, and after a restart the snapshot announces it as the last follow-on
+/// record (`animation_preset_state`, after the scene layout).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn animation_presets_replicate_apply_and_persist_through_restart() {
+    use fm_model::fm_animation::{
+        Easing, Keyframe, MotionClip, MotionTarget, Phase, PhaseMotion, Property, Timebase, Track,
+        TrackKey, Value,
+    };
+    use fm_protocol::{AnimationPresetChange, AnimationPresetEntry, WireSceneLayerId};
+
+    let directory = TestDirectory::new("animation-presets");
+    let project_path = directory.project_path();
+    create_scene_program_project(&project_path);
+    let preset = NonZeroU32::new(1).unwrap();
+    let clip = MotionClip::from_tracks(
+        Timebase::new(FrameRate::new(30, 1).unwrap()),
+        10,
+        0,
+        vec![Track::new(
+            TrackKey::new(MotionTarget, Phase::In, Property::PositionY),
+            vec![
+                Keyframe::new(0, Value::Scalar(300), Easing::CubicOut),
+                Keyframe::new(10, Value::Scalar(0), Easing::Linear),
+            ],
+        )],
+    )
+    .unwrap();
+    let motion = PhaseMotion::new(clip, 1_920, 1_080).unwrap();
+    let entry = AnimationPresetEntry {
+        preset,
+        name: "Rise".into(),
+        phase: Phase::In,
+        motion: Box::new(motion.clone()),
+    };
+    let mut expected = ProjectStore::new(&project_path)
+        .unwrap()
+        .load()
+        .unwrap()
+        .project()
+        .scene(scene_id(1))
+        .unwrap()
+        .clone();
+    expected
+        .apply_animation_motion(fm_model::LayerId::new(2).unwrap(), Phase::In, &motion, 15)
+        .unwrap();
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut viewer = daemon.connect();
+    viewer.handshake_as(Role::Viewer, None);
+    let (snapshot, _) = scene_animation_sync(&mut viewer);
+    assert_eq!(snapshot.animation_preset_states, 0);
+    let add = CommandPayload::AddAnimationPreset {
+        preset,
+        name: "Rise".into(),
+        phase: Phase::In,
+        motion: Box::new(motion.clone()),
+        index: None,
+    };
+    permission_denied(&mut viewer, "viewer-add", add.clone());
+
+    let mut graphics = daemon.connect();
+    graphics.handshake_as(Role::Graphics, None);
+    scene_animation_sync(&mut graphics);
+    graphics.send(&command("add", "add-key", add));
+    assert_eq!(accepted_revision(&mut graphics, "add"), 1);
+    let changed = EventPayload::AnimationPresetChanged(AnimationPresetChange::Set {
+        index: 0,
+        entry: entry.clone(),
+    });
+    assert_eq!(durable_event_at(&mut graphics, 1).payload, changed);
+    assert_eq!(durable_event_at(&mut viewer, 1).payload, changed);
+
+    graphics.send(&command(
+        "apply",
+        "apply-key",
+        CommandPayload::ApplySceneAnimationUserPreset {
+            input: input(4),
+            base_revision: 0,
+            layer: WireSceneLayerId::new(NonZeroU32::new(2).unwrap()),
+            phase: Phase::In,
+            preset,
+            frames: 15,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut graphics, "apply"), 2);
+    assert_eq!(
+        durable_event_at(&mut graphics, 2).payload,
+        EventPayload::SceneAnimationChanged {
+            inputs: vec![input(4)],
+            animation_revision: 1,
+            clip: Box::new(fm_control::scene_clip_to_wire(&expected.animation.clip)),
+        }
+    );
+    // An unknown preset is refused.
+    graphics.send(&command(
+        "unknown",
+        "unknown-key",
+        CommandPayload::ApplySceneAnimationUserPreset {
+            input: input(4),
+            base_revision: 1,
+            layer: WireSceneLayerId::new(NonZeroU32::new(2).unwrap()),
+            phase: Phase::In,
+            preset: NonZeroU32::new(9).unwrap(),
+            frames: 15,
+        },
+    ));
+    assert!(matches!(
+        graphics.next_result(),
+        CommandResult::Rejected { id, .. } if id == "unknown"
+    ));
+    drop(graphics);
+    drop(viewer);
+    daemon.stop();
+
+    for restart in ["recovered", "restarted"] {
+        let daemon = Daemon::start_without_once(&project_path);
+        let mut viewer = daemon.connect();
+        viewer.handshake_as(Role::Viewer, None);
+        let (snapshot, state) = scene_animation_sync(&mut viewer);
+        assert_eq!(snapshot.animation_preset_states, 1, "{restart}");
+        assert_eq!(state.animation_revision, 1, "{restart}");
+        match viewer.receive() {
+            WireMessage::AnimationPresetState(state) => {
+                assert_eq!(state.revision, snapshot.revision, "{restart}");
+                assert_eq!(state.entry, entry, "{restart}");
+            }
+            other => panic!("{restart}: expected animation_preset_state, got {other:?}"),
+        }
+        drop(viewer);
+        daemon.stop();
+        let stored = ProjectStore::new(&project_path).unwrap().load().unwrap();
+        let library = stored.project().animation_presets();
+        assert_eq!(library.len(), 1, "{restart}");
+        assert_eq!(library.presets()[0].motion, motion, "{restart}");
+        assert_eq!(
+            stored.project().scene(scene_id(1)).unwrap().animation,
+            expected.animation,
+            "{restart}"
+        );
+    }
 }

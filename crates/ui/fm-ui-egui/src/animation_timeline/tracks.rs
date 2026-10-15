@@ -27,6 +27,7 @@ use crate::theme::{
     ACCENT_FILL, AMBER, ERROR, accent_color, border_color, border_strong_color, faded, legible,
     muted_color, raised_color, text_color, text_dim_color, widget_color,
 };
+use fm_ui_model::animation_editor::PresetSource;
 
 /// Height of the time ruler.
 pub const RULER_HEIGHT: f32 = 26.0;
@@ -745,13 +746,21 @@ fn paint_background<T: Copy + Ord>(
     );
 }
 
-/// Frames between labelled ruler ticks: the smallest "nice" step at least
-/// 64 points apart.
+/// Frames between labelled ruler ticks: the smallest frame-rate-friendly
+/// step at least 64 points apart.
+///
+/// Below a second the step divides the (nominal) rate exactly, so every
+/// second boundary carries a label and labels read evenly (`0:10`, `0:20`,
+/// `1:00` at 30 fps; `0:05`, `0:10`, ... `1:00` at 25 fps). From a second up
+/// it is a whole number of seconds: 1, 2, 5, 10, 15, 30 s, then 1, 2, 5, 10
+/// minutes.
 #[must_use]
 pub fn ruler_step(frames_per_pixel: f32, fps: u32) -> u32 {
     let fps = fps.max(1);
-    let mut candidates = vec![1, 2, 5, 10];
-    candidates.retain(|step| *step < fps);
+    let mut candidates: Vec<u32> = [1, 2, 3, 5, 6, 10, 12, 15, 20, 30]
+        .into_iter()
+        .filter(|step| *step < fps && fps.is_multiple_of(*step))
+        .collect();
     candidates.extend(
         [1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
             .iter()
@@ -762,6 +771,26 @@ pub fn ruler_step(frames_per_pixel: f32, fps: u32) -> u32 {
         .into_iter()
         .find(|step| *step as f32 / frames_per_pixel >= 64.0)
         .unwrap_or(600 * fps)
+}
+
+/// Frames between the unlabelled ticks inside one ruler `step`: the
+/// coarsest division into at most six parts that stays frame-rate
+/// friendly (whole seconds inside a multi-second step, an exact divisor of
+/// the rate inside a second).
+#[must_use]
+pub fn ruler_minor_step(step: u32, fps: u32) -> u32 {
+    let fps = fps.max(1);
+    let step = step.max(1);
+    let finest = |whole: u32| {
+        (1..=whole)
+            .find(|part| whole.is_multiple_of(*part) && whole / part <= 6)
+            .unwrap_or(whole)
+    };
+    if step > fps && step.is_multiple_of(fps) {
+        finest(step / fps) * fps
+    } else {
+        finest(step)
+    }
 }
 
 /// A ruler label: `S:FF` under a minute, `M:SS:FF` above.
@@ -796,7 +825,7 @@ fn paint_ruler<T: Copy + Ord>(
     let view = document.view();
     let fps = nominal_fps(document);
     let step = ruler_step(view.frames_per_pixel(), fps);
-    let minor = (step / 5).max(1);
+    let minor = ruler_minor_step(step, fps);
     #[allow(clippy::cast_precision_loss)]
     let minor_visible = minor as f32 / view.frames_per_pixel() >= 5.0;
     let (first, last) = view.visible_range(geometry.track_width());
@@ -986,24 +1015,68 @@ fn labels<T: Copy + Ord>(
                             .width(picker_rect.width() - 8.0)
                             .show_ui(ui, |ui| {
                                 for preset in AnimationPreset::ALL {
+                                    let preset = PresetSource::BuiltIn(preset);
+                                    let PresetSource::BuiltIn(builtin) = preset else {
+                                        unreachable!("a built-in preset")
+                                    };
                                     let item = ui
-                                        .selectable_label(false, text::preset_name(l, preset))
+                                        .selectable_label(false, text::preset_name(l, builtin))
                                         .on_hover_text(if document.target(target).is_some() {
                                             l.format(
                                                 Msg::AnimPresetItemHover,
                                                 &[(
                                                     "help",
-                                                    Arg::Str(text::preset_hover(l, preset)),
+                                                    Arg::Str(text::preset_hover(l, builtin)),
                                                 )],
                                             )
                                         } else {
-                                            text::preset_hover(l, preset).to_owned()
+                                            text::preset_hover(l, builtin).to_owned()
                                         });
                                     if item.hovered() {
-                                        preset_hover = Some((target, preset));
+                                        preset_hover = Some((target, preset.clone()));
                                     }
                                     if item.clicked() {
                                         preset_choice = Some((target, preset));
+                                    }
+                                }
+                                // The project's own presets saved from this
+                                // phase that animate something here.
+                                let mine: Vec<_> = state
+                                    .user_presets
+                                    .iter()
+                                    .filter(|item| {
+                                        item.phase == document.phase()
+                                            && item.motion.properties().any(|property| {
+                                                state.properties.contains(&property)
+                                            })
+                                    })
+                                    .collect();
+                                if !mine.is_empty() {
+                                    ui.separator();
+                                    ui.label(crate::theme::section_label(
+                                        l.text(Msg::AnimMyPresets),
+                                    ));
+                                }
+                                for item in mine {
+                                    let help = super::library::user_preset_hover(l, item);
+                                    let response = ui
+                                        .selectable_label(
+                                            false,
+                                            crate::theme::ellipsize(&item.name, 22),
+                                        )
+                                        .on_hover_text(if document.target(target).is_some() {
+                                            l.format(
+                                                Msg::AnimPresetItemHover,
+                                                &[("help", Arg::Str(&help))],
+                                            )
+                                        } else {
+                                            help
+                                        });
+                                    if response.hovered() {
+                                        preset_hover = Some((target, item.source()));
+                                    }
+                                    if response.clicked() {
+                                        preset_choice = Some((target, item.source()));
                                     }
                                 }
                             });
@@ -1017,10 +1090,19 @@ fn labels<T: Copy + Ord>(
             }
         }
     }
-    let duration = if document.phase_frames() > 0 {
-        document.phase_frames()
-    } else {
-        (nominal_fps(document) / 2).max(1)
+    // A preset runs over the phase; into an empty phase a built-in brings
+    // half a second and a user preset its own length.
+    let duration = |preset: &PresetSource| {
+        if document.phase_frames() > 0 {
+            document.phase_frames()
+        } else {
+            match preset {
+                PresetSource::BuiltIn(_) => (nominal_fps(document) / 2).max(1),
+                PresetSource::User { motion, .. } => {
+                    motion.frames_at(document.clip().timebase()).max(1)
+                }
+            }
+        }
     };
     // Only presets that would apply here are previewed.
     state.preset_hover =
@@ -1029,20 +1111,22 @@ fn labels<T: Copy + Ord>(
             .map(|(target, preset)| PresetRequest {
                 target,
                 phase: document.phase(),
+                frames: duration(&preset),
                 preset,
-                frames: duration,
             });
     if let Some((target, preset)) = preset_choice {
+        let frames = duration(&preset);
         if document.target(target).is_none() {
             state.preset_requests.push(PresetRequest {
                 target,
                 phase: document.phase(),
                 preset,
-                frames: duration,
+                frames,
             });
             return;
         }
-        match document.apply_preset(target, document.phase(), preset, duration) {
+        let phase = document.phase();
+        match document.apply_preset_source(target, phase, &preset, frames, state.properties) {
             Ok(()) => state.notice = None,
             Err(error) => state.notice = Some(Notice::error(l, &error)),
         }
@@ -1309,13 +1393,67 @@ mod tests {
     #[test]
     fn ruler_steps_stay_readable_at_every_zoom() {
         // Four pixels per frame at 25 fps: labels every 20 frames would be
-        // 80 px, but steps are "nice" (1, 2, 5, 10 frames, then seconds).
+        // 80 px, but a sub-second step must divide the rate (1 or 5 frames
+        // at 25 fps), so the next is one second.
         assert_eq!(ruler_step(0.25, 25), 25);
         assert_eq!(ruler_step(1.0 / 64.0, 25), 1);
-        assert_eq!(ruler_step(1.0 / 8.0, 25), 10);
+        assert_eq!(ruler_step(1.0 / 8.0, 25), 25);
+        assert_eq!(ruler_step(1.0 / 16.0, 25), 5);
         assert_eq!(ruler_step(4.0, 25), 25 * 15);
         assert_eq!(ruler_label(0, 25), "0:00");
         assert_eq!(ruler_label(37, 25), "1:12");
         assert_eq!(ruler_label(25 * 61 + 3, 25), "1:01:03");
+    }
+
+    /// Every labelled tick at every zoom and common rate falls on a
+    /// frame-rate-friendly position: a sub-second step divides the rate, so
+    /// each second boundary is labelled and the frame part of a label is
+    /// always a multiple of the step (30 fps never reads `1:05` after
+    /// `0:20`); a longer step is whole seconds.
+    #[test]
+    fn ruler_labels_align_to_the_frame_rate() {
+        for fps in [24_u32, 25, 30, 50, 60] {
+            let mut previous = 0;
+            for zoom in 1..=400 {
+                #[allow(clippy::cast_precision_loss)]
+                let frames_per_pixel = zoom as f32 / 64.0;
+                let step = ruler_step(frames_per_pixel, fps);
+                assert!(step >= previous, "{fps} fps: steps grow with zoom");
+                previous = step;
+                if step < fps {
+                    assert_eq!(fps % step, 0, "{fps} fps: {step} divides the rate");
+                } else {
+                    assert_eq!(step % fps, 0, "{fps} fps: {step} is whole seconds");
+                }
+                let minor = ruler_minor_step(step, fps);
+                assert_eq!(step % minor, 0, "{fps} fps: minor {minor} divides {step}");
+                assert!(step / minor <= 6);
+                if minor >= fps {
+                    assert_eq!(minor % fps, 0);
+                }
+                let labels: Vec<_> = (0..4).map(|tick| ruler_label(tick * step, fps)).collect();
+                for (tick, label) in (0_u32..).zip(&labels) {
+                    let frame = tick * step;
+                    let frames = label.rsplit(':').next().unwrap().parse::<u32>().unwrap();
+                    assert_eq!(frames, frame % fps, "{fps} fps label {label}");
+                    assert_eq!(frames % step.min(fps), 0, "{fps} fps label {label}");
+                }
+            }
+        }
+        // The reported case: a 10-frame step at 30 fps reads 0:00, 0:10,
+        // 0:20, 1:00, and 25 fps never takes a 10-frame step.
+        let at_30: Vec<_> = (0..6).map(|tick| ruler_label(tick * 10, 30)).collect();
+        assert_eq!(at_30, ["0:00", "0:10", "0:20", "1:00", "1:10", "1:20"]);
+        assert_eq!(ruler_step(1.0 / 6.0, 30), 15);
+        assert!((1..=400).all(|zoom| {
+            #[allow(clippy::cast_precision_loss)]
+            let step = ruler_step(zoom as f32 / 64.0, 25);
+            step != 10 && step != 2
+        }));
+        assert_eq!(ruler_minor_step(25, 25), 5);
+        assert_eq!(ruler_minor_step(30, 30), 5);
+        assert_eq!(ruler_minor_step(10, 30), 2);
+        assert_eq!(ruler_minor_step(60, 30), 30);
+        assert_eq!(ruler_minor_step(30 * 30, 30), 150);
     }
 }

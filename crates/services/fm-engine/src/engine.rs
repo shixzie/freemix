@@ -297,6 +297,9 @@ pub enum EngineCommand {
     /// Edits a scene's layer animation (see
     /// [`crate::EngineSceneAnimationEdit`]). A project edit.
     SceneAnimation(crate::EngineSceneAnimationEdit),
+    /// Edits the animation preset library (see
+    /// [`crate::EngineAnimationPresetEdit`]). A project edit.
+    AnimationPreset(crate::EngineAnimationPresetEdit),
 }
 
 /// What an accepted title command does on air.
@@ -397,6 +400,9 @@ pub enum EngineEvent {
     SceneAnimationChanged {
         input: InputId,
     },
+    /// An animation preset library edit (or its undo or redo) was accepted;
+    /// the library afterwards is read from [`ShowState::animation_presets`].
+    AnimationPresetsChanged(crate::EngineAnimationPresetEdit),
 }
 
 /// Engine-level desired status of one stream target; realization is owned by
@@ -1063,6 +1069,7 @@ impl Engine {
                 && !matches!(&command, EngineCommand::Grade(_))
                 && !matches!(&command, EngineCommand::TitleAnimation(_))
                 && !matches!(&command, EngineCommand::SceneAnimation(_))
+                && !matches!(&command, EngineCommand::AnimationPreset(_))
                 && !matches!(
                     &command,
                     EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
@@ -1542,6 +1549,13 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::AnimationPreset(edit) = self.command {
+            crate::animation_preset::apply(state.animation_presets_mut(), &edit)?;
+            events.push(EngineEvent::AnimationPresetsChanged(edit));
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::Grade(edit) = self.command {
             crate::grade_edit::apply_show_grade_edit(state, &edit)?;
             events.push(EngineEvent::GradingChanged(edit));
@@ -1793,7 +1807,8 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             }
             EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
-            | EngineCommand::SceneAnimation(_) => {
+            | EngineCommand::SceneAnimation(_)
+            | EngineCommand::AnimationPreset(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
         };
@@ -2135,6 +2150,7 @@ fn apply_runtime(
             | EngineCommand::Grade(_)
             | EngineCommand::TitleAnimation(_)
             | EngineCommand::SceneAnimation(_)
+            | EngineCommand::AnimationPreset(_)
     ) {
         return Ok(Vec::new());
     }
@@ -2276,7 +2292,8 @@ fn apply_runtime(
         }
         EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
-        | EngineCommand::SceneAnimation(_) => {
+        | EngineCommand::SceneAnimation(_)
+        | EngineCommand::AnimationPreset(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
     })
@@ -2408,7 +2425,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::RealizeTitle(_)
         | EngineCommand::Grade(_)
         | EngineCommand::TitleAnimation(_)
-        | EngineCommand::SceneAnimation(_) => None,
+        | EngineCommand::SceneAnimation(_)
+        | EngineCommand::AnimationPreset(_) => None,
     }
 }
 

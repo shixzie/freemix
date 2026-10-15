@@ -152,6 +152,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,
+        animation_preset_states: 0,
     }
 }
 

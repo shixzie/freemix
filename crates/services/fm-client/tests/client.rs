@@ -185,6 +185,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         frame_rate: fm_types::FrameRate::new(30, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,
+        animation_preset_states: 0,
     }
 }
 
@@ -1900,6 +1901,7 @@ mod playlists {
             },
             playlist_follows: true,
             grade_states: 0,
+            animation_preset_states: 0,
             ..snapshot(revision)
         }
     }
@@ -2501,5 +2503,194 @@ mod scene_animation {
             .intake(WireMessage::SceneAnimationState(animation(4, 1)))
             .unwrap_err();
         assert!(matches!(error, ClientError::ResyncRequired { .. }));
+    }
+}
+
+/// Protocol 2.34: a snapshot announces its `animation_preset_state`
+/// records, which complete it after every other follow-on record, and
+/// `animation_preset_changed` keeps the replicated library current.
+mod animation_presets {
+    use core::num::NonZeroU32;
+
+    use fm_animation::{
+        Easing, Keyframe, MotionClip, MotionTarget, Phase, PhaseMotion, Property, Timebase, Track,
+        TrackKey, Value,
+    };
+    use fm_protocol::{
+        AnimationPresetChange, AnimationPresetEntry, AnimationPresetStateMessage, GradeEntry,
+        GradeStateMessage, WireGradeSource,
+    };
+
+    use super::*;
+
+    fn entry(preset: u32, name: &str) -> AnimationPresetEntry {
+        let clip = MotionClip::from_tracks(
+            Timebase::new(fm_types::FrameRate::new(25, 1).unwrap()),
+            10,
+            0,
+            vec![Track::new(
+                TrackKey::new(MotionTarget, Phase::In, Property::PositionY),
+                vec![
+                    Keyframe::new(0, Value::Scalar(-50), Easing::CubicOut),
+                    Keyframe::new(10, Value::Scalar(0), Easing::Linear),
+                ],
+            )],
+        )
+        .unwrap();
+        AnimationPresetEntry {
+            preset: NonZeroU32::new(preset).unwrap(),
+            name: name.into(),
+            phase: Phase::In,
+            motion: Box::new(PhaseMotion::new(clip, 200, 50).unwrap()),
+        }
+    }
+
+    fn preset_state(revision: u64, preset: u32, name: &str) -> WireMessage {
+        WireMessage::AnimationPresetState(AnimationPresetStateMessage {
+            revision,
+            entry: entry(preset, name),
+        })
+    }
+
+    fn grade_state(revision: u64) -> WireMessage {
+        WireMessage::GradeState(GradeStateMessage {
+            revision,
+            entry: GradeEntry::Program {
+                source: WireGradeSource::Inline(Box::new(fm_grade::Grade::IDENTITY)),
+            },
+        })
+    }
+
+    fn synchronizing(grade_states: u16, animation_preset_states: u16) -> Client {
+        let mut client = Client::new(config(4)).unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client.accept_handshake(handshake(4, None)).unwrap();
+        client
+            .intake(WireMessage::Snapshot(SnapshotMessage {
+                grade_states,
+                animation_preset_states,
+                ..snapshot(4)
+            }))
+            .unwrap();
+        client
+    }
+
+    fn resyncs(client: &mut Client, message: WireMessage) {
+        let error = client.intake(message).unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn announced_preset_states_complete_the_snapshot_last() {
+        let mut client = synchronizing(1, 2);
+        // A preset before the grade states it follows is out of order.
+        resyncs(&mut client, preset_state(4, 1, "Rise"));
+
+        let mut client = synchronizing(1, 2);
+        client.intake(grade_state(4)).unwrap();
+        for (preset, name) in [(3, "Rise"), (1, "Drop")] {
+            assert!(matches!(
+                client.state(),
+                ConnectionState::Synchronizing {
+                    mode: SyncMode::Snapshot,
+                    ..
+                }
+            ));
+            assert_eq!(
+                client.intake(preset_state(4, preset, name)).unwrap(),
+                Intake::AnimationPresetStateApplied
+            );
+        }
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        let library = client.model().state().unwrap().animation_presets().clone();
+        assert_eq!(
+            library
+                .entries()
+                .iter()
+                .map(|entry| (entry.preset.get(), entry.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(3, "Rise"), (1, "Drop")]
+        );
+        assert_eq!(*library.entries()[0].motion, *entry(3, "Rise").motion);
+
+        // animation_preset_changed edits the replicated library; a removal
+        // of an unknown preset is refused.
+        let event = |revision: u64, change: AnimationPresetChange| {
+            WireMessage::Event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision,
+                },
+                payload: EventPayload::AnimationPresetChanged(change),
+            })
+        };
+        client
+            .intake(event(
+                5,
+                AnimationPresetChange::Set {
+                    index: 1,
+                    entry: entry(1, "Fall"),
+                },
+            ))
+            .unwrap();
+        client
+            .intake(event(
+                6,
+                AnimationPresetChange::Removed {
+                    preset: NonZeroU32::new(3).unwrap(),
+                },
+            ))
+            .unwrap();
+        let library = client.model().state().unwrap().animation_presets().clone();
+        assert_eq!(library.entries().len(), 1);
+        assert_eq!(library.entries()[0].name, "Fall");
+        assert!(
+            client
+                .intake(event(
+                    7,
+                    AnimationPresetChange::Removed {
+                        preset: NonZeroU32::new(3).unwrap(),
+                    },
+                ))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unannounced_stale_or_duplicate_preset_states_force_a_fresh_snapshot() {
+        // Beyond the announced count.
+        let mut client = synchronizing(0, 0);
+        assert_eq!(client.state(), &ConnectionState::Ready);
+        resyncs(&mut client, preset_state(4, 1, "Rise"));
+
+        // At another revision.
+        let mut client = synchronizing(0, 1);
+        resyncs(&mut client, preset_state(3, 1, "Rise"));
+
+        // A repeated name.
+        let mut client = synchronizing(0, 2);
+        client.intake(preset_state(4, 1, "Rise")).unwrap();
+        resyncs(&mut client, preset_state(4, 2, "Rise"));
+
+        // An event before the announced states arrive.
+        let mut client = synchronizing(0, 1);
+        resyncs(
+            &mut client,
+            WireMessage::Event(EventMessage {
+                edit_history: fm_protocol::EditHistoryStatus::EMPTY,
+                cursor: EventCursor {
+                    engine: engine(),
+                    revision: 5,
+                },
+                payload: EventPayload::AnimationPresetChanged(AnimationPresetChange::Removed {
+                    preset: NonZeroU32::new(1).unwrap(),
+                }),
+            }),
+        );
     }
 }

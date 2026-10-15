@@ -1467,6 +1467,25 @@ pub fn run(command: Command) -> AppResult<()> {
             crate::grading::import_lut(&path, &file, name)?;
         }
         Command::GradeList { path } => crate::grading::list(&path)?,
+        Command::GradeExport { path, grade, file } => {
+            crate::presets::export_grade(&path, grade, &file)?;
+        }
+        Command::GradeImport { path, file, name } => {
+            crate::presets::import_grade(&path, &file, name.as_deref())?;
+        }
+        Command::PresetExport { path, preset, file } => {
+            crate::presets::export_animation(&path, preset, &file)?;
+        }
+        Command::PresetSave {
+            path,
+            template_uri,
+            element,
+            phase,
+            name,
+        } => crate::title_animation::save_preset(&path, &template_uri, element, phase, &name)?,
+        Command::PresetImport { path, file, name } => {
+            crate::presets::import_animation(&path, &file, name.as_deref())?;
+        }
         Command::ProjectAutosave { path, keep } => project_bundle::autosave(&path, keep)?,
         Command::ProjectRecover { path, restore } => project_bundle::recover(&path, restore)?,
         Command::RecentProjects { file } => project_bundle::list_recent(&file)?,
@@ -4081,6 +4100,11 @@ Usage:
       and assigns it by reference, --grade assigns a library grade.
   freemix-cli grade-clear <show.freemix> <input-id|layer <scene-id> <layer-id>|program>
   freemix-cli grade-import-lut <show.freemix> <file.cube> [--name <name>]
+  freemix-cli grade-export <show.freemix> <grade-id> <file.fmgrade>
+  freemix-cli grade-import <show.freemix> <file.fmgrade> [--name <name>]
+  freemix-cli preset-export <show.freemix> <preset-id> <file.fmpreset>
+  freemix-cli preset-import <show.freemix> <file.fmpreset> [--name <name>]
+  freemix-cli preset-save <show.freemix> <template-uri> <element-id> --phase <in|out> --name <name>
       Copies a .cube LUT (at most 16 MiB, 65^3) to assets/luts/<id>.cube.
   freemix-cli grade-list <show.freemix>
   freemix-cli audio-bus-add <show.freemix> <nonzero-bus-id> <name>

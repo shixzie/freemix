@@ -65,6 +65,19 @@ pub(super) fn validate_grade_name(name: &str) -> Result<(), CodecError> {
     }
 }
 
+/// Enforces the animation preset name rule (Protocol 2.34): the grade name
+/// rule with [`crate::MAX_ANIMATION_PRESET_NAME_BYTES`].
+pub(super) fn validate_preset_name(name: &str) -> Result<(), CodecError> {
+    if name.trim().is_empty()
+        || name.len() > crate::MAX_ANIMATION_PRESET_NAME_BYTES
+        || name.chars().any(char::is_control)
+    {
+        Err(invalid("name", name))
+    } else {
+        Ok(())
+    }
+}
+
 pub(super) const fn encode_cube_kind(kind: CubeKind) -> &'static str {
     match kind {
         CubeKind::OneD => "1d",

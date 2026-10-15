@@ -22,8 +22,8 @@
 use crate::{ElementId, TitleTemplate};
 use core::fmt;
 use fm_animation::{
-    AnimationPreset, Clip, ClipError, ClipState, Phase, PresetGeometry, Property, Rgba, Timebase,
-    Value,
+    AnimationPreset, Clip, ClipError, ClipState, MotionError, Phase, PhaseMotion, PresetGeometry,
+    Property, Rgba, Timebase, Value,
 };
 use fm_types::FrameRate;
 
@@ -146,6 +146,68 @@ impl TitleTemplate {
             clip.set_phase_frames_keeping_keys(phase, length)?;
             clip.apply_preset(element, phase, preset, frames, geometry)
         })
+    }
+
+    /// Applies a saved motion (a user animation preset) to one element over
+    /// `frames` frames of `phase` (see [`fm_animation::Clip::apply_motion`]),
+    /// its crop keys sized to the element's static bounds. Atomic; returns
+    /// the new animation revision.
+    ///
+    /// # Errors
+    ///
+    /// [`AnimationEditError`]; nothing changes on error.
+    pub fn apply_animation_motion(
+        &mut self,
+        element: ElementId,
+        phase: Phase,
+        motion: &PhaseMotion,
+        frames: u32,
+    ) -> Result<u64, AnimationEditError> {
+        let bounds = self
+            .elements
+            .iter()
+            .find(|candidate| candidate.id == element)
+            .map(|candidate| candidate.bounds)
+            .ok_or(AnimationEditError::UnknownElement(element))?;
+        self.edit_animation(|clip| {
+            clip.apply_motion(
+                element,
+                phase,
+                motion,
+                frames,
+                bounds.width.max(1),
+                bounds.height.max(1),
+                |_| true,
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Saves `element`'s tracks in `phase` as a motion measured against its
+    /// static bounds.
+    ///
+    /// # Errors
+    ///
+    /// [`MotionError::Empty`] for an unknown element or one with nothing to
+    /// save in `phase`.
+    pub fn capture_animation_motion(
+        &self,
+        element: ElementId,
+        phase: Phase,
+    ) -> Result<PhaseMotion, MotionError> {
+        let bounds = self
+            .elements
+            .iter()
+            .find(|candidate| candidate.id == element)
+            .map(|candidate| candidate.bounds)
+            .ok_or(MotionError::Empty)?;
+        PhaseMotion::capture(
+            &self.animation.clip,
+            element,
+            phase,
+            bounds.width.max(1),
+            bounds.height.max(1),
+        )
     }
 
     /// Scales every key of `phase` to a new phase length (see

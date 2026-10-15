@@ -28,8 +28,8 @@ use fm_protocol::{MonitorImage, MonitorTap, WireInputId};
 use fm_ui_model::GradingStatus;
 use fm_ui_model::grade_editor::{
     GradeBinding, GradeCommand, GradeNameProblem, GradeSyncStatus, GradeTarget, RgbaImage,
-    library_name_problem, lut_name_problem, lut_uri, next_library_id, next_lut_id, sample_still,
-    target_grade,
+    library_name_problem, lut_id, lut_name_problem, lut_uri, next_library_id, next_lut_id,
+    sample_still, target_grade,
 };
 
 use crate::color_panel::{ColorPanelState, ColorPanelWidget, PREVIEW_MAX};
@@ -37,6 +37,7 @@ use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::MONITOR_STALE_AFTER;
+use crate::preset_files::{ExportLut, PresetFileRequest};
 use crate::theme::{
     AMBER, Tone, border_strong_color, caption, close_key, muted_color, raised_color, section_label,
     small_button, status_chip,
@@ -101,7 +102,11 @@ pub(crate) struct ColorWindow {
     pub(crate) lut_path: String,
     lut_requests: Vec<GradeLutRequest>,
     /// The last LUT id requested this session; the next import goes past it.
-    lut_issued: Option<NonZeroU32>,
+    pub(crate) lut_issued: Option<NonZeroU32>,
+    /// The `.fmgrade` path export and import use.
+    pub(crate) grade_path: String,
+    /// `.fmgrade` files to export or import, for the host.
+    pub(crate) grade_file_requests: Vec<PresetFileRequest>,
     /// The picture shown and the frame it came from.
     source: Option<(GradeTarget, SourceKind)>,
     source_frame: Option<(MonitorTap, u64)>,
@@ -123,6 +128,8 @@ impl Default for ColorWindow {
             lut_path: String::new(),
             lut_requests: Vec::new(),
             lut_issued: None,
+            grade_path: String::new(),
+            grade_file_requests: Vec::new(),
             source: None,
             source_frame: None,
             source_at: None,
@@ -205,7 +212,7 @@ pub(crate) fn grade_lock_reason(
 
 /// The library-wide edits (saves, LUT imports) are project edits: only the
 /// session gates and the project padlock apply.
-fn project_lock_reason(state: &StudioUiState) -> Option<&'static str> {
+pub(crate) fn project_lock_reason(state: &StudioUiState) -> Option<&'static str> {
     grade_lock_reason(state, GradeTarget::Program)
 }
 
@@ -951,6 +958,101 @@ impl StudioShell {
                 .size(crate::theme::legible(10.0))
                 .color(muted_color()),
         );
+        self.grade_file_row(ui, grading, project_lock);
+    }
+
+    /// Sharing grades through `.fmgrade` files: export the draft, import
+    /// into the library.
+    fn grade_file_row(
+        &mut self,
+        ui: &mut Ui,
+        grading: &GradingStatus,
+        project_lock: Option<&'static str>,
+    ) {
+        let l = self.locale;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(section_label(l.text(Msg::ColorGradeFile)))
+                .on_hover_text(l.text(Msg::ColorGradeFileHover));
+            ui.add(
+                TextEdit::singleline(&mut self.color.grade_path)
+                    .hint_text(l.text(Msg::ColorGradePathHint))
+                    .desired_width(300.0),
+            )
+            .on_hover_text(l.text(Msg::ColorGradePathHover));
+            let path = self.color.grade_path.trim().to_owned();
+            let no_path = path.is_empty().then_some(Msg::AnimReasonNoPath.en());
+            let export_reason = no_path.or_else(|| {
+                self.color
+                    .binding
+                    .is_none()
+                    .then_some(Msg::ColorReasonGradingPending.en())
+            });
+            let export = ui
+                .add_enabled(
+                    export_reason.is_none(),
+                    small_button(l.text(Msg::ColorGradeExport)),
+                )
+                .hint(
+                    l.text(Msg::ColorGradeExportHover),
+                    export_reason.unwrap_or(""),
+                );
+            if export.clicked()
+                && let Some(binding) = &self.color.binding
+            {
+                let grade = binding.document().grade().clone();
+                let lut = grade.lut.as_ref().and_then(|lut| {
+                    let id = lut_id(&lut.asset_uri)?;
+                    let entry = grading.luts.iter().find(|entry| entry.lut == id)?;
+                    Some(ExportLut {
+                        lut: id,
+                        name: entry.name.clone(),
+                        strength_permille: lut.strength_permille,
+                    })
+                });
+                let path = PathBuf::from(&path);
+                let typed = self.color.library_name.trim();
+                let name = if typed.is_empty() {
+                    path.file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .filter(|stem| !stem.trim().is_empty())
+                        .unwrap_or("Grade")
+                        .to_owned()
+                } else {
+                    typed.to_owned()
+                };
+                self.color
+                    .grade_file_requests
+                    .push(PresetFileRequest::ExportGrade {
+                        path,
+                        name,
+                        grade: Box::new(grade),
+                        lut,
+                    });
+            }
+            let import_reason = project_lock.or(no_path).or_else(|| {
+                next_library_id(grading)
+                    .is_none()
+                    .then_some(Msg::ColorReasonLibraryFull.en())
+            });
+            let import = ui
+                .add_enabled(
+                    import_reason.is_none(),
+                    small_button(l.text(Msg::ColorGradeImport)),
+                )
+                .hint(
+                    l.text(Msg::ColorGradeImportHover),
+                    import_reason.unwrap_or(""),
+                );
+            if import.clicked() {
+                self.color
+                    .grade_file_requests
+                    .push(PresetFileRequest::ImportGrade {
+                        path: PathBuf::from(path),
+                    });
+                self.color.grade_path.clear();
+            }
+        });
     }
 }
 
@@ -1076,6 +1178,7 @@ mod tests {
             playlist_follows: false,
             grade_states: u16::try_from(graded.len()).unwrap()
                 + u16::from(scene.is_some_and(|(graded, _)| graded)),
+            animation_preset_states: 0,
         };
         let mut model = ClientModel::new(project);
         model

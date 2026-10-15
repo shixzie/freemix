@@ -806,7 +806,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(33);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(34);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -843,6 +843,7 @@ pub struct Project {
     locked_inputs: BTreeSet<InputId>,
     playlist: Playlist,
     grading: ProjectGrading,
+    animation_presets: crate::AnimationPresetLibrary,
 }
 
 impl Project {
@@ -867,6 +868,7 @@ impl Project {
             locked_inputs: BTreeSet::new(),
             playlist: Playlist::default(),
             grading: ProjectGrading::default(),
+            animation_presets: crate::AnimationPresetLibrary::default(),
         }
     }
 
@@ -1031,6 +1033,24 @@ impl Project {
     /// reports bounds, duplicate ids and names, and dangling references.
     pub fn set_grading(&mut self, grading: ProjectGrading) {
         self.grading = grading;
+    }
+
+    /// The animation preset library (GX-011, schema 34).
+    #[must_use]
+    pub const fn animation_presets(&self) -> &crate::AnimationPresetLibrary {
+        &self.animation_presets
+    }
+
+    /// Replaces the animation preset library without checking it;
+    /// [`Project::validate`] reports its bound, duplicate ids and names, and
+    /// invalid names.
+    pub fn set_animation_presets(&mut self, presets: crate::AnimationPresetLibrary) {
+        self.animation_presets = presets;
+    }
+
+    /// The animation preset library, to edit with its checked methods.
+    pub const fn animation_presets_mut(&mut self) -> &mut crate::AnimationPresetLibrary {
+        &mut self.animation_presets
     }
 
     /// Adds a named grade to the end of the library.

@@ -12,18 +12,33 @@
 //! selection along a track), `alt` extends a retime handle without scaling,
 //! and `ctrl` toggles click/box selection.
 
+use core::num::NonZeroU32;
 use core::time::Duration;
+use std::sync::Arc;
 
 use fm_animation::{
     AnimationPreset, Clip, ClipPosition, ClipState, Easing, KeyRef, KeySelection, Keyframe,
-    MAX_PHASE_FRAMES, Phase, PresetGeometry, Property, Snap, SnapTargets, TrackKey, Value,
-    stretch_frame,
+    MAX_PHASE_FRAMES, MotionError, Phase, PhaseMotion, PresetGeometry, Property, Snap, SnapTargets,
+    TrackKey, Value, stretch_frame,
 };
 
 use super::curve::{CurveHandle, CurveSnap};
 use super::document::{AnimDocument, AnimEditorError, Snapshot};
 
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
+
+/// A preset the Simple-mode picker offers: a built-in motion or one the
+/// operator saved to the project's preset library (Protocol 2.34).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PresetSource {
+    BuiltIn(AnimationPreset),
+    User {
+        /// The library preset id.
+        preset: NonZeroU32,
+        name: String,
+        motion: Arc<PhaseMotion>,
+    },
+}
 
 /// Keyboard modifiers held during a pointer action.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -810,6 +825,100 @@ impl<T: Copy + Ord> AnimDocument<T> {
             self.transport.playing = false;
         }
         result
+    }
+
+    /// Puts a saved user preset's `motion` on `target` over `duration`
+    /// frames of `phase` (retimed proportionally, crop keys scaled from the
+    /// preset's box to the target's outline), first lengthening the phase
+    /// to `duration` if it is shorter. Only `properties` the target
+    /// animates are put; a motion animating none of them changes nothing.
+    /// One undo step; shows `phase` and selects the generated keys.
+    ///
+    /// # Errors
+    ///
+    /// [`AnimEditorError::UnknownTarget`], a retime collision, a limit, or
+    /// [`AnimEditorError::DragActive`].
+    pub fn apply_motion(
+        &mut self,
+        target: T,
+        phase: Phase,
+        motion: &PhaseMotion,
+        duration: u32,
+        properties: &[Property],
+    ) -> Result<(), AnimEditorError<T>> {
+        let outline = self
+            .target(target)
+            .ok_or(AnimEditorError::UnknownTarget(target))?;
+        let (width, height) = (outline.bounds.width.max(1), outline.bounds.height.max(1));
+        self.ensure_idle()?;
+        let shown = self.phase;
+        self.phase = phase;
+        let result = self.edit(|clip, _| {
+            clip.apply_motion(target, phase, motion, duration, width, height, |property| {
+                properties.contains(&property)
+            })?;
+            Ok(motion
+                .properties()
+                .filter(|property| properties.contains(property))
+                .flat_map(|property| {
+                    let track = TrackKey::new(target, phase, property);
+                    clip.track(track)
+                        .map(|track| track.keys.clone())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(move |key| KeyRef {
+                            track,
+                            frame: key.frame,
+                        })
+                })
+                .collect())
+        });
+        if result.is_err() {
+            self.phase = shown;
+        } else if shown != phase {
+            self.transport.playing = false;
+        }
+        result
+    }
+
+    /// Applies a built-in or user preset ([`Self::apply_preset`],
+    /// [`Self::apply_motion`]).
+    ///
+    /// # Errors
+    ///
+    /// As the preset kind's method.
+    pub fn apply_preset_source(
+        &mut self,
+        target: T,
+        phase: Phase,
+        preset: &PresetSource,
+        duration: u32,
+        properties: &[Property],
+    ) -> Result<(), AnimEditorError<T>> {
+        match preset {
+            PresetSource::BuiltIn(preset) => self.apply_preset(target, phase, *preset, duration),
+            PresetSource::User { motion, .. } => {
+                self.apply_motion(target, phase, motion, duration, properties)
+            }
+        }
+    }
+
+    /// `target`'s tracks in `phase` of the draft as a motion measured
+    /// against its outline, for saving as a user preset.
+    ///
+    /// # Errors
+    ///
+    /// [`MotionError::Empty`] when the target has no outline or nothing to
+    /// save in `phase`, or a motion bound.
+    pub fn capture_motion(&self, target: T, phase: Phase) -> Result<PhaseMotion, MotionError> {
+        let outline = self.target(target).ok_or(MotionError::Empty)?;
+        PhaseMotion::capture(
+            &self.draft,
+            target,
+            phase,
+            outline.bounds.width.max(1),
+            outline.bounds.height.max(1),
+        )
     }
 
     /// Sets `phase`'s length to `frames`, stretching its keys

@@ -69,6 +69,7 @@ fn design() -> TitleDesign {
 /// Camera 1 and title input 6 (a lower third) whose animation is at
 /// `animation_revision`; `edit` grants `EditProject`, `locked` engages the
 /// project padlock.
+#[allow(clippy::too_many_lines)] // one literal snapshot
 fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
     let project = ProjectId::new(NonZeroU128::new(1).unwrap());
     let live = FadeToBlackState {
@@ -135,6 +136,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         frame_rate: FrameRate::new(25, 1).unwrap(),
         playlist_follows: false,
         grade_states: 0,
+        animation_preset_states: 0,
     };
     let mut model = ClientModel::new(project);
     model
@@ -409,10 +411,12 @@ fn elements_without_a_design_take_presets_from_the_server() {
     let pick = PresetRequest {
         target: element(1),
         phase: Phase::In,
-        preset: AnimationPreset::SlideFromLeft,
+        preset: fm_ui_model::animation_editor::PresetSource::BuiltIn(
+            AnimationPreset::SlideFromLeft,
+        ),
         frames: 20,
     };
-    shell.animation.timeline.preset_requests.push(pick);
+    shell.animation.timeline.preset_requests.push(pick.clone());
     let intents = draw(&context, &mut shell, &state);
     assert_eq!(
         saves(&intents),
@@ -716,6 +720,7 @@ mod scenes {
             frame_rate: FrameRate::new(25, 1).unwrap(),
             playlist_follows: false,
             grade_states: 0,
+            animation_preset_states: 0,
         };
         let mut model = ClientModel::new(project);
         model

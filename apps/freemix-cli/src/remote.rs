@@ -263,8 +263,9 @@ impl Remote {
                 );
             }
         }
-        // The title, playlist, grade, title and scene animation, and title and
-        // scene layout states the snapshot announced complete it.
+        // The title, playlist, grade, title and scene animation, title and
+        // scene layout, and animation preset states the snapshot announced
+        // complete it.
         while client.state() != &ConnectionState::Ready {
             match remote.read()? {
                 message @ (WireMessage::TitleState(_)
@@ -273,13 +274,14 @@ impl Remote {
                 | WireMessage::TitleAnimationState(_)
                 | WireMessage::TitleLayoutState(_)
                 | WireMessage::SceneAnimationState(_)
-                | WireMessage::SceneLayoutState(_)) => {
+                | WireMessage::SceneLayoutState(_)
+                | WireMessage::AnimationPresetState(_)) => {
                     client.intake(message)?;
                 }
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
                 _ => {
                     return Err(RemoteFailure(
-                        "expected the snapshot's title, playlist, grade, animation, and layout states"
+                        "expected the snapshot's title, playlist, grade, animation, layout, and preset states"
                             .into(),
                     )
                     .into());
@@ -392,6 +394,7 @@ impl Remote {
                         | EventPayload::InputAdded { .. }
                         | EventPayload::InputRemoved { .. }
                         | EventPayload::GradeChanged(_)
+                        | EventPayload::AnimationPresetChanged(_)
                         | EventPayload::TitleAnimationChanged { .. }
                         | EventPayload::SceneAnimationChanged { .. } => matches!(
                             completion,
