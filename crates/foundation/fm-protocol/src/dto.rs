@@ -1696,6 +1696,9 @@ pub enum CommandPayload {
         input: WireInputId,
         operation: crate::MediaOperation,
     },
+    /// An input lifecycle edit (Protocol 2.38, IN-026; see
+    /// [`crate::InputLifecycleOperation`]). A project edit.
+    InputLifecycle(crate::InputLifecycleOperation),
 }
 
 /// Most presets one animation preset library holds (Protocol 2.34).
@@ -2027,6 +2030,9 @@ pub struct InputAudioStripStatus {
 pub struct InputStatus {
     pub input: WireInputId,
     pub name: String,
+    /// Category, colour label, pause, close, and offline state (Protocol
+    /// 2.38).
+    pub lifecycle: crate::InputLifecycleStatus,
 }
 
 /// One canonical show output exposed to clients in project order.
@@ -2089,6 +2095,8 @@ pub struct SnapshotMessage {
     /// ascending input order, at most [`crate::MAX_MEDIA_STATES`] (Protocol
     /// 2.37).
     pub media_states: u16,
+    /// The project's input category list in display order (Protocol 2.38).
+    pub input_categories: Vec<crate::InputCategoryStatus>,
 }
 
 /// The complete playlist at a snapshot's revision.
@@ -2214,6 +2222,15 @@ pub enum EventPayload {
         operation: crate::MediaOperation,
         status: Box<crate::MediaStatus>,
     },
+    /// An input lifecycle edit was accepted (Protocol 2.38): the operation
+    /// as executed (an undo or redo reports the edit it applied), the
+    /// inputs it appended with their names, and the batch import items it
+    /// refused, by item index.
+    InputLifecycleChanged {
+        operation: crate::InputLifecycleOperation,
+        added: Vec<crate::AddedInput>,
+        refused: Vec<(u16, crate::ImportRefusal)>,
+    },
 }
 
 /// One durable revision.
@@ -2292,6 +2309,12 @@ pub enum RuntimeLifecycleEvent {
         frame: u64,
         events: Vec<crate::MediaEvent>,
         status: Box<crate::MediaStatus>,
+    },
+    /// An input's source became unavailable or available again (Protocol
+    /// 2.38): `offline` is the reason, or `None` once it is back.
+    InputAvailability {
+        input: WireInputId,
+        offline: Option<crate::InputOfflineReason>,
     },
 }
 

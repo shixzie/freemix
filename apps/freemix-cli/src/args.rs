@@ -618,6 +618,22 @@ pub enum Command {
     InputMediaList {
         path: PathBuf,
     },
+    /// One input lifecycle edit (IN-026), locally (category list,
+    /// category, colour label, pause, close) or on a server (also
+    /// duplicate, source replacement, and batch import).
+    InputLifecycle {
+        target: MediaTarget,
+        operation: fm_protocol::InputLifecycleOperation,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Imports media files into the bundle as new media inputs, numbered
+    /// from `first_input` (IN-026). Refused files are reported per file.
+    InputImportBatch {
+        path: PathBuf,
+        first_input: u128,
+        files: Vec<PathBuf>,
+    },
     /// Drives one media-file input's transport or edits its playback
     /// settings, locally or on a server (IN-003).
     InputMedia {
@@ -1558,6 +1574,36 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "project path")?;
             reject_extra(&mut arguments)?;
             Ok(Command::InputMediaList { path })
+        }
+        "input-import-batch" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let first_input = number(&required(&mut arguments, "first input")?, "first input")?;
+            let files = arguments.map(PathBuf::from).collect::<Vec<_>>();
+            if files.is_empty() {
+                return Err(ArgsError::MissingValue("media file"));
+            }
+            Ok(Command::InputImportBatch {
+                path,
+                first_input,
+                files,
+            })
+        }
+        "input-categories" | "input-category" | "input-color" | "input-pause" | "input-close" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let operation = command.strip_prefix("input-").unwrap_or_default();
+            parse_input_lifecycle(MediaTarget::Local(path), operation, arguments)
+        }
+        "remote-input-categories"
+        | "remote-input-category"
+        | "remote-input-color"
+        | "remote-input-pause"
+        | "remote-input-close"
+        | "remote-input-duplicate"
+        | "remote-input-replace"
+        | "remote-input-import-batch" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            let operation = command.strip_prefix("remote-input-").unwrap_or_default();
+            parse_input_lifecycle(MediaTarget::Remote(address), operation, arguments)
         }
         "help" | "--help" | "-h" => Ok(Command::Help),
         _ => {
@@ -4124,6 +4170,200 @@ fn media_seek_target(value: &str) -> Result<MediaSeekTarget, ArgsError> {
         numerator,
         denominator,
     })
+}
+
+/// Parses one input lifecycle command's operands (IN-026) and its
+/// `[--key <key>] [--expect <revision>]` options.
+#[allow(clippy::too_many_lines)] // one arm per lifecycle operation
+fn parse_input_lifecycle(
+    target: MediaTarget,
+    operation: &str,
+    arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    use fm_protocol::InputLifecycleOperation as Operation;
+    let mut arguments = arguments.peekable();
+    let wire = |value: u128| -> Result<fm_protocol::WireInputId, ArgsError> {
+        let id = core::num::NonZeroU128::new(value).ok_or(ArgsError::InvalidNumber {
+            field: "input",
+            value: value.to_string(),
+        })?;
+        Ok(fm_protocol::WireInputId::from_domain(
+            fm_types::InputId::new(id),
+        ))
+    };
+    let input = |arguments: &mut core::iter::Peekable<_>| -> Result<_, ArgsError> {
+        wire(number(&required(arguments, "input")?, "input")?)
+    };
+    let positional = |arguments: &mut core::iter::Peekable<_>| -> Vec<String> {
+        let mut values = Vec::new();
+        while let Some(value) = arguments.next_if(|value: &String| !value.starts_with("--")) {
+            values.push(value);
+        }
+        values
+    };
+    let operation = match operation {
+        "categories" => {
+            let mut categories = Vec::new();
+            for entry in positional(&mut arguments) {
+                let (id, name) = entry
+                    .split_once('=')
+                    .ok_or_else(|| ArgsError::InvalidChoice {
+                        field: "category (<id>=<name>)",
+                        value: entry.clone(),
+                    })?;
+                categories.push(fm_protocol::InputCategoryStatus {
+                    id: number(id, "category id")?,
+                    name: name.to_owned(),
+                });
+            }
+            Operation::SetCategories { categories }
+        }
+        "category" => {
+            let input = input(&mut arguments)?;
+            let category = required(&mut arguments, "category")?;
+            Operation::SetCategory {
+                input,
+                category: if category == "none" {
+                    None
+                } else {
+                    Some(number(&category, "category")?)
+                },
+            }
+        }
+        "color" => {
+            let input = input(&mut arguments)?;
+            let color = required(&mut arguments, "colour")?;
+            Operation::SetColor {
+                input,
+                color: if color == "none" {
+                    None
+                } else {
+                    Some(fm_protocol::InputColorLabel::from_token(&color).ok_or(
+                        ArgsError::InvalidChoice {
+                            field: "colour",
+                            value: color,
+                        },
+                    )?)
+                },
+            }
+        }
+        "pause" => Operation::SetPaused {
+            input: input(&mut arguments)?,
+            paused: boolean_choice(&required(&mut arguments, "paused")?, "paused")?,
+        },
+        "close" => Operation::SetClosed {
+            input: input(&mut arguments)?,
+            closed: boolean_choice(&required(&mut arguments, "closed")?, "closed")?,
+        },
+        "duplicate" => {
+            let source = input(&mut arguments)?;
+            let input = input(&mut arguments)?;
+            let name = positional(&mut arguments).into_iter().next();
+            Operation::Duplicate {
+                source,
+                input,
+                name,
+            }
+        }
+        "replace" => {
+            let input = input(&mut arguments)?;
+            let source = input_source(&required(&mut arguments, "source")?)?;
+            Operation::ReplaceSource { input, source }
+        }
+        "import-batch" => {
+            let first: u128 = number(&required(&mut arguments, "first input")?, "first input")?;
+            let files = positional(&mut arguments);
+            if files.is_empty() {
+                return Err(ArgsError::MissingValue("media file"));
+            }
+            let mut items = Vec::with_capacity(files.len());
+            for (offset, file) in (0_u128..).zip(files) {
+                items.push(fm_protocol::ImportItemSpec {
+                    input: wire(first.saturating_add(offset))?,
+                    name: None,
+                    uri: host_media_uri(&file),
+                });
+            }
+            Operation::Import { items }
+        }
+        _ => return Err(ArgsError::UnknownCommand(format!("input-{operation}"))),
+    };
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(Command::InputLifecycle {
+        target,
+        operation,
+        key,
+        expected_revision,
+    })
+}
+
+/// An `asset://` URI as given, otherwise the absolute form of a host path,
+/// which the daemon imports into its bundle.
+fn host_media_uri(value: &str) -> String {
+    if value.starts_with("asset://") {
+        return value.to_owned();
+    }
+    std::path::absolute(value).map_or_else(
+        |_| value.to_owned(),
+        |path| path.to_string_lossy().into_owned(),
+    )
+}
+
+/// Parses a replacement source: `solid:RRGGBBAA`, `bars`, `media:<file or
+/// asset://key>`, `device:<stable key>`, or `network:<endpoint>`, each
+/// generator optionally followed by `:<tone hz>`.
+fn input_source(value: &str) -> Result<fm_protocol::WireInputSource, ArgsError> {
+    use fm_protocol::{WireGeneratorVideo, WireInputSource};
+    let invalid = || ArgsError::InvalidChoice {
+        field: "source (solid:RRGGBBAA, bars, media:<file>, device:<key>, network:<endpoint>)",
+        value: value.to_owned(),
+    };
+    let tone = |rest: Option<&str>| -> Result<Option<u32>, ArgsError> {
+        rest.map(|hz| number(hz, "tone hz")).transpose()
+    };
+    let (kind, rest) = value
+        .split_once(':')
+        .map_or((value, None), |(kind, rest)| (kind, Some(rest)));
+    match kind {
+        "bars" => Ok(WireInputSource::Generator {
+            video: WireGeneratorVideo::Bars,
+            tone_hz: tone(rest)?,
+        }),
+        "solid" => {
+            let rest = rest.ok_or_else(invalid)?;
+            let (hex, hz) = rest
+                .split_once(':')
+                .map_or((rest, None), |(hex, hz)| (hex, Some(hz)));
+            if hex.len() != 8 {
+                return Err(invalid());
+            }
+            let mut rgba = [0_u8; 4];
+            for (index, channel) in rgba.iter_mut().enumerate() {
+                *channel = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16)
+                    .map_err(|_| invalid())?;
+            }
+            Ok(WireInputSource::Generator {
+                video: WireGeneratorVideo::Solid { rgba },
+                tone_hz: tone(hz)?,
+            })
+        }
+        "media" => Ok(WireInputSource::Media {
+            uri: host_media_uri(rest.filter(|rest| !rest.is_empty()).ok_or_else(invalid)?),
+        }),
+        "device" => Ok(WireInputSource::Device {
+            stable_key: rest
+                .filter(|rest| !rest.is_empty())
+                .ok_or_else(invalid)?
+                .to_owned(),
+        }),
+        "network" => Ok(WireInputSource::Network {
+            endpoint: rest
+                .filter(|rest| !rest.is_empty())
+                .ok_or_else(invalid)?
+                .to_owned(),
+        }),
+        _ => Err(invalid()),
+    }
 }
 
 fn command_options(

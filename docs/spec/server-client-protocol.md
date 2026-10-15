@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.37 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.38 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -896,6 +896,70 @@ track selection, and frame-accurate position):
   `playback`); the transport itself is runtime state and a restored show
   cues each input at its `start_frame`, stopped.
 - 2.36 is refused.
+
+Protocol 2.38 completes the input lifecycle (`IN-026`: duplicate,
+categorize, colour-label, pause, close, offline, replace source, and batch
+import, besides the existing add, remove, rename, and reorder):
+
+- Commands, all project edits (`EditProject`, undoable, realized on the
+  `project` domain, refused under the project padlock and, for edits naming
+  an input, that input's padlock):
+  - `input_duplicate` (`source`, `input`, optional `name`; without a name
+    the source name takes the next free ` 2`, ` 3`, ... suffix) appends a
+    copy with the source's kind, audio strip, category, colour label, media
+    settings, title, and scene; the copy starts neither paused nor closed.
+  - `input_replace_source` (`input`, `source`) replaces a generator, media,
+    device, or network input's source: `solid:<rrggbbaa>[:<tone hz>]`,
+    `bars[:<tone hz>]`, `media:<asset URI>`, `device:<stable key>`, or
+    `network:<endpoint>` (locators escaped, at most 1024 bytes). A media
+    source must be a strict `asset://` URI with a media file extension;
+    replacing into or out of media adds or drops the media settings.
+  - `input_category_set` (`input`, `category` `<id>` or `-`),
+    `input_color_set` (`input`, `color`
+    `red|orange|yellow|green|teal|blue|purple|pink` or `-`),
+    `input_pause_set` (`input`, `paused`), and `input_close_set` (`input`,
+    `closed`). Closing an input on Program is refused (`input_in_use`).
+  - `input_categories_set` (`categories`, `<id>~<name>` joined by `,`, at
+    most 32, ids nonzero and unique, names nonblank, at most 48 bytes, and
+    unique ignoring case) replaces the project's category list; dropping a
+    category still assigned is refused (`category_in_use`).
+  - `input_import_batch` (`items`, at most 64 `<input>~<name or
+    ->~<uri>`) appends one media input per acceptable item. Items are
+    planned in order and refused individually (`invalid_uri`,
+    `unsupported_type`, `unavailable` for a source that is not an
+    `asset://` URI, `duplicate_source`, `duplicate_input`, `invalid_name`,
+    `duplicate_name`, `too_many_inputs`); a batch with no acceptable item
+    is refused. A name derives from the file name, made unique. `freemixd`
+    first copies each absolute host path to a media file into the bundle
+    (`assets/`) and executes and journals the command with the resulting
+    `asset://` URIs; the same applies to a `media:` replacement source.
+  - `inputs_remove` (`inputs`) removes several inputs at once; it is how
+    a duplicate or an import is undone, and it forgets the edit history
+    naming the removed inputs.
+- `event=input_lifecycle_changed` (`operation` and its fields, `added`
+  `<input>~<name>` joined by `,` in append order, `refused`
+  `<item index>:<refusal>` joined by `,`) announces each accepted edit and
+  its undo or redo.
+- Each snapshot input is `<id>~<name>~<lifecycle>` where the lifecycle is
+  `<category or ->:<colour or ->:<paused 0|1>:<closed 0|1>:<offline reason
+  or ->`; the snapshot gains `input_categories` (encoded last).
+- `runtime_event=input_availability` (`input`, `offline` reason or `-`)
+  reports a source going offline or coming back: `source_missing`,
+  `source_changed`, `unsupported`, `decode_failed`, `tool_unavailable`
+  (mapped from media faults; a media input that ticks again is back), and
+  `device_unavailable`, `network_unavailable` for the media plane. Offline
+  is runtime state and never persisted.
+- Realization: a paused input holds its last frame (its media transport
+  stops moving while it keeps its play state); a closed input releases its
+  source (the engine drops the media transport and reports one `media`
+  event without a tick; the native daemon stops the file's decoder worker
+  and reopens the file when the input reopens). The native daemon refuses
+  `input_duplicate`, `input_import_batch`, `inputs_remove`, and
+  `input_replace_source` (`unavailable`), as it refuses live add and
+  remove.
+- Durability: categories and per-input lifecycle are project state
+  (schema 37, `input_categories` and `input_lifecycle`).
+- 2.37 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

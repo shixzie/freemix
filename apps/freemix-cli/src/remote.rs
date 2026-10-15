@@ -223,6 +223,7 @@ impl CommandCompletion {
             | CommandPayload::ReorderInputs { .. }
             | CommandPayload::AddInput { .. }
             | CommandPayload::RemoveInput { .. }
+            | CommandPayload::InputLifecycle(_)
             | CommandPayload::SetTitleFields { .. } => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::Undo { .. } | CommandPayload::Redo { .. } => Self::History,
@@ -468,6 +469,7 @@ impl Remote {
                         | EventPayload::InputOrderChanged { .. }
                         | EventPayload::InputAdded { .. }
                         | EventPayload::InputRemoved { .. }
+                        | EventPayload::InputLifecycleChanged { .. }
                         | EventPayload::GradeChanged(_)
                         | EventPayload::AnimationPresetChanged(_)
                         | EventPayload::TitleAnimationChanged { .. }

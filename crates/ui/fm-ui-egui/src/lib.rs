@@ -13,7 +13,9 @@
 //! `gating` (disabled-control reasons), `meter_ballistics` (peak hold),
 //! `stream_control` (per-target stream Start/Stop gating), and
 //! `stinger_config` (Stinger slot assignment and clearing), and
-//! `input_catalogue` (live input add and remove, with its dialogs).
+//! `input_catalogue` (live input add and remove, with its dialogs), and
+//! `input_lifecycle` (IN-026: colour labels, category filter, badges,
+//! duplicate, replace source, pause, close, and batch import).
 
 use egui::{
     Align, CentralPanel, Event, Frame, Key, Layout, Margin, Modifiers, Panel, ScrollArea, Stroke,
@@ -46,6 +48,7 @@ mod health;
 pub mod hover_audit;
 mod input_bank;
 mod input_catalogue;
+mod input_lifecycle;
 mod l10n;
 mod media_transport;
 mod menu;
@@ -263,6 +266,11 @@ pub enum StudioIntent {
     },
     /// Removes one input nothing on air or configured references.
     RemoveInput { input: InputId },
+    /// Sends one input lifecycle command (Protocol 2.38, IN-026): a
+    /// duplicate or batch import (with Studio-chosen unused identifiers),
+    /// a source replacement, a category or colour label, pause, close, or
+    /// the project's category list.
+    InputLifecycle(fm_protocol::InputLifecycleOperation),
     /// Sends one title-editor command (save, take, update live, off air).
     /// The editor already marked the title pending; the worker answers with
     /// a [`TitleUpdate`] for `command.request`.
@@ -1216,6 +1224,8 @@ pub struct StudioShell {
     remove_input: Option<input_catalogue::RemoveConfirm>,
     /// Sent input adds and removes awaiting their outcome.
     catalogue: input_catalogue::CatalogueTracker,
+    /// The bank's category filter and the input lifecycle dialogs.
+    lifecycle: input_lifecycle::LifecyclePanel,
     /// The operator's UI language and clock; local to this console.
     locale: Locale,
     /// The Titles tab and its title editor.
@@ -1448,6 +1458,7 @@ impl StudioShell {
             || self.show_preferences
             || self.add_input.is_some()
             || self.remove_input.is_some()
+            || self.lifecycle.dialog_open()
             || self.color_owns_keyboard()
             || self.animation_owns_keyboard()
             || self.designer_owns_keyboard()
@@ -1473,6 +1484,7 @@ impl StudioShell {
     fn reconcile_local_state(&mut self, state: &StudioUiState) {
         self.reconcile_rename_draft(state);
         self.reconcile_catalogue_dialogs(state);
+        self.reconcile_lifecycle(state);
         self.titles.sync(state);
         self.playlist.sync(state, std::time::Instant::now());
     }
@@ -1604,6 +1616,7 @@ impl StudioShell {
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
+        self.draw_lifecycle_dialogs(ui.ctx(), state, &mut intents);
         self.draw_tool_windows(ui.ctx(), state, &mut intents);
         self.track_catalogue_intents(ui.ctx(), state, &intents);
         theme::paint_focus_ring(ui.ctx());
@@ -1867,6 +1880,7 @@ impl Default for StudioShell {
             add_input: None,
             remove_input: None,
             catalogue: input_catalogue::CatalogueTracker::default(),
+            lifecycle: input_lifecycle::LifecyclePanel::default(),
             locale: Locale::ENGLISH,
             titles: titles::TitlesPanel::default(),
             playlist: playlist::PlaylistPanel::default(),
@@ -2760,6 +2774,8 @@ mod tests {
             edit_locks: fm_ui_model::EditLocks::default(),
             edit_history: fm_protocol::EditHistoryStatus::EMPTY,
             transition_favorites: TransitionFavoriteStatus::defaults(),
+            input_lifecycle: vec![fm_ui_model::InputLifecycleStatus::default()],
+            input_categories: Vec::new(),
         }
     }
 

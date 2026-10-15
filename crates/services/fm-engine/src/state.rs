@@ -42,6 +42,27 @@ pub enum EngineInputSource {
     Bars,
 }
 
+impl EngineInputSource {
+    /// The replaceable source this generator is (IN-026).
+    #[must_use]
+    pub const fn spec(self) -> fm_model::InputSourceSpec {
+        fm_model::InputSourceSpec::Generator {
+            video: match self {
+                Self::Solid {
+                    red,
+                    green,
+                    blue,
+                    alpha,
+                } => fm_model::GeneratorVideo::Solid {
+                    rgba: [red, green, blue, alpha],
+                },
+                Self::Bars => fm_model::GeneratorVideo::Bars,
+            },
+            tone_hz: None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EngineInputAudioStripState {
     pub gain_millidb: i32,
@@ -146,6 +167,13 @@ pub struct ShowState {
     transition_favorites: fm_model::TransitionFavorites,
     /// Every media input's playback settings (IN-003).
     media: BTreeMap<InputId, fm_model::MediaPlaybackSettings>,
+    /// The project's input category list (IN-026).
+    input_categories: Vec<fm_model::InputCategory>,
+    /// Every input whose category, colour, pause, or close differs from the
+    /// default (IN-026).
+    input_lifecycle: BTreeMap<InputId, fm_model::InputLifecycle>,
+    /// The replaceable source of every input that has one (IN-026).
+    input_sources: BTreeMap<InputId, fm_model::InputSourceSpec>,
 }
 
 impl ShowState {
@@ -215,6 +243,9 @@ impl ShowState {
             animation_presets: fm_model::AnimationPresetLibrary::default(),
             transition_favorites: fm_model::TransitionFavorites::default(),
             media: BTreeMap::new(),
+            input_categories: Vec::new(),
+            input_lifecycle: BTreeMap::new(),
+            input_sources: BTreeMap::new(),
         })
     }
 
@@ -453,6 +484,8 @@ impl ShowState {
         self.scene_inputs.remove(&input);
         self.grading.inputs.remove(&input);
         self.media.remove(&input);
+        self.input_lifecycle.remove(&input);
+        self.input_sources.remove(&input);
         Ok(())
     }
 
@@ -822,6 +855,142 @@ impl ShowState {
         if let Some(current) = self.media.get_mut(&input) {
             *current = settings;
         }
+    }
+
+    /// The project's input category list, in display order (IN-026).
+    #[must_use]
+    pub fn input_categories(&self) -> &[fm_model::InputCategory] {
+        &self.input_categories
+    }
+
+    /// One input's lifecycle (the default for an input without an entry).
+    #[must_use]
+    pub fn input_lifecycle(&self, input: InputId) -> fm_model::InputLifecycle {
+        self.input_lifecycle
+            .get(&input)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Every input whose lifecycle differs from the default.
+    #[must_use]
+    pub const fn input_lifecycles(&self) -> &BTreeMap<InputId, fm_model::InputLifecycle> {
+        &self.input_lifecycle
+    }
+
+    /// Restores the project's category list and per-input lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidInputLifecycle`] for a broken category
+    /// list, an unknown input, or an unknown category. The show is
+    /// unchanged on error.
+    pub fn restore_input_lifecycle(
+        &mut self,
+        categories: Vec<fm_model::InputCategory>,
+        entries: &BTreeMap<InputId, fm_model::InputLifecycle>,
+    ) -> Result<(), ShowError> {
+        fm_model::validate_input_categories(&categories)
+            .map_err(|error| ShowError::InvalidInputLifecycle(error.code()))?;
+        for (input, lifecycle) in entries {
+            if !self.inputs.contains(input) {
+                return Err(ShowError::UnknownInput(*input));
+            }
+            if let Some(category) = lifecycle.category
+                && !categories.iter().any(|candidate| candidate.id == category)
+            {
+                return Err(ShowError::InvalidInputLifecycle("unknown_category"));
+            }
+        }
+        self.input_categories = categories;
+        self.input_lifecycle = entries
+            .iter()
+            .filter(|(_, lifecycle)| !lifecycle.is_default())
+            .map(|(input, lifecycle)| (*input, *lifecycle))
+            .collect();
+        Ok(())
+    }
+
+    pub(crate) fn set_input_categories_unchecked(
+        &mut self,
+        categories: Vec<fm_model::InputCategory>,
+    ) {
+        self.input_categories = categories;
+    }
+
+    pub(crate) fn set_input_lifecycle_unchecked(
+        &mut self,
+        input: InputId,
+        lifecycle: fm_model::InputLifecycle,
+    ) {
+        if lifecycle.is_default() {
+            self.input_lifecycle.remove(&input);
+        } else {
+            self.input_lifecycle.insert(input, lifecycle);
+        }
+    }
+
+    /// Records input `input`'s replaceable source (see
+    /// [`fm_model::InputSourceSpec::from_kind`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] when the input is outside this
+    /// show.
+    pub fn set_input_source(
+        &mut self,
+        input: InputId,
+        source: fm_model::InputSourceSpec,
+    ) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        self.input_sources.insert(input, source);
+        Ok(())
+    }
+
+    /// Input `input`'s replaceable source, when it has one.
+    #[must_use]
+    pub fn input_source(&self, input: InputId) -> Option<&fm_model::InputSourceSpec> {
+        self.input_sources.get(&input)
+    }
+
+    /// Every input's replaceable source, ascending by input.
+    #[must_use]
+    pub const fn input_sources(&self) -> &BTreeMap<InputId, fm_model::InputSourceSpec> {
+        &self.input_sources
+    }
+
+    pub(crate) fn set_input_source_unchecked(
+        &mut self,
+        input: InputId,
+        source: fm_model::InputSourceSpec,
+    ) {
+        self.input_sources.insert(input, source);
+    }
+
+    pub(crate) fn remove_media_input(&mut self, input: InputId) {
+        self.media.remove(&input);
+    }
+
+    pub(crate) fn insert_media_input(
+        &mut self,
+        input: InputId,
+        settings: fm_model::MediaPlaybackSettings,
+    ) {
+        self.media.insert(input, settings);
+    }
+
+    pub(crate) fn insert_title(&mut self, input: InputId, title: EngineTitle) {
+        self.titles.insert(input, title);
+    }
+
+    pub(crate) fn insert_scene_input(&mut self, input: InputId, scene: SceneId) {
+        self.scene_inputs.insert(input, scene);
+    }
+
+    pub(crate) fn scene_of_input(&self, input: InputId) -> Option<SceneId> {
+        self.scene_inputs.get(&input).copied()
     }
 
     pub(crate) const fn animation_presets_mut(&mut self) -> &mut fm_model::AnimationPresetLibrary {

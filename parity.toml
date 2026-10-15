@@ -110,8 +110,8 @@ commands = ["cargo test -p fm-model --test virtual_inputs"]
 [[tests]]
 id = "accept-in-026"
 state = "present"
-paths = ["crates/services/fm-engine/tests/input_catalogue.rs", "crates/services/fm-engine/tests/engine.rs", "crates/foundation/fm-model/tests/project_validation.rs", "apps/freemixd/tests/process.rs", "apps/freemix-cli/tests/e2e.rs"]
-commands = ["cargo test -p fm-engine --test input_catalogue", "cargo test -p fm-engine --test engine", "cargo test -p fm-model --test project_validation", "cargo test -p freemixd --test process", "cargo test -p freemix-cli --test e2e"]
+paths = ["crates/services/fm-engine/tests/input_catalogue.rs", "crates/services/fm-engine/tests/engine.rs", "crates/services/fm-engine/tests/input_lifecycle.rs", "crates/foundation/fm-model/tests/project_validation.rs", "crates/foundation/fm-model/tests/input_lifecycle.rs", "crates/services/fm-persistence/tests/input_lifecycle.rs", "crates/foundation/fm-protocol/tests/input_lifecycle.rs", "apps/freemixd/tests/process.rs", "apps/freemixd/tests/input_lifecycle.rs", "apps/freemixd/tests/native_media_files.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-engine --test input_catalogue", "cargo test -p fm-engine --test engine", "cargo test -p fm-engine --test input_lifecycle", "cargo test -p fm-model --test project_validation", "cargo test -p fm-model --test input_lifecycle", "cargo test -p fm-persistence --test input_lifecycle", "cargo test -p fm-protocol --test input_lifecycle", "cargo test -p freemixd --test process", "cargo test -p freemixd --test input_lifecycle", "cargo test -p freemixd --test native_media_files", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-in-027"
 state = "present"

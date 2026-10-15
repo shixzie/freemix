@@ -196,7 +196,7 @@ fn grading_round_trips_exactly_and_is_strict_at_schema_34() {
     let expected = stored(graded_project());
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 36,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 37,\n"));
     let grading = format!(
         "\n    \"luts\": [{{\"id\": 3, \"name\": \"Film\", \"kind\": \"3d\", \"size\": 33}}],\
          \n    \"grades\": [{{\"id\": 9, \"name\": \"Night \\\"blue\\\"\", \"grade\": {FULL_GRADE_JSON}}}],\
@@ -289,18 +289,18 @@ fn grading_round_trips_exactly_and_is_strict_at_schema_34() {
 }
 
 #[test]
-fn schema_35_and_37_manifests_are_refused() {
-    let temp = TestDirectory::new("schema-35-37");
+fn schema_36_and_38_manifests_are_refused() {
+    let temp = TestDirectory::new("schema-36-38");
     let store = temp.store("show.freemix");
     store.save(&stored(graded_project())).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
 
     // The previous schema is refused outright; there is no migration path.
-    for found in [35, 37] {
+    for found in [36, 38] {
         fs::write(
             store.manifest_path(),
             encoded.replacen(
-                "\"schema_version\": 36",
+                "\"schema_version\": 37",
                 &format!("\"schema_version\": {found}"),
                 1,
             ),
@@ -311,7 +311,7 @@ fn schema_35_and_37_manifests_are_refused() {
             Err(StoreError::Validation(
                 ProjectValidationError::UnsupportedSchema {
                     found: f,
-                    supported: 36
+                    supported: 37
                 }
             )) if f == found
         ));

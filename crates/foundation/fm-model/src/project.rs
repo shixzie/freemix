@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fm_types::{
     AudioFormat, BusId, FrameRate, InputId, InputOrderError, OutputId, ProjectId, RenameInputError,
@@ -17,6 +17,24 @@ use crate::{
     title::{SetTitleFieldsError, TitleFieldEntry, TitleInput, validate_title_fields},
     validation::validate_project,
 };
+
+/// Why [`Project::duplicate_input`] refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DuplicateInputError {
+    UnknownInput(InputId),
+    Add(AddInputError),
+}
+
+impl std::fmt::Display for DuplicateInputError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "input {input} does not exist"),
+            Self::Add(error) => write!(formatter, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for DuplicateInputError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemoveInputError {
@@ -806,7 +824,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(36);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(37);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -845,6 +863,8 @@ pub struct Project {
     grading: ProjectGrading,
     animation_presets: crate::AnimationPresetLibrary,
     transition_favorites: crate::TransitionFavorites,
+    input_categories: Vec<crate::InputCategory>,
+    input_lifecycle: BTreeMap<InputId, crate::InputLifecycle>,
 }
 
 impl Project {
@@ -871,6 +891,8 @@ impl Project {
             grading: ProjectGrading::default(),
             animation_presets: crate::AnimationPresetLibrary::default(),
             transition_favorites: crate::TransitionFavorites::default(),
+            input_categories: Vec::new(),
+            input_lifecycle: BTreeMap::new(),
         }
     }
 
@@ -1345,6 +1367,144 @@ impl Project {
         self.input_audio_strips.retain(|strip| strip.input != input);
         self.locked_inputs.remove(&input);
         self.grading.inputs.remove(&input);
+        self.input_lifecycle.remove(&input);
+        Ok(())
+    }
+
+    /// The project's input category list, in display order (IN-026).
+    #[must_use]
+    pub fn input_categories(&self) -> &[crate::InputCategory] {
+        &self.input_categories
+    }
+
+    /// Replaces the input category list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`crate::InputLifecycleError`] when the list breaks a
+    /// bound or repeats an id or name, or when a category it drops is still
+    /// assigned to an input. Nothing changes on error.
+    pub fn set_input_categories(
+        &mut self,
+        categories: Vec<crate::InputCategory>,
+    ) -> Result<(), crate::InputLifecycleError> {
+        crate::validate_input_categories(&categories)?;
+        for (input, lifecycle) in &self.input_lifecycle {
+            if let Some(category) = lifecycle.category
+                && !categories.iter().any(|candidate| candidate.id == category)
+            {
+                return Err(crate::InputLifecycleError::CategoryInUse {
+                    category,
+                    input: *input,
+                });
+            }
+        }
+        self.input_categories = categories;
+        Ok(())
+    }
+
+    /// Every input whose lifecycle differs from the default, by id.
+    #[must_use]
+    pub const fn input_lifecycles(&self) -> &BTreeMap<InputId, crate::InputLifecycle> {
+        &self.input_lifecycle
+    }
+
+    /// One input's lifecycle (the default for an input without an entry).
+    #[must_use]
+    pub fn input_lifecycle(&self, input: InputId) -> crate::InputLifecycle {
+        self.input_lifecycle
+            .get(&input)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Sets one input's lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::InputLifecycleError::UnknownInput`] or
+    /// [`crate::InputLifecycleError::UnknownCategory`]. Nothing changes on
+    /// error.
+    pub fn set_input_lifecycle(
+        &mut self,
+        input: InputId,
+        lifecycle: crate::InputLifecycle,
+    ) -> Result<(), crate::InputLifecycleError> {
+        if !self.inputs.iter().any(|candidate| candidate.id == input) {
+            return Err(crate::InputLifecycleError::UnknownInput(input));
+        }
+        if let Some(category) = lifecycle.category
+            && !self
+                .input_categories
+                .iter()
+                .any(|candidate| candidate.id == category)
+        {
+            return Err(crate::InputLifecycleError::UnknownCategory(category));
+        }
+        self.restore_input_lifecycle(input, lifecycle);
+        Ok(())
+    }
+
+    /// Sets one input's lifecycle without checking references; a decoder
+    /// restores persisted entries this way and [`Project::validate`]
+    /// reports a dangling input or category.
+    pub fn restore_input_lifecycle(&mut self, input: InputId, lifecycle: crate::InputLifecycle) {
+        if lifecycle.is_default() {
+            self.input_lifecycle.remove(&input);
+        } else {
+            self.input_lifecycle.insert(input, lifecycle);
+        }
+    }
+
+    /// Restores the category list without validation; [`Project::validate`]
+    /// reports a broken list.
+    pub fn restore_input_categories(&mut self, categories: Vec<crate::InputCategory>) {
+        self.input_categories = categories;
+    }
+
+    /// Appends a copy of `source` as `input` named `name`: the same kind
+    /// and required capabilities, Master strip, category, and colour label.
+    /// The copy starts neither paused nor closed and without a padlock or a
+    /// grade.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DuplicateInputError::UnknownInput`] for an unknown source
+    /// and [`DuplicateInputError::Add`] for a taken id or an unusable name.
+    /// Nothing changes on error.
+    pub fn duplicate_input(
+        &mut self,
+        source: InputId,
+        input: InputId,
+        name: String,
+    ) -> Result<(), DuplicateInputError> {
+        let original = self
+            .inputs
+            .iter()
+            .find(|candidate| candidate.id == source)
+            .ok_or(DuplicateInputError::UnknownInput(source))?
+            .clone();
+        let strip = self.input_audio_strip(source);
+        let lifecycle = self.input_lifecycle(source);
+        self.add_input_checked(Input {
+            id: input,
+            name,
+            kind: original.kind,
+            required_capabilities: original.required_capabilities,
+        })
+        .map_err(DuplicateInputError::Add)?;
+        if let Some(strip) = strip {
+            self.set_input_audio_strip(input, strip);
+        }
+        self.restore_input_lifecycle(
+            input,
+            crate::InputLifecycle {
+                category: lifecycle.category,
+                color: lifecycle.color,
+                paused: false,
+                closed: false,
+            },
+        );
         Ok(())
     }
 

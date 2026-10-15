@@ -554,3 +554,77 @@ const fn recent_status_name(status: RecentProjectStatus) -> &'static str {
         RecentProjectStatus::NotABundle => "not-a-bundle",
     }
 }
+
+/// Imports `files` into the bundle as new media inputs numbered from
+/// `first_input`, through the same plan the engine's batch import uses
+/// (IN-026): each regular media file is copied into `assets/`, names come
+/// from the file names made unique, and each refused file is reported
+/// without refusing the others.
+pub fn import_batch(path: &Path, first_input: u128, files: &[std::path::PathBuf]) -> AppResult<()> {
+    let store = ProjectStore::new(path)?;
+    let stored = load_stored_project(path)?;
+    let mut requests = Vec::with_capacity(files.len());
+    for (offset, file) in (0_u128..).zip(files) {
+        let input = input_id(first_input.saturating_add(offset))?;
+        let display = file.to_string_lossy().into_owned();
+        let asset_uri = if fm_model::is_media_file_name(&display) && file.is_file() {
+            store
+                .import_media_file(file)
+                .map_or(display, |imported| imported.asset_uri)
+        } else {
+            display
+        };
+        requests.push(fm_model::BatchImportRequest {
+            input,
+            name: None,
+            asset_uri,
+        });
+    }
+    let mut project = stored.project().clone();
+    let existing = project
+        .inputs()
+        .iter()
+        .map(|input| (input.id, input.name.clone()))
+        .collect::<Vec<_>>();
+    let existing = existing
+        .iter()
+        .map(|(input, name)| (*input, name.as_str()))
+        .collect::<Vec<_>>();
+    let plan = fm_model::plan_batch_import(&existing, fm_engine::MAX_SHOW_INPUTS, &requests);
+    for item in &plan.accepted {
+        project.add_input_checked(fm_model::Input {
+            id: item.input,
+            name: item.name.clone(),
+            kind: InputKind::Media {
+                asset_uri: item.asset_uri.clone(),
+                playback: fm_model::MediaPlaybackSettings::default(),
+            },
+            required_capabilities: Vec::new(),
+        })?;
+        println!(
+            "input-import-batch: added input {} `{}` from {}",
+            item.input, item.name, item.asset_uri
+        );
+    }
+    for (index, refusal) in &plan.refused {
+        println!(
+            "input-import-batch: refused {}: {} ({refusal})",
+            files[*index].display(),
+            refusal.token()
+        );
+    }
+    let configured = StoredProject::from_project_with_complete_runtime_state(
+        project,
+        stored.runtime_routing(),
+        stored.runtime_manual_transitions(),
+        stored.runtime_fade_to_black(),
+        stored.runtime_overlays().clone(),
+        stored.position(),
+        stored.idempotency_receipts().to_vec(),
+    )?;
+    store.save(&configured)?;
+    if plan.accepted.is_empty() {
+        return Err(AppFailure("input-import-batch: no file was imported".into()).into());
+    }
+    Ok(())
+}

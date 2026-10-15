@@ -310,6 +310,12 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("kind", kind.token())?;
             record.field("duration_frames", duration_frames)?;
         }
+        CommandPayload::InputLifecycle(operation) => {
+            record.field("payload", operation.payload())?;
+            super::input_lifecycle::encode_lifecycle_operation(operation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         CommandPayload::Media { input, operation } => {
             record.field("payload", media_payload_name(*operation))?;
             record.field("input", input)?;
@@ -1292,7 +1298,11 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
             value: message.media_states.to_string(),
         });
     }
-    record.field("media_states", message.media_states)
+    record.field("media_states", message.media_states)?;
+    record.field_string(
+        "input_categories",
+        super::input_lifecycle::encode_categories(&message.input_categories)?,
+    )
 }
 
 /// Writes a grade source as `library=<id>` or `grade=<grade>`.
@@ -1839,6 +1849,19 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::AnimationPresetChanged(change) => {
             encode_animation_preset_changed(record, change)?;
         }
+        EventPayload::InputLifecycleChanged {
+            operation,
+            added,
+            refused,
+        } => {
+            record.field("event", "input_lifecycle_changed")?;
+            record.field("operation", operation.payload())?;
+            super::input_lifecycle::encode_lifecycle_operation(operation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+            record.field_string("added", super::input_lifecycle::encode_added(added)?)?;
+            record.field_string("refused", super::input_lifecycle::encode_refused(refused)?)?;
+        }
         EventPayload::MediaChanged {
             frame,
             operation,
@@ -2043,6 +2066,14 @@ fn encode_runtime_event(
         RuntimeLifecycleEvent::Superseded { by_revision } => {
             record.field("event", "superseded")?;
             record.field("by_revision", by_revision)?;
+        }
+        RuntimeLifecycleEvent::InputAvailability { input, offline } => {
+            record.field("event", "input_availability")?;
+            record.field("input", input)?;
+            record.field(
+                "offline",
+                offline.map_or("-", crate::InputOfflineReason::token),
+            )?;
         }
         RuntimeLifecycleEvent::Media {
             frame,

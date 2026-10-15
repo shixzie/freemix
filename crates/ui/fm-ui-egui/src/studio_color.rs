@@ -1234,6 +1234,7 @@ mod tests {
                 .map(|value| InputStatus {
                     input: wire(value),
                     name: format!("Cam {value}"),
+                    lifecycle: fm_protocol::InputLifecycleStatus::default(),
                 })
                 .collect(),
             outputs: Vec::new(),
@@ -1292,6 +1293,7 @@ mod tests {
                 + u16::from(scene.is_some_and(|(graded, _)| graded)),
             animation_preset_states: 0,
             media_states: 0,
+            input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         };
         let mut model = ClientModel::new(project);

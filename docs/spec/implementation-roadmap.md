@@ -349,9 +349,9 @@ Neither command applies an optimistic change or changes current switcher state.
 Studio exposes compact Up/Down controls
 for one-step reorder, gated by the current Ready session and EditProject
 permission; the native worker resolves each move against the latest confirmed
-order and the daemon remains final authority. Live add/duplicate, input removal,
-categories, colors, pause, close, offline, relink, import, and the rest of
-IN-026 remain planned.
+order and the daemon remains final authority. Live duplicate, categories,
+colours, pause, close, offline, source replacement, and batch import are
+described in the `IN-026` boundary below.
 Studio now has a compact permission-gated gain fader with exact milli-dB entry
 and a latest-only compact peak/RMS meter display for Master and current inputs.
 There is still no PFL, strip-name editor, strip groups, microphone automix,
@@ -494,6 +494,50 @@ failure). There is still no persistent decoder process (each window is a
 bounded tool run), no reverse play, no variable-frame-rate source support,
 no pitch-preserving time stretch, and no certification on the Windows,
 macOS, or profile-a-hd profiles, so `IN-003` remains planned.
+
+Current implementation boundary for the input lifecycle (`IN-026`): schema
+37 adds a project input category list (at most 32, unique nonzero ids,
+unique case-insensitive names of at most 48 bytes) and a per-input
+lifecycle (category, one of eight colour labels, paused, closed), stored
+only for inputs that differ from the default, validated against the inputs
+and categories, and dropped with the input. The engine owns the same state
+plus each input's replaceable source (generator, media asset, device, or
+network locator) and executes duplicate, replace source, category, colour,
+pause, close, category list, batch import, and multi-input removal as
+padlock-honouring, undoable project edits (an import or duplicate is undone
+by removing exactly the inputs it appended; redo appends them again). Batch
+import plans each item in order and refuses items individually. Protocol
+2.38 carries them as `input_*` commands, `input_lifecycle_changed`, the
+snapshot's per-input lifecycle and category list, and
+`input_availability` runtime events; the client reducer replicates all of
+it. A paused input holds its frame (the media transport stops while keeping
+its play state) and a closed input releases its source: the simulated
+daemon reopens a synthetic source when the input reopens, and the native
+daemon stops the media-file worker's decoder on close and reopens the file
+on reopen. Media faults map to offline reasons, published once and cleared
+when the input plays again. `freemixd` copies host media paths named by an
+import or a media replacement into the bundle before executing and
+journaling the command; the native daemon refuses duplicate, import,
+multi-input removal, and source replacement, as it refuses live add and
+remove. The CLI edits categories, colour, pause, and close locally through
+the engine (`input-categories`, `input-category`, `input-color`,
+`input-pause`, `input-close`), imports a file list locally
+(`input-import-batch`), duplicates with labels (`input-duplicate`), and
+drives a running daemon with `remote-input-duplicate`,
+`remote-input-replace`, `remote-input-categories`, `remote-input-category`,
+`remote-input-color`, `remote-input-pause`, `remote-input-close`, and
+`remote-input-import-batch`. Studio shows a colour strip and offline,
+paused, and closed badges on each input tile, filters the input bank by
+category chips, and offers Duplicate, Replace source, Category, Colour,
+Pause/Resume, and Close/Reopen in the tile menu plus a batch import path
+list, with English and Spanish hover help. Acceptance (`accept-in-026`)
+adds model, persistence, protocol, engine, simulated daemon process, native
+media-file (`--features native-media`), CLI, and Studio hover-audit
+coverage. Capture devices are not paused or released natively (camera
+capture is macOS-only and the device graph is fixed at startup), device and
+network sources report no availability yet, there is no relink-on-offline
+workflow beyond `project-relink`, and no certification on the Windows,
+macOS, or profile-a-hd profiles, so `IN-026` remains planned.
 
 Current implementation boundary for item 8: `fm-gpu` provides a portable,
 bounded latest-frame presentation policy plus opaque, context-bound native
@@ -2509,7 +2553,7 @@ proxy frame, not from the full-resolution graded output; and native
 graded scene previews match the GPU only within the 8-bit CPU and 16-bit
 float GPU pipeline difference, so `SW-019` remains planned. Grades travel
 between
-projects as `.fmgrade` files (schema 36): strict JSON (`kind: "grade"`)
+projects as `.fmgrade` files (schema 37): strict JSON (`kind: "grade"`)
 holding the grade's name and values without its project LUT reference, and
 its LUT by name and strength with the `.cube` text embedded when it is at
 most 32 KiB, otherwise written to a sibling `.cube` file the document names

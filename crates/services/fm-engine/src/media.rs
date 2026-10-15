@@ -272,6 +272,9 @@ pub(crate) struct MediaRuntime {
     pending: Vec<EngineMediaOperation>,
     /// Ticks a complete-length synthetic growing source has not grown.
     idle_ticks: u32,
+    /// The input source the open source was opened for (IN-026): a
+    /// replaced source releases it.
+    pub(crate) opened_for: Option<fm_model::InputSourceSpec>,
 }
 
 impl MediaRuntime {
@@ -324,17 +327,34 @@ impl MediaRuntime {
         self.pending.push(operation);
     }
 
-    /// Whether the transport changes on the next tick absent commands.
-    pub(crate) fn advancing(&self) -> bool {
+    /// Releases the source of a closed input (IN-026): the transport is
+    /// gone until the media plane opens the source again.
+    pub(crate) fn release(&mut self) {
+        self.source = None;
+        self.playback = None;
+        self.idle_ticks = 0;
+        self.opened_for = None;
+    }
+
+    /// Whether a source is open.
+    pub(crate) const fn is_open(&self) -> bool {
+        self.source.is_some()
+    }
+
+    /// Whether the transport changes on the next tick absent commands. A
+    /// held (paused or closed) transport changes only by commands and
+    /// faults.
+    pub(crate) fn advancing(&self, held: bool) -> bool {
         !self.pending.is_empty()
             || (self.fault.is_some() && !self.fault_reported)
-            || self.playback.as_ref().is_some_and(|playback| {
-                matches!(playback.state(), MediaState::Playing | MediaState::Waiting)
-                    || self
-                        .source
-                        .as_ref()
-                        .is_some_and(|source| source.synthetic && !source.complete)
-            })
+            || !held
+                && self.playback.as_ref().is_some_and(|playback| {
+                    matches!(playback.state(), MediaState::Playing | MediaState::Waiting)
+                        || self
+                            .source
+                            .as_ref()
+                            .is_some_and(|source| source.synthetic && !source.complete)
+                })
     }
 
     /// Realizes the oldest pending operation; returns whether it asked an
@@ -362,12 +382,14 @@ impl MediaRuntime {
     }
 
     /// Realizes `operations` (the actions scheduled on this frame) and
-    /// advances one frame.
+    /// advances one frame, unless `held` (a paused or closed input, IN-026):
+    /// then the transport and a synthetic source stand still.
     pub(crate) fn tick(
         &mut self,
         input: InputId,
         operations: usize,
         settings: &MediaPlaybackSettings,
+        held: bool,
     ) -> Option<EngineMediaFrame> {
         let mut realized = Vec::with_capacity(operations);
         let mut completion_requested = false;
@@ -376,8 +398,12 @@ impl MediaRuntime {
             realized.push(operation);
             completion_requested |= requested;
         }
-        self.grow_synthetic(settings);
-        let tick = self.playback.as_mut().map(MediaPlayback::tick);
+        let tick = if held {
+            None
+        } else {
+            self.grow_synthetic(settings);
+            self.playback.as_mut().map(MediaPlayback::tick)
+        };
         let faulted = match self.fault {
             Some(fault) if !self.fault_reported => {
                 self.fault_reported = true;

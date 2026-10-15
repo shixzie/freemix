@@ -1,6 +1,7 @@
 mod animation_preset;
 mod cycles;
 mod grade;
+mod input_lifecycle;
 mod media_playback;
 mod playlist;
 mod project;
@@ -22,6 +23,15 @@ pub use grade::{
     ProjectGrade, ProjectGrading, ProjectLut, SceneLayerRef, lut_asset_key, lut_asset_uri,
     lut_id_from_uri, next_free_id,
 };
+pub use input_lifecycle::{
+    BatchImportItem, BatchImportPlan, BatchImportRefusal, BatchImportRequest, GeneratorVideo,
+    InputCategory, InputCategoryId, InputColorLabel, InputLifecycle, InputLifecycleError,
+    InputSourceError, InputSourceSpec, MAX_BATCH_IMPORT_ITEMS, MAX_INPUT_CATEGORIES,
+    MAX_INPUT_CATEGORY_NAME_BYTES, MAX_INPUT_SOURCE_BYTES, MEDIA_ASSET_URI_PREFIX,
+    MEDIA_FILE_EXTENSIONS, is_media_file_name, media_input_name, plan_batch_import,
+    unique_input_name, validate_input_categories, validate_input_category_name,
+    validate_media_asset_uri,
+};
 pub use media_playback::{
     DEFAULT_MEDIA_LIVE_EDGE_OFFSET_FRAMES, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_FRAME,
     MAX_MEDIA_IDLE_COMPLETION_REFRESHES, MAX_MEDIA_LIVE_EDGE_OFFSET_FRAMES,
@@ -39,14 +49,14 @@ pub use project::AddInputError;
 pub use project::AudioBusSendError;
 pub use project::{
     AddAudioBusError, AddOutputError, AddSceneInputError, AddSceneLayerError, AddStreamTargetError,
-    AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DuplicateSceneInputError, Input,
-    InputAudioStrip, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
-    InputGainMilliDb, InputKind, InputReference, Layer, LayerEffect, LayerEffectError,
-    LayerGeometry, MainMix, MixFeed, Output, OutputFormat, Project, ProjectSettings,
-    RECORDER_SLOT_COUNT, RecorderSlot, RecorderSlotError, RectMask, RelinkMediaInputError,
-    RemoveAudioBusError, RemoveInputError, RemoveOutputError, RemoveSceneError,
-    RemoveStreamTargetError, RenameAudioBusError, RenameOutputError, RenameProjectError,
-    RenameSceneError, ReplaceInputError, RestartPolicy, Rgba8, Rotation, Scene,
+    AudioBus, BusSend, CURRENT_SCHEMA_VERSION, CropRect, DuplicateInputError,
+    DuplicateSceneInputError, Input, InputAudioStrip, InputAudioStripState,
+    InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, InputReference, Layer,
+    LayerEffect, LayerEffectError, LayerGeometry, MainMix, MixFeed, Output, OutputFormat, Project,
+    ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot, RecorderSlotError, RectMask,
+    RelinkMediaInputError, RemoveAudioBusError, RemoveInputError, RemoveOutputError,
+    RemoveSceneError, RemoveStreamTargetError, RenameAudioBusError, RenameOutputError,
+    RenameProjectError, RenameSceneError, ReplaceInputError, RestartPolicy, Rgba8, Rotation, Scene,
     SceneInputAudioSourceError, SceneLayerError, SchemaVersion, SetInputLockError,
     SetOutputRouteError, SetOutputStartupError, SetSceneAnimationError, SetSceneBackgroundError,
     SetStingerError, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,

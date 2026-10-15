@@ -318,6 +318,9 @@ pub enum EngineCommand {
     /// operations; settings changes are project edits (padlocked, without
     /// an undo entry). Realized on the target frame (see [`crate::media`]).
     Media(crate::EngineMediaCommand),
+    /// Edits an input's lifecycle or the input catalogue (IN-026; see
+    /// [`crate::EngineInputLifecycleEdit`]). A project edit.
+    InputLifecycle(crate::EngineInputLifecycleEdit),
 }
 
 /// What an accepted title command does on air.
@@ -434,6 +437,16 @@ pub enum EngineEvent {
         input: InputId,
         frame: u64,
         operation: crate::EngineMediaOperation,
+    },
+    /// An input lifecycle edit (or its undo or redo) was accepted
+    /// (IN-026). `added` lists the inputs a duplicate or import appended,
+    /// with their names; `refused` the import items it refused, by request
+    /// index. Lifecycle, sources, and categories afterwards are read from
+    /// [`ShowState`].
+    InputLifecycleChanged {
+        edit: crate::EngineInputLifecycleEdit,
+        added: Vec<(InputId, String)>,
+        refused: Vec<(usize, fm_model::BatchImportRefusal)>,
     },
 }
 
@@ -739,12 +752,32 @@ impl Engine {
             .show()
             .media_settings(input)
             .ok_or(crate::EngineMediaError::NotMediaInput(input))?;
+        let opened_for = source
+            .is_some()
+            .then(|| self.show().input_source(input).cloned())
+            .flatten();
         let runtime = self.media.entry(input).or_default();
+        runtime.opened_for = opened_for;
         if let Err(error) = runtime.open(source, &settings, self.frame_rate) {
             runtime.fault(crate::EngineMediaFault::Unsupported);
             return Err(crate::EngineMediaError::Playback(error));
         }
         Ok(())
+    }
+
+    /// Whether media input `input` plays from an open source (IN-026): a
+    /// source is open, the input is not closed, and its source has not
+    /// been replaced since the source opened. The media plane opens the
+    /// source of any media input for which this is `false`, unless it is
+    /// closed.
+    #[must_use]
+    pub fn media_source_open(&self, input: InputId) -> bool {
+        let show = self.show();
+        self.media.get(&input).is_some_and(|runtime| {
+            runtime.is_open()
+                && !show.input_lifecycle(input).closed
+                && runtime.opened_for.as_ref() == show.input_source(input)
+        })
     }
 
     /// Reports an external source's current frame count and completion. A
@@ -817,9 +850,11 @@ impl Engine {
     /// growing, or a command or fault is still to be realized.
     #[must_use]
     pub fn media_advancing(&self) -> bool {
-        self.media
-            .values()
-            .any(crate::media::MediaRuntime::advancing)
+        let show = self.show();
+        self.media.iter().any(|(input, runtime)| {
+            let lifecycle = show.input_lifecycle(*input);
+            runtime.advancing(lifecycle.paused || lifecycle.closed)
+        })
     }
 
     /// Refuses every title animation edit (undo and redo included) whose
@@ -1164,6 +1199,20 @@ impl Engine {
                 .realized_switcher
                 .input_usage(*input)
                 .map(|usage| (*input, usage)),
+            Ok(EngineCommand::InputLifecycle(crate::EngineInputLifecycleEdit::RemoveInputs {
+                inputs,
+            })) => inputs.iter().find_map(|input| {
+                self.realized_switcher
+                    .input_usage(*input)
+                    .map(|usage| (*input, usage))
+            }),
+            Ok(EngineCommand::InputLifecycle(crate::EngineInputLifecycleEdit::SetClosed {
+                input,
+                closed: true,
+            })) => self
+                .realized_switcher
+                .on_air_usage(*input)
+                .map(|usage| (*input, usage)),
             _ => None,
         };
         // Title air checks span both switchers for the same reason: a title
@@ -1219,6 +1268,14 @@ impl Engine {
                 && !matches!(&command, EngineCommand::AnimationPreset(_))
                 && !matches!(&command, EngineCommand::SetTransitionFavorite { .. })
                 && !matches!(&command, EngineCommand::Media(_))
+                && !matches!(
+                    &command,
+                    EngineCommand::InputLifecycle(edit) if !matches!(
+                        edit,
+                        crate::EngineInputLifecycleEdit::RemoveInputs { .. }
+                            | crate::EngineInputLifecycleEdit::SetClosed { closed: true, .. }
+                    )
+                )
                 && !matches!(
                     &command,
                     EngineCommand::StreamStart { .. } | EngineCommand::StreamStop { .. }
@@ -1319,11 +1376,32 @@ impl Engine {
             .iter_mut()
             .filter_map(|(input, runtime)| {
                 let settings = show.media_settings(*input)?;
-                runtime.tick(
-                    *input,
-                    operations.get(input).copied().unwrap_or(0),
-                    settings,
-                )
+                let lifecycle = show.input_lifecycle(*input);
+                // A closed input's source is released, as is a replaced
+                // one; a paused one holds. A release reports one frame
+                // without a tick, so clients see the transport go.
+                let released = runtime.is_open()
+                    && (lifecycle.closed
+                        || runtime.opened_for.as_ref() != show.input_source(*input));
+                if released {
+                    runtime.release();
+                }
+                runtime
+                    .tick(
+                        *input,
+                        operations.get(input).copied().unwrap_or(0),
+                        settings,
+                        lifecycle.paused || lifecycle.closed,
+                    )
+                    .or_else(|| {
+                        released.then(|| crate::EngineMediaFrame {
+                            input: *input,
+                            tick: None,
+                            operations: Vec::new(),
+                            faulted: None,
+                            completion_requested: false,
+                        })
+                    })
             })
             .collect()
     }
@@ -1735,6 +1813,12 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::InputLifecycle(edit) = &self.command {
+            events.push(crate::input_lifecycle::apply(state, edit)?);
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::Media(command) = &self.command {
             let settings = crate::media::accept(state, command, self.media_tracks.as_deref())?;
             state.set_media_settings(command.input, settings);
@@ -2021,7 +2105,8 @@ impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {
             | EngineCommand::SceneAnimation(_)
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
-            | EngineCommand::Media(_) => {
+            | EngineCommand::Media(_)
+            | EngineCommand::InputLifecycle(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
         };
@@ -2083,6 +2168,9 @@ fn apply_input_catalogue_mutation(
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;
+            state
+                .set_input_source(input, source.spec())
+                .map_err(|_| input_catalogue_rejection(InputCatalogueError::UnknownInput(input)))?;
             events.push(EngineEvent::InputAdded {
                 input,
                 name,
@@ -2369,6 +2457,9 @@ fn apply_runtime(
     ) {
         return Ok(Vec::new());
     }
+    if let EngineCommand::InputLifecycle(edit) = &command {
+        return realize_input_lifecycle(switcher, edit);
+    }
     if let EngineCommand::RealizePlaylistCue(cue) = &command {
         return cue
             .as_ref()
@@ -2517,10 +2608,40 @@ fn apply_runtime(
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
-        | EngineCommand::Media(_) => {
+        | EngineCommand::Media(_)
+        | EngineCommand::InputLifecycle(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
     })
+}
+
+/// Realizes an input lifecycle edit on the realized switcher: the inputs a
+/// duplicate or import appends (the import already filtered to its
+/// accepted items) and the inputs a batch removal removes.
+fn realize_input_lifecycle(
+    switcher: &mut SwitcherState,
+    edit: &crate::EngineInputLifecycleEdit,
+) -> Result<Vec<SwitcherEvent>, SwitcherError> {
+    match edit {
+        crate::EngineInputLifecycleEdit::Duplicate { input, .. } => switcher.add_input(*input)?,
+        crate::EngineInputLifecycleEdit::Import { items } => {
+            for item in items {
+                switcher.add_input(item.input)?;
+            }
+        }
+        crate::EngineInputLifecycleEdit::RemoveInputs { inputs } => {
+            for input in inputs {
+                switcher.remove_input(*input)?;
+            }
+        }
+        crate::EngineInputLifecycleEdit::ReplaceSource { .. }
+        | crate::EngineInputLifecycleEdit::SetCategory { .. }
+        | crate::EngineInputLifecycleEdit::SetColor { .. }
+        | crate::EngineInputLifecycleEdit::SetPaused { .. }
+        | crate::EngineInputLifecycleEdit::SetClosed { .. }
+        | crate::EngineInputLifecycleEdit::SetCategories { .. } => {}
+    }
+    Ok(Vec::new())
 }
 
 fn apply_runtime_stream(
@@ -2653,7 +2774,8 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
-        | EngineCommand::Media(_) => None,
+        | EngineCommand::Media(_)
+        | EngineCommand::InputLifecycle(_) => None,
     }
 }
 
@@ -2729,6 +2851,26 @@ fn runtime_action(state: &ShowState, command: &EngineCommand) -> EngineCommand {
                 }),
                 Err(_) => command.clone(),
             }
+        }
+        // The realized switcher appends only the items the import accepts,
+        // which the pre-command show determines.
+        EngineCommand::InputLifecycle(crate::EngineInputLifecycleEdit::Import { items }) => {
+            let accepted = crate::input_lifecycle::added_inputs(
+                state,
+                &crate::EngineInputLifecycleEdit::Import {
+                    items: items.clone(),
+                },
+                &[],
+            )
+            .map(|(added, _)| added)
+            .unwrap_or_default();
+            EngineCommand::InputLifecycle(crate::EngineInputLifecycleEdit::Import {
+                items: items
+                    .iter()
+                    .filter(|item| accepted.iter().any(|(input, _)| *input == item.input))
+                    .cloned()
+                    .collect(),
+            })
         }
         _ => command.clone(),
     }

@@ -5584,11 +5584,30 @@ impl NativeDaemon {
     }
 
     /// Opens every media-file input's transport on its decoder's source.
-    fn attach_media_sources(&self, control: &mut ControlService<Policy>) -> AppResult<()> {
+    fn attach_media_sources(&mut self, control: &mut ControlService<Policy>) -> AppResult<()> {
         for (input, source) in self.files.sources() {
             control
                 .set_media_source(*input, Some(source.clone()))
                 .map_err(|error| AppFailure(format!("media input {input} cannot open: {error}")))?;
+        }
+        self.sync_input_lifecycle(control)
+    }
+
+    /// Releases the decoder of every closed media-file input and reopens
+    /// it, with its engine transport, once the input reopens (IN-026). A
+    /// paused input holds its frame: the engine stops moving its transport.
+    fn sync_input_lifecycle(&mut self, control: &mut ControlService<Policy>) -> AppResult<()> {
+        for (input, source) in self.files.sources().to_vec() {
+            let input = &input;
+            let closed = control.input_lifecycle(*input).closed;
+            self.files.set_closed(*input, closed);
+            if !closed && !control.media_source_open(*input) {
+                control
+                    .set_media_source(*input, Some(source.clone()))
+                    .map_err(|error| {
+                        AppFailure(format!("media input {input} cannot reopen: {error}"))
+                    })?;
+            }
         }
         Ok(())
     }
@@ -6398,7 +6417,7 @@ impl NativeDaemon {
     fn invalidate_projection(&mut self) {}
 
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
-    fn attach_media_sources(&self, _control: &mut ControlService<Policy>) -> AppResult<()> {
+    fn attach_media_sources(&mut self, _control: &mut ControlService<Policy>) -> AppResult<()> {
         Ok(())
     }
 
@@ -8519,7 +8538,7 @@ fn serve_inner(
             )?)
         }
     };
-    if let Some(native) = native.as_ref() {
+    if let Some(native) = native.as_mut() {
         native.attach_media_sources(&mut control.borrow_mut())?;
     }
     // Every authored local HLS output is a configured show destination, so it
@@ -9433,13 +9452,18 @@ fn restore_engine(project: &StoredProject) -> AppResult<Engine> {
 #[allow(clippy::too_many_lines)] // one restore step per project part
 /// Opens every media input of `project` on its synthetic source (the
 /// simulated engine's stand-in for the file's decoder, see
-/// [`fm_engine::EngineMediaSource::synthetic`]).
+/// [`fm_engine::EngineMediaSource::synthetic`]), unless its source is
+/// already open or the input is closed (IN-026). After a command this
+/// opens imported, duplicated, replaced, and reopened media inputs.
 fn attach_synthetic_media(
     control: &mut ControlService<Policy>,
     project: &fm_model::Project,
 ) -> AppResult<()> {
     let rate = project.settings().frame_rate;
     for input in project.inputs() {
+        if project.input_lifecycle(input.id).closed || control.media_source_open(input.id) {
+            continue;
+        }
         if let fm_model::InputKind::Media { playback, .. } = &input.kind {
             control
                 .set_media_source(
@@ -9471,7 +9495,16 @@ fn restore_presets_favorites_and_media(
         if let fm_model::InputKind::Media { playback, .. } = &input.kind {
             show.set_media_input(input.id, *playback)?;
         }
+        // Each input's replaceable source, for replace and duplicate
+        // (IN-026).
+        if let Some(source) = fm_model::InputSourceSpec::from_kind(&input.kind) {
+            show.set_input_source(input.id, source)?;
+        }
     }
+    show.restore_input_lifecycle(
+        canonical.input_categories().to_vec(),
+        canonical.input_lifecycles(),
+    )?;
     Ok(())
 }
 
@@ -10346,6 +10379,8 @@ fn execute_authority_command(
             process_shutdown,
         );
     }
+    let imported = import_host_media(store, command);
+    let command = imported.as_ref().unwrap_or(command);
     let execution = execute_durable_command(
         &mut control,
         store,
@@ -10355,6 +10390,9 @@ fn execute_authority_command(
         command,
         now,
     )?;
+    // Imported, duplicated, replaced and reopened media inputs play from a
+    // synthetic source as soon as they exist (IN-026).
+    attach_synthetic_media(&mut control, durable.project())?;
     Ok(durable_delivery(execution))
 }
 
@@ -10378,10 +10416,7 @@ fn execute_native_authority_command(
     native: &mut NativeDaemon,
     process_shutdown: Option<&ProcessShutdown>,
 ) -> AppResult<CommandDelivery> {
-    if matches!(
-        command.payload,
-        CommandPayload::AddInput { .. } | CommandPayload::RemoveInput { .. }
-    ) {
+    if native_refuses_input_catalogue(&command.payload) {
         return Ok(CommandDelivery {
             result: native_input_catalogue_rejection(
                 command,
@@ -10448,6 +10483,8 @@ fn execute_native_authority_command(
     native.titles.observe(durable.project());
     #[cfg(feature = "native-media")]
     native.titles.observe_templates(&control.title_templates());
+    #[cfg(feature = "native-media")]
+    native.sync_input_lifecycle(control)?;
     Ok(durable_delivery(execution))
 }
 
@@ -10488,6 +10525,66 @@ fn native_stinger_preflight_rejection(
     }
 }
 
+/// Brings the host media files a batch import or a source replacement names
+/// into the bundle (IN-026): each absolute host path to a regular media file
+/// becomes the `asset://` URI of its imported copy, and the command is
+/// executed (and journaled) with those URIs. A path that cannot be imported
+/// is left as it is, and the engine refuses that item as unavailable.
+/// Returns `None` when nothing changed.
+fn import_host_media(store: &dyn DurableStore, command: &CommandMessage) -> Option<CommandMessage> {
+    let import = |uri: &mut String| -> bool {
+        let path = Path::new(uri.as_str());
+        if uri.starts_with(fm_model::MEDIA_ASSET_URI_PREFIX)
+            || !path.is_absolute()
+            || !fm_model::is_media_file_name(uri)
+            || !path.is_file()
+        {
+            return false;
+        }
+        match store.import_media_path(path) {
+            Ok(Some(asset)) => {
+                *uri = asset;
+                true
+            }
+            Ok(None) | Err(_) => false,
+        }
+    };
+    let mut rewritten = command.clone();
+    let changed = match &mut rewritten.payload {
+        CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::Import { items }) => {
+            // Every item is imported; no short-circuit.
+            let mut changed = false;
+            for item in items.iter_mut() {
+                changed |= import(&mut item.uri);
+            }
+            changed
+        }
+        CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::ReplaceSource {
+            source: fm_protocol::WireInputSource::Media { uri },
+            ..
+        }) => import(uri),
+        _ => false,
+    };
+    changed.then_some(rewritten)
+}
+
+/// Whether a native daemon refuses `payload` because it changes the input
+/// catalogue or an input's source graph: add, remove, duplicate, batch
+/// import, multi-input removal, and source replacement (IN-026).
+fn native_refuses_input_catalogue(payload: &CommandPayload) -> bool {
+    matches!(
+        payload,
+        CommandPayload::AddInput { .. }
+            | CommandPayload::RemoveInput { .. }
+            | CommandPayload::InputLifecycle(
+                fm_protocol::InputLifecycleOperation::Duplicate { .. }
+                    | fm_protocol::InputLifecycleOperation::Import { .. }
+                    | fm_protocol::InputLifecycleOperation::RemoveInputs { .. }
+                    | fm_protocol::InputLifecycleOperation::ReplaceSource { .. }
+            )
+    )
+}
+
 /// Refuses a live input addition or removal on a native daemon.
 ///
 /// The native media runtime builds its capture, decode and mixer graph from
@@ -10501,8 +10598,8 @@ fn native_input_catalogue_rejection(
     CommandResult::Rejected {
         id: command.id.clone(),
         code: RejectionCode::Unavailable.as_str().to_owned(),
-        message: "live input add and remove are not realized by the native media runtime; \
-                  stop the daemon and use freemix-cli add-input or remove-input"
+        message: "live input add, remove, duplicate, import and source replacement are not \
+                  realized by the native media runtime; stop the daemon and use freemix-cli"
             .to_owned(),
         fields: Vec::new(),
         current_revision,
@@ -11238,6 +11335,7 @@ fn command_base_ticks(
         | CommandPayload::RemoveStinger { .. }
         | CommandPayload::SetTransitionFavorite { .. }
         | CommandPayload::Media { .. }
+        | CommandPayload::InputLifecycle(_)
         | CommandPayload::UpdateOverlay { .. }
         | CommandPayload::SetOverlayOutputInclusion { .. }
         | CommandPayload::ConfigureOverlayTransition { .. }
@@ -11409,6 +11507,7 @@ fn stored_project_with_receipts(
     sync_project_edit_locks(&mut project, show)?;
     sync_project_titles(&mut project, show)?;
     sync_project_scenes(&mut project, show)?;
+    sync_project_input_lifecycle(&mut project, show)?;
     project.set_playlist(fm_engine::playlist_to_model(show.playlist()));
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
@@ -11494,6 +11593,39 @@ fn sync_project_inputs(
                 source,
                 ..
             }) if added.to_domain() == input => *source,
+            Some(CommandPayload::InputLifecycle(
+                fm_protocol::InputLifecycleOperation::Duplicate {
+                    source,
+                    input: added,
+                    ..
+                },
+            )) if added.to_domain() == input => {
+                project
+                    .duplicate_input(source.to_domain(), input, name)
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be duplicated: {error}"))
+                    })?;
+                continue;
+            }
+            Some(CommandPayload::InputLifecycle(
+                fm_protocol::InputLifecycleOperation::Import { .. },
+            )) => {
+                let source = show
+                    .input_source(input)
+                    .ok_or_else(|| AppFailure(format!("imported input {input} has no source")))?;
+                let playback = show.media_settings(input).copied().unwrap_or_default();
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: source.to_kind(playback),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be imported: {error}"))
+                    })?;
+                continue;
+            }
             _ => {
                 return Err(AppFailure(format!(
                     "projected engine snapshot adds input {input} without an input_add command"
@@ -11523,6 +11655,50 @@ fn sync_project_inputs(
                 required_capabilities: Vec::new(),
             })
             .map_err(|error| AppFailure(format!("input {input} could not be added: {error}")))?;
+    }
+    Ok(())
+}
+
+/// Folds replaced input sources, the category list, and every input's
+/// lifecycle into the stored project (IN-026). The engine's show owns all
+/// three; a source the project does not hold is a replacement.
+fn sync_project_input_lifecycle(
+    project: &mut fm_model::Project,
+    show: &ShowState,
+) -> AppResult<()> {
+    for (&input, source) in show.input_sources() {
+        let Some(current) = project
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == input)
+        else {
+            continue;
+        };
+        if fm_model::InputSourceSpec::from_kind(&current.kind).as_ref() == Some(source) {
+            continue;
+        }
+        let playback = show.media_settings(input).copied().unwrap_or_default();
+        let capabilities = current.required_capabilities.clone();
+        project
+            .replace_input_source(input, source.to_kind(playback), capabilities)
+            .map_err(|error| {
+                AppFailure(format!(
+                    "input {input}'s source could not be replaced: {error}"
+                ))
+            })?;
+    }
+    let stale = project
+        .input_lifecycles()
+        .keys()
+        .copied()
+        .filter(|input| !show.input_lifecycles().contains_key(input))
+        .collect::<Vec<_>>();
+    for input in stale {
+        project.restore_input_lifecycle(input, fm_model::InputLifecycle::default());
+    }
+    project.restore_input_categories(show.input_categories().to_vec());
+    for (&input, &lifecycle) in show.input_lifecycles() {
+        project.restore_input_lifecycle(input, lifecycle);
     }
     Ok(())
 }
@@ -18316,8 +18492,68 @@ mod tests {
                 ..
             } if code == "unavailable"
                 && message.contains("not realized by the native media runtime")
-                && message.contains("freemix-cli add-input")
+                && message.contains("freemix-cli")
         ));
+        // IN-026: duplicate, import, multi-input removal and source
+        // replacement change the source graph and are refused natively;
+        // labels, pause and close are realized.
+        let wire = |id| fm_protocol::WireInputId::from_domain(test_input_id(id));
+        for (operation, refused) in [
+            (
+                fm_protocol::InputLifecycleOperation::Duplicate {
+                    source: wire(1),
+                    input: wire(9),
+                    name: None,
+                },
+                true,
+            ),
+            (
+                fm_protocol::InputLifecycleOperation::Import { items: Vec::new() },
+                true,
+            ),
+            (
+                fm_protocol::InputLifecycleOperation::RemoveInputs {
+                    inputs: vec![wire(2)],
+                },
+                true,
+            ),
+            (
+                fm_protocol::InputLifecycleOperation::ReplaceSource {
+                    input: wire(2),
+                    source: fm_protocol::WireInputSource::Generator {
+                        video: fm_protocol::WireGeneratorVideo::Bars,
+                        tone_hz: None,
+                    },
+                },
+                true,
+            ),
+            (
+                fm_protocol::InputLifecycleOperation::SetPaused {
+                    input: wire(2),
+                    paused: true,
+                },
+                false,
+            ),
+            (
+                fm_protocol::InputLifecycleOperation::SetClosed {
+                    input: wire(2),
+                    closed: true,
+                },
+                false,
+            ),
+            (
+                fm_protocol::InputLifecycleOperation::SetColor {
+                    input: wire(2),
+                    color: Some(fm_protocol::InputColorLabel::Red),
+                },
+                false,
+            ),
+        ] {
+            assert_eq!(
+                native_refuses_input_catalogue(&CommandPayload::InputLifecycle(operation)),
+                refused
+            );
+        }
     }
 
     #[cfg(feature = "native-media")]

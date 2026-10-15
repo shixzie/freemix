@@ -26,7 +26,10 @@ use fm_protocol::{
     StingerReadiness, StreamRealizedState as ProtocolStreamRealizedState, TitleFieldStatus,
     TitleFieldUpdate, TitlePhase, TitleStateMessage, WireRecorderSlot,
 };
-pub use fm_protocol::{TRANSITION_FAVORITE_COUNT, TransitionFavoriteStatus};
+pub use fm_protocol::{
+    InputCategoryStatus, InputLifecycleOperation, InputLifecycleStatus, InputOfflineReason,
+    TRANSITION_FAVORITE_COUNT, TransitionFavoriteStatus,
+};
 use fm_types::{FrameRate, InputId, MAX_INPUT_NAME_BYTES, OutputId, ProjectId, SceneId};
 
 pub use animation_presets::AnimationPresetsStatus;
@@ -38,6 +41,7 @@ mod animation_presets;
 pub mod grade_editor;
 mod grading;
 pub mod i18n;
+mod input_lifecycle;
 pub mod scene_designer;
 pub mod title_animation;
 pub mod title_editor;
@@ -431,6 +435,10 @@ pub struct ProjectSnapshot {
     /// How many `media_state` records complete this snapshot (Protocol
     /// 2.37).
     pub media_states: u16,
+    /// Each input's lifecycle, parallel to `inputs` (Protocol 2.38).
+    pub input_lifecycle: Vec<InputLifecycleStatus>,
+    /// The project's input categories (Protocol 2.38).
+    pub input_categories: Vec<InputCategoryStatus>,
 }
 
 impl ProjectSnapshot {
@@ -442,6 +450,7 @@ impl ProjectSnapshot {
         let desired_overlays = protocol_overlays(message.desired_overlays);
         let realized_overlays = protocol_overlays(message.realized_overlays);
         let input_audio_strips = protocol_input_audio_strips(message.input_audio_strips);
+        let input_lifecycle = message.inputs.iter().map(|input| input.lifecycle).collect();
         let (inputs, input_names) = message
             .inputs
             .into_iter()
@@ -513,6 +522,8 @@ impl ProjectSnapshot {
             animation_preset_states: message.animation_preset_states,
             transition_favorites: message.transition_favorites,
             media_states: message.media_states,
+            input_lifecycle,
+            input_categories: message.input_categories,
         }
     }
 }
@@ -606,6 +617,12 @@ pub enum DurableChange {
     /// (Protocol 2.37).
     MediaChanged {
         status: Box<MediaStatus>,
+    },
+    /// An accepted input lifecycle edit (Protocol 2.38): the operation and
+    /// the inputs it appended, in order.
+    InputLifecycleChanged {
+        operation: InputLifecycleOperation,
+        added: Vec<(InputId, String)>,
     },
 }
 
@@ -753,6 +770,15 @@ impl DurableProjectEvent {
                 DurableChange::TransitionFavoriteChanged { slot, favorite }
             }
             EventPayload::MediaChanged { status, .. } => DurableChange::MediaChanged { status },
+            EventPayload::InputLifecycleChanged {
+                operation, added, ..
+            } => DurableChange::InputLifecycleChanged {
+                operation,
+                added: added
+                    .into_iter()
+                    .map(|added| (added.input.to_domain(), added.name))
+                    .collect(),
+            },
             EventPayload::AnimationPresetChanged(change) => {
                 DurableChange::AnimationPresetChanged(change)
             }
@@ -856,9 +882,28 @@ pub struct ProjectState {
     media: BTreeMap<InputId, MediaStatus>,
     /// `media_state` records the snapshot announced that have not arrived.
     media_states_pending: u16,
+    /// Every input's non-default lifecycle (Protocol 2.38).
+    input_lifecycle: BTreeMap<InputId, InputLifecycleStatus>,
+    /// The project's input categories (Protocol 2.38).
+    input_categories: Vec<InputCategoryStatus>,
 }
 
 impl ProjectState {
+    /// Returns input `input`'s replicated lifecycle (Protocol 2.38).
+    #[must_use]
+    pub fn input_lifecycle(&self, input: InputId) -> InputLifecycleStatus {
+        self.input_lifecycle
+            .get(&input)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Returns the project's input categories (Protocol 2.38).
+    #[must_use]
+    pub fn input_categories(&self) -> &[InputCategoryStatus] {
+        &self.input_categories
+    }
+
     /// Returns every media input's replicated status, ascending by input.
     /// Complete only once [`Self::media_complete`].
     #[must_use]
@@ -1122,9 +1167,24 @@ pub struct ClientView {
     pub edit_history: EditHistoryStatus,
     /// The favourite transition buttons, slot 1 first (Protocol 2.36).
     pub transition_favorites: [TransitionFavoriteStatus; TRANSITION_FAVORITE_COUNT],
+    /// Each input's lifecycle, parallel to `inputs` (Protocol 2.38).
+    pub input_lifecycle: Vec<InputLifecycleStatus>,
+    /// The project's input categories (Protocol 2.38).
+    pub input_categories: Vec<InputCategoryStatus>,
 }
 
 impl ClientView {
+    /// Returns input `input`'s lifecycle, or the default for an unknown
+    /// input.
+    #[must_use]
+    pub fn lifecycle(&self, input: InputId) -> InputLifecycleStatus {
+        self.inputs
+            .iter()
+            .position(|candidate| *candidate == input)
+            .and_then(|index| self.input_lifecycle.get(index).copied())
+            .unwrap_or_default()
+    }
+
     /// Returns the replicated engine-owned recording-desired flag for one slot.
     ///
     /// Returns `false` when the slot is absent from the validated roster.
@@ -1376,6 +1436,9 @@ pub enum ModelError {
     /// A media status (`media_changed` or a `media` runtime event) names an
     /// input outside the replicated project.
     InvalidMediaChange(InputId),
+    /// An input lifecycle change (Protocol 2.38) or snapshot lifecycle does
+    /// not match the replicated project.
+    InvalidInputLifecycleChange,
     /// A title change's fields are not the title's field set, or its field
     /// revision went backwards.
     InvalidTitleChange(InputId),
@@ -1500,6 +1563,7 @@ impl fmt::Display for ModelError {
             | Self::InvalidAnimationPresetChange
             | Self::MediaStateMismatch
             | Self::InvalidMediaChange(_)
+            | Self::InvalidInputLifecycleChange
             | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
             Self::InvalidTransitionFavorite(slot) => write!(
                 formatter,
@@ -1566,6 +1630,9 @@ fn write_catalogue_message(error: &ModelError, formatter: &mut fmt::Formatter<'_
         }
         ModelError::InvalidMediaChange(input) => {
             write!(formatter, "media status names unknown input {input}")
+        }
+        ModelError::InvalidInputLifecycleChange => {
+            formatter.write_str("input lifecycle change does not match the replicated project")
         }
         _ => Ok(()),
     }
@@ -1706,6 +1773,12 @@ impl ClientModel {
             edit_locks: state.edit_locks.clone(),
             edit_history: state.edit_history,
             transition_favorites: state.transition_favorites,
+            input_lifecycle: state
+                .inputs
+                .iter()
+                .map(|input| state.input_lifecycle(*input))
+                .collect(),
+            input_categories: state.input_categories.clone(),
         })
     }
 
@@ -1881,6 +1954,13 @@ impl ClientModel {
         self.expected_engine = Some(snapshot.cursor.engine.clone());
         self.known_revision = Some(snapshot.cursor.revision);
         self.cursor = Some(snapshot.cursor);
+        let input_lifecycle = snapshot
+            .inputs
+            .iter()
+            .copied()
+            .zip(snapshot.input_lifecycle)
+            .filter(|(_, lifecycle)| *lifecycle != InputLifecycleStatus::default())
+            .collect();
         self.state = Some(ProjectState {
             show_name: snapshot.show_name,
             inputs: snapshot.inputs,
@@ -1907,6 +1987,8 @@ impl ClientModel {
             transition_favorites: snapshot.transition_favorites,
             media: BTreeMap::new(),
             media_states_pending: snapshot.media_states,
+            input_lifecycle,
+            input_categories: snapshot.input_categories,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -2199,6 +2281,29 @@ impl ClientModel {
             return Err(ModelError::InvalidMediaChange(input));
         }
         state.media.insert(input, status);
+        Ok(())
+    }
+
+    /// Records an input's source availability from an `input_availability`
+    /// runtime event (Protocol 2.38). Runtime events never move the durable
+    /// cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::UnknownInput`] for an input outside the project.
+    pub fn apply_runtime_input_availability(
+        &mut self,
+        input: InputId,
+        offline: Option<InputOfflineReason>,
+    ) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if !state.inputs.contains(&input) {
+            return Err(ModelError::UnknownInput(input));
+        }
+        let mut lifecycle = state.input_lifecycle(input);
+        lifecycle.offline = offline;
+        input_lifecycle::store_lifecycle(state, input, lifecycle);
         Ok(())
     }
 
@@ -2630,6 +2735,21 @@ fn valid_output_name(name: &str) -> bool {
     !name.trim().is_empty()
 }
 
+/// Whether the snapshot's per-input lifecycle parallels its inputs and
+/// names only listed categories, and the category list is valid.
+fn valid_snapshot_lifecycle(snapshot: &ProjectSnapshot) -> bool {
+    snapshot.input_lifecycle.len() == snapshot.inputs.len()
+        && input_lifecycle::valid_categories(&snapshot.input_categories)
+        && snapshot.input_lifecycle.iter().all(|lifecycle| {
+            lifecycle.category.is_none_or(|id| {
+                snapshot
+                    .input_categories
+                    .iter()
+                    .any(|category| category.id == id)
+            })
+        })
+}
+
 fn validate_snapshot_inputs(snapshot: &ProjectSnapshot) -> Result<(), ModelError> {
     if snapshot.input_names.len() != snapshot.inputs.len() {
         return Err(ModelError::InvalidInputNames);
@@ -2647,6 +2767,9 @@ fn validate_snapshot_inputs(snapshot: &ProjectSnapshot) -> Result<(), ModelError
         if !inputs.insert(*input) {
             return Err(ModelError::DuplicateInput(*input));
         }
+    }
+    if !valid_snapshot_lifecycle(snapshot) {
+        return Err(ModelError::InvalidInputLifecycleChange);
     }
     let mut output_names = HashSet::with_capacity(snapshot.outputs.len());
     let mut outputs = HashSet::with_capacity(snapshot.outputs.len());
@@ -3024,6 +3147,9 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         DurableChange::InputAdded { .. } | DurableChange::InputRemoved { .. } => {
             return validate_input_catalogue_change(change, state);
         }
+        DurableChange::InputLifecycleChanged { operation, added } => {
+            return input_lifecycle::validate(operation, added, state);
+        }
         DurableChange::TitleChanged { .. } => return validate_title_change(change, state),
         DurableChange::GradeChanged(change) => return validate_grade_change(change, state),
         DurableChange::AnimationPresetChanged(change) => {
@@ -3223,6 +3349,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     state.scenes.retain(|scene| scene.input != input);
     state.grading.remove_input(input);
     state.media.remove(&input);
+    state.input_lifecycle.remove(&input);
     // A settled-off overlay forgets a removed input it retained.
     for overlay in state
         .desired_overlays
@@ -3263,6 +3390,9 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         }
         DurableChange::InputAdded { input, name } => apply_input_added(state, input, name),
         DurableChange::InputRemoved { input } => apply_input_removed(state, input),
+        DurableChange::InputLifecycleChanged { operation, added } => {
+            input_lifecycle::apply(state, operation, added);
+        }
         DurableChange::DesiredSwitcher {
             selection,
             manual_transition,

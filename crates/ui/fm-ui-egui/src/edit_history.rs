@@ -438,6 +438,7 @@ mod tests {
                 .map(|(id, name)| fm_protocol::InputStatus {
                     input: fm_protocol::WireInputId::from_domain(input(id)),
                     name: name.into(),
+                    lifecycle: fm_protocol::InputLifecycleStatus::default(),
                 })
                 .to_vec(),
             outputs: Vec::new(),
@@ -486,6 +487,7 @@ mod tests {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         };
         snapshot.edit_locks.project = locks.project;

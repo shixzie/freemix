@@ -519,6 +519,48 @@ pub fn run(command: Command) -> AppResult<()> {
                 );
             }
         }
+        Command::InputLifecycle {
+            target,
+            operation,
+            key,
+            expected_revision,
+        } => match target {
+            crate::args::MediaTarget::Local(path) => {
+                if matches!(
+                    operation,
+                    fm_protocol::InputLifecycleOperation::Duplicate { .. }
+                        | fm_protocol::InputLifecycleOperation::ReplaceSource { .. }
+                        | fm_protocol::InputLifecycleOperation::Import { .. }
+                        | fm_protocol::InputLifecycleOperation::RemoveInputs { .. }
+                ) {
+                    return Err(AppFailure(format!(
+                        "{} changes the input catalogue; use input-duplicate, input-replace-*, or input-import-batch locally",
+                        operation.payload()
+                    ))
+                    .into());
+                }
+                mutate(
+                    &path,
+                    EngineCommand::InputLifecycle(fm_control::engine_input_lifecycle_edit(
+                        &operation,
+                    )),
+                    1,
+                    key,
+                    expected_revision,
+                )?;
+            }
+            crate::args::MediaTarget::Remote(address) => remote::execute(
+                address,
+                fm_protocol::CommandPayload::InputLifecycle(operation),
+                key,
+                expected_revision,
+            )?,
+        },
+        Command::InputImportBatch {
+            path,
+            first_input,
+            files,
+        } => project_bundle::import_batch(&path, first_input, &files)?,
         Command::InputMedia {
             target,
             input,
@@ -1946,6 +1988,7 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     sync_input_audio_strips(&mut project, snapshot.show())?;
     sync_stream_running(&mut project, snapshot.show())?;
     sync_recording_desired(&mut project, snapshot.show());
+    sync_input_lifecycle(&mut project, snapshot.show());
     project.set_transition_favorites(*snapshot.show().transition_favorites());
     for (&input, settings) in snapshot.show().media_inputs() {
         if project.media_playback(input) != Some(settings) {
@@ -1990,6 +2033,24 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     )?;
     ProjectStore::new(path)?.save(&stored)?;
     Ok(())
+}
+
+/// Copies the engine's category list and every input's lifecycle into the
+/// project (IN-026).
+fn sync_input_lifecycle(project: &mut Project, show: &ShowState) {
+    let stale = project
+        .input_lifecycles()
+        .keys()
+        .copied()
+        .filter(|input| !show.input_lifecycles().contains_key(input))
+        .collect::<Vec<_>>();
+    for input in stale {
+        project.restore_input_lifecycle(input, fm_model::InputLifecycle::default());
+    }
+    project.restore_input_categories(show.input_categories().to_vec());
+    for (&input, &lifecycle) in show.input_lifecycles() {
+        project.restore_input_lifecycle(input, lifecycle);
+    }
 }
 
 fn sync_input_names(project: &mut Project, show: &ShowState) -> AppResult<()> {
@@ -3003,27 +3064,13 @@ fn remove_audio_bus(path: &Path, bus: BusId) -> AppResult<()> {
 
 fn duplicate_input(path: &Path, source: InputId, input: InputId, name: String) -> AppResult<()> {
     let stored = load_stored_project(path)?;
-    let source_input = stored
-        .project()
-        .inputs()
-        .iter()
-        .find(|candidate| candidate.id == source)
-        .ok_or_else(|| AppFailure(format!("unknown source input {source}")))?;
-    let source_strip = stored
-        .project()
-        .input_audio_strip(source)
-        .ok_or_else(|| AppFailure(format!("project is missing audio strip for input {source}")))?;
     let store = ProjectStore::new(path)?;
     let mut project = stored.project().clone();
-    project.add_input_checked(Input {
-        id: input,
-        name,
-        kind: source_input.kind.clone(),
-        required_capabilities: source_input.required_capabilities.clone(),
-    })?;
-    if !project.set_input_audio_strip(input, source_strip) {
-        return Err(AppFailure(format!("project is missing audio strip for input {input}")).into());
-    }
+    // The copy shares the source's kind, capabilities, strip, category and
+    // colour label (IN-026).
+    project
+        .duplicate_input(source, input, name)
+        .map_err(|error| AppFailure(format!("input {source} cannot be duplicated: {error}")))?;
     let configured = StoredProject::from_project_with_complete_runtime_state(
         project,
         stored.runtime_routing(),
@@ -3159,7 +3206,14 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
         if let InputKind::Media { playback, .. } = &input.kind {
             show.set_media_input(input.id, *playback)?;
         }
+        if let Some(source) = fm_model::InputSourceSpec::from_kind(&input.kind) {
+            show.set_input_source(input.id, source)?;
+        }
     }
+    show.restore_input_lifecycle(
+        project.input_categories().to_vec(),
+        project.input_lifecycles(),
+    )?;
     Ok(())
 }
 
@@ -4339,6 +4393,12 @@ Usage:
   freemix-cli input-replace-media <show.freemix> <input-id> <asset://key>
   freemix-cli input-replace-scene <show.freemix> <input-id> <existing-scene-id>
   freemix-cli input-media-list <show.freemix>
+  freemix-cli input-categories <show.freemix> [<id>=<name>...] [--key <key>] [--expect <revision>]
+  freemix-cli input-category <show.freemix> <input-id> <category-id|none> [--key <key>] [--expect <revision>]
+  freemix-cli input-color <show.freemix> <input-id> <red|orange|yellow|green|teal|blue|purple|pink|none> [--key <key>] [--expect <revision>]
+  freemix-cli input-pause <show.freemix> <input-id> <on|off> [--key <key>] [--expect <revision>]
+  freemix-cli input-close <show.freemix> <input-id> <on|off> [--key <key>] [--expect <revision>]
+  freemix-cli input-import-batch <show.freemix> <first-new-input-id> <media-file>...
   freemix-cli input-media-<trim|rate|end-action|end-trigger|audio-track|audio-policy> <show.freemix> <input-id> <operands> [--key <key>] [--expect <revision>]
       trim <in> <out|end>; rate <2500..=40000 basis points>; end-action <stop|hold|loop>; end-trigger <frames|off>; audio-track <stream|none>; audio-policy <mute|resample>
   freemix-cli status <show.freemix>
@@ -4387,6 +4447,14 @@ Usage:
   freemix-cli remote-input-add <127.0.0.1:port> solid <input> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> bars <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-remove <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-duplicate <127.0.0.1:port> <source-input> <new-input> [<name>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-replace <127.0.0.1:port> <input> <solid:RRGGBBAA[:hz]|bars[:hz]|media:<file|asset://key>|device:<key>|network:<endpoint>> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-categories <127.0.0.1:port> [<id>=<name>...] [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-category <127.0.0.1:port> <input> <category-id|none> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-color <127.0.0.1:port> <input> <colour|none> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-pause <127.0.0.1:port> <input> <on|off> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-close <127.0.0.1:port> <input> <on|off> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-import-batch <127.0.0.1:port> <first-new-input> <media-file|asset://key>... [--key <key>] [--expect <revision>]
   freemix-cli remote-input-reorder <127.0.0.1:port> <input> [<input>...] [--key <key>] [--expect <revision>]
   freemix-cli remote-preview <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-cut <127.0.0.1:port> [--key <key>] [--expect <revision>]

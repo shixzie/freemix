@@ -464,7 +464,7 @@ pub(crate) struct AddInputDraft {
 }
 
 /// Colour presets offered beside the picker.
-const COLOUR_PRESETS: [(Msg, Color32); 8] = [
+pub(crate) const COLOUR_PRESETS: [(Msg, Color32); 8] = [
     (Msg::ColourBlack, Color32::from_rgb(0, 0, 0)),
     (Msg::ColourWhite, Color32::from_rgb(235, 235, 235)),
     (Msg::ColourGrey, Color32::from_rgb(64, 68, 74)),
@@ -1260,7 +1260,7 @@ impl StudioShell {
     }
 }
 
-fn capitalized(text: &str) -> String {
+pub(crate) fn capitalized(text: &str) -> String {
     let mut chars = text.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
@@ -1268,7 +1268,7 @@ fn capitalized(text: &str) -> String {
 }
 
 /// A segmented kind key: lit accent outline and fill when selected.
-fn kind_key(label: &str, selected: bool) -> Button<'static> {
+pub(crate) fn kind_key(label: &str, selected: bool) -> Button<'static> {
     Button::new(
         RichText::new(label.to_owned())
             .size(crate::theme::legible(11.5))
@@ -1296,7 +1296,7 @@ fn kind_key(label: &str, selected: bool) -> Button<'static> {
 }
 
 /// One clickable colour preset; the current colour has an accent ring.
-fn colour_swatch(ui: &mut Ui, color: Color32, selected: bool) -> egui::Response {
+pub(crate) fn colour_swatch(ui: &mut Ui, color: Color32, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
@@ -1436,6 +1436,7 @@ mod tests {
             .map(|(id, name)| fm_protocol::InputStatus {
                 input: wire(id),
                 name: name.into(),
+                lifecycle: fm_protocol::InputLifecycleStatus::default(),
             })
             .to_vec(),
             outputs: Vec::new(),
@@ -1484,6 +1485,7 @@ mod tests {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }
     }
@@ -1798,6 +1800,7 @@ mod tests {
         added.inputs.push(fm_protocol::InputStatus {
             input: wire(5),
             name: "Colour Bars 1".into(),
+            lifecycle: fm_protocol::InputLifecycleStatus::default(),
         });
         let mut strip = added.input_audio_strips[0];
         strip.input = wire(5);

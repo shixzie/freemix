@@ -166,7 +166,12 @@ pub(super) fn input_statuses(values: &[InputStatus]) -> Result<String, CodecErro
                 value: input.name.clone(),
             });
         }
-        Ok(format!("{}~{}", input.input, escape_bounded(&input.name)?))
+        Ok(format!(
+            "{}~{}~{}",
+            input.input,
+            escape_bounded(&input.name)?,
+            super::input_lifecycle::encode_lifecycle_status(&input.lifecycle)?
+        ))
     })?;
     let mut inputs = BTreeSet::new();
     for input in values {
@@ -192,7 +197,12 @@ pub(super) fn parse_input_statuses(value: &str) -> Result<Vec<InputStatus>, Code
     value
         .split(',')
         .map(|entry| {
-            let (input, name) = entry.split_once('~').ok_or(CodecError::InvalidRecord)?;
+            let mut parts = entry.split('~');
+            let (Some(input), Some(name), Some(lifecycle), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                return Err(CodecError::InvalidRecord);
+            };
             let input = input
                 .parse::<u128>()
                 .ok()
@@ -204,6 +214,7 @@ pub(super) fn parse_input_statuses(value: &str) -> Result<Vec<InputStatus>, Code
                     value: value.to_owned(),
                 });
             }
+            let lifecycle = super::input_lifecycle::decode_lifecycle_status(lifecycle)?;
             let input = crate::WireInputId::new(input.ok_or_else(|| CodecError::InvalidField {
                 field: "inputs",
                 value: value.to_owned(),
@@ -214,7 +225,11 @@ pub(super) fn parse_input_statuses(value: &str) -> Result<Vec<InputStatus>, Code
                     value: value.to_owned(),
                 });
             }
-            Ok(InputStatus { input, name })
+            Ok(InputStatus {
+                input,
+                name,
+                lifecycle,
+            })
         })
         .collect()
 }
@@ -693,7 +708,7 @@ fn bounded_join<T>(
     Ok(output)
 }
 
-fn escape_bounded(value: &str) -> Result<String, CodecError> {
+pub(super) fn escape_bounded(value: &str) -> Result<String, CodecError> {
     let mut encoded = String::with_capacity(value.len().min(MAX_FIELD_VALUE_BYTES));
     for byte in value.bytes() {
         let additional = if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {

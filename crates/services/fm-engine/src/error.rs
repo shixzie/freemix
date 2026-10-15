@@ -20,6 +20,9 @@ pub enum ShowError {
     DuplicateOutput(OutputId),
     UnknownInput(InputId),
     InvalidMediaPlayback(InputId, fm_model::MediaPlaybackSettingsError),
+    /// The input category list or a lifecycle entry is invalid; carries the
+    /// [`fm_model::InputLifecycleError::code`] (IN-026).
+    InvalidInputLifecycle(&'static str),
     Switcher(SwitcherError),
 }
 
@@ -43,6 +46,12 @@ impl fmt::Display for ShowError {
             Self::UnknownInput(input) => write!(formatter, "show does not contain input {input}"),
             Self::InvalidMediaPlayback(input, error) => {
                 write!(formatter, "media input {input} playback settings: {error}")
+            }
+            Self::InvalidInputLifecycle(code) => {
+                write!(
+                    formatter,
+                    "input categories or lifecycle are invalid: {code}"
+                )
             }
             Self::Switcher(error) => error.fmt(formatter),
         }

@@ -7,8 +7,11 @@
 //! - **Project edits** change durable show configuration: the input
 //!   catalogue (adding and removing inputs), input names and order, Stinger
 //!   slots, overlay transition, appearance, and output inclusion, and the
-//!   project grading ([`crate::EngineGradeEdit`]), and the animation preset
-//!   library ([`crate::EngineAnimationPresetEdit`]). They are rejected while
+//!   project grading ([`crate::EngineGradeEdit`]), the animation preset
+//!   library ([`crate::EngineAnimationPresetEdit`]), and the input lifecycle
+//!   ([`crate::EngineInputLifecycleEdit`]: duplicate, source replacement,
+//!   categories, colour labels, pause, close, batch import, and multi-input
+//!   removal). They are rejected while
 //!   the edit padlock covers them (an input's padlock also covers its
 //!   grade), and all but input and LUT removal are recorded in the undo
 //!   history.
@@ -61,6 +64,17 @@
 //! instead clears the redo stack, like any new edit, and forgets every
 //! retained undo entry that names the removed input (renames, reorders, adds,
 //! and Stinger configurations), since none of them could apply again.
+//!
+//! # Input lifecycle edits
+//!
+//! Category, colour, pause, close, category list, and source replacement
+//! edits record the previous value as their inverse. A duplicate or a batch
+//! import is undone by removing exactly the inputs it appended
+//! ([`crate::EngineInputLifecycleEdit::RemoveInputs`]); like undoing an add,
+//! that is refused as drift unless those inputs are still the last of the
+//! order under their recorded names and ungraded, so redo appends them to the
+//! same position again. A direct multi-input removal is, like a single
+//! removal, not undoable and forgets the history naming its inputs.
 //!
 //! # Interaction rules
 //!
@@ -129,7 +143,8 @@ impl EngineCommand {
             | Self::TitleAnimation(_)
             | Self::SceneAnimation(_)
             | Self::AnimationPreset(_)
-            | Self::SetTransitionFavorite { .. } => EngineCommandKind::ProjectEdit,
+            | Self::SetTransitionFavorite { .. }
+            | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
             Self::Media(command) => {
                 if command.operation.is_transport() {
                     EngineCommandKind::LiveOperation
@@ -350,9 +365,9 @@ pub(crate) enum HistoryStep {
         inverse: EngineCommand,
     },
     /// A project edit without an inverse: input removal. Clears the redo
-    /// stack and forgets undo entries that name the removed input.
+    /// stack and forgets undo entries that name a removed input.
     Forget {
-        input: InputId,
+        inputs: Vec<InputId>,
     },
     /// LUT removal, which has no journalable inverse. Clears the redo stack
     /// and forgets undo entries that name the removed LUT.
@@ -397,7 +412,17 @@ impl EditHistory {
             }
             EngineCommand::RemoveInput { input } => Ok(ResolvedCommand {
                 command: command.clone(),
-                step: HistoryStep::Forget { input: *input },
+                step: HistoryStep::Forget {
+                    inputs: vec![*input],
+                },
+            }),
+            EngineCommand::InputLifecycle(crate::EngineInputLifecycleEdit::RemoveInputs {
+                inputs,
+            }) => Ok(ResolvedCommand {
+                command: command.clone(),
+                step: HistoryStep::Forget {
+                    inputs: inputs.clone(),
+                },
             }),
             EngineCommand::Grade(EngineGradeEdit::RemoveLut { id }) => Ok(ResolvedCommand {
                 command: command.clone(),
@@ -494,10 +519,12 @@ impl EditHistory {
                     self.undo.pop_front();
                 }
             }
-            HistoryStep::Forget { input } => {
+            HistoryStep::Forget { inputs } => {
                 self.redo.clear();
                 self.undo.retain(|entry| {
-                    !names_input(&entry.forward, input) && !names_input(&entry.inverse, input)
+                    inputs.iter().all(|input| {
+                        !names_input(&entry.forward, *input) && !names_input(&entry.inverse, *input)
+                    })
                 });
             }
             HistoryStep::ForgetLut { lut } => {
@@ -541,6 +568,12 @@ fn reverses(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) 
                 && state.input_name(*input) == Some(name.as_str())
                 && !state.grading().inputs.contains_key(input)
         }
+        // Undoing a duplicate or a batch import removes exactly the inputs
+        // it appended (see `input_lifecycle::removal_reverses`).
+        (
+            EngineCommand::InputLifecycle(crate::EngineInputLifecycleEdit::RemoveInputs { inputs }),
+            EngineCommand::InputLifecycle(forward),
+        ) => crate::input_lifecycle::removal_reverses(state, inputs, forward),
         // Undoing an import removes the LUT it imported, which must still be
         // the last LUT with the recorded name and text, so redo re-imports
         // it to the same position.
@@ -608,6 +641,7 @@ fn names_input(command: &EngineCommand, input: InputId) -> bool {
         EngineCommand::Grade(edit) => edit.input() == Some(input),
         EngineCommand::TitleAnimation(edit) => edit.input == input,
         EngineCommand::SceneAnimation(edit) => edit.input == input,
+        EngineCommand::InputLifecycle(edit) => edit.names_input(input),
         _ => false,
     }
 }
@@ -670,6 +704,7 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::AnimationPreset(edit) => {
             crate::animation_preset::inverse(state, edit).map(EngineCommand::AnimationPreset)
         }
+        EngineCommand::InputLifecycle(edit) => crate::input_lifecycle::inverse(state, edit),
         EngineCommand::SetTransitionFavorite { slot, .. } => state
             .transition_favorites()
             .get(*slot)
@@ -737,6 +772,7 @@ fn grade_inverse(state: &ShowState, edit: &EngineGradeEdit) -> Option<EngineGrad
 }
 
 /// Rejects a project edit covered by the padlock.
+#[allow(clippy::too_many_lines)] // one arm per lockable edit
 pub(crate) fn check_edit_locks(
     state: &ShowState,
     command: &EngineCommand,
@@ -768,6 +804,16 @@ pub(crate) fn check_edit_locks(
                 }
             }
             Ok(())
+        }
+        EngineCommand::InputLifecycle(edit) => {
+            match edit
+                .locked_inputs()
+                .into_iter()
+                .find(|input| state.is_input_locked(*input))
+            {
+                Some(locked) => Err(EditRejection::InputLocked(locked)),
+                None => Ok(()),
+            }
         }
         // Every Scene input showing the graded layer's scene shows the edit.
         EngineCommand::Grade(EngineGradeEdit::SetLayer { scene, .. }) => {

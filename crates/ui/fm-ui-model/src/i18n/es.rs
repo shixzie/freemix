@@ -691,7 +691,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::ShortcutTileMenu,
-        t("Menú de la entrada: Previo, Corte, Renombrar, Mover, Quitar"),
+        t(
+            "Menú de la entrada: Previo, Corte, Duplicar, Reemplazar fuente, Categoría, Color, Pausa, Cerrar, Renombrar, Mover, Quitar",
+        ),
     ),
     (
         Msg::ShortcutTileFocus,
@@ -775,7 +777,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::TileMoreHover,
-        t("Más: Previo, Corte, Renombrar, Mover, Quitar"),
+        t(
+            "Más: Previo, Corte, Duplicar, Categoría, Color, Pausa, Cerrar, Renombrar, Mover, Quitar",
+        ),
     ),
     (Msg::CutKey, t("CORTE")),
     (
@@ -4324,4 +4328,256 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::MediaLanguageGerman, t("Alemán")),
     (Msg::MediaLanguageItalian, t("Italiano")),
     (Msg::MediaLanguagePortuguese, t("Portugués")),
+    // Input lifecycle (IN-026).
+    (Msg::LcDuplicate, t("Duplicar")),
+    (
+        Msg::LcDuplicateHover,
+        t("Añadir una copia de {name} con su fuente, ajustes de audio, categoría y color"),
+    ),
+    (Msg::LcReplaceEllipsis, t("Reemplazar fuente…")),
+    (
+        Msg::LcReplaceHover,
+        t("Cambiar lo que muestra esta entrada; conserva su nombre, posición y ajustes"),
+    ),
+    (Msg::LcCategory, t("Categoría")),
+    (
+        Msg::LcCategoryHover,
+        t("Archivar esta entrada en una categoría del proyecto para el filtro del banco"),
+    ),
+    (Msg::LcCategoryNone, t("Sin categoría")),
+    (
+        Msg::LcCategoryNoneHover,
+        t("Sacar esta entrada de su categoría"),
+    ),
+    (
+        Msg::LcCategoryOptionHover,
+        t("Archivar esta entrada en {category}"),
+    ),
+    (Msg::LcManageCategoriesEllipsis, t("Gestionar categorías…")),
+    (
+        Msg::LcManageCategoriesHover,
+        t("Añadir, renombrar o quitar las categorías de entradas del proyecto"),
+    ),
+    (Msg::LcColour, t("Etiqueta de color")),
+    (
+        Msg::LcColourHover,
+        t("Marcar el mosaico de esta entrada con una franja de color"),
+    ),
+    (Msg::LcColourNone, t("Sin color")),
+    (
+        Msg::LcColourNoneHover,
+        t("Quitar la etiqueta de color de esta entrada"),
+    ),
+    (
+        Msg::LcColourOptionHover,
+        t("Etiquetar esta entrada en {colour}"),
+    ),
+    (Msg::LcColourOrange, t("Naranja")),
+    (Msg::LcColourYellow, t("Amarillo")),
+    (Msg::LcColourTeal, t("Turquesa")),
+    (Msg::LcColourPurple, t("Morado")),
+    (Msg::LcColourPink, t("Rosa")),
+    (Msg::LcPause, t("Pausar entrada")),
+    (
+        Msg::LcPauseHover,
+        t("Congelar el último fotograma de esta entrada y suspender su reproducción o captura"),
+    ),
+    (Msg::LcResume, t("Reanudar entrada")),
+    (
+        Msg::LcResumeHover,
+        t("Reanudar la reproducción o captura de esta entrada"),
+    ),
+    (Msg::LcClose, t("Cerrar entrada")),
+    (
+        Msg::LcCloseHover,
+        t(
+            "Liberar el archivo, dispositivo o conexión de esta entrada hasta reabrirla; el mosaico sigue en el banco",
+        ),
+    ),
+    (Msg::LcReopen, t("Reabrir entrada")),
+    (
+        Msg::LcReopenHover,
+        t("Volver a abrir la fuente de esta entrada"),
+    ),
+    (Msg::LcBadgeOffline, t("SIN SEÑAL")),
+    (Msg::LcBadgeClosed, t("CERRADA")),
+    (Msg::LcOfflineDetail, t("{badge} ({reason})")),
+    (Msg::LcFilterAll, t("Todas")),
+    (
+        Msg::LcFilterAllHover,
+        t("Mostrar todas las entradas del banco"),
+    ),
+    (Msg::LcFilterUncategorised, t("Sin categoría")),
+    (
+        Msg::LcFilterUncategorisedHover,
+        t("Mostrar solo las entradas sin categoría"),
+    ),
+    (
+        Msg::LcFilterCategoryHover,
+        t("Mostrar solo las entradas archivadas en {category}"),
+    ),
+    (
+        Msg::LcFilterKeysNote,
+        t("Las teclas numéricas siguen seleccionando por posición en el banco"),
+    ),
+    (Msg::LcFilterShowing, t("{shown} de {total} visibles")),
+    (Msg::LcImportEllipsis, t("Importar archivos…")),
+    (
+        Msg::LcImportHover,
+        t("Añadir una entrada de medios por archivo a partir de una lista de rutas"),
+    ),
+    (Msg::LcCategoriesEllipsis, t("Categorías…")),
+    (Msg::LcImportTitle, t("Importar archivos")),
+    (
+        Msg::LcImportIntro,
+        t(
+            "Pegue una ruta de archivo por línea. Cada archivo se convierte en una entrada de medios con su nombre; el daemon copia los archivos del equipo al proyecto.",
+        ),
+    ),
+    (
+        Msg::LcImportPathsHover,
+        t("Rutas de archivo, una por línea: rutas absolutas del equipo o URI asset://"),
+    ),
+    (
+        Msg::LcImportCount,
+        plural(
+            "{count} archivo para importar",
+            "{count} archivos para importar",
+        ),
+    ),
+    (Msg::LcImportKey, t("IMPORTAR")),
+    (
+        Msg::LcImportKeyHover,
+        t("Añadir una entrada de medios por cada archivo de la lista"),
+    ),
+    (Msg::LcImportCancelHover, t("Cerrar sin importar")),
+    (
+        Msg::LcReasonNoPaths,
+        t("no hay rutas de archivo para importar"),
+    ),
+    (
+        Msg::LcReasonTooManyItems,
+        t("una importación admite como máximo 64 archivos"),
+    ),
+    (
+        Msg::LcReasonImportOverLimit,
+        t("la importación superaría el máximo de 256 entradas"),
+    ),
+    (
+        Msg::LcReasonPathTooLong,
+        t("una ruta supera los 1024 bytes"),
+    ),
+    (
+        Msg::LcReasonNoFreeIds,
+        t("no queda ningún identificador de entrada libre"),
+    ),
+    (Msg::LcReplaceTitle, t("Reemplazar fuente")),
+    (
+        Msg::LcReplaceIntro,
+        t(
+            "{name} conserva su nombre, posición en el banco, ajustes de audio y etiquetas; solo cambia su fuente.",
+        ),
+    ),
+    (Msg::LcSourceSolid, t("SÓLIDO")),
+    (
+        Msg::LcSourceSolidHover,
+        t("Reemplazar por un generador de color sólido"),
+    ),
+    (Msg::LcSourceBars, t("BARRAS")),
+    (Msg::LcSourceBarsHover, t("Reemplazar por barras de color")),
+    (Msg::LcSourceMedia, t("ARCHIVO")),
+    (
+        Msg::LcSourceMediaHover,
+        t("Reproducir un archivo de medios; una ruta del equipo se copia al proyecto"),
+    ),
+    (Msg::LcSourceDevice, t("DISPOSITIVO")),
+    (
+        Msg::LcSourceDeviceHover,
+        t("Capturar de un dispositivo por su clave estable"),
+    ),
+    (Msg::LcSourceNetwork, t("RED")),
+    (
+        Msg::LcSourceNetworkHover,
+        t("Recibir una señal de red desde un punto de conexión"),
+    ),
+    (
+        Msg::LcSourceMediaFieldHover,
+        t("Ruta absoluta de archivo del equipo o URI asset://"),
+    ),
+    (
+        Msg::LcSourceDeviceFieldHover,
+        t("La clave estable del dispositivo, tal como la lista el daemon"),
+    ),
+    (
+        Msg::LcSourceNetworkFieldHover,
+        t("Punto de conexión de red, como srt://host:9000"),
+    ),
+    (Msg::LcReplaceKey, t("REEMPLAZAR")),
+    (
+        Msg::LcReplaceKeyHover,
+        t("Cambiar esta entrada a la nueva fuente"),
+    ),
+    (Msg::LcReplaceCancelHover, t("Cerrar sin cambiar la fuente")),
+    (
+        Msg::LcReasonSourceEmpty,
+        t("el campo de la fuente está vacío"),
+    ),
+    (
+        Msg::LcReasonSourceTooLong,
+        t("la fuente supera los 1024 bytes"),
+    ),
+    (Msg::LcCategoriesTitle, t("Categorías de entradas")),
+    (
+        Msg::LcCategoriesIntro,
+        t(
+            "Las categorías agrupan entradas para el filtro del banco. Un cambio de nombre se aplica a todas las entradas de la categoría.",
+        ),
+    ),
+    (Msg::LcCategoriesEmpty, t("Aún no hay categorías.")),
+    (
+        Msg::LcCategoryNameHover,
+        t("Nombre de la categoría: hasta 48 bytes, único"),
+    ),
+    (Msg::LcCategoryRemove, t("Eliminar")),
+    (
+        Msg::LcCategoryRemoveHover,
+        t("Quitar esta categoría de la lista"),
+    ),
+    (
+        Msg::LcCategoryNewHover,
+        t("Nombre para una nueva categoría"),
+    ),
+    (Msg::LcCategoryAdd, t("Añadir categoría")),
+    (
+        Msg::LcCategoryAddHover,
+        t("Añadir el nombre escrito como nueva categoría"),
+    ),
+    (
+        Msg::LcCategoriesApplyHover,
+        t("Guardar la lista de categorías en el proyecto"),
+    ),
+    (
+        Msg::LcCategoriesCancelHover,
+        t("Cerrar sin guardar los cambios de categorías"),
+    ),
+    (
+        Msg::LcReasonCategoryInUse,
+        t("aún hay entradas archivadas en esta categoría"),
+    ),
+    (
+        Msg::LcReasonCategoryLimit,
+        t("el proyecto ya tiene 32 categorías"),
+    ),
+    (
+        Msg::LcReasonCategoryNameTooLong,
+        t("el nombre supera los 48 bytes"),
+    ),
+    (
+        Msg::LcReasonCategoryTaken,
+        t("otra categoría ya usa este nombre"),
+    ),
+    (
+        Msg::LcReasonCategoriesUnchanged,
+        t("la lista de categorías no ha cambiado"),
+    ),
 ];

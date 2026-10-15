@@ -2,6 +2,7 @@
 
 mod codec;
 mod dto;
+mod input_lifecycle;
 mod media;
 mod monitor_image;
 mod version;
@@ -64,6 +65,12 @@ pub use dto::{
     TitleAnimationStateMessage, TitleLayoutStateMessage, TitlePreviewFrameMessage,
     TitlePreviewImage, TitlePreviewRequest, TitlePreviewSample, WireTitleClip, WireTitleElementId,
     WireTitleElementKind, WireTitleElementOutline, WireTitleLayout,
+};
+pub use input_lifecycle::{
+    AddedInput, ImportItemSpec, ImportRefusal, InputCategoryStatus, InputColorLabel,
+    InputLifecycleOperation, InputLifecycleStatus, InputOfflineReason, MAX_BATCH_IMPORT_ITEMS,
+    MAX_INPUT_CATEGORIES, MAX_INPUT_CATEGORY_NAME_BYTES, MAX_INPUT_SOURCE_BYTES,
+    WireGeneratorVideo, WireInputSource,
 };
 pub use media::{
     MAX_MEDIA_AUDIO_TRACKS, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_EVENTS, MAX_MEDIA_FRAME,

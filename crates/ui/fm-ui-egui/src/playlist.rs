@@ -2110,6 +2110,7 @@ mod tests {
                 .map(|(value, name)| InputStatus {
                     input: wire(input(value)),
                     name: name.into(),
+                    lifecycle: fm_protocol::InputLifecycleStatus::default(),
                 })
                 .to_vec(),
             outputs: Vec::new(),
@@ -2152,6 +2153,7 @@ mod tests {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         };
         let mut model = ClientModel::new(project);

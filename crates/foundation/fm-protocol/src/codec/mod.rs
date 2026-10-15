@@ -2,6 +2,7 @@ mod animation;
 mod decode;
 mod encode;
 mod grade;
+mod input_lifecycle;
 mod layout;
 mod media;
 mod playlist;

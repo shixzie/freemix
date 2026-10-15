@@ -70,6 +70,7 @@ fn input_statuses() -> Vec<fm_protocol::InputStatus> {
         .map(|(value, name)| fm_protocol::InputStatus {
             input: input(value),
             name: name.into(),
+            lifecycle: fm_protocol::InputLifecycleStatus::default(),
         })
         .collect()
 }
@@ -188,6 +189,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     }
 }
@@ -1529,6 +1531,7 @@ fn input_catalogue_events_reduce_into_inputs_strips_and_tally() {
     resynced.inputs.push(fm_protocol::InputStatus {
         input: input(3),
         name: "Red".to_owned(),
+        lifecycle: fm_protocol::InputLifecycleStatus::default(),
     });
     resynced.input_audio_strips = strips.clone();
     resynced.desired_program = input(2);
@@ -1906,6 +1909,7 @@ mod playlists {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             ..snapshot(revision)
         }

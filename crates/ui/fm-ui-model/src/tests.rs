@@ -127,6 +127,8 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        input_lifecycle: vec![fm_protocol::InputLifecycleStatus::default(); 3],
+        input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     }
 }
@@ -1402,6 +1404,7 @@ mod titles {
                 .map(|value| fm_protocol::InputStatus {
                     input: wire(value),
                     name: format!("Input {value}"),
+                    lifecycle: fm_protocol::InputLifecycleStatus::default(),
                 })
                 .collect(),
             outputs: Vec::new(),
@@ -1429,6 +1432,7 @@ mod titles {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }
     }
@@ -2279,4 +2283,168 @@ fn transition_favourites_replicate_from_snapshot_and_change_events() {
         "favourite transition change names slot 5, not 1 through 4"
     );
     assert_eq!(model.view().unwrap().transition_favorites[3], stinger);
+}
+
+/// IN-026, Protocol 2.38: lifecycle edits reduce into the replicated input
+/// labels and catalogue; a duplicate copies its source's strip and labels;
+/// availability is runtime state; malformed changes are refused.
+#[test]
+#[allow(clippy::too_many_lines)] // one scenario across every lifecycle edit
+fn input_lifecycle_changes_reduce_into_labels_catalogue_and_availability() {
+    use fm_protocol::{InputColorLabel, InputLifecycleOperation as Operation};
+    let wire = fm_protocol::WireInputId::from_domain;
+    let project = project(1);
+    let mut model = ClientModel::new(project);
+    let base = snapshot(project, 4);
+    model.install_snapshot(base.clone()).unwrap();
+    let engine = base.cursor.engine.clone();
+    let mut revision = 4;
+    let mut apply = |model: &mut ClientModel, operation: Operation, added: Vec<(InputId, &str)>| {
+        revision += 1;
+        model.apply_event(event(
+            project,
+            engine.clone(),
+            revision,
+            DurableChange::InputLifecycleChanged {
+                operation,
+                added: added
+                    .into_iter()
+                    .map(|(input, name)| (input, name.to_owned()))
+                    .collect(),
+            },
+        ))
+    };
+    apply(
+        &mut model,
+        Operation::SetCategories {
+            categories: vec![InputCategoryStatus {
+                id: 5,
+                name: "Cameras".into(),
+            }],
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    apply(
+        &mut model,
+        Operation::SetCategory {
+            input: wire(input(3)),
+            category: Some(5),
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    apply(
+        &mut model,
+        Operation::SetColor {
+            input: wire(input(3)),
+            color: Some(InputColorLabel::Blue),
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    apply(
+        &mut model,
+        Operation::SetPaused {
+            input: wire(input(3)),
+            paused: true,
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    // An unknown category, and a category list dropping one in use, are
+    // refused without changing the model.
+    assert_eq!(
+        apply(
+            &mut model,
+            Operation::SetCategory {
+                input: wire(input(2)),
+                category: Some(6),
+            },
+            Vec::new(),
+        ),
+        Err(ModelError::InvalidInputLifecycleChange)
+    );
+    let view = model.view().unwrap();
+    assert_eq!(view.input_categories.len(), 1);
+    let three = view.lifecycle(input(3));
+    assert_eq!(
+        (three.category, three.color, three.paused, three.closed),
+        (Some(5), Some(InputColorLabel::Blue), true, false)
+    );
+
+    // A duplicate is appended with the source's strip and labels.
+    model
+        .apply_event(event(
+            project,
+            engine.clone(),
+            9,
+            DurableChange::InputLifecycleChanged {
+                operation: Operation::Duplicate {
+                    source: wire(input(3)),
+                    input: wire(input(8)),
+                    name: None,
+                },
+                added: vec![(input(8), "Guest 2".into())],
+            },
+        ))
+        .unwrap();
+    let view = model.view().unwrap();
+    assert_eq!(view.inputs.last(), Some(&input(8)));
+    assert_eq!(view.input_names.last().map(String::as_str), Some("Guest 2"));
+    let copy = view.lifecycle(input(8));
+    assert_eq!(
+        (copy.category, copy.color, copy.paused),
+        (Some(5), Some(InputColorLabel::Blue), false)
+    );
+    assert_eq!(view.input_lifecycle.len(), view.inputs.len());
+
+    // A batch import appends every added input; a removal drops them.
+    model
+        .apply_event(event(
+            project,
+            engine.clone(),
+            10,
+            DurableChange::InputLifecycleChanged {
+                operation: Operation::Import { items: Vec::new() },
+                added: vec![(input(11), "Clip".into()), (input(12), "Clip 2".into())],
+            },
+        ))
+        .unwrap();
+    assert_eq!(model.view().unwrap().inputs.len(), 6);
+    model
+        .apply_runtime_input_availability(
+            input(11),
+            Some(fm_protocol::InputOfflineReason::DecodeFailed),
+        )
+        .unwrap();
+    assert_eq!(
+        model.view().unwrap().lifecycle(input(11)).offline,
+        Some(fm_protocol::InputOfflineReason::DecodeFailed)
+    );
+    assert!(
+        model
+            .apply_runtime_input_availability(input(99), None)
+            .is_err()
+    );
+    model
+        .apply_event(event(
+            project,
+            engine,
+            11,
+            DurableChange::InputLifecycleChanged {
+                operation: Operation::RemoveInputs {
+                    inputs: vec![wire(input(11)), wire(input(12))],
+                },
+                added: Vec::new(),
+            },
+        ))
+        .unwrap();
+    let view = model.view().unwrap();
+    assert_eq!(view.inputs, [input(1), input(2), input(3), input(8)]);
+    assert!(
+        view.input_lifecycle
+            .iter()
+            .all(|status| status.offline.is_none())
+    );
 }

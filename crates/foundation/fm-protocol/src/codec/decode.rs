@@ -396,6 +396,7 @@ fn decode_input_catalogue_command(
     })
 }
 
+#[allow(clippy::too_many_lines)] // one dispatch over every command payload
 fn decode_command_payload(
     fields: &mut Fields,
     payload_name: String,
@@ -433,6 +434,18 @@ fn decode_command_payload(
             kind: decode_auto_transition_kind(fields.required("kind")?, "kind")?,
             duration_frames: fields.parse_required("duration_frames")?,
         },
+        lifecycle @ ("input_duplicate"
+        | "input_replace_source"
+        | "input_category_set"
+        | "input_color_set"
+        | "input_pause_set"
+        | "input_close_set"
+        | "input_categories_set"
+        | "input_import_batch"
+        | "inputs_remove") => CommandPayload::InputLifecycle(
+            super::input_lifecycle::decode_lifecycle_operation(lifecycle, fields)?
+                .expect("every listed payload is a lifecycle operation"),
+        ),
         media if media.starts_with("media_") => {
             let input = fields.canonical_input("input")?;
             let operation =
@@ -1459,6 +1472,9 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
                     value,
                 })?
         },
+        input_categories: super::input_lifecycle::decode_categories(
+            &fields.required("input_categories")?,
+        )?,
     })
 }
 
@@ -1999,6 +2015,7 @@ fn decode_media_changed(fields: &mut Fields) -> Result<EventPayload, CodecError>
     })
 }
 
+#[allow(clippy::too_many_lines)] // one dispatch over every event
 fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
     let event = fields.required("event")?;
     let payload = match event.as_str() {
@@ -2041,6 +2058,18 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             active: fields.boolean("active")?,
         },
         "media_changed" => decode_media_changed(fields)?,
+        "input_lifecycle_changed" => {
+            let operation = fields.required("operation")?;
+            EventPayload::InputLifecycleChanged {
+                operation: super::input_lifecycle::decode_lifecycle_operation(&operation, fields)?
+                    .ok_or(CodecError::InvalidField {
+                        field: "operation",
+                        value: operation,
+                    })?,
+                added: super::input_lifecycle::decode_added(&fields.required("added")?)?,
+                refused: super::input_lifecycle::decode_refused(&fields.required("refused")?)?,
+            }
+        }
         "transition_favorite_changed" => EventPayload::TransitionFavoriteChanged {
             slot: decode_favorite_slot(fields.required("slot")?, "slot")?,
             favorite: decode_favorite(&fields.required("favorite")?, "favorite")?,
@@ -2298,6 +2327,22 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
                 disposition,
             }
         }
+        "input_availability" => RuntimeLifecycleEvent::InputAvailability {
+            input: fields.canonical_input("input")?,
+            offline: {
+                let value = fields.required("offline")?;
+                if value == "-" {
+                    None
+                } else {
+                    Some(crate::InputOfflineReason::from_token(&value).ok_or(
+                        CodecError::InvalidField {
+                            field: "offline",
+                            value,
+                        },
+                    )?)
+                }
+            },
+        },
         "superseded" => RuntimeLifecycleEvent::Superseded {
             by_revision: fields.parse_required("by_revision")?,
         },

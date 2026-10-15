@@ -2366,8 +2366,45 @@ fn intent_payload(
                 input: WireInputId::from_domain(input),
             }
         }
+        StudioIntent::InputLifecycle(operation) => {
+            let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
+            check_input_lifecycle(view, &operation)?;
+            CommandPayload::InputLifecycle(operation)
+        }
     };
     Ok(payload)
+}
+
+/// Refuses an input lifecycle command whose inputs the latest state
+/// contradicts before sending it: an edited, duplicated, or removed input
+/// that no longer exists, or a new input whose identifier is already used.
+fn check_input_lifecycle(
+    view: &ClientView,
+    operation: &fm_protocol::InputLifecycleOperation,
+) -> Result<(), String> {
+    use fm_protocol::InputLifecycleOperation as Op;
+    let exists = |input: &WireInputId| view.inputs.contains(&input.to_domain());
+    let (existing, fresh): (Vec<&WireInputId>, Vec<&WireInputId>) = match operation {
+        Op::Duplicate { source, input, .. } => (vec![source], vec![input]),
+        Op::ReplaceSource { input, .. }
+        | Op::SetCategory { input, .. }
+        | Op::SetColor { input, .. }
+        | Op::SetPaused { input, .. }
+        | Op::SetClosed { input, .. } => (vec![input], Vec::new()),
+        Op::SetCategories { .. } => (Vec::new(), Vec::new()),
+        Op::Import { items } => (Vec::new(), items.iter().map(|item| &item.input).collect()),
+        Op::RemoveInputs { inputs } => (inputs.iter().collect(), Vec::new()),
+    };
+    if !existing.into_iter().all(exists) {
+        return Err("Input no longer exists".to_owned());
+    }
+    if let Some(input) = fresh.into_iter().find(|input| exists(input)) {
+        return Err(format!(
+            "Input {} already exists; try again for a fresh id",
+            input.to_domain()
+        ));
+    }
+    Ok(())
 }
 
 /// The protocol command for one Playlist tab action. Starts are immediate;
@@ -2921,6 +2958,7 @@ mod tests {
             inputs: vec![InputStatus {
                 input,
                 name: "i".into(),
+                lifecycle: fm_protocol::InputLifecycleStatus::default(),
             }],
             outputs: Vec::new(),
             input_audio_strips: vec![InputAudioStripStatus {
@@ -2967,6 +3005,7 @@ mod tests {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         }
     }
@@ -4427,6 +4466,7 @@ mod tests {
         )));
         peer.send(&WireMessage::Snapshot(SnapshotMessage {
             media_states: 1,
+            input_categories: Vec::new(),
             ..heartbeat_snapshot()
         }));
         peer.send(&WireMessage::MediaState(fm_protocol::MediaStateMessage {
@@ -4923,6 +4963,114 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one table of operations
+    fn input_lifecycle_intents_map_to_lifecycle_payloads() {
+        use fm_protocol::{
+            ImportItemSpec, InputColorLabel, InputLifecycleOperation as Op, WireInputSource,
+        };
+        let project = ProjectId::new(NonZeroU128::new(7).unwrap());
+        let mut model = ClientModel::new(project);
+        model
+            .install_snapshot(ProjectSnapshot::from_protocol(
+                project,
+                heartbeat_snapshot(),
+            ))
+            .unwrap();
+        let view = model.view().unwrap();
+        let existing = WireInputId::from_domain(view.inputs[0]);
+        let fresh = WireInputId::new(NonZeroU128::new(90).unwrap());
+        let send =
+            |operation: Op| intent_payload(StudioIntent::InputLifecycle(operation), Some(&view));
+        for operation in [
+            Op::Duplicate {
+                source: existing,
+                input: fresh,
+                name: None,
+            },
+            Op::ReplaceSource {
+                input: existing,
+                source: WireInputSource::Media {
+                    uri: "/media/clip.mov".into(),
+                },
+            },
+            Op::SetCategory {
+                input: existing,
+                category: None,
+            },
+            Op::SetColor {
+                input: existing,
+                color: Some(InputColorLabel::Teal),
+            },
+            Op::SetPaused {
+                input: existing,
+                paused: true,
+            },
+            Op::SetClosed {
+                input: existing,
+                closed: true,
+            },
+            Op::SetCategories {
+                categories: vec![fm_protocol::InputCategoryStatus {
+                    id: 1,
+                    name: "Cameras".into(),
+                }],
+            },
+            Op::Import {
+                items: vec![ImportItemSpec {
+                    input: fresh,
+                    name: None,
+                    uri: "/media/a.mov".into(),
+                }],
+            },
+            Op::RemoveInputs {
+                inputs: vec![existing],
+            },
+        ] {
+            assert_eq!(
+                send(operation.clone()),
+                Ok(CommandPayload::InputLifecycle(operation))
+            );
+        }
+        // An edited input that is gone, or a new id already in use, is
+        // refused before sending.
+        assert_eq!(
+            send(Op::SetPaused {
+                input: fresh,
+                paused: true
+            }),
+            Err("Input no longer exists".to_owned())
+        );
+        assert_eq!(
+            send(Op::Duplicate {
+                source: fresh,
+                input: WireInputId::new(NonZeroU128::new(91).unwrap()),
+                name: None,
+            }),
+            Err("Input no longer exists".to_owned())
+        );
+        assert!(
+            send(Op::Import {
+                items: vec![ImportItemSpec {
+                    input: existing,
+                    name: None,
+                    uri: "/media/a.mov".into(),
+                }],
+            })
+            .unwrap_err()
+            .contains("already exists")
+        );
+        assert!(
+            intent_payload(
+                StudioIntent::InputLifecycle(Op::SetCategories {
+                    categories: Vec::new()
+                }),
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn catalogue_commands_publish_pending_requests_and_refusal_reasons() {
         let project = ProjectId::new(NonZeroU128::new(1).unwrap());
         let mut client = Client::new(crate::native_client_config(
@@ -5155,6 +5303,7 @@ mod tests {
         snapshot.inputs.push(InputStatus {
             input: second,
             name: "clip".into(),
+            lifecycle: fm_protocol::InputLifecycleStatus::default(),
         });
         snapshot.input_audio_strips.push(InputAudioStripStatus {
             input: second,
@@ -5776,6 +5925,7 @@ mod tests {
             snapshot.inputs.push(InputStatus {
                 input: title_input(),
                 name: "Lower third".into(),
+                lifecycle: fm_protocol::InputLifecycleStatus::default(),
             });
             let mut strip = snapshot.input_audio_strips[0];
             strip.input = title_input();
@@ -6212,6 +6362,7 @@ mod tests {
             peer.send(&WireMessage::Snapshot(SnapshotMessage {
                 animation_preset_states: 1,
                 media_states: 0,
+                input_categories: Vec::new(),
                 transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
                 ..title_snapshot()
             }));

@@ -69,6 +69,7 @@ fn input_statuses() -> Vec<fm_protocol::InputStatus> {
         .map(|(value, name)| fm_protocol::InputStatus {
             input: input(value),
             name: name.into(),
+            lifecycle: fm_protocol::InputLifecycleStatus::default(),
         })
         .collect()
 }
@@ -170,6 +171,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     }
 }

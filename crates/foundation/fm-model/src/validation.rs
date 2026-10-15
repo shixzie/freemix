@@ -54,6 +54,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_inputs(project, &mut errors);
     validate_input_audio_strips(project, &mut errors);
     validate_input_locks(project, &mut errors);
+    validate_input_lifecycle(project, &mut errors);
     validate_playlist(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
@@ -134,6 +135,59 @@ fn validate_input_locks(project: &Project, errors: &mut Vec<ValidationError>) {
                 field: "locked_inputs",
                 kind: ValidationErrorKind::MissingReference(EntityRef::Input(input)),
             });
+        }
+    }
+}
+
+/// Validates the category list and every lifecycle entry's input and
+/// category reference (IN-026).
+fn validate_input_lifecycle(project: &Project, errors: &mut Vec<ValidationError>) {
+    use crate::InputLifecycleError as Error;
+    if let Err(error) = crate::validate_input_categories(project.input_categories()) {
+        let (field, kind) = match error {
+            Error::DuplicateCategoryId(_) => {
+                ("input_categories.id", ValidationErrorKind::DuplicateId)
+            }
+            Error::DuplicateCategoryName(_) => {
+                ("input_categories.name", ValidationErrorKind::DuplicateName)
+            }
+            Error::EmptyCategoryName => ("input_categories.name", ValidationErrorKind::Empty),
+            Error::CategoryNameTooLong { .. } | Error::CategoryNameControlCharacter => {
+                ("input_categories.name", ValidationErrorKind::OutOfRange)
+            }
+            Error::TooManyCategories { .. }
+            | Error::UnknownInput(_)
+            | Error::UnknownCategory(_)
+            | Error::CategoryInUse { .. } => ("input_categories", ValidationErrorKind::OutOfRange),
+        };
+        push_error(errors, None, field, kind);
+    }
+    for (input, lifecycle) in project.input_lifecycles() {
+        let entity = Some(EntityRef::Input(*input));
+        if !project
+            .inputs()
+            .iter()
+            .any(|candidate| candidate.id == *input)
+        {
+            push_error(
+                errors,
+                entity,
+                "input_lifecycle.input",
+                ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            );
+        }
+        if let Some(category) = lifecycle.category
+            && !project
+                .input_categories()
+                .iter()
+                .any(|candidate| candidate.id == category)
+        {
+            push_error(
+                errors,
+                entity,
+                "input_lifecycle.category",
+                ValidationErrorKind::OutOfRange,
+            );
         }
     }
 }

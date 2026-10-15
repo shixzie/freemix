@@ -2,6 +2,7 @@ mod animation_preset;
 mod decoder;
 mod encoder;
 mod grade;
+mod input_lifecycle;
 mod media_playback;
 mod scene_animation;
 mod transition_favorite;

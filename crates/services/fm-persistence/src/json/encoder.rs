@@ -114,6 +114,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     super::grade::write_grading(output, project.grading());
     super::animation_preset::write_animation_presets(output, project.animation_presets());
     super::transition_favorite::write_transition_favorites(output, project.transition_favorites());
+    super::input_lifecycle::write_input_lifecycle(output, project);
     output.push_str("\n  },");
 }
 

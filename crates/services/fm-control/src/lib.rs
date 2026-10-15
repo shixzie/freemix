@@ -5,7 +5,7 @@
 //! compose durable storage without coupling it to a transport.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     convert::Infallible,
     error::Error,
     fmt,
@@ -18,12 +18,17 @@ use std::{
 mod animation_preset;
 mod automation;
 mod grade;
+mod input_lifecycle;
 mod media;
 mod playlist;
 mod scene_animation;
 mod title_animation;
 mod title_layout;
 mod transition;
+pub use input_lifecycle::{
+    engine_edit as engine_input_lifecycle_edit, media_offline_reason, model_color, model_source,
+    wire_color, wire_lifecycle, wire_operation as wire_input_lifecycle_operation, wire_source,
+};
 pub use media::{
     domain_media_operation, wire_media_events, wire_media_fault, wire_media_operation,
     wire_media_status,
@@ -278,7 +283,7 @@ enum PreparedSubmissionKind {
         /// The wire payload that replays this acceptance on a fresh engine:
         /// the resolved edit for undo and redo, which a restored engine with
         /// empty history could not resolve again.
-        replay_payload: Option<CommandPayload>,
+        replay_payload: Option<Box<CommandPayload>>,
     },
     AuthorizationDenial {
         /// False when the key already owns a durable engine receipt, which a
@@ -332,7 +337,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                 replay_payload: Some(payload),
                 ..
             } if self.submission.is_accepted() => CommandMessage {
-                payload: payload.clone(),
+                payload: payload.as_ref().clone(),
                 ..message.clone()
             },
             PreparedSubmissionKind::Engine { .. }
@@ -498,7 +503,11 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                             command,
                         });
                 }
-                control.snapshot = snapshot_record(&control.engine, &control.identity);
+                control
+                    .input_offline
+                    .retain(|input, _| control.engine.show().inputs().contains(input));
+                control.snapshot =
+                    snapshot_record(&control.engine, &control.identity, &control.input_offline);
 
                 let live_events = submission
                     .output
@@ -760,6 +769,9 @@ pub struct ControlService<A = Policy> {
     /// End triggers fired since the authority last took them, oldest first
     /// (bounded by [`MAX_PENDING_MEDIA_END_TRIGGERS`]).
     media_end_triggers: Vec<MediaEndTrigger>,
+    /// Inputs whose source is unavailable, and why (IN-026): runtime state
+    /// reported by media faults and by the media plane.
+    input_offline: BTreeMap<InputId, fm_protocol::InputOfflineReason>,
 }
 
 /// How many fired media end triggers wait for the authority at most; older
@@ -793,7 +805,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             state_epoch: engine.state_epoch().get(),
             log_id: log_id.into(),
         };
-        let snapshot = snapshot_record(&engine, &identity);
+        let snapshot = snapshot_record(&engine, &identity, &BTreeMap::new());
         Self {
             engine,
             authorizer,
@@ -812,7 +824,69 @@ impl<A: AuthorizationHook> ControlService<A> {
             runtime_sequence: 0,
             media_published: HashMap::new(),
             media_end_triggers: Vec::new(),
+            input_offline: BTreeMap::new(),
         }
+    }
+
+    /// Every input whose source is unavailable, and why (IN-026).
+    #[must_use]
+    pub const fn input_offline(&self) -> &BTreeMap<InputId, fm_protocol::InputOfflineReason> {
+        &self.input_offline
+    }
+
+    /// Records that input `input`'s source is unavailable for `offline`, or
+    /// available again (`None`), as the media plane observes it (IN-026).
+    /// A change refreshes the snapshot and returns the published
+    /// `input_availability` runtime event; an unchanged state or an input
+    /// outside the show returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a server identity mismatch or an exhausted runtime sequence.
+    pub fn set_input_offline(
+        &mut self,
+        server: &ServerIdentity,
+        input: InputId,
+        offline: Option<fm_protocol::InputOfflineReason>,
+    ) -> Result<Option<RuntimeEventMessage>, ControlError> {
+        if server.engine_id != self.identity.engine_id
+            || server.state_epoch != self.identity.state_epoch
+            || server.log_id != self.identity.log_id
+        {
+            return Err(ControlError::ServerIdentityMismatch);
+        }
+        if !self.engine.show().inputs().contains(&input)
+            || self.input_offline.get(&input).copied() == offline
+        {
+            return Ok(None);
+        }
+        let event = self.availability_event(server, input, offline)?;
+        self.snapshot = snapshot_record(&self.engine, &self.identity, &self.input_offline);
+        let _ = self.publish(&[LiveEvent::Runtime(event.clone())]);
+        Ok(Some(event))
+    }
+
+    fn availability_event(
+        &mut self,
+        server: &ServerIdentity,
+        input: InputId,
+        offline: Option<fm_protocol::InputOfflineReason>,
+    ) -> Result<RuntimeEventMessage, ControlError> {
+        match offline {
+            Some(reason) => self.input_offline.insert(input, reason),
+            None => self.input_offline.remove(&input),
+        };
+        let revision = self.engine.revision().get();
+        let generation = self.engine.runtime_generation().get();
+        self.runtime_event(
+            server,
+            revision,
+            generation,
+            RuntimeLifecycleEvent::InputAvailability {
+                input: WireInputId::from_domain(input),
+                offline,
+            },
+        )
     }
 
     /// Takes the media end triggers fired since the last call, oldest first.
@@ -861,6 +935,20 @@ impl<A: AuthorizationHook> ControlService<A> {
         source: Option<fm_engine::EngineMediaSource>,
     ) -> Result<(), fm_engine::EngineMediaError> {
         self.engine.set_media_source(input, source)
+    }
+
+    /// Input `input`'s lifecycle: category, colour label, pause, and close
+    /// (IN-026).
+    #[must_use]
+    pub fn input_lifecycle(&self, input: InputId) -> fm_model::InputLifecycle {
+        self.engine.show().input_lifecycle(input)
+    }
+
+    /// Whether media input `input` plays from an open source (see
+    /// [`Engine::media_source_open`]).
+    #[must_use]
+    pub fn media_source_open(&self, input: InputId) -> bool {
+        self.engine.media_source_open(input)
     }
 
     /// Reports an external source's growth or completion (see
@@ -1239,7 +1327,10 @@ impl<A: AuthorizationHook> ControlService<A> {
         }
 
         let command = engine_command(&message.payload);
-        let replay_payload = history_target.as_ref().and_then(wire_edit_payload);
+        let replay_payload = history_target
+            .as_ref()
+            .and_then(wire_edit_payload)
+            .map(Box::new);
         let executed = history_target.unwrap_or_else(|| command.clone());
         match self
             .engine
@@ -1389,6 +1480,22 @@ impl<A: AuthorizationHook> ControlService<A> {
         if !publish {
             return Ok(events);
         }
+        // A media fault takes its input offline; a source that plays again
+        // brings it back (IN-026).
+        for media_frame in &frame.media {
+            let offline = match (media_frame.faulted, &media_frame.tick) {
+                (Some(fault), _) => Some(Some(input_lifecycle::media_offline_reason(fault))),
+                (None, Some(_)) if self.input_offline.contains_key(&media_frame.input) => {
+                    Some(None)
+                }
+                _ => None,
+            };
+            if let Some(offline) = offline
+                && self.input_offline.get(&media_frame.input).copied() != offline
+            {
+                events.push(self.availability_event(server, media_frame.input, offline)?);
+            }
+        }
         let frames_per_second = u64::from(self.engine.frame_rate().numerator())
             .div_ceil(u64::from(self.engine.frame_rate().denominator()));
         let revision = self.engine.revision().get();
@@ -1508,7 +1615,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             .map_err(TickWithRealizerError::Tick)?,
         );
 
-        self.snapshot = snapshot_record(&self.engine, &self.identity);
+        self.snapshot = snapshot_record(&self.engine, &self.identity, &self.input_offline);
         let live_events = runtime_events
             .iter()
             .cloned()
@@ -1636,7 +1743,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::TitleAnimation(_)
         | EngineCommand::SceneAnimation(_)
         | EngineCommand::AnimationPreset(_)
-        | EngineCommand::SetTransitionFavorite { .. } => "project",
+        | EngineCommand::SetTransitionFavorite { .. }
+        | EngineCommand::InputLifecycle(_) => "project",
         EngineCommand::SetInputAudioStrip { .. } => "audio",
         EngineCommand::Media(_) => "media",
         _ => "switcher",
@@ -1703,7 +1811,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::Redo { .. }
         | CommandPayload::SetEditLock { .. }
         | CommandPayload::SetTitleFields { .. }
-        | CommandPayload::SetPlaylist { .. } => CommandClass::EditProject,
+        | CommandPayload::SetPlaylist { .. }
+        | CommandPayload::InputLifecycle(_) => CommandClass::EditProject,
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
@@ -1819,6 +1928,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         }
         CommandPayload::Media { input, operation } => {
             media::media_engine_command(*input, *operation)
+        }
+        CommandPayload::InputLifecycle(operation) => {
+            EngineCommand::InputLifecycle(input_lifecycle::engine_edit(operation))
         }
         payload @ (CommandPayload::Stinger { .. }
         | CommandPayload::ConfigureStinger { .. }
@@ -2230,6 +2342,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
             included: *included,
         },
         EngineCommand::Grade(edit) => grade::wire_grade_payload(edit),
+        EngineCommand::InputLifecycle(edit) => {
+            CommandPayload::InputLifecycle(input_lifecycle::wire_operation(edit))
+        }
         EngineCommand::SetTransitionFavorite { slot, favorite } => {
             CommandPayload::SetTransitionFavorite {
                 slot: *slot,
@@ -2547,6 +2662,19 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     }) {
         return media::media_changed(engine, input, frame, operation);
     }
+    if let Some(payload) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::InputLifecycleChanged {
+            edit,
+            added,
+            refused,
+        } = &event.payload
+        else {
+            return None;
+        };
+        Some(input_lifecycle::lifecycle_changed(edit, added, refused))
+    }) {
+        return payload;
+    }
     if let Some(slot) = outcome.events.iter().find_map(|event| {
         let EngineEvent::TransitionFavoriteChanged { slot } = &event.payload else {
             return None;
@@ -2703,7 +2831,11 @@ fn project_engine(engine: &Engine, ticks: u64) -> Result<EngineSnapshot, EngineE
     projected.snapshot().map_err(EngineError::from)
 }
 
-fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord {
+fn snapshot_record(
+    engine: &Engine,
+    identity: &EngineIdentity,
+    offline: &BTreeMap<InputId, fm_protocol::InputOfflineReason>,
+) -> SnapshotRecord {
     let snapshot = SnapshotMessage {
         engine: identity.clone(),
         revision: engine.revision().get(),
@@ -2717,6 +2849,7 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
             .map(|(input, name)| InputStatus {
                 input: WireInputId::from_domain(input),
                 name,
+                lifecycle: input_lifecycle::wire_lifecycle(engine.show(), input, offline),
             })
             .collect(),
         outputs: engine
@@ -2767,6 +2900,7 @@ fn snapshot_record(engine: &Engine, identity: &EngineIdentity) -> SnapshotRecord
         animation_preset_states: animation_preset::animation_preset_state_count(engine),
         transition_favorites: transition::wire_favorites(engine),
         media_states: media::media_state_count(engine),
+        input_categories: input_lifecycle::wire_categories(engine.show()),
     };
     SnapshotRecord {
         cursor: EventCursor {

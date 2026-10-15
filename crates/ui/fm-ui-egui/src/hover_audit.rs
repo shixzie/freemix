@@ -6,8 +6,10 @@
 //! The audit renders the real [`StudioShell`] headlessly over rich fixtures
 //! (each side tab, including the Media tab's transport bars, every dialog, the advanced controls behind each
 //! disclosure, a session without permissions, a live manual transition, a
-//! locked project, Fade-to-Black and a running playlist, toasts, and a
-//! disconnected console) in English
+//! locked project, Fade-to-Black and a running playlist, toasts, the input
+//! lifecycle (colour labels, badges, the category filter, the tile menu's
+//! Category and Colour label submenus, and the Replace source, Import
+//! files, and Categories dialogs), and a disconnected console) in English
 //! and Spanish, and inspects what egui itself recorded for the pass, so no
 //! drawing code has to opt in and a widget added without help cannot slip
 //! past:
@@ -122,6 +124,40 @@ fn output(value: u128) -> WireOutputId {
     WireOutputId::new(NonZeroU128::new(value).unwrap())
 }
 
+/// The input lifecycle of fixture input `value` (IN-026): filed cameras
+/// with colour labels, a paused guest, an offline clip, and a closed
+/// slides input, so the tiles show every badge and the bank its filter.
+fn lifecycle(value: u128) -> fm_protocol::InputLifecycleStatus {
+    use fm_protocol::{InputColorLabel, InputLifecycleStatus, InputOfflineReason};
+    match value {
+        1 => InputLifecycleStatus {
+            category: Some(1),
+            color: Some(InputColorLabel::Red),
+            ..InputLifecycleStatus::default()
+        },
+        2 => InputLifecycleStatus {
+            category: Some(1),
+            color: Some(InputColorLabel::Blue),
+            ..InputLifecycleStatus::default()
+        },
+        3 => InputLifecycleStatus {
+            closed: true,
+            ..InputLifecycleStatus::default()
+        },
+        4 => InputLifecycleStatus {
+            paused: true,
+            color: Some(InputColorLabel::Teal),
+            ..InputLifecycleStatus::default()
+        },
+        5 => InputLifecycleStatus {
+            category: Some(2),
+            offline: Some(InputOfflineReason::SourceMissing),
+            ..InputLifecycleStatus::default()
+        },
+        _ => InputLifecycleStatus::default(),
+    }
+}
+
 /// A synchronized show that exercises every console region: five sources
 /// and a title, two outputs and stream targets, two Stinger slots, an
 /// overlay on air with a queue, undo and redo history, and a playlist.
@@ -195,6 +231,7 @@ fn model(variant: Variant) -> ClientModel {
             .map(|value| InputStatus {
                 input: wire(value),
                 name: names[usize::try_from(value).unwrap() - 1].into(),
+                lifecycle: lifecycle(value),
             })
             .collect(),
         outputs: vec![
@@ -284,6 +321,16 @@ fn model(variant: Variant) -> ClientModel {
         grade_states: 4,
         animation_preset_states: 0,
         media_states: 2,
+        input_categories: vec![
+            fm_protocol::InputCategoryStatus {
+                id: 1,
+                name: "Cameras".into(),
+            },
+            fm_protocol::InputCategoryStatus {
+                id: 2,
+                name: "Playback".into(),
+            },
+        ],
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     };
     let mut model = ClientModel::new(project);
@@ -775,6 +822,13 @@ fn scenes(language: Language) -> Vec<Scene> {
             },
         ),
     ));
+    scenes.push(Scene::console(
+        "operator/bank-filtered",
+        shell(&|shell| {
+            shell.lifecycle.filter = crate::input_lifecycle::BankFilter::Category(1);
+        }),
+        ready(true, Variant::default()),
+    ));
     scenes.push(Scene::console("operator/notices", shell(&|_| {}), {
         let mut state = ready(true, Variant::default());
         state.notice = Some("saved".into());
@@ -783,7 +837,7 @@ fn scenes(language: Language) -> Vec<Scene> {
         state
     }));
     let operator = ready(true, Variant::default());
-    let dialogs: [(&str, Configure); 6] = [
+    let dialogs: [(&str, Configure); 11] = [
         ("shortcuts", &|shell| shell.show_shortcuts = true),
         ("about", &|shell| shell.show_about = true),
         ("preferences", &|shell| shell.show_preferences = true),
@@ -793,6 +847,32 @@ fn scenes(language: Language) -> Vec<Scene> {
         }),
         ("rename", &|shell| {
             shell.rename_draft = Some(crate::RenameDraft::new(input(2), "Camera 2"));
+        }),
+        // IN-026: Replace source on a colour, then on a typed media path
+        // (its text field), batch import with and without paths, and the
+        // category list with a typed new name.
+        ("replace-source", &|shell| {
+            shell.open_replace_source(input(2), "Camera 2");
+        }),
+        ("replace-source-media", &|shell| {
+            shell.open_replace_source(input(2), "Camera 2");
+            if let Some(draft) = shell.lifecycle.replace.as_mut() {
+                draft.kind = crate::input_lifecycle::SourceKind::Media;
+                draft.text = "/media/opener.mov".into();
+            }
+        }),
+        ("import-files", &|shell| shell.open_import(&operator)),
+        ("import-files-listed", &|shell| {
+            shell.open_import(&operator);
+            if let Some(draft) = shell.lifecycle.import.as_mut() {
+                draft.text = "/media/a.mov\n/media/b.mov".into();
+            }
+        }),
+        ("categories", &|shell| {
+            shell.open_categories(&operator);
+            if let Some(draft) = shell.lifecycle.categories.as_mut() {
+                draft.new_name = "Graphics".into();
+            }
         }),
     ];
     for (name, open) in dialogs {

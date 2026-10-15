@@ -73,6 +73,7 @@ struct ProjectDto {
     grading: ProjectGrading,
     animation_presets: fm_model::AnimationPresetLibrary,
     transition_favorites: fm_model::TransitionFavorites,
+    input_lifecycle: super::input_lifecycle::ParsedInputLifecycle,
 }
 
 struct EditLocks {
@@ -116,6 +117,7 @@ impl ProjectDto {
             transition_favorites: super::transition_favorite::parse_transition_favorites(
                 &mut object,
             )?,
+            input_lifecycle: super::input_lifecycle::parse_input_lifecycle(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -193,6 +195,12 @@ impl ProjectDto {
         // validation.
         project.set_animation_presets(self.animation_presets);
         project.set_transition_favorites(self.transition_favorites);
+        // Category bounds and dangling input or category references are
+        // reported by project validation.
+        project.restore_input_categories(self.input_lifecycle.categories);
+        for (input, lifecycle) in self.input_lifecycle.entries {
+            project.restore_input_lifecycle(input, lifecycle);
+        }
         project
     }
 }

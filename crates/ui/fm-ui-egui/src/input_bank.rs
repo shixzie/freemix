@@ -4,18 +4,25 @@
 //! source on Preview and then cuts it to Program, using only the existing
 //! Preview-selection and Cut intents under their usual gates. A `+` tile at
 //! the end of the bank opens the Add input dialog; the tile menu offers
-//! Remove with a confirmation step.
+//! Remove with a confirmation step and the input lifecycle actions
+//! (`input_lifecycle`). A toolbar above the tiles filters them by category;
+//! hidden tiles keep their bank position and number key.
 
 use egui::{
     Align2, Color32, CornerRadius, FontFamily, FontId, Rect, RichText, ScrollArea, Sense, Stroke,
     StrokeKind, Ui, Vec2, pos2,
 };
-use fm_protocol::{MonitorFrameOrigin, MonitorTap, WireInputId};
+use fm_protocol::{
+    InputCategoryStatus, InputLifecycleStatus, MonitorFrameOrigin, MonitorTap, WireInputId,
+};
 use fm_types::{InputId, MAX_INPUT_NAME_BYTES};
 use fm_ui_model::{EditLocks, SwitcherState};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::input_catalogue::{CatalogueAvailability, MAX_LIVE_INPUTS};
+use crate::input_lifecycle::{
+    LifecycleMenu, label_color, lifecycle_badges, tile_status_line, visible_inputs,
+};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::{FrameFacts, MonitorPicture, letterbox, picture_visible};
 use crate::theme::{
@@ -249,6 +256,8 @@ impl StudioShell {
             }
         });
         ui.add_space(2.0);
+        self.draw_bank_toolbar(ui, state);
+        ui.add_space(2.0);
 
         let gate = TransitionGate::from_state(state);
         let enabled = preview_selection_available(gate, state.can_select_preview);
@@ -274,10 +283,12 @@ impl StudioShell {
                 };
                 let spacing = 8.0;
                 let available = ui.available_width() - 4.0;
-                // The `+` tile takes one more grid cell after the inputs.
-                let cells = view.inputs.len() + 1;
+                // The filter hides tiles but each keeps its bank position;
+                // the `+` tile takes one more grid cell after the inputs.
+                let mut cell_indices = visible_inputs(view, self.lifecycle.filter);
+                cell_indices.push(view.inputs.len());
+                let cells = cell_indices.len();
                 let (columns, tile_width) = bank_grid(available, bank_height, cells, spacing);
-                let cell_indices: Vec<usize> = (0..cells).collect();
                 for row in cell_indices.chunks(columns) {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = spacing;
@@ -301,6 +312,8 @@ impl StudioShell {
                                         count: view.inputs.len(),
                                         width: tile_width,
                                         tally: tally_state(input, view.switcher),
+                                        lifecycle: view.lifecycle(input),
+                                        categories: &view.input_categories,
                                         thumbnail: thumbnail_tap(
                                             input,
                                             view.switcher,
@@ -389,6 +402,7 @@ impl StudioShell {
                     name,
                     tally,
                     thumbnail,
+                    lifecycle: tile.lifecycle,
                     enabled,
                     locked: tile.locked,
                     hovered: response.hovered(),
@@ -406,8 +420,9 @@ impl StudioShell {
             MonitorTap::Program => Msg::ThumbnailProgram,
             MonitorTap::Preview => Msg::ThumbnailPreview,
         }));
+        let status = tile_status_line(l, name, tile.lifecycle, tile.categories);
         let hover = format!(
-            "{name}\n{}\n{source}\n{}",
+            "{status}\n{}\n{source}\n{}",
             tally.operator_label(l),
             l.format(Msg::TileGestures, &[("shortcut", Arg::Str(&shortcut))])
         );
@@ -431,6 +446,7 @@ impl StudioShell {
         response.context_menu(|ui| {
             self.draw_tile_menu(
                 ui,
+                state,
                 tile,
                 TileReasons {
                     preview: preview_reason,
@@ -451,6 +467,7 @@ impl StudioShell {
             .ui(ui, |ui| {
                 self.draw_tile_menu(
                     ui,
+                    state,
                     tile,
                     TileReasons {
                         preview: preview_reason,
@@ -496,6 +513,7 @@ impl StudioShell {
     fn draw_tile_menu(
         &mut self,
         ui: &mut Ui,
+        state: &StudioUiState,
         tile: TileContext<'_>,
         reasons: TileReasons,
         intents: &mut Vec<StudioIntent>,
@@ -594,6 +612,18 @@ impl StudioShell {
         ) {
             self.open_color(Some(fm_ui_model::grade_editor::GradeTarget::Input(input)));
         }
+        ui.separator();
+        self.draw_lifecycle_menu(
+            ui,
+            state,
+            LifecycleMenu {
+                input,
+                name,
+                edit: (reorder_enabled, edit_reason),
+                mark: if locked { LOCKED_MARK } else { "" },
+            },
+            intents,
+        );
         ui.separator();
         let edit_mark = if locked { LOCKED_MARK } else { "" };
         let [left_lock, right_lock] = tile.move_locks;
@@ -1040,6 +1070,10 @@ struct TileContext<'a> {
     count: usize,
     width: f32,
     tally: crate::TallyState,
+    /// Category, colour label, pause, close, and offline state.
+    lifecycle: InputLifecycleStatus,
+    /// The project's categories, for the hover's category name.
+    categories: &'a [InputCategoryStatus],
     thumbnail: Option<(MonitorTap, MonitorPicture)>,
     enabled: bool,
     cut_enabled: bool,
@@ -1063,6 +1097,7 @@ struct TilePaint<'a> {
     name: &'a str,
     tally: crate::TallyState,
     thumbnail: Option<(MonitorTap, MonitorPicture)>,
+    lifecycle: InputLifecycleStatus,
     enabled: bool,
     locked: bool,
     hovered: bool,
@@ -1077,6 +1112,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         name,
         tally,
         thumbnail,
+        lifecycle,
         enabled,
         locked,
         hovered,
@@ -1155,6 +1191,23 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             crate::theme::faded(muted_color(), 0.7),
         );
     }
+    if lifecycle.closed {
+        // A closed input's source is released: dim whatever is shown.
+        painter.rect_filled(thumb, radius, Color32::from_black_alpha(150));
+    }
+    if let Some(label) = lifecycle.color {
+        // The colour label: a strip down the leading edge of the picture.
+        painter.rect_filled(
+            Rect::from_min_max(rect.min, pos2(rect.min.x + 4.0, thumb.max.y)),
+            CornerRadius {
+                nw: 4,
+                ne: 0,
+                sw: 0,
+                se: 0,
+            },
+            label_color(label),
+        );
+    }
     if has_tally {
         // Broadcast-style tally strip across the top edge.
         painter.rect_filled(
@@ -1186,6 +1239,17 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             text_dim_color(),
         );
     }
+    paint_lifecycle_badges(
+        ui,
+        &painter,
+        thumb,
+        lifecycle,
+        if tally_badge(tally).is_some() {
+            28.0
+        } else {
+            8.0
+        },
+    );
     if let Some(badge) = tally_badge(tally) {
         let galley = painter.layout_no_wrap(
             badge.to_owned(),
@@ -1271,6 +1335,37 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             Stroke::new(crate::theme::focus_ring_width(), accent_color()),
             StrokeKind::Outside,
         );
+    }
+}
+
+/// The lifecycle badges (OFFLINE, CLOSED, PAUSED) in a row along the
+/// picture's trailing top corner, `top` below its top edge.
+fn paint_lifecycle_badges(
+    ui: &Ui,
+    painter: &egui::Painter,
+    thumb: Rect,
+    lifecycle: InputLifecycleStatus,
+    top: f32,
+) {
+    let l = l10n::locale(ui.ctx());
+    let mut right = thumb.max.x - 6.0;
+    for badge in lifecycle_badges(lifecycle) {
+        let galley = painter.layout_no_wrap(
+            badge.text(l).to_owned(),
+            FontId::new(9.0, FontFamily::Proportional),
+            Color32::WHITE,
+        );
+        let badge_rect = Rect::from_min_size(
+            pos2(right - galley.size().x - 10.0, thumb.min.y + top),
+            Vec2::new(galley.size().x + 10.0, 15.0),
+        );
+        painter.rect_filled(badge_rect, CornerRadius::same(3), badge.color());
+        painter.galley(
+            badge_rect.center() - galley.size() / 2.0,
+            galley,
+            Color32::WHITE,
+        );
+        right = badge_rect.min.x - 4.0;
     }
 }
 

@@ -158,6 +158,7 @@ fn snapshot_locked(
         .map(|(value, name)| InputStatus {
             input: wire(value),
             name: name.to_owned(),
+            lifecycle: fm_protocol::InputLifecycleStatus::default(),
         })
         .collect(),
         outputs: Vec::new(),
@@ -191,6 +192,7 @@ fn snapshot_locked(
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     }))
 }

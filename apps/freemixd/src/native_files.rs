@@ -103,6 +103,9 @@ struct WorkerState {
     /// The last presented tick not yet collected, latest-wins.
     completed: Option<(Request, Option<CpuVideoFrame>, Option<AudioBlock>)>,
     reports: Vec<FileReport>,
+    /// The input is closed (IN-026): the worker releases its decoder, and
+    /// reopens the file once this clears.
+    closed: bool,
     shutdown: bool,
 }
 
@@ -124,6 +127,8 @@ struct Worker {
     requested: Option<Request>,
     /// The tick whose result the loop collected last.
     collected: Option<Request>,
+    /// The input is closed: its worker presents nothing (IN-026).
+    closed: bool,
 }
 
 /// The media-file inputs of one native daemon and their workers.
@@ -281,10 +286,19 @@ impl NativeMediaFiles {
             });
             let worker_shared = Arc::clone(&shared);
             let growing = settings.growing.is_some();
+            let reopen_adapter = adapter.clone();
             let thread = thread::Builder::new()
                 .name(format!("freemix-media-file-{input}"))
                 .spawn(move || {
-                    run_worker(&worker_shared, &mut player, growing, rate, clock_domain);
+                    let reopen = || reopen_adapter.open_playback(&path, config);
+                    run_worker(
+                        &worker_shared,
+                        Some(player),
+                        &reopen,
+                        growing,
+                        rate,
+                        clock_domain,
+                    );
                 })
                 .map_err(|error| format!("native media input {input} worker: {error}"))?;
             workers.insert(
@@ -294,6 +308,7 @@ impl NativeMediaFiles {
                     thread: Some(thread),
                     requested: None,
                     collected: None,
+                    closed: false,
                 },
             );
         }
@@ -335,6 +350,9 @@ impl NativeMediaFiles {
             let Some(worker) = self.workers.get_mut(&media.input) else {
                 continue;
             };
+            if worker.closed {
+                continue;
+            }
             let request = media.tick.clone().map(|tick| Request { frame, tick });
             let changed = request.is_some() && worker.requested != request;
             if !changed && !media.completion_requested {
@@ -358,12 +376,12 @@ impl NativeMediaFiles {
         let frame = projected.frame.get();
         let pending = projected.media.iter().any(|media| {
             self.workers.get(&media.input).is_some_and(|worker| {
-                media.tick.as_ref().is_some_and(|tick| {
-                    worker
-                        .collected
-                        .as_ref()
-                        .is_none_or(|collected| collected.frame != frame || collected.tick != *tick)
-                })
+                !worker.closed
+                    && media.tick.as_ref().is_some_and(|tick| {
+                        worker.collected.as_ref().is_none_or(|collected| {
+                            collected.frame != frame || collected.tick != *tick
+                        })
+                    })
             })
         });
         if !pending {
@@ -395,6 +413,29 @@ impl NativeMediaFiles {
             worker.collected = Some(request);
         }
         presented
+    }
+
+    /// Closes (`true`) or reopens (`false`) media-file input `input`
+    /// (IN-026): a closed input's worker releases its decoder, and reopens
+    /// the file when the input reopens. Returns whether the input has a
+    /// worker.
+    pub(crate) fn set_closed(&mut self, input: InputId, closed: bool) -> bool {
+        let Some(worker) = self.workers.get_mut(&input) else {
+            return false;
+        };
+        if worker.closed != closed {
+            worker.closed = closed;
+            worker.requested = None;
+            worker.collected = None;
+        }
+        let mut state = worker.shared.lock();
+        if state.closed != closed {
+            state.closed = closed;
+            state.request = None;
+            drop(state);
+            worker.shared.wake.notify_one();
+        }
+        true
     }
 
     /// Takes every worker's reports for the engine, in input order.
@@ -459,9 +500,11 @@ fn follow_growing_source(
     }
 }
 
+#[allow(clippy::too_many_lines)] // one worker loop: close, reopen, present
 fn run_worker(
     shared: &Shared,
-    player: &mut FilePlayer,
+    mut opened: Option<FilePlayer>,
+    reopen: &dyn Fn() -> Result<FilePlayer, FilePlaybackError>,
     growing: bool,
     rate: FrameRate,
     clock_domain: ClockDomainId,
@@ -469,6 +512,7 @@ fn run_worker(
     let second = Duration::from_secs(1);
     let mut next_refresh = Instant::now() + second;
     let mut faulted = false;
+    let mut released = false;
     let mut last_picture: Option<Arc<CpuVideoFrame>> = None;
     loop {
         let (request, complete) = {
@@ -476,6 +520,16 @@ fn run_worker(
             loop {
                 if state.shutdown {
                     return;
+                }
+                if state.closed != released {
+                    break;
+                }
+                if state.closed {
+                    state = shared
+                        .wake
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    continue;
                 }
                 if state.request.is_some() || state.complete {
                     break;
@@ -497,7 +551,43 @@ fn run_worker(
                         .unwrap_or_else(PoisonError::into_inner)
                 };
             }
+            if state.closed != released {
+                released = state.closed;
+                state.request = None;
+                state.completed = None;
+                if released {
+                    // Closing releases the decoder and its tool processes.
+                    drop(state);
+                    opened = None;
+                    last_picture = None;
+                    continue;
+                }
+                // Reopening opens the file again; a file that no longer
+                // opens takes the input offline through its fault.
+                drop(state);
+                match reopen() {
+                    Ok(player) => {
+                        opened = Some(player);
+                        faulted = false;
+                    }
+                    Err(error) => {
+                        faulted = true;
+                        shared
+                            .lock()
+                            .reports
+                            .push(FileReport::Fault(engine_fault(&error)));
+                    }
+                }
+                continue;
+            }
             (state.request.take(), std::mem::take(&mut state.complete))
+        };
+        let Some(player) = opened.as_mut() else {
+            // A file that did not reopen presents nothing.
+            if let Some(request) = request {
+                shared.lock().completed = Some((request, None, None));
+            }
+            continue;
         };
         let mut reports = Vec::new();
         if !faulted && growing {

@@ -105,6 +105,13 @@ pub(crate) trait DurableStore {
     fn discard_staged_title_animations(&self, _revision: u64, _uris: &[String]) -> AppResult<()> {
         Ok(())
     }
+
+    /// Copies the media file at host path `path` into the bundle's assets
+    /// and returns its `asset://` URI (IN-026 batch import and source
+    /// replacement). Stores without a bundle import nothing (`None`).
+    fn import_media_path(&self, _path: &std::path::Path) -> AppResult<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// Commits every staged template animation in `store`'s bundle through
@@ -162,6 +169,15 @@ impl<'store> DurableJournal<'store> {
 }
 
 impl DurableStore for DurableJournal<'_> {
+    fn import_media_path(&self, path: &std::path::Path) -> AppResult<Option<String>> {
+        let imported = self
+            .writer
+            .project_store()
+            .import_media_file(path)
+            .map_err(|error| AppFailure(format!("media file cannot be imported: {error}")))?;
+        Ok(Some(imported.asset_uri))
+    }
+
     fn record(
         &self,
         command: &CommandMessage,

@@ -2787,6 +2787,7 @@ fn input_add_and_remove_project_events_snapshots_history_and_journal() {
         Some(&InputStatus {
             input: WireInputId::from_domain(input(4)),
             name: "Slate".to_owned(),
+            lifecycle: fm_protocol::InputLifecycleStatus::default(),
         })
     );
     assert!(
@@ -5293,5 +5294,168 @@ fn media_commands_states_and_runtime_events_propagate_exactly() {
     assert_eq!(
         control.media_states()[0].status.transport.fault,
         Some(fm_protocol::MediaFault::DecodeFailed)
+    );
+}
+
+/// IN-026, Protocol 2.38: a media fault takes its input offline in the
+/// snapshot with one `input_availability` runtime event, a source that
+/// plays again brings it back, the media plane may report availability
+/// directly, and lifecycle commands are project edits replicated in the
+/// snapshot's input lifecycle and category list.
+#[test]
+#[allow(clippy::too_many_lines)] // one scenario from fault to replicated edits
+fn media_faults_take_inputs_offline_and_lifecycle_edits_replicate() {
+    let mut control = media_service();
+    let availability = |events: &[RuntimeEventMessage]| {
+        events
+            .iter()
+            .filter_map(|event| match &event.event {
+                RuntimeLifecycleEvent::InputAvailability { input, offline } => {
+                    Some((*input, *offline))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let lifecycle = |control: &ControlService, value: u128| {
+        control
+            .snapshot()
+            .snapshot
+            .inputs
+            .iter()
+            .find(|status| status.input == WireInputId::from_domain(input(value)))
+            .unwrap()
+            .lifecycle
+    };
+    control
+        .set_media_fault(input(2), fm_engine::EngineMediaFault::SourceMissing)
+        .unwrap();
+    let tick = control.tick(&server_identity()).unwrap();
+    assert_eq!(
+        availability(&tick.runtime_events),
+        [(
+            WireInputId::from_domain(input(2)),
+            Some(fm_protocol::InputOfflineReason::SourceMissing)
+        )]
+    );
+    assert_eq!(
+        lifecycle(&control, 2).offline,
+        Some(fm_protocol::InputOfflineReason::SourceMissing)
+    );
+    let tick = control.tick(&server_identity()).unwrap();
+    assert_eq!(availability(&tick.runtime_events), Vec::new());
+
+    // The source opens again and plays: the input is back.
+    control
+        .set_media_source(
+            input(2),
+            Some(fm_engine::EngineMediaSource::synthetic(
+                &fm_model::MediaPlaybackSettings::default(),
+                FrameRate::new(25, 1).unwrap(),
+            )),
+        )
+        .unwrap();
+    let tick = control.tick(&server_identity()).unwrap();
+    assert_eq!(
+        availability(&tick.runtime_events),
+        [(WireInputId::from_domain(input(2)), None)]
+    );
+    assert_eq!(lifecycle(&control, 2).offline, None);
+
+    // The media plane reports a lost device directly, once.
+    let event = control
+        .set_input_offline(
+            &server_identity(),
+            input(1),
+            Some(fm_protocol::InputOfflineReason::DeviceUnavailable),
+        )
+        .unwrap();
+    assert!(event.is_some());
+    assert!(
+        control
+            .set_input_offline(
+                &server_identity(),
+                input(1),
+                Some(fm_protocol::InputOfflineReason::DeviceUnavailable),
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        lifecycle(&control, 1).offline,
+        Some(fm_protocol::InputOfflineReason::DeviceUnavailable)
+    );
+
+    // Lifecycle commands are project edits replicated in the snapshot.
+    for (key, operation) in [
+        (
+            "categories",
+            fm_protocol::InputLifecycleOperation::SetCategories {
+                categories: vec![fm_protocol::InputCategoryStatus {
+                    id: 3,
+                    name: "Clips".into(),
+                }],
+            },
+        ),
+        (
+            "category",
+            fm_protocol::InputLifecycleOperation::SetCategory {
+                input: WireInputId::from_domain(input(2)),
+                category: Some(3),
+            },
+        ),
+        (
+            "colour",
+            fm_protocol::InputLifecycleOperation::SetColor {
+                input: WireInputId::from_domain(input(2)),
+                color: Some(fm_protocol::InputColorLabel::Yellow),
+            },
+        ),
+        (
+            "pause",
+            fm_protocol::InputLifecycleOperation::SetPaused {
+                input: WireInputId::from_domain(input(2)),
+                paused: true,
+            },
+        ),
+    ] {
+        let viewer = control
+            .submit(
+                &principal(Role::Viewer),
+                command(key, key, CommandPayload::InputLifecycle(operation.clone())),
+                0,
+            )
+            .unwrap();
+        assert!(!viewer.is_accepted(), "{key}");
+        let accepted = control
+            .submit(
+                &principal(Role::Admin),
+                command(
+                    &format!("{key}-admin"),
+                    &format!("{key}-admin"),
+                    CommandPayload::InputLifecycle(operation),
+                ),
+                0,
+            )
+            .unwrap();
+        assert!(accepted.is_accepted(), "{key}");
+        control.tick(&server_identity()).unwrap();
+    }
+    assert_eq!(
+        control.snapshot().snapshot.input_categories,
+        [fm_protocol::InputCategoryStatus {
+            id: 3,
+            name: "Clips".into(),
+        }]
+    );
+    let two = lifecycle(&control, 2);
+    assert_eq!(
+        (two.category, two.color, two.paused, two.closed),
+        (
+            Some(3),
+            Some(fm_protocol::InputColorLabel::Yellow),
+            true,
+            false
+        )
     );
 }

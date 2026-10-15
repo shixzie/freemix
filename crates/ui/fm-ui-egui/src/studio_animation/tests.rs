@@ -97,10 +97,12 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
             InputStatus {
                 input: wire(1),
                 name: "Cam 1".into(),
+                lifecycle: fm_protocol::InputLifecycleStatus::default(),
             },
             InputStatus {
                 input: wire(TITLE),
                 name: "Lower third".into(),
+                lifecycle: fm_protocol::InputLifecycleStatus::default(),
             },
         ],
         outputs: Vec::new(),
@@ -139,6 +141,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         grade_states: 0,
         animation_preset_states: 0,
         media_states: 0,
+        input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
     };
     let mut model = ClientModel::new(project);
@@ -689,6 +692,7 @@ mod scenes {
                 .map(|(value, name)| InputStatus {
                     input: wire(*value),
                     name: (*name).into(),
+                    lifecycle: fm_protocol::InputLifecycleStatus::default(),
                 })
                 .collect(),
             outputs: Vec::new(),
@@ -731,6 +735,7 @@ mod scenes {
             grade_states: 0,
             animation_preset_states: 0,
             media_states: 0,
+            input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         };
         let mut model = ClientModel::new(project);

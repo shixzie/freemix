@@ -8,6 +8,10 @@
 //! report the decoder's source and the transport's position, end action,
 //! and audio-track changes.
 //!
+//! IN-026 on the same runtime: pausing the input holds its picture while
+//! its transport plays, and closing it releases the file's decoder until it
+//! reopens.
+//!
 //! The test needs `FFmpeg` tools and a native GPU adapter (a software Vulkan
 //! driver such as lavapipe suffices). Without them it is skipped, unless
 //! `FM_REQUIRE_FFMPEG=1` or `FM_REQUIRE_NATIVE_MEDIA=1` makes that a failure.
@@ -292,6 +296,44 @@ impl Client {
         (image.input == clip()).then(|| frame_number(&image))
     }
 
+    /// Submits `payload` and waits for its acceptance.
+    fn accept(&mut self, payload: CommandPayload) {
+        self.commands += 1;
+        let id = format!("command-{}", self.commands);
+        let described = format!("{payload:?}");
+        self.send(&WireMessage::Command(CommandMessage {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            id: id.clone(),
+            idempotency_key: id,
+            expected_revision: None,
+            deadline_ms: None,
+            payload,
+        }));
+        self.wait_for("the command result", |_, message| match message {
+            WireMessage::CommandResult(result) => {
+                assert!(
+                    matches!(result, CommandResult::Accepted { .. }),
+                    "{described}: {result:?}"
+                );
+                Some(())
+            }
+            _ => None,
+        });
+    }
+
+    /// The clip's transport as the next `media` runtime event reports it.
+    fn next_transport(&mut self, what: &str) -> fm_protocol::MediaTransportStatus {
+        self.wait_for(what, |_, message| {
+            let WireMessage::RuntimeEvent(event) = message else {
+                return None;
+            };
+            let RuntimeLifecycleEvent::Media { status, .. } = event.event else {
+                return None;
+            };
+            (status.input == clip()).then_some(status.transport)
+        })
+    }
+
     /// Submits a media operation on the clip and waits for its acceptance,
     /// returning the `media_changed` status.
     fn media(&mut self, operation: MediaOperation) -> MediaStatus {
@@ -499,6 +541,76 @@ fn native_daemon_plays_a_media_file_through_its_engine_transport() {
         repeated += 1;
         (repeated == 2).then_some(())
     });
+
+    // IN-026: pausing the input holds its picture although its transport
+    // is playing.
+    client.media(MediaOperation::Play);
+    client.wait_for("playback after the pause", |client, message| {
+        let frame = client.shown_frame(message)?;
+        (frame != held).then_some(())
+    });
+    client.accept(CommandPayload::InputLifecycle(
+        fm_protocol::InputLifecycleOperation::SetPaused {
+            input: clip(),
+            paused: true,
+        },
+    ));
+    let mut last = None;
+    let mut repeats = 0;
+    let held = client.wait_for("the paused input to hold", |client, message| {
+        let frame = client.shown_frame(message)?;
+        if last == Some(frame) {
+            repeats += 1;
+        } else {
+            last = Some(frame);
+            repeats = 0;
+        }
+        (repeats == 5).then_some(frame)
+    });
+    let mut repeated = 0;
+    client.wait_for("the paused input's frame twice more", |client, message| {
+        let frame = client.shown_frame(message)?;
+        assert_eq!(
+            frame, held,
+            "the paused input held {held}, then showed {frame}"
+        );
+        repeated += 1;
+        (repeated == 2).then_some(())
+    });
+    client.accept(CommandPayload::InputLifecycle(
+        fm_protocol::InputLifecycleOperation::SetPaused {
+            input: clip(),
+            paused: false,
+        },
+    ));
+    client.wait_for("playback after resuming", |client, message| {
+        let frame = client.shown_frame(message)?;
+        (frame != held).then_some(())
+    });
+
+    // Closing the input (off Program) releases its source; reopening opens
+    // the file again on a fresh transport.
+    client.accept(CommandPayload::Cut);
+    client.accept(CommandPayload::InputLifecycle(
+        fm_protocol::InputLifecycleOperation::SetClosed {
+            input: clip(),
+            closed: true,
+        },
+    ));
+    let mut closed = client.next_transport("the closed transport");
+    while closed.available {
+        closed = client.next_transport("the closed transport");
+    }
+    client.accept(CommandPayload::InputLifecycle(
+        fm_protocol::InputLifecycleOperation::SetClosed {
+            input: clip(),
+            closed: false,
+        },
+    ));
+    let seeked = client.media(MediaOperation::Seek(MediaSeekTarget::Frame(10)));
+    assert!(seeked.transport.available, "{:?}", seeked.transport);
+    assert_eq!(seeked.transport.fault, None);
+    assert_eq!(seeked.transport.frames, 100);
     drop(client);
     drop(daemon);
 }

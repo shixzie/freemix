@@ -1374,6 +1374,10 @@ impl Client {
         if let RuntimeLifecycleEvent::Media { status, .. } = &event.event {
             self.model.apply_runtime_media(status.as_ref().clone())?;
         }
+        if let RuntimeLifecycleEvent::InputAvailability { input, offline } = &event.event {
+            self.model
+                .apply_runtime_input_availability(input.to_domain(), *offline)?;
+        }
         self.runtime_server = Some(event.server);
         self.runtime_sequence = Some((event.generation, event.sequence));
         Ok(())
@@ -1444,6 +1448,7 @@ impl Client {
             | CommandPayload::Transition { .. }
             | CommandPayload::SetTransitionFavorite { .. }
             | CommandPayload::Media { .. }
+            | CommandPayload::InputLifecycle(_)
             | CommandPayload::Stinger { .. }
             | CommandPayload::ConfigureStinger { .. }
             | CommandPayload::RemoveStinger { .. }
